@@ -337,8 +337,8 @@ session closes too.
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and
-`wait --for "<sentence>"` are usage errors (`removed_form`) that point to
-the plan command.
+`wait --for "<sentence>"` are usage errors: unknown arguments, or a
+target that is not a ref, which points to the plan command.
 
 **The decision model** runs in the host, never the worker, behind one
 interface (`model.rs`): choose one option, or yes/no with a probability.
@@ -411,8 +411,7 @@ latch opens is a new window behind all others (its page still visible and
 unthrottled), and switching tabs brings nothing to the front. A page's own
 JavaScript dialog still raises its window, and so can a tab the page opens
 (`target=_blank`, `window.open`); `handoff` will bring it forward on
-purpose. This is the pin's one `focus` switch (`background`; `front` brings
-windows and tab switches forward instead).
+purpose.
 Camoufox runs the same way: outside latch's Seatbelt, with Firefox's own
 sandbox on for every web content process; the helper and the browser each
 in a process group of their own, both killed and waited for on close; an

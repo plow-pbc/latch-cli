@@ -18,7 +18,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::failure::{Exit, Failure};
@@ -35,23 +35,8 @@ pub struct Pin {
     pub builds: BTreeMap<String, Build>,
     /// The launch arguments, always passed, before latch's own per-session ones.
     pub recipe: Vec<String>,
-    /// Whether the engine's windows open behind the owner's (`background`)
-    /// or come to the front (`front`). The one switch for it.
-    pub focus: Focus,
     /// Optional driver features this engine has.
     pub capabilities: Vec<String>,
-    #[allow(dead_code)]
-    pub licence: String,
-}
-
-#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum Focus {
-    /// Never take the owner's focus or desktop: windows open behind the
-    /// others and tabs are never activated. Only a handoff comes forward.
-    Background,
-    /// Windows and tab switches come to the front, as a person's would.
-    Front,
 }
 
 #[derive(Deserialize)]
@@ -89,10 +74,7 @@ pub struct CamoufoxPin {
     pub builds: BTreeMap<String, CamoufoxBuild>,
     /// The operating system the fingerprint claims: always the host's own.
     pub os: String,
-    pub focus: Focus,
     pub capabilities: Vec<String>,
-    #[allow(dead_code)]
-    pub licence: String,
 }
 
 #[derive(Deserialize)]
@@ -365,8 +347,6 @@ mod tests {
         assert!(forbidden("--headless=new"));
         assert!(forbidden("--no-sandbox"));
         assert!(CFT.builds.contains_key("mac_arm64") && CFT.builds.contains_key("mac_x64"));
-        // The owner's focus is never taken (spec §8); flipping this is the one switch.
-        assert_eq!(CFT.focus, Focus::Background);
     }
 
     /// The same tree through `scripts/cft-pin.py`'s `tree_hash` gives this
@@ -421,9 +401,8 @@ mod tests {
             (Exit::Denied, "engine_unverified")
         );
         assert!(changed.message.contains("camoufox"), "{}", changed.message);
-        // The fingerprint claims the host's own OS; windows open behind.
+        // The fingerprint claims the host's own OS.
         assert_eq!(CAMOUFOX.os, "macos");
-        assert_eq!(CAMOUFOX.focus, Focus::Background);
     }
 
     #[test]

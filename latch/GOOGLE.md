@@ -81,5 +81,4 @@ bulk `--query`/`--thread` on single-message actions, and `--raw-file` (a raw
 message whose recipients the audit could not see). The four release executable hashes (macOS and Linux, arm64 and
 amd64) live in `src/google/pin.json` with the version. latch compiles that file
 in and takes both from it: the host looks for gog in that version's folder and
-checks the hashes before each child starts. No extra crate was introduced:
-`tempfile`, already used by tests, now owns the per-call folders too.
+checks the hashes before each child starts.

@@ -144,7 +144,6 @@ impl Camoufox {
                 "executable": engine.executable,
                 "headless": headless,
                 "os": CAMOUFOX.os,
-                "focus": CAMOUFOX.focus,
                 "reader": READER,
                 "env": env,
             }),

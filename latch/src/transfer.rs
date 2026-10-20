@@ -49,25 +49,11 @@ async fn receive(
         op: "file_get".to_string(),
         args: json!({ "remote_path": remote_path }),
     };
-    let (mut send, mut recv) = dial::start(connection, &request).await?;
-    send.finish().map_err(|_| dial::lost(connection, true))?;
-    let size = size_of(&dial::answer(connection, &mut recv, ANSWER_WITHIN).await?)?;
-
-    let mut file = File::create(local)
-        .await
-        .map_err(|err| local_failure(local, err))?;
-    let copied = wire::copy(&mut recv, &mut file, size).await;
-    let Ok(sha256) = copied else {
-        // Don't leave half a file behind.
-        let _ = tokio::fs::remove_file(local).await;
-        return Err(dial::lost(connection, true));
-    };
-    let done = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    check_same(&done, &sha256)?;
+    let (start, done, sha256) = download(connection, &request, local).await?;
     Ok(json!({
         "path": local,
         "remote_path": remote_path,
-        "size": size,
+        "size": start["size"],
         "sha256": sha256,
         "audit_id": done["audit_id"],
     }))
@@ -117,15 +103,7 @@ async fn send(
         op: "file_put".to_string(),
         args: json!({ "remote_path": remote_path, "size": size, "name": name }),
     };
-    let (mut send, mut recv) = dial::start(connection, &request).await?;
-    // Wait for "go ahead": the host has the file open, or says why not.
-    dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-
-    let sha256 = wire::copy(file, &mut send, size)
-        .await
-        .map_err(|_| dial::lost(connection, true))?;
-    send.finish().map_err(|_| dial::lost(connection, true))?;
-    let done = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
+    let (done, sha256) = upload(connection, &request, file, size).await?;
     check_same(&done, &sha256)?;
     Ok(json!({
         // Where the host put it: inside `remote_path` if that is a folder.
@@ -136,7 +114,56 @@ async fn send(
     }))
 }
 
-/// The byte count in the host's first answer to `file_get`.
+/// Sends `request`, then `size` bytes of `file` once the host says go
+/// ahead (the host has somewhere to put them, or says why not). Returns
+/// the host's last answer and this side's sha256; whether that answer
+/// carries a sha256 to check depends on the operation.
+pub async fn upload(
+    connection: &Connection,
+    request: &Request,
+    file: &mut File,
+    size: u64,
+) -> Result<(Value, String), Failure> {
+    let (mut send, mut recv) = dial::start(connection, request).await?;
+    dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
+    let sha256 = wire::copy(file, &mut send, size)
+        .await
+        .map_err(|_| dial::lost(connection, true))?;
+    send.finish().map_err(|_| dial::lost(connection, true))?;
+    let done = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
+    Ok((done, sha256))
+}
+
+/// Sends `request`, then reads the host's first answer with the size,
+/// exactly that many bytes into `local`, and the host's last answer, whose
+/// sha256 must match. A file that broke off or does not match is removed.
+/// Returns both answers and the sha256.
+pub async fn download(
+    connection: &Connection,
+    request: &Request,
+    local: &Path,
+) -> Result<(Value, Value, String), Failure> {
+    let (mut send, mut recv) = dial::start(connection, request).await?;
+    send.finish().map_err(|_| dial::lost(connection, true))?;
+    let start = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
+    let size = size_of(&start)?;
+    let mut file = File::create(local)
+        .await
+        .map_err(|err| local_failure(local, err))?;
+    let Ok(sha256) = wire::copy(&mut recv, &mut file, size).await else {
+        // Don't leave half a file behind.
+        let _ = tokio::fs::remove_file(local).await;
+        return Err(dial::lost(connection, true));
+    };
+    let done = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
+    if let Err(failure) = check_same(&done, &sha256) {
+        let _ = tokio::fs::remove_file(local).await;
+        return Err(failure);
+    }
+    Ok((start, done, sha256))
+}
+
+/// The byte count in the host's first answer to a download.
 fn size_of(start: &Value) -> Result<u64, Failure> {
     start["size"].as_u64().ok_or_else(|| {
         let message = "the host's answer did not say how many bytes follow".to_string();
@@ -155,4 +182,79 @@ fn check_same(done: &Value, sha256: &str) -> Result<(), Failure> {
 
 fn local_failure(path: &Path, err: std::io::Error) -> Failure {
     Failure::usage("local_file", format!("{}: {err}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh::endpoint::presets;
+    use iroh::{Endpoint, RelayMode};
+    use wire::Response;
+
+    /// A download from a host that sends `bytes` of the `size` it promised,
+    /// then `sha256` as the one it saw.
+    async fn download_from(
+        size: u64,
+        bytes: &[u8],
+        sha256: &str,
+        local: &Path,
+    ) -> Result<(), Failure> {
+        let bind = |alpns: Vec<Vec<u8>>| {
+            Endpoint::builder(presets::Minimal)
+                .relay_mode(RelayMode::Disabled)
+                .alpns(alpns)
+                .bind()
+        };
+        let host = bind(vec![wire::ALPN.to_vec()]).await.unwrap();
+        let client = bind(vec![]).await.unwrap();
+        let accepting = host.accept();
+        let (accepted, connection) =
+            tokio::join!(async { accepting.await.unwrap().await.unwrap() }, async {
+                client.connect(host.addr(), wire::ALPN).await.unwrap()
+            });
+        let serving = async {
+            let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
+            wire::read_frame(&mut recv).await.unwrap();
+            let frame = |value| serde_json::to_vec(&Response::Ok(value)).unwrap();
+            wire::write_frame(&mut send, &frame(json!({"size": size})))
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut send, bytes)
+                .await
+                .unwrap();
+            if bytes.len() as u64 == size {
+                wire::write_frame(&mut send, &frame(json!({"sha256": sha256})))
+                    .await
+                    .unwrap();
+            }
+            send.finish().unwrap();
+            let _ = send.stopped().await;
+        };
+        let request = Request {
+            op: "file_get".into(),
+            args: json!({}),
+        };
+        let ((), result) = tokio::join!(serving, download(&connection, &request, local));
+        client.close().await;
+        host.close().await;
+        result.map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn a_download_that_breaks_off_or_does_not_match_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("got");
+        let sha256 = crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(b"hello"));
+
+        download_from(5, b"hello", &sha256, &local).await.unwrap();
+        assert_eq!(std::fs::read(&local).unwrap(), b"hello");
+
+        let wrong = download_from(5, b"hello", "00", &local).await.unwrap_err();
+        assert_eq!(wrong.code, "checksum_mismatch");
+        assert!(!local.exists(), "a file that does not match is removed");
+
+        let short = download_from(5, b"hel", &sha256, &local).await.unwrap_err();
+        assert_eq!(short.code, "outcome_unknown");
+        assert!(!local.exists(), "a file that broke off is removed");
+    }
 }

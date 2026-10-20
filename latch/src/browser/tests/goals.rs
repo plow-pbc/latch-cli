@@ -563,8 +563,8 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
             .starts_with("Order placed")
     );
 
-    // `--output F`: the host sends the page as the plan ended after its
-    // answer; a stop keeps it as the request's `final` shot.
+    // `--output F`: the page as the plan ended, or stopped, is kept as the
+    // request's `final` shot, which the client then fetches into F.
     told.tell(|s| {
         if title(s).starts_with("Drinks") {
             complete("[title] Drinks", "done")
@@ -576,7 +576,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     args["request"] = json!("r-output-1");
     args["output"] = json!(true);
     let mut audit = serde_json::Map::new();
-    let (result, png) = crate::browser::host::call(
+    let (result, _) = crate::browser::host::call(
         &h.browsers,
         super::CALLER.into(),
         "do",
@@ -587,13 +587,13 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     )
     .await
     .unwrap();
-    let png = png.expect("the final page follows the answer");
-    assert!(png.starts_with(b"\x89PNG"));
-    assert_eq!(result["size"], png.len());
     assert_eq!(
         result["screenshot"],
         json!({"request": "r-output-1", "shot": "final"})
     );
+    let png = crate::browser::steps::shot(&h.browsers, &h.id, super::CALLER, "r-output-1", "final")
+        .unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
     told.tell(|_| choose("stuck", None));
     args["request"] = json!("r-output-2");
     let failure = crate::browser::host::call(

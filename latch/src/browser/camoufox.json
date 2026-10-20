@@ -33,7 +33,6 @@
     }
   },
   "os": "macos",
-  "focus": "background",
   "capabilities": ["eval", "upload", "downloads"],
   "licence": "Camoufox (https://camoufox.com), built from Firefox: Mozilla Public License 2.0. Node.js: MIT and others (https://github.com/nodejs/node/blob/main/LICENSE). Playwright: Apache-2.0. camoufox-js: MIT. Downloaded at install time with --with-camoufox, never shipped with latch."
 }
