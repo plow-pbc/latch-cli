@@ -13,7 +13,6 @@ use serde::Serialize;
 
 use crate::cli::{BUILD_API_URL, LoginArgs};
 use crate::credential;
-use crate::devices;
 use crate::failure::Failure;
 use crate::heartbeat;
 use crate::plow::{Peer, Plow, Registration};
@@ -27,9 +26,6 @@ const POLL: Duration = Duration::from_secs(3);
 pub struct LoginOutput {
     pub peer: Peer,
     pub key_created: bool,
-    /// The machine this login took the name from, if it replaced one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub replaced: Option<Peer>,
 }
 
 /// Where this login's credential comes from.
@@ -76,12 +72,13 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     let owner = !matches!(source, Source::Agent(_));
     let save_token = matches!(source, Source::Given(_));
 
+    let named = args.name.is_some();
     let mut name = args
         .name
         .or(saved.as_ref().map(|config| config.peer.name.clone()));
-    // A machine needs a name; an agent's defaults to its own.
-    if owner && name.is_none() && term::interactive() {
-        name = Some(term::ask("Name for this machine: ")).filter(|name| !name.is_empty());
+    // A machine is named after its hostname, without asking.
+    if owner && name.is_none() {
+        name = hostname();
     }
 
     let token = match source {
@@ -108,34 +105,42 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         key: key.public().to_string(),
         name,
         relay_url,
-        take_over: false,
     };
     let plow = Plow::new(&api_url, &token);
-    let (peer, replaced) = match plow.register(&registration).await {
+    // An agent is named after itself in Plow. Plow names one that is not
+    // an agent's credential, as it always has.
+    let me = if owner {
+        None
+    } else {
+        plow.agent_me().await.ok()
+    };
+    let registration = Registration {
+        name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
+        ..registration
+    };
+    let peer = match plow.register(&registration).await {
+        // Two agents may share a name: unless one was asked for, try once
+        // more as the name plus the start of this agent's uid.
+        Err(failure) if failure.code == "conflict" && !owner && !named => {
+            let me = match me {
+                Some(me) => me,
+                None => plow.agent_me().await.map_err(|_| failure)?,
+            };
+            let name = registration.name.as_deref().unwrap_or(&me.name);
+            let suffixed = Registration {
+                name: Some(format!("{name}-{}", &me.uid[..6.min(me.uid.len())])),
+                ..registration.clone()
+            };
+            plow.register(&suffixed).await?
+        }
         // Another of the owner's machines may hold the name.
         Err(failure) if failure.code == "conflict" && owner => {
             let Some(name) = &registration.name else {
                 return Err(failure);
             };
-            // If this same login holds it (this machine logged in again with
-            // a new key, say), Plow moves the name here; nobody is asked.
-            let take_over = Registration {
-                take_over: true,
-                ..registration.clone()
-            };
-            match plow.register(&take_over).await {
-                Ok(peer) => {
-                    eprintln!("The name {name} now points to this machine.");
-                    (peer, None)
-                }
-                Err(failure) if failure.code == "conflict" => {
-                    let replaced = replace_machine(&plow, name, &registration.key).await?;
-                    (plow.register(&registration).await?, Some(replaced))
-                }
-                Err(failure) => return Err(failure),
-            }
+            return Err(clash(&plow, name, &registration.key).await);
         }
-        result => (result?, None),
+        result => result?,
     };
 
     // Save only after Plow accepted us, so a failed first login leaves no
@@ -148,11 +153,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         api_url,
         peer: peer.clone(),
     })?;
-    Ok(LoginOutput {
-        peer,
-        key_created,
-        replaced,
-    })
+    Ok(LoginOutput { peer, key_created })
 }
 
 /// Registers this peer again as it last was, when Plow no longer lists it:
@@ -164,7 +165,6 @@ pub async fn register_again(state: &StateDir) -> Result<(), Failure> {
         key: state.load_key()?.public().to_string(),
         name: Some(config.peer.name.clone()),
         relay_url: config.peer.relay_url.clone(),
-        take_over: false,
     };
     let peer = Plow::from_state(state)?.register(&registration).await?;
     state.save_config(&Config {
@@ -236,40 +236,27 @@ fn open_messages(send_to: &str, text: &str) {
     }
 }
 
-/// The name is taken. If another of the owner's machines holds it, a person
-/// at the terminal may replace that machine, which signs it out; otherwise
-/// the login stops and says what to do. A name an agent holds is never
-/// offered for replacement.
-async fn replace_machine(plow: &Plow, name: &str, key: &str) -> Result<Peer, Failure> {
-    let peers = plow.list_peers().await?;
+/// The name is taken by another peer: the login stops and says by whom
+/// and what to do. It never renames this machine or replaces the other.
+async fn clash(plow: &Plow, name: &str, key: &str) -> Failure {
+    let peers = plow.list_peers().await.unwrap_or_default();
     let holder = peers.iter().find(|peer| peer.name == name);
-    let Some(machine) = holder.filter(|peer| peer.kind == "device" && peer.key != key) else {
-        let message = match holder {
-            Some(peer) if peer.kind == "agent" => {
-                format!("the name {name:?} belongs to an agent; choose another --name")
-            }
-            _ => format!(
-                "this key or the name {name:?} is taken by another peer; choose another --name"
-            ),
-        };
-        return Err(Failure::usage("conflict", message));
+    let message = match holder {
+        Some(peer) if peer.kind == "agent" => {
+            format!("the name {name:?} belongs to an agent; choose another --name")
+        }
+        Some(machine) if machine.key != key => {
+            let last_seen = machine.last_seen_at.as_deref().unwrap_or("never");
+            format!(
+                "a machine named {name:?} already exists (last seen {last_seen}); \
+                 remove it with `latch devices remove {name}`, or choose another --name"
+            )
+        }
+        _ => {
+            format!("this key or the name {name:?} is taken by another peer; choose another --name")
+        }
     };
-    let last_seen = machine.last_seen_at.as_deref().unwrap_or("never");
-    if !term::interactive() {
-        let message = format!(
-            "a machine named {name:?} already exists (last seen {last_seen}); \
-             remove it with `latch devices remove {name}`, or choose another --name"
-        );
-        return Err(Failure::usage("conflict", message));
-    }
-    let question = format!(
-        "A machine named {name} already exists (last seen {last_seen}). Replace it? This signs that machine out."
-    );
-    if !term::confirm(&question) {
-        let message = format!("kept the machine named {name:?}; choose another --name");
-        return Err(Failure::usage("conflict", message));
-    }
-    devices::remove_from_plow(plow, machine).await
+    Failure::usage("conflict", message)
 }
 
 /// `text` percent-encoded for a URL: letters, digits and `-._~` stay as
@@ -283,6 +270,24 @@ fn escape(text: &str) -> String {
             _ => format!("%{byte:02X}"),
         })
         .collect()
+}
+
+/// This machine's hostname, up to its first dot (`mac-studio`, not
+/// `mac-studio.local`), if it has one.
+fn hostname() -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: gethostname writes at most `buffer.len()` bytes into it.
+    let status = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+    if status != 0 {
+        return None;
+    }
+    let end = buffer
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(buffer.len());
+    let full = String::from_utf8_lossy(&buffer[..end]);
+    let short = full.split('.').next().unwrap_or_default().trim();
+    Some(short.to_string()).filter(|name| !name.is_empty())
 }
 
 fn missing(what: &str) -> Failure {

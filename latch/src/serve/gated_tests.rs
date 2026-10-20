@@ -59,13 +59,22 @@ fn latch_binary() -> PathBuf {
 }
 
 async fn start(world: World) -> TestHost {
+    start_denying(world, DenyExec::default()).await
+}
+
+/// A host whose owner denies exec as `deny_exec` says.
+async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
     let fake = fake::serve(world);
     let provider = model::Plow::new(&fake.url, "made-up-login".into()).with_model(gate::MODEL);
-    start_with(fake, Arc::new(provider)).await
+    start_with(fake, Arc::new(provider), deny_exec).await
 }
 
 /// A host on `plow`, its gatekeeper asking `provider`.
-async fn start_with(plow: FakePlow, provider: Arc<dyn model::Provider>) -> TestHost {
+async fn start_with(
+    plow: FakePlow,
+    provider: Arc<dyn model::Provider>,
+    deny_exec: DenyExec,
+) -> TestHost {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     std::fs::create_dir_all(&parent).unwrap();
     let dir = tempfile::tempdir_in(parent).unwrap();
@@ -96,6 +105,7 @@ async fn start_with(plow: FakePlow, provider: Arc<dyn model::Provider>) -> TestH
         endpoint: endpoint.clone(),
         name: "test-host".into(),
         gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
+        deny_exec,
     });
     let serving = host.clone();
     tokio::spawn(async move {
@@ -343,6 +353,25 @@ async fn a_google_change_is_already_done_the_next_time_and_a_read_is_not() {
 }
 
 #[tokio::test]
+async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
+    let every_agent = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);
+    let t = start_denying(a_chat(always_covered), every_agent).await;
+    let agent = t.caller("agent").await;
+    let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
+    let (exit, code, _) = refusal(&answer);
+    assert_eq!((exit, code), (Exit::Denied, "exec_denied"));
+    assert!(!t.area.join("made").exists());
+    assert_eq!(t.judged(), 0);
+    assert!(t.audit()[0].get("gate").is_none());
+    // Other operations are still judged.
+    let (answer, _) = t
+        .call(&agent, "file_get", json!({"remote_path": "notes.txt"}))
+        .await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert_eq!(t.judged(), 1);
+}
+
+#[tokio::test]
 async fn devices_are_never_judged() {
     let t = start(a_chat(down)).await;
     let device = t.caller("device").await;
@@ -405,7 +434,7 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
     .unwrap();
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
 
-    let t = start_with(fake::serve(World::default()), provider).await;
+    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
     assert_eq!(refusal(&answer).1, "no_intent", "neither chat nor rules");
