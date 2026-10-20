@@ -30,6 +30,7 @@ use crate::heartbeat;
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
 use crate::state::{Config, StateDir};
+use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
 
@@ -45,6 +46,9 @@ struct Host {
     browsers: crate::browser::host::Browsers,
     /// The host's vault, shared by every engine and profile.
     vault: std::sync::Arc<crate::vault::host::Vault>,
+    /// Our own endpoint and name, which a phone link points at.
+    endpoint: Endpoint,
+    name: String,
 }
 
 /// How an allowed operation ended: the final answer for the client, and
@@ -138,7 +142,7 @@ async fn run_host(
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(state.load_key()?)
         .relay_mode(RelayMode::Default)
-        .alpns(vec![wire::ALPN.to_vec()])
+        .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
         .bind()
         .await
         .map_err(|err| Failure::failed("iroh", format!("could not start iroh: {err}")))?;
@@ -159,6 +163,7 @@ async fn run_host(
     }
     let terminate = signal(SignalKind::terminate())
         .map_err(|err| Failure::failed("signal", format!("cannot listen for SIGTERM: {err}")))?;
+    let name = config.peer.name.clone();
     let heartbeat_state = StateDir {
         path: state.path.clone(),
     };
@@ -186,6 +191,8 @@ async fn run_host(
         dashboard,
         browsers,
         vault,
+        endpoint: endpoint.clone(),
+        name,
     });
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
@@ -285,6 +292,9 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
     };
     // The caller's key, proven by the connection's own handshake.
     let caller = connection.remote_id().to_string();
+    if connection.alpn() == link::ALPN {
+        return serve_phone(&host, &caller, connection).await;
+    }
 
     // First check: on connect. A refused caller's connection is closed with
     // the "denied" code, which its client reports as exit 4.
@@ -358,6 +368,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                 "vault" => {
                     crate::vault::host::run(
                         &host.vault,
+                        &host.here(),
                         caller,
                         &identity.kind,
                         request.args,
@@ -420,6 +431,68 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
     answer(&mut send, &response).await;
 }
 
+/// A phone page's connection (see `vault/link.rs`). Its key is a
+/// throwaway one Plow has never heard of: the link's code in each request
+/// is what lets it in, so Plow is not asked. It can fetch its link's form
+/// and save its link's item, nothing else.
+async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
+    log(&format!(
+        "phone {caller}: connected over {}",
+        describe_paths(&connection)
+    ));
+    while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+        let Ok(json) = wire::read_frame(&mut recv).await else {
+            return;
+        };
+        let Ok(request) = serde_json::from_slice::<Request>(&json) else {
+            let response = failed("bad_request", "the request frame is not valid".to_string());
+            answer(&mut send, &response).await;
+            continue;
+        };
+        let started = Instant::now();
+        let mut audit_args = serde_json::Map::new();
+        audit_args.insert("command".into(), Value::String(request.op.clone()));
+        let result = match request.op.as_str() {
+            "page" => link::page(&host.vault, &host.here(), &request.args, &mut audit_args),
+            "submit" => link::submit(&host.vault, &request.args, &mut audit_args),
+            op => Err(Failure::new(
+                crate::failure::Exit::Denied,
+                "not_on_a_phone_link",
+                format!("a phone link cannot run `{op}`"),
+            )),
+        };
+        let done = crate::vault::host::done(result, audit_args);
+        let decision = decision(&done.response);
+        log(&format!(
+            "vault_link: phone {caller}: {decision}: {} {}",
+            done.outcome, done.audit_args
+        ));
+        if let Some(dashboard) = &host.dashboard {
+            let (target, result) = dashboard::describe(
+                "vault_link",
+                &done.audit_args,
+                &done.outcome,
+                started.elapsed(),
+            );
+            dashboard.call(Row {
+                at: jiff::Timestamp::now(),
+                caller: "phone link".to_string(),
+                op: "vault_link".to_string(),
+                target,
+                result,
+                refused: decision == "deny",
+            });
+        }
+        let mut record = audit::record(caller, None, "vault_link", decision, &done.outcome);
+        record.args = done.audit_args;
+        let response = match host.append(record) {
+            Ok(audit_id) => with_audit_id(done.response, audit_id),
+            Err(message) => failed("audit_failed", message),
+        };
+        answer(&mut send, &response).await;
+    }
+}
+
 /// The audit decision for an operation the caller check let through: a
 /// refusal (such as the sandbox's) is a "deny", anything else an "allow" —
 /// a failure that is not a refusal (a missing file) was allowed to run.
@@ -473,6 +546,15 @@ struct Denial {
 }
 
 impl Host {
+    /// Where a phone link points: our key, name and current relay.
+    fn here(&self) -> link::Here {
+        link::Here {
+            key: self.endpoint.id().to_string(),
+            name: self.name.clone(),
+            relay: self.endpoint.addr().relay_urls().next().cloned(),
+        }
+    }
+
     /// Asks Plow who `caller` is. Returns the caller's identity if it may
     /// call, or why not. Nothing is cached: every check asks Plow again, so
     /// a revoked key stops working at once.

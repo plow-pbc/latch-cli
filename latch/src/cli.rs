@@ -388,6 +388,28 @@ pub enum VaultCommand {
         #[arg(long)]
         ask: Vec<String>,
     },
+    /// A one-time link that adds an item from your phone: the phone page
+    /// connects to the host itself, and the value goes straight there.
+    /// Prints the link, and a QR code on a terminal; it works once, for 15
+    /// minutes
+    Link {
+        /// login, card, identity or note
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        title: String,
+        /// A login's site (required, repeatable); for a card or identity, the
+        /// only sites it fills on
+        #[arg(long)]
+        site: Vec<String>,
+        /// A non-secret field, filled in on the phone: LABEL=VALUE
+        #[arg(long)]
+        field: Vec<String>,
+        /// The phone page's address (see `phone/`); the link adds the rest
+        /// after `#`
+        #[arg(long, env = "LATCH_PHONE_PAGE")]
+        page: String,
+    },
     /// Remove an item at its current revision
     Remove {
         item: String,

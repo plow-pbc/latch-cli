@@ -26,3 +26,13 @@ cft:
 # file is copied into each test's own state directory, never printed.
 test-model key:
     LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model browser::tests::steps::live
+
+# The phone page (phone/): iroh for the browser plus the shim, into phone/dist.
+phone:
+    phone/build.sh
+
+# Serves phone/dist on this machine, for `latch vault link --page
+# http://localhost:PORT/` (an emulator here, or a phone on the network with
+# --bind 0.0.0.0). Never publish it from here.
+phone-serve port="8731" bind="127.0.0.1":
+    python3 -m http.server {{port}} --bind {{bind}} --directory phone/dist

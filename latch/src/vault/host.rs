@@ -16,6 +16,7 @@ use serde_json::{Map, Value, json};
 
 use super::import::{self, Parsed};
 use super::item::{Item, Raw, kind_code};
+use super::link::{self, Here};
 use super::store::{Backend, OwnStore};
 use crate::failure::{Exit, Failure};
 use crate::serve::Done;
@@ -31,6 +32,8 @@ pub struct Vault {
     /// Previewed imports awaiting a pick, by id, with who previewed them.
     imports: Mutex<HashMap<String, (String, Instant, Parsed)>>,
     next_import: Mutex<u64>,
+    /// Open phone links, by the sha256 of their code (see `link.rs`).
+    pub(super) links: Mutex<HashMap<String, super::link::Request>>,
 }
 
 impl Vault {
@@ -40,6 +43,7 @@ impl Vault {
             store: Mutex::new(None),
             imports: Mutex::new(HashMap::new()),
             next_import: Mutex::new(0),
+            links: Mutex::new(HashMap::new()),
         })
     }
 
@@ -69,6 +73,7 @@ impl Vault {
 /// `vault`: one owner command. `kind` is the caller's kind as Plow says.
 pub async fn run(
     vault: &Vault,
+    here: &Here,
     caller: &str,
     kind: &str,
     args: Value,
@@ -85,6 +90,7 @@ pub async fn run(
         "list" => vault.with(|store| Ok(json!({"items": store.list()}))),
         "add" => add(vault, &args, &mut audit),
         "edit" => edit(vault, &args, &mut audit),
+        "link" => link::open(vault, here, &args, &mut audit),
         "remove" => remove(vault, &args, &mut audit),
         "import_preview" => preview(vault, caller, &args, send, recv, &mut audit).await,
         "import_commit" => commit(vault, caller, &args, &mut audit),
@@ -109,7 +115,7 @@ fn owner_only(kind: &str) -> Result<(), Failure> {
     ))
 }
 
-fn done(result: Result<Value, Failure>, audit: Map<String, Value>) -> Done {
+pub(crate) fn done(result: Result<Value, Failure>, audit: Map<String, Value>) -> Done {
     match result {
         Ok(value) => Done {
             response: Response::Ok(value),
@@ -133,7 +139,9 @@ fn strings(value: &Value) -> Vec<String> {
         .collect()
 }
 
-fn add(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
+/// The item `args` describes (kind, title, sites, values by label), not
+/// yet checked.
+pub(super) fn item_from(args: &Value) -> Result<Item, Failure> {
     let bad = |message: String| Failure::usage("bad_item", message);
     let kind = args["kind"]
         .as_str()
@@ -147,13 +155,21 @@ fn add(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<Va
         .filter_map(|(label, value)| Some((label.clone(), value.as_str()?.to_string())))
         .collect();
     let raw = Raw::from_labels(kind, title, &values).map_err(bad)?;
-    let item = Item {
+    Ok(Item {
         id: String::new(),
         revision: 0,
         sites: strings(&args["sites"]),
         other_top_sites: strings(&args["other_top_sites"]),
         raw,
-    };
+    })
+}
+
+pub(super) fn add(
+    vault: &Vault,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    let item = item_from(args)?;
     let meta = vault.with(|store| store.add(item))?;
     audit.insert("item".into(), json!(meta.item));
     audit.insert("kind".into(), json!(meta.kind));

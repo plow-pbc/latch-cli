@@ -1,8 +1,9 @@
 # Dev and test state (--state-dir), the pinned Chrome for Testing, test folders
 /.dev/
 
-# Cargo build output
+# Cargo build output, and the phone page's build (latch/phone/build.sh)
 target/
+/latch/phone/dist/
 
 # Local agent tooling
 .claude/

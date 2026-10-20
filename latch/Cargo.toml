@@ -48,6 +48,8 @@ psl = "2.1.239"
 totp-rs = { version = "6.0.0", default-features = false, features = ["std"] }
 url = "2.5.8"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+# `latch vault link`'s QR code, drawn in the terminal (no image backends).
+qrcode = { version = "0.14.1", default-features = false }
 
 [features]
 # Builds the browser test that calls the decision model (jev) for real;
