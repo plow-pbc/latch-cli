@@ -11,12 +11,14 @@ use sha2::Digest;
 
 use super::shop::serve_shop;
 use super::steps::Harness;
-use super::{cdp_engine, test_state};
+use super::test_state;
 use crate::browser::model::{Answer, Asked, CallMeta, Kind, Provider, Question};
 use crate::browser::plan::{Plan, short_step};
 use crate::failure::Failure;
 use crate::vault::item::{CARD, Item, Raw};
 use crate::vault::store::Backend;
+
+conformance!(with_no_model_an_instruction_step_sends_nothing);
 
 /// What the stand-in model answers on one pass: the step's status, the
 /// evidence line (an option whose text holds this), the operation, and
@@ -263,7 +265,7 @@ fn sent(answer: &Value) -> usize {
 
 #[tokio::test]
 async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
-    let (_dir, state, _area) = test_state(cdp_engine(), &["default"]);
+    let (_dir, state, _area) = test_state("cft", &["default"]);
     let site = serve_shop();
     let told = Arc::new(Told::default());
     let mut h = Harness::start(&state, Some(told.clone())).await;
@@ -874,11 +876,11 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
         crate::browser::steps::shot(&h.browsers, &h.id, super::CALLER, "r-output-2", "final")
             .unwrap();
     assert!(kept.starts_with(b"\x89PNG"));
+    h.close().await;
 }
 
-#[tokio::test]
-async fn with_no_model_an_instruction_step_sends_nothing() {
-    let (_dir, state, _area) = test_state(cdp_engine(), &["default"]);
+async fn with_no_model_an_instruction_step_sends_nothing(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let site = serve_shop();
     let mut h = Harness::start(&state, None).await;
     h.open(&format!("{site}/index.html")).await;
@@ -887,4 +889,5 @@ async fn with_no_model_an_instruction_step_sends_nothing() {
         .await
         .unwrap_err();
     assert_eq!(failure.code, "model_unavailable", "{}", failure.message);
+    h.close().await;
 }

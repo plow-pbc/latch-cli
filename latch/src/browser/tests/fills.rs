@@ -37,24 +37,79 @@ conformance!(
     a_login_after_an_edit_fills_the_new_password,
 );
 
-/// `text` without its sha256 digests (a screenshot's, in a confirmation):
-/// 64 hex digits hold the three-digit CVV by chance, and are no value.
-fn without_digests(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut run = String::new();
-    for ch in text.chars().chain(std::iter::once(' ')) {
-        if ch.is_ascii_hexdigit() {
-            run.push(ch);
-            continue;
+/// `value` as an agent or the audit saw it, for the leak checks, less what
+/// holds digits by chance and is no value: a screenshot's size and digest,
+/// a confirmation's id, and the test site's port.
+fn seen(value: &Value) -> String {
+    let mut value = value.clone();
+    without_incidentals(&mut value);
+    value.to_string()
+}
+
+fn without_incidentals(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if let Some(shot) = map.get_mut("screenshot").and_then(Value::as_object_mut) {
+                shot.remove("size");
+                shot.remove("sha256");
+            }
+            match map.get_mut("confirmation") {
+                Some(Value::Object(confirmation)) => {
+                    confirmation.remove("id");
+                }
+                Some(Value::String(_)) => {
+                    map.remove("confirmation");
+                }
+                _ => {}
+            }
+            map.values_mut().for_each(without_incidentals);
         }
-        if run.len() != 64 {
-            out.push_str(&run);
-        }
-        run.clear();
-        out.push(ch);
+        Value::Array(items) => items.iter_mut().for_each(without_incidentals),
+        Value::String(text) => *text = without_port(text),
+        _ => {}
     }
-    out.pop();
-    out
+}
+
+/// `text` with the port after the test site's host left out.
+fn without_port(text: &str) -> String {
+    ["127.0.0.1:", "localhost:"]
+        .iter()
+        .fold(text.to_string(), |text, host| {
+            let mut parts = text.split(host);
+            let mut out = parts.next().unwrap_or_default().to_string();
+            for part in parts {
+                out.push_str(host);
+                out.push_str(part.trim_start_matches(|ch: char| ch.is_ascii_digit()));
+            }
+            out
+        })
+}
+
+/// A failure as shown, for the leak checks (`seen`).
+fn seen_failure(failure: &crate::failure::Failure) -> String {
+    format!(
+        "{} {} {}",
+        failure.code,
+        without_port(&failure.message),
+        seen(&failure.details)
+    )
+}
+
+#[test]
+fn the_leak_check_leaves_out_incidental_digits_and_nothing_else() {
+    let shown = seen(&json!({
+        "origin": "http://127.0.0.1:50319",
+        "confirmation": "c3190a1b2c3d4",
+        "details": {"confirmation": {
+            "id": "c3190a1b2c3d4",
+            "screenshot": {"sha256": "ab3190", "shot": "final", "size": 23190},
+        }},
+        "lines": ["Total $100.00", "cvv319"],
+        "url": "http://localhost:50319/a?c=319",
+    }));
+    // The size, digest, confirmation id and port are gone; the two values
+    // in the page's text and its query are still there.
+    assert_eq!(shown.matches(CVV).count(), 2, "{shown}");
 }
 
 /// Form fields from a POST body.
@@ -87,15 +142,8 @@ fn form(body: &str) -> Vec<(String, String)> {
 /// what arrived was right, never the value.
 fn site() -> u16 {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-site");
-    // The port is in every origin an agent and the audit see; one holding
-    // the CVV's digits (`50319`) would read as a leaked value.
-    let (listener, port) = loop {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        if !port.to_string().contains(CVV) {
-            break (listener, port);
-        }
-    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for socket in listener.incoming() {
             let Ok(socket) = socket else { continue };
@@ -260,17 +308,14 @@ impl Harness {
             let before = std::mem::replace(&mut self.id, id);
             self.browsers.close(&before, CALLER).await.unwrap();
         }
-        self.shown.push(Value::Object(audit).to_string());
+        self.shown.push(seen(&Value::Object(audit)));
         match result {
             Ok((value, _)) => {
-                self.shown.push(value.to_string());
+                self.shown.push(seen(&value));
                 Ok(value)
             }
             Err(failure) => {
-                self.shown.push(format!(
-                    "{} {} {}",
-                    failure.code, failure.message, failure.details
-                ));
+                self.shown.push(seen_failure(&failure));
                 Err(failure)
             }
         }
@@ -285,13 +330,10 @@ impl Harness {
         let result =
             crate::browser::fill::run(&self.browsers, &self.entry, command, &args, &mut audit)
                 .await;
-        self.shown.push(Value::Object(audit.clone()).to_string());
+        self.shown.push(seen(&Value::Object(audit.clone())));
         match &result {
-            Ok(value) => self.shown.push(value.to_string()),
-            Err(failure) => self.shown.push(format!(
-                "{} {} {}",
-                failure.code, failure.message, failure.details
-            )),
+            Ok(value) => self.shown.push(seen(value)),
+            Err(failure) => self.shown.push(seen_failure(failure)),
         }
         (result, audit)
     }
@@ -315,12 +357,9 @@ impl Harness {
             &mut audit,
         )
         .await;
-        self.shown.push(Value::Object(audit.clone()).to_string());
+        self.shown.push(seen(&Value::Object(audit.clone())));
         if let Err(failure) = &result {
-            self.shown.push(format!(
-                "{} {} {}",
-                failure.code, failure.message, failure.details
-            ));
+            self.shown.push(seen_failure(failure));
         }
         (result, audit)
     }
@@ -473,7 +512,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
         assert_eq!(paused.code, "session_paused");
     }
     let (slow, audit) = filling.await.unwrap();
-    h.shown.push(Value::Object(audit.clone()).to_string());
+    h.shown.push(seen(&Value::Object(audit.clone())));
     assert_eq!(slow.unwrap()["submitted"], true);
     // Agent code ran in this session before that fill, and the audit says so.
     assert_eq!(audit["agent_code_before_fill"], true);
@@ -548,8 +587,8 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     )
     .await
     .unwrap();
-    h.shown.push(paid.to_string());
-    h.shown.push(Value::Object(audit.clone()).to_string());
+    h.shown.push(seen(&paid));
+    h.shown.push(seen(&Value::Object(audit.clone())));
     println!("card confirmed: {}", paid["trail"]);
     assert_eq!(paid["trail"][0]["op"], "fill");
     assert_eq!(paid["trail"][0]["submitted"], true);
@@ -566,7 +605,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     );
     assert_eq!(audit["top_origin"], json!(local));
     assert_eq!(audit["frame_origins"], json!([local]));
-    let after = h.call("observe", json!({})).await.unwrap().to_string();
+    let after = seen(&h.call("observe", json!({})).await.unwrap());
     assert!(!after.contains(NUMBER) && !after.contains(CVV));
 
     // A confirmed card fill whose page reprices once the number is in: Pay
@@ -606,11 +645,8 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     )
     .await
     .unwrap_err();
-    h.shown.push(format!(
-        "{} {} {}",
-        repriced.code, repriced.message, repriced.details
-    ));
-    h.shown.push(Value::Object(audit.clone()).to_string());
+    h.shown.push(seen_failure(&repriced));
+    h.shown.push(seen(&Value::Object(audit.clone())));
     println!(
         "repriced during the fill: {} ({})",
         repriced.code, repriced.message
@@ -708,7 +744,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
         .iter()
         .map(|t| params.code(*t))
         .collect();
-    let everything = without_digests(&h.shown.join("\n"));
+    let everything = h.shown.join("\n");
     for value in [PASSWORD, NUMBER, CVV, KEY]
         .iter()
         .map(|s| s.to_string())
@@ -917,7 +953,7 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
         "session_paused",
         "still paused after the later fill"
     );
-    let everything = without_digests(&h.shown.join("\n"));
+    let everything = h.shown.join("\n");
     for value in [PASSWORD, NUMBER, CVV] {
         assert!(
             !everything.contains(value),
@@ -983,7 +1019,11 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
         )
         .await
         .map(|(result, _)| result);
-        shown_b.push(format!("{} {result:?}", Value::Object(audit)));
+        shown_b.push(seen(&Value::Object(audit)));
+        shown_b.push(match &result {
+            Ok(value) => seen(value),
+            Err(failure) => seen_failure(failure),
+        });
         result
     };
     let b = call_b(
@@ -1030,7 +1070,7 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
     println!("a new session during the fill: {}", opened.code);
     assert_eq!(opened.code, "session_paused");
     let (slow, audit) = filling.await.unwrap();
-    h.shown.push(Value::Object(audit).to_string());
+    h.shown.push(seen(&Value::Object(audit)));
     assert_eq!(slow.unwrap()["submitted"], true);
     let seen = call_b("observe", &b, json!({})).await.unwrap();
     println!("the other session after cleanup: {}", seen["title"]);
@@ -1067,7 +1107,7 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
 
     call_b("close", &b, json!({})).await.unwrap();
 
-    let everything = without_digests(&format!("{}\n{}", h.shown.join("\n"), shown_b.join("\n")));
+    let everything = format!("{}\n{}", h.shown.join("\n"), shown_b.join("\n"));
     for value in [PASSWORD, NUMBER, CVV] {
         assert!(
             !everything.contains(value),
@@ -1276,14 +1316,14 @@ async fn an_identifier_first_login_fills_both_steps_in_one_pause(engine: &str) {
     println!("observe between the steps: {}", paused.code);
     assert_eq!(paused.code, "session_paused");
     let (signed_in, audit) = filling.await.unwrap();
-    h.shown.push(Value::Object(audit.clone()).to_string());
+    h.shown.push(seen(&Value::Object(audit.clone())));
     println!(
         "two pages: {:?}; audit {}",
         signed_in.as_ref().map(|r| (&r["filled"], &r["submitted"])),
         Value::Object(audit.clone())
     );
     let signed_in = signed_in.unwrap();
-    h.shown.push(signed_in.to_string());
+    h.shown.push(seen(&signed_in));
     assert_eq!(signed_in["filled"], json!(["username", "password"]));
     assert!(h.text().await.contains("password accepted"));
     assert_eq!(audit["top_origin"], json!(local));
@@ -1470,8 +1510,8 @@ async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {
         &mut audit,
     )
     .unwrap();
-    h.shown.push(edited.to_string());
-    h.shown.push(Value::Object(audit.clone()).to_string());
+    h.shown.push(seen(&edited));
+    h.shown.push(seen(&Value::Object(audit.clone())));
     println!("edit audit: {}", Value::Object(audit));
 
     h.call("open", json!({"url": format!("{local}/login.html")}))

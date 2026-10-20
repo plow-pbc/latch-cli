@@ -5,7 +5,7 @@ Date: 2026-10-19 · Owner: head chef · Stage: **proof of concept on real hosts,
 - It is not throwaway: the code must be clean enough for later work to build on directly.
 - Reviewers don't demand the hardening that §2 defers.
 
-Source of truth: `browser-api-proposal.html` (kitchen notes) and the chef's browser and vault rulings of 2026-10-19. Plans, task sessions and vault edit: `plan-merged-rec.md` (chef-approved 2026-10-19), from `design-plan-{jplan,bapix}.md` and their critiques.
+Source of truth: `browser-api-proposal.html` (kitchen notes) and the chef's browser and vault rulings of 2026-10-19. Plans, task sessions and vault edit: `plan-merged-rec.md` (chef-approved 2026-10-19), from `design-plan-{jplan,bapix}.md` and their critiques. The one `fill`: `brief-fill-go.md` (chef-approved 2026-10-20), from `design-fill-{fillr,bapix}.md` and their critiques.
 
 ## 1. Goal
 
@@ -39,6 +39,7 @@ In scope: §1, on macOS hosts first and Linux hosts (the Pi) second. Not in the 
   - CloakBrowser;
   - network interception, extensions and closed shadow DOM;
   - passkeys beyond handoff;
+  - an autofill engine: fill suggestions come only from standard field hints, with no keyword classifier of fields or buttons (§7);
   - **a free-goal runner** (latch never invents steps; the agent writes them);
   - a generative text model;
   - loops or branches inside plans;
@@ -68,6 +69,7 @@ In scope: §1, on macOS hosts first and Linux hosts (the Pi) second. Not in the 
   - A sentence check is judged by the decision model, with a quoted line of the page as evidence.
 - **Confirmation:** the agent's explicit go-ahead for one consequential action. It is bound to the exact element and to what the page showed about it.
 - **Item:** a saved login, card, identity or note in the vault.
+- **Mapping:** which page element gets which item field in a fill, plus the button latch presses after it. The agent writes it, or accepts a **suggestion**: a mapping latch built from the page's own hints, with an id and the evidence for each element (§7).
 - **Decision model:** a model that only chooses, picking one option from a list or answering yes/no with a probability. It never writes text.
 
 ## 4. Architecture
@@ -101,7 +103,7 @@ agent machine                         latch host
 
     It sees nothing else of the state directory, and no areas.
   - File and exec workers never see profiles.
-- **The shared core** runs in the worker and is engine-neutral. It owns tabs, the page reader (an isolated-world script that builds the element list), snapshots and refs, actions, waits, the login step and the pause. Secret filtering is written once, here.
+- **The shared core** runs in the worker and is engine-neutral. It owns tabs, the page reader (an isolated-world script that builds the element list), snapshots and refs, actions, waits, the fill step and the pause. Secret filtering is written once, here.
 - **Drivers** speak each engine's own channel over **private pipes only**, so no other latch worker can connect to a browser.
   - **CfT:** CDP over `--remote-debugging-pipe`, through a driver written in Rust and built into latch.
   - **Camoufox:** a small Node helper running Camoufox's pinned Playwright runtime, which speaks the driver operations as JSON lines over stdio.
@@ -118,7 +120,7 @@ Every command below is `latch browser <cmd> --host H`; session commands also tak
 | Command | Does |
 |---|---|
 | `open [--profile P] [--task LABEL] [--reserve-site] [URL]` | Creates a new session in P's runtime (no `--profile`: profile `default`, CfT, created on first use). Returns the **session id** (unguessable; §5.1), engine, URL, title and a compact element list. `--task` is a label for listings and audit, never authority. `--reserve-site` is described in §5.3. |
-| `observe [--tab T] [--scope eN]` | A snapshot of the element list, short page text, and the vault items that fit this page (titles and handles, never values). |
+| `observe [--tab T] [--scope eN]` | A snapshot of the element list, short page text, and what a fill could use (§7): the vault items that fit this page with the fields each holds, what the page asks for, and suggested mappings. Never a value. |
 | `text` · `screenshot --output F` | Page text, or an image file on the client. |
 | `do STEP… [--fact NAME=TEXT]… [--item I]… [--within S] [--reserve-site] [--output F]` · `do --plan-file FILE\|-` · `do --dry-run …` | **The plan command** (§6). `--plan-file` takes the canonical plan object. `--dry-run` prints the canonical plan and runs nothing. `--output F` writes the final page's screenshot to F on the client, as `screenshot --output` does. |
 | `do --confirm C [STEP…]` | Carries out confirmation C from a `confirm_needed` stop, then any further steps (§6.5). |
@@ -126,7 +128,7 @@ Every command below is `latch browser <cmd> --host H`; session commands also tak
 | `act click\|type\|select\|press\|scroll\|back eN [text] [--check CHECK]` | One literal step on a ref from the last page latch returned to this session. It runs through the plan executor as a plan of one step, with the same checks, confirmations, trail and answer. |
 | `find --role R --name N` | Candidate refs by role and exact name. No model, never acts. |
 | `wait --ref eN --state S` · `--text T` · `--url-path P` | Waits for a typed condition, with a deadline. |
-| `login --snapshot O --item I [--username eN] [--password eN] [--submit eN]` · `fill --snapshot O --item I --field F=eN… [--press eN]` · `fill-code --snapshot O --item I [--field eN] [--submit eN]` | Login, card/identity/note and TOTP steps (§7). |
+| `fill --snapshot O --item I (--field F=eN… \| --suggested S) [--press eN]` | Fills any vault item: a login, an authenticator code (`otp`), a card, an identity or a note (§7). |
 | `handoff --reason captcha\|2fa\|passkey\|signin` | Pauses the agent until the owner says done (§7). |
 | `upload eN FILE` · `downloads` · `download get D --output F` | Files move as files. |
 | `dialog accept\|dismiss` · `tab new\|switch\|close` | Dialogs and tabs. |
@@ -139,9 +141,10 @@ These forms are removed:
 - `act --steps`;
 - `act click --at X,Y`, until it gets the binding listed in §15;
 - `find "<description>"`;
-- `wait --for "<sentence>"`.
+- `wait --for "<sentence>"`;
+- `login` and `fill-code`, folded into `fill` with no aliases (§7).
 
-Using any of them is a usage error: an unknown argument, or (for a target that is not a ref) a message pointing to the plan command.
+Using any of them is a usage error: an unknown argument, or (for a target that is not a ref) a message pointing to the plan command, or (for `login` and `fill-code`) one naming `fill`.
 
 **Owner-device commands.** `latch vault add|edit|list|remove|import` (§9) are client commands run from an **owner device**: a latch client state (its own `--state-dir`, logged in with `latch login` as kind `device`) distinct from the serving host's state. On the host's own machine the owner uses that separate client state, never the host's (the client already refuses to dial its own serving identity). The host accepts them only from a `device`-kind peer on its account; agent peers get exit 4.
 
@@ -183,7 +186,7 @@ latch never reports "done" for the user's task. `reached` means every step's own
 | 1 | stopped | `check_not_met`, `unconfirmed`, `already_true`, `needs_text`, `needs_fields`, `needs_login`, `needs_owner`, `blocked`, `stuck`, `repeat`, `no_progress`, `ambiguous_target`, `step_budget`, `plan_budget`, `deadline`, `stale_snapshot`, `covered_target`, `session_paused`, `site_busy`, `model_unavailable`, `request_too_large`, `no_such_session`, `unsupported_capability`, `timeout` |
 | 2 | usage | bad arguments, a malformed plan, `vague_condition`, a removed form, unknown host |
 | 3 | host unreachable; nothing sent | — |
-| 4 | refused | `confirm_needed`, `confirm_stale`, `step_not_allowed`, `not_owner`, `origin_mismatch`, `secret_on_page` |
+| 4 | refused | `confirm_needed`, `confirm_stale`, `step_not_allowed`, `not_owner`, `origin_mismatch`, `bad_target`, `secret_on_page` |
 | 5 | outcome unknown | read the plan command's `--history R` before anything else |
 
 `model_unavailable` replaces B5's `assist_off`.
@@ -242,9 +245,9 @@ Two sessions on one profile share the site's account state: one cart, one login,
 - `steps`: up to 10. Each step has one of:
   - a `goal` in words, with optional `values` (named literal texts), `urls` (named absolute URLs) and a `check`;
   - a `literal` action on refs: `click`, `type`, `select` or `press` (`op`, `ref`, `snapshot`, optional `text`), with an optional `check`;
-  - a `literal` **`fill`**: `item`, `fields` (item field → ref, a list of refs for split boxes) and `press` (the button), with an optional `check`. This is §7's explicit mapping, carried inside a plan.
+  - a `literal` **`fill`**: `item`, and either `fields` (item field → ref, a list of refs for split boxes) with `press` (the button), or `suggestion` (a suggestion id from a page latch returned to the session), with an optional `check`. This is §7's `fill`, carried inside a plan.
 - `facts`: named texts a goal step may type where it names them (`{NAME}`, below).
-- `items`: vault item handles the plan may use.
+- `items`: vault item handles the plan may use. Naming an item here is the agent's go-ahead for jev to choose one of latch's suggested mappings for it (§7, inside plans); a plan that names none never fills by itself.
 - `within`: seconds, default 120, at most 300.
 
 The whole plan is validated before anything runs (shape, step count, refs, URLs, fill mappings, check syntax). A malformed later step never lets earlier steps run.
@@ -256,7 +259,7 @@ The whole plan is validated before anything runs (shape, step count, refs, URLs,
 - **Checks.** A step's check follows its **last** ` -> ` outside quotes. So `add the note "A -> B"` has the value `A -> B` and no check.
 - **Literal steps.** A step that matches either of these is a literal step:
   - `click|type|select|press eN ["text"]`;
-  - `fill --item vN --field F=eN… [--press eN]`.
+  - `fill --item vN (--field F=eN… [--press eN] | --suggested S)`.
 
 **Checks:**
 - `origin: https://www.doordash.com`: the page's origin equals it.
@@ -287,7 +290,7 @@ Each pass observes the page and makes **one decision-model request**. In that re
 - the scroll position;
 - the actions already taken in this step;
 - the lines new since the step began: written on screen since then (a line whose text was set again counts, even with the same words, such as a message an add-to-cart writes again), or text that was not on the page then;
-- a note when a saved login or card fits the page.
+- the vault items that fit the page (title, kind, the fields each holds; never a value), and what the page asks for (§7).
 
 **The questions:**
 - **status:** `complete` (the page or the actions taken show the step's result), `not_yet`, or `cannot` (an error, an unavailable item, or missing information).
@@ -301,20 +304,19 @@ Each pass observes the page and makes **one decision-model request**. In that re
   | `navigate` | only to the step's or plan's URLs |
   | `scroll`, `back` | always, where they apply |
   | `wait` | until the step has waited twice |
-  | `login` | the page shows sign-in fields and exactly one vault item fits the page's origin under its site rule, or the plan's `items` / `--item` name one (§7) |
-  | `fill_code` | the page shows a code field and that fitting login item has an authenticator key (§7) |
-  | `fill` | a card or identity item fits the page under its site rule (or the plan names one), and the page shows a form |
+  | `fill` | a vault item fits the page under its site rule, and the page shows sign-in or form fields (§7). A code or passkey stage never gets this far: it stops before the decision (§6.4 stop 1) |
   | `done` | only after the step's first action, and only in a step without a typed check (latch decides that step's completion) |
   | `stuck` | always |
 
-  Choosing `fill` never maps fields: it stops with `needs_fields` (below).
+  Choosing `fill` never makes jev map fields: it picks one of latch's complete suggestions or `none` (the targets below, and §7).
 - **targets:**
   - click targets: elements an action can reach now, not disabled and **not covered**. Each with its row or card text, off-screen ones included, at most 250, with truncation shown.
   - field × value pairs over the step's own values, **always with `none`**, even when there is only one pair. With no value to pair, the fields text could go into, so a `needs_text` names the field the step wants.
   - dropdown × option pairs, **including the option already chosen**, marked as such.
   - supplied-URL ids.
+  - fill bundles: latch's complete suggestions for the items the plan names, each shown as the item's title and kind, its map (item field → the element's name on the page) and its press button, **always with `none`**, even when there is only one.
 
-  A target choice is dropped only where the host has already established the single eligible target by itself. So `login` and `fill_code` take no target head. Every model-chosen field × value pair keeps its `none`.
+  Every model-chosen field × value pair and fill bundle keeps its `none`.
 
   **Size.** A request that would pass the route's 64 KiB is cut to fit (latch budgets 60 KiB): the page's other lines first, then click targets from the end of the page, then field and dropdown pairs, then on-screen lines, then field lines and the step's action lines. The request says what was left out, and so does the action's trail entry. What is never cut (the plan, the step's own values, the page's address and title) may still not fit: then the step stops `request_too_large` and nothing is sent.
 
@@ -340,7 +342,11 @@ Each pass observes the page and makes **one decision-model request**. In that re
 ### 6.4 Stops and limits
 
 Each pass applies these stop conditions, in this order:
-1. A CAPTCHA, texted-code or passkey page: `needs_owner`.
+1. Pages latch can't go past by itself, whatever operations are offered or chosen, and whether or not any vault item fits:
+   - a CAPTCHA page: `needs_owner`;
+   - a **code stage** (a `one-time-code` field) or a **passkey stage** (a `webauthn` token, and neither a password field nor a `username` token: an identifier field marked `username webauthn` is an identifier stage, not a passkey stage): `needs_fields`, with the payload in 9 (the fitting items may be none). latch can't tell a texted code from an authenticator code, and holds no passkeys, so the agent chooses between a literal `fill` of `otp` and `handoff`.
+
+   A code field with no `one-time-code` token is not detected here; no step value fits it, so typing into it stops `needs_text` (7).
 2. Completion as in §6.3.
 3. `cannot` stops the plan with `blocked`.
 4. `done` stops the plan with `unconfirmed`; `stuck` stops it with `stuck` (or `already_true`).
@@ -353,20 +359,21 @@ Each pass applies these stop conditions, in this order:
    - exhausted budgets stop with `step_budget`, `plan_budget` or `deadline`.
 6. A chosen target below p 0.5: `ambiguous_target`, with up to 3 candidate refs. There is no floor on the operation head.
 7. Typing whose field × value choice is `none`, or where none of the step's own values fits: `needs_text`, naming the field. A fact the step does not name is not one of its values, so it is never typed there.
-8. `login` with no single fitting item: `needs_login`.
-9. `fill` chosen: `needs_fields`, with:
-   - the fitting item handles;
+8. `fill` chosen on a sign-in page when the plan names no fitting login item: `needs_login`, with the fitting items (value-free) and the page's suggestions.
+9. `fill` chosen with bundle `none`, or with no complete bundle for an item the plan names: `needs_fields`, with:
+   - the fitting item handles and the fields each holds;
    - the form's candidate refs (its fields and buttons);
-   - the item fields each one could take.
+   - the item fields each one could take;
+   - what the page asks for, and its other sign-in controls as refs.
 
-   The agent sends a literal `fill` step with the mapping, in a new plan.
+   The agent sends a literal `fill` step with its own mapping, or names the item, in a new plan.
 10. **Repeat guard:**
     - in a step **without a typed check**, each control is clicked or submitted at most once; a second try is refused with `repeat`, nothing sent (the control stays on offer). Whether the first try did the step is the model's to judge, and if it can't establish that, the step stops `unconfirmed`. With a typed check, the same control may be used again until the check holds;
     - an action identical to one already dispatched in this plan, on the same page state (same document, field values, on-screen lines and scroll), is refused with `repeat`;
     - two actions in a row that leave the page state unchanged stop with `no_progress`.
 
     The same control on a changed page is real progress in a step with a typed check, as in a same-URL wizard (`-> text: All set`), and is allowed.
-11. A consequential action: `confirm_needed` (§6.5).
+11. A consequential action, or a fill bundle that releases a card or identity secret: `confirm_needed` (§6.5).
 
 Then:
 - **Before dispatch,** latch re-checks:
@@ -381,7 +388,7 @@ Then:
 These stop with `confirm_needed` (exit 4) before anything is sent:
 - **a click** that would pay, place an order, send, publish, delete or close something, sign out of an account, create credentials, or otherwise can't be undone;
 - **an Enter** in a field whose form submits such an action;
-- **a fill that releases a card or identity secret field**, through the plan command or the standalone `fill` command (§7).
+- **a fill that releases a card or identity secret field**, through the plan command (a literal step or a chosen bundle) or the standalone `fill` command (§7).
 
 This applies whether the model chose the target or the agent named it in a literal step, and whether or not the agent has seen the page.
 - **The decision.** It is a decision-model yes/no on the exact element (or, for Enter, the form's submit control), at p ≥ 0.5. Enter in a form with no submit control latch can identify is judged as a submit of that form.
@@ -391,14 +398,14 @@ This applies whether the model chose the target or the agent named it in a liter
 The stop returns **a confirmation**:
 - its id;
 - the target's ref and snapshot;
-- the reviewed context: the target's name and row or card text, the page title, and the lines naming the item, amount or recipient. For a fill, also the item's title and the `--press` button;
+- the reviewed context: the target's name and row or card text, the page title, and the lines naming the item, amount or recipient. For a fill, also the item's title, **the exact mapping** (item field → ref, with the element's name on the page and its evidence), **the site of each destination frame**, and the press button;
 - a screenshot.
 
 The agent confirms with the plan command's `--confirm C [STEP…]`, for clicks, Enters and fills alike; there is no other route. A click or Enter sent any other way, `act click` on the confirmation's own ref included, gets a new risk decision: if it still looks like it can't be undone, it stops again with a new confirmation, and the stop's message names `do --confirm`.
 
 A confirmation:
 - **is used once;**
-- **is valid only in the same session and document,** and only while the target and reviewed context are unchanged at dispatch;
+- **is valid only in the same session and document,** and only while the target and reviewed context are unchanged at dispatch; for a fill, also the mapping, every destination frame's site and the item's revision;
 - **otherwise is refused with `confirm_stale`** and a fresh page. A total that changes from $10 to $100 is refused, even with the same ref, URL and button name.
 
 A literal step written into a plan before latch found the consequence is never a confirmation.
@@ -455,9 +462,49 @@ Measured from the audit, grouped by the caller's turn id (`--turn` / `LATCH_TURN
 
 B9 sets the targets.
 
-## 7. Login, codes and handoff
+## 7. Fills, codes and handoff
 
-**`login --snapshot O --item I`:**
+**One command fills every vault kind** (chef, 2026-10-20): logins, authenticator codes, cards, identities and notes.
+- **The agent decides where each value goes.** latch suggests a mapping from the page's own hints, checks any mapping before it releases a value, and owns the destination, the submit and the cleanup.
+- **latch never places a value nobody mapped.** Outside plans the agent writes the mapping or accepts a suggestion by its id. Inside a plan, jev may choose a suggestion only for an item the plan names.
+
+**`fill --snapshot O --item I (--field F=eN… | --suggested S) [--press eN]`:**
+- **`F` is a field of the item,** by its vault field id, never a page label:
+  - login: `username`, `password`, and `otp`, a code the host computes from the item's authenticator key (the key never leaves the vault);
+  - card: `number`, `expiry`, `cvv`, `name`, …;
+  - identity: name, address and identity-number fields;
+  - note: its text.
+
+  A list of refs (`--field otp=e5,e6,e7,e8,e9,e10`) fills split boxes in order. latch splits the value, and reshapes dates and expiries to the field's format.
+- **`--suggested S`** takes suggestion S from the `observe` that made snapshot O. It is the same mapping object an explicit `--field` list builds, and it goes through the same checks.
+  - latch recomputes S at fill time. If O is stale, the item's revision changed, or the recomputed mapping differs, the fill is refused `stale_snapshot`, with a fresh page and its suggestions.
+  - latch never remaps, picks another item or finds another button on its own.
+- **`--press eN`** is the button latch presses after setting the values. A mapping that holds a secret (a password, a code, a card or identity secret field) needs one, given or inside the accepted suggestion. A fill of non-secret fields only may leave it out.
+- **Removed:** `login` and `fill-code`, with no aliases (§5).
+
+**What `observe` tells the agent (never a value):**
+- **`items`:** each vault item that fits the page under its site rule (§9): handle, title, kind, revision, and its fields, each marked `present`, and `secret` or `derived` (`otp`) where so. No value, and no username.
+- **`page_offers`:** what the page asks for, from standard hints only: `password` (a password field), `username_only` (a `username` token and no password field: an identifier stage, not a promise that a password follows), `code` (`one-time-code`), `passkey` (`webauthn`), `card` (`cc-*`), `address` (address tokens).
+- **`suggestions`:** per fitting item, at most one per form: an id, the item and its revision, the snapshot, the map (item field → ref), the press ref, each ref's evidence (`autocomplete=current-password`, `type=password`, `the text field before the password`) and each target frame's site.
+- **`alternatives`:** the form's other buttons and links, as refs with their names, unclassified ("Sign in with a passkey", "Continue with Google" are read by the agent, not by latch). Clicking one is ordinary navigation, and the next page gets its own `fill`.
+
+latch holds no passkeys. A passkey-only sign-in is the owner's: the agent runs `handoff`.
+
+**How a suggestion is built.** Only from standard evidence, never from labels or button words:
+- valid `autocomplete` tokens, parsed with their section, `shipping` and `billing` qualifiers (`on`, `off` and invalid tokens are ignored);
+- native input types;
+- one structural rule for one-page logins, as Chrome's password manager has it: a `type=password` field, and the single text or email field before it in the same form;
+- a lone field makes a login suggestion only with a `username` token; an `email` token or type alone does not (a newsletter box is not a sign-in);
+- the press target: the form's single submit button (a submit-type `button` or `input`). None, or several: no press is suggested, and the agent names one.
+
+No suggestion is made:
+- on a form that looks like registration or a password change: a `new-password` token, or two password fields;
+- for `otp`: a `one-time-code` hint can't tell an authenticator code from a texted one, so the agent maps `otp` itself;
+- where the map would be ambiguous (two eligible elements for one item field) or incomplete. The candidates still come back, and the agent maps by its own reading of the page.
+
+Suggestions and mappings use latch's element list, which drops hidden, `aria-hidden` and inert elements. Checkouts carry hidden duplicate inputs with the same tokens; those are never a target.
+
+**The fill:**
 1. **Gate.**
    - No per-profile binding (chef, 2026-10-19): any session may use any vault item, subject to its site rule; who may use what is the later gatekeeper's job.
    - The host notes whether agent code (`eval`) has run **on this site in any session of this profile**. It keeps that with the profile, because service workers and site storage outlive sessions.
@@ -465,42 +512,55 @@ B9 sets the targets.
    - Calls return `session_paused`.
    - Plans in other sessions wait at their next action boundary, then observe again.
    - The pause ends only after cleanup is confirmed (step 6). If cleanup can't be confirmed, the whole runtime stays paused.
-3. **Prepare.** latch picks the fields from snapshot O, unless the agent named them with `--username`, `--password` and `--submit`:
-   - the one password field in a form; the text or email field before it in the same form; that form's submit button;
-   - an identifier-first login (a page with only the username field): latch fills it, presses its continue button, waits up to 15 s for the password step (same or another site), re-reads that page itself, re-runs the origin match on it, then fills and submits — all inside the one paused `login` (chef, 2026-10-19, from the DoorDash test). A second step that asks for something other than a password (code, passkey) ends in `timeout` after cleanup;
-   - the submit or continue button is picked only when exactly one candidate fits (the form's own submit button, else one plainly named continue/next/sign in/log in button for that field, never a button naming another provider); otherwise `ambiguous_target` with the candidates, and the agent names it;
-   - no candidate, or more than one, stops with `ambiguous_target` and the candidate refs, and the agent names them.
+3. **Check the mapping,** before any value leaves the vault. A failed check returns `bad_target` (exit 4), naming the field and the reason, and releases nothing.
+   - **Every target:** in snapshot O and still in its document; visible, enabled, editable and not covered; one item field per element, and one element per item field (ordered split boxes excepted).
+   - **`password`:** a `type=password` field, or a text field with a `current-password` token (a revealed password). Never a field with a `new-password`, `one-time-code`, `cc-*` or search role.
+   - **`username`:** not `type=password`; not a `cc-*`, `one-time-code` or `new-password` token; not search.
+   - **`otp`:** not a password field with a `current-password` token; not a `cc-*`, `username` or `email` token.
+   - **Card `number` and `cvv`:** a text, tel or number input (never a textarea, contenteditable, search field or checkbox), with no token naming something else. An unhinted but compatible text field is allowed on the agent's explicit map (chef, 2026-10-20); the confirmation shows that exact map (below).
+   - **Everything else:** refused only on a contradiction (`type=password`, or a `cc-*` token for a non-card field). A weak mismatch, such as an email into a `tel-national` box labelled "phone or email", is allowed and flagged `hint_mismatch` in the result and the audit.
 
-   The driver resolves those refs and reports:
-   - the field frame's **effective origin**, read as `self.origin` in latch's isolated world and bound to the frame and document (a frame URL or CDP `securityOrigin` misreports sandboxed frames);
+   These checks reject what the page's own markup contradicts. They can't prove what a page means: a page can lie with `autocomplete=cc-number`, and an unhinted box can be anything. The origin rule (step 4) bounds who receives a value; the mapping supplies the purpose.
+
+   The driver resolves each target and reports:
+   - its frame's **effective origin**, read as `self.origin` in latch's isolated world and bound to the frame and document (a frame URL or CDP `securityOrigin` misreports sandboxed frames);
    - the **top-level origin**;
    - the document id.
-4. **Match (chef, 2026-10-19: subdomains match, for parity with the Latch app).** Both the field frame's and the top-level origin must be HTTPS and share the item's **registrable domain** (public-suffix list via `psl`, private suffixes included), unless the item allows other top-level sites. Plain `http`, an IP or local host, a missing page address, and opaque or uncertain origins are refused (`origin_mismatch`) — closing the old app's gaps. Only then does the vault release a value.
+4. **Match.**
+   - **Logins and codes (chef, 2026-10-19: subdomains match, for parity with the Latch app).** Both the field frame's and the top-level origin must be HTTPS and share the item's **registrable domain** (public-suffix list via `psl`, private suffixes included), unless the item allows other top-level sites.
+   - **Cards, identities and notes:** the per-kind rule in §9, unchanged (chef, 2026-10-20: no list of payment providers). A card's field frame may be another site, such as a payment processor's; it is checked, audited and shown in the confirmation.
+   - For every kind, plain `http`, an IP or local host, a missing page address, and opaque or uncertain origins are refused (`origin_mismatch`). Only then does the vault release a value.
 5. **Set.** One value at a time crosses the worker's private pipe. The driver re-checks element, document and origin and sets the value in one synchronous step, with no typing. A site that rejects it gets `needs_owner`, never a typing fallback.
-6. **Submit and clean up.** latch clicks the item's submit element. It waits until the secret-bearing document is replaced, or the values are verified cleared (a URL change isn't enough). On failure it clears the fields. If cleanup can't be confirmed, the whole runtime stays paused (step 2).
-7. **Resume.** The result is `submitted`, not "logged in". `eval` is refused while a filled secret is still on the page.
+6. **Submit and clean up.** latch presses the mapping's press target. It waits until the secret-bearing document is replaced, or the values are verified cleared (a URL change isn't enough). On failure it clears the fields. If cleanup can't be confirmed, the whole runtime stays paused (step 2).
+7. **A login's second stage (chef, 2026-10-20).** When a login fill maps no password (an identifier stage: a username and its continue button), latch carries on inside the same pause.
+   - It waits up to 15 s after the press for the next stage (another document, or new controls in the same one), and reads it privately.
+   - It fills the password itself only when all of these hold:
+     - the stage asks for a password: exactly one element passes step 3's `password` rule, on a form that isn't registration-like;
+     - the origin match (step 4) passes again for the same item;
+     - the stage has exactly one submit button, by the suggestion's rule.
 
-**`fill --snapshot O --item I --field <item-field>=eN … [--press eN]`** fills cards, identities and notes, as the Latch app did: the agent names which element gets which item field (`number`, `expiry`, `cvv`, `name`, address and identity fields). latch reshapes dates and expiries to the field's format and splits values across split boxes. The same pause and one-step set as `login` apply, with the per-kind origin rule from §9 ("Where each kind may fill"); no automatic field detection in the POC.
+     Then it sets the password, presses that button and cleans up as in steps 5 and 6. A fill has at most two stages.
+   - **Anything else ends the fill after cleanup**: a code or passkey stage, a method or account chooser, two password fields, no single submit button. The result is `needs_fields` (exit 1), carrying a fresh snapshot of the new stage, its candidates, what it asks for, its other sign-in controls and the item's fields; the first stage is reported `submitted`. A second stage on a site the item doesn't match is refused `origin_mismatch`, with nothing released.
+   - **A code stage never continues by itself**, since a code field can't tell an authenticator code from a texted one. The agent maps `otp` in a new `fill`, or hands off.
+8. **Resume.** The result is `submitted`, not "logged in" or "paid", with one outcome per field (`{field, ref, outcome: filled|not_accepted, hint_mismatch}`, never a value) and the number of stages. `eval` is refused while a filled secret is still on the page.
 
-**Releasing a secret field needs a confirmation.** Secret fields (card number, CVV, identity numbers, per the ported classifier) must leave the page before the agent resumes. So a fill that includes one **requires `--press eN`**, and it is **confirmed before any value is released** (§6.5):
-- the fill first stops with `confirm_needed`, carrying the item's title, the press button and the reviewed amount;
-- the confirmation lets latch fill, press and clean up as in step 6, as one step.
+**Releasing a card or identity secret needs a confirmation (chef, 2026-10-20).** Secret fields (card number, CVV, identity numbers, per the ported classifier) must leave the page before the agent resumes. So a fill that includes one needs a press button, and it is **confirmed before any value is released** (§6.5).
+- The fill first stops with `confirm_needed`, carrying the item's title, the exact mapping, each destination frame's site, the press button and the reviewed amount.
+- The confirmation binds that mapping and one release. It lets latch fill, press and clean up as in step 6, as one step. A changed mapping, frame site, item revision or reviewed context is refused `confirm_stale`.
 
-This holds for the standalone `fill` command and for a literal `fill` step in a plan alike. Non-secret fields (name, address) may fill without `--press` and without confirmation. Site lists and auditing are in §9.
-
-**`fill-code --snapshot O --item I`.** The TOTP seed stays in the vault. The host computes the code. The field and submit button are picked like `login`'s (one code field and its form's submit button, or `--field` / `--submit`). The same steps then run: pause, origin match, one-step write, submit, cleanup until the code's document is replaced or the field is verified cleared, resume with `submitted`.
+This holds for the standalone `fill`, a literal `fill` step and a chosen bundle in a plan alike. Non-secret fields (name, address) may fill without a press button and without confirmation. Site lists and auditing are in §9.
 
 **Inside plans.**
-
-- **`login`** (operation contract in §6.2) runs this section's `login` unchanged: pause, origin match, one-step set, submit, cleanup. An identifier-first sign-in is one operation.
-  - The trail records the item's title and what was filled, never a value.
-  - Its result is `submitted`. Whether the step's goal holds is decided by the step's own check.
-- **`fill_code`** (operation contract in §6.2) runs this section's `fill-code` unchanged.
-- **Card and identity fills keep this section's explicit mapping.**
-  - A plan carries them only as a literal `fill` step (§6.1).
-  - An instruction step that reaches a fillable form stops with `needs_fields` and the candidate refs (§6.4). latch never maps fields by itself.
-  - Secret releases are confirmed first (above).
-- **The plan stops with `needs_owner`** on a CAPTCHA, a texted code or a passkey. The agent runs `handoff`, then sends a new plan.
+- **The `fill` operation** (contract in §6.2).
+  - The plan's `items` (`--item`) name the items it may fill. Naming one is the agent's go-ahead for jev to choose a latch suggestion for it.
+  - jev chooses among complete bundles (item, map, press button) plus `none`, even when there is one. It never builds a map, a field name or a ref, and it sees no value.
+  - A login bundle, or one without a secret field, runs this section's fill: gate, pause, checks, match, set, submit, cleanup, and a second stage. An identifier-first sign-in is one operation.
+  - A bundle that releases a card or identity secret stops `confirm_needed`, as above; `--confirm C` accepts that mapping and the release together, once.
+  - `none`, or no complete bundle, stops `needs_fields`; a fitting item the plan doesn't name stops `needs_login` on a sign-in page (§6.4).
+  - A code or passkey stage stops `needs_fields` before any decision, whether or not an item fits (§6.4 stop 1). For a TOTP stage the agent sends a literal `fill --item vN --field otp=eN --press eN`.
+  - The trail records the item's title and the mapping, never a value. The result is `submitted`; whether the step's goal holds is decided by the step's own check.
+- **A literal `fill` step** (§6.1) runs this section's fill unchanged, with confirm-before-release. It is a literal step like any other under B9's step policy, and a confirmation never makes a forbidden literal fill allowed.
+- **The plan stops with `needs_owner`** on a CAPTCHA, and with `needs_fields` on a code or passkey stage (§6.4 stop 1). For a texted code or a passkey, the agent runs `handoff`, then sends a new plan.
 - **No observation or screenshot is taken** from the start of a fill to confirmed cleanup. The trail records a suppressed-secret-phase marker instead.
 
 **`handoff`.**
@@ -532,15 +592,15 @@ This holds for the standalone `fill` command and for a literal `fill` step in a 
   - add, update and remove items;
   - release exactly one value, into the §7 fill path only;
   - call audit hooks.
-- **Always latch's job, whatever the backend:** the origin rules, the login step, deciding a release, and value-free audit. A release needs only a matching origin; items are not bound to browser profiles (chef, 2026-10-19), and access rules belong to the later gatekeeper. There are no owner approvals for now (chef, 2026-10-19): a generic approval flow comes later, plugging into the gate; until then confirmations go back to the agent. Start with test and low-stakes accounts.
+- **Always latch's job, whatever the backend:** the origin rules, the fill step, deciding a release, and value-free audit. A release needs only a matching origin; items are not bound to browser profiles (chef, 2026-10-19), and access rules belong to the later gatekeeper. There are no owner approvals for now (chef, 2026-10-19): a generic approval flow comes later, plugging into the gate; until then confirmations go back to the agent. Start with test and low-stakes accounts.
 - **POC backend: latch's own store,** one file in the host's state directory, written only by `latch serve`, atomically.
   - Items are encrypted (AES-256-GCM, RustCrypto `aes-gcm`) with a random **data key**; the data key is locked by a **custody key**. In the POC the custody key is a 0600 file in the state directory on every OS (not the login Keychain: latch's `exec` sandbox can read login-Keychain items). The signed-app chunk (B4b) adds a Keychain half on macOS.
   - `exec` and file workers can read neither file; a conformance test checks it from inside both. On Linux the browser worker can't either (bubblewrap). **On macOS the browser engine runs outside latch's Seatbelt as the same user (§4), so a compromised engine main process could read both files: accepted risk with the chef's macOS ruling; a separate macOS user or B4b's Keychain half narrows it later.**
   - KeePass, Bitwarden, 1Password and Keychain items come later, behind the same interface.
 - **Where each kind may fill** (all require HTTPS, non-opaque origins for both the field frame and the top-level page, and a page address; `http`, IP and local hosts are refused):
   - **login:** both origins share the item's registrable domain (§7 step 4); a login item must have a site.
-  - **card, identity:** without a site list, any top-level site (parity with the Latch app); with an optional "only on these sites" list, the top-level page must share one of the listed registrable domains. The field frame may be another site (payment-processor iframes) but is checked and audited.
-  - **note:** any top-level site, filled only into non-secret-marked fields named by the agent.
+  - **card, identity:** without a site list, any top-level site (parity with the Latch app); with an optional "only on these sites" list, the top-level page must share one of the listed registrable domains. The field frame may be another site (payment-processor iframes) but is checked, audited, and shown in the fill's confirmation (§7). There is no built-in list of payment providers (chef, 2026-10-20).
+  - **note:** any top-level site, filled only into non-secret-marked fields the mapping names.
   - Every card and identity fill's top-level and field-frame sites are audited.
 - **Item kinds, for parity with the Latch app:** login (username, password, optional TOTP seed — marked, since it holds both factors), card, identity, secure note. Field names follow rbw's Bitwarden-style model. Every item has a title, its site (required for logins; an optional site list for cards and identities) and a **revision** (an edit against an old revision is refused). Which fields are secret follows the Latch app's classifier, ported with its truth table as tests. TOTP via `totp-rs`, checked against the RFC 6238 vectors.
 - **Commands** (owner-only):
@@ -568,7 +628,7 @@ This holds for the standalone `fill` command and for a literal `fill` step in a 
 | input | Browser-generated ("trusted"), human-paced mouse, keys and text. Never `element.click()` from script. |
 | wait · screenshot | Named conditions with deadlines; pixels plus the coordinate mapping. |
 | files · downloads · dialogs | Set upload files; stage downloads under their guid and report them as handles; answer a dialog only through its own target |
-| prepare fill · checked fill | Report where a fill would go; re-check element, document and origin and write in one step, or refuse. Never retry. |
+| prepare fill · checked fill | Report, for each element a fill could target, its frame and effective origin, input type, `autocomplete` tokens, form and that form's submit buttons, so the core can suggest and check mappings; re-check element, document and origin and write in one step, or refuse. Never retry. |
 | pause · resume | Freeze all agent access to every session of the runtime, and report a pause epoch |
 | focus | Open windows, tabs and popups in the background; never activate the app except for `handoff` |
 | capabilities | Report optional features. Anything missing returns `unsupported_capability` before dispatch, never a substitute. |
@@ -577,12 +637,12 @@ This holds for the standalone `fill` command and for a literal `fill` step in a 
 - **CfT first:** Rust CDP driver; pinned CfT per OS and architecture; no `Runtime.enable`; `--disable-blink-features=AutomationControlled` in the recipe.
 - **Camoufox second:** the Node helper, with pinned Node, Playwright (below 1.63) and Camoufox, `os` pinned to the host OS. An opt-in install (about 2.5 GB). The bar for dropping it is very high.
 
-**Conformance suite.** latch accepts a driver only after it passes local test pages for: frames of every kind with the right origins; isolated globals with DOM changes visible; trusted input; checked fill refusing a wrong site, an opaque frame and a replaced document; the pause holding (screenshots included); dialogs, pop-ups and files; and, from inside `exec`, no reachable port and an unreadable vault key. An engine that fails only the fill tests is accepted without `login`, `fill` and `fill-code`. Also required:
+**Conformance suite.** latch accepts a driver only after it passes local test pages for: frames of every kind with the right origins; isolated globals with DOM changes visible; trusted input; checked fill refusing a wrong site, an opaque frame and a replaced document; the pause holding (screenshots included); dialogs, pop-ups and files; and, from inside `exec`, no reachable port and an unreadable vault key. An engine that fails only the fill tests is accepted without `fill`. Also required:
 
 - two sessions on one runtime keep their tabs, downloads (same file name at once) and dialogs apart, while sharing cookies;
 - a pause holds across both sessions;
 - closing one session leaves the other's browser (and, on a screenless host, its display) working;
-- **headed focus:** with another app frontmost, nothing activates the browser: launch, a new session window, a new tab, a popup, a download, a dialog. Only `handoff` does.
+- **headed focus:** with another app frontmost, nothing activates the browser: launch, a new session window, a new tab, a popup, a download, a dialog, a page's modal passkey prompt (B5d). Only `handoff` does.
 
 ## 11. Audit
 
@@ -600,7 +660,7 @@ The host's hash-chained NDJSON audit gets one record per browser request and one
 **Never written:** page text, field values, typed text (`type` records length and sha256), screenshots, vault values, codes, seeds, or session ids (only their hash). Page lines and screenshots live only in the session's trail bundle (§6.7).
 
 Additions:
-- **Fills:** item, both origins, outcome, and `agent_code_before_fill`.
+- **Fills:** item and revision; the mapping (item field → ref, never a value), and whether it came from a suggestion (its id, and for a plan bundle jev's p) or from the agent; the number of stages; the top-level origin and each target frame's origin; each field's outcome and `hint_mismatch`; and `agent_code_before_fill`.
 - **`eval`:** the script verbatim, capped at 4 KiB, as with `exec` argv. Plus **workaround tags**, recorded only, when the script reaches into other frames or shadow roots, fires synthetic events or sets field values directly, patches `fetch`/`XMLHttpRequest`, reads cookies or storage, or polls in place of `wait`.
 - **Every `unsupported_capability` hit:** capability, engine, origin and command. Together with the eval tags, this shows what raw commands would have been needed for.
 - **Decision-model calls:** provider, model version, request id, latency, and the kinds of data sent, never the content.
@@ -627,6 +687,18 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
 - **Real public sites, read-only:** a few WebVoyager tasks (Apache-2.0) such as arXiv help, GitHub latest release, a recipe with constraints; answers checked against the page at run time.
 - **Security, where simple:** local pages adapted from WASP/AgentDojo (an injected post trying to leak a made-up canary to another local origin), SCAM (a lookalike login: no vault release, nothing reaches the "attacker" origin) and ST-WebAgentBench ("draft, don't send": zero sends).
 - **latch's own promises:** a vault login with a handoff; the pause holding through a fill and its cleanup.
+- **Fill fixtures (local pages; B5d).** They cover what real pages showed in the fill research (`design-fill-fillr.md` §3):
+  - identifier-first sign-in, with the second stage as a new document and as new controls in the same document;
+  - one-page logins with tokens, and without (`type=password` only);
+  - a wrong token (a "phone or email" box marked `tel-national`), and a revealed password (text with `current-password`);
+  - a registration form (`new-password`; two password fields);
+  - hidden `aria-hidden` duplicate inputs carrying card tokens, as Shopify's checkout has;
+  - a discount box beside card fields, and an unhinted text card field;
+  - card fields in a cross-site processor frame;
+  - a second stage asking for a code, a method chooser, and passkey and SSO buttons;
+  - a passkey-only page (a `webauthn` field, no password or `username` field), and an identifier field marked `username webauthn`;
+  - two legitimate forms with repeated tokens on one page;
+  - a lone `email` newsletter box on a page a login item fits.
 - **Consumer-site matrix (the bake-off's core):** for each engine (CfT; Camoufox once B8 lands), each site: does the home page load, can the agent search/browse logged out, does the login page load, and is the agent challenged or blocked (and where). Starting list: DoorDash, Costco, Redfin, plus a dozen common consumer sites (shopping, food delivery, travel, real estate, banking login pages). Logged-out only, except sites where the chef has added his own login to the vault and asked for it. Result: a table of site × engine → works / challenged / blocked, with screenshots, repeated on at least two days. This measures blocking; it does not build evasion.
 - **Plan suite (local fixtures; development data, §6.3).** A fictional shop and forms, scored by independent, identity-sensitive checkers (the right item, the right story, not just the right page type). It covers:
   - navigation and search;
@@ -640,7 +712,7 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
   - **one note field with one unrelated supplied value**, such as a street address given as a fact;
   - a value containing ` -> `;
   - a sign-in wall in the middle of a step (identifier-first);
-  - a card form, reached without a mapping and then filled with one;
+  - a card form: reached by a plan that names no card (`needs_fields`), and by one that names it (jev chooses the suggestion; `confirm_needed` shows the mapping);
   - checkout with "Place order" (confirmed, and repriced before confirmation);
   - Enter in a form that submits an order;
   - a delete-account button;
@@ -662,6 +734,8 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
 8. **What the logs show.** Do the `eval` workaround tags and `unsupported_capability` hits justify raw commands, or new ordinary commands?
 9. **The plan command's name.** Pending the chef, who asked "why not `steps`?". A rename touches only its §3 entry and the §5 table.
 10. **The trail's retention and size.** 7 days and per-action screenshots are trial values.
+11. **Modal passkey prompts.** A site calling `navigator.credentials.get()` without conditional mediation raises a browser or OS sheet. Whether that brings a headed window forward on macOS is unverified; the headed focus check (§10) answers it. If it does, the fix needs the chef. latch installs no virtual authenticator by default.
+12. **Suggestion coverage.** How often real login and checkout pages get a complete suggestion from standard hints alone. B9's site matrix measures it on login pages; the answer decides whether suggestions are convenient enough, never whether to add a keyword classifier.
 
 ## 15. Later
 
@@ -702,7 +776,7 @@ A prototype beside v0, not part of the chunks: the owner enters a secret on thei
   - A chunk may set starting values on development cases.
   - Nothing is tuned against held-out cases.
   - Cases that informed a change are development data from then on.
-- **No generative text model, and no keyword stand-in for the risk decision, in any chunk.** Every typed string comes from a plan's values or facts, or from the vault.
+- **No generative text model, and no keyword stand-in for the risk decision, in any chunk.** Every typed string comes from a plan's values or facts, or from the vault. **No keyword classifier of fields or buttons in fills** (§7).
 - **Nothing activates a browser window except `handoff`.**
 
 ### Chunk B1: CfT launches from the macOS host with its own sandbox on
@@ -721,9 +795,10 @@ Interfaces: consumes B2 · produces eval and file transfer for agents; the audit
 Done when: eval returns a JSON result from a local page and is audited verbatim (≤ 4 KiB) with workaround tags on a test script that patches `fetch`; an upload and a completed download round-trip as files with matching sha256; an unsupported capability returns `unsupported_capability` and is logged.
 
 ### Chunk B4: the vault, the login step and fill parity
-Implements: §9 (backend interface, own store with data key + 0600 custody key, four item kinds, revisions, owner commands over latch's connection, import), §7 login, fill and fill-code, §10 prepare/checked fill and pause, §11 fill records.
-Interfaces: consumes B2 · produces the vault backend interface later backends implement, and `login` / `fill` / `fill-code` for agents.
-Done when: a login item added from a client logs in to a public practice login site via `login`, including on a subdomain of its site; it is refused (`origin_mismatch`) on a lookalike domain, on `http`, and on a sandboxed-iframe test page; a card item fills a local checkout test page with `fill … --press` (number, expiry reshaped, CVV) and the card fields are gone before the agent resumes, while a secret-field fill without `--press` is refused; an identity item fills a local address form; `eval` is refused while a value is on the page; screenshots and observe return `session_paused` during fills; a TOTP item fills a local TOTP form and the code matches RFC 6238 vectors in unit tests; a 1Password 1PUX and a Chrome CSV fixture import through the picker; the ported classifier truth table passes; a grep of results, audit and logs finds no value; exec and file workers can't read the vault or its key; the audit flags `agent_code_before_fill` when eval ran first and records every card fill's site.
+Landed with the separate `login`, `fill` and `fill-code` commands; B5d folds them into the one `fill` and proves this acceptance again through it.
+Implements: §9 (backend interface, own store with data key + 0600 custody key, four item kinds, revisions, owner commands over latch's connection, import), §7's fill, §10 prepare/checked fill and pause, §11 fill records.
+Interfaces: consumes B2 · produces the vault backend interface later backends implement, the checked write, pause and cleanup the one `fill` uses.
+Done when: a login item added from a client logs in to a public practice login site via `fill`, including on a subdomain of its site; it is refused (`origin_mismatch`) on a lookalike domain, on `http`, and on a sandboxed-iframe test page; a card item fills a local checkout test page with `fill … --press` (number, expiry reshaped, CVV) and the card fields are gone before the agent resumes, while a secret-field fill without `--press` is refused; an identity item fills a local address form; `eval` is refused while a value is on the page; screenshots and observe return `session_paused` during fills; a TOTP item fills a local TOTP form (`--field otp=…`) and the code matches RFC 6238 vectors in unit tests; a 1Password 1PUX and a Chrome CSV fixture import through the picker; the ported classifier truth table passes; a grep of results, audit and logs finds no value; exec and file workers can't read the vault or its key; the audit flags `agent_code_before_fill` when eval ran first and records every card fill's site.
 
 ### Chunk B4b: signed latch on macOS, Keychain half, Latch app import
 Implements: §9's macOS Keychain half of the custody key and import from the Latch app's vault. Blocked on the chef: an Apple App ID with keychain sharing, a provisioning profile, and where the Developer ID certificate lives.
@@ -741,7 +816,7 @@ Done when: the bundled `latch` is signed and notarized; the custody key is split
     - it replaces a login's password and authenticator key through no-echo prompts;
     - a secret can't be given on the command line or in the environment;
     - an edit against an older revision returns `stale_revision`, and the item's kind can't change;
-  - **The new value is used:** a `login` after the edit fills the new value on the practice site;
+  - **The new value is used:** a `fill` of the login after the edit fills the new value on the practice site;
   - **Agents can't edit:** an agent peer gets exit 4;
   - **The audit** records the item, the names of the changed fields and the new revision, and no value appears in any result, audit record or log.
 
@@ -833,27 +908,56 @@ Implements: §7 handoff (one session's window to the front, dashboard notice, `h
 Interfaces: consumes B2, B4 · produces the owner handoff flow.
 Done when: on the Mac a handoff pauses the agent, the dashboard shows it, `latch browser handoff done` resumes it and old refs are refused; with the display check forced to "no screen" in a host test, the call returns `needs_owner` with `no_screen` at once (the real screenless check is B7's).
 
-### Chunk B5d: sign-in, fills and handoff inside plans
+### Chunk B5d: one fill, suggestions, and fills inside plans
 - **Implements:**
-  - §7 inside plans: the `login` and `fill_code` operations, literal `fill` steps with confirm-before-release, suppressed secret phases, and `needs_owner` → `handoff` → new plan;
-  - the browser-wide pause across sessions;
+  - §7: the one `fill` (removing `login` and `fill-code`); `observe`'s items, `page_offers`, suggestions and alternatives; the mapping checks and `bad_target`; a login's second stage; per-field results; confirm-before-release with the mapping and frame sites;
+  - removing the reader's English button words and keyword field patterns: a press button is the form's single submit button or the one the agent names;
+  - §5's command and exit rows, §6.1's literal `fill` and `items`, §6.2's `fill` operation with bundles, §6.4 stops 8, 9 and 11, §6.5's fill confirmation;
+  - §7 inside plans: suppressed secret phases, and `needs_owner` → `handoff` → new plan;
+  - §10's prepare-fill report and the passkey-prompt focus check; §11's fill records; §13's fill fixtures;
   - popups that a step's click opens.
 - **Interfaces:**
-  - consumes B4's `login`/`fill`/`fill-code`, B6's handoff, B5 and B5c;
-  - produces sign-in and card fills inside plans.
-- **Done when:**
-  - **Sign-in inside plans:**
-    - a plan step `sign in` passes on the identifier-first local login as one `login` operation, and on a one-page practice login;
-    - a sign-in wall met in the middle of `proceed to checkout` is signed through, and the plan continues to checkout;
-    - a TOTP fixture fills through `fill_code`;
-  - **Card fills:**
-    - a plan whose instruction step reaches the card form stops `needs_fields`;
-    - a following plan with the literal `fill --item vN --field … --press eN` stops `confirm_needed` before any value is released, and the confirmation fills, presses and cleans up as one step;
-  - **Owner handoff:** a CAPTCHA stand-in stops `needs_owner`, `handoff` brings only that session's window forward, and a new plan continues afterwards;
+  - consumes B4's vault, checked write, pause and cleanup; B6's handoff; B2b's browser-wide pause; B5 and B5c;
+  - produces the one `fill` for agents and plans, which B8's fill conformance and B9's guide use.
+- **Done when** (on the §13 fill fixtures unless a practice site is named; plans through jev on the dev Plow stack):
+  - **One command:**
+    - `login` and `fill-code` are usage errors that name `fill`;
+    - B4's login, card, identity, TOTP, origin and leak rows pass again through `fill`, on the same practice sites and local pages;
+    - `--field otp=…` fills split code boxes in order.
+  - **`observe` tells, without values:**
+    - fitting items list their fields as present, secret or derived; a grep of the result finds no value and no username;
+    - `page_offers` is right on the identifier stage, the code stage and the passkey-only page, and the passkey and SSO buttons come back as alternatives; the `username webauthn` field is an identifier stage, and a plan step signs in through it;
+    - suggestions come from tokens, and from `type=password` plus the field before it on the tokenless login;
+    - no suggestion is made on the registration forms, for a code field, or for the lone `email` newsletter box; two submit buttons give no press;
+    - the hidden duplicate inputs are never suggested and are refused as targets;
+    - the two forms with repeated tokens each get their own suggestion.
+  - **`--suggested S`:**
+    - it fills exactly S's mapping;
+    - after the fixture moves a field, or the item's revision changes, it is refused `stale_snapshot` with a fresh suggestion, and nothing is released.
+  - **The checks refuse what the markup contradicts** (`bad_target`, field and reason named; the audit shows no release):
+    - refused: a password into a text field without `current-password` and into `new-password`; a username into a password field; `otp` into a `current-password` field; a card number into a textarea, a search field and an `email`-token field; two item fields into one element;
+    - allowed: a revealed password; an unhinted text card field on an explicit map, whose confirmation shows that map; an email into the `tel-national` box, flagged `hint_mismatch`.
+  - **A login's second stage:**
+    - on both identifier-first fixtures, one `fill` of the username and its button, explicit or suggested, signs in through the password stage inside one pause, reporting two stages;
+    - a second stage asking for a code, a method chooser, or two submit buttons ends after cleanup with `needs_fields`, carrying the new stage's candidates, offers and alternatives, with no password released;
+    - a second stage on another site is refused `origin_mismatch`, with nothing released.
+  - **Card confirmation:**
+    - a standalone card `fill` stops `confirm_needed` before any release, showing the exact mapping, the processor frame's site and the press button;
+    - its confirmation fills, presses and cleans up once, and a second use is refused;
+    - after the fixture swaps the processor frame, or a mapped element, the confirmation is refused `confirm_stale`.
+  - **Inside plans:**
+    - `sign in` with `--item vN` passes on an identifier-first fixture as one `fill` operation, and on a one-page practice login;
+    - a sign-in wall met in the middle of `proceed to checkout` is signed through when the plan names the item, and the plan continues to checkout; without the item named, it stops `needs_login` listing the fitting item;
+    - a TOTP stage stops `needs_fields` naming the code field, and a following plan's literal `fill --item vN --field otp=eN --press eN` passes;
+    - with no vault item fitting the site, a code stage and the passkey-only page each stop `needs_fields` before any decision, with an empty item list, `code` or `passkey` in the page's offers, and (for the passkey page) its button as an alternative; nothing is typed or clicked;
+    - a plan that names the card stops `confirm_needed` with jev's chosen mapping, and its confirmation fills, presses and cleans up; a plan that names no card stops `needs_fields`;
+    - jev is offered each bundle with `none`, and a grep of the decision requests finds no value.
+  - **Owner handoff:** a CAPTCHA stand-in stops `needs_owner`; `handoff` brings only that session's window forward; a new plan continues afterwards.
   - **No secret reaches the agent:**
-    - no observation or screenshot is taken during a fill;
-    - the trail shows the suppressed-phase marker;
-    - a grep of results, trail, audit and logs finds no value;
+    - no observation or screenshot is taken during a fill, and the trail shows the suppressed-phase marker;
+    - a grep of results, trail, decision requests, audit and logs finds no value.
+  - **No word lists:** a grep finds no button-word or field-keyword pattern in the reader's fill code, and B5c's plan suite still ends with its listed outcomes in one run.
+  - **Focus:** the opt-in headed focus check (§10) includes a page raising a modal passkey prompt, and its result answers §14 question 11.
   - **Popups:** a popup opened by a step's click is followed, belongs to the session, and opens in the background.
 
 ### Chunk B2b: task sessions on a shared profile
@@ -899,7 +1003,7 @@ Done when: on the Pi dev host (`~/latch-dev/`), CfT runs headed on a private Xvf
 ### Chunk B8: Camoufox as the second engine
 Implements: §10 Camoufox engine (Node helper, pinned runtime, JSON-lines driver ops), `install.sh --with-camoufox`; the conformance suite as a reusable runner for any driver.
 Interfaces: consumes the driver contract from B1–B6, B2b and B5c · produces the second engine and the conformance runner the bake-off uses.
-Done when: the conformance runner passes every test for CfT, and every non-fill test for Camoufox on macOS (if Camoufox fails only fill tests, `login`/`fill`/`fill-code` are disabled for it and the failures are listed; any other failure means not done); the B2, B5 and B5c Done-when tasks pass unchanged with `--profile` bound to a Camoufox profile, the headed focus test included.
+Done when: the conformance runner passes every test for CfT, and every non-fill test for Camoufox on macOS (if Camoufox fails only fill tests, `fill` is disabled for it and the failures are listed; any other failure means not done); the B2, B5 and B5c Done-when tasks pass unchanged with `--profile` bound to a Camoufox profile, the headed focus test included.
 
 ### Chunk B9: agent guide, agent adoption test, and the §13 set
 - **Implements:**
@@ -915,7 +1019,7 @@ Done when: the conformance runner passes every test for CfT, and every non-fill 
     - 12 on new local fixtures, at least 3 of them prelabelled as needing a repair, plus traps (wrong item, repriced confirmation);
     - 4 read-only public tasks;
     - each scored by an independent, identity-sensitive checker.
-  - **The step policy (added here).** A host setting that decides which literal steps a session may run: `any` (refs from any page latch returned to the session), `stop` (only refs returned in that session's latest stop) or `none`. It is enforced in the shared step dispatcher, whether a step came from `act`, the plan command's short form or `--plan-file`; a forbidden step is refused with `step_not_allowed` (exit 4) before anything is sent; `--confirm C` is never forbidden. A separate switch turns instruction steps off, for arm A.
+  - **The step policy (added here).** A host setting that decides which literal steps a session may run: `any` (refs from any page latch returned to the session), `stop` (only refs returned in that session's latest stop) or `none`. It is enforced in the shared step dispatcher, whether a step came from `act`, the standalone `fill`, the plan command's short form or `--plan-file`; a forbidden step is refused with `step_not_allowed` (exit 4) before anything is sent; `--confirm C` is never forbidden, and creating a confirmation never makes a forbidden literal step, `fill` included, allowed. A separate switch turns instruction steps off, for arm A.
   - **Arms,** set by the host's step policy and enforced in the dispatcher for every route:
     - **A:** instruction steps off; literal steps on refs from any page; `eval` (the baseline);
     - **B:** plans and confirmations; literal steps `none`;
@@ -952,4 +1056,4 @@ Done when: the conformance runner passes every test for CfT, and every non-fill 
   - **A result that changes wording, thresholds or budgets** makes this suite development data. A later evaluation claim needs a fresh held-out suite (§6.3).
 - **Done when (b), the §13 set:**
   - it runs from one command against a host and engine, and writes a report (task → pass/fail with evidence; security cases → outcome);
-  - the consumer-site matrix is filled for CfT and Camoufox on the Mac (two runs, on different days), with screenshots, plus, for each site, a logged-out plan (a search through the plan command) with its outcome.
+  - the consumer-site matrix is filled for CfT and Camoufox on the Mac (two runs, on different days), with screenshots, plus, for each site, a logged-out plan (a search through the plan command) with its outcome, and for each login page whether `observe` offers a complete suggestion (read-only: nothing typed or submitted).
