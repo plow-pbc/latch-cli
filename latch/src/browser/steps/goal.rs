@@ -1108,6 +1108,15 @@ impl Run<'_> {
         if !offers.is_empty() {
             notes.push(format!("the page asks for: {}", offers.join(", ")));
         }
+        // A passkey stage gets this far only for a named login with a
+        // password: latch has no passkey to give, the password path is the
+        // way in.
+        if suggest::passkey_stage(&offers) {
+            notes.push(
+                "the saved login signs in with its password, not a passkey: go to the page's password sign-in, where it can be filled"
+                    .into(),
+            );
+        }
         if view["truncated"] == true {
             notes.push("the element list was cut short".into());
         }
