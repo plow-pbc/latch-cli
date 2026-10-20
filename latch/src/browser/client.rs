@@ -12,7 +12,8 @@ use tokio::fs::File;
 
 use super::plan::{self, Check, Literal, Op, Plan, Step};
 use crate::cli::{
-    ActAction, BrowserArgs, BrowserCommand, DialogAction, DownloadCommand, TabCommand,
+    ActAction, BrowserArgs, BrowserCommand, DialogAction, DownloadCommand, EngineArg,
+    ProfileCommand, TabCommand,
 };
 use crate::dial::{self, ANSWER_MARGIN, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
@@ -21,6 +22,19 @@ use crate::state::StateDir;
 use crate::wire::{self, Request};
 
 pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> {
+    // Profiles are made on the host itself, in its own state directory:
+    // nothing an agent can reach over the connection.
+    if let BrowserCommand::Profile {
+        command: ProfileCommand::Create { name, engine },
+    } = &args.command
+    {
+        let engine = match engine {
+            EngineArg::Cft => "cft",
+            EngineArg::Camoufox => "camoufox",
+        };
+        super::profile::open(&state.path, name, engine)?;
+        return Ok(json!({"profile": name, "engine": engine}));
+    }
     let mut request = json!({
         "session": args.session,
         "ppid": std::os::unix::process::parent_id(),
@@ -390,6 +404,7 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
         }
         BrowserCommand::Sessions => "sessions",
         BrowserCommand::Close => "close",
+        BrowserCommand::Profile { .. } => unreachable!("made here, never sent"),
     };
     if !matches!(name, "open" | "sessions") && request["session"].is_null() {
         return Err(Failure::usage(

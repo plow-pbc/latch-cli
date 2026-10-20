@@ -1,18 +1,20 @@
 //! The browser worker: one long-lived process per profile runtime, run as
 //! `latch browser-worker --profile P --scratch DIR [--headless]` (hidden
-//! from `--help`). It launches the engine on its profile and drives it over
-//! the CDP pipe, for every session on the profile: each has its own
-//! windows, tabs, snapshots, downloads and dialogs, and the browser's
-//! logins are shared.
+//! from `--help`). It launches the engine its profile is bound to (a
+//! profile not made yet is made for CfT) and drives it, CfT over the CDP
+//! pipe and Camoufox through its helper, for every session on the profile:
+//! each has its own windows, tabs, snapshots, downloads and dialogs, and
+//! the browser's logins are shared.
 //!
 //! On macOS it is not inside latch's Seatbelt: a Seatbelt-confined process
-//! can only re-apply its own profile, and every Chrome helper applies its
-//! own, so a confined Chrome could only run with its sandbox off. Chrome's
-//! sandbox stays on for every web-content process instead. What latch still
-//! controls: the pinned build, checked before launch; a recipe that never
-//! opens a debug port or turns the sandbox off; the profile locked to this
-//! runtime; and an environment of nothing but `PATH`, a home, a temp folder
-//! and a crash-dump folder, all in the runtime's scratch folder.
+//! can only re-apply its own profile, and every Chrome or Firefox helper
+//! applies its own, so a confined engine could only run with its sandbox
+//! off. The engine's sandbox stays on for every web-content process
+//! instead. What latch still controls: the pinned build, checked before
+//! launch; a recipe that never opens a debug port or turns the sandbox off;
+//! the profile locked to this runtime; and a minimal environment (`PATH`, a
+//! home, a temp folder and the engine's own settings), all in the runtime's
+//! scratch folder.
 //!
 //! It talks to the host over its standard streams, one JSON line each way
 //! per call, every answer a `wire::Response`:
@@ -49,11 +51,13 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::camoufox::Camoufox;
 use super::cdp;
-use super::cft::{self, Cft, Seat};
+use super::cft::{self, Cft};
 use super::core::{Answer, Call, Core};
-use super::driver::Driver;
-use super::engine::CFT;
+use super::driver::{Runtime, Seat};
+use super::engine::{CAMOUFOX, CFT};
+use super::profile;
 use crate::failure::Failure;
 use crate::wire::Response;
 
@@ -64,27 +68,49 @@ pub fn run(
     idle: Duration,
     headless: bool,
 ) -> ExitCode {
-    let mut stdout = io::stdout().lock();
     // The engine runs from its scratch folder, so every path it gets is absolute.
     let absolute = |path: &Path| path.canonicalize().map_err(cft::io_failure);
-    let launched = absolute(state_dir)
-        .and_then(|state_dir| Cft::launch(&state_dir, profile_name, &absolute(scratch)?, headless));
-    let browser = match launched {
-        Ok(browser) => browser,
-        Err(failure) => {
-            answer(&mut stdout, Response::error(&failure), None);
-            return ExitCode::FAILURE;
-        }
-    };
-    let ready = json!({
-        "engine": CFT.engine,
-        "version": CFT.version,
-        "driver_contract": CFT.driver_contract,
-        "pid": browser.pid(),
+    let launched = absolute(state_dir).and_then(|state_dir| {
+        let scratch = absolute(scratch)?;
+        Ok(
+            match profile::engine_of(&state_dir, profile_name)?.as_deref() {
+                Some("camoufox") => {
+                    let browser = Camoufox::launch(&state_dir, profile_name, &scratch, headless)?;
+                    let ready = json!({
+                        "engine": CAMOUFOX.engine,
+                        "version": CAMOUFOX.version,
+                        "driver_contract": CAMOUFOX.driver_contract,
+                        "pid": browser.pid(),
+                    });
+                    serve(ready, browser, idle)
+                }
+                _ => {
+                    let browser = Cft::launch(&state_dir, profile_name, &scratch, headless)?;
+                    let ready = json!({
+                        "engine": CFT.engine,
+                        "version": CFT.version,
+                        "driver_contract": CFT.driver_contract,
+                        "pid": browser.pid(),
+                    });
+                    serve(ready, browser, idle)
+                }
+            },
+        )
     });
+    launched.unwrap_or_else(|failure| {
+        answer(&mut io::stdout().lock(), Response::error(&failure), None);
+        ExitCode::FAILURE
+    })
+}
+
+/// Says the browser is up, then answers each session's calls until the host
+/// closes the browser, stops writing, or every session has gone quiet for
+/// `idle`.
+fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration) -> ExitCode {
+    let mut stdout = io::stdout().lock();
     answer(&mut stdout, Response::Ok(ready), None);
     let browser = Rc::new(RefCell::new(browser));
-    let mut sessions: HashMap<String, Live> = HashMap::new();
+    let mut sessions: HashMap<String, Live<B>> = HashMap::new();
     let mut last_call = Instant::now();
 
     // Standard input unbuffered by std, so `buffer()` below is the only
@@ -235,8 +261,8 @@ pub fn run(
 }
 
 /// One session on the browser, and when it was last called.
-struct Live {
-    core: Core<Seat>,
+struct Live<B: Runtime> {
+    core: Core<Seat<B>>,
     last: Instant,
 }
 
