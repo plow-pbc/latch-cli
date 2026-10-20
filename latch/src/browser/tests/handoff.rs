@@ -135,6 +135,7 @@ async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back(engine: &str
     assert!(handoff::pending(&state).is_empty());
     let (after, _) = super::run_as(&browsers, OWNER_AGENT.into(), "observe", &id, json!({})).await;
     assert!(after.is_ok());
+    browsers.close_all().await;
 }
 
 async fn a_host_with_no_screen_answers_needs_owner_at_once(engine: &str) {
@@ -170,6 +171,7 @@ async fn a_host_with_no_screen_answers_needs_owner_at_once(engine: &str) {
         .await
         .unwrap_err();
     assert_eq!(bad.code, "bad_arguments");
+    host.browsers.close_all().await;
 }
 
 /// A page whose text says "ready" a little after it loads, beside a field.
@@ -246,6 +248,7 @@ async fn a_plan_running_when_the_handoff_starts_sends_nothing_more(engine: &str)
         note["value"].is_null(),
         "nothing was typed during the handoff: {note}"
     );
+    browsers.close_all().await;
 }
 
 async fn refs_are_forgotten_even_while_another_session_holds_the_browser(engine: &str) {
@@ -317,4 +320,5 @@ async fn refs_are_forgotten_even_while_another_session_holds_the_browser(engine:
         "an old ref after the handoff: {}",
         refused.message
     );
+    browsers.close_all().await;
 }

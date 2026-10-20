@@ -248,6 +248,11 @@ impl Harness {
         result
     }
 
+    /// Closes every session and browser, before the test's folder goes.
+    pub(super) async fn close(self) {
+        self.browsers.close_all().await;
+    }
+
     pub(super) async fn open(&mut self, url: &str) -> Value {
         self.call("open", json!({"url": url})).await
     }
@@ -516,6 +521,7 @@ async fn literal_steps_take_effect_and_their_checks_decide_the_outcome(engine: &
     assert_eq!(record["dispatch"], "sent");
     assert!(record["risk_p"].is_number());
     assert!(audits.contains("text_sha256"));
+    h.close().await;
 }
 
 async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewed(engine: &str) {
@@ -670,6 +676,7 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
     let audits = serde_json::to_string(&h.audits).unwrap();
     assert!(audits.contains("\"confirmation\""));
     assert!(!audits.contains("$10.00") && !audits.contains("Sharp Objects"));
+    h.close().await;
 }
 
 async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_dispatch(engine: &str) {
@@ -719,7 +726,7 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
     assert_eq!(placed["page"]["title"], "Order · Shop");
 
     // With no model at all (a host not logged in to Plow), the same.
-    drop(h);
+    h.close().await;
     let mut bare = Harness::start(&state, None).await;
     let page = bare.open(&format!("{site}/order.html")).await;
     let place = find(&page, "button", "Place order");
@@ -733,6 +740,7 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         "{}",
         failure.message
     );
+    bare.close().await;
 }
 
 async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(engine: &str) {
@@ -797,6 +805,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
             .code,
         "no_such_request"
     );
+    h.close().await;
 }
 
 /// The risk decision and a sentence check on jev itself, built only with `--features
@@ -855,4 +864,5 @@ async fn live_jev_asks_for_a_confirmation_only_where_one_is_needed() {
     assert_eq!(saved["steps"][0]["outcome"], "model_assessed");
     let calls = serde_json::to_string(&h.audits).unwrap();
     assert!(calls.contains("\"provider\":\"typesafe\""));
+    h.close().await;
 }

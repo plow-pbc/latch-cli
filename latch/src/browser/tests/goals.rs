@@ -876,6 +876,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
         crate::browser::steps::shot(&h.browsers, &h.id, super::CALLER, "r-output-2", "final")
             .unwrap();
     assert!(kept.starts_with(b"\x89PNG"));
+    h.close().await;
 }
 
 async fn with_no_model_an_instruction_step_sends_nothing(engine: &str) {
@@ -888,4 +889,5 @@ async fn with_no_model_an_instruction_step_sends_nothing(engine: &str) {
         .await
         .unwrap_err();
     assert_eq!(failure.code, "model_unavailable", "{}", failure.message);
+    h.close().await;
 }

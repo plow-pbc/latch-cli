@@ -25,7 +25,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{CALLER, HEADLESS, latch, test_state};
+use super::{HEADLESS, latch, test_state};
 use crate::browser::plan::{self, Plan};
 use crate::browser::session::Session;
 
@@ -764,8 +764,7 @@ async fn the_plan_suite_on_the_decision_model() {
     .unwrap();
     std::fs::write(run.join("audit.ndjson"), audit_lines).unwrap();
     println!("run kept in {}", run.display());
-    // The browser has written its last before its folder goes.
-    h.browsers.close(&h.id, CALLER).await.unwrap();
+    h.close().await;
     assert!(
         failed.is_empty(),
         "cases that did not end as listed: {failed:?}"

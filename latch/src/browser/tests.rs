@@ -231,6 +231,38 @@ impl std::ops::Deref for TestDir {
     }
 }
 
+/// A test that ends with a browser still running in its folder lets that
+/// browser write there after the folder is gone: the test must close its
+/// sessions first. A test already failing is not checked again.
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let out = Command::new("ps")
+            .args(["-axww", "-o", "command="])
+            .output()
+            .unwrap();
+        // By its unique name: processes see the folder by another spelling.
+        let folder = self
+            .dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let left: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| line.contains(&folder))
+            .map(|line| line.chars().take(160).collect())
+            .collect();
+        assert!(
+            left.is_empty(),
+            "still running in the test's folder (close its sessions first): {left:#?}"
+        );
+    }
+}
+
 /// `n` of the `ENGINES_AT_ONCE` places.
 struct Turn(usize);
 
