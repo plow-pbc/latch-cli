@@ -24,7 +24,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{latch, test_state};
+use super::{HEADLESS, latch, test_state};
 use crate::browser::plan::{self, Plan};
 use crate::browser::session::Session;
 
@@ -291,9 +291,15 @@ fn the_plan_suite_is_well_formed() {
 async fn each_checker_tells_its_right_state_from_the_near_misses() {
     let (_dir, state, _area) = test_state();
     let site = serve_shop();
-    let mut session = Session::start_with(&latch(), &state, "b5c-shop", Duration::from_secs(300))
-        .await
-        .unwrap();
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "b5c-shop",
+        Duration::from_secs(300),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
     let mut wrong = Vec::new();
     for case in suite() {
         // Every case starts on a page the shop has.
