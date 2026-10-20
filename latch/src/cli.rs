@@ -162,18 +162,6 @@ pub enum BrowserCommand {
         /// `field: e3=Large`, `download: complete`, … or a sentence
         #[arg(long, value_name = "CHECK")]
         check: Option<String>,
-        /// Removed: coordinate clicks
-        #[arg(long, hide = true)]
-        at: Option<String>,
-        /// Removed: use --check, or the plan command
-        #[arg(long, hide = true)]
-        expect: Option<String>,
-        /// Removed: use the plan command
-        #[arg(long, hide = true)]
-        steps: Option<String>,
-        /// Removed: use `do --history R`
-        #[arg(long, hide = true)]
-        history: Option<String>,
     },
     /// Candidate refs by role and exact name; never acts
     Find {
@@ -181,9 +169,6 @@ pub enum BrowserCommand {
         role: Option<String>,
         #[arg(long)]
         name: Option<String>,
-        /// Removed: a description in words
-        #[arg(hide = true)]
-        description: Option<String>,
     },
     /// Wait for an element's state, text or a path, with a deadline
     Wait {
@@ -202,9 +187,6 @@ pub enum BrowserCommand {
         /// Text that is part of the page's path
         #[arg(long, value_name = "P")]
         url_path: Option<String>,
-        /// Removed: a sentence
-        #[arg(long = "for", hide = true)]
-        sentence: Option<String>,
         /// Seconds to wait (default 10)
         #[arg(long, value_name = "S")]
         within: Option<f64>,

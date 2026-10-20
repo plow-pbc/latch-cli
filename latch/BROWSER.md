@@ -259,8 +259,8 @@ can read it.
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and
-`wait --for "<sentence>"` are usage errors (`removed_form`) that point to
-the plan command.
+`wait --for "<sentence>"` are usage errors: unknown arguments, or a
+target that is not a ref, which points to the plan command.
 
 **The decision model** runs in the host, never the worker, behind one
 interface (`model.rs`): choose one option, or yes/no with a probability.
