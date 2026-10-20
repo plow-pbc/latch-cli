@@ -48,6 +48,7 @@ macro_rules! conformance {
     };
 }
 mod fills;
+mod gated;
 mod goals;
 mod handoff;
 mod shop;
@@ -1558,6 +1559,7 @@ impl super::model::Provider for Calm {
             model: "calm-1".into(),
             request_id: None,
             latency_ms: 0,
+            cost: None,
         };
         Box::pin(async move { Ok((answers, meta)) })
     }
@@ -1880,6 +1882,7 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
     let device = host::Caller {
         key: "owner-device",
         device: true,
+        gate: None,
     };
     let agent = h
         .call(CALLER, "close", &hash_b, json!({}))

@@ -38,11 +38,6 @@ pub struct Registration {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay_url: Option<String>,
-    /// Asks Plow to move this login's own machine name to this key. Only
-    /// `latch login` sets it; a heartbeat never does, so a host whose name
-    /// moved away cannot take it back.
-    #[serde(skip_serializing_if = "is_false")]
-    pub take_over: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -66,6 +61,13 @@ pub struct Redeemed {
     pub token: Option<String>,
 }
 
+/// The agent a credential belongs to, from `GET /v1/agents/me`.
+#[derive(Deserialize, Clone, Debug)]
+pub struct AgentIdentity {
+    pub uid: String,
+    pub name: String,
+}
+
 #[derive(Deserialize)]
 struct PeerList {
     data: Vec<Peer>,
@@ -85,6 +87,79 @@ pub struct Identity {
 #[derive(Deserialize, Debug)]
 pub struct Permissions {
     pub call: bool,
+}
+
+/// An agent, from `GET /v1/agents/{uid}`: its current name and the line
+/// it serves.
+#[derive(Deserialize, Debug)]
+pub struct Agent {
+    pub name: String,
+    pub line: Line,
+}
+
+/// A messaging line (a phone number or a mailbox).
+#[derive(Deserialize, Debug, Clone)]
+pub struct Line {
+    pub uid: String,
+}
+
+/// A chat, from `GET /v1/chats`. Its line is the agent participant whose
+/// relationship is `self`.
+#[derive(Deserialize, Debug)]
+pub struct Chat {
+    pub uid: String,
+    pub participants: Vec<Participant>,
+}
+
+impl Chat {
+    pub fn line(&self) -> Option<&Line> {
+        self.participants.iter().find_map(|p| match p {
+            Participant::Agent { line, relationship } if relationship == "self" => Some(line),
+            _ => None,
+        })
+    }
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Participant {
+    Agent {
+        line: Line,
+        relationship: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// A chat message, from `GET /v1/chats/{uid}/messages`.
+#[derive(Deserialize, Debug, Clone)]
+pub struct Message {
+    pub uid: String,
+    pub body: String,
+    pub sender: Sender,
+    pub created_at: String,
+}
+
+/// Who sent a message, as Plow classifies it. A member's `role` is `owner`
+/// when the sender is the account the chat belongs to.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Sender {
+    Agent { relationship: String },
+    Member { display_name: String, role: String },
+    System {},
+}
+
+pub struct MessagePage {
+    pub messages: Vec<Message>,
+    pub has_more: bool,
+}
+
+#[derive(Deserialize)]
+struct List<T> {
+    data: Vec<T>,
+    #[serde(default)]
+    has_more: bool,
 }
 
 // No `Debug`: this struct holds the Plow credential, and a debug print of
@@ -130,11 +205,7 @@ impl Plow {
     /// Registers this peer, or refreshes it if it already is (§5.1).
     pub async fn register(&self, registration: &Registration) -> Result<Peer, Failure> {
         let url = format!("{}/v1/latch/peers", self.api_url);
-        let request = self
-            .http
-            .post(url)
-            .bearer_auth(&self.token)
-            .json(registration);
+        let request = self.http.post(url).json(registration);
         let response = self.send(request).await?;
         response.json().await.map_err(|_| bad_answer())
     }
@@ -142,10 +213,23 @@ impl Plow {
     /// Every live peer in the account, machines and agents, online or not.
     pub async fn list_peers(&self) -> Result<Vec<Peer>, Failure> {
         let url = format!("{}/v1/latch/peers", self.api_url);
-        let request = self.http.get(url).bearer_auth(&self.token);
+        let request = self.http.get(url);
         let response = self.send(request).await?;
         let list: PeerList = response.json().await.map_err(|_| bad_answer())?;
         Ok(list.data)
+    }
+
+    /// The agent this credential belongs to. 404 (`not_found`) for a
+    /// credential that is not an agent's.
+    pub async fn agent_me(&self) -> Result<AgentIdentity, Failure> {
+        #[derive(Deserialize)]
+        struct Me {
+            agent: AgentIdentity,
+        }
+        let url = format!("{}/v1/agents/me", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let me: Me = response.json().await.map_err(|_| bad_answer())?;
+        Ok(me.agent)
     }
 
     /// Starts a login by text for a machine called `name`.
@@ -172,7 +256,7 @@ impl Plow {
     /// registered it. Returns the removed peer. Owner logins only.
     pub async fn remove_peer(&self, key: &str) -> Result<Peer, Failure> {
         let url = format!("{}/v1/latch/peers/{key}", self.api_url);
-        let request = self.http.delete(url).bearer_auth(&self.token);
+        let request = self.http.delete(url);
         let response = self.send(request).await?;
         response.json().await.map_err(|_| bad_answer())
     }
@@ -182,7 +266,7 @@ impl Plow {
     /// registered the peer may say so.
     pub async fn go_offline(&self, key: &str) -> Result<Peer, Failure> {
         let url = format!("{}/v1/latch/peers/{key}/offline", self.api_url);
-        let request = self.http.post(url).bearer_auth(&self.token);
+        let request = self.http.post(url);
         let response = self.send(request).await?;
         response.json().await.map_err(|_| bad_answer())
     }
@@ -191,7 +275,7 @@ impl Plow {
     /// unknown key, another account's key, or a revoked one).
     pub async fn lookup(&self, key: &str) -> Result<Identity, Failure> {
         let url = format!("{}/v1/latch/peers/{key}", self.api_url);
-        let request = self.http.get(url).bearer_auth(&self.token);
+        let request = self.http.get(url);
         let response = self.send(request).await?;
         let identity: Identity = response.json().await.map_err(|_| bad_answer())?;
         // Trust the answer only if it is about the key we asked about.
@@ -200,6 +284,43 @@ impl Plow {
             return Err(Failure::failed("plow_error", message));
         }
         Ok(identity)
+    }
+
+    /// One of the account's agents, with the line it serves.
+    pub async fn agent(&self, agent_uid: &str) -> Result<Agent, Failure> {
+        let url = format!("{}/v1/agents/{agent_uid}", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// Every chat this login may see, oldest first.
+    pub async fn chats(&self) -> Result<Vec<Chat>, Failure> {
+        let url = format!("{}/v1/chats", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let list: List<Chat> = response.json().await.map_err(|_| bad_answer())?;
+        Ok(list.data)
+    }
+
+    /// One page of a chat's messages, newest first, older than
+    /// `starting_after` when given, each body as the literal text sent.
+    pub async fn messages(
+        &self,
+        chat_uid: &str,
+        starting_after: Option<&str>,
+    ) -> Result<MessagePage, Failure> {
+        let url = format!("{}/v1/chats/{chat_uid}/messages", self.api_url);
+        let mut query = vec![("limit", "100"), ("format", "text_decorations")];
+        if let Some(uid) = starting_after {
+            query.push(("starting_after", uid));
+        }
+        let url = url::Url::parse_with_params(&url, &query).map_err(|_| bad_answer())?;
+        let request = self.http.get(url);
+        let response = self.send(request).await?;
+        let page: List<Message> = response.json().await.map_err(|_| bad_answer())?;
+        Ok(MessagePage {
+            messages: page.data,
+            has_more: page.has_more,
+        })
     }
 
     /// Fresh short-lived credentials for the owner's connected Google accounts.
@@ -211,7 +332,6 @@ impl Plow {
         let request = self
             .http
             .post(format!("{}/v1/connectors/gmail/access-token", self.api_url))
-            .bearer_auth(&self.token)
             .json(&serde_json::json!({"all":true}));
         let response = self.send(request).await?;
         response
@@ -221,10 +341,17 @@ impl Plow {
             .map_err(|_| bad_answer())
     }
 
-    /// Sends a request and turns "could not connect" and non-2xx answers
-    /// into failures. Plow's own error text is never shown: a server body
-    /// could echo a credential or someone's data. The status says enough.
+    /// Sends a request with this client's credential, and turns "could not
+    /// connect" and non-2xx answers into failures. Plow's own error text is
+    /// never shown: a server body could echo a credential or someone's data.
+    /// The status says enough. With no credential (a login by text, or a
+    /// cloud agent whose proxy adds its own) no `Authorization` is sent.
     async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response, Failure> {
+        let request = if self.token.is_empty() {
+            request
+        } else {
+            request.bearer_auth(&self.token)
+        };
         let response = match request.send().await {
             Ok(response) => response,
             Err(err) => {

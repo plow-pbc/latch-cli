@@ -41,12 +41,23 @@ cft:
 test-model key:
     LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model browser::tests::steps::live
 
+# The gatekeeper's judge on jev 1.14 over the v0 held-out corpus, twice per
+# probe, its decisions written to `out` (synthetic chats only).
+gatekeeper-replay key out:
+    LATCH_TEST_JEV_KEY="{{key}}" LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live -- --nocapture
+
 # The plan suite (tests/browser-shop) on the decision model, through the dev
 # Plow stack the host in `host_state` is logged in to; each run, with its
 # metrics (scripts/plan-metrics.py), is kept under `out`; the profile is on
 # `engine` (cft or camoufox).
 plan-suite host_state out engine="cft":
     status=0; LATCH_SUITE_ENGINE="{{engine}}" LATCH_SUITE_HOST_STATE="{{host_state}}" LATCH_SUITE_OUT="{{out}}" cargo test --locked --bin latch the_plan_suite_on_the_decision_model -- --ignored --nocapture || status=$?; run="$(ls -d "{{out}}"/2*/ | sort | tail -1)"; python3 scripts/plan-metrics.py "$run/audit.ndjson" > "$run/metrics.json"; exit $status
+
+# A shopping task with every agent command through the gatekeeper, on jev
+# through the dev Plow stack the host in `host_state` is logged in to, with a
+# synthetic chat: its judge calls, cost and added time, kept under `out`.
+gated-shopping host_state out:
+    LATCH_GATE_HOST_STATE="{{host_state}}" LATCH_GATE_OUT="{{out}}" cargo test --locked --bin latch a_gated_shopping_task_on_the_decision_model -- --ignored --nocapture
 
 # The phone page (phone/): iroh for the browser plus the shim, into phone/dist.
 phone:

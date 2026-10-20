@@ -26,6 +26,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
     let call = |args: Value| Request {
         op: "vault".to_string(),
         args,
+        chat: None,
     };
     match args.command {
         VaultCommand::List => {
@@ -290,6 +291,7 @@ async fn import(connection: &iroh::endpoint::Connection, path: &Path) -> Result<
     let request = Request {
         op: "vault".to_string(),
         args: json!({"command": "import", "size": size}),
+        chat: None,
     };
     // One stream: the go-ahead, the bytes, the preview, the picks, the
     // outcome. The host drops the export if the stream ends before picks.

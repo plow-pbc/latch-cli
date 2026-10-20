@@ -27,11 +27,25 @@ fn version() -> &'static str {
     }
 }
 
+/// What `latch --help` adds after the commands: how an agent uses latch.
+const AGENT_HELP: &str = "\
+Agents:
+  Log in with your own Plow agent credential (`latch login` finds it). Never
+  use a device login copied from one of the owner's machines: that is the
+  owner acting, and hosts never check it against what the owner asked for.
+
+  Exit 4 means denied. A host's gatekeeper refusal, gatekeeper_denied with
+  reason not_covered, is the one to retry: ask the owner in your Plow chat,
+  naming exactly what you will do, then retry once they agree. owner_said_no
+  and exec_denied (the owner turned exec off on that host) mean no.
+  Exit 3, gatekeeper_unavailable: the host could not judge; retry later.";
+
 #[derive(Parser, Debug)]
 #[command(
     name = "latch",
     version = version(),
-    about = "Reach your other machines over iroh, with Plow as the directory."
+    about = "Reach your other machines over iroh, with Plow as the directory.",
+    after_help = AGENT_HELP
 )]
 pub struct Cli {
     /// Directory of this latch instance: its key, Plow credential and config (~/.latch unless this build has another default)
@@ -83,6 +97,10 @@ pub struct BrowserArgs {
     /// The agent turn this call belongs to, for the host's metrics
     #[arg(long, env = "LATCH_TURN", global = true)]
     pub turn: Option<String>,
+    /// The owner's Plow chat this agent acts for, when its line has more
+    /// than one: the host's gatekeeper reads what the owner asked there
+    #[arg(long, env = "LATCH_CHAT", global = true)]
+    pub chat: Option<String>,
     #[command(subcommand)]
     pub command: BrowserCommand,
 }
@@ -590,19 +608,28 @@ pub struct ServeArgs {
     /// more often, so a host people use runs them headed (the default)
     #[arg(long)]
     pub headless_browsers: bool,
+
+    /// Refuse `exec` to every agent, or with `=AGENT_UID` to that agent only (repeatable). Keyed by the agent's Plow uid, never its name; the owner's own machines are unaffected
+    #[arg(long, value_name = "AGENT_UID", num_args = 0..=1, require_equals = true,
+          default_missing_value = EVERY_AGENT)]
+    pub deny_exec: Vec<String>,
 }
+
+/// What a bare `--deny-exec` stands for. An agent uid is hex, so it is
+/// never this.
+pub const EVERY_AGENT: &str = "*";
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
-    /// File holding the owner's Plow login token, saved for this machine [without it: the token saved here, else an agent's own credential ($PLOW_TOKEN_FILE, else /config/secrets/plow-api-token), else at a terminal a login by text]
+    /// File holding the owner's Plow login token, saved for this machine [without it: the token saved here, else an agent's own credential ($PLOW_AGENT_TOKEN, else the file $PLOW_TOKEN_FILE or /config/secrets/plow-api-token, else none with $PLOW_API_BASE, whose proxy adds it), else at a terminal a login by text]
     #[arg(long, value_name = "FILE")]
     pub token_file: Option<PathBuf>,
 
-    /// Plow API base URL, e.g. https://api.plow.co
-    #[arg(long, env = "PLOW_API_URL", value_name = "URL", default_value = BUILD_API_URL)]
+    /// Plow API base URL, e.g. https://api.plow.co [else $PLOW_API_BASE, a cloud agent's; else $PLOW_API_URL]
+    #[arg(long, value_name = "URL")]
     pub api_url: Option<String>,
 
-    /// Name of this peer, unique in the account (a machine's is asked for at a terminal; an agent defaults to its own name)
+    /// Name of this peer, unique in the account [default: a machine's hostname; an agent's own name in Plow]
     #[arg(long)]
     pub name: Option<String>,
 }
@@ -706,6 +733,27 @@ pub struct ExecArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn serve(args: &[&str]) -> ServeArgs {
+        let args = [&["latch", "serve"], args].concat();
+        match Cli::try_parse_from(args).unwrap().command {
+            Command::Serve(serve) => serve,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn deny_exec_takes_its_agent_only_after_an_equals_sign() {
+        let bare = serve(&["/a", "--deny-exec", "/b"]);
+        assert_eq!(bare.folders, [PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(bare.deny_exec, [EVERY_AGENT]);
+
+        let some = serve(&["/a", "--deny-exec=ab12", "--deny-exec=cd34"]);
+        assert_eq!(some.folders, [PathBuf::from("/a")]);
+        assert_eq!(some.deny_exec, ["ab12", "cd34"]);
+
+        assert!(serve(&["/a"]).deny_exec.is_empty());
+    }
     #[test]
     fn google_requires_the_separator_and_leaves_gog_flags_alone() {
         assert!(Cli::try_parse_from(["latch", "google", "gmail", "labels", "list"]).is_err());
