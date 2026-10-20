@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 
 use super::host::{Browsers, Entry, paused};
-use super::steps::call as worker;
+use super::steps::owner_call as worker;
 use crate::failure::{Exit, Failure};
 
 /// How long a handoff waits for the owner by default, and at most.
@@ -114,15 +114,29 @@ pub(super) async fn run(
     let outcome = wait(browsers, entry, &file, &pending, within, audit).await;
     let _ = fs::remove_file(&file);
     browsers.notice_handoffs();
-    // Whatever happened, the agent gets the session back, and nothing from
-    // before the handoff still names an element.
-    let forgot = worker(entry, json!({"op": "forget"}), audit).await;
+    // The agent gets the session back only once nothing from before the
+    // handoff names an element any more; otherwise it stays paused.
+    if let Err(failure) = worker(entry, json!({"op": "forget"}), audit).await {
+        audit.insert("forget_failed".into(), json!(failure.code));
+        return Err(Failure::failed(
+            "session_paused",
+            format!(
+                "the handoff ended, but latch could not retire the refs from before it ({}); the session stays paused: close it",
+                failure.code
+            ),
+        ));
+    }
     entry.end_handoff();
     let waited = outcome?;
-    forgot?;
     audit.insert("waited_s".into(), json!(waited.as_secs()));
-    let (page, _) = worker(entry, json!({"op": "glance"}), audit).await?;
-    Ok(json!({"handed_back": true, "reason": reason, "waited_s": waited.as_secs(), "page": page}))
+    let mut out = json!({"handed_back": true, "reason": reason, "waited_s": waited.as_secs()});
+    // The page now, when it can be read: another session's fill may hold
+    // the browser, and then the agent observes once it is free.
+    match worker(entry, json!({"op": "glance"}), audit).await {
+        Ok((page, _)) => out["page"] = page,
+        Err(failure) => out["page_unread"] = json!(failure.code),
+    }
+    Ok(out)
 }
 
 /// Posts the pending handoff, brings its window forward, and waits for the

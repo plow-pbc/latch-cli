@@ -60,6 +60,8 @@ impl Display {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .process_group(0);
+        // Gone with the worker, however it ends.
+        bound(&mut command);
         // SAFETY: only async-signal-safe calls: the read end is closed in
         // the child, so the parent sees the end of the pipe if Xvfb dies.
         let read_fd = reads.as_raw_fd();
@@ -101,6 +103,30 @@ impl Drop for Display {
     }
 }
 
+/// Ties `command`'s process to this one: it is killed when this process
+/// ends, even by SIGKILL, when no `Drop` runs.
+fn bound(command: &mut Command) {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: only async-signal-safe calls between fork and exec.
+        let parent = std::process::id() as libc::pid_t;
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The parent may have ended before the signal was set.
+                if libc::getppid() != parent {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = command;
+}
+
 /// Xvfb's command line: one screen, no TCP, and the display number
 /// written to `fd` once it is ready.
 fn arguments(fd: i32) -> Vec<String> {
@@ -127,6 +153,70 @@ fn display_name(said: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for a worker: started by the test below with
+    /// `LATCH_TEST_BOUND_HELPER` naming a file, it starts a bound `sleep`,
+    /// writes its pid there, and waits to be killed. Run on its own, it
+    /// does nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bound_helper() {
+        let Some(file) = std::env::var_os("LATCH_TEST_BOUND_HELPER") else {
+            return;
+        };
+        let mut sleep = Command::new("sleep");
+        sleep.arg("60").stdout(Stdio::null());
+        bound(&mut sleep);
+        let mut child = sleep.spawn().unwrap();
+        std::fs::write(file, child.id().to_string()).unwrap();
+        // Killed long before this: the test is about what happens then.
+        let _ = child.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bound_process_ends_with_its_parent_even_on_sigkill() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pid");
+        let mut helper = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "browser::display::tests::bound_helper"])
+            .env("LATCH_TEST_BOUND_HELPER", &file)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let pid: u32 = loop {
+            if let Some(pid) = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|p| p.parse().ok())
+            {
+                break pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the helper never started its child"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let alive = || {
+            std::path::Path::new(&format!("/proc/{pid}")).exists()
+                && !std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .unwrap_or_default()
+                    .contains(") Z ")
+        };
+        assert!(alive());
+        helper.kill().unwrap();
+        helper.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let gone = !alive();
+        if !gone {
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        }
+        assert!(gone, "the bound process outlived its killed parent");
+    }
 
     #[test]
     fn xvfb_takes_a_free_display_and_no_tcp_port() {

@@ -129,6 +129,18 @@ impl Entry {
         audit.insert("profile".into(), json!(self.runtime.profile));
     }
 
+    /// The session's worker for one agent call: refused while the owner has
+    /// the session, whenever the call was asked for.
+    pub(super) async fn agent_session(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, Session>, Failure> {
+        let session = self.session.lock().await;
+        if self.handing.load(Ordering::SeqCst) {
+            return Err(super::handoff::handed_off());
+        }
+        Ok(session)
+    }
+
     /// Starts a handoff; false if one is already under way.
     pub(super) fn begin_handoff(&self) -> bool {
         self.handing
@@ -249,6 +261,12 @@ impl Browsers {
             return None;
         }
         Some(entry)
+    }
+
+    /// Tests only: the session `id`, whoever opened it.
+    #[cfg(all(test, target_os = "macos"))]
+    pub(super) async fn session_for_test(&self, id: &str) -> Arc<Entry> {
+        self.get(id).await.expect("a live session")
     }
 
     /// The running session `id`, if `caller` opened it.
@@ -704,7 +722,7 @@ async fn worker(
     if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
-    let mut session = entry.session.lock().await;
+    let mut session = entry.agent_session().await?;
     audit.insert("engine".into(), session.ready["engine"].clone());
     let reply = match session.call_with(call, input).await {
         Ok(reply) => {

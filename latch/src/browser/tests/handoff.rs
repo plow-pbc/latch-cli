@@ -166,3 +166,152 @@ async fn a_host_with_no_screen_answers_needs_owner_at_once() {
         .unwrap_err();
     assert_eq!(bad.code, "bad_arguments");
 }
+
+/// A page whose text says "ready" a little after it loads, beside a field.
+fn slow_page() -> String {
+    let page = b"<!doctype html><title>latch slow page</title>\
+        <p id=t>loading</p><p><label>Note <input id=note></label></p>\
+        <script>setTimeout(() => { t.textContent = 'ready'; }, 2500)</script>";
+    format!(
+        "http://127.0.0.1:{}/",
+        super::serve(vec![("/".into(), page.to_vec())])
+    )
+}
+
+#[tokio::test]
+async fn a_plan_running_when_the_handoff_starts_sends_nothing_more() {
+    let (_dir, state, _area) = test_state();
+    let browsers = browsers(&state, true);
+    let (opened, _) = super::run_as(
+        &browsers,
+        OWNER_AGENT.into(),
+        "open",
+        "default",
+        json!({"url": slow_page()}),
+    )
+    .await;
+    let opened = opened.unwrap();
+    let id = opened["session"].as_str().unwrap().to_string();
+    let note = super::find(&opened, "textbox", "Note");
+    // Step 1 waits for "ready"; step 2 types, after the handoff has begun.
+    let plan = json!({"request": "r-handoff-plan", "via": "do", "plan": {"steps": [
+        {"literal": {"op": "scroll", "text": "down"}, "check": {"kind": "text", "value": "ready"}},
+        {"literal": {"op": "type", "ref": note, "text": "after the handoff"}},
+    ]}});
+    let running = {
+        let (browsers, id) = (browsers.clone(), id.clone());
+        tokio::spawn(
+            async move { super::run_as(&browsers, OWNER_AGENT.into(), "do", &id, plan).await },
+        )
+    };
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let waiting = {
+        let (browsers, id) = (browsers.clone(), id.clone());
+        tokio::spawn(async move {
+            super::run_as(
+                &browsers,
+                OWNER_AGENT.into(),
+                "handoff",
+                &id,
+                json!({"reason": "captcha", "within": 60}),
+            )
+            .await
+        })
+    };
+    let (planned, _) = running.await.unwrap();
+    let stopped = planned.unwrap_err();
+    println!("plan: {} {}", stopped.code, stopped.message);
+    assert_eq!(stopped.code, "session_paused");
+    let started = Instant::now();
+    while handoff::pending(&state).is_empty() && started.elapsed() < Duration::from_secs(20) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    handoff::done(&state, None).unwrap();
+    let (handed, _) = waiting.await.unwrap();
+    let field = super::find(&handed.unwrap()["page"], "textbox", "Note");
+    let (seen, _) = super::run_as(&browsers, OWNER_AGENT.into(), "observe", &id, json!({})).await;
+    let seen = seen.unwrap();
+    let note = seen["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["ref"] == json!(field))
+        .unwrap()
+        .clone();
+    assert!(
+        note["value"].is_null(),
+        "nothing was typed during the handoff: {note}"
+    );
+}
+
+#[tokio::test]
+async fn refs_are_forgotten_even_while_another_session_holds_the_browser() {
+    let (_dir, state, _area) = test_state();
+    let browsers = browsers(&state, true);
+    let page = slow_page();
+    let open = || async {
+        let (opened, _) = super::run_as(
+            &browsers,
+            OWNER_AGENT.into(),
+            "open",
+            "default",
+            json!({"url": page}),
+        )
+        .await;
+        let opened = opened.unwrap();
+        (opened["session"].as_str().unwrap().to_string(), opened)
+    };
+    let (id, opened) = open().await;
+    let old = opened["snapshot"].as_str().unwrap().to_string();
+    let (other, _) = open().await;
+    let waiting = {
+        let (browsers, id) = (browsers.clone(), id.clone());
+        tokio::spawn(async move {
+            super::run_as(
+                &browsers,
+                OWNER_AGENT.into(),
+                "handoff",
+                &id,
+                json!({"reason": "2fa", "within": 60}),
+            )
+            .await
+        })
+    };
+    let started = Instant::now();
+    while handoff::pending(&state).is_empty() && started.elapsed() < Duration::from_secs(20) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Another session's fill now holds the browser (it stays prepared).
+    let held = browsers.session_for_test(&other).await;
+    let mut audit = serde_json::Map::new();
+    let _ = crate::browser::steps::call(
+        &held,
+        json!({"op": "prepare_fill", "mode": "login"}),
+        &mut audit,
+    )
+    .await;
+    handoff::done(&state, None).unwrap();
+    let (handed, _) = waiting.await.unwrap();
+    println!(
+        "handed back while held: {:?}",
+        handed
+            .as_ref()
+            .map(|_| "ok")
+            .map_err(|f| (&f.code, &f.message))
+    );
+    // Old refs never work again, whatever the answer was.
+    let mut stale = act("scroll e1 down");
+    stale["plan"]["steps"][0]["literal"]["snapshot"] = json!(old);
+    let _ = crate::browser::steps::call(&held, json!({"op": "fill_resume"}), &mut audit).await;
+    let (refused, _) = super::run_as(&browsers, OWNER_AGENT.into(), "do", &id, stale).await;
+    let refused = refused.unwrap_err();
+    assert!(
+        handed.is_ok(),
+        "retiring refs is let by another session's pause"
+    );
+    assert_eq!(
+        refused.code, "stale_snapshot",
+        "an old ref after the handoff: {}",
+        refused.message
+    );
+}

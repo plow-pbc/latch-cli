@@ -205,8 +205,10 @@ pub fn run(
                     "no_such_session",
                     "that session has ended".into(),
                 )),
-                // Listing a session's tabs is the one call a pause lets by.
-                Some(_) if held && !matches!(call, Call::Tabs) => Err(paused()),
+                // Listing a session's tabs, and retiring its refs after a
+                // handoff, are the calls a pause lets by: neither reads or
+                // touches a page.
+                Some(_) if held && !matches!(call, Call::Tabs | Call::Forget) => Err(paused()),
                 Some(live) => {
                     live.last = Instant::now();
                     let reserved: Vec<&str> = line["reserved"]
