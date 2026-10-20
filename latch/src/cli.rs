@@ -380,6 +380,9 @@ pub struct BrowserWorkerArgs {
     /// Seconds without a call before the session closes
     #[arg(long, default_value_t = 1800)]
     pub idle_timeout: u64,
+    /// Run the engine with no window (the host's `--headless-browsers`)
+    #[arg(long)]
+    pub headless: bool,
 }
 
 /// Arguments the host gives a worker (see `worker.rs`).
@@ -461,6 +464,12 @@ pub struct ServeArgs {
     /// Log plainly even on a terminal, instead of showing the live dashboard
     #[arg(long)]
     pub no_dashboard: bool,
+
+    /// Run every browser session with no window, in Chrome's headless mode:
+    /// for a test host nobody watches. Sites block headless browsers far
+    /// more often, so a host people use runs them headed (the default)
+    #[arg(long)]
+    pub headless_browsers: bool,
 }
 
 #[derive(Args, Debug)]

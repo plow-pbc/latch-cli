@@ -258,15 +258,19 @@ own sandbox on for every renderer, GPU and utility process
 - the pinned build, checked before each launch;
 - a launch recipe that never opens a debug port, runs headless or turns
   the sandbox off (latch refuses one that does), with mock Keychain,
-  no extensions and no crash reporter;
+  no extensions and no crash reporter; headless comes only from the host's
+  own setting (below);
 - an environment of only `PATH`, `HOME`, `TMPDIR` and
   `BREAKPAD_DUMP_LOCATION`, the last three in the session's own scratch
   folder, removed when the session ends;
 - every engine process in one process group, killed and waited for on
   close.
 
-Engines always run headed: on macOS the browser is a real window in the
+Engines run headed by default: on macOS the browser is a real window in the
 owner's session, so the host must run in the logged-in desktop session.
+`latch serve --headless-browsers` runs every session in Chrome's headless
+mode instead, with no window: for a test host nobody watches. Sites block
+headless browsers far more often, so a host people use stays headed.
 They stay out of the owner's way: Chrome starts with no window, every tab
 latch opens is a new window behind all others (its page still visible and
 unthrottled), and switching tabs brings nothing to the front. A page's own
@@ -277,9 +281,12 @@ A separate macOS user for engines is the later hardening.
 
 ## Tests
 
-`src/browser/tests.rs` (macOS) runs a real, headed session against the
-pinned CfT in `.dev/cft-state`, which `just cft` installs and `just test`
-runs first; CI does the same on its Macs. `LATCH_CFT_STATE` points the test
+`src/browser/tests.rs` (macOS) runs real sessions against the pinned CfT
+in `.dev/cft-state`, which `just cft` installs and `just test` runs first;
+CI does the same on its Macs. They run headless, so a test run never puts
+a window on the screen. `just test-headed` (the `headed-tests` feature)
+runs the same tests headed, where the checks that the engine never becomes
+the front app have something to check; it is not part of the gate. `LATCH_CFT_STATE` points the test
 at another state directory. Without an installed engine the test fails,
 naming what to run. `src/browser/tests/steps.rs` covers literal steps,
 checks, confirmations, the step policy and the journal, with a fake

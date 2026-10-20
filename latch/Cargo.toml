@@ -53,6 +53,10 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 # Builds the browser test that calls the decision model (jev) for real;
 # `just test-model KEYFILE` runs it. Never part of the gate.
 live-model = []
+# Runs the real-engine browser tests headed, with a window behind the
+# owner's, for what only a real window shows (its focus); `just
+# test-headed` runs them. Never part of the gate.
+headed-tests = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "=0.5.0"

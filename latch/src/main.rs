@@ -74,6 +74,7 @@ fn main() -> ExitCode {
                     &args.profile,
                     &args.scratch,
                     Duration::from_secs(args.idle_timeout),
+                    args.headless,
                 ),
                 Err(failure) => {
                     eprintln!("{}", failure.to_json());
@@ -171,7 +172,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             // for plain output (`--no-dashboard`, `NO_COLOR`).
             let dashboard = !args.no_dashboard && term::stdout_is_terminal() && !term::no_color();
             paint::set_color(dashboard);
-            serve::run(&state, &args.folders, dashboard).await?;
+            serve::run(&state, &args.folders, dashboard, args.headless_browsers).await?;
             to_json(json!({}))
         }
         Command::Worker(_) | Command::BrowserWorker(_) => unreachable!("handled in main"),

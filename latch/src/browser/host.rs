@@ -41,6 +41,8 @@ const CLOSING: Duration = Duration::from_secs(15);
 
 pub struct Browsers {
     state_dir: PathBuf,
+    /// Every session's engine runs with no window (`serve --headless-browsers`).
+    headless: bool,
     sessions: Mutex<HashMap<String, Arc<Entry>>>,
     pub(super) vault: Arc<Vault>,
     /// Plan requests under way, as `session/request`: a journal with no
@@ -77,9 +79,10 @@ pub(super) struct Entry {
 }
 
 impl Browsers {
-    pub fn new(state_dir: PathBuf, vault: Arc<Vault>) -> Self {
+    pub fn new(state_dir: PathBuf, vault: Arc<Vault>, headless: bool) -> Self {
         Browsers {
             state_dir,
+            headless,
             sessions: Mutex::new(HashMap::new()),
             vault,
             running: Default::default(),
@@ -164,12 +167,19 @@ impl Browsers {
         #[cfg(test)]
         let started = match &self.test {
             Some((latch, _)) => {
-                Session::start_with(latch, &self.state_dir, profile, super::session::IDLE).await?
+                Session::start_with(
+                    latch,
+                    &self.state_dir,
+                    profile,
+                    super::session::IDLE,
+                    self.headless,
+                )
+                .await?
             }
-            None => Session::start(&self.state_dir, profile).await?,
+            None => Session::start(&self.state_dir, profile, self.headless).await?,
         };
         #[cfg(not(test))]
-        let started = Session::start(&self.state_dir, profile).await?;
+        let started = Session::start(&self.state_dir, profile, self.headless).await?;
         let entry = Arc::new(Entry {
             session: Mutex::new(started),
             owner: caller.to_string(),
