@@ -1,7 +1,7 @@
 //! The step executor on the pinned engine, through the host's own `do`
 //! (and `act`, a plan of one step), on the test site's expense, checkout
 //! and counter pages: literal steps and their checks, confirmations, the
-//! decision model's absence, the step policy, and the journal.
+//! decision model's absence, and the journal.
 //!
 //! The decision model is a fake provider answering from fixed facts about
 //! the test site, in every run, with a switch that makes it unreachable;
@@ -317,12 +317,6 @@ impl Harness {
     fn history(&self, request: &str) -> Value {
         steps::history(&self.browsers, &self.id, CALLER, request).unwrap()
     }
-
-    fn policy(&self, policy: &str) {
-        let file = self.state.join(steps::POLICY_FILE);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, json!({"literal_steps": policy}).to_string()).unwrap();
-    }
 }
 
 /// Keeps `value` as `name` in `LATCH_BROWSER_EVIDENCE`, when it is set.
@@ -582,6 +576,9 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
     let again = h.confirm(issued["id"].as_str().unwrap()).await.unwrap_err();
     assert_eq!(refused(&again), (Exit::Denied, "confirm_stale"));
     assert!(again.message.contains("already used"));
+    let unknown = h.confirm("c000000000000").await.unwrap_err();
+    assert_eq!(refused(&unknown), (Exit::Denied, "confirm_stale"));
+    assert!(unknown.message.contains("does not exist"));
 
     // Repriced from $10 to $100 on the same page, same ref and name: stale.
     let page = h.open(&format!("{site}/order.html")).await;
@@ -602,6 +599,14 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
             .contains("$100.00")
     );
     assert!(!h.text().await.contains("Order placed"));
+
+    // Issued on a page since replaced by a new load of it: stale.
+    let page = h.open(&format!("{site}/order.html")).await;
+    let place = find(&page, "button", "Place order");
+    let issued = confirmation(&h.act(ActAction::Click, &[&place], None).await.unwrap_err());
+    h.open(&format!("{site}/order.html")).await;
+    let replaced = h.confirm(issued["id"].as_str().unwrap()).await.unwrap_err();
+    assert_eq!(refused(&replaced), (Exit::Denied, "confirm_stale"));
 
     // A line break in typed text is an Enter: judged as the form's submit.
     let page = h.open(&format!("{site}/order.html")).await;
@@ -721,83 +726,6 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         "{}",
         failure.message
     );
-}
-
-#[tokio::test]
-async fn the_step_policy_holds_on_every_route_and_confirmations_still_pass() {
-    let (_dir, state, _area) = test_state();
-    let site = site();
-    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
-    let mut h = Harness::start(&state, Some(fake)).await;
-    let page = h.open(&format!("{site}/order.html")).await;
-    let place = find(&page, "button", "Place order");
-    let note = find(&page, "textbox", "Gift note");
-    let first = confirmation(&h.act(ActAction::Click, &[&place], None).await.unwrap_err());
-
-    // `none`: no literal step, through act, the short form or a plan file.
-    h.policy("none");
-    let routes = [
-        h.act(ActAction::Type, &[&note, "x"], None).await,
-        h.short(&[&format!("type {note} \"x\"")]).await,
-        h.plan_file(json!({"steps": [{"literal": {"op": "type", "ref": note, "text": "x"}}]}))
-            .await,
-    ];
-    for refused_step in routes {
-        let failure = refused_step.unwrap_err();
-        stopped("b5-policy-none.json", &failure);
-        assert_eq!(refused(&failure), (Exit::Denied, "step_not_allowed"));
-    }
-    assert_eq!(
-        h.audits.last().unwrap()["step_not_allowed"]["policy"],
-        "none"
-    );
-    let shown = h.call("observe", json!({})).await;
-    assert!(
-        shown["elements"]
-            .to_string()
-            .contains("\"name\":\"Gift note\"")
-            && !shown["elements"].to_string().contains("\"value\":\"x\""),
-        "nothing was typed"
-    );
-    // A confirmation still works.
-    let placed = h.confirm(first["id"].as_str().unwrap()).await.unwrap();
-    assert_eq!(placed["steps"][0]["confirm"], first["id"]);
-
-    // `stop`: only refs from the page the latest stop returned.
-    let page = h.open(&format!("{site}/order.html")).await;
-    h.policy("stop");
-    let note = find(&page, "textbox", "Gift note");
-    let failure = h
-        .act(ActAction::Type, &[&note, "x"], None)
-        .await
-        .unwrap_err();
-    assert_eq!(refused(&failure), (Exit::Denied, "step_not_allowed"));
-    let failure = h.confirm("c000000000000").await.unwrap_err();
-    assert_eq!(refused(&failure), (Exit::Denied, "confirm_stale"));
-    let note = find(&failure.details["page"], "textbox", "Gift note");
-    let typed = h
-        .act(ActAction::Type, &[&note, "for Ada"], None)
-        .await
-        .unwrap();
-    assert_eq!(typed["status"], "dispatched");
-    // That answer was no stop: its page's refs are not allowed.
-    let place = find(&typed["page"], "button", "Place order");
-    let failure = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
-    assert_eq!(refused(&failure), (Exit::Denied, "step_not_allowed"));
-    // A confirmation passes under `stop` too.
-    let stop = h.confirm("c000000000000").await.unwrap_err();
-    let place = find(&stop.details["page"], "button", "Place order");
-    let second = confirmation(&h.act(ActAction::Click, &[&place], None).await.unwrap_err());
-    h.open(&format!("{site}/order.html")).await;
-    let failure = h.confirm(second["id"].as_str().unwrap()).await.unwrap_err();
-    assert_eq!(
-        failure.code, "confirm_stale",
-        "issued on a page since replaced"
-    );
-    let place = find(&failure.details["page"], "button", "Place order");
-    let third = confirmation(&h.act(ActAction::Click, &[&place], None).await.unwrap_err());
-    let placed = h.confirm(third["id"].as_str().unwrap()).await.unwrap();
-    assert_eq!(placed["page"]["title"], "Order · Shop");
 }
 
 #[tokio::test]

@@ -109,9 +109,6 @@ pub(super) struct Entry {
     pub(super) serial: Mutex<()>,
     /// The confirmations issued in this session, used or not.
     pub(super) confirmations: std::sync::Mutex<Vec<super::steps::Confirmation>>,
-    /// The snapshot of the page the latest stop returned, for the `stop`
-    /// step policy.
-    pub(super) last_stop: std::sync::Mutex<Option<String>>,
 }
 
 impl Entry {
@@ -255,7 +252,6 @@ impl Browsers {
             seen: std::sync::Mutex::new((Instant::now(), None)),
             serial: Mutex::new(()),
             confirmations: Default::default(),
-            last_stop: Default::default(),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))

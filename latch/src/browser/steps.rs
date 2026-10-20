@@ -2,9 +2,8 @@
 //! literal step), confirmations, `find` and `wait`.
 //!
 //! **Before anything is sent** the whole plan is checked: its shape, every
-//! ref pinned to the snapshot it is read in, every sentence check (refused
-//! as `vague_condition`, or `model_unavailable` with no model), and the
-//! host's step policy (`step_not_allowed`).
+//! ref pinned to the snapshot it is read in, and every sentence check
+//! (refused as `vague_condition`, or `model_unavailable` with no model).
 //!
 //! **Each literal step** then runs in order: a click, or an Enter in a
 //! field, first gets the decision model's risk decision on exactly what it
@@ -26,7 +25,6 @@
 //! The decision model (`model.rs`) runs here, never in the worker, and the
 //! worker is not held while it answers.
 
-use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -50,8 +48,6 @@ const WAIT_POLL: Duration = Duration::from_millis(250);
 /// `wait`'s default and largest deadline, in seconds.
 const WAIT_WITHIN: f64 = 10.0;
 const MAX_WAIT: f64 = 120.0;
-/// Where the host's step policy is set, in the state directory.
-pub const POLICY_FILE: &str = "browser/policy.json";
 
 /// An issued confirmation: what it lets through, and what it is bound to.
 pub struct Confirmation {
@@ -74,47 +70,6 @@ enum Confirms {
     Keys(Op, String),
     /// A fill releasing a secret field, with its arguments.
     Fill(Value),
-}
-
-/// Which literal steps a session may run (a host setting).
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Policy {
-    /// Refs from any page latch returned to the session.
-    Any,
-    /// Only refs returned in the session's latest stop.
-    Stop,
-    /// None.
-    None,
-}
-
-impl Policy {
-    fn name(self) -> &'static str {
-        match self {
-            Policy::Any => "any",
-            Policy::Stop => "stop",
-            Policy::None => "none",
-        }
-    }
-}
-
-/// The host's step policy: `{"literal_steps": "any" | "stop" | "none"}` in
-/// `browser/policy.json`, `any` without one.
-fn policy(state_dir: &Path) -> Result<Policy, Failure> {
-    let bad = |why: String| Failure::failed("bad_policy", format!("{POLICY_FILE}: {why}"));
-    let text = match std::fs::read_to_string(state_dir.join(POLICY_FILE)) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::Any),
-        Err(err) => return Err(bad(err.to_string())),
-    };
-    let set: Value = serde_json::from_str(&text).map_err(|err| bad(err.to_string()))?;
-    match set["literal_steps"].as_str() {
-        None | Some("any") => Ok(Policy::Any),
-        Some("stop") => Ok(Policy::Stop),
-        Some("none") => Ok(Policy::None),
-        Some(other) => Err(bad(format!(
-            "literal_steps is any, stop or none, not {other:?}"
-        ))),
-    }
 }
 
 /// Waits until `deadline` for `condition`, checking it a few times a
@@ -319,41 +274,6 @@ pub async fn run(
         work.push(Work::Literal(literal, step.check.clone()));
     }
 
-    // The step policy, before anything is sent. Confirmations always pass.
-    let policy = policy(&browsers.state_dir())?;
-    audit.insert("policy".into(), json!(policy.name()));
-    let last_stop = entry.last_stop.lock().expect("last stop lock").clone();
-    for (n, step) in work.iter().enumerate() {
-        let Work::Literal(literal, _) = step else {
-            continue;
-        };
-        let allowed = match policy {
-            Policy::Any => true,
-            Policy::None => false,
-            Policy::Stop => {
-                literal.target.is_none() && literal.op != Op::Fill
-                    || literal.snapshot.is_some() && literal.snapshot == last_stop
-            }
-        };
-        if !allowed {
-            audit.insert(
-                "step_not_allowed".into(),
-                json!({"step": n + 1, "policy": policy.name()}),
-            );
-            let why = match policy {
-                Policy::None => "this host allows no literal steps".to_string(),
-                _ => "this host allows literal steps only on refs from the latest stop".to_string(),
-            };
-            let mut failure = Failure::new(
-                Exit::Denied,
-                "step_not_allowed",
-                format!("step {}: {why}; nothing was sent", n + 1),
-            );
-            failure.details = json!({"step": n + 1, "policy": policy.name()});
-            return Err(failure);
-        }
-    }
-
     let summaries: Vec<Value> = work
         .iter()
         .enumerate()
@@ -479,8 +399,6 @@ pub async fn run(
         return Ok(out);
     };
     audit.insert("stop".into(), json!({"step": step, "code": failure.code}));
-    *entry.last_stop.lock().expect("last stop lock") =
-        page["snapshot"].as_str().map(str::to_string);
     let mut shown = json!({"step": step, "code": failure.code, "message": failure.message});
     for (key, value) in failure.details.as_object().into_iter().flatten() {
         shown[key] = value.clone();
@@ -1429,18 +1347,6 @@ mod tests {
         assert!(request_id(&json!({})).is_err());
         assert!(request_id(&json!({"request": "r 1"})).is_err());
         assert_eq!(request_id(&json!({"request": "r1a2"})).unwrap(), "r1a2");
-    }
-
-    #[test]
-    fn the_step_policy_is_a_host_setting() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(policy(dir.path()).unwrap(), Policy::Any);
-        std::fs::create_dir_all(dir.path().join("browser")).unwrap();
-        let file = dir.path().join(POLICY_FILE);
-        std::fs::write(&file, r#"{"literal_steps": "stop"}"#).unwrap();
-        assert_eq!(policy(dir.path()).unwrap(), Policy::Stop);
-        std::fs::write(&file, r#"{"literal_steps": "some"}"#).unwrap();
-        assert_eq!(policy(dir.path()).unwrap_err().code, "bad_policy");
     }
 
     #[test]

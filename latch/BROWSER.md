@@ -141,12 +141,11 @@ before anything is dispatched.
 The host audits each call: command, session, profile, engine, tab, origin
 and path (never the query), snapshot, target ref and role, the outcome,
 and the client's parent process id (or `--turn`, `LATCH_TURN`). A plan
-(`do`, or `act`) records its request id, whether it came by `act`, its
-step count, the step policy, its status and stop (step and code), and per
+(`do`, or `act`) records its request id, its
+step count, its status and stop (step and code), and per
 action the step and action number, operation, ref and role, how it was
 chosen (`ref`), the risk `p`, the confirmation id when one was used, the
-origin and path, and the dispatch (`sent`, `refused`, `unknown`); a
-`step_not_allowed` refusal records the step and policy. Each
+origin and path, and the dispatch (`sent`, `refused`, `unknown`). Each
 decision-model call records its purpose, provider, model, the provider's
 request id, latency and the kinds of data sent, never content.
 Never page text, field values or typed text: `type` records the text's
@@ -248,14 +247,6 @@ a risk decision, and a sentence check, stop with `model_unavailable` and
 nothing sent. Literal `type`, `select`, `scroll` and `back`, typed checks
 and confirmations already issued still work.
 
-**The step policy** (a host setting, `browser/policy.json` in the state
-directory: `{"literal_steps": "any" | "stop" | "none"}`, `any` without one)
-decides which literal steps a session may run: refs from any page latch
-returned, only refs from the page the session's latest stop returned, or
-none. A forbidden step is refused with `step_not_allowed` (exit 4) before
-anything is sent, whether it came by `act`, the short form or a plan file.
-Confirmations are never forbidden.
-
 **Request ids and the journal.** The client makes an id per request, so it
 knows it even if the answer is lost: an exit 5 names it. The host journals
 each request in its state directory (`browser/journal/<session hash>/`,
@@ -327,7 +318,7 @@ runs the same tests headed, where the checks that the engine never becomes
 the front app have something to check; it is not part of the gate. `LATCH_CFT_STATE` points the test
 at another state directory. Without an installed engine the test fails,
 naming what to run. `src/browser/tests/steps.rs` covers literal steps,
-checks, confirmations, the step policy and the journal, with a fake
+checks, confirmations and the journal, with a fake
 provider that answers from fixed facts about the test site and can be made
 unreachable; the risk decision and a sentence check on jev itself are built
 only with `--features live-model`, which `just test-model KEYFILE` runs.
