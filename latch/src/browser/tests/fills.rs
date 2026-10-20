@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::{CALLER, HIDDEN, cdp_engine, exec, latch, test_state, test_state_alone};
+use super::{CALLER, HIDDEN, exec, latch, test_state, test_state_alone};
 use crate::browser::host::{self, Browsers};
 use crate::vault::host::Vault;
 use crate::vault::item::{CARD, IDENTITY, Item, LOGIN, Raw};
@@ -766,7 +766,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
 /// The vault's files from inside `exec` and a file worker: never readable.
 #[test]
 fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
-    let (_dir, state, area) = test_state(cdp_engine(), &[]);
+    let (_dir, state, area) = test_state("cft", &[]);
     let vault = Vault::new(state.clone());
     vault
         .with(|s| {

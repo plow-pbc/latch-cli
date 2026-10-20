@@ -8,14 +8,23 @@
       "zip_sha256": "13b9e98ce56f5ce18e100a009f455c9285f399e7c9dc8a76fdf2f3a9755bb5f2",
       "folder": "chrome-mac-arm64",
       "tree_sha256": "f6abbb67165d686611cbad800ebe1c3eebc842c82569c3e403b676962626902f",
-      "executable": "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+      "executable": "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+      "args": ["--disable-crashpad-for-testing"]
     },
     "mac_x64": {
       "url": "https://storage.googleapis.com/chrome-for-testing-public/155.0.8059.84/mac-x64/chrome-mac-x64.zip",
       "zip_sha256": "d805a173118daa5f6f5cf464500789e1e00022a9a6aed8abfec821ab828fa862",
       "folder": "chrome-mac-x64",
       "tree_sha256": "d325042222b7f45448c8976f52ab96c2a0f0620dad7e557d515ed1f8a8dc7f6b",
-      "executable": "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+      "executable": "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+      "args": ["--disable-crashpad-for-testing"]
+    },
+    "linux_arm64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/155.0.8059.84/linux-arm64/chrome-linux-arm64.zip",
+      "zip_sha256": "1692a407908867de88eb1f1b2a93ca47c348d8fb2e3c04752d966e0f2e0344b4",
+      "folder": "chrome-linux-arm64",
+      "tree_sha256": "1ab4fcc49f33697e9f74c13bfb73143fdb52253a4afff6f447c9976fee8d4e9c",
+      "executable": "chrome"
     }
   },
   "recipe": [
@@ -24,7 +33,6 @@
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-extensions",
-    "--disable-crashpad-for-testing",
     "--disable-blink-features=AutomationControlled",
     "--no-startup-window",
     "--disable-backgrounding-occluded-windows",

@@ -1,11 +1,10 @@
 //! The browser worker: one long-lived process per profile runtime, run as
 //! `latch browser-worker --profile P --scratch DIR [--headless]` (hidden
 //! from `--help`). It launches the engine its profile is bound to (a
-//! profile not made yet is made for this platform's CDP engine: CfT, or
-//! Debian's Chromium on Linux arm64) and drives it, CfT and Chromium over
-//! the CDP pipe and Camoufox through its helper, for every session on the
-//! profile: each has its own windows, tabs, snapshots, downloads and
-//! dialogs, and the browser's logins are shared.
+//! profile not made yet is made for CfT) and drives it, CfT over the CDP
+//! pipe and Camoufox through its helper, for every session on the profile:
+//! each has its own windows, tabs, snapshots, downloads and dialogs, and
+//! the browser's logins are shared.
 //!
 //! On macOS it is not inside latch's Seatbelt: a Seatbelt-confined process
 //! can only re-apply its own profile, and every Chrome or Firefox helper
@@ -64,7 +63,7 @@ use super::cdp;
 use super::cft::{self, Cft};
 use super::core::{Answer, Call, Core};
 use super::driver::{Runtime, Seat};
-use super::engine::{self, CAMOUFOX};
+use super::engine::{CAMOUFOX, CFT};
 use super::profile;
 use crate::failure::Failure;
 use crate::wire::Response;
@@ -80,18 +79,18 @@ const UNANSWERED_IN_A_ROW: usize = 3;
 #[cfg(target_os = "linux")]
 fn confine(state_dir: &Path, profile_name: &str, scratch: &Path) -> Result<(), Failure> {
     let state_dir = state_dir.canonicalize().map_err(cft::io_failure)?;
-    // Made here if new (for this platform's engine, as the launch below
-    // would), so the view has it to bind.
-    let bound = profile::engine_of(&state_dir, profile_name)?;
-    let pin = bound
-        .as_deref()
-        .and_then(engine::cdp_pin)
-        .unwrap_or(engine::default_pin());
-    let profile = profile::open(&state_dir, profile_name, &pin.engine)?;
+    // Made here if new (for CfT, as the launch below would), so the view
+    // has it to bind.
+    let engine = profile::engine_of(&state_dir, profile_name)?;
+    let profile = profile::open(
+        &state_dir,
+        profile_name,
+        engine.as_deref().unwrap_or(&CFT.engine),
+    )?;
     let view = crate::sandbox::BrowserView {
         profile: profile.dir,
-        // Camoufox is pinned for macOS only, so the engine here is a CDP one.
-        plugin: pin.folder(&state_dir),
+        // Camoufox is pinned for macOS only, so CfT is the one engine here.
+        plugin: CFT.folder(&state_dir),
         scratch: scratch.canonicalize().map_err(cft::io_failure)?,
         state_dir,
     };
@@ -142,16 +141,13 @@ pub fn run(
                     });
                     serve(ready, browser, idle, call_limit)
                 }
-                bound => {
-                    let pin = bound
-                        .and_then(engine::cdp_pin)
-                        .unwrap_or(engine::default_pin());
+                _ => {
                     let browser =
-                        Cft::launch(pin, &state_dir, profile_name, &scratch, headless, display)?;
+                        Cft::launch(&state_dir, profile_name, &scratch, headless, display)?;
                     let ready = json!({
-                        "engine": pin.engine,
-                        "version": pin.version,
-                        "driver_contract": pin.driver_contract,
+                        "engine": CFT.engine,
+                        "version": CFT.version,
+                        "driver_contract": CFT.driver_contract,
                         "pid": browser.pid(),
                     });
                     serve(ready, browser, idle, call_limit)

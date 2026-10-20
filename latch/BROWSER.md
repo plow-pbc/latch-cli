@@ -2,31 +2,25 @@
 
 A host runs Chrome for Testing (CfT), the release pinned in
 `src/browser/cft.json`. latch downloads it, it does not ship it: on macOS
-`install.sh` fetches the zip for the machine's architecture, checks its
-sha256 against the pin, unpacks it with `ditto` into
-`<state-dir>/plugins/cft/<version>/` (beside older versions, as gog's are)
-and copies the pin in as `manifest.json`, which marks the install complete.
+and on Linux arm64 (the Pi) `install.sh` fetches the zip for the machine's
+architecture, checks its sha256 against the pin, unpacks it (`ditto` on
+macOS, `unzip` on Linux) into `<state-dir>/plugins/cft/<version>/` (beside
+older versions, as gog's are) and copies the pin in as `manifest.json`,
+which marks the install complete. On Linux it also installs Xvfb, for
+hosts with no screen.
 
-On a Debian-based Linux arm64 (the Pi) the engine is Debian's Chromium
-instead, pinned in `src/browser/chromium.json` and driven by the same
-driver. `install.sh` downloads its two packages (`chromium`,
-`chromium-common`) from snapshot.debian.org, checks each one's sha256,
-unpacks them with `dpkg-deb -x` (no package script runs, nothing goes into
-`/usr`) and moves their `usr/lib/chromium` to
-`<state-dir>/plugins/chromium/<version>/chromium`. It installs, with apt,
-the libraries the pin lists and Xvfb, for hosts with no screen. Chromium's
-recipe leaves out `--disable-crashpad-for-testing`: with it, the network
-service crashes at once on the Pi ("FD ownership violation"), in CfT's
-build as in Debian's. A profile made on such a host is a `chromium`
-profile; `profile create --engine` names another.
+A build may add launch arguments of its own (`args`) after the recipe's.
+The macOS builds add `--disable-crashpad-for-testing`, which keeps Chrome's
+crash handler from writing to the user's Library; the Linux arm64 build
+leaves it out, because with it the network service crashes at once on the
+Pi ("FD ownership violation") and no page loads.
 
 Before every launch latch hashes the whole unpacked build (every file's
 bytes and execute bit, every link and folder) and refuses one that differs
 from the pin's `tree_sha256` (`engine_unverified`), so a changed framework
 or helper is caught, not only a changed main binary. To pin a new release,
 run `python3 scripts/cft-pin.py VERSION` on a Mac and put its output in
-`builds`; for Chromium, `python3 scripts/chromium-pin.py VERSION` on
-Debian.
+`builds`.
 
 ## Camoufox, the second engine
 
@@ -58,7 +52,7 @@ first launch with the host's OS and kept in the profile (`camoufox.json`,
 password saving and form autofill off; its uBlock add-on is left out.
 
 A profile is bound to its engine when it is made. `open` makes a missing
-profile for CfT (Chromium on Linux arm64); for Camoufox, make it first, on the host:
+profile for CfT; for Camoufox, make it first, on the host:
 
     latch browser profile create shop --engine camoufox
     latch browser open --profile shop https://example.com   # from a client
@@ -67,7 +61,7 @@ profile for CfT (Chromium on Linux arm64); for Camoufox, make it first, on the h
 
 Each profile in use has one running browser, its **runtime**, driven by
 one long-lived browser worker (`latch browser-worker`, hidden), which the
-host talks to over stdio. The worker drives CfT and Chromium over
+host talks to over stdio. The worker drives CfT over
 `--remote-debugging-pipe` only: CDP on Chrome's fds 3 and 4, never a port;
 Camoufox through its helper (above).
 
@@ -492,14 +486,14 @@ unreachable; the risk decision and a sentence check on jev itself are built
 only with `--features live-model`, which `just test-model KEYFILE` runs.
 
 On Linux they are built only with `--features linux-browser-tests` (the
-gate's containers have no engine), against the Chromium install.sh put in
+gate's containers have no engine), against the CfT install.sh put in
 `LATCH_CFT_STATE`. There the sandbox checks look at the user namespaces and
 seccomp mode of the engine's processes, exec's view of the network at
 `/proc/net`, and the front-app checks have no front app to watch.
 
 These real-engine tests are also the driver conformance runner: each runs
 once per engine, as `browser::tests::cft::NAME` and
-`browser::tests::camoufox::NAME` on macOS and `browser::tests::chromium::NAME`
-on Linux (and the same under `fills` and `steps`).
+`browser::tests::camoufox::NAME`, Camoufox on macOS only (and the same
+under `fills` and `steps`).
 `just conformance camoufox` runs one engine's checks; a new engine joins by
 one line in the `conformance!` macro.

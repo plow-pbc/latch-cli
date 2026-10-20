@@ -4,9 +4,9 @@
 //! needs the engine installed where `just cft` (part of `just test`, and a
 //! step in CI) puts it, `.dev/cft-state`, or in the state directory
 //! `LATCH_CFT_STATE` names; without it the test fails, saying so. On Linux
-//! arm64 the engine is Debian's Chromium, inside the worker's bubblewrap,
-//! and the tests are built only with `linux-browser-tests`, on a host
-//! whose install.sh put it in place (`just conformance chromium`).
+//! arm64 the engine runs inside the worker's bubblewrap, and the tests are
+//! built only with `linux-browser-tests`, on a host whose install.sh put
+//! CfT in place (`just conformance cft`).
 //!
 //! `LATCH_BROWSER_EVIDENCE=DIR` also keeps the screenshot there.
 
@@ -27,12 +27,11 @@ use super::profile;
 use crate::failure::Failure;
 
 /// The engines the conformance checks run on, each its own test:
-/// `browser::tests::cft::NAME` and `browser::tests::camoufox::NAME` on
-/// macOS, `browser::tests::chromium::NAME` on Linux (and the same under
-/// `fills` and `steps`). `just conformance ENGINE` runs one engine's.
+/// `browser::tests::cft::NAME`, and `browser::tests::camoufox::NAME` on
+/// macOS (and the same under `fills` and `steps`). `just conformance
+/// ENGINE` runs one engine's.
 macro_rules! conformance {
     ($($check:ident),* $(,)?) => {
-        #[cfg(target_os = "macos")]
         mod cft {
             $(#[tokio::test]
             async fn $check() {
@@ -46,13 +45,6 @@ macro_rules! conformance {
                 super::$check("camoufox").await
             })*
         }
-        #[cfg(target_os = "linux")]
-        mod chromium {
-            $(#[tokio::test]
-            async fn $check() {
-                super::$check("chromium").await
-            })*
-        }
     };
 }
 mod fills;
@@ -64,12 +56,6 @@ use super::session::Session;
 
 /// The caller every host-level test calls as.
 const CALLER: &str = "test-caller";
-
-/// The engine of the tests outside the conformance runner: this
-/// platform's CDP engine.
-fn cdp_engine() -> &'static str {
-    &super::engine::default_pin().engine
-}
 
 /// What a sandboxed `cat` or `ls` of a hidden path says: Seatbelt refuses
 /// it; Linux's bubblewrap leaves the path out.
@@ -437,10 +423,10 @@ fn test_state_taking(
             &super::engine::CAMOUFOX.version,
             super::engine::CAMOUFOX.folder(&installed),
         ),
-        _ => {
-            let pin = super::engine::cdp_pin(engine).unwrap();
-            (&pin.version, pin.folder(&installed))
-        }
+        _ => (
+            &super::engine::CFT.version,
+            super::engine::CFT.folder(&installed),
+        ),
     };
     assert!(
         engine_folder.join("manifest.json").is_file(),
@@ -1184,7 +1170,8 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
 
 /// The Camoufox helper gives up on a page's title after a wait of its own
 /// and answers its operation without it; the title the browser never sent
-/// is still a command left unanswered.
+/// is still a command left unanswered. Camoufox is pinned for macOS only.
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
     use super::camoufox::Camoufox;

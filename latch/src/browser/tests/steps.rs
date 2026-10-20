@@ -815,7 +815,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
 #[tokio::test]
 async fn live_jev_asks_for_a_confirmation_only_where_one_is_needed() {
     use std::os::unix::fs::PermissionsExt;
-    let (_dir, state, _area) = test_state(super::cdp_engine(), &["default"]);
+    let (_dir, state, _area) = test_state("cft", &["default"]);
     let key = std::env::var_os("LATCH_TEST_JEV_KEY")
         .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
     let path = state.join(crate::browser::model::JEV_KEY_FILE);

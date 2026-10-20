@@ -11,7 +11,7 @@ test: cft
 test-headed: cft
     cargo test --locked --features headed-tests browser::tests
 
-# The driver conformance checks on one engine (cft or camoufox; chromium
+# The driver conformance checks on one engine (cft or camoufox; cft only
 # on Linux arm64), each a test that passes or fails by name: the
 # real-engine browser tests, run against that engine's driver.
 [macos]
@@ -31,8 +31,8 @@ cft:
     cargo build --locked
     HOME="$PWD/../.dev/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
 
-# The real-engine browser tests run on macOS only; install.sh puts a Linux
-# host's engine in place.
+# On Linux, install.sh puts a host's engine in place; the real-engine tests
+# (`just conformance cft`) find it through LATCH_CFT_STATE.
 [linux]
 cft:
 

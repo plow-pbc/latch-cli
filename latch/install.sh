@@ -11,10 +11,11 @@
 # version gets its own folder, so a new pin never overwrites the old gog.
 # That download needs curl and tar.
 #
-# On macOS it also installs Chrome for Testing, the browser a host runs for
-# `latch browser`: the release pinned in src/browser/cft.json, into
-# <state-dir>/plugins/cft/<version>/, beside older versions, with the pin
-# copied in as manifest.json. That download needs curl and ditto.
+# On macOS and on Linux arm64 (the Pi) it also installs Chrome for Testing,
+# the browser a host runs for `latch browser`: the release pinned in
+# src/browser/cft.json, into <state-dir>/plugins/cft/<version>/, beside older
+# versions, with the pin copied in as manifest.json. That download needs
+# curl, and ditto (macOS) or unzip (Linux).
 #
 # With --with-camoufox (macOS), it also installs Camoufox, the second
 # browser engine, pinned in src/browser/camoufox.json: the Camoufox build,
@@ -24,12 +25,9 @@
 #
 # On Linux it also installs bubblewrap, which `latch serve` uses to sandbox
 # its workers, and on Ubuntu 24.04 and later the AppArmor profile that lets
-# bubblewrap create user namespaces there. On a Debian-based Linux arm64
-# (the Pi) it also installs Debian's Chromium, the browser pinned there in
-# src/browser/chromium.json, unpacked from its packages into
-# <state-dir>/plugins/chromium/<version>/ the same way, with the libraries
-# it needs and Xvfb, the display of a host with no screen. Those packages
-# need root, so it asks for sudo once, and only when something is missing. On macOS none of that is
+# bubblewrap create user namespaces there; on arm64, also Xvfb, the display
+# of a host with no screen, and unzip. Those need root, so it asks for sudo
+# once, and only when something is missing. On macOS none of that is
 # needed. It downloads no latch binary. Running it again changes
 # nothing that is already in place.
 set -eu
@@ -126,28 +124,111 @@ else
   say "installed gog $gog_version to $gog (sha256 $(sha256 "$gog"))"
 fi
 
-# 3. macOS: the pinned Chrome for Testing. plutil, macOS's own property
-# list tool, reads the pin's JSON. install.sh checks the zip's sha256; latch
-# hashes the whole unpacked build before every launch. The manifest goes in
-# last, so a folder without it is a half-made install, made again.
-if [ "$(uname -s)" = Darwin ]; then
+# 3. Linux: work out what needs root, then run it all under one sudo.
+# On a Linux with a Chrome for Testing build (arm64, the Pi), the browser
+# also needs Xvfb, a screenless host's display, and unzip to unpack it.
+cft_linux=""
+case "$(uname -s)/$(uname -m)" in
+  Linux/aarch64 | Linux/arm64) cft_linux=linux_arm64 ;;
+esac
+if [ "$(uname -s)" = Linux ]; then
+  packages=""
+  want() { packages="${packages:+$packages }$1"; }
+  command -v bwrap >/dev/null 2>&1 || want bubblewrap
+  if [ -n "$cft_linux" ]; then
+    command -v Xvfb >/dev/null 2>&1 || want xvfb
+    command -v unzip >/dev/null 2>&1 || want unzip
+  fi
+
+  # Ubuntu 24.04 and later let a program create user namespaces only if an
+  # AppArmor profile allows it (the kernel setting below reads 1). Ubuntu's
+  # bwrap-userns-restrict profile allows it for /usr/bin/bwrap; 24.04 ships it
+  # in apparmor-profiles, later releases install it already. Without AppArmor
+  # (a container, WSL) the setting is absent and nothing is needed. The profile
+  # is copied only after it loads, so a rerun can trust the copy.
+  apparmor=""
+  profile=/etc/apparmor.d/bwrap-userns-restrict
+  restrict=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+  if [ "$(cat "$restrict" 2>/dev/null)" = 1 ] && [ ! -f "$profile" ]; then
+    want "apparmor apparmor-profiles"
+    extra=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+    apparmor="apparmor_parser -r $extra && cp $extra $profile"
+  fi
+
+  if [ -z "$packages" ]; then
+    say "bubblewrap${cft_linux:+, Xvfb and unzip} already installed"
+  else
+    if command -v apt-get >/dev/null 2>&1; then
+      manager=apt-get
+    elif command -v dnf >/dev/null 2>&1; then
+      manager=dnf
+    elif command -v apk >/dev/null 2>&1; then
+      manager=apk
+    elif command -v pacman >/dev/null 2>&1; then
+      manager=pacman
+    else
+      die "no apt-get, dnf, apk or pacman found; install $packages yourself, then run this again"
+    fi
+    # Xvfb's package has a different name on each.
+    named=""
+    for package in $packages; do
+      case "$manager:$package" in
+        dnf:xvfb) package=xorg-x11-server-Xvfb ;;
+        pacman:xvfb) package=xorg-server-xvfb ;;
+      esac
+      named="${named:+$named }$package"
+    done
+    case $manager in
+      apt-get) install="apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q $named" ;;
+      dnf) install="dnf install -y $named" ;;
+      apk) install="apk add $named" ;;
+      pacman) install="pacman -Sy --needed --noconfirm $named" ;;
+    esac
+    root_steps="$install${apparmor:+ && $apparmor}"
+
+    say "installing as root: $named${apparmor:+ (and loading the bwrap-userns-restrict AppArmor profile)}"
+    if [ "$(id -u)" -eq 0 ]; then
+      as_root=""
+    elif command -v sudo >/dev/null 2>&1; then
+      as_root=sudo
+    else
+      die "need root for that, and sudo is not installed; run this as root"
+    fi
+    $as_root sh -c "$root_steps" || die "installing as root failed (see above); fix that and run this again"
+  fi
+fi
+
+# 4. The pinned Chrome for Testing, on macOS and on Linux arm64. The pin's
+# JSON has a fixed shape: each build is one block of "key": "value" lines,
+# which sed reads. install.sh checks the zip's sha256; latch hashes the
+# whole unpacked build before every launch. The manifest goes in last, so a
+# folder without it is a half-made install, made again.
+case "$(uname -s)/$(uname -m)" in
+  Darwin/arm64) cft_build=mac_arm64 ;;
+  Darwin/x86_64) cft_build=mac_x64 ;;
+  Darwin/*) die "no Chrome for Testing build for $(uname -m)" ;;
+  *) cft_build=$cft_linux ;;
+esac
+if [ -z "$cft_build" ]; then
+  say "no Chrome for Testing build for $(uname -s) $(uname -m): this host runs no browser"
+else
   cft_pin="$(dirname "$0")/src/browser/cft.json"
   [ -f "$cft_pin" ] || die "$cft_pin not found; run install.sh from the latch workspace"
-  cft() { plutil -extract "$1" raw -o - "$cft_pin" 2>/dev/null || die "$cft_pin has no $1"; }
-  case "$(uname -m)" in
-    arm64) cft_build=builds.mac_arm64 ;;
-    x86_64) cft_build=builds.mac_x64 ;;
-    *) die "no Chrome for Testing build for $(uname -m)" ;;
-  esac
-  cft_version=$(cft version)
+  cft() {
+    value=$(sed -n "/^    \"$cft_build\": {/,/}/s/^ *\"$1\": *\"\([^\"]*\)\".*/\1/p" "$cft_pin")
+    [ -n "$value" ] || die "$cft_pin has no builds.$cft_build.$1"
+    printf '%s\n' "$value"
+  }
+  cft_version=$(sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$cft_pin")
+  [ -n "$cft_version" ] || die "$cft_pin has no version"
   cft_dir="$state_dir/plugins/cft/$cft_version"
   if [ -f "$cft_dir/manifest.json" ] && [ "$(cksum < "$cft_pin")" = "$(cksum < "$cft_dir/manifest.json")" ]; then
     say "Chrome for Testing $cft_version already installed in $cft_dir"
   else
     command -v curl >/dev/null 2>&1 || die "need curl to download Chrome for Testing"
-    cft_url=$(cft "$cft_build.url")
-    cft_zip_sha256=$(cft "$cft_build.zip_sha256")
-    cft_folder=$(cft "$cft_build.folder")
+    cft_url=$(cft url)
+    cft_zip_sha256=$(cft zip_sha256)
+    cft_folder=$(cft folder)
     (umask 077 && mkdir -p "$state_dir")
     mkdir -p "$cft_dir"
     cft_tmp=$(mktemp -d "$cft_dir/.download.XXXXXX")
@@ -156,7 +237,12 @@ if [ "$(uname -s)" = Darwin ]; then
     curl -fsSL --proto '=https' -o "$cft_tmp/cft.zip" "$cft_url" || die "could not download $cft_url"
     got=$(sha256 "$cft_tmp/cft.zip")
     [ "$got" = "$cft_zip_sha256" ] || die "$cft_url has sha256 $got, not the pinned $cft_zip_sha256; nothing installed"
-    ditto -x -k "$cft_tmp/cft.zip" "$cft_tmp/x" || die "could not unpack $cft_url"
+    # Each unpacks as scripts/cft-pin.py did for the pin's tree hash.
+    if [ "$(uname -s)" = Darwin ]; then
+      ditto -x -k "$cft_tmp/cft.zip" "$cft_tmp/x" || die "could not unpack $cft_url"
+    else
+      unzip -q "$cft_tmp/cft.zip" -d "$cft_tmp/x" || die "could not unpack $cft_url"
+    fi
     [ -d "$cft_tmp/x/$cft_folder" ] || die "$cft_url has no $cft_folder in it"
     rm -rf "${cft_dir:?}/$cft_folder"
     mv "$cft_tmp/x/$cft_folder" "$cft_dir/$cft_folder"
@@ -165,7 +251,7 @@ if [ "$(uname -s)" = Darwin ]; then
   fi
 fi
 
-# 4. macOS, with --with-camoufox: the pinned Camoufox, Node and the helper's
+# 5. macOS, with --with-camoufox: the pinned Camoufox, Node and the helper's
 # runtime, each checked as it arrives (the archives' sha256, `npm ci`'s
 # lockfile integrity); latch hashes each unpacked part before every launch.
 # No package's install script runs. The manifest goes in last.
@@ -221,111 +307,4 @@ if [ -n "$with_camoufox" ]; then
   fi
 fi
 
-[ "$(uname -s)" = Linux ] || exit 0
-
-# 5. Linux: work out what needs root, then run it all under one sudo.
-packages=""
-want() { packages="${packages:+$packages }$1"; }
-command -v bwrap >/dev/null 2>&1 || want bubblewrap
-
-# On arm64 the browser is Debian's Chromium (step 6): it needs dpkg-deb to
-# unpack it, the libraries its pin lists, and Xvfb.
-chromium=""
-chromium_pin="$(dirname "$0")/src/browser/chromium.json"
-case "$(uname -m)" in
-  aarch64 | arm64)
-    if command -v dpkg-deb >/dev/null 2>&1; then
-      chromium=1
-    else
-      say "Debian's Chromium, the browser pinned for Linux arm64, needs dpkg: this host runs no browser"
-    fi
-    ;;
-esac
-if [ -n "$chromium" ]; then
-  [ -f "$chromium_pin" ] || die "$chromium_pin not found; run install.sh from the latch workspace"
-  command -v Xvfb >/dev/null 2>&1 || want xvfb
-  for library in $(sed -n 's/^ *"packages": *"\([^"]*\)".*/\1/p' "$chromium_pin"); do
-    dpkg-query -W -f '${Status}' "$library" 2>/dev/null | grep -q ' installed$' || want "$library"
-  done
-fi
-
-# Ubuntu 24.04 and later let a program create user namespaces only if an
-# AppArmor profile allows it (the kernel setting below reads 1). Ubuntu's
-# bwrap-userns-restrict profile allows it for /usr/bin/bwrap; 24.04 ships it
-# in apparmor-profiles, later releases install it already. Without AppArmor
-# (a container, WSL) the setting is absent and nothing is needed. The profile
-# is copied only after it loads, so a rerun can trust the copy.
-apparmor=""
-profile=/etc/apparmor.d/bwrap-userns-restrict
-restrict=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-if [ "$(cat "$restrict" 2>/dev/null)" = 1 ] && [ ! -f "$profile" ]; then
-  want "apparmor apparmor-profiles"
-  extra=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
-  apparmor="apparmor_parser -r $extra && cp $extra $profile"
-fi
-
-if [ -z "$packages" ]; then
-  say "bubblewrap${chromium:+, Xvfb and the Chromium libraries} already installed"
-else
-  if command -v apt-get >/dev/null 2>&1; then
-    install="apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q $packages"
-  elif command -v dnf >/dev/null 2>&1; then
-    install="dnf install -y $packages"
-  elif command -v apk >/dev/null 2>&1; then
-    install="apk add $packages"
-  elif command -v pacman >/dev/null 2>&1; then
-    install="pacman -Sy --needed --noconfirm $packages"
-  else
-    die "no apt-get, dnf, apk or pacman found; install $packages yourself, then run this again"
-  fi
-  root_steps="$install${apparmor:+ && $apparmor}"
-
-  say "installing as root: $packages${apparmor:+ (and loading the bwrap-userns-restrict AppArmor profile)}"
-  if [ "$(id -u)" -eq 0 ]; then
-    as_root=""
-  elif command -v sudo >/dev/null 2>&1; then
-    as_root=sudo
-  else
-    die "need root for that, and sudo is not installed; run this as root"
-  fi
-  $as_root sh -c "$root_steps" || die "installing as root failed (see above); fix that and run this again"
-fi
-
-# 6. Linux arm64: the pinned Debian Chromium, from its two packages, each
-# checked against the pin's sha256 and unpacked with dpkg-deb, as
-# scripts/chromium-pin.py did for the tree hash. No package script runs and
-# nothing goes into /usr: latch runs the build from the packages'
-# usr/lib/chromium, moved to <state-dir>/plugins/chromium/<version>/chromium,
-# and hashes it before every launch. The manifest goes in last.
-if [ -n "$chromium" ]; then
-  chromium_version=$(sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$chromium_pin")
-  [ -n "$chromium_version" ] || die "$chromium_pin has no version"
-  chromium_dir="$state_dir/plugins/chromium/$chromium_version"
-  if [ -f "$chromium_dir/manifest.json" ] && [ "$(cksum < "$chromium_pin")" = "$(cksum < "$chromium_dir/manifest.json")" ]; then
-    say "Chromium $chromium_version already installed in $chromium_dir"
-  else
-    command -v curl >/dev/null 2>&1 || die "need curl to download Chromium"
-    (umask 077 && mkdir -p "$state_dir")
-    mkdir -p "$chromium_dir"
-    chromium_tmp=$(mktemp -d "$chromium_dir/.download.XXXXXX")
-    trap 'rm -rf ${tmp:+"$tmp"} ${cft_tmp:+"$cft_tmp"} ${fox_tmp:+"$fox_tmp"} ${chromium_tmp:+"$chromium_tmp"}' EXIT
-    say "downloading Debian's Chromium $chromium_version (about 110 MB)"
-    # The pin lists each package as a "url" line, then its "sha256" line.
-    sums=$(sed -n 's/^ *"sha256": *"\([^"]*\)".*/\1/p' "$chromium_pin")
-    n=0
-    for url in $(sed -n 's/^ *"url": *"\([^"]*\)".*/\1/p' "$chromium_pin"); do
-      n=$((n + 1))
-      pinned_sha256=$(printf '%s\n' "$sums" | sed -n "${n}p")
-      curl -fsSL --proto '=https' -o "$chromium_tmp/$n.deb" "$url" || die "could not download $url"
-      got=$(sha256 "$chromium_tmp/$n.deb")
-      [ "$got" = "$pinned_sha256" ] || die "$url has sha256 $got, not the pinned $pinned_sha256; nothing installed"
-      dpkg-deb -x "$chromium_tmp/$n.deb" "$chromium_tmp/x" || die "could not unpack $url"
-    done
-    [ -d "$chromium_tmp/x/usr/lib/chromium" ] || die "the pinned packages have no usr/lib/chromium"
-    rm -rf "${chromium_dir:?}/chromium"
-    mv "$chromium_tmp/x/usr/lib/chromium" "$chromium_dir/chromium"
-    cp "$chromium_pin" "$chromium_dir/manifest.json"
-    say "installed Chromium $chromium_version to $chromium_dir"
-  fi
-fi
 say "done"

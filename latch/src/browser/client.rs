@@ -30,10 +30,8 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     } = &args.command
     {
         let engine = match engine {
-            Some(EngineArg::Cft) => "cft",
-            Some(EngineArg::Chromium) => "chromium",
-            Some(EngineArg::Camoufox) => "camoufox",
-            None => &super::engine::default_pin().engine,
+            EngineArg::Cft => "cft",
+            EngineArg::Camoufox => "camoufox",
         };
         super::profile::open(&state.path, name, engine)?;
         return Ok(json!({"profile": name, "engine": engine}));
