@@ -1,5 +1,7 @@
 # latch-cli proof of concept — design
 
+> **Historical.** This records the proof-of-concept design as of 2026-10-14 and is no longer kept up to date. Where it differs, the code, the docs beside it in `latch/` and `2026-10-19-latch-browser-poc-design.md` are current.
+
 Date: 2026-10-14 · Owner: head chef · Stage: **proof of concept on the path to the real product**, run on owned test accounts and test files. It is not throwaway: the code should be clean and simple enough that later work builds directly on it. Reviewers hold code quality and structure to that bar, but do not demand the production hardening the "Later" section defers (scoped credentials, revocation, self-hosted relays and so on).
 
 ## 1. Goal

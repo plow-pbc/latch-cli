@@ -1,5 +1,7 @@
 # latch-cli command audit
 
+> **Historical.** This records the command audit as of 2026-10-14 and is no longer kept up to date. Where it differs, the code, the docs beside it in `latch/` and `2026-10-19-latch-browser-poc-design.md` are current.
+
 Date: 2026-10-14 · Companion to `2026-10-14-latch-cli-poc-design.md` (the approved spec; this file follows its vocabulary and conventions and never overrides it).
 
 What this is: every capability of the existing Electron Latch (its 15 MCP tools and its non-tool features) and every `plow` CLI command, mapped to a `latch` command, with arguments, output, where it runs, and whether it is in the **POC** or **Later**. The mapping is informed by a survey of other CLIs (§1). Sources read: Latch `packages/mcp-server/src/tools.ts` and `packages/device-core/src/providers/` (`plowGog.ts`, `gogSkill.ts`) at `1ea5674e`; this repo's `cli/plow/commands/*.py` at `68c43c6c`.
