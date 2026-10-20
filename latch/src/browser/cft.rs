@@ -252,8 +252,9 @@ impl Cft {
 
     /// The session a frame's page belongs to: the tab it is, or the tab
     /// that holds it, in the same process or another. None when no tab of
-    /// any session holds it.
-    fn owner_of_frame(&mut self, frame: &str) -> Result<Option<String>, Failure> {
+    /// any session holds it. `dialogs` are the CDP sessions whose page
+    /// opened a dialog that latch has heard of but not yet taken in.
+    fn owner_of_frame(&mut self, frame: &str, dialogs: &[&str]) -> Result<Option<String>, Failure> {
         if let Some(key) = self.owner_of_target(frame) {
             return Ok(Some(key));
         }
@@ -278,14 +279,37 @@ impl Cft {
             })
             .collect();
         for (key, session) in tabs {
-            let deadline = self.by(COMMAND);
-            if let Ok(tree) = self.frame_command("Page.getFrameTree", json!({}), &session, deadline)
-                && holds_frame(&tree["frameTree"], frame)
+            // A tab a dialog holds answers for none of its frames until the
+            // dialog is answered; it is left out, not waited on.
+            if self.held_by_dialog(&session) || dialogs.contains(&session.as_str()) {
+                continue;
+            }
+            let here = [session.clone()];
+            let opened = |event: &Value| dialog_in(event, &here);
+            if let Ok(Reply::Answer(tree)) = self.session_call(
+                "Page.getFrameTree",
+                json!({}),
+                &session,
+                self.by(COMMAND),
+                opened,
+            ) && holds_frame(&tree["frameTree"], frame)
             {
                 return Ok(Some(key));
             }
         }
         Ok(None)
+    }
+
+    /// Whether a dialog holds the tab whose CDP session `session` is.
+    fn held_by_dialog(&self, session: &str) -> bool {
+        self.shares.values().any(|share| {
+            share.dialog.as_ref().is_some_and(|tab| {
+                share
+                    .tabs
+                    .iter()
+                    .any(|t| &t.id == tab && t.session == session)
+            })
+        })
     }
 
     /// The CDP sessions of the selected session's tabs: where its dialogs
@@ -300,11 +324,17 @@ impl Cft {
 
     /// A download starts or moves on. It belongs to the session whose page
     /// started it; one that can't be traced to a session is never listed.
-    fn download_event(&mut self, method: &str, params: &Value) -> Result<(), Failure> {
+    /// `dialogs` as for `owner_of_frame`.
+    fn download_event(
+        &mut self,
+        method: &str,
+        params: &Value,
+        dialogs: &[&str],
+    ) -> Result<(), Failure> {
         let guid = params["guid"].as_str().unwrap_or_default().to_string();
         if method == "Browser.downloadWillBegin" {
             let frame = params["frameId"].as_str().unwrap_or_default();
-            let Some(key) = self.owner_of_frame(frame)? else {
+            let Some(key) = self.owner_of_frame(frame, dialogs)? else {
                 return Ok(());
             };
             let share = self.shares.get_mut(&key).expect("the owner has a share");
@@ -487,6 +517,13 @@ impl Cft {
     fn absorb(&mut self) -> Result<Vec<Value>, Failure> {
         let events = self.cdp.take_events();
         let mut attach = Vec::new();
+        // Pages that opened a dialog anywhere in this batch: a download
+        // heard before it must not wait on that page either.
+        let dialogs: Vec<&str> = events
+            .iter()
+            .filter(|event| event["method"] == "Page.javascriptDialogOpening")
+            .filter_map(|event| event["sessionId"].as_str())
+            .collect();
         for event in &events {
             let params = &event["params"];
             let session = event["sessionId"].as_str().unwrap_or_default();
@@ -570,7 +607,7 @@ impl Cft {
                     }
                 }
                 method @ ("Browser.downloadWillBegin" | "Browser.downloadProgress") => {
-                    self.download_event(method, params)?;
+                    self.download_event(method, params, &dialogs)?;
                 }
                 _ => {}
             }
@@ -688,7 +725,32 @@ impl Cft {
         owner_session: Option<&str>,
         frames: &mut Vec<Frame>,
     ) -> Result<(), Failure> {
-        let tree = self.frame_command("Page.getFrameTree", json!({}), session, self.by(COMMAND))?;
+        // A page held by a dialog does not answer for its frames until the
+        // dialog is answered: one open already, or one opening meanwhile.
+        let blocked = || {
+            Failure::failed(
+                "dialog_open",
+                "a dialog is open; answer it with `dialog accept|dismiss`".into(),
+            )
+        };
+        if self.held_by_dialog(session) {
+            return Err(blocked());
+        }
+        let here = [session.to_string()];
+        let opened = |event: &Value| dialog_in(event, &here);
+        let tree = match self.session_call(
+            "Page.getFrameTree",
+            json!({}),
+            session,
+            self.by(COMMAND),
+            opened,
+        ) {
+            Ok(Reply::Answer(tree)) => tree,
+            Ok(Reply::Stopped) => return Err(blocked()),
+            Ok(Reply::Gone) => return Err(stale()),
+            Err(failure) if failure.code == "engine_error" => return Err(stale()),
+            Err(failure) => return Err(failure),
+        };
         let mut stack = vec![(tree["frameTree"].clone(), true)];
         while let Some((node, root)) = stack.pop() {
             let frame = &node["frame"];
