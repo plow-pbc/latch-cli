@@ -38,11 +38,6 @@ pub struct Registration {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay_url: Option<String>,
-    /// Asks Plow to move this login's own machine name to this key. Only
-    /// `latch login` sets it; a heartbeat never does, so a host whose name
-    /// moved away cannot take it back.
-    #[serde(skip_serializing_if = "is_false")]
-    pub take_over: bool,
 }
 
 fn is_false(value: &bool) -> bool {

@@ -181,6 +181,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 dashboard,
                 args.headless_browsers,
                 deny_exec,
+                args.relay.as_deref(),
             )
             .await?;
             to_json(json!({}))

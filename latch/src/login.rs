@@ -105,7 +105,6 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         key: key.public().to_string(),
         name,
         relay_url,
-        take_over: false,
     };
     let plow = Plow::new(&api_url, &token);
     // An agent is named after itself in Plow. Plow names one that is not
@@ -139,22 +138,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             let Some(name) = &registration.name else {
                 return Err(failure);
             };
-            // If this same login holds it (this machine logged in again with
-            // a new key, say), Plow moves the name here; nobody is asked.
-            let take_over = Registration {
-                take_over: true,
-                ..registration.clone()
-            };
-            match plow.register(&take_over).await {
-                Ok(peer) => {
-                    eprintln!("The name {name} now points to this machine.");
-                    peer
-                }
-                Err(failure) if failure.code == "conflict" => {
-                    return Err(clash(&plow, name, &registration.key).await);
-                }
-                Err(failure) => return Err(failure),
-            }
+            return Err(clash(&plow, name, &registration.key).await);
         }
         result => result?,
     };
@@ -181,7 +165,6 @@ pub async fn register_again(state: &StateDir) -> Result<(), Failure> {
         key: state.load_key()?.public().to_string(),
         name: Some(config.peer.name.clone()),
         relay_url: config.peer.relay_url.clone(),
-        take_over: false,
     };
     let peer = Plow::from_state(state)?.register(&registration).await?;
     state.save_config(&Config {

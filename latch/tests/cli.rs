@@ -445,12 +445,8 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     let hostname = String::from_utf8(uname.stdout).unwrap();
     let hostname = hostname.trim().split('.').next().unwrap().to_string();
     let holder = peer(json!("c".repeat(64)), &hostname, "device", Value::Null);
-    // Taken; not by this login either; and Plow lists who holds it.
-    let (api_url, server) = fake_plow(vec![
-        (409, json!({})),
-        (409, json!({})),
-        (200, json!({"data": [holder]})),
-    ]);
+    // Taken, and Plow lists who holds it.
+    let (api_url, server) = fake_plow(vec![(409, json!({})), (200, json!({"data": [holder]}))]);
     let dir = test_dir();
     let owner_token = dir.path().join("owner.token");
     fs::write(&owner_token, "owner-login\n").unwrap();
@@ -468,19 +464,18 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     assert_eq!(error["error"]["code"], "conflict", "{error}");
     assert!(!state.join("config.json").exists());
 
+    // One registration, never retried to take the name over.
     let requests = server.join().unwrap();
     assert_eq!(body(&requests[0])["name"], hostname.as_str());
-    assert_eq!(requests.len(), 3);
+    assert!(body(&requests[0]).get("take_over").is_none());
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("GET /v1/latch/peers "));
 }
 
 #[test]
 fn a_name_clash_stops_a_login_at_a_terminal_too() {
     let holder = peer(json!("c".repeat(64)), "mac", "device", Value::Null);
-    let (api_url, server) = fake_plow(vec![
-        (409, json!({})),
-        (409, json!({})),
-        (200, json!({"data": [holder]})),
-    ]);
+    let (api_url, server) = fake_plow(vec![(409, json!({})), (200, json!({"data": [holder]}))]);
     let dir = test_dir();
     let owner_token = dir.path().join("owner.token");
     fs::write(&owner_token, "owner-login\n").unwrap();
@@ -503,7 +498,7 @@ fn a_name_clash_stops_a_login_at_a_terminal_too() {
     assert!(shown.contains("latch devices remove mac"), "{shown}");
     assert!(!shown.contains("Replace it?"), "{shown}");
     assert!(!state.join("config.json").exists());
-    assert_eq!(server.join().unwrap().len(), 3);
+    assert_eq!(server.join().unwrap().len(), 2);
 }
 
 #[test]
@@ -938,10 +933,27 @@ fn a_cloud_agent_logs_in_through_a_proxy_that_adds_its_credential() {
     }
 }
 
+/// An iroh relay on this machine, over plain HTTP, kept running by the
+/// returned runtime. Returns its URL.
+fn local_relay() -> (tokio::runtime::Runtime, String) {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut config = ServerConfig::default();
+    config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+    let server = runtime.block_on(Server::spawn(config)).unwrap();
+    let url = format!("http://{}", server.http_addr().unwrap());
+    // The server stops when dropped; it lives as long as the runtime.
+    runtime.spawn(async move {
+        let _server = server;
+        std::future::pending::<()>().await
+    });
+    (runtime, url)
+}
+
 #[test]
-#[ignore = "needs the internet: runs a real `latch serve` on iroh's public relays"]
 fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
     let dir = test_dir();
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
@@ -972,6 +984,8 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
             host.to_str().unwrap(),
             "serve",
             "--no-dashboard",
+            "--relay",
+            &relay,
         ])
         .arg(&share)
         .env_remove("LATCH_HOST")

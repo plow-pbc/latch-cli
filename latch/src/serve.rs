@@ -127,7 +127,17 @@ pub async fn run(
     show_dashboard: bool,
     headless_browsers: bool,
     deny_exec: DenyExec,
+    relay: Option<&str>,
 ) -> Result<(), Failure> {
+    let relay_mode = match relay {
+        None => RelayMode::Default,
+        Some(url) => {
+            let url = url.parse().map_err(|_| {
+                Failure::usage("bad_relay", format!("--relay {url:?} is not a relay URL"))
+            })?;
+            RelayMode::custom([url])
+        }
+    };
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
     // missing kernel feature; the probe worker then installs the sandbox
@@ -168,6 +178,7 @@ pub async fn run(
         dashboard.clone(),
         headless_browsers,
         deny_exec,
+        relay_mode,
     )
     .await;
     if let Some(dashboard) = &dashboard {
@@ -183,6 +194,7 @@ async fn run_host(
     dashboard: Option<Dashboard>,
     headless_browsers: bool,
     deny_exec: DenyExec,
+    relay_mode: RelayMode,
 ) -> Result<(), Failure> {
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
     let audit = AuditLog::open(state.path.join("audit.ndjson"))?;
@@ -199,7 +211,7 @@ async fn run_host(
 
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(state.load_key()?)
-        .relay_mode(RelayMode::Default)
+        .relay_mode(relay_mode)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
         .bind()
         .await

@@ -35,6 +35,12 @@ stars, rustls org) on its `aws-lc-rs` backend (262M / 98M, aws org). iroh is
 built without its default `ring` backend, so the binary carries one crypto
 library.
 
+Tests only (a dev-dependency, never in a latch build): `iroh-relay` with
+its `server` feature, a local iroh relay so the test that runs a real host
+and client needs no internet. Same crate and version iroh already uses, from
+the n0-computer org. Its server brings `ring` and an ACME client into test
+builds only; `cargo tree -e normal` shows neither in latch.
+
 Not used, although the audit lists them: `anyhow` and `thiserror`. A failure
 is one plain struct (`src/failure.rs`) with an exit kind, a code and a
 message, which is all the error contract needs.

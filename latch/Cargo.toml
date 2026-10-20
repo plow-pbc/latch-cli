@@ -51,6 +51,11 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 # `latch vault link`'s QR code, drawn in the terminal (no image backends).
 qrcode = { version = "0.14.1", default-features = false }
 
+[dev-dependencies]
+# A local iroh relay (plain HTTP), so the test that runs a real host and
+# client needs no internet. Tests only; never in a latch build.
+iroh-relay = { version = "1.3.0", default-features = false, features = ["server"] }
+
 [features]
 # Builds the browser test that calls the decision model (jev) for real;
 # `just test-model KEYFILE` runs it. Never part of the gate.
