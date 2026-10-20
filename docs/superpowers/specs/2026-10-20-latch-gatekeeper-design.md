@@ -137,7 +137,7 @@ latch rules clear --host mac --from ag_7Hk2
     1. `PLOW_AGENT_TOKEN`, when set;
     2. else the token file (`$PLOW_TOKEN_FILE`, else `/config/secrets/plow-api-token`);
     3. else no bearer at all, relying on the exe.dev integration to add it. This happens only when `PLOW_API_BASE` is set; otherwise login stops with `no_credential`.
-  - When a host refuses at connect with `not_found`, before anything is sent, the client registers once more and retries once, so a rotated credential heals itself.
+  - Before dialing, if Plow's live peer list lacks this machine's key, the client registers again first; a failed registration stops with its own error. The list and the host's lookup share the same live-credential filter (Plow `latch.py:247`/`264`), so a key missing from the list is one the host would refuse `not_found`, and a rotated credential heals itself before anything is sent.
 
 ## 8. Audit
 
@@ -206,8 +206,8 @@ Done when: on a headless test host with synthetic chats, a refused open, plan, f
 
 ### Chunk G3: `--deny-exec`, names, agent login, docs
 Implements: §6, §7, §5 (docs)
-Interfaces: consumes agent identity from the peer lookup, `GET /v1/agents/me` and `GET /v1/agents/{uid}` · produces the `serve` flag, login naming, the cloud-agent credential contract and re-register-on-`not_found`
-Done when: global and per-agent denies hold across agent renames and leave devices alone; `latch serve ~/a --deny-exec ~/b` parses as two folders; a device login with no `--name` takes the hostname and stops on a clash; an agent login with no `--name` registers under the agent's Plow name, and on a clash as the name plus 6 uid characters; the host's dashboard shows Plow's current agent name after a rename; `latch login` with only `PLOW_API_BASE` set (no token, no file) registers through a test proxy that adds the bearer; with `PLOW_AGENT_TOKEN` set it sends that token, even when a token file exists; with only a token file (no `PLOW_AGENT_TOKEN`) it sends the file's token; with neither a token, a file nor `PLOW_API_BASE` it stops with `no_credential`; a host refusing `not_found` makes the client register once and retry once, and a second refusal is reported, not retried; `--help` and the client docs show deny → ask the owner → retry and say an agent must never use a device login.
+Interfaces: consumes agent identity from the peer lookup, `GET /v1/agents/me` and `GET /v1/agents/{uid}` · produces the `serve` flag, login naming, the cloud-agent credential contract and re-register-before-dial
+Done when: global and per-agent denies hold across agent renames and leave devices alone; `latch serve ~/a --deny-exec ~/b` parses as two folders; a device login with no `--name` takes the hostname and stops on a clash; an agent login with no `--name` registers under the agent's Plow name, and on a clash as the name plus 6 uid characters; the host's dashboard shows Plow's current agent name after a rename; `latch login` with only `PLOW_API_BASE` set (no token, no file) registers through a test proxy that adds the bearer; with `PLOW_AGENT_TOKEN` set it sends that token, even when a token file exists; with only a token file (no `PLOW_AGENT_TOKEN`) it sends the file's token; with neither a token, a file nor `PLOW_API_BASE` it stops with `no_credential`; after the agent's credential is rotated, the next call finds its key missing from Plow's live peer list, registers again, then dials and succeeds; with the key present it dials without registering; a failed re-registration stops with that registration's error and dials nothing; `--help` and the client docs show deny → ask the owner → retry and say an agent must never use a device login.
 
 ### Chunk G4: `latch rules`
 Implements: §6a (commands, storage, remote owner-only operation, `show`, audit)
