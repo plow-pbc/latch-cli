@@ -127,13 +127,14 @@ pub async fn run(
     show_dashboard: bool,
     headless_browsers: bool,
     deny_exec: DenyExec,
-    relay: Option<&str>,
 ) -> Result<(), Failure> {
-    let relay_mode = match relay {
-        None => RelayMode::Default,
-        Some(url) => {
+    // Tests run a relay of their own, so they need no internet.
+    let relay_mode = match std::env::var("LATCH_TEST_RELAY_URL") {
+        Err(_) => RelayMode::Default,
+        Ok(url) => {
             let url = url.parse().map_err(|_| {
-                Failure::usage("bad_relay", format!("--relay {url:?} is not a relay URL"))
+                let message = format!("LATCH_TEST_RELAY_URL {url:?} is not a relay URL");
+                Failure::usage("bad_relay", message)
             })?;
             RelayMode::custom([url])
         }

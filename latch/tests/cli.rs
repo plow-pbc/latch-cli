@@ -984,10 +984,9 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
             host.to_str().unwrap(),
             "serve",
             "--no-dashboard",
-            "--relay",
-            &relay,
         ])
         .arg(&share)
+        .env("LATCH_TEST_RELAY_URL", &relay)
         .env_remove("LATCH_HOST")
         .stderr(std::process::Stdio::piped())
         .spawn()

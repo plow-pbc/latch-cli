@@ -609,10 +609,6 @@ pub struct ServeArgs {
     #[arg(long, value_name = "AGENT_UID", num_args = 0..=1, require_equals = true,
           default_missing_value = EVERY_AGENT)]
     pub deny_exec: Vec<String>,
-
-    /// Reach callers through this iroh relay instead of iroh's public ones: your own relay, or a test's
-    #[arg(long, value_name = "URL")]
-    pub relay: Option<String>,
 }
 
 /// What a bare `--deny-exec` stands for. An agent uid is hex, so it is
