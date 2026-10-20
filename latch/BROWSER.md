@@ -236,7 +236,9 @@ evidence, its action count), `trail` (per action: page URL and title,
 operation, target with role, name and row text, `chosen` (`ref`, or
 `model` with the operation's and target's p), the risk `p`,
 the confirmation used, `result` `dispatched`/`refused`/`unknown`, what
-changed) and `page` (snapshot, URL, title, up to 40 lines, the element
+changed, and `screenshot`: the handle `{"request": R, "shot": N}` of a
+screenshot taken after it, or `{"suppressed": true}` after a vault fill or
+while a filled value is on the page) and `page` (snapshot, URL, title, up to 40 lines, the element
 list). A plan stops at the first step that does not pass, or at its
 deadline; nothing is replayed or retried. Exit 0 is `reached` or
 `dispatched`; a stop exits 1, or 4 for `confirm_needed`, `confirm_stale` and
@@ -288,7 +290,9 @@ reads it while the plan runs, after its answer was lost, and after the host
 restarted: an action whose result was never recorded reads `unknown`, never
 `not_sent`, and a request that never ended reads `interrupted`. An id is
 never run twice (`duplicate_request`). Only the caller that sent a request
-can read it.
+can read it, or fetch its screenshots with `do --history R --shot N
+--output F`. A request's journal and screenshots are kept 7 days, after its
+session closes too.
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and

@@ -796,6 +796,9 @@ impl Run<'_> {
                 shown[key] = value.clone();
             }
         }
+        if result == "dispatched" {
+            self.shoot(action, &mut record, &mut shown).await;
+        }
         self.records.push(record);
         self.trail.push(shown);
         reply.map(|_| ())

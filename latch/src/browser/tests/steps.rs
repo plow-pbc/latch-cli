@@ -184,11 +184,11 @@ pub(super) struct Harness {
     pub(super) browsers: Arc<Browsers>,
     /// The session the harness acts in, and its id.
     entry: Arc<host::Entry>,
-    id: String,
+    pub(super) id: String,
     state: std::path::PathBuf,
     requests: u32,
     /// Every audit record, for the checks on what it holds.
-    audits: Vec<Map<String, Value>>,
+    pub(super) audits: Vec<Map<String, Value>>,
 }
 
 impl Harness {

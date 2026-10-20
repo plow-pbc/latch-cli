@@ -58,6 +58,9 @@ pub enum Call {
     },
     Text,
     Screenshot,
+    /// A screenshot for a plan's trail: refused while a value latch filled
+    /// from the vault is on the page.
+    Shot,
     Act {
         snapshot: Option<String>,
         action: Action,
@@ -344,6 +347,7 @@ impl<D: Driver> Core<D> {
                 | Call::Resolve { .. }
                 | Call::Lines
                 | Call::View
+                | Call::Shot
                 | Call::Wait { .. }
                 | Call::Pin { .. }
                 | Call::Review { .. }
@@ -374,6 +378,9 @@ impl<D: Driver> Core<D> {
             }
             Call::Text => self.text(&mut audit),
             Call::Screenshot => self.screenshot(&mut audit),
+            Call::Shot => self
+                .no_value_on_page()
+                .and_then(|()| self.screenshot(&mut audit)),
             Call::Act {
                 snapshot,
                 action,

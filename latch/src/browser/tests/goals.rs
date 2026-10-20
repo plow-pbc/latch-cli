@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
+use sha2::Digest;
 
 use super::shop::serve_shop;
 use super::steps::Harness;
@@ -293,6 +294,19 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
             .any(|o| o.contains("link \"Drinks\""))
     );
     assert_eq!(reached["trail"][0]["chosen"], "model");
+    // Each action's screenshot is kept, and fetched by request and number.
+    let request = reached["request"].as_str().unwrap();
+    assert_eq!(
+        reached["trail"][1]["screenshot"],
+        json!({"request": request, "shot": 2})
+    );
+    let png = crate::browser::steps::shot(&h.browsers, &h.id, super::CALLER, request, "2").unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    let audit = h.audits.last().unwrap();
+    assert_eq!(
+        audit["step_records"][1]["screenshot"]["sha256"],
+        crate::state::to_hex(&sha2::Sha256::digest(&png))
+    );
 
     // A dropdown already on the option asked for: held, with no action;
     // the option already chosen is offered, and marked.

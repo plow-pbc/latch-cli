@@ -333,6 +333,8 @@ pub async fn run(
     let mut run = Run {
         browsers,
         entry,
+        session,
+        request: &request,
         model,
         journal,
         audit,
@@ -446,8 +448,10 @@ pub async fn run(
         shown[key] = value.clone();
     }
     if failure.code == "confirm_needed"
-        && let Some(handle) = keep_shot(browsers, entry, session, &request, audit).await
+        && let Some((handle, meta)) =
+            keep_shot(browsers, entry, session, &request, "final", "screenshot").await
     {
+        audit.insert("screenshot".into(), meta);
         shown["confirmation"]["screenshot"] = handle.clone();
         out["screenshot"] = handle;
     }
@@ -456,30 +460,34 @@ pub async fn run(
     Err(failure)
 }
 
-/// A screenshot of the page now, kept with request `request` as its
-/// `final` shot; its handle, which `do --history R --shot final` fetches,
-/// or none if the page could not be shot.
+/// A screenshot of the page now, kept with request `request` as shot
+/// `name` (`final`, or an action's number), taken by worker call `op`: its
+/// handle, which `do --history R --shot <name>` fetches, and what the audit
+/// records of it. None if the page could not be shot, or (`shot`) a value
+/// latch filled from the vault is on it.
 async fn keep_shot(
     browsers: &Browsers,
     entry: &Entry,
     session: &str,
     request: &str,
-    audit: &mut Map<String, Value>,
-) -> Option<Value> {
+    name: &str,
+    op: &str,
+) -> Option<(Value, Value)> {
     let reply = entry
         .session
         .lock()
         .await
-        .call(json!({"op": "screenshot"}))
+        .call(json!({"op": op}))
         .await
         .ok()?;
     let png = reply.bytes?;
-    journal::save_shot(&browsers.state_dir(), session, request, "final", &png).ok()?;
-    audit.insert(
-        "screenshot".into(),
-        json!({"shot": "final", "size": png.len(), "sha256": to_hex(&Sha256::digest(&png))}),
-    );
-    Some(json!({"request": request, "shot": "final"}))
+    journal::save_shot(&browsers.state_dir(), session, request, name, &png).ok()?;
+    let meta = json!({"shot": name, "size": png.len(), "sha256": to_hex(&Sha256::digest(&png))});
+    let handle = match name.parse::<usize>() {
+        Ok(n) => json!({"request": request, "shot": n}),
+        Err(_) => json!({"request": request, "shot": name}),
+    };
+    Some((handle, meta))
 }
 
 /// A standalone `fill` that releases a secret field: journaled as a request
@@ -518,8 +526,10 @@ pub async fn stop_fill(
         return lost;
     }
     if failure.code == "confirm_needed"
-        && let Some(handle) = keep_shot(browsers, entry, session, &request, audit).await
+        && let Some((handle, meta)) =
+            keep_shot(browsers, entry, session, &request, "final", "screenshot").await
     {
+        audit.insert("screenshot".into(), meta);
         failure.details["confirmation"]["screenshot"] = handle.clone();
         failure.details["screenshot"] = handle;
     }
@@ -536,6 +546,8 @@ struct Done {
 struct Run<'a> {
     browsers: &'a Browsers,
     entry: &'a Entry,
+    session: &'a str,
+    request: &'a str,
     model: Model,
     journal: Journal,
     audit: &'a mut Map<String, Value>,
@@ -876,9 +888,35 @@ impl Run<'_> {
             other => other,
         });
         shown["result"] = json!(result);
+        if result == "dispatched" {
+            self.shoot(action, &mut record, &mut shown).await;
+        }
         self.records.push(record);
         self.trail.push(shown);
         outcome
+    }
+
+    /// A screenshot after action `action`, for the trail: its handle in the
+    /// action's trail entry, its size and sha256 in its audit record, or a
+    /// marker where a vault value on the page keeps it from being taken.
+    async fn shoot(&mut self, action: usize, record: &mut Value, shown: &mut Value) {
+        let name = action.to_string();
+        match keep_shot(
+            self.browsers,
+            self.entry,
+            self.session,
+            self.request,
+            &name,
+            "shot",
+        )
+        .await
+        {
+            Some((handle, meta)) => {
+                shown["screenshot"] = handle;
+                record["screenshot"] = meta;
+            }
+            None => shown["screenshot"] = json!({"suppressed": true}),
+        }
     }
 
     /// The journal's record of an action about to be sent.
@@ -949,8 +987,10 @@ impl Run<'_> {
             record["confirmation"] = json!(id);
         }
         self.records.push(record);
+        // No screenshot: the page may still show what was filled.
         let mut shown = json!({"step": n, "action": action, "op": "fill", "item": args["item"],
-                               "chosen": "ref", "result": result});
+                               "chosen": "ref", "result": result,
+                               "screenshot": {"suppressed": true}});
         if let Some(id) = confirmation {
             shown["confirmation"] = json!(id);
         }
