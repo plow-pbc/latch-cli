@@ -2139,7 +2139,9 @@ async fn back_into_a_reserved_site_is_refused_after_a_return_visit(engine: &str)
 /// tab that loads in the background; Firefox keeps the ones that differ from
 /// its defaults in the profile's `prefs.js` as it quits. Whether a window
 /// then stays behind the owner's needs a screen to tell: Playwright keeps
-/// every page active, and Camoufox reports a made-up screen.
+/// every page active, and Camoufox reports a made-up screen. Camoufox is
+/// pinned for macOS only.
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn camoufox_runs_with_page_windows_as_background_tabs() {
     let (_dir, state, _area) = test_state("camoufox", &["fox-tabs"]);
