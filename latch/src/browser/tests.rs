@@ -23,6 +23,7 @@ use super::profile;
 use crate::failure::Failure;
 
 mod fills;
+mod handoff;
 mod steps;
 use super::session::Session;
 

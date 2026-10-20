@@ -70,6 +70,8 @@ latch browser --host my-mac download get d1 --output report.csv
 latch browser --host my-mac login --item v1                # a vault login; latch finds the form
 latch browser --host my-mac fill --item v2 --field number=e4 --field expiry=e5 --field cvv=e6 --press e7   # stops for a confirmation
 latch browser --host my-mac fill-code --item v1            # the current authenticator code
+latch browser --host my-mac handoff --reason captcha      # the owner takes over; waits until handed back
+latch browser handoff done [HASH]                          # on the host: hand the session back
 latch browser --host my-mac sessions | close
 latch browser --host my-mac open --profile shop --task basket --reserve-site https://shop.example/
 ```
@@ -286,6 +288,31 @@ Plow's request id. Only a host set up for development calls TypeSafe jev
 is never used. A host not logged in to Plow, or a route that fails, can't
 be reached or is rate limited, means what needs a decision stops with
 `model_unavailable`; there is no keyword stand-in.
+
+## Handoff and screenless hosts
+
+`handoff --reason captcha|2fa|passkey|signin [--within S]` hands the
+session to the owner, for what only a person can do there. The call waits
+until the owner hands it back (at most `--within`, 600 s by default).
+Meanwhile that session alone is paused (`session_paused`; `close` still
+works), the runtime's other sessions go on, and its window is the one
+thing latch ever brings to the front. The host's dashboard shows the
+pending handoff with the session's id hash, the reason and the start of
+the caller's key (without a dashboard, the log says so). The owner hands
+it back on the host with `latch browser handoff done`, naming the hash
+when several are pending: it runs against the host's own state directory
+(`browser/handoff/`), which file and exec workers can never reach. The
+answer is `handed_back` with a fresh look at the page; every ref from
+before the handoff is refused with `stale_snapshot`. At the deadline the
+session is the agent's again (`timeout`), its old refs refused the same.
+
+A host with no screen a person could use (a Linux host without a display
+of its own, or any host started with `--headless-browsers`) answers
+`handoff` with `needs_owner` and `"reason": "no_screen"` at once, and a plan
+step that led to a CAPTCHA there stops the same way. On such a Linux host,
+each profile runtime's worker starts a private Xvfb display (`-displayfd`,
+no TCP) for its engine, up for as long as the runtime; a Linux host with a
+screen gives the engine its own `DISPLAY`.
 
 ## The engine is not inside latch's Seatbelt
 

@@ -57,6 +57,11 @@ pub struct Browsers {
     state_dir: PathBuf,
     /// Every session's engine runs with no window (`serve --headless-browsers`).
     headless: bool,
+    /// The host's live view, which shows pending handoffs.
+    dashboard: std::sync::Mutex<Option<crate::dashboard::Dashboard>>,
+    /// Tests only: whether the host has a screen, in place of the check.
+    #[cfg(test)]
+    pub(super) screen: Option<bool>,
     /// Each profile's running runtime.
     runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
     /// Open sessions, by id.
@@ -112,6 +117,8 @@ pub(super) struct Entry {
     /// The snapshot of the page the latest stop returned, for the `stop`
     /// step policy.
     pub(super) last_stop: std::sync::Mutex<Option<String>>,
+    /// The owner has the session (`handoff`): its other calls wait outside.
+    handing: std::sync::atomic::AtomicBool,
 }
 
 impl Entry {
@@ -125,6 +132,22 @@ impl Entry {
         audit.insert("profile".into(), json!(self.runtime.profile));
     }
 
+    /// Starts a handoff; false if one is already under way.
+    pub(super) fn begin_handoff(&self) -> bool {
+        self.handing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub(super) fn end_handoff(&self) {
+        self.handing.store(false, Ordering::SeqCst);
+    }
+
+    /// The start of the caller's key, as a pending handoff names it.
+    pub(super) fn owner_hint(&self) -> String {
+        self.owner.chars().take(12).collect()
+    }
+
     fn idle(&self) -> bool {
         self.seen.lock().expect("seen lock").0.elapsed() >= IDLE
     }
@@ -132,9 +155,14 @@ impl Entry {
 
 impl Browsers {
     pub fn new(state_dir: PathBuf, vault: Arc<Vault>, headless: bool) -> Self {
+        // Handoffs end with the host: none is pending in a new one.
+        let _ = std::fs::remove_dir_all(super::handoff::folder(&state_dir));
         Browsers {
             state_dir,
             headless,
+            dashboard: Default::default(),
+            #[cfg(test)]
+            screen: None,
             runtimes: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             vault,
@@ -161,6 +189,36 @@ impl Browsers {
 
     pub(super) fn is_running(&self, request: &str) -> bool {
         self.running.lock().expect("running lock").contains(request)
+    }
+
+    /// Shows pending handoffs on `dashboard` from now on.
+    pub fn show_on(&self, dashboard: crate::dashboard::Dashboard) {
+        *self.dashboard.lock().expect("dashboard lock") = Some(dashboard);
+    }
+
+    /// Whether a person at this host could act in its browser windows.
+    pub(super) fn screen(&self) -> bool {
+        #[cfg(test)]
+        if let Some(screen) = self.screen {
+            return screen;
+        }
+        super::handoff::screen(self.headless)
+    }
+
+    /// Shows the pending handoffs: on the dashboard, or in the log.
+    pub(super) fn notice_handoffs(&self) {
+        let lines: Vec<String> = super::handoff::pending(&self.state_dir)
+            .iter()
+            .map(super::handoff::line)
+            .collect();
+        match &*self.dashboard.lock().expect("dashboard lock") {
+            Some(dashboard) => dashboard.notices(lines),
+            None => {
+                for line in lines {
+                    crate::log::log(&line);
+                }
+            }
+        }
     }
 
     /// The decision model for one request.
@@ -256,6 +314,7 @@ impl Browsers {
             serial: Mutex::new(()),
             confirmations: Default::default(),
             last_stop: Default::default(),
+            handing: Default::default(),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
@@ -545,12 +604,19 @@ pub(super) async fn call(
     }
     let entry = browsers.session(name, key).await?;
     entry.note(audit);
+    // While the owner has the session, only `close` reaches it.
+    if entry.handing.load(Ordering::SeqCst) && command != "close" {
+        return Err(super::handoff::handed_off());
+    }
     let result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
         "login" | "fill" | "fill_code" => fill(browsers, &entry, name, key, command, args, audit)
             .await
             .map(|result| (result, None)),
         "do" => super::steps::run(browsers, &entry, name, key, args, audit)
+            .await
+            .map(|result| (result, None)),
+        "handoff" => super::handoff::run(browsers, &entry, args, audit)
             .await
             .map(|result| (result, None)),
         "find" => super::steps::find(&entry, args, audit)

@@ -107,6 +107,9 @@ impl Runtime {
         if headless {
             command.arg("--headless");
         }
+        if let Some(display) = super::display::for_runtime(headless) {
+            command.arg("--display").arg(display);
+        }
         let mut child = command
             .env_clear()
             .env("PATH", PATH)

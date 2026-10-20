@@ -12,7 +12,8 @@ use tokio::fs::File;
 
 use super::plan::{self, Check, Literal, Op, Plan, Step};
 use crate::cli::{
-    ActAction, BrowserArgs, BrowserCommand, DialogAction, DownloadCommand, TabCommand,
+    ActAction, BrowserArgs, BrowserCommand, DialogAction, DownloadCommand, HandoffAction,
+    TabCommand,
 };
 use crate::dial::{self, ANSWER_MARGIN, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
@@ -21,6 +22,15 @@ use crate::state::StateDir;
 use crate::wire::{self, Request};
 
 pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> {
+    // `handoff done` runs on the host, on its own state directory: no call.
+    if let BrowserCommand::Handoff {
+        action: Some(HandoffAction::Done),
+        hash,
+        ..
+    } = &args.command
+    {
+        return super::handoff::done(&state.path, hash.as_deref());
+    }
     let mut request = json!({
         "session": args.session,
         "ppid": std::os::unix::process::parent_id(),
@@ -127,6 +137,11 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
         }
         BrowserCommand::Wait { within, .. } => {
             answer_within += Duration::from_secs_f64(within.unwrap_or(10.0)) + ANSWER_MARGIN;
+            None
+        }
+        BrowserCommand::Handoff { within, .. } => {
+            answer_within =
+                Duration::from_secs(within.unwrap_or(super::handoff::WITHIN)) + ANSWER_MARGIN;
             None
         }
         _ => None,
@@ -389,6 +404,17 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "submit", json!(submit));
             "fill_code"
         }
+        BrowserCommand::Handoff { reason, within, .. } => {
+            let reason = reason.ok_or_else(|| {
+                Failure::usage(
+                    "bad_arguments",
+                    "handoff needs --reason captcha|2fa|passkey|signin (or, on the host, `handoff done`)".into(),
+                )
+            })?;
+            set(request, "reason", json!(reason.name()));
+            set(request, "within", json!(within));
+            "handoff"
+        }
         BrowserCommand::Sessions => "sessions",
         BrowserCommand::Close => "close",
     };
@@ -622,6 +648,40 @@ mod tests {
                 failure.message
             );
         }
+    }
+
+    #[tokio::test]
+    async fn handoff_done_runs_on_the_hosts_own_state_and_handoff_needs_a_reason() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        let folder = super::super::handoff::folder(dir.path());
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("abcd.json"),
+            json!({"session": "abcd", "reason": "captcha", "since": "2026-10-19T10:00:00Z"})
+                .to_string(),
+        )
+        .unwrap();
+        let parse = |argv: &[&str]| {
+            let cli = Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).unwrap();
+            let Command::Browser(args) = cli.command else {
+                panic!("browser");
+            };
+            args
+        };
+        // No host is looked up: it is the host's own state directory.
+        let done = run(&state, parse(&["handoff", "done"])).await.unwrap();
+        assert_eq!(done["handed_back"], "abcd");
+        assert!(!folder.join("abcd.json").exists());
+        let failure = run(&state, parse(&["handoff"])).await.unwrap_err();
+        assert_eq!(
+            (failure.exit, failure.code.as_str()),
+            (Exit::Usage, "bad_arguments")
+        );
+        assert!(Cli::try_parse_from(["latch", "browser", "handoff", "--reason", "lunch"]).is_err());
+        assert!(Cli::try_parse_from(["latch", "browser", "handoff", "--reason", "2fa"]).is_ok());
     }
 
     #[test]

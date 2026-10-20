@@ -63,12 +63,33 @@ pub fn run(
     scratch: &Path,
     idle: Duration,
     headless: bool,
+    display: Option<&str>,
 ) -> ExitCode {
     let mut stdout = io::stdout().lock();
+    // A screenless Linux host's runtime gets an Xvfb display of its own,
+    // up for as long as this worker.
+    let private = match display {
+        Some(super::display::PRIVATE) => match super::display::Display::start() {
+            Ok(private) => Some(private),
+            Err(failure) => {
+                answer(&mut stdout, Response::error(&failure), None);
+                return ExitCode::FAILURE;
+            }
+        },
+        _ => None,
+    };
+    let display = private.as_ref().map(|d| d.name.as_str()).or(display);
     // The engine runs from its scratch folder, so every path it gets is absolute.
     let absolute = |path: &Path| path.canonicalize().map_err(cft::io_failure);
-    let launched = absolute(state_dir)
-        .and_then(|state_dir| Cft::launch(&state_dir, profile_name, &absolute(scratch)?, headless));
+    let launched = absolute(state_dir).and_then(|state_dir| {
+        Cft::launch(
+            &state_dir,
+            profile_name,
+            &absolute(scratch)?,
+            headless,
+            display,
+        )
+    });
     let browser = match launched {
         Ok(browser) => browser,
         Err(failure) => {

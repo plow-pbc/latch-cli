@@ -143,7 +143,7 @@ async fn poll(
 /// One worker call; its audit fills in what the request's audit lacks
 /// (tab, origin, path), and is returned for the action's own record. The
 /// session is held only for the call.
-async fn call(
+pub(super) async fn call(
     entry: &Entry,
     call: Value,
     audit: &mut Map<String, Value>,
@@ -685,7 +685,7 @@ impl Run<'_> {
         };
         let done = self.check(n, literal, check, besides).await?;
         if !last {
-            wall(&acted)?;
+            wall(&acted, self.browsers.screen())?;
         }
         Ok(done)
     }
@@ -1194,12 +1194,16 @@ impl Run<'_> {
     }
 }
 
-/// A step that led to a sign-in form or a CAPTCHA stops the plan there.
-fn wall(acted: &Value) -> Result<(), Failure> {
+/// A step that led to a sign-in form or a CAPTCHA stops the plan there; a
+/// CAPTCHA on a host with no screen, where no handoff can help, says so.
+fn wall(acted: &Value, screen: bool) -> Result<(), Failure> {
     match acted["wall"].as_str() {
         Some("login") => Err(stopped(
             "needs_login",
             "this step led to a sign-in form; the rest of the plan did not run: sign in with `login`, then go on".into(),
+        )),
+        Some("captcha") if !screen => Err(super::handoff::no_screen(
+            "this step led to a CAPTCHA; the rest of the plan did not run",
         )),
         Some("captcha") => {
             let mut failure = stopped(
@@ -1505,6 +1509,22 @@ pub async fn wait(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_captcha_on_a_host_with_no_screen_says_so() {
+        let acted = json!({"wall": "captcha"});
+        assert_eq!(wall(&acted, true).unwrap_err().details["reason"], "captcha");
+        let failure = wall(&acted, false).unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), &failure.details["reason"]),
+            ("needs_owner", &json!("no_screen"))
+        );
+        assert_eq!(
+            wall(&json!({"wall": "login"}), false).unwrap_err().code,
+            "needs_login"
+        );
+        assert!(wall(&json!({}), false).is_ok());
+    }
 
     #[test]
     fn request_ids_are_the_clients_own() {
