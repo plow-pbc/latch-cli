@@ -205,6 +205,7 @@ conformance!(
     navigating_into_a_reserved_site_is_refused_before_it_is_sent,
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
+    back_into_a_reserved_site_is_refused_after_a_return_visit,
 );
 
 /// At most this many tests drive a real engine at once: two engines' worth
@@ -1712,6 +1713,53 @@ async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent(engine: &s
             .starts_with(&local)
     );
     h.call(other, "close", &b, json!({})).await.unwrap();
+}
+
+/// Back is checked against the tab's real history: after A, B and A
+/// again, Back leads to B, not to whatever came before the first A.
+async fn back_into_a_reserved_site_is_refused_after_a_return_visit(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["b8-back"]);
+    let frames = test_site();
+    let a = frames.replace("frames.html", "next.html");
+    let cross = frames.split("cross=").nth(1).unwrap();
+    let b = format!("http://localhost:{cross}/next.html");
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "b8-back",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
+    for url in [&a, &b, &a] {
+        session
+            .call(json!({"op": "open", "url": url}))
+            .await
+            .unwrap();
+    }
+    // Another session on the profile reserves B's site.
+    let holder = Session::begin(&session.runtime).await.unwrap();
+    let site = crate::vault::sites::site_of(&b).unwrap();
+    assert!(session.runtime.reserve(&site, holder.key()));
+    let back = session.call(json!({"op": "act", "action": "back"})).await;
+    let back = back.map_or_else(|f| f.code, |_| "sent".into());
+    let now = session.call(json!({"op": "observe"})).await.unwrap().result;
+    println!("back from the return visit: {back}; now on {}", now["url"]);
+    assert_eq!(back, "site_busy");
+    assert_eq!(now["url"], json!(a));
+    // A page of A's own site first: Back leads back to A, and goes.
+    let a2 = a.replace("next.html", "alert.html");
+    session
+        .call(json!({"op": "open", "url": a2}))
+        .await
+        .unwrap();
+    let back = session.call(json!({"op": "act", "action": "back"})).await;
+    let back = back.map_or_else(|f| f.code, |_| "sent".into());
+    let now = session.call(json!({"op": "observe"})).await.unwrap().result;
+    println!("back within A's site: {back}; now on {}", now["url"]);
+    assert_eq!((back.as_str(), &now["url"]), ("sent", &json!(a)));
+    session.close().await.unwrap();
 }
 
 async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {

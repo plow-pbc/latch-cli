@@ -145,9 +145,6 @@ function adopt(key, page, opener) {
     opener,
     started: false,
     loading: false,
-    // The tab's history as latch saw it commit, for `back_url`.
-    history: [page.url()],
-    at: 0,
   };
   owner.tabs.push(state);
   const main = (request) => request.isNavigationRequest() && request.frame() === page.mainFrame();
@@ -162,19 +159,6 @@ function adopt(key, page, opener) {
   });
   page.on("load", () => {
     state.loading = false;
-  });
-  page.on("framenavigated", (frame) => {
-    if (frame !== page.mainFrame()) return;
-    const url = frame.url();
-    const { history } = state;
-    if (url === history[state.at]) return;
-    if (state.at > 0 && history[state.at - 1] === url) state.at -= 1;
-    else if (history[state.at + 1] === url) state.at += 1;
-    else {
-      history.splice(state.at + 1);
-      history.push(url);
-      state.at = history.length - 1;
-    }
   });
   page.on("dialog", (opened) => {
     owner.dialog = { tab: state.id, dialog: opened };
@@ -433,9 +417,23 @@ const ops = {
     return {};
   },
 
-  back_url() {
-    const t = tab(share().active);
-    return t.at > 0 ? t.history[t.at - 1] : null;
+  /// The entry Back would load, read from the tab's own history through
+  /// the Navigation API. That API names only entries of the page's own
+  /// origin; when the one before is not among them (another origin's, or
+  /// none), where Back leads is not known.
+  async back_url() {
+    const before = await guarded(
+      activePage()
+        .mainFrame()
+        .evaluate(() => {
+          const index = navigation.currentEntry?.index ?? 0;
+          return index > 0 ? navigation.entries()[index - 1].url : null;
+        }),
+    );
+    if (before === null) {
+      throw new Failure("back_unknown", "the page before this one is of another origin, or there is none");
+    }
+    return before;
   },
 
   async back() {

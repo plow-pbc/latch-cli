@@ -228,13 +228,17 @@ fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration) -> ExitCode {
                     let busy = if reserved.is_empty() {
                         None
                     } else {
-                        let sites = live.core.sites_of(&call);
-                        sites
-                            .into_iter()
-                            .find(|site| reserved.contains(&site.as_str()))
+                        match live.core.sites_of(&call) {
+                            Some(sites) => sites
+                                .into_iter()
+                                .find(|site| reserved.contains(&site.as_str()))
+                                .map(Some),
+                            // Where it leads is not known: it might be there.
+                            None => Some(None),
+                        }
                     };
                     let reply = match busy {
-                        Some(site) => Err(site_busy(&site)),
+                        Some(site) => Err(site_busy(site.as_deref())),
                         None => live.core.call(call, input).map_err(|mut failure| {
                             if failure.code != "browser_gone" {
                                 live.core.reading_for(&mut failure);
@@ -288,11 +292,16 @@ fn paused() -> Failure {
     failure
 }
 
-fn site_busy(site: &str) -> Failure {
-    let mut failure = Failure::failed(
-        "site_busy",
-        format!("another session on this profile has reserved {site}; nothing was sent"),
-    );
+/// Refused before it is sent: the call would act on `site`, which another
+/// session reserved, or (None) on a page that is not known.
+fn site_busy(site: Option<&str>) -> Failure {
+    let message = match site {
+        Some(site) => {
+            format!("another session on this profile has reserved {site}; nothing was sent")
+        }
+        None => "another session on this profile has reserved a site, and the page Back leads to is not known; nothing was sent".to_string(),
+    };
+    let mut failure = Failure::failed("site_busy", message);
     failure.details = json!({"site": site, "audit": {"site_busy": site}});
     failure
 }
