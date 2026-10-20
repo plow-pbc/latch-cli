@@ -110,6 +110,9 @@ pub trait Driver {
     /// Opens a tab (on `url`, or blank) and makes it the active one.
     fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure>;
     fn switch_tab(&mut self, tab: &str) -> Result<(), Failure>;
+    /// Brings the session's active tab, its window and the browser to the
+    /// front, for the owner: what only a handoff does.
+    fn front(&mut self) -> Result<(), Failure>;
     fn close_tab(&mut self, tab: &str) -> Result<(), Failure>;
     fn active_tab(&self) -> String;
 
@@ -232,6 +235,9 @@ impl<B: Runtime> Driver for Seat<B> {
     }
     fn close_tab(&mut self, tab: &str) -> Result<(), Failure> {
         self.browser().close_tab(tab)
+    }
+    fn front(&mut self) -> Result<(), Failure> {
+        self.browser().front()
     }
     fn active_tab(&self) -> String {
         self.browser().active_tab()

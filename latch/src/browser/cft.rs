@@ -130,6 +130,7 @@ impl Cft {
         profile_name: &str,
         scratch: &Path,
         headless: bool,
+        display: Option<&str>,
     ) -> Result<Self, Failure> {
         if CFT.driver_contract != driver::CONTRACT {
             return Err(Failure::failed(
@@ -155,6 +156,7 @@ impl Cft {
             &profile.data(),
             scratch,
             headless,
+            display,
             &chrome_reads,
             &chrome_writes,
         )?;
@@ -961,6 +963,19 @@ impl Driver for Cft {
         Ok(())
     }
 
+    /// The session's active tab to the front, whatever the pinned focus:
+    /// the owner is to act in it.
+    fn front(&mut self) -> Result<(), Failure> {
+        let target = self.tab(&self.share().active.clone())?.target.clone();
+        self.cdp.call(
+            "Target.activateTarget",
+            json!({"targetId": target}),
+            None,
+            self.by(COMMAND),
+        )?;
+        Ok(())
+    }
+
     fn close_tab(&mut self, tab: &str) -> Result<(), Failure> {
         let target = self.tab(tab)?.target.clone();
         if self.share().tabs.len() == 1 {
@@ -1624,6 +1639,7 @@ fn start(
     data: &Path,
     scratch: &Path,
     headless: bool,
+    display: Option<&str>,
     reads: &impl AsRawFd,
     writes: &impl AsRawFd,
 ) -> Result<Child, Failure> {
@@ -1652,6 +1668,9 @@ fn start(
         .stdout(Stdio::null())
         .stderr(log)
         .process_group(0);
+    if let Some(display) = display {
+        command.env("DISPLAY", display);
+    }
     // SAFETY: between fork and exec, only async-signal-safe calls: the two
     // ends are first copied above fd 4 (so neither is overwritten by the
     // other's move), then onto 3 and 4, which exec keeps open.

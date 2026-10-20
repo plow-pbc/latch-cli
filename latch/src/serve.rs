@@ -184,6 +184,9 @@ async fn run_host(
         vault.clone(),
         headless_browsers,
     );
+    if let Some(dashboard) = &dashboard {
+        browsers.show_on(dashboard.clone());
+    }
     let host = Arc::new(Host {
         plow,
         audit: Mutex::new(audit),

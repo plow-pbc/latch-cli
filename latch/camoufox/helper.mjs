@@ -396,6 +396,13 @@ const ops = {
     return {};
   },
 
+  /// Brings this session's active tab, its window and the browser to the
+  /// front, for the owner: what only a handoff does.
+  async front() {
+    await guarded(activePage().bringToFront());
+    return {};
+  },
+
   async close_tab({ tab: id }) {
     const t = tab(id);
     if (share().tabs.length === 1) {

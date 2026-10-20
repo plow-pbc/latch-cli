@@ -75,6 +75,7 @@ fn main() -> ExitCode {
                     &args.scratch,
                     Duration::from_secs(args.idle_timeout),
                     args.headless,
+                    args.display.as_deref(),
                 ),
                 Err(failure) => {
                     eprintln!("{}", failure.to_json());

@@ -69,6 +69,7 @@ impl Camoufox {
         profile_name: &str,
         scratch: &Path,
         headless: bool,
+        display: Option<&str>,
     ) -> Result<Self, Failure> {
         if CAMOUFOX.driver_contract != driver::CONTRACT {
             return Err(Failure::failed(
@@ -125,6 +126,15 @@ impl Camoufox {
             scratch: scratch.to_path_buf(),
             _lock: lock,
         };
+        let mut env = json!({
+            "PATH": PATH,
+            "HOME": scratch,
+            "TMPDIR": scratch.join("tmp"),
+            "MOZ_CRASHREPORTER_DISABLE": "1",
+        });
+        if let Some(display) = display {
+            env["DISPLAY"] = json!(display);
+        }
         let launched = browser.request::<Value>(
             "launch",
             json!({
@@ -136,12 +146,7 @@ impl Camoufox {
                 "os": CAMOUFOX.os,
                 "focus": CAMOUFOX.focus,
                 "reader": READER,
-                "env": {
-                    "PATH": PATH,
-                    "HOME": scratch,
-                    "TMPDIR": scratch.join("tmp"),
-                    "MOZ_CRASHREPORTER_DISABLE": "1",
-                },
+                "env": env,
             }),
             STARTUP,
         );
@@ -280,6 +285,10 @@ impl Driver for Camoufox {
     fn close_tab(&mut self, tab: &str) -> Result<(), Failure> {
         self.ask::<Value>("close_tab", json!({"tab": tab}))
             .map(drop)
+    }
+
+    fn front(&mut self) -> Result<(), Failure> {
+        self.ask::<Value>("front", json!({})).map(drop)
     }
 
     fn active_tab(&self) -> String {

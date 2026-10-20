@@ -69,7 +69,21 @@ pub fn run(
     scratch: &Path,
     idle: Duration,
     headless: bool,
+    display: Option<&str>,
 ) -> ExitCode {
+    // A screenless Linux host's runtime gets an Xvfb display of its own,
+    // up for as long as this worker.
+    let private = match display {
+        Some(super::display::PRIVATE) => match super::display::Display::start() {
+            Ok(private) => Some(private),
+            Err(failure) => {
+                answer(&mut io::stdout().lock(), Response::error(&failure), None);
+                return ExitCode::FAILURE;
+            }
+        },
+        _ => None,
+    };
+    let display = private.as_ref().map(|d| d.name.as_str()).or(display);
     // The engine runs from its scratch folder, so every path it gets is absolute.
     let absolute = |path: &Path| path.canonicalize().map_err(cft::io_failure);
     let launched = absolute(state_dir).and_then(|state_dir| {
@@ -77,7 +91,8 @@ pub fn run(
         Ok(
             match profile::engine_of(&state_dir, profile_name)?.as_deref() {
                 Some("camoufox") => {
-                    let browser = Camoufox::launch(&state_dir, profile_name, &scratch, headless)?;
+                    let browser =
+                        Camoufox::launch(&state_dir, profile_name, &scratch, headless, display)?;
                     let ready = json!({
                         "engine": CAMOUFOX.engine,
                         "version": CAMOUFOX.version,
@@ -87,7 +102,8 @@ pub fn run(
                     serve(ready, browser, idle)
                 }
                 _ => {
-                    let browser = Cft::launch(&state_dir, profile_name, &scratch, headless)?;
+                    let browser =
+                        Cft::launch(&state_dir, profile_name, &scratch, headless, display)?;
                     let ready = json!({
                         "engine": CFT.engine,
                         "version": CFT.version,
@@ -215,8 +231,10 @@ fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration) -> ExitCode {
                     "no_such_session",
                     "that session has ended".into(),
                 )),
-                // Listing a session's tabs is the one call a pause lets by.
-                Some(_) if held && !matches!(call, Call::Tabs) => Err(paused()),
+                // Listing a session's tabs, and retiring its refs after a
+                // handoff, are the calls a pause lets by: neither reads or
+                // touches a page.
+                Some(_) if held && !matches!(call, Call::Tabs | Call::Forget) => Err(paused()),
                 Some(live) => {
                     live.core.limit(deadline);
                     let reserved: Vec<&str> = line["reserved"]

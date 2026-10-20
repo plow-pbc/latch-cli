@@ -112,6 +112,10 @@ pub enum Call {
         text: Option<String>,
     },
     Tabs,
+    /// A handoff begins: the session's window to the front for the owner.
+    Front,
+    /// A handoff has ended: every ref from before it is refused.
+    Forget,
     /// The agent's script; the host audits it.
     Eval {
         script: String,
@@ -390,6 +394,12 @@ impl<D: Driver> Core<D> {
             }
             Call::Dialog { accept, text } => self.dialog(accept, text.as_deref(), &mut audit),
             Call::Tabs => self.driver.tabs().map(|tabs| json!({"tabs": tabs})),
+            Call::Front => self.driver.front().map(|()| json!({"front": true})),
+            Call::Forget => {
+                self.snapshots.clear();
+                self.last_shown = None;
+                Ok(json!({"forgot": true}))
+            }
             Call::Eval { script } => self.eval(&script, &mut audit),
             Call::Upload {
                 snapshot,
@@ -1349,6 +1359,9 @@ mod tests {
         fn new_tab(&mut self, _: Option<&str>) -> Result<String, Failure> {
             unreachable!()
         }
+        fn front(&mut self) -> Result<(), Failure> {
+            unreachable!()
+        }
         fn switch_tab(&mut self, _: &str) -> Result<(), Failure> {
             unreachable!()
         }
@@ -1466,6 +1479,9 @@ mod tests {
     }
 
     impl Driver for Slow {
+        fn front(&mut self) -> Result<(), Failure> {
+            unreachable!()
+        }
         fn limit(&mut self, _: Option<Instant>) {}
         fn tabs(&mut self) -> Result<Vec<super::super::driver::Tab>, Failure> {
             Bare.tabs()
