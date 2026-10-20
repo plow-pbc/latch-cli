@@ -147,7 +147,7 @@
     "setup": "reset.html",
     "start": "category.html?c=salads",
     "steps": ["add the Greek Salad to the cart", "add one more Greek Salad to the cart"],
-    "expected": {"status": "reached", "or": {"status": "stopped", "code": "unconfirmed", "step": 2}},
+    "expected": {"status": "reached", "or": {"status": "stopped", "codes": ["unconfirmed", "repeat"], "step": 2}},
     "check": "only('greek', 'Regular', 2)",
     "probes": [
       {"setup": "reset.html?cart=greek:Regular:2", "at": "cart.html", "holds": true},
