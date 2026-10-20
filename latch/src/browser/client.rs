@@ -45,6 +45,18 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     {
         return super::handoff::done(&state.path, hash.as_deref());
     }
+    if let BrowserCommand::Do {
+        history: Some(_),
+        shot: None,
+        output: Some(_),
+        ..
+    } = &args.command
+    {
+        return Err(Failure::usage(
+            "bad_arguments",
+            "with --history, --output takes one of R's screenshots: add --shot N".into(),
+        ));
+    }
     let mut request = json!({
         "session": args.session,
         "ppid": std::os::unix::process::parent_id(),
@@ -52,12 +64,21 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     });
     // Where bytes go: a screenshot or download into a file here, an
     // upload's out of one.
+    let output = match &args.command {
+        BrowserCommand::Do {
+            history: None,
+            output: Some(output),
+            ..
+        } => Some(output.clone()),
+        _ => None,
+    };
     let transfer = match &args.command {
         BrowserCommand::Screenshot { output }
         | BrowserCommand::Download {
             command: DownloadCommand::Get { output, .. },
         }
         | BrowserCommand::Do {
+            history: Some(_),
             output: Some(output),
             ..
         } => Some(Transfer::Into(output.clone())),
@@ -77,13 +98,21 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
             confirm,
             history: None,
             within,
+            fact,
+            item,
+            dry_run,
             ..
-        } => Some(do_plan(
-            steps,
-            plan_file.as_deref(),
-            confirm.is_some(),
-            *within,
-        )?),
+        } => {
+            let plan = with_facts(
+                do_plan(steps, plan_file.as_deref(), confirm.is_some(), *within)?,
+                fact,
+                item,
+            )?;
+            if *dry_run {
+                return Ok(json!({"plan": plan}));
+            }
+            Some(plan)
+        }
         BrowserCommand::Act {
             snapshot,
             action,
@@ -137,9 +166,35 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     };
     let id = request.args["request"].clone();
     match transfer {
-        None => dial::call(state, &host, &request, answer_within)
-            .await
-            .map_err(|failure| with_request(failure, &id)),
+        None => {
+            let answer = dial::call(state, &host, &request, answer_within).await;
+            // `do --output F`: the page as the plan ended or stopped, which
+            // the host kept as the request's `final` shot, fetched into F.
+            let Some(path) = output else {
+                return answer.map_err(|failure| with_request(failure, &id));
+            };
+            let (mut details, failure) = match answer {
+                Ok(result) => (result, None),
+                Err(failure) => (failure.details.clone(), Some(failure)),
+            };
+            if let Some(shot) = details["screenshot"]["request"].as_str() {
+                let fetched = fetch_final(state, &host, &request, shot, &path).await;
+                match fetched {
+                    Ok(got) => {
+                        details["screenshot"]["path"] = got["path"].clone();
+                        details["screenshot"]["sha256"] = got["sha256"].clone();
+                    }
+                    Err(lost) => details["screenshot"]["error"] = json!(lost.message),
+                }
+            }
+            match failure {
+                None => Ok(details),
+                Some(mut failure) => {
+                    failure.details = details;
+                    Err(with_request(failure, &id))
+                }
+            }
+        }
         Some(transfer) => {
             let link = dial::connect(state, &host).await?;
             let result = match transfer {
@@ -254,8 +309,11 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "shot", json!(shot));
             "do_history"
         }
-        BrowserCommand::Do { confirm, .. } => {
+        BrowserCommand::Do {
+            confirm, output, ..
+        } => {
             set(request, "confirm", json!(confirm));
+            set(request, "output", json!(output.is_some().then_some(true)));
             "do"
         }
         BrowserCommand::Find { role, name } => {
@@ -421,6 +479,55 @@ fn with_request(mut failure: Failure, id: &Value) -> Failure {
     }
     failure.details = Value::Object(details);
     failure
+}
+
+/// The plan with `--fact NAME=TEXT` and `--item vN` added, checked again.
+fn with_facts(mut plan: Plan, facts: &[String], items: &[String]) -> Result<Plan, Failure> {
+    let bad = |why: String| Failure::usage("bad_arguments", why);
+    for fact in facts {
+        match fact.split_once('=') {
+            Some((name, text)) if !name.trim().is_empty() => {
+                plan.facts.insert(name.trim().to_string(), text.to_string());
+            }
+            _ => return Err(bad(format!("--fact takes NAME=TEXT, not {fact:?}"))),
+        }
+    }
+    for item in items {
+        if !plan.items.contains(item) {
+            plan.items.push(item.clone());
+        }
+    }
+    plan.validate().map_err(bad)?;
+    plan.resolve_facts();
+    Ok(plan)
+}
+
+/// Request `shot`'s `final` screenshot, as `do --history R --shot final`
+/// fetches it, into `path`.
+async fn fetch_final(
+    state: &StateDir,
+    host: &crate::plow::Peer,
+    request: &Request,
+    shot: &str,
+    path: &Path,
+) -> Result<Value, Failure> {
+    let mut args = request.args.clone();
+    if let Some(args) = args.as_object_mut() {
+        for key in ["plan", "confirm", "output"] {
+            args.remove(key);
+        }
+    }
+    args["command"] = json!("do_history");
+    args["request"] = json!(shot);
+    args["shot"] = json!("final");
+    let fetch = Request {
+        op: "browser".to_string(),
+        args,
+    };
+    let link = dial::connect(state, host).await?;
+    let got = receive(&link.connection, &fetch, path).await;
+    link.close().await;
+    got
 }
 
 /// The plan command's plan: from `--plan-file`, or one short-form step per
@@ -590,6 +697,51 @@ mod tests {
                 failure.message
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_shows_the_plan_with_its_facts_and_items_and_sends_nothing() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        let parse = |argv: &[&str]| {
+            let cli = Cli::try_parse_from(["latch", "browser", "do"].iter().chain(argv)).unwrap();
+            let Command::Browser(args) = cli.command else {
+                panic!("browser");
+            };
+            args
+        };
+        // No host is known here: a dry run never looks one up.
+        let shown = run(
+            &state,
+            parse(&[
+                "add the note \"A -> B\" for the driver",
+                "--fact",
+                "street=12 Elm Road",
+                "--item",
+                "v2",
+                "--dry-run",
+            ]),
+        )
+        .await
+        .unwrap();
+        let plan = &shown["plan"];
+        assert_eq!(plan["steps"][0]["values"]["v1"], "A -> B");
+        assert!(plan["steps"][0]["check"].is_null());
+        assert_eq!(plan["facts"]["street"], "12 Elm Road");
+        assert_eq!(plan["items"], json!(["v2"]));
+        let bad = run(
+            &state,
+            parse(&["open the cart", "--fact", "12 Elm Road", "--dry-run"]),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(bad.exit, Exit::Usage);
+        let bad = run(&state, parse(&["--history", "r1", "--output", "x.png"]))
+            .await
+            .unwrap_err();
+        assert!(bad.message.contains("--shot"), "{}", bad.message);
     }
 
     #[tokio::test]

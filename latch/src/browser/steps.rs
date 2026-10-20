@@ -1,5 +1,5 @@
 //! The host's step executor: the plan command (`do`), `act` (a plan of one
-//! literal step), confirmations, `find` and `wait`.
+//! literal step), instruction steps, confirmations, `find` and `wait`.
 //!
 //! **Before anything is sent** the whole plan is checked: its shape, every
 //! ref pinned to the snapshot it is read in, and every sentence check
@@ -16,6 +16,10 @@
 //! it has none. The plan stops at the first step that does not pass, and
 //! nothing is ever replayed.
 //!
+//! **Each instruction step**, a goal in words, runs pass by pass in
+//! `goal.rs`, its actions going through the same risk decision, dispatch
+//! and journal.
+//!
 //! **A confirmation** is used once, in the session and document it was
 //! issued in, and only while its element and the lines around it are
 //! unchanged: otherwise `confirm_stale`. It is carried out by
@@ -25,6 +29,7 @@
 //! The decision model (`model.rs`) runs here, never in the worker, and the
 //! worker is not held while it answers.
 
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -35,10 +40,12 @@ use super::core::{Action, fingerprint};
 use super::host::{Browsers, Entry, paused, take_audit};
 use super::journal::{self, Journal};
 use super::model::{self, CHECKABLE_P, Model, RISKY_P};
-use super::plan::{Check, CheckKind, Literal, Op, Plan};
+use super::plan::{Check, CheckKind, Literal, Op, Plan, Step};
 use super::session::Session;
 use crate::failure::{Exit, Failure};
 use crate::state::to_hex;
+
+mod goal;
 
 /// How long a step's check may wait after its action.
 const CHECK_WITHIN: Duration = Duration::from_secs(10);
@@ -205,14 +212,16 @@ fn record_model(model: &Model, audit: &mut Map<String, Value>) {
     }
 }
 
-/// One step of a run: a confirmation to carry out, or a literal action.
+/// One step of a run: a confirmation to carry out, a literal action, or
+/// a goal in words.
 enum Work {
     Confirm(String),
     Literal(Literal, Option<Check>),
+    Goal(Step),
 }
 
-/// `do` and `act`: a plan's literal steps, or a confirmation and the steps
-/// after it.
+/// `do` and `act`: a plan's steps, or a confirmation and the steps after
+/// it.
 pub async fn run(
     browsers: &Browsers,
     entry: &Entry,
@@ -223,28 +232,29 @@ pub async fn run(
 ) -> Result<Value, Failure> {
     let request = request_id(args)?;
     audit.insert("request".into(), json!(request));
-    let plan: Plan = serde_json::from_value(args["plan"].clone())
+    let mut plan: Plan = serde_json::from_value(args["plan"].clone())
         .map_err(|err| usage(format!("the plan is malformed: {err}")))?;
     plan.validate().map_err(usage)?;
+    plan.resolve_facts();
     let confirm = args["confirm"].as_str().map(str::to_string);
     if plan.steps.is_empty() && confirm.is_none() {
         return Err(usage("a plan needs a step".into()));
     }
     audit.insert("steps".into(), json!(plan.steps.len()));
+    audit.insert(
+        "goals".into(),
+        json!(plan.steps.iter().filter(|s| s.goal.is_some()).count()),
+    );
     let first = usize::from(confirm.is_some()) + 1;
-    if let Some(n) = plan.steps.iter().position(|s| s.goal.is_some()) {
-        let mut failure = Failure::new(
-            Exit::Denied,
-            "step_not_allowed",
-            format!(
-                "step {}: this host runs literal steps only; instruction steps (a goal in words) are not available on it yet",
-                n + first
-            ),
-        );
+    let mut model = browsers.model();
+    if let Some(n) = plan.steps.iter().position(|s| s.goal.is_some())
+        && !model.is_on()
+    {
+        let mut failure =
+            model_unavailable(&model, &format!("step {} (a goal in words)", n + first));
         failure.details = json!({"step": n + first});
         return Err(failure);
     }
-    let mut model = browsers.model();
     let sentences: Vec<(usize, String)> = plan
         .steps
         .iter()
@@ -274,7 +284,10 @@ pub async fn run(
         work.push(Work::Confirm(id.clone()));
     }
     for (n, step) in plan.steps.iter().enumerate() {
-        let mut literal = step.literal.clone().expect("goals were refused");
+        let Some(mut literal) = step.literal.clone() else {
+            work.push(Work::Goal(step.clone()));
+            continue;
+        };
         let at = |failure: Failure| Failure {
             message: format!("step {}: {}", n + first, failure.message),
             ..failure
@@ -307,8 +320,32 @@ pub async fn run(
                 }
                 summary
             }
+            Work::Goal(step) => {
+                let mut summary = json!({"step": n + 1, "goal": step.goal});
+                if let Some(check) = &step.check {
+                    summary["check"] = json!(check.kind);
+                }
+                summary
+            }
         })
         .collect();
+    let context = goal::Context {
+        plan: work
+            .iter()
+            .map(|step| match step {
+                Work::Confirm(id) => format!("carry out confirmation {id}"),
+                Work::Literal(literal, _) => match &literal.target {
+                    Some(target) => format!(
+                        "{} {target}",
+                        json!(literal.op).as_str().unwrap_or_default()
+                    ),
+                    None => json!(literal.op).as_str().unwrap_or_default().to_string(),
+                },
+                Work::Goal(step) => step.goal.clone().unwrap_or_default(),
+            })
+            .collect(),
+        items: plan.items.clone(),
+    };
     let journal = Journal::start(
         &browsers.state_dir(),
         session,
@@ -321,6 +358,8 @@ pub async fn run(
     let mut run = Run {
         browsers,
         entry,
+        session,
+        request: &request,
         model,
         journal,
         audit,
@@ -329,6 +368,8 @@ pub async fn run(
         trail: Vec::new(),
         records: Vec::new(),
         actions: 0,
+        dispatched: HashSet::new(),
+        choice: None,
     };
     let mut stop = None;
     for (n, step) in work.into_iter().enumerate() {
@@ -343,6 +384,10 @@ pub async fn run(
             Work::Literal(literal, check) => {
                 shown["op"] = json!(literal.op);
                 run.literal(step_no, &literal, check.as_ref()).await
+            }
+            Work::Goal(step) => {
+                shown["goal"] = json!(step.goal);
+                run.goal(step_no, n, &step, &context).await
             }
         };
         shown["actions"] = json!(run.actions - before);
@@ -375,10 +420,12 @@ pub async fn run(
     }
     let status = match &stop {
         Some(_) => "stopped",
-        None if run
-            .steps
-            .iter()
-            .all(|s| s["outcome"] == "checked" || s["outcome"] == "model_assessed") =>
+        None if run.steps.iter().all(|s| {
+            matches!(
+                s["outcome"].as_str(),
+                Some("checked" | "model_assessed" | "already_held")
+            )
+        }) =>
         {
             "reached"
         }
@@ -402,6 +449,26 @@ pub async fn run(
     record_model(&model, audit);
     audit.insert("status".into(), json!(status));
     audit.insert("step_records".into(), json!(records));
+    // Each step's kind and outcome, for the metrics: never its words.
+    let outcomes: Vec<Value> = steps
+        .iter()
+        .map(|s| {
+            let kind = if s.get("goal").is_some() {
+                "goal"
+            } else if s.get("confirm").is_some() {
+                "confirm"
+            } else {
+                "literal"
+            };
+            let mut outcome = json!({"step": s["step"], "kind": kind, "outcome": s["outcome"],
+                                     "actions": s["actions"]});
+            if let Some(code) = s.get("code") {
+                outcome["code"] = code.clone();
+            }
+            outcome
+        })
+        .collect();
+    audit.insert("step_outcomes".into(), json!(outcomes));
     // Every answer ends with the page as it is now.
     let page = call(entry, json!({"op": "glance"}), audit)
         .await
@@ -409,23 +476,40 @@ pub async fn run(
         .unwrap_or(Value::Null);
     let mut out =
         json!({"request": request, "status": status, "steps": steps, "trail": trail, "page": page});
-    if steps
-        .last()
-        .is_some_and(|s| s["outcome"] == "model_assessed")
+    // `--output F`: the page as the plan ended, kept as its `final` shot (a
+    // stop for a confirmation keeps its own, below).
+    let confirming = stop
+        .as_ref()
+        .is_some_and(|(_, f)| f.code == "confirm_needed");
+    if args["output"] == true
+        && !confirming
+        && let Some((handle, meta)) =
+            keep_shot(browsers, entry, session, &request, "final", "shot").await
     {
+        audit.insert("screenshot".into(), meta);
+        out["screenshot"] = handle;
+    }
+    // A final step only the model judged is for the agent to review.
+    if steps.last().is_some_and(|s| {
+        s["outcome"] == "model_assessed"
+            || s["outcome"] == "already_held" && !s["evidence"]["p"].is_null()
+    }) {
         out["review"] = json!(true);
     }
     let Some((step, mut failure)) = stop else {
         return Ok(out);
     };
+    rebase(&mut failure.details, &page);
     audit.insert("stop".into(), json!({"step": step, "code": failure.code}));
     let mut shown = json!({"step": step, "code": failure.code, "message": failure.message});
     for (key, value) in failure.details.as_object().into_iter().flatten() {
         shown[key] = value.clone();
     }
     if failure.code == "confirm_needed"
-        && let Some(handle) = keep_shot(browsers, entry, session, &request, audit).await
+        && let Some((handle, meta)) =
+            keep_shot(browsers, entry, session, &request, "final", "screenshot").await
     {
+        audit.insert("screenshot".into(), meta);
         shown["confirmation"]["screenshot"] = handle.clone();
         out["screenshot"] = handle;
     }
@@ -434,30 +518,34 @@ pub async fn run(
     Err(failure)
 }
 
-/// A screenshot of the page now, kept with request `request` as its
-/// `final` shot; its handle, which `do --history R --shot final` fetches,
-/// or none if the page could not be shot.
+/// A screenshot of the page now, kept with request `request` as shot
+/// `name` (`final`, or an action's number), taken by worker call `op`: its
+/// handle, which `do --history R --shot <name>` fetches, and what the audit
+/// records of it. None if the page could not be shot, or (`shot`) a value
+/// latch filled from the vault is on it.
 async fn keep_shot(
     browsers: &Browsers,
     entry: &Entry,
     session: &str,
     request: &str,
-    audit: &mut Map<String, Value>,
-) -> Option<Value> {
+    name: &str,
+    op: &str,
+) -> Option<(Value, Value)> {
     let reply = entry
-        .session
-        .lock()
+        .agent_session()
         .await
-        .call(json!({"op": "screenshot"}))
+        .ok()?
+        .call(json!({"op": op}))
         .await
         .ok()?;
     let png = reply.bytes?;
-    journal::save_shot(&browsers.state_dir(), session, request, "final", &png).ok()?;
-    audit.insert(
-        "screenshot".into(),
-        json!({"shot": "final", "size": png.len(), "sha256": to_hex(&Sha256::digest(&png))}),
-    );
-    Some(json!({"request": request, "shot": "final"}))
+    journal::save_shot(&browsers.state_dir(), session, request, name, &png).ok()?;
+    let meta = json!({"shot": name, "size": png.len(), "sha256": to_hex(&Sha256::digest(&png))});
+    let handle = match name.parse::<usize>() {
+        Ok(n) => json!({"request": request, "shot": n}),
+        Err(_) => json!({"request": request, "shot": name}),
+    };
+    Some((handle, meta))
 }
 
 /// A standalone `fill` that releases a secret field: journaled as a request
@@ -496,8 +584,10 @@ pub async fn stop_fill(
         return lost;
     }
     if failure.code == "confirm_needed"
-        && let Some(handle) = keep_shot(browsers, entry, session, &request, audit).await
+        && let Some((handle, meta)) =
+            keep_shot(browsers, entry, session, &request, "final", "screenshot").await
     {
+        audit.insert("screenshot".into(), meta);
         failure.details["confirmation"]["screenshot"] = handle.clone();
         failure.details["screenshot"] = handle;
     }
@@ -514,6 +604,8 @@ struct Done {
 struct Run<'a> {
     browsers: &'a Browsers,
     entry: &'a Entry,
+    session: &'a str,
+    request: &'a str,
     model: Model,
     journal: Journal,
     audit: &'a mut Map<String, Value>,
@@ -523,6 +615,11 @@ struct Run<'a> {
     /// The audit's record of each action.
     records: Vec<Value>,
     actions: usize,
+    /// Every action an instruction step dispatched, with the page state it
+    /// was dispatched on.
+    dispatched: HashSet<(String, String)>,
+    /// How the model chose the action being dispatched, for its record.
+    choice: Option<Value>,
 }
 
 fn stopped(code: &str, message: String) -> Failure {
@@ -790,6 +887,13 @@ impl Run<'_> {
         }
         let reply = call(self.entry, act, self.audit).await;
         let mut record = json!({"step": n, "action": action, "op": literal.op, "chosen": "ref"});
+        let mut shown = json!({"step": n, "action": action, "op": literal.op, "chosen": "ref"});
+        if let Some(choice) = &self.choice {
+            for (key, value) in choice.as_object().into_iter().flatten() {
+                record[key] = value.clone();
+                shown[key] = value.clone();
+            }
+        }
         if let Some(target) = &literal.target {
             record["ref"] = json!(target);
         }
@@ -805,7 +909,6 @@ impl Run<'_> {
         if let Some(id) = confirmation {
             record["confirmation"] = json!(id);
         }
-        let mut shown = json!({"step": n, "action": action, "op": literal.op, "chosen": "ref"});
         if let Some(p) = risk_p {
             shown["risk_p"] = json!(model::round(p));
         }
@@ -843,13 +946,43 @@ impl Run<'_> {
             other => other,
         });
         shown["result"] = json!(result);
+        if result == "dispatched" {
+            self.shoot(action, &mut record, &mut shown).await;
+        }
         self.records.push(record);
         self.trail.push(shown);
         outcome
     }
 
+    /// A screenshot after action `action`, for the trail: its handle in the
+    /// action's trail entry, its size and sha256 in its audit record, or a
+    /// marker where a vault value on the page keeps it from being taken.
+    async fn shoot(&mut self, action: usize, record: &mut Value, shown: &mut Value) {
+        let name = action.to_string();
+        match keep_shot(
+            self.browsers,
+            self.entry,
+            self.session,
+            self.request,
+            &name,
+            "shot",
+        )
+        .await
+        {
+            Some((handle, meta)) => {
+                shown["screenshot"] = handle;
+                record["screenshot"] = meta;
+            }
+            None => shown["screenshot"] = json!({"suppressed": true}),
+        }
+    }
+
     /// The journal's record of an action about to be sent.
     fn begin(&mut self, n: usize, op: Op, target: Value) -> Result<usize, Failure> {
+        self.begin_named(n, json!(op), target)
+    }
+
+    fn begin_named(&mut self, n: usize, op: Value, target: Value) -> Result<usize, Failure> {
         self.actions += 1;
         let action = self.actions;
         self.journal.write(
@@ -912,8 +1045,10 @@ impl Run<'_> {
             record["confirmation"] = json!(id);
         }
         self.records.push(record);
+        // No screenshot: the page may still show what was filled.
         let mut shown = json!({"step": n, "action": action, "op": "fill", "item": args["item"],
-                               "chosen": "ref", "result": result});
+                               "chosen": "ref", "result": result,
+                               "screenshot": {"suppressed": true}});
         if let Some(id) = confirmation {
             shown["confirmation"] = json!(id);
         }
@@ -1036,6 +1171,29 @@ impl Run<'_> {
             outcome: "model_assessed",
             evidence: Some(evidence),
         })
+    }
+}
+
+/// A stop's refs (its `candidates`, its `field`), read in latch's own
+/// snapshot of the page, as refs in the page the answer ends with: the
+/// element of the same role and name. One the page no longer shows loses
+/// its ref.
+fn rebase(details: &mut Value, page: &Value) {
+    let elements = page["elements"].as_array().cloned().unwrap_or_default();
+    let fix = |candidate: &mut Value| {
+        let same = |e: &&Value| e["role"] == candidate["role"] && e["name"] == candidate["name"];
+        let found = elements
+            .iter()
+            .filter(same)
+            .find(|e| e["ref"] == candidate["ref"])
+            .or_else(|| elements.iter().find(same));
+        candidate["ref"] = found.map_or(Value::Null, |e| e["ref"].clone());
+    };
+    if let Some(candidates) = details.get_mut("candidates").and_then(Value::as_array_mut) {
+        candidates.iter_mut().for_each(fix);
+    }
+    if let Some(field) = details.get_mut("field").filter(|f| f.is_object()) {
+        fix(field);
     }
 }
 

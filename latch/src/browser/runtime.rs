@@ -53,6 +53,9 @@ pub struct Runtime {
     /// A vault fill holds the browser: every session's call is answered
     /// `session_paused` at once rather than waiting for it.
     pub filling: AtomicBool,
+    /// How many fill pauses have begun: a decision made before one began
+    /// is not acted on.
+    pub pauses: AtomicU32,
     /// The sites agent code (`eval`) has run on in this profile, in any
     /// session: a value filled there later may be seen by what it left.
     agent_code: Shared<BTreeSet<String>>,
@@ -148,6 +151,7 @@ impl Runtime {
             worker: Mutex::new(worker),
             ready,
             filling: AtomicBool::new(false),
+            pauses: AtomicU32::new(0),
             agent_code: Shared::new(super::profile::agent_code_sites(state_dir, profile)),
             state_dir: state_dir.to_path_buf(),
             next_key: AtomicU32::new(0),

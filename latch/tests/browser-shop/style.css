@@ -1,0 +1,7 @@
+body{font-family:system-ui;margin:0;color:#222} header{display:flex;gap:16px;align-items:center;padding:12px 24px;background:#e8f3e8;flex-wrap:wrap}
+.logo{font-weight:700;color:#185c18;text-decoration:none} nav a{margin-right:12px} main{padding:16px 24px;max-width:900px}
+ul.products{list-style:none;padding:0} li.product{padding:8px 0;border-bottom:1px solid #ddd} .price{color:#555;margin:0 8px}
+.out{color:#b00;margin-right:8px} .err{color:#b00;font-weight:600} .ok{color:#070;font-weight:600} label{display:block;margin-top:10px}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}
+.modal{background:#fff;padding:24px;border-radius:8px;max-width:420px} table{border-collapse:collapse} td,th{padding:6px 10px;border-bottom:1px solid #ddd}
+.pager a{margin-right:10px}

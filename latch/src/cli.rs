@@ -121,8 +121,9 @@ pub enum BrowserCommand {
         output: PathBuf,
     },
     /// The plan command: up to 10 steps in order, each `click|type|select|press
-    /// eN ["text"]` or `fill --item vN --field F=eN… [--press eN]`, with an
-    /// optional check after ` -> `: `do 'click e7 -> path: /cart'`
+    /// eN ["text"]`, `fill --item vN --field F=eN… [--press eN]`, or a goal in
+    /// words with its texts in double quotes, with an optional check after
+    /// ` -> `: `do 'click e7 -> path: /cart' 'add the note "Ring twice"'`
     Do {
         /// The steps, one argument each
         steps: Vec<String>,
@@ -135,12 +136,21 @@ pub enum BrowserCommand {
         /// Request R's steps, actions and outcomes (an answer that exited 5 names R)
         #[arg(long, value_name = "R", conflicts_with = "steps")]
         history: Option<String>,
-        /// With --history: one of R's screenshots (`final`), written to --output
+        /// With --history: one of R's screenshots, by action number or `final`, written to --output
         #[arg(long, value_name = "N", requires_all = ["history", "output"])]
         shot: Option<String>,
-        /// Where --shot's PNG goes on this machine
-        #[arg(long, short, requires = "shot")]
+        /// Where a PNG goes on this machine: the page as the plan ended, or --shot's
+        #[arg(long, short)]
         output: Option<PathBuf>,
+        /// A text every step may type, as NAME=TEXT (repeatable)
+        #[arg(long, value_name = "NAME=TEXT", conflicts_with = "history")]
+        fact: Vec<String>,
+        /// A vault item the plan may fill from (repeatable)
+        #[arg(long, value_name = "vN", conflicts_with = "history")]
+        item: Vec<String>,
+        /// Print the plan as it would be sent, and send nothing
+        #[arg(long, conflicts_with = "history")]
+        dry_run: bool,
         /// Seconds the whole plan may take (default 120, at most 300)
         #[arg(long, value_name = "S")]
         within: Option<f64>,

@@ -81,6 +81,7 @@ pub async fn run(
     if entry.runtime.filling.swap(true, Ordering::SeqCst) {
         return Err(paused());
     }
+    entry.runtime.pauses.fetch_add(1, Ordering::SeqCst);
     let mut session = match entry.agent_session().await {
         Ok(session) => session,
         Err(failure) => {

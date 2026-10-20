@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><title>reset</title></head><body><script>
+// ?user=EMAIL signs in; ?cart=id:size:qty,… fills the cart; ?order=id is a
+// placed order; ?swap=1 and ?captcha=1 turn on those fixtures.
+localStorage.clear(); const p = new URLSearchParams(location.search);
+if (p.get('user')) localStorage.setItem('user', JSON.stringify({email: p.get('user')}));
+if (p.get('cart')) localStorage.setItem('cart', JSON.stringify(p.get('cart').split(',').map((s) => { const [id, size, qty] = s.split(':'); return {id, size: size || '', qty: Number(qty) || 1}; })));
+if (p.get('order')) localStorage.setItem('order', JSON.stringify({items: [{id: p.get('order'), size: '', qty: 1}], note: '', slot: ''}));
+for (const flag of ['swap', 'captcha']) if (p.get(flag)) localStorage.setItem(flag, 'true');
+document.body.textContent = 'reset';
+</script></body></html>

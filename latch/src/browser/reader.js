@@ -56,6 +56,15 @@
     return SECRET.test(marks);
   };
 
+  // A label or row's text without the options of a dropdown inside it,
+  // which are its choices, not its name.
+  const ownText = (el) => {
+    if (!el.querySelector('select, textarea')) return el.innerText || el.textContent;
+    const copy = el.cloneNode(true);
+    copy.querySelectorAll('select, textarea').forEach((control) => control.remove());
+    return copy.textContent;
+  };
+
   const byIds = (ids) => ids.split(/\s+/)
     .map((id) => document.getElementById(id))
     .filter(Boolean)
@@ -68,7 +77,7 @@
     const label = el.getAttribute('aria-label');
     if (label && label.trim()) return clean(label);
     if (el.labels && el.labels.length) {
-      const text = clean([...el.labels].map((l) => l.innerText || l.textContent).join(' '));
+      const text = clean([...el.labels].map(ownText).join(' '));
       if (text) return text;
     }
     if (el.localName === 'input') {
@@ -120,7 +129,7 @@
     if (!rendered(el)) item.hidden = true;
     const row = el.parentElement && el.parentElement.closest(ROWS);
     if (row) {
-      const text = clean(row.innerText, 160);
+      const text = clean(ownText(row), 160);
       if (text && text !== item.name) item.row = text;
     }
     return item;
@@ -148,19 +157,30 @@
     };
   };
 
-  // Brings element `index` of `snap` into view and reports where its
-  // centre is, in this frame's viewport, and whether a click there would
-  // reach it.
+  // Brings element `index` of `snap` into view and reports where to click
+  // it, in this frame's viewport, and whether a click there would reach it:
+  // its centre, or for a link that wraps onto several lines (whose box's
+  // centre may fall between them) the middle of the first line that does.
   const locate = (snap, index) => {
     const el = (snaps.get(snap) || [])[index];
     if (!el || !el.isConnected) return { gone: true };
     if (!rendered(el)) return { hidden: true };
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const rect = el.getBoundingClientRect();
-    const x = rect.left + rect.width / 2;
-    const y = rect.top + rect.height / 2;
-    const hit = document.elementFromPoint(x, y);
-    const reaches = !!hit && (hit === el || el.contains(hit) || (el.labels && [...el.labels].some((l) => l.contains(hit))));
+    const reachesAt = (px, py) => {
+      const hit = document.elementFromPoint(px, py);
+      return !!hit && (hit === el || el.contains(hit) || (el.labels && [...el.labels].some((l) => l.contains(hit))));
+    };
+    let x = rect.left + rect.width / 2;
+    let y = rect.top + rect.height / 2;
+    let reaches = reachesAt(x, y);
+    for (const line of reaches ? [] : el.getClientRects()) {
+      const [lx, ly] = [line.left + line.width / 2, line.top + line.height / 2];
+      if (line.width > 0 && line.height > 0 && reachesAt(lx, ly)) {
+        [x, y, reaches] = [lx, ly, true];
+        break;
+      }
+    }
     return {
       x, y, width: rect.width, height: rect.height,
       covered: !reaches,
@@ -335,7 +355,9 @@
   // What a consequential action acts on, as a confirmation is bound to it:
   // the element (for Enter, its form's submit control, else the form), an
   // identity that tells it from every other element in this document, and
-  // the lines of the form or section around it.
+  // the lines of the section around it: the dialog, section, article or
+  // main part of the page it is in (around its form, so the total or the
+  // item a checkout form submits is among them), else its form.
   const uids = new WeakMap();
   let nextUid = 0;
   const uid = (el) => {
@@ -357,13 +379,136 @@
           : null;
       around = submit || form || el;
     }
-    const region = around.closest('form, dialog, [role=dialog], section, article, main') || document.body;
+    const region = around.closest('dialog, [role=dialog], section, article, main')
+      || around.closest('form') || document.body;
     const lines = (region ? region.innerText : '').split('\n').map((line) => clean(line, 160)).filter(Boolean).slice(0, 20);
     return { uid: uid(el), element: { role: r, name: n, row }, acts_on: actsOn, lines };
   };
 
+  // --- What a plan's decision sees ----------------------------------------
+  // What was written into this document since a step began: `mark(step)`
+  // starts the count, and every element text was put into after it (added,
+  // or set again, even to the same text) is kept until the next mark.
+  let marked = null;
+  const written = new Set();
+  const note = (records) => {
+    for (const record of records) {
+      if (record.type === 'characterData') {
+        if (record.target.parentElement) written.add(record.target.parentElement);
+      } else {
+        for (const added of record.addedNodes) {
+          const el = added.nodeType === 1 ? added : added.parentElement;
+          if (el) written.add(el);
+        }
+      }
+    }
+  };
+  let watcher = null;
+  const mark = (step) => {
+    if (!watcher) {
+      watcher = new MutationObserver(note);
+      watcher.observe(document, { subtree: true, childList: true, characterData: true });
+    }
+    watcher.takeRecords();
+    marked = step;
+    written.clear();
+  };
+
+  // The lines of text on screen now, top to bottom: the text of each block
+  // (a paragraph, a list item, a cell) that shows in the viewport, one line
+  // per block, so "Total: $13.74" stays one line though its parts are
+  // separate elements. With `step`, also whether each line was written
+  // since that step began (`fresh`): all of them on a document the step
+  // did not begin on; none when `begin` starts the step here.
+  const SKIP_TEXT = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'OPTION', 'TEXTAREA', 'SELECT']);
+  const screenView = (max, step, begin) => {
+    if (step != null && begin) mark(step);
+    if (watcher) note(watcher.takeRecords());
+    const other = step != null && marked !== step;
+    const blocks = new Map();
+    const blockOf = (el) => {
+      if (blocks.has(el)) return blocks.get(el);
+      const display = getComputedStyle(el).display;
+      const found = (display.startsWith('inline') || display === 'contents') && el.parentElement
+        ? blockOf(el.parentElement) : el;
+      blocks.set(el, found);
+      return found;
+    };
+    const lines = [];
+    const fresh = [];
+    let block = null;
+    let line = '';
+    let rewritten = false;
+    const push = () => {
+      const text = clean(line, 160);
+      if (text && lines[lines.length - 1] !== text) {
+        lines.push(text);
+        fresh.push(other || rewritten);
+      } else if (text && rewritten) {
+        fresh[fresh.length - 1] = true;
+      }
+      line = '';
+      rewritten = false;
+    };
+    const root = document.body || document.documentElement;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && lines.length < max; node = walker.nextNode()) {
+      const parent = node.parentElement;
+      if (!parent || SKIP_TEXT.has(parent.tagName) || !node.textContent.trim() || !rendered(parent)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const rect = range.getBoundingClientRect();
+      if ((rect.width === 0 && rect.height === 0) || rect.bottom < 0 || rect.top > innerHeight) continue;
+      const at = blockOf(parent);
+      if (at !== block) { push(); block = at; }
+      line += ' ' + node.textContent;
+      if (step != null && !other && written.size && [...written].some((el) => el.contains(node))) rewritten = true;
+    }
+    push();
+    return { lines: lines.slice(0, max), fresh: fresh.slice(0, max) };
+  };
+
+  // For each element of snapshot `snap`: what kind of input it takes, a
+  // dropdown's options, its form (an index into the document's forms) and
+  // whether something else, such as a modal or a banner, covers it so a
+  // click could not reach it now. Off-screen elements are never covered:
+  // a click scrolls them into view first. A link that wraps onto several
+  // lines is tried at the middle of each line, not of the box around them,
+  // which may fall between its lines.
+  const viewOf = (snap) => (snaps.get(snap) || []).map((el) => {
+    if (!el.isConnected) return { gone: true };
+    const item = {
+      kind: el.localName === 'select' ? 'select' : fileInput(el) ? 'file' : textLike(el) ? 'text' : 'other',
+    };
+    if (el.localName === 'select') item.options = [...el.options].slice(0, 50).map((o) => clean(o.label, 80));
+    const form = el.form || el.closest('form');
+    if (form) item.form = [...document.forms].indexOf(form);
+    if (rendered(el) && !offscreen(el.getBoundingClientRect())) {
+      const reachesAt = (rect) => {
+        const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
+        const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
+        const hit = document.elementFromPoint(x, y);
+        return !hit || hit === el || el.contains(hit) || hit.contains(el)
+          || (el.labels && [...el.labels].some((l) => l.contains(hit)));
+      };
+      const lines = [...el.getClientRects()].filter((r) => r.width > 0 && r.height > 0 && !offscreen(r));
+      if (!(lines.length ? lines : [el.getBoundingClientRect()]).some(reachesAt)) item.covered = true;
+    }
+    return item;
+  });
+
+  const scroll = () => ({
+    y: Math.round(scrollY),
+    max: Math.max(0, Math.round(document.documentElement.scrollHeight - innerHeight)),
+  });
+
   // Whether this frame shows a password field: a two-page login's second page.
   const passwordShown = () => [...document.querySelectorAll('input[type=password]')].some(rendered);
+
+  // What an instruction step stops at, or offers to sign in on: a CAPTCHA's
+  // frame, and a password field.
+  const CAPTCHA = /\/recaptcha\/|hcaptcha\.com|challenges\.cloudflare\.com/;
+  const wall = () => ({ password: passwordShown(), captcha: CAPTCHA.test(location.href) });
 
   // The page a click on `el`, or the key `key` in it, would load, when that
   // is known before it happens: a link's address, or the address its form
@@ -390,8 +535,12 @@
 
   globalThis.__latch = {
     fields,
+    screenView,
+    viewOf,
+    scroll,
     review,
     passwordShown,
+    wall,
     read,
     locate,
     elementAt: (snap, index) => element(snap, index),

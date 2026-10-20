@@ -10,14 +10,17 @@
 //! that is not running reads as `interrupted`.
 //!
 //! It holds what the agent's own answer held: operations, targets and
-//! outcomes. A stop that asks for a confirmation keeps a screenshot of the
-//! page beside it (`<request>/final.png`), which `do --history R --shot
-//! final` streams to the client.
+//! outcomes. Beside it, `<request>/` keeps a screenshot after each action
+//! (`<N>.png`, by action number) and, for a stop that asks for a
+//! confirmation, of the page then (`final.png`); `do --history R --shot N`
+//! streams one to the client. A request's journal and screenshots are kept
+//! for 7 days, whether or not its session is still open.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -28,6 +31,9 @@ use crate::state::to_hex;
 pub struct Journal {
     file: File,
 }
+
+/// How long a request's journal and screenshots are kept.
+pub const KEEP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// A session's journal folder: named by a hash, never the session's name.
 fn folder(state_dir: &Path, session: &str) -> PathBuf {
@@ -52,6 +58,9 @@ impl Journal {
         request: &str,
         steps: Value,
     ) -> Result<Journal, Failure> {
+        if let Some(before) = SystemTime::now().checked_sub(KEEP) {
+            prune(state_dir, before);
+        }
         let folder = folder(state_dir, session);
         fs::DirBuilder::new()
             .recursive(true)
@@ -83,6 +92,50 @@ impl Journal {
         line.push(b'\n');
         self.file.write_all(&line).map_err(lost)?;
         self.file.sync_data().map_err(lost)
+    }
+}
+
+/// Removes every request journal last written before `before`, with its
+/// screenshots, and session folders left empty. What can't be removed
+/// stays for the next try.
+pub fn prune(state_dir: &Path, before: SystemTime) {
+    let old = |path: &Path| {
+        fs::metadata(path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|at| at < before)
+    };
+    let Ok(sessions) = fs::read_dir(state_dir.join("browser/journal")) else {
+        return;
+    };
+    for session in sessions.flatten() {
+        let Ok(requests) = fs::read_dir(session.path()) else {
+            continue;
+        };
+        let paths: Vec<PathBuf> = requests.flatten().map(|entry| entry.path()).collect();
+        // Every path judged before any is removed: a request's screenshots
+        // go with its journal; a folder with no journal, by its own age.
+        let stale: Vec<&PathBuf> = paths
+            .iter()
+            .filter(|path| match path.extension() {
+                Some(ext) if ext == "jsonl" => old(path),
+                _ => {
+                    let journal = path.with_extension("jsonl");
+                    if journal.exists() {
+                        old(&journal)
+                    } else {
+                        old(path)
+                    }
+                }
+            })
+            .collect();
+        for path in stale {
+            let _ = if path.is_dir() {
+                fs::remove_dir_all(path)
+            } else {
+                fs::remove_file(path)
+            };
+        }
+        let _ = fs::remove_dir(session.path());
     }
 }
 
@@ -306,5 +359,31 @@ mod tests {
             .permissions();
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(mode.mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_request_is_kept_seven_days_with_its_screenshots() {
+        let dir = tempfile::tempdir().unwrap();
+        Journal::start(dir.path(), "default", "k1", "r1", json!([])).unwrap();
+        save_shot(dir.path(), "default", "r1", "1", b"png").unwrap();
+        let now = SystemTime::now();
+        let eight_days = now - Duration::from_secs(8 * 24 * 60 * 60);
+        File::options()
+            .write(true)
+            .open(folder(dir.path(), "default").join("r1.jsonl"))
+            .unwrap()
+            .set_modified(eight_days)
+            .unwrap();
+        // A request from another session, sent today, stays.
+        Journal::start(dir.path(), "other", "k1", "r2", json!([])).unwrap();
+        assert!(history(dir.path(), "default", "k1", "r1", false).is_err());
+        assert_eq!(
+            shot(dir.path(), "default", "k1", "r1", "1")
+                .unwrap_err()
+                .code,
+            "no_such_request"
+        );
+        assert!(!folder(dir.path(), "default").exists());
+        assert!(history(dir.path(), "other", "k1", "r2", false).is_ok());
     }
 }

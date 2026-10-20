@@ -43,7 +43,9 @@ macro_rules! conformance {
     };
 }
 mod fills;
+mod goals;
 mod handoff;
+mod shop;
 mod steps;
 use super::session::Session;
 

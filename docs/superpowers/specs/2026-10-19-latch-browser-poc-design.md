@@ -180,7 +180,7 @@ latch never reports "done" for the user's task. `reached` means every step's own
 | Exit | Meaning | Codes |
 |---|---|---|
 | 0 | `reached` or `dispatched` | — |
-| 1 | stopped | `check_not_met`, `unconfirmed`, `already_true`, `needs_text`, `needs_fields`, `needs_login`, `needs_owner`, `blocked`, `stuck`, `repeat`, `no_progress`, `ambiguous_target`, `step_budget`, `plan_budget`, `deadline`, `stale_snapshot`, `covered_target`, `session_paused`, `site_busy`, `model_unavailable`, `no_such_session`, `unsupported_capability`, `timeout` |
+| 1 | stopped | `check_not_met`, `unconfirmed`, `already_true`, `needs_text`, `needs_fields`, `needs_login`, `needs_owner`, `blocked`, `stuck`, `repeat`, `no_progress`, `ambiguous_target`, `step_budget`, `plan_budget`, `deadline`, `stale_snapshot`, `covered_target`, `session_paused`, `site_busy`, `model_unavailable`, `request_too_large`, `no_such_session`, `unsupported_capability`, `timeout` |
 | 2 | usage | bad arguments, a malformed plan, `vague_condition`, a removed form, unknown host |
 | 3 | host unreachable; nothing sent | — |
 | 4 | refused | `confirm_needed`, `confirm_stale`, `step_not_allowed`, `not_owner`, `origin_mismatch`, `secret_on_page` |
@@ -243,14 +243,15 @@ Two sessions on one profile share the site's account state: one cart, one login,
   - a `goal` in words, with optional `values` (named literal texts), `urls` (named absolute URLs) and a `check`;
   - a `literal` action on refs: `click`, `type`, `select` or `press` (`op`, `ref`, `snapshot`, optional `text`), with an optional `check`;
   - a `literal` **`fill`**: `item`, `fields` (item field → ref, a list of refs for split boxes) and `press` (the button), with an optional `check`. This is §7's explicit mapping, carried inside a plan.
-- `facts`: named texts every step may type.
+- `facts`: named texts a goal step may type where it names them (`{NAME}`, below).
 - `items`: vault item handles the plan may use.
 - `within`: seconds, default 120, at most 300.
 
 The whole plan is validated before anything runs (shape, step count, refs, URLs, fill mappings, check syntax). A malformed later step never lets earlier steps run.
 
 **The short form** is the plan command with one argument per step:
-- **Values.** Text in double quotes (straight or curly) is a value of that step. Nothing else is ever typed.
+- **Values.** Text in double quotes (straight or curly) is a value of that step.
+- **Fact references.** `{NAME}` outside quotes names the plan's fact NAME: its text joins that step's values. A step types only its own values: its quoted texts and the facts it names. A name the plan has no fact for is refused before anything runs. Nothing else is ever typed.
 - **URLs.** A quoted absolute URL is also offered to `navigate`.
 - **Checks.** A step's check follows its **last** ` -> ` outside quotes. So `add the note "A -> B"` has the value `A -> B` and no check.
 - **Literal steps.** A step that matches either of these is a literal step:
@@ -267,7 +268,7 @@ The whole plan is validated before anything runs (shape, step count, refs, URLs,
 - `new text: …` (or `"require_change": true` on any check): it must not hold when the step starts, and must hold after.
 - `<sentence>`: judged by the decision model (§6.3). A sentence that names a task rather than a page fact is refused before anything runs (`vague_condition`).
 
-Checks wait up to 10 s after a step's last action.
+Checks wait up to 10 s after a step's last action. In an instruction step, a typed check is also polled for up to 2 s after each action, before the next decision (most of a step's actions are on the way, so the full 10 s is kept for when the step stops after acting).
 
 **Step policy: none until B9.** Every literal step on a ref latch returned to the session runs. B9's agent adoption test adds a host step policy for its arms (`any`, `stop`, `none`), and decides whether one ships.
 
@@ -285,6 +286,7 @@ Each pass observes the page and makes **one decision-model request**. In that re
 - **field states as lines** (`combobox "Size": "Large"`, `checkbox "Gift": not checked`);
 - the scroll position;
 - the actions already taken in this step;
+- the lines new since the step began: written on screen since then (a line whose text was set again counts, even with the same words, such as a message an add-to-cart writes again), or text that was not on the page then;
 - a note when a saved login or card fits the page.
 
 **The questions:**
@@ -297,21 +299,24 @@ Each pass observes the page and makes **one decision-model request**. In that re
   | `click`, `type`, `select` | there is a target for them |
   | `press_enter` | after typing |
   | `navigate` | only to the step's or plan's URLs |
-  | `scroll`, `back`, `wait` | always, where they apply |
+  | `scroll`, `back` | always, where they apply |
+  | `wait` | until the step has waited twice |
   | `login` | the page shows sign-in fields and exactly one vault item fits the page's origin under its site rule, or the plan's `items` / `--item` name one (§7) |
   | `fill_code` | the page shows a code field and that fitting login item has an authenticator key (§7) |
   | `fill` | a card or identity item fits the page under its site rule (or the plan names one), and the page shows a form |
-  | `done` | only after the step's first action |
+  | `done` | only after the step's first action, and only in a step without a typed check (latch decides that step's completion) |
   | `stuck` | always |
 
   Choosing `fill` never maps fields: it stops with `needs_fields` (below).
 - **targets:**
   - click targets: elements an action can reach now, not disabled and **not covered**. Each with its row or card text, off-screen ones included, at most 250, with truncation shown.
-  - field × value pairs, **always with `none`**, even when there is only one pair.
+  - field × value pairs over the step's own values, **always with `none`**, even when there is only one pair. With no value to pair, the fields text could go into, so a `needs_text` names the field the step wants.
   - dropdown × option pairs, **including the option already chosen**, marked as such.
   - supplied-URL ids.
 
   A target choice is dropped only where the host has already established the single eligible target by itself. So `login` and `fill_code` take no target head. Every model-chosen field × value pair keeps its `none`.
+
+  **Size.** A request that would pass the route's 64 KiB is cut to fit (latch budgets 60 KiB): the page's other lines first, then click targets from the end of the page, then field and dropdown pairs, then on-screen lines, then field lines and the step's action lines. The request says what was left out, and so does the action's trail entry. What is never cut (the plan, the step's own values, the page's address and title) may still not fit: then the step stops `request_too_large` and nothing is sent.
 
 ### 6.3 When a step is complete
 
@@ -347,7 +352,7 @@ Each pass applies these stop conditions, in this order:
    - at most 2 waits per step;
    - exhausted budgets stop with `step_budget`, `plan_budget` or `deadline`.
 6. A chosen target below p 0.5: `ambiguous_target`, with up to 3 candidate refs. There is no floor on the operation head.
-7. Typing whose field × value choice is `none`, or where no value fits: `needs_text`, naming the field. A supplied value meant for another purpose is never typed just because it is the only one.
+7. Typing whose field × value choice is `none`, or where none of the step's own values fits: `needs_text`, naming the field. A fact the step does not name is not one of its values, so it is never typed there.
 8. `login` with no single fitting item: `needs_login`.
 9. `fill` chosen: `needs_fields`, with:
    - the fitting item handles;
@@ -356,10 +361,11 @@ Each pass applies these stop conditions, in this order:
 
    The agent sends a literal `fill` step with the mapping, in a new plan.
 10. **Repeat guard:**
+    - in a step **without a typed check**, each control is clicked or submitted at most once; a second try is refused with `repeat`, nothing sent (the control stays on offer). Whether the first try did the step is the model's to judge, and if it can't establish that, the step stops `unconfirmed`. With a typed check, the same control may be used again until the check holds;
     - an action identical to one already dispatched in this plan, on the same page state (same document, field values, on-screen lines and scroll), is refused with `repeat`;
     - two actions in a row that leave the page state unchanged stop with `no_progress`.
 
-    The same control on a changed page is real progress, as in a same-URL wizard, and is allowed.
+    The same control on a changed page is real progress in a step with a typed check, as in a same-URL wizard (`-> text: All set`), and is allowed.
 11. A consequential action: `confirm_needed` (§6.5).
 
 Then:
@@ -399,7 +405,7 @@ A literal step written into a plan before latch found the consequence is never a
 
 ### 6.6 Text, the model and its absence
 
-- **Every typed string** comes from the step's values, the plan's facts, or the vault through §7. There is no generative text model.
+- **Every typed string** comes from the step's values (its quoted texts and the plan's facts it names), or the vault through §7. There is no generative text model.
 - **The decision model is swappable:**
   - one host-side interface: choose one option from a list, or answer yes/no with a probability;
   - answers are validated before use: offered options only; finite probabilities that sum to 1 and peak at the choice;
@@ -802,7 +808,8 @@ Done when:
     - a flash message from an earlier step never makes a later step `already_held`;
   - **Repeats and limits behave:**
     - the same-URL wizard completes through repeated "Next";
-    - a no-op click is refused with `repeat`;
+    - a no-op click is never sent twice: the step stops `repeat`, `no_progress` or `stuck`, with at most one dispatch and no effect on the page;
+    - a step without a typed check clicks a control once ("add one more Greek Salad" adds exactly one);
     - the out-of-stock step stops `blocked`, and the missing note stops `needs_text`;
   - **Text and fields are never guessed:**
     - with one note field and one unrelated supplied value (a street address fact), a step asking for a note that wasn't supplied stops `needs_text` and types nothing;
