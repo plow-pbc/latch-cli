@@ -211,6 +211,7 @@ conformance!(
     a_browser_that_leaves_calls_unanswered_is_closed,
     a_dialog_that_opens_between_calls_is_refused_at_once,
     a_dialog_in_one_session_does_not_hold_another_sessions_download,
+    a_download_heard_before_another_sessions_dialog_does_not_wait_on_it,
     back_into_a_reserved_site_is_refused_after_a_return_visit,
 );
 
@@ -1114,6 +1115,18 @@ async fn a_dialog_that_opens_between_calls_is_refused_at_once(engine: &str) {
 /// through each tab's frames; a tab a dialog holds answers for none of
 /// them, and another session's call does not wait on it.
 async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine: &str) {
+    dialog_and_download(engine, 1000).await;
+}
+
+/// The same, with the download heard first and the dialog after it, both
+/// taken in together by the next call.
+async fn a_download_heard_before_another_sessions_dialog_does_not_wait_on_it(engine: &str) {
+    dialog_and_download(engine, 2500).await;
+}
+
+/// Session a's page opens a dialog `alert_after` ms after its eval; session
+/// b's page downloads from a frame 1.5 s after its own.
+async fn dialog_and_download(engine: &str, alert_after: u64) {
     let (_dir, state, _area) = test_state(engine, &["dialog-download"]);
     let mut h = Host::new(&state);
     let (a, _) = h
@@ -1126,7 +1139,7 @@ async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine:
         CALLER,
         "eval",
         &a,
-        json!({"script": "setTimeout(() => alert('later'), 1000); 1"}),
+        json!({"script": format!("setTimeout(() => alert('later'), {alert_after}); 1")}),
     )
     .await
     .unwrap();
