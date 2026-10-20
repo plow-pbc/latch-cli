@@ -81,7 +81,10 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   shim shows in a sandboxed frame.
 - **What the phone may do:** fetch its link's form and save its link's item.
   The code lets it in; Plow is not asked who the phone is. Secret fields are
-  typed on the phone; the owner's non-secret `--field`s come filled in.
+  typed on the phone; the owner's non-secret `--field`s come filled in. A
+  login's username and password, a card's number and code and a note's
+  text are always asked for; `--ask LABEL` asks for any other field the
+  kind has (`--kind identity --ask ssn --ask "passport number"`).
 - **Audit:** `vault_link` records (`page`, `submit`) name the link and the
   item, never a value.
 - **Hosting the page:** `just phone-serve` serves it on this machine, for a

@@ -23,11 +23,12 @@
   .for { color: var(--muted); font-size: 15px; margin: 0; }
   .site { font-size: 30px; font-weight: 700; margin: 2px 0 4px; word-break: break-all; }
   .title { color: var(--muted); margin: 0 0 20px; }
-  label { display: block; font-size: 14px; color: var(--muted); margin: 14px 0 6px; text-transform: capitalize; }
-  input {
+  label { display: block; font-size: 14px; color: var(--muted); margin: 14px 0 6px; }
+  input, textarea {
     width: 100%; padding: 12px; font-size: 17px; border: 1px solid var(--line);
     border-radius: 10px; background: var(--field); color: var(--fg);
   }
+  textarea { min-height: 8em; font: inherit; }
   button {
     width: 100%; margin-top: 22px; padding: 14px; font-size: 17px; font-weight: 600;
     border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-fg);
@@ -41,7 +42,7 @@
 </style>
 </head>
 <body>
-<p class="for">Add a <span id="kind">login</span> for</p>
+<p class="for" id="for"></p>
 <p class="site" id="site"></p>
 <p class="title" id="title"></p>
 <form id="form" autocomplete="on"></form>
@@ -56,7 +57,7 @@
   let left = 0;
 
   function show(request) {
-    $("kind").textContent = request.kind;
+    $("for").textContent = (/^[aeiou]/.test(request.kind) ? "Add an " : "Add a ") + request.kind + " for";
     $("site").textContent = request.sites.join(", ") || "any site";
     $("title").textContent = request.title;
     for (const el of document.querySelectorAll(".host")) el.textContent = request.host;
@@ -64,9 +65,11 @@
     for (const field of request.fields) {
       const label = document.createElement("label");
       label.textContent = field.label;
-      const input = document.createElement("input");
+      // A note's text gets a box of lines; any other field is one line,
+      // masked when it is secret.
+      const input = document.createElement(field.label === "notes" ? "textarea" : "input");
       input.name = field.label;
-      input.type = field.secret ? "password" : "text";
+      if (field.label !== "notes") input.type = field.secret ? "password" : "text";
       input.autocapitalize = "off";
       input.spellcheck = false;
       if (field.label === "username") input.autocomplete = "username";
@@ -98,7 +101,7 @@
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const values = {};
-    for (const input of form.querySelectorAll("input")) {
+    for (const input of form.querySelectorAll("input, textarea")) {
       if (input.value) values[input.name] = input.value;
     }
     form.querySelector("button").disabled = true;

@@ -405,6 +405,11 @@ pub enum VaultCommand {
         /// A non-secret field, filled in on the phone: LABEL=VALUE
         #[arg(long)]
         field: Vec<String>,
+        /// Also ask the phone for this field (an identity's ssn, say); a
+        /// login's username and password, a card's number and code and a
+        /// note's text are always asked for
+        #[arg(long)]
+        ask: Vec<String>,
         /// The phone page's address (see `phone/`); the link adds the rest
         /// after `#`
         #[arg(long, env = "LATCH_PHONE_PAGE")]

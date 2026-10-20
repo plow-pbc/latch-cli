@@ -84,7 +84,7 @@ pub fn open(
     let mut item = item_from(args)?;
     item.validate()?;
     let kind = args["kind"].as_str().unwrap_or_default().to_string();
-    let fields = fields(&kind, &args["values"]);
+    let fields = fields(&kind, &args["values"], &args["ask"])?;
     let code: [u8; 16] = rand::random();
     let code = to_hex(&code);
     let id = format!("l{:08x}", rand::random::<u32>());
@@ -113,9 +113,11 @@ pub fn open(
     }))
 }
 
-/// The fields the phone shows: the owner's non-secret ones, filled in; a
-/// login's username if the owner left it out; and the kind's secrets.
-fn fields(kind: &str, given: &Value) -> Vec<Field> {
+/// The fields the phone shows: the owner's non-secret ones, filled in;
+/// what each kind always asks for (a login's username and password, a
+/// card's number and code, a note's text); and any more the owner names
+/// with `--ask` (an identity's ssn, say), typed on the phone.
+fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure> {
     let labels = kind_code(kind).map(entry_labels).unwrap_or_default();
     let mut fields: Vec<Field> = given
         .as_object()
@@ -129,23 +131,34 @@ fn fields(kind: &str, given: &Value) -> Vec<Field> {
             })
         })
         .collect();
-    let asked: &[&str] = match kind {
+    let always: &[&str] = match kind {
         "login" => &["username", "password"],
         "card" => &["number", "code"],
+        "note" => &["notes"],
         _ => &[],
     };
-    for label in asked {
-        if fields.iter().any(|f| f.label == *label) {
+    let asked = ask
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str);
+    for label in always.iter().copied().chain(asked) {
+        let Some((_, secret)) = labels.iter().find(|(l, _)| *l == label) else {
+            return Err(Failure::usage(
+                "bad_item",
+                format!("a {kind} has no field {label:?}"),
+            ));
+        };
+        if fields.iter().any(|f| f.label == label) {
             continue;
         }
-        let secret = labels.iter().any(|(l, s)| l == label && *s);
         fields.push(Field {
             label: label.to_string(),
-            secret,
+            secret: *secret,
             value: None,
         });
     }
-    fields
+    Ok(fields)
 }
 
 /// The relay as a browser must dial it. iroh names relays as fully
@@ -330,6 +343,54 @@ mod tests {
         assert_eq!(refused.code, "bad_item");
         // A refused submit leaves the link open.
         assert!(submitted(&vault, &code, json!({"password": "made-up"})).is_ok());
+    }
+
+    #[test]
+    fn a_link_asks_the_phone_for_an_identitys_secrets_and_a_notes_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        let args = json!({
+            "kind": "identity", "title": "Me",
+            "values": {"first name": "Ada"}, "ask": ["ssn", "passport number"],
+        });
+        let link = open(&vault, &here(), &args, &mut Map::new()).unwrap();
+        let code = link["code"].as_str().unwrap();
+        let shown = page(&vault, &here(), &json!({"code": code}), &mut Map::new()).unwrap();
+        assert_eq!(
+            shown["request"]["fields"],
+            json!([
+                {"label": "first name", "secret": false, "value": "Ada"},
+                {"label": "ssn", "secret": true},
+                {"label": "passport number", "secret": true},
+            ])
+        );
+        let values = json!({"ssn": "078-05-1120", "passport number": "X1234567"});
+        submitted(&vault, code, values).unwrap();
+
+        let args = json!({"kind": "note", "title": "Wifi"});
+        let link = open(&vault, &here(), &args, &mut Map::new()).unwrap();
+        let code = link["code"].as_str().unwrap();
+        submitted(&vault, code, json!({"notes": "made-up text"})).unwrap();
+
+        let items = vault.with(|store| Ok(store.list())).unwrap();
+        let release = |item: usize, label: &str| {
+            vault
+                .with(|store| store.release(&items[item].item, label))
+                .unwrap()
+        };
+        assert_eq!(release(0, "ssn"), "078-05-1120");
+        assert_eq!(release(0, "passport number"), "X1234567");
+        assert_eq!(release(1, "notes"), "made-up text");
+    }
+
+    #[test]
+    fn a_link_refuses_to_ask_for_a_field_its_kind_lacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        let args = json!({"kind": "identity", "title": "Me", "ask": ["cvv"]});
+        let refused = open(&vault, &here(), &args, &mut Map::new()).unwrap_err();
+        assert_eq!(refused.code, "bad_item");
+        assert!(vault.links.lock().unwrap().is_empty());
     }
 
     #[test]

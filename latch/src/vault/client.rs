@@ -126,6 +126,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             title,
             site,
             field,
+            ask,
             page,
         } => {
             let values = given(&kind, &field)?;
@@ -135,6 +136,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 "title": title,
                 "sites": site,
                 "values": values,
+                "ask": ask,
             }));
             let opened = dial::call(state, &host, &request, ANSWER_WITHIN).await?;
             let url = link_url(&page, &opened);

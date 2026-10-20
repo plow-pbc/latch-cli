@@ -4,6 +4,7 @@
 # Cargo build output, and the phone page's build (latch/phone/build.sh)
 target/
 /latch/phone/dist/
+/latch/phone/e2e/node_modules/
 
 # Local agent tooling
 .claude/
