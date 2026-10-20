@@ -61,7 +61,8 @@ pub enum Op {
 
 /// One exact action. `ref` and `snapshot` name the element; `text` is
 /// what `type` types, the option `select` picks, the key `press` presses
-/// or the way `scroll` goes. A `fill` maps item fields to refs.
+/// or the way `scroll` goes. A `fill` maps item fields to refs, or takes
+/// a suggestion latch made.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Literal {
@@ -78,6 +79,10 @@ pub struct Literal {
     pub fields: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub press: Option<String>,
+    /// A `fill` that takes one of latch's suggestions, by its id, in place
+    /// of `fields`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -267,6 +272,7 @@ impl Literal {
             item: None,
             fields: BTreeMap::new(),
             press: None,
+            suggestion: None,
         }
     }
 
@@ -282,7 +288,10 @@ impl Literal {
                 "{target:?} is not a ref (eN); to name an element in words, write the step as a goal"
             ));
         }
-        let fill_only = self.item.is_some() || !self.fields.is_empty() || self.press.is_some();
+        let fill_only = self.item.is_some()
+            || !self.fields.is_empty()
+            || self.press.is_some()
+            || self.suggestion.is_some();
         if self.op != Op::Fill && fill_only {
             return Err(format!("{op} takes no item, fields or press"));
         }
@@ -308,13 +317,33 @@ impl Literal {
             }
             Op::Fill => {
                 if target.is_some() || text.is_some() {
-                    return Err("fill takes --item, --field and --press, not a ref or text".into());
+                    return Err(
+                        "fill takes --item, --field, --suggested and --press, not a ref or text"
+                            .into(),
+                    );
                 }
                 if self.item.as_deref().is_none_or(str::is_empty) {
                     return Err("fill needs --item".into());
                 }
-                if self.fields.is_empty() {
-                    return Err("fill needs --field LABEL=eN for each field".into());
+                match (&self.suggestion, self.fields.is_empty()) {
+                    (None, true) => {
+                        return Err(
+                            "fill needs --field FIELD=eN for each field, or --suggested S".into(),
+                        );
+                    }
+                    (Some(_), false) => {
+                        return Err("fill takes --field or --suggested, not both".into());
+                    }
+                    (Some(id), true)
+                        if !(id.len() > 1
+                            && id.starts_with('s')
+                            && id[1..].chars().all(|c| c.is_ascii_hexdigit())) =>
+                    {
+                        return Err(format!(
+                            "--suggested takes a suggestion id from observe, such as s3f2a, not {id:?}"
+                        ));
+                    }
+                    _ => {}
                 }
                 for (label, refs) in &self.fields {
                     if refs.is_empty() || !refs.iter().all(|r| is_ref(r)) {
@@ -415,6 +444,7 @@ fn fill_words(words: &[(String, bool)]) -> Result<Literal, String> {
         match flag.as_str() {
             "--item" => literal.item = Some(value.clone()),
             "--press" => literal.press = Some(value.clone()),
+            "--suggested" => literal.suggestion = Some(value.clone()),
             "--field" => {
                 let (label, refs) = value
                     .rsplit_once('=')
@@ -426,7 +456,7 @@ fn fill_words(words: &[(String, bool)]) -> Result<Literal, String> {
             }
             other => {
                 return Err(format!(
-                    "fill takes --item, --field and --press, not {other}"
+                    "fill takes --item, --field, --suggested and --press, not {other}"
                 ));
             }
         }

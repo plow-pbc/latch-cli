@@ -1,31 +1,41 @@
-//! The host's half of `login`, `fill` and `fill-code`: the vault's gate,
-//! and the order of the worker's fill steps (`core/fill.rs`).
+//! The host's half of `fill`, for every vault kind: what a fill may use on
+//! a page (`offered`, for `observe` and plans), a suggestion taken by its
+//! id (`resolve`), and the fill itself, run in the worker's steps
+//! (`core/fill.rs`):
 //!
 //! 1. **Gate.** Any session may use any item; where it may go is the
-//!    site rule's question (step 3). A `fill` that includes a secret field
-//!    (card number, CVV, …, as the classifier says) needs `--press`: a
-//!    secret leaves the page before the agent is back. It is also
-//!    confirmed by the agent before any value is released (`steps.rs`,
-//!    [`releases_secret`]); this runs once it is.
+//!    site rule's question (step 4). A mapping that includes a secret (a
+//!    password, a code, a card or identity secret) needs a press button: a
+//!    secret leaves the page before the agent is back. One that releases a
+//!    card or identity secret is also confirmed by the agent before any
+//!    value is released (`steps.rs`, [`releases_secret`]); this runs once
+//!    it is.
 //! 2. **Pause and prepare.** The browser is held: every other call, in
 //!    any session on the profile, gets `session_paused`. The worker
-//!    reports where each value would go.
-//! 3. **Match.** Each field frame's origin and the top-level origin must
+//!    reports what the page's markup says of each mapped element.
+//! 3. **Check.** Each element must take its item field (`suggest::check`):
+//!    what the markup contradicts is refused `bad_target`, before any value
+//!    leaves the vault.
+//! 4. **Match.** Each field frame's origin and the top-level origin must
 //!    pass the item kind's site rule (`vault::sites`). Only then is a value
 //!    released, one at a time, into the worker's private pipe.
-//! 4. **Submit, clean up, resume.** latch presses the submit (or `--press`)
-//!    button, waits for the values to leave the page, and lets the agent
-//!    back in. Cleanup it cannot confirm leaves the session paused.
+//! 5. **Submit, clean up, resume.** latch presses the mapping's button,
+//!    waits for the values to leave the page, and lets the agent back in.
+//!    Cleanup it cannot confirm leaves the session paused.
 //!
-//! A login whose page takes the username alone (the first of two pages)
-//! goes on within the same pause: after its button, latch waits for the
-//! password field, and prepares, matches and submits there as in steps 2
-//! to 4, with the origins checked again on that page.
+//! A login whose mapping has no password (an identifier stage) goes on
+//! within the same pause: after its button, latch reads the next stage
+//! itself, and fills the password there only when exactly one field takes
+//! it, its form is no registration and has a single submit button, and
+//! the origins pass again. Anything else ends the fill after cleanup with
+//! `needs_fields`, the new stage's fields shown.
 //!
-//! The result says `submitted`, never "logged in". The audit records the
-//! item, its kind, the fields by label, both origins (a second page's under
-//! `password_step`), whether agent code ever ran on those sites in the
-//! profile (`agent_code_before_fill`), and the outcome: never a value.
+//! The result says `submitted`, never "logged in" or "paid", with each
+//! field's outcome. The audit records the item, its revision, the mapping
+//! by ref, where it came from (a suggestion's id, or the agent), the
+//! stages, the origins, any `hint_mismatch`, whether agent code ever ran on
+//! those sites in the profile (`agent_code_before_fill`), and the outcome:
+//! never a value.
 
 use std::sync::atomic::Ordering;
 
@@ -33,51 +43,291 @@ use serde_json::{Map, Value, json};
 
 use super::host::{Browsers, Entry, paused, take_audit};
 use super::session::Session;
+use super::suggest::{self, Control};
 use crate::failure::{Exit, Failure};
-use crate::vault::item::Item;
+use crate::vault::item::{Item, Meta};
 use crate::vault::store::Backend;
 use crate::vault::{classify, dates, sites, totp};
 
-/// Whether a `fill` releases a secret field, and so needs the agent's
-/// confirmation first: the item's title if it does. A malformed fill is
-/// refused here, as `run` would refuse it.
+/// Whether a fill releases a card or identity secret, and so needs the
+/// agent's confirmation first: the item's title if it does. A malformed
+/// fill is refused here, as `run` would refuse it. A login's password and
+/// code need no confirmation: they go only to the login's own site.
 pub fn releases_secret(browsers: &Browsers, args: &Value) -> Result<Option<String>, Failure> {
+    let item = item_of(browsers, args)?;
+    let plan = Plan::of(&item, args)?;
+    let meta = item.meta();
+    let secret = meta.kind != "login"
+        && plan
+            .fields
+            .iter()
+            .any(|(label, _)| suggest::secret_field(&meta, label));
+    Ok(secret.then(|| meta.title))
+}
+
+fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
     let id = args["item"]
         .as_str()
         .ok_or_else(|| Failure::usage("bad_arguments", "name the vault item with --item".into()))?;
-    let item = browsers.vault.with(|store| {
+    browsers.vault.with(|store| {
         store
             .item(id)
             .ok_or_else(|| Failure::usage("no_such_item", format!("there is no vault item {id}")))
-    })?;
-    let plan = Plan::of("fill", &item, args)?;
-    let secret = plan
-        .fields
+    })
+}
+
+/// What a fill could use on a page, for `observe`, a `needs_fields` and a
+/// plan's pass: the vault items that fit it (by their kind's site rule for
+/// a frame holding a field, under the top-level page), each with the fields
+/// it holds and never a value; what the page asks for; latch's suggestions
+/// for those items; and the page's other buttons and links in its forms.
+pub fn offered(browsers: &Browsers, inventory: &Value) -> Value {
+    let controls = controls_of(inventory);
+    let snapshot = inventory["snapshot"].as_str().unwrap_or_default();
+    let top = browsers.origin_as(inventory["top_origin"].as_str().unwrap_or("opaque"));
+    let mut frames: Vec<String> = Vec::new();
+    for control in controls.iter().filter(|c| c.takes_value()) {
+        let origin = browsers.origin_as(&control.origin);
+        if !frames.contains(&origin) {
+            frames.push(origin);
+        }
+    }
+    let mut items = Vec::new();
+    let mut suggestions = Vec::new();
+    for meta in browsers.vault.list_if_present() {
+        if !frames
+            .iter()
+            .any(|frame| sites::allows(&meta, frame, &top).is_ok())
+        {
+            continue;
+        }
+        for made in suggest::suggest(&meta, snapshot, &controls) {
+            let allowed = made
+                .frames
+                .iter()
+                .all(|frame| sites::allows(&meta, &browsers.origin_as(frame), &top).is_ok());
+            if allowed {
+                let mut shown = made.to_json();
+                shown["frames"] = json!(
+                    made.frames
+                        .iter()
+                        .map(|f| browsers.origin_as(f))
+                        .collect::<Vec<_>>()
+                );
+                suggestions.push(shown);
+            }
+        }
+        items.push(holding(&meta));
+    }
+    let presses: Vec<&str> = suggestions
         .iter()
-        .any(|(label, _)| classify::is_secret(&item.raw, label));
-    Ok(secret.then(|| item.meta().title))
+        .filter_map(|s| s["press"].as_str())
+        .collect();
+    let alternatives = suggest::alternatives(&controls, &presses);
+    json!({
+        "snapshot": snapshot,
+        "items": items,
+        "page_offers": suggest::offers(&controls),
+        "suggestions": suggestions,
+        "alternatives": alternatives,
+    })
+}
+
+/// An item as a fill may use it: its fields, each present, and secret or
+/// derived where so. Never a value, and no username.
+pub fn holding(meta: &Meta) -> Value {
+    let mut fields = Vec::new();
+    for field in meta.fields.iter().filter(|f| !f.alias) {
+        if field.label == classify::TOTP {
+            continue;
+        }
+        let mut shown = json!({"id": field.label, "present": true});
+        if suggest::secret_field(meta, &field.label) {
+            shown["secret"] = json!(true);
+        }
+        fields.push(shown);
+    }
+    if meta.kind == "login" && meta.totp {
+        fields.push(json!({"id": "otp", "present": true, "secret": true, "derived": "totp"}));
+    }
+    json!({"item": meta.item, "title": meta.title, "kind": meta.kind,
+           "revision": meta.revision, "fields": fields})
+}
+
+/// The elements of a worker's inventory, as a fill sees them.
+pub fn controls_of(inventory: &Value) -> Vec<Control> {
+    inventory["controls"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(Control::of)
+        .collect()
+}
+
+/// A fill that takes suggestion `suggested`, as the explicit mapping it
+/// stands for: recomputed on its snapshot now, for the item as it is. A
+/// suggestion that no longer comes out the same is refused `stale_snapshot`,
+/// with the page as it is now and its suggestions; latch never maps anew
+/// on its own. Arguments with no suggestion come back as they are.
+pub async fn resolve(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<Value, Failure> {
+    let Some(id) = args["suggested"].as_str() else {
+        return Ok(args.clone());
+    };
+    let item = item_of(browsers, args)?;
+    let meta = item.meta();
+    let inventory = worker(
+        entry,
+        json!({"op": "fill_inventory", "snapshot": args["snapshot"]}),
+    )
+    .await;
+    let found = inventory.as_ref().ok().and_then(|inventory| {
+        let snapshot = inventory["snapshot"].as_str().unwrap_or_default();
+        suggest::suggest(&meta, snapshot, &controls_of(inventory))
+            .into_iter()
+            .find(|s| s.id == id)
+    });
+    let Some(found) = found else {
+        let mut failure = Failure::failed(
+            "stale_snapshot",
+            format!(
+                "suggestion {id} no longer fits the page or item {} as they are now; nothing was released. Use one of the fresh suggestions, or map the fields yourself",
+                meta.item
+            ),
+        );
+        if let Ok((page, _)) = worker_with(entry, json!({"op": "observe"})).await {
+            let fresh = worker(
+                entry,
+                json!({"op": "fill_inventory", "snapshot": page["snapshot"]}),
+            )
+            .await
+            .map(|inventory| offered(browsers, &inventory))
+            .unwrap_or(Value::Null);
+            failure.details = json!({"page": page, "fill": fresh});
+        }
+        return Err(failure);
+    };
+    let mut resolved = args.clone();
+    if let Some(object) = resolved.as_object_mut() {
+        object.remove("suggested");
+        object.insert(
+            "fields".into(),
+            json!(
+                found
+                    .fields
+                    .iter()
+                    .map(|(label, refs)| json!([label, refs]))
+                    .collect::<Vec<_>>()
+            ),
+        );
+        object.insert("snapshot".into(), json!(found.snapshot));
+        object.insert("suggestion".into(), json!(found.id));
+        if object.get("press").is_none_or(Value::is_null) {
+            object.insert("press".into(), json!(found.press));
+        }
+    }
+    Ok(resolved)
+}
+
+/// One worker call outside a fill's pause: refused while another fill
+/// holds the browser.
+async fn worker(entry: &Entry, call: Value) -> Result<Value, Failure> {
+    worker_with(entry, call).await.map(|(result, _)| result)
+}
+
+async fn worker_with(entry: &Entry, call: Value) -> Result<(Value, Value), Failure> {
+    if entry.runtime.filling.load(Ordering::SeqCst) {
+        return Err(paused());
+    }
+    let mut session = entry.agent_session().await?;
+    let reply = session.call(call).await?;
+    Ok((reply.result, reply.audit))
+}
+
+/// The mapping as the agent will see it confirmed: for each item field,
+/// each element's ref, its name on the page and its markup's evidence; the
+/// origin of each frame a value would go into, as the site rules read it;
+/// after checking each element takes its field (`bad_target` otherwise).
+pub async fn preview(
+    browsers: &Browsers,
+    entry: &Entry,
+    args: &Value,
+) -> Result<(Vec<Value>, Vec<String>), Failure> {
+    let item = item_of(browsers, args)?;
+    let meta = item.meta();
+    let plan = Plan::of(&item, args)?;
+    let inventory = worker(
+        entry,
+        json!({"op": "fill_inventory", "snapshot": args["snapshot"]}),
+    )
+    .await?;
+    let controls = controls_of(&inventory);
+    let mut shown = Vec::new();
+    let mut frames: Vec<String> = Vec::new();
+    for (label, refs) in &plan.fields {
+        for reference in refs {
+            let Some(control) = controls.iter().find(|c| &c.reference == reference) else {
+                return Err(bad_target(
+                    label,
+                    &format!("{reference} is not on that page"),
+                ));
+            };
+            let mismatch =
+                suggest::check(meta.kind, label, control).map_err(|why| bad_target(label, &why))?;
+            let mut entry = json!({"field": label, "ref": reference, "name": control.name});
+            if let Some(token) = control.hint.field.as_deref() {
+                entry["evidence"] = json!(format!("autocomplete={token}"));
+            }
+            if let Some(token) = mismatch {
+                entry["hint_mismatch"] = json!(token);
+            }
+            shown.push(entry);
+            let origin = browsers.origin_as(&control.origin);
+            if !frames.contains(&origin) {
+                frames.push(origin);
+            }
+        }
+    }
+    Ok((shown, frames))
+}
+
+fn bad_target(label: &str, why: &str) -> Failure {
+    let mut failure = Failure::new(
+        Exit::Denied,
+        "bad_target",
+        format!("nothing was released: {label} can't go there: {why}"),
+    );
+    failure.details = json!({"field": label, "reason": why});
+    failure
 }
 
 pub async fn run(
     browsers: &Browsers,
     entry: &Entry,
-    command: &str,
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
-    let id = args["item"]
-        .as_str()
-        .ok_or_else(|| Failure::usage("bad_arguments", "name the vault item with --item".into()))?;
-    audit.insert("item".into(), json!(id));
-    let item = browsers.vault.with(|store| {
-        store
-            .item(id)
-            .ok_or_else(|| Failure::usage("no_such_item", format!("there is no vault item {id}")))
-    })?;
+    let args = &resolve(browsers, entry, args).await?;
+    let item = item_of(browsers, args)?;
+    audit.insert("item".into(), json!(item.id));
     let meta = item.meta();
     audit.insert("kind".into(), json!(meta.kind));
-    let plan = Plan::of(command, &item, args)?;
-    audit.insert("fields".into(), json!(plan.labels()));
+    audit.insert("revision".into(), json!(meta.revision));
+    audit.insert(
+        "source".into(),
+        args.get("suggestion")
+            .cloned()
+            .unwrap_or_else(|| json!("agent")),
+    );
+    let plan = Plan::of(&item, args)?;
+    audit.insert("mapping".into(), plan.mapping());
+    if let Some(confirmed) = args["confirmed"]["revision"].as_u64()
+        && confirmed != meta.revision
+    {
+        return Err(Failure::failed(
+            "context_changed",
+            "the item changed after the fill was confirmed; nothing was released".into(),
+        ));
+    }
     if entry.runtime.filling.swap(true, Ordering::SeqCst) {
         return Err(paused());
     }
@@ -96,117 +346,105 @@ pub async fn run(
 
 /// What the agent asked to fill, checked against the item.
 struct Plan {
-    mode: &'static str,
-    /// Item label (or `code`), and the refs it goes into (none: latch picks).
+    /// Item field, and the refs it goes into.
     fields: Vec<(String, Vec<String>)>,
-    submit: Option<String>,
+    press: Option<String>,
 }
 
 impl Plan {
-    fn labels(&self) -> Vec<&str> {
-        self.fields
-            .iter()
-            .map(|(label, _)| label.as_str())
-            .collect()
+    fn mapping(&self) -> Value {
+        Value::Object(
+            self.fields
+                .iter()
+                .map(|(label, refs)| (label.clone(), json!(refs)))
+                .collect(),
+        )
     }
 
-    fn of(command: &str, item: &Item, args: &Value) -> Result<Plan, Failure> {
-        let kind = item.meta().kind;
+    fn of(item: &Item, args: &Value) -> Result<Plan, Failure> {
+        let meta = item.meta();
         let usage = |message: &str| Failure::usage("bad_arguments", message.to_string());
-        let named = |key: &str| args[key].as_str().map(|r| vec![r.to_string()]);
-        match command {
-            "login" => {
-                if kind != "login" {
+        let mut fields: Vec<(String, Vec<String>)> = Vec::new();
+        for pair in args["fields"].as_array().into_iter().flatten() {
+            let label = pair[0].as_str().unwrap_or_default().to_string();
+            let refs: Vec<String> = pair[1]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r.as_str().map(str::to_string))
+                .collect();
+            let known = match meta.kind {
+                "login" if label == classify::TOTP => {
                     return Err(usage(
-                        "login takes a login item; fill takes cards, identities and notes",
+                        "a login's authenticator key never leaves the vault: map `otp`, the code computed from it",
                     ));
                 }
-                let mut fields = Vec::new();
-                for key in ["username", "password"] {
-                    if let Some(refs) = named(key) {
-                        fields.push((key.to_string(), refs));
-                    }
-                }
-                Ok(Plan {
-                    mode: "login",
-                    fields,
-                    submit: args["submit"].as_str().map(str::to_string),
-                })
+                "login" if label == "otp" => meta.totp,
+                _ => classify::read(&item.raw, &label).is_some(),
+            };
+            if !known {
+                return Err(Failure::usage(
+                    "no_such_field",
+                    format!(
+                        "item {} has no field {label:?}; observe lists the fields each item holds",
+                        item.id
+                    ),
+                ));
             }
-            "fill_code" => {
-                if !item.meta().totp {
-                    return Err(usage(
-                        "fill-code takes a login item with an authenticator key",
-                    ));
-                }
-                Ok(Plan {
-                    mode: "code",
-                    fields: named("field")
-                        .map(|refs| vec![("code".to_string(), refs)])
-                        .unwrap_or_default(),
-                    submit: args["submit"].as_str().map(str::to_string),
-                })
-            }
-            _ => {
-                if kind == "login" {
-                    return Err(usage(
-                        "fill takes cards, identities and notes; a login uses login",
-                    ));
-                }
-                let mut fields = Vec::new();
-                for pair in args["fields"].as_array().into_iter().flatten() {
-                    let label = pair[0].as_str().unwrap_or_default().to_string();
-                    let refs: Vec<String> = pair[1]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|r| r.as_str().map(str::to_string))
-                        .collect();
-                    if classify::read(&item.raw, &label).is_none() {
-                        return Err(Failure::usage(
-                            "no_such_field",
-                            format!(
-                                "item {} has no field {label:?}; vault list shows its fields",
-                                item.id
-                            ),
-                        ));
-                    }
-                    if kind == "note"
-                        && label != "notes"
-                        && !item
-                            .raw
-                            .fields
-                            .iter()
-                            .any(|f| f.name.as_deref() == Some(label.as_str()))
-                    {
-                        return Err(usage("a note fills its notes or its own custom fields"));
-                    }
-                    if refs.is_empty() {
-                        return Err(usage("each --field names its refs: LABEL=eN[,eN…]"));
-                    }
-                    fields.push((label, refs));
-                }
-                if fields.is_empty() {
-                    return Err(usage("fill needs --field LABEL=eN for each field"));
-                }
-                let press = args["press"].as_str().map(str::to_string);
-                let secret = fields
+            if meta.kind == "note"
+                && label != "notes"
+                && !item
+                    .raw
+                    .fields
                     .iter()
-                    .any(|(label, _)| classify::is_secret(&item.raw, label));
-                if secret && press.is_none() {
-                    return Err(Failure::new(
-                        Exit::Denied,
-                        "press_required",
-                        "that fill includes a secret field, which must leave the page before you are back: add --press eN, the button that submits it".into(),
+                    .any(|f| f.name.as_deref() == Some(label.as_str()))
+            {
+                return Err(usage("a note fills its notes or its own custom fields"));
+            }
+            if refs.is_empty() {
+                return Err(usage("each --field names its refs: FIELD=eN[,eN…]"));
+            }
+            if fields.iter().any(|(other, _)| *other == label) {
+                return Err(usage(&format!("{label} is mapped twice")));
+            }
+            for reference in &refs {
+                let taken = fields.iter().any(|(_, others)| others.contains(reference))
+                    || refs.iter().filter(|r| *r == reference).count() > 1;
+                if taken {
+                    return Err(bad_target(
+                        &label,
+                        &format!("{reference} already takes another field"),
                     ));
                 }
-                Ok(Plan {
-                    mode: "fields",
-                    fields,
-                    submit: press,
-                })
             }
+            fields.push((label, refs));
         }
+        if fields.is_empty() {
+            return Err(usage(
+                "fill needs --field FIELD=eN for each field, or --suggested S",
+            ));
+        }
+        let press = args["press"].as_str().map(str::to_string);
+        let secret = fields
+            .iter()
+            .any(|(label, _)| suggest::secret_field(&meta, label));
+        if secret && press.is_none() {
+            return Err(Failure::new(
+                Exit::Denied,
+                "press_required",
+                "that fill includes a secret, which must leave the page before you are back: add --press eN, the button that submits it".into(),
+            ));
+        }
+        Ok(Plan { fields, press })
+    }
+
+    /// An identifier stage: a login's username mapped alone, with its
+    /// button, for an item that holds a password.
+    fn identifier_stage(&self, meta: &Meta) -> bool {
+        meta.kind == "login"
+            && self.press.is_some()
+            && matches!(self.fields.as_slice(), [(label, _)] if label != "password" && label != "otp")
+            && meta.fields.iter().any(|f| f.label == "password")
     }
 }
 
@@ -240,43 +478,59 @@ async fn fill(
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
+    let meta = item.meta();
     let prepare = json!({
         "op": "prepare_fill",
         "snapshot": args["snapshot"],
-        "mode": plan.mode,
         "fields": plan.fields,
-        "submit": plan.submit,
+        "submit": plan.press,
     });
     let prepared = match step(session, prepare, audit).await {
         Ok(prepared) => prepared,
         Err(failure) => return Err(resume_after(session, failure, audit).await),
     };
-    // The fields latch picked, when the agent named none.
-    let mut filled = labels(&prepared);
-    audit.insert("fields".into(), json!(filled));
+    let mut outcomes = match checked(&meta, &prepared) {
+        Ok(outcomes) => outcomes,
+        Err(failure) => return Err(resume_after(session, failure, audit).await),
+    };
+    if let Some(sites) = args["confirmed"]["frames"].as_array() {
+        let now = frame_sites(browsers, &prepared);
+        if now.iter().any(|site| !sites.contains(&json!(site))) {
+            let failure = Failure::failed(
+                "context_changed",
+                "a field's frame is on another site than the one confirmed; nothing was released"
+                    .into(),
+            );
+            return Err(resume_after(session, failure, audit).await);
+        }
+    }
     if let Err(failure) = release_and_set(browsers, session, item, &prepared, audit).await {
         return Err(stop(session, failure, audit).await);
     }
-    let submitted = prepared["submit"].as_str().map(str::to_string);
-    if let Some(submit) = &submitted {
-        audit.insert("pressed".into(), json!(submit));
-        let pressed = json!({"op": "fill_submit", "target": submit, "guard": args["guard"]});
+    let mut stages = 1;
+    if let Some(press) = &plan.press {
+        audit.insert("pressed".into(), json!(press));
+        let pressed = json!({"op": "fill_submit", "target": press, "guard": args["guard"]});
         if let Err(failure) = step(session, pressed, audit).await {
             return Err(stop(session, failure, audit).await);
         }
-        if plan.mode == "login" && plan.fields.is_empty() && filled == ["username"] {
+        if plan.identifier_stage(&meta) {
             let mut second = Map::new();
-            let outcome = password_step(browsers, session, item, &mut second).await;
-            audit.insert("password_step".into(), Value::Object(second));
+            let outcome = next_stage(browsers, session, item, &mut second).await;
             match outcome {
-                Ok(labels) => {
-                    for label in labels {
-                        if !filled.contains(&label) {
-                            filled.push(label);
-                        }
-                    }
+                Ok(Stage::Filled(more)) => {
+                    stages = 2;
+                    outcomes.extend(more);
+                    audit.insert("second_stage".into(), Value::Object(second));
                 }
-                Err(failure) => return Err(stop(session, failure, audit).await),
+                Ok(Stage::Ended(ended)) => {
+                    audit.insert("second_stage".into(), Value::Object(second));
+                    return Err(stage_ended(browsers, session, ended, audit).await);
+                }
+                Err(failure) => {
+                    audit.insert("second_stage".into(), Value::Object(second));
+                    return Err(stop(session, failure, audit).await);
+                }
             }
         }
         let cleaned = step(session, json!({"op": "fill_cleanup"}), audit).await;
@@ -291,48 +545,187 @@ async fn fill(
             return Err(stuck("submitted"));
         }
     }
+    audit.insert("stages".into(), json!(stages));
+    let mismatches: Vec<&Value> = outcomes
+        .iter()
+        .filter(|o| o.get("hint_mismatch").is_some())
+        .collect();
+    if !mismatches.is_empty() {
+        audit.insert("hint_mismatch".into(), json!(mismatches));
+    }
     let mut result = step(session, json!({"op": "fill_resume"}), audit).await?;
     if let Some(object) = result.as_object_mut() {
         object.insert("item".into(), json!(item.id));
-        object.insert("filled".into(), json!(filled));
-        object.insert("submitted".into(), json!(submitted.is_some()));
+        object.insert("fields".into(), json!(outcomes));
+        object.insert("stages".into(), json!(stages));
+        object.insert("submitted".into(), json!(plan.press.is_some()));
     }
     Ok(result)
 }
 
-/// The fields a prepared step picked, by label.
-fn labels(prepared: &Value) -> Vec<String> {
-    prepared["fields"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|field| field["field"].as_str().map(str::to_string))
-        .collect()
+/// Each prepared element against the item field it takes: the field's
+/// outcome (`filled` once set), or `bad_target` for the first that the
+/// page's markup contradicts.
+fn checked(meta: &Meta, prepared: &Value) -> Result<Vec<Value>, Failure> {
+    let mut outcomes = Vec::new();
+    for field in prepared["fields"].as_array().into_iter().flatten() {
+        let label = field["field"].as_str().unwrap_or_default();
+        for target in field["boxes"].as_array().into_iter().flatten() {
+            let control = Control::of(target);
+            let mismatch = suggest::check(meta.kind, label, &control)
+                .map_err(|why| bad_target(label, &why))?;
+            let mut outcome =
+                json!({"field": label, "ref": control.reference, "outcome": "filled"});
+            if let Some(token) = mismatch {
+                outcome["hint_mismatch"] = json!(token);
+            }
+            outcomes.push(outcome);
+        }
+    }
+    Ok(outcomes)
 }
 
-/// The second page of a two-page login: once its password field shows,
-/// latch picks the form there, checks its origins, fills and submits.
-/// Answers the labels filled.
-async fn password_step(
+/// The site of each frame a prepared fill would write into.
+fn frame_sites(browsers: &Browsers, prepared: &Value) -> Vec<String> {
+    let mut sites: Vec<String> = Vec::new();
+    for field in prepared["fields"].as_array().into_iter().flatten() {
+        for target in field["boxes"].as_array().into_iter().flatten() {
+            let origin = browsers.origin_as(target["origin"].as_str().unwrap_or("opaque"));
+            if !sites.contains(&origin) {
+                sites.push(origin);
+            }
+        }
+    }
+    sites
+}
+
+/// How a login's second stage went.
+enum Stage {
+    /// The password went in and its button was pressed: its outcome.
+    Filled(Vec<Value>),
+    /// The stage was no password stage latch fills by itself: why, and the
+    /// stage as latch read it.
+    Ended(String),
+}
+
+/// A login's next stage, after its identifier stage: the password goes in
+/// only when exactly one field takes it, on a form that is no registration,
+/// with that form's single submit button, and the origins pass again.
+async fn next_stage(
     browsers: &Browsers,
     session: &mut Session,
     item: &Item,
     audit: &mut Map<String, Value>,
-) -> Result<Vec<String>, Failure> {
-    let prepare = json!({"op": "prepare_fill", "mode": "login", "password_step": true});
+) -> Result<Stage, Failure> {
+    let meta = item.meta();
+    let stage = step(session, json!({"op": "next_stage"}), audit).await?;
+    let controls = controls_of(&stage);
+    let offers = suggest::offers(&controls);
+    audit.insert("page_offers".into(), json!(offers));
+    let passwords: Vec<&Control> = controls
+        .iter()
+        .filter(|c| suggest::check("login", "password", c).is_ok())
+        .collect();
+    let [password] = passwords.as_slice() else {
+        return Ok(Stage::Ended(if passwords.is_empty() {
+            format!(
+                "the next stage asks for no password ({})",
+                described(&offers)
+            )
+        } else {
+            "the next stage has more than one password field".into()
+        }));
+    };
+    let form: Vec<&Control> = controls
+        .iter()
+        .filter(|c| c.form.is_some() && c.form == password.form)
+        .collect();
+    if password.form.is_none()
+        || form
+            .iter()
+            .any(|c| c.hint.field.as_deref() == Some("new-password"))
+        || form.iter().filter(|c| c.kind == "password").count() > 1
+    {
+        return Ok(Stage::Ended(
+            "the next stage's password field is in no form, or in one that looks like a registration".into(),
+        ));
+    }
+    let submits: Vec<&&Control> = form
+        .iter()
+        .filter(|c| c.submit && c.unusable.is_none())
+        .collect();
+    let [submit] = submits.as_slice() else {
+        return Ok(Stage::Ended(
+            "the next stage's form has no single submit button".into(),
+        ));
+    };
+    let prepare = json!({
+        "op": "prepare_fill",
+        "snapshot": stage["snapshot"],
+        "fields": [["password", [password.reference]]],
+        "submit": submit.reference,
+    });
     let prepared = step(session, prepare, audit).await?;
-    let filled = labels(&prepared);
-    audit.insert("fields".into(), json!(filled));
+    let outcomes = checked(&meta, &prepared)?;
     release_and_set(browsers, session, item, &prepared, audit).await?;
-    let submit = prepared["submit"].as_str().unwrap_or_default();
-    audit.insert("pressed".into(), json!(submit));
+    audit.insert("pressed".into(), json!(submit.reference));
     step(
         session,
-        json!({"op": "fill_submit", "target": submit}),
+        json!({"op": "fill_submit", "target": submit.reference}),
         audit,
     )
     .await?;
-    Ok(filled)
+    Ok(Stage::Filled(outcomes))
+}
+
+fn described(offers: &[&str]) -> String {
+    if offers.is_empty() {
+        "no sign-in field latch can tell".into()
+    } else {
+        format!("it asks for: {}", offers.join(", "))
+    }
+}
+
+/// A second stage latch does not fill by itself: the first stage's values
+/// are cleaned up, the agent is let back in, and the stage comes back as
+/// the agent's own page with what a fill could use there.
+async fn stage_ended(
+    browsers: &Browsers,
+    session: &mut Session,
+    why: String,
+    audit: &mut Map<String, Value>,
+) -> Failure {
+    let ended = || {
+        Failure::failed(
+            "needs_fields",
+            format!(
+                "latch submitted the first stage and stopped: {why}. Map this stage's fields in a new fill, or hand off to the owner"
+            ),
+        )
+    };
+    let mut failure = ended();
+    let stopped = stop(session, ended(), audit).await;
+    if stopped.code != "needs_fields" {
+        return stopped;
+    }
+    let page = step(session, json!({"op": "observe"}), &mut Map::new()).await;
+    let mut details = json!({"first_stage": "submitted"});
+    if let Ok(page) = page {
+        let inventory = step(
+            session,
+            json!({"op": "fill_inventory", "snapshot": page["snapshot"]}),
+            &mut Map::new(),
+        )
+        .await;
+        if let Ok(inventory) = inventory {
+            let controls = controls_of(&inventory);
+            details["candidates"] = json!(suggest::candidates(&controls));
+            details["fill"] = offered(browsers, &inventory);
+        }
+        details["page"] = page;
+    }
+    failure.details = details;
+    failure
 }
 
 /// After a fill that stopped with values possibly written: clears them, and
@@ -461,10 +854,10 @@ async fn release_and_set(
     Ok(())
 }
 
-/// One value out of the vault: a field, or for `code` the current TOTP
-/// code, computed here from the stored key.
+/// One value out of the vault: a field, or for a login's `otp` the current
+/// TOTP code, computed here from the stored key.
 fn release(browsers: &Browsers, item: &Item, label: &str) -> Result<String, Failure> {
-    if label == "code" && item.meta().kind == "login" {
+    if label == "otp" && item.meta().kind == "login" {
         let key = browsers
             .vault
             .with(|store| store.release(&item.id, classify::TOTP))?;

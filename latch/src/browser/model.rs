@@ -338,7 +338,7 @@ impl Model {
 }
 
 /// What an instruction step's operations do, as the model reads them.
-const OPERATIONS: [(&str, &str); 14] = [
+const OPERATIONS: [(&str, &str); 12] = [
     (
         "click",
         "Click one element (a link, button, checkbox, tab, menu item or result).",
@@ -364,16 +364,8 @@ const OPERATIONS: [(&str, &str); 14] = [
     ("back", "Go back to the previous page."),
     ("wait", "Wait for the page to finish loading or updating."),
     (
-        "login",
-        "Sign in with the saved login for this site: latch fills the sign-in fields and submits them. Use it on any sign-in or password page.",
-    ),
-    (
-        "fill_code",
-        "Fill the one-time code field from the saved login's authenticator and submit it.",
-    ),
-    (
         "fill",
-        "Fill the form on the page from a saved card or identity.",
+        "Fill the sign-in fields or the form on this page from a saved vault item: latch fills them from the vault and presses the form's button. Use it on a sign-in or password page, or a form the step asks to fill.",
     ),
     (
         "done",
@@ -437,6 +429,10 @@ pub struct Pass {
     /// Dropdown × option pairs, the option already chosen among them.
     pub selects: Vec<Offer>,
     pub urls: Vec<Offer>,
+    /// Complete fills latch suggested for the vault items the plan names:
+    /// item, mapping and press button each; the question always adds
+    /// `none`.
+    pub bundles: Vec<Offer>,
 }
 
 /// Where an evidence line comes from. Only a state line (a field's
@@ -488,6 +484,8 @@ pub struct Decision {
     pub type_field: Option<Pick>,
     pub select: Option<Pick>,
     pub url: Option<Pick>,
+    /// `none`, or one of the fills latch suggested.
+    pub bundle: Option<Pick>,
     /// How many click targets and page lines were left out so the request
     /// fits `REQUEST_BUDGET`, if any were.
     pub trimmed: Option<(usize, usize)>,
@@ -693,6 +691,18 @@ fn asked(pass: &Pass) -> (Value, Vec<Question>, Vec<(String, String, Line)>) {
             kind: Kind::Choose(options(&pass.selects)),
         });
     }
+    if offered("fill") && !pass.bundles.is_empty() {
+        let mut bundles = options(&pass.bundles);
+        bundles.push((
+            "none".into(),
+            "None of these saved items and mappings is what the current step should fill.".into(),
+        ));
+        questions.push(Question {
+            id: "fill".into(),
+            instructions: with("Assume the next operation fills from the vault. Which saved item, filled into which fields, does the current step call for? Choose none if none of them fits the step."),
+            kind: Kind::Choose(bundles),
+        });
+    }
     if offered("navigate") && !pass.urls.is_empty() {
         questions.push(Question {
             id: "navigate".into(),
@@ -829,6 +839,7 @@ impl Model {
             type_field: pick("type_field"),
             select: pick("select"),
             url: pick("navigate"),
+            bundle: pick("fill"),
             trimmed,
         })
     }

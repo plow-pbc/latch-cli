@@ -111,6 +111,10 @@
 
   const fileInput = (el) => el.localName === 'input' && el.type === 'file';
 
+  // Hidden from the page's readers: `aria-hidden` or inert, itself or by an
+  // ancestor (checkouts carry such copies of their fields).
+  const unread = (el) => !!el.closest('[aria-hidden="true"], [inert]');
+
   const offscreen = (rect) => rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth;
 
   const describe = (el) => {
@@ -144,7 +148,8 @@
     }
     // A file input is often hidden behind a styled label; it is listed
     // anyway, since `upload` needs no click on it.
-    const all = [...root.querySelectorAll(INTERACTIVE)].filter((el) => rendered(el) || fileInput(el));
+    const all = [...root.querySelectorAll(INTERACTIVE)]
+      .filter((el) => (rendered(el) || fileInput(el)) && !unread(el));
     if (root !== document && root.matches && root.matches(INTERACTIVE)) all.unshift(root);
     const kept = all.slice(0, limit);
     snaps.set(snap, kept);
@@ -208,86 +213,87 @@
   const textLike = (el) => el.localName === 'textarea' || el.isContentEditable
     || (el.localName === 'input' && inputRole(el) !== 'button'
       && !['checkbox', 'radio', 'file', 'hidden', 'range', 'color'].includes(el.type));
-  const formOf = (el) => el.form || el.closest('form') || el.ownerDocument;
-  const USERNAME = /user|e-?mail|login|account|identifier/i;
-  const CODE = /otp|one.?time|totp|2fa|mfa|verif|passcode|security.?code|auth.?code|\bcode\b/i;
-  const marks = (el) => [el.name, el.id, el.getAttribute('autocomplete'), el.getAttribute('placeholder'),
-    el.getAttribute('aria-label'), el.labels && [...el.labels].map((l) => l.textContent).join(' ')].join(' ');
-  const BUTTONS = 'button, input[type=submit], input[type=image], input[type=button], [role=button]';
-  // A name that says only "end this step": it starts so, and every word is
-  // one of these ("Continue", "Next", "Sign in", "Continue to Sign In"; not
-  // "Sign in via LinkedIn", "Sign in · Yahoo", "Forgot password").
-  const STEP_START = /^(sign in|log in|login|log on|continue|next|submit|verify|confirm)\b/;
-  const STEP_WORDS = new Set(['continue', 'next', 'sign', 'in', 'log', 'login', 'on', 'submit', 'verify',
-    'confirm', 'to', 'and', 'your', 'account', 'code', 'now']);
-  const plainStep = (text) => {
-    const words = text.toLowerCase().replace(/[^a-z]+/g, ' ').trim().split(' ').filter(Boolean);
-    return STEP_START.test(words.join(' ')) && words.every((w) => STEP_WORDS.has(w));
-  };
-  // The buttons that could end `field`'s step (`submits`, as indexes into
-  // `els`): the buttons after the field, in its form or (with none) its
-  // document, whose names say only that, whatever their type. Only when
-  // exactly one fits is it the `submit`; otherwise that is -1.
-  const submitOf = (field, els) => {
-    const form = field.form || field.closest('form');
-    const at = [...(form || field.ownerDocument).querySelectorAll(BUTTONS)]
-      .filter((b) => rendered(b) && els.includes(b) && plainStep(name(b))
-        && (field.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING))
-      .map((b) => els.indexOf(b));
-    return { submit: at.length === 1 ? at[0] : -1, submits: at };
+  const SUBMIT_BUTTONS = 'button:not([type]), button[type=submit], input[type=submit], input[type=image]';
+  // Whether something, such as a modal or a banner, covers `el` so a click
+  // could not reach it now. Off-screen elements are never covered: a click
+  // scrolls them into view first. A link that wraps onto several lines is
+  // tried at the middle of each line, not of the box around them.
+  const covered = (el) => {
+    if (!rendered(el) || offscreen(el.getBoundingClientRect())) return false;
+    const reachesAt = (rect) => {
+      const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
+      const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
+      const hit = document.elementFromPoint(x, y);
+      return !hit || hit === el || el.contains(hit) || hit.contains(el)
+        || (el.labels && [...el.labels].some((l) => l.contains(hit)));
+    };
+    const lines = [...el.getClientRects()].filter((r) => r.width > 0 && r.height > 0 && !offscreen(r));
+    return !(lines.length ? lines : [el.getBoundingClientRect()]).some(reachesAt);
   };
 
-  // Login candidates among snapshot `snap`'s elements, as indexes into it:
-  // each password field with the text or email field before it in its form,
-  // and the button that submits it (-1 when latch cannot tell one; the
-  // buttons that could, in `submits`).
-  const loginFields = (snap) => {
-    const els = snaps.get(snap) || [];
-    const logins = [];
-    for (const [i, el] of els.entries()) {
-      if (!(el.localName === 'input' && el.type === 'password' && el.isConnected && rendered(el))) continue;
-      const form = formOf(el);
-      const before = [...form.querySelectorAll('input')]
-        .filter((f) => f !== el && textLike(f) && f.type !== 'password' && rendered(f) && els.includes(f))
-        .filter((f) => f.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
-      const user = before.length ? before[before.length - 1] : null;
-      logins.push({ password: i, username: els.indexOf(user), ...submitOf(el, els) });
-    }
-    // A page with no password field may be the first step of a two-page
-    // login: a username or email field, alone.
-    const users = els.map((el, i) => [el, i]).filter(([el]) => el.localName === 'input' && textLike(el)
-      && rendered(el) && (el.type === 'email' || USERNAME.test(marks(el))))
-      .map(([el, i]) => ({ password: -1, username: i, ...submitOf(el, els) }));
-    return { logins, users };
+  // What a fill needs to know of one element, from the page's own markup:
+  // its tag and input type, its `autocomplete` attribute, its form (an
+  // index into the document's forms), whether it is a submit button or a
+  // button or link at all, its role and name, and whether a value could go
+  // into it now. Never its value, and never a guess from its words.
+  const controlOf = (el) => {
+    const form = el.form || el.closest('form');
+    const r = role(el);
+    return {
+      tag: ['input', 'textarea', 'select'].includes(el.localName) ? el.localName
+        : el.isContentEditable ? 'editable' : el.localName,
+      type: el.localName === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '',
+      autocomplete: el.getAttribute('autocomplete') || '',
+      form: form ? [...document.forms].indexOf(form) : -1,
+      submit: !!form && el.matches(SUBMIT_BUTTONS),
+      clickable: r === 'button' || r === 'link',
+      role: r,
+      name: name(el),
+      hidden: !rendered(el) || unread(el),
+      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+      readonly: !!el.readOnly,
+      covered: covered(el),
+    };
   };
 
-  // The buttons that could end the step of element `index`'s field.
-  const submitFor = (snap, index) => {
-    const els = snaps.get(snap) || [];
-    const el = els[index];
-    return el ? submitOf(el, els) : { submit: -1, submits: [] };
+  // Every element of snapshot `snap`, as a fill sees it.
+  const controls = (snap) => ({
+    origin: self.origin === 'null' ? 'opaque' : self.origin,
+    controls: (snaps.get(snap) || []).map((el) => (el.isConnected ? controlOf(el) : { gone: true })),
+  });
+
+  // The page's rendered fields as one mark, which changes when the page
+  // moves to another stage of a sign-in, and whether one asks for a
+  // password or a code.
+  const stageMark = () => {
+    const shown = [...document.querySelectorAll('input:not([type=hidden]), textarea, select')]
+      .filter((el) => rendered(el) && !unread(el));
+    const tokens = (el) => (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/);
+    return {
+      mark: shown.map((el) => [el.localName, (el.getAttribute('type') || '').toLowerCase(),
+        el.getAttribute('autocomplete') || '', el.name || el.id || ''].join('/')).join('|'),
+      asks: shown.some((el) => (el.getAttribute('type') || '').toLowerCase() === 'password'
+        || tokens(el).includes('one-time-code')),
+    };
   };
 
-  // One-time-code fields: marked as such, or a short numeric box.
-  const codeFields = (snap) => {
-    const els = snaps.get(snap) || [];
-    return els.map((el, i) => [el, i]).filter(([el]) => el.localName === 'input' && textLike(el) && rendered(el)
-      && el.type !== 'password' && (el.getAttribute('autocomplete') === 'one-time-code' || CODE.test(marks(el))
-        || (el.inputMode === 'numeric' && el.maxLength >= 4 && el.maxLength <= 8)))
-      .map(([el, i]) => ({ code: i, ...submitOf(el, els) }));
-  };
+  // Fields whose markup marks them secret, which a note never fills.
+  const SECRET_TOKENS = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc'];
+  const markedSecret = (el) => (el.getAttribute('type') || '').toLowerCase() === 'password'
+    || (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).some((t) => SECRET_TOKENS.includes(t));
 
   // Where a value would go, and what the field says about its format.
   const fillTarget = (snap, index) => {
     const el = element(snap, index);
     if (!el) return { gone: true };
     return {
+      ...controlOf(el),
       origin: self.origin === 'null' ? 'opaque' : self.origin,
       token,
       kind: el.localName === 'select' ? 'select' : textLike(el) ? 'text' : 'other',
       max_length: el.maxLength > 0 ? el.maxLength : null,
       placeholder: el.getAttribute('placeholder') || '',
-      page_secret: secret(el),
+      page_secret: markedSecret(el),
     };
   };
 
@@ -483,17 +489,7 @@
     if (el.localName === 'select') item.options = [...el.options].slice(0, 50).map((o) => clean(o.label, 80));
     const form = el.form || el.closest('form');
     if (form) item.form = [...document.forms].indexOf(form);
-    if (rendered(el) && !offscreen(el.getBoundingClientRect())) {
-      const reachesAt = (rect) => {
-        const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
-        const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
-        const hit = document.elementFromPoint(x, y);
-        return !hit || hit === el || el.contains(hit) || hit.contains(el)
-          || (el.labels && [...el.labels].some((l) => l.contains(hit)));
-      };
-      const lines = [...el.getClientRects()].filter((r) => r.width > 0 && r.height > 0 && !offscreen(r));
-      if (!(lines.length ? lines : [el.getBoundingClientRect()]).some(reachesAt)) item.covered = true;
-    }
+    if (covered(el)) item.covered = true;
     return item;
   });
 
@@ -539,7 +535,6 @@
     viewOf,
     scroll,
     review,
-    passwordShown,
     wall,
     read,
     locate,
@@ -554,9 +549,8 @@
       const body = document.body ? document.body.innerText : '';
       return { text: body.length > max ? body.slice(0, max) : body, truncated: body.length > max };
     },
-    loginFields,
-    codeFields,
-    submitFor,
+    controls,
+    stageMark,
     fillTarget,
     fill,
     holding,

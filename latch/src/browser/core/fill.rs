@@ -1,18 +1,19 @@
-//! The browser's half of a vault fill (`login`, `fill`, `fill-code`). The
-//! host runs the steps in order, holding the session the whole time:
+//! The browser's half of a vault `fill`. The host runs the steps in order,
+//! holding the session the whole time:
 //!
 //! 1. `PrepareFill` pauses the session (every agent call now gets
 //!    `session_paused`, and the worker answers every other session on the
-//!    browser the same), picks the fields from the snapshot unless the
-//!    agent named them, and reports for each where a value would go: the
-//!    field frame's effective origin (`self.origin` in latch's isolated
-//!    world), the top-level origin, and the document's token;
-//! 2. the host checks those origins against the item and releases values,
+//!    browser the same) and reports, for each ref of the mapping, what the
+//!    page's markup says of it (`__latch.fillTarget`) and where a value
+//!    would go: the field frame's effective origin (`self.origin` in
+//!    latch's isolated world), the top-level origin, and the document's
+//!    token. latch never picks a field here: the mapping names every one;
+//! 2. the host checks the mapping and those origins and releases values,
 //!    one `SetValue` each: the driver re-checks element, document and
 //!    origin and sets the value in one step, never by typing;
-//! 3. `FillSubmit` clicks the submit (or `--press`) button; on the first
-//!    page of a two-page login, a second `PrepareFill` waits for the
-//!    password field, and steps 2 and 3 run again there;
+//! 3. `FillSubmit` clicks the mapping's press button; after a login's
+//!    identifier stage, `NextStage` waits for the page's next stage and
+//!    reads it privately, and the host may run steps 1 to 3 there once;
 //! 4. `FillCleanup` waits until each document a value went into is
 //!    replaced or its filled fields are empty, clearing them itself when
 //!    the page keeps them; if that cannot be confirmed the session stays
@@ -20,8 +21,10 @@
 //! 5. `FillResume` lets the agent back in, never while an unconfirmed
 //!    cleanup, of this fill or an earlier one, stands.
 //!
-//! No step answers with a value. While a filled value is still on the page
-//! (a fill without a submit), `eval` is refused.
+//! `FillInventory` reports every element of a snapshot as a fill sees it
+//! (`__latch.controls`), for the host's suggestions and checks; it pauses
+//! nothing. No step answers with a value. While a filled value is still on
+//! the page (a fill without a press), `eval` is refused.
 
 use std::time::{Duration, Instant};
 
@@ -36,40 +39,23 @@ use crate::failure::{Exit, Failure};
 const CLEANUP: Duration = Duration::from_secs(15);
 /// How long latch watches fields it emptied before calling them empty.
 const SETTLED: Duration = Duration::from_millis(500);
-/// How long the second page of a two-page login has to show its password
-/// field.
-const PASSWORD_STEP: Duration = Duration::from_secs(15);
-
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum Mode {
-    Login,
-    Code,
-    Fields,
-}
+/// How long a login's next stage has to show after its identifier stage.
+const NEXT_STAGE: Duration = Duration::from_secs(15);
+/// How long a changed page must stay unchanged to count as the next stage,
+/// when it shows no password, code or passkey field.
+const STAGE_SETTLED: Duration = Duration::from_secs(1);
 
 #[derive(Deserialize, Debug)]
 pub struct Prepare {
     pub snapshot: Option<String>,
-    pub mode: Mode,
-    /// Refs the agent named: `username`, `password`, `code`, or an item
-    /// field's label; several refs split one value across boxes.
-    #[serde(default)]
+    /// Item field, and the refs it goes into; several refs split one value
+    /// across boxes.
     pub fields: Vec<(String, Vec<String>)>,
     pub submit: Option<String>,
-    /// The second step of a login whose first took the username alone:
-    /// wait for a password field, read the page afresh, and pick there.
-    #[serde(default)]
-    pub password_step: bool,
 }
 
-/// Item labels (or `username`, `password`, `code`) and the refs each goes into.
-type Fields = Vec<(String, Vec<String>)>;
 /// A snapshot's frame, with its refs and their indexes in that frame.
 type FrameRefs = (Frame, Vec<(String, usize)>);
-/// The button that ends a field's step, when latch can tell one, and every
-/// button that could.
-type Ends = (Option<String>, Vec<String>);
 
 /// One field a value goes into.
 struct Target {
@@ -91,6 +77,8 @@ pub struct State {
     /// A cleanup could not confirm the values left the page; until a later
     /// one does, nobody is let back in.
     unclean: bool,
+    /// The page's fields as the fill was prepared: a later stage differs.
+    stage: Option<String>,
 }
 
 impl<D: Driver> Core<D> {
@@ -102,39 +90,17 @@ impl<D: Driver> Core<D> {
         self.no_dialog()?;
         self.paused = true;
         self.fill.targets.clear();
-        if prepare.password_step {
-            self.password_shown()?;
-        }
         self.page(audit)?;
         let snapshot = match prepare.snapshot.as_deref() {
-            // latch's own reading of the password page, not the agent's.
-            _ if prepare.password_step => {
-                self.quiet = true;
-                self.read(None)?.snapshot
-            }
             Some(id) => self.snapshot(id)?.id.clone(),
             None => self.snapshots.back().ok_or_else(stale)?.id.clone(),
         };
-        let (fields, submit) = match prepare.mode {
-            // Named fields of a login or a code still go out through their
-            // form's submit: found, or the fill stops before any release.
-            Mode::Login | Mode::Code if !prepare.fields.is_empty() => {
-                let submit = match prepare.submit {
-                    Some(submit) => submit,
-                    None => self.form_submit(&snapshot, &prepare.fields)?,
-                };
-                (prepare.fields, Some(submit))
-            }
-            _ if !prepare.fields.is_empty() => (prepare.fields, prepare.submit),
-            Mode::Login => self.pick_login(&snapshot, prepare.submit)?,
-            Mode::Code => self.pick_code(&snapshot, prepare.submit)?,
-            Mode::Fields => {
-                return Err(Failure::usage(
-                    "bad_arguments",
-                    "fill needs --field LABEL=eN for each field".into(),
-                ));
-            }
-        };
+        if prepare.fields.is_empty() {
+            return Err(Failure::usage(
+                "bad_arguments",
+                "a fill names each field it fills".into(),
+            ));
+        }
         let main = self.main_frame()?;
         let top = self
             .driver
@@ -142,159 +108,144 @@ impl<D: Driver> Core<D> {
         let top = top.as_str().unwrap_or("opaque").to_string();
         let mut targets = Vec::new();
         let mut reported = Vec::new();
-        for (key, refs) in &fields {
+        for (key, refs) in &prepare.fields {
             let mut boxes = Vec::new();
             for reference in refs {
                 let (id, position) = self.bound(Some(&snapshot), reference)?;
                 let (frame, index) = self.reference(&id, position)?;
-                let info = self
+                let mut info = self
                     .driver
                     .run(&frame, &format!("__latch.fillTarget({id:?}, {index})"))?;
                 if info["gone"] == true {
                     return Err(stale());
                 }
-                boxes.push(json!({
-                    "ref": reference,
-                    "origin": info["origin"],
-                    "kind": info["kind"],
-                    "max_length": info["max_length"],
-                    "placeholder": info["placeholder"],
-                    "page_secret": info["page_secret"],
-                }));
+                let token = info["token"].as_str().unwrap_or_default().to_string();
+                if let Some(object) = info.as_object_mut() {
+                    object.remove("token");
+                    object.insert("ref".into(), json!(reference));
+                    object.insert("frame".into(), json!(frame.id));
+                }
                 targets.push(Target {
                     reference: reference.clone(),
                     frame,
                     snapshot: id,
                     index,
                     origin: info["origin"].as_str().unwrap_or("opaque").to_string(),
-                    token: info["token"].as_str().unwrap_or_default().to_string(),
+                    token,
                 });
+                boxes.push(info);
             }
             reported.push(json!({"field": key, "boxes": boxes}));
         }
-        if let Some(submit) = &submit {
+        if let Some(submit) = &prepare.submit {
             self.bound(Some(&snapshot), submit)?;
         }
         self.fill.targets = targets;
         self.fill.snapshot = Some(snapshot.clone());
-        Ok(json!({"snapshot": snapshot, "top_origin": top, "fields": reported, "submit": submit}))
+        self.fill.stage = self.stage_now().ok().map(|(mark, _)| mark);
+        Ok(
+            json!({"snapshot": snapshot, "top_origin": top, "fields": reported, "submit": prepare.submit}),
+        )
     }
 
-    /// Waits for the second page of a two-page login: a password field
-    /// shown in some frame of the active tab.
-    fn password_shown(&mut self) -> Result<(), Failure> {
-        let deadline = Instant::now() + PASSWORD_STEP;
+    /// Every element of a snapshot (default: the latest shown) as a fill
+    /// sees it, by ref, with its frame and that frame's origin; and the
+    /// top-level origin.
+    pub(super) fn fill_inventory(&mut self, snapshot: Option<&str>) -> Result<Value, Failure> {
+        let snapshot = match snapshot {
+            Some(id) => self.snapshot(id)?.id.clone(),
+            None => self.last_shown.clone().ok_or_else(stale)?,
+        };
+        self.inventory(&snapshot)
+    }
+
+    pub(super) fn inventory(&mut self, snapshot: &str) -> Result<Value, Failure> {
+        let main = self.main_frame()?;
+        let top = self
+            .driver
+            .run(&main, "self.origin === 'null' ? 'opaque' : self.origin")?;
+        let mut controls = Vec::new();
+        for (frame, refs) in self.frames_of(snapshot)? {
+            let Some(found) = self.in_frame(&frame, &format!("__latch.controls({snapshot:?})"))?
+            else {
+                continue;
+            };
+            let listed = found["controls"].as_array().cloned().unwrap_or_default();
+            for (reference, index) in refs {
+                let Some(mut control) = listed.get(index).cloned() else {
+                    continue;
+                };
+                if control["gone"] == true {
+                    continue;
+                }
+                control["ref"] = json!(reference);
+                control["frame"] = json!(frame.id);
+                control["origin"] = found["origin"].clone();
+                controls.push(control);
+            }
+        }
+        // Refs are listed in snapshot order.
+        controls.sort_by_key(|c| {
+            c["ref"]
+                .as_str()
+                .and_then(|r| r.trim_start_matches('e').parse::<usize>().ok())
+                .unwrap_or(usize::MAX)
+        });
+        Ok(json!({"snapshot": snapshot, "top_origin": top, "controls": controls}))
+    }
+
+    /// The page's fields now, as one mark (each frame's document and its
+    /// rendered fields' markup), and whether one asks for a password, a
+    /// code or a passkey.
+    fn stage_now(&mut self) -> Result<(String, bool), Failure> {
+        let mut mark = String::new();
+        let mut asks = false;
+        for frame in self.driver.frames()? {
+            let Ok(found) = self.driver.run(&frame, "__latch.stageMark()") else {
+                continue;
+            };
+            mark.push_str(&frame.document);
+            mark.push(':');
+            mark.push_str(found["mark"].as_str().unwrap_or_default());
+            mark.push('\n');
+            asks |= found["asks"] == true;
+        }
+        Ok((mark, asks))
+    }
+
+    /// After a login's identifier stage: waits for the next stage (the
+    /// page's fields changed, and show a password, code or passkey field,
+    /// or stayed as they are for a moment), then reads it privately.
+    pub(super) fn next_stage(&mut self) -> Result<Value, Failure> {
+        let before = self.fill.stage.clone().unwrap_or_default();
+        let deadline = Instant::now() + NEXT_STAGE;
+        let mut last: Option<(String, Instant)> = None;
         loop {
-            for frame in self.driver.frames()? {
-                if self.driver.run(&frame, "__latch.passwordShown()").ok() == Some(json!(true)) {
-                    return Ok(());
+            let _ = self.driver.settle();
+            if let Ok((mark, asks)) = self.stage_now()
+                && mark != before
+            {
+                if asks {
+                    break;
+                }
+                match &last {
+                    Some((seen, since)) if *seen == mark => {
+                        if since.elapsed() >= STAGE_SETTLED {
+                            break;
+                        }
+                    }
+                    _ => last = Some((mark, Instant::now())),
                 }
             }
             if Instant::now() >= deadline || self.driver.dialog_open() {
-                return Err(Failure::failed(
-                    "timeout",
-                    "latch filled the username, but no password field came after it; observe the page (it may want a code, a passkey or the owner)".into(),
-                ));
+                break;
             }
             std::thread::sleep(Duration::from_millis(200));
-            self.driver.settle()?;
         }
-    }
-
-    /// The login form on the snapshot's page: one password field with the
-    /// text or email field before it and its form's submit button; or, on
-    /// the first page of a two-page login, one username field alone.
-    fn pick_login(
-        &mut self,
-        snapshot: &str,
-        submit: Option<String>,
-    ) -> Result<(Fields, Option<String>), Failure> {
-        let mut logins = Vec::new();
-        let mut users = Vec::new();
-        for (frame, refs) in self.frames_of(snapshot)? {
-            let Some(found) =
-                self.in_frame(&frame, &format!("__latch.loginFields({snapshot:?})"))?
-            else {
-                continue;
-            };
-            let to_ref = |index: &Value| {
-                index
-                    .as_i64()
-                    .filter(|i| *i >= 0)
-                    .and_then(|i| refs.iter().find(|(_, at)| *at == i as usize))
-                    .map(|(r, _)| r.clone())
-            };
-            for login in found["logins"].as_array().into_iter().flatten() {
-                logins.push((
-                    to_ref(&login["username"]),
-                    to_ref(&login["password"]),
-                    ends(login, &to_ref),
-                ));
-            }
-            for user in found["users"].as_array().into_iter().flatten() {
-                users.push((to_ref(&user["username"]), None, ends(user, &to_ref)));
-            }
-        }
-        let candidates = if logins.is_empty() { users } else { logins };
-        let [(username, password, found_submit)] = candidates.as_slice() else {
-            return Err(ambiguous(
-                if candidates.is_empty() {
-                    "no login field on this page; name them with --username/--password"
-                } else {
-                    "more than one login form on this page; name the fields with --username/--password"
-                },
-                candidates
-                    .iter()
-                    .flat_map(|(u, p, _)| [u.clone(), p.clone()])
-                    .flatten()
-                    .collect(),
-                snapshot,
-            ));
-        };
-        let mut fields = Vec::new();
-        if let Some(username) = username {
-            fields.push(("username".to_string(), vec![username.clone()]));
-        }
-        if let Some(password) = password {
-            fields.push(("password".to_string(), vec![password.clone()]));
-        }
-        let submit = step_end(submit, found_submit.clone(), "the login form", snapshot)?;
-        Ok((fields, Some(submit)))
-    }
-
-    /// The one one-time-code field on the page and its form's submit button.
-    fn pick_code(
-        &mut self,
-        snapshot: &str,
-        submit: Option<String>,
-    ) -> Result<(Fields, Option<String>), Failure> {
-        let mut codes = Vec::new();
-        for (frame, refs) in self.frames_of(snapshot)? {
-            let Some(found) =
-                self.in_frame(&frame, &format!("__latch.codeFields({snapshot:?})"))?
-            else {
-                continue;
-            };
-            for code in found.as_array().into_iter().flatten() {
-                let to_ref = |index: &Value| {
-                    index
-                        .as_i64()
-                        .filter(|i| *i >= 0)
-                        .and_then(|i| refs.iter().find(|(_, at)| *at == i as usize))
-                        .map(|(r, _)| r.clone())
-                };
-                codes.push((to_ref(&code["code"]), ends(code, &to_ref)));
-            }
-        }
-        let [(Some(code), found_submit)] = codes.as_slice() else {
-            return Err(ambiguous(
-                "latch cannot tell the one code field on this page; name it with --field",
-                codes.iter().filter_map(|(c, _)| c.clone()).collect(),
-                snapshot,
-            ));
-        };
-        let submit = step_end(submit, found_submit.clone(), "the code's form", snapshot)?;
-        Ok((vec![("code".into(), vec![code.clone()])], Some(submit)))
+        // latch's own reading of the new stage, not the agent's.
+        self.quiet = true;
+        let reading = self.read(None)?;
+        self.inventory(&reading.snapshot)
     }
 
     /// `expression`'s answer in one of a snapshot's frames, or `None` when
@@ -306,32 +257,6 @@ impl<D: Driver> Core<D> {
             Err(failure) if failure.code == "stale_snapshot" => Ok(None),
             Err(failure) => Err(failure),
         }
-    }
-
-    /// The button that submits the form holding the first named field.
-    fn form_submit(&mut self, snapshot: &str, fields: &Fields) -> Result<String, Failure> {
-        let Some(reference) = fields.first().and_then(|(_, refs)| refs.first()) else {
-            return step_end(None, (None, Vec::new()), "this form", snapshot);
-        };
-        let (id, position) = self.bound(Some(snapshot), reference)?;
-        let (frame, index) = self.reference(&id, position)?;
-        let found = self
-            .driver
-            .run(&frame, &format!("__latch.submitFor({id:?}, {index})"))?;
-        let refs = self
-            .frames_of(snapshot)?
-            .into_iter()
-            .find(|(f, _)| f.id == frame.id)
-            .map(|(_, refs)| refs)
-            .unwrap_or_default();
-        let to_ref = |index: &Value| {
-            index
-                .as_i64()
-                .filter(|i| *i >= 0)
-                .and_then(|i| refs.iter().find(|(_, at)| *at == i as usize))
-                .map(|(r, _)| r.clone())
-        };
-        step_end(None, ends(&found, &to_ref), "this form", snapshot)
     }
 
     /// Each frame of a snapshot, with its refs and their in-frame indexes.
@@ -517,48 +442,6 @@ impl<D: Driver> Core<D> {
         }
         Ok(())
     }
-}
-
-/// The reader's answer for the buttons that could end a field's step, as
-/// refs: the one latch can tell, and every candidate.
-fn ends(found: &Value, to_ref: &impl Fn(&Value) -> Option<String>) -> Ends {
-    (
-        to_ref(&found["submit"]),
-        found["submits"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(to_ref)
-            .collect(),
-    )
-}
-
-/// The button that ends a step: the one the agent named, else the one latch
-/// can tell. With several that could, or none, the agent names it.
-fn step_end(
-    named: Option<String>,
-    ends: Ends,
-    form: &str,
-    snapshot: &str,
-) -> Result<String, Failure> {
-    let (found, candidates) = ends;
-    if let Some(submit) = named.or(found) {
-        return Ok(submit);
-    }
-    let message = if candidates.is_empty() {
-        format!("{form} has no submit button latch can tell; name it with --submit")
-    } else {
-        format!("more than one button could submit {form}; name it with --submit")
-    };
-    Err(ambiguous(&message, candidates, snapshot))
-}
-
-/// The candidates are refs in `snapshot`: on a login's second page, a
-/// reading latch took itself.
-fn ambiguous(message: &str, candidates: Vec<String>, snapshot: &str) -> Failure {
-    let mut failure = Failure::failed("ambiguous_target", message.to_string());
-    failure.details = json!({"candidates": candidates, "snapshot": snapshot});
-    failure
 }
 
 #[cfg(test)]

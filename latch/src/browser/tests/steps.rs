@@ -203,9 +203,19 @@ impl Harness {
         state: &std::path::Path,
         provider: Option<Arc<dyn Provider>>,
     ) -> Harness {
+        Harness::start_with(state, provider, Vec::new()).await
+    }
+
+    /// A harness whose local origins the site rules read as the HTTPS
+    /// sites they stand in for, `(local, site)` each.
+    pub(super) async fn start_with(
+        state: &std::path::Path,
+        provider: Option<Arc<dyn Provider>>,
+        origins: Vec<(String, String)>,
+    ) -> Harness {
         let vault = Vault::new(state.to_path_buf());
         let mut browsers = Browsers::new(state.to_path_buf(), vault, super::HEADLESS);
-        browsers.test = Some((latch(), Vec::new()));
+        browsers.test = Some((latch(), origins));
         browsers.provider = provider;
         let browsers = Arc::new(browsers);
         let (id, entry) = browsers.open("default", CALLER, None).await.unwrap();

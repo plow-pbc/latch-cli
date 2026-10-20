@@ -546,31 +546,28 @@ pub async fn run(
     }
 }
 
-/// `login`, `fill-code`, and a `fill`: one that releases a secret field
-/// stops for the agent's confirmation before any value is released.
+/// A `fill`: a suggestion taken by its id becomes the mapping it stands
+/// for; one that releases a card or identity secret stops for the agent's
+/// confirmation before any value is released.
 pub(super) async fn fill(
     browsers: &Browsers,
     entry: &Entry,
     session: &str,
     caller: &str,
-    command: &str,
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
-    if command == "fill" {
-        audit.insert("item".into(), args["item"].clone());
-        if let Some(title) = super::fill::releases_secret(browsers, args)? {
-            if entry.runtime.filling.load(Ordering::SeqCst) {
-                return Err(paused());
-            }
-            let mut args = args.clone();
-            args["item_title"] = json!(title);
-            return Err(
-                super::steps::stop_fill(browsers, entry, session, caller, &args, audit).await,
-            );
+    audit.insert("item".into(), args["item"].clone());
+    let args = super::fill::resolve(browsers, entry, args).await?;
+    if let Some(title) = super::fill::releases_secret(browsers, &args)? {
+        if entry.runtime.filling.load(Ordering::SeqCst) {
+            return Err(paused());
         }
+        let mut args = args.clone();
+        args["item_title"] = json!(title);
+        return Err(super::steps::stop_fill(browsers, entry, session, caller, &args, audit).await);
     }
-    super::fill::run(browsers, entry, command, args, audit).await
+    super::fill::run(browsers, entry, &args, audit).await
 }
 
 /// One command for `caller`: `open` on profile `name`, `sessions`, or a
@@ -624,7 +621,7 @@ pub(super) async fn call(
     }
     let result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
-        "login" | "fill" | "fill_code" => fill(browsers, &entry, name, key, command, args, audit)
+        "fill" => fill(browsers, &entry, name, key, args, audit)
             .await
             .map(|result| (result, None)),
         "do" => super::steps::run(browsers, &entry, name, key, args, audit)
@@ -749,14 +746,10 @@ async fn worker(
     let reply = reply?;
     let mut result = reply.result;
     if command == "observe" {
-        let page = audit["origin"]
-            .as_str()
-            .map(|origin| browsers.origin_as(origin));
-        let fields: Vec<String> = field_frames(&result)
-            .iter()
-            .map(|origin| browsers.origin_as(origin))
-            .collect();
-        result["vault"] = json!(fitting(&browsers.vault, page.as_deref(), &fields));
+        let inventory = session
+            .call(json!({"op": "fill_inventory", "snapshot": result["snapshot"]}))
+            .await?;
+        result["fill"] = super::fill::offered(browsers, &inventory.result);
     }
     Ok((result, reply.bytes))
 }
@@ -807,61 +800,6 @@ fn letters(bytes: &[u8]) -> String {
         .flat_map(|byte| [byte >> 4, byte & 15])
         .map(|nibble| char::from(b'a' + nibble))
         .collect()
-}
-
-/// The vault items that fit this page, for `observe`: allowed by their
-/// kind's site rule to fill a field in one of `fields` (the origins of
-/// frames holding a field) under the top-level `page`. Titles and handles
-/// only, never a value.
-fn fitting(vault: &Vault, page: Option<&str>, fields: &[String]) -> Vec<Value> {
-    let Some(page) = page else {
-        return Vec::new();
-    };
-    vault
-        .list_if_present()
-        .into_iter()
-        .filter(|meta| {
-            fields
-                .iter()
-                .any(|frame| crate::vault::sites::allows(meta, frame, page).is_ok())
-        })
-        .map(|meta| json!({"item": meta.item, "kind": meta.kind, "title": meta.title}))
-        .collect()
-}
-
-/// The origins of the frames in an observed element list that hold a field
-/// a value could go into.
-fn field_frames(observed: &Value) -> Vec<String> {
-    let origin_of = |label: &str| {
-        observed["frames"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|f| f["frame"] == label)
-            .and_then(|f| f["origin"].as_str())
-            .or(if label == "f0" {
-                observed["url"].as_str()
-            } else {
-                None
-            })
-            .map(|origin| crate::browser::core::origin_and_path(origin).0)
-    };
-    let mut origins: Vec<String> = Vec::new();
-    for element in observed["elements"].as_array().into_iter().flatten() {
-        if !matches!(
-            element["role"].as_str(),
-            Some("textbox" | "searchbox" | "combobox" | "spinbutton")
-        ) {
-            continue;
-        }
-        let label = element["frame"].as_str().unwrap_or("f0");
-        if let Some(origin) = origin_of(label)
-            && !origins.contains(&origin)
-        {
-            origins.push(origin);
-        }
-    }
-    origins
 }
 
 /// The worker's call for a client command: the command's own arguments,
@@ -1042,27 +980,6 @@ mod tests {
             audit["script_sha256"],
             to_hex(&Sha256::digest(long.as_bytes()))
         );
-    }
-
-    #[test]
-    fn field_frames_are_the_origins_of_frames_holding_fields() {
-        let observed = json!({
-            "url": "https://www.portal.example/home?x=1",
-            "frames": [
-                {"frame": "f0", "origin": "https://www.portal.example"},
-                {"frame": "f1", "origin": "https://login.shop.example", "parent": "f0"},
-                {"frame": "f2", "origin": "https://ads.example", "parent": "f0"},
-            ],
-            "elements": [
-                {"ref": "e1", "role": "link"},
-                {"ref": "e2", "role": "textbox", "frame": "f1"},
-                {"ref": "e3", "role": "button", "frame": "f2"},
-            ],
-        });
-        assert_eq!(field_frames(&observed), ["https://login.shop.example"]);
-        let single =
-            json!({"url": "https://shop.example/login", "elements": [{"role": "textbox"}]});
-        assert_eq!(field_frames(&single), ["https://shop.example"]);
     }
 
     #[test]
