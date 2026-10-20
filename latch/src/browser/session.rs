@@ -66,7 +66,7 @@ impl Session {
 
     /// A runtime with this one session in it, for tests that drive the
     /// worker directly.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
     pub async fn start_with(
         latch: &std::path::Path,
         state_dir: &std::path::Path,
@@ -79,13 +79,13 @@ impl Session {
         Session::begin(&runtime).await
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
     pub fn scratch(&self) -> std::path::PathBuf {
         self.runtime.scratch()
     }
 
     /// Closes the browser and waits for the worker to end.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
     pub async fn close(self) -> Result<Value, Failure> {
         self.runtime.close().await
     }

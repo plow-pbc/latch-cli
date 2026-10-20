@@ -3,10 +3,14 @@
 //! unless built with `headed-tests` (see `HEADLESS`). It
 //! needs the engine installed where `just cft` (part of `just test`, and a
 //! step in CI) puts it, `.dev/cft-state`, or in the state directory
-//! `LATCH_CFT_STATE` names; without it the test fails, saying so.
+//! `LATCH_CFT_STATE` names; without it the test fails, saying so. On Linux
+//! arm64 the engine is Debian's Chromium, inside the worker's bubblewrap,
+//! and the tests are built only with `linux-browser-tests`, on a host
+//! whose install.sh put it in place (`just conformance chromium`).
 //!
 //! `LATCH_BROWSER_EVIDENCE=DIR` also keeps the screenshot there.
 
+#[cfg(target_os = "macos")]
 use std::ffi::{c_char, c_int};
 use std::fs;
 use std::io::{Read, Write};
@@ -23,21 +27,30 @@ use super::profile;
 use crate::failure::Failure;
 
 /// The engines the conformance checks run on, each its own test:
-/// `browser::tests::cft::NAME` and `browser::tests::camoufox::NAME` (and
-/// the same under `fills` and `steps`). `just conformance ENGINE` runs one
-/// engine's.
+/// `browser::tests::cft::NAME` and `browser::tests::camoufox::NAME` on
+/// macOS, `browser::tests::chromium::NAME` on Linux (and the same under
+/// `fills` and `steps`). `just conformance ENGINE` runs one engine's.
 macro_rules! conformance {
     ($($check:ident),* $(,)?) => {
+        #[cfg(target_os = "macos")]
         mod cft {
             $(#[tokio::test]
             async fn $check() {
                 super::$check("cft").await
             })*
         }
+        #[cfg(target_os = "macos")]
         mod camoufox {
             $(#[tokio::test]
             async fn $check() {
                 super::$check("camoufox").await
+            })*
+        }
+        #[cfg(target_os = "linux")]
+        mod chromium {
+            $(#[tokio::test]
+            async fn $check() {
+                super::$check("chromium").await
             })*
         }
     };
@@ -52,20 +65,53 @@ use super::session::Session;
 /// The caller every host-level test calls as.
 const CALLER: &str = "test-caller";
 
+/// The engine of the tests outside the conformance runner: this
+/// platform's CDP engine.
+fn cdp_engine() -> &'static str {
+    &super::engine::default_pin().engine
+}
+
+/// What a sandboxed `cat` or `ls` of a hidden path says: Seatbelt refuses
+/// it; Linux's bubblewrap leaves the path out.
+const HIDDEN: &str = if cfg!(target_os = "macos") {
+    "Operation not permitted"
+} else {
+    "No such file or directory"
+};
+
 /// The engine runs with no window, so a test run never puts a browser over
 /// the owner's screen. `just test-headed` (the `headed-tests` feature) runs
 /// the same tests headed, with a real window behind the owner's.
 const HEADLESS: bool = !cfg!(feature = "headed-tests");
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     /// macOS: 1 if the process is inside a Seatbelt sandbox (with no
     /// operation named), 0 if not.
     fn sandbox_check(pid: libc::pid_t, operation: *const c_char, kind: c_int, ...) -> c_int;
 }
 
+#[cfg(target_os = "macos")]
 fn sandboxed(pid: u32) -> bool {
     // SAFETY: no operation or filter arguments; reads the pid's sandbox state.
     unsafe { sandbox_check(pid as libc::pid_t, std::ptr::null(), 0) == 1 }
+}
+
+/// Linux: the user namespace process `pid` is in, and its seccomp mode
+/// (2: a filter is on).
+#[cfg(target_os = "linux")]
+fn confinement(pid: u32) -> (String, String) {
+    let namespace = fs::read_link(format!("/proc/{pid}/ns/user"))
+        .map(|link| link.display().to_string())
+        .unwrap_or_default();
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let seccomp = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Seccomp:"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    (namespace, seccomp)
 }
 
 struct Process {
@@ -76,7 +122,7 @@ struct Process {
 
 fn processes() -> Vec<Process> {
     let out = Command::new("/bin/ps")
-        .args(["-axww", "-o", "pid=,pgid=,args="])
+        .args(["-Aww", "-o", "pid=,pgid=,args="])
         .output()
         .unwrap();
     String::from_utf8_lossy(&out.stdout)
@@ -92,6 +138,86 @@ fn processes() -> Vec<Process> {
             })
         })
         .collect()
+}
+
+/// The engine's pid as the host sees it. On Linux the worker reports its
+/// pid inside the worker's bubblewrap, so it is found by its profile
+/// argument instead.
+fn host_pid(pid: u32, profile_arg: &str) -> u32 {
+    if cfg!(target_os = "macos") {
+        return pid;
+    }
+    processes()
+        .into_iter()
+        .find(|p| p.args.contains(profile_arg) && !p.args.contains("--type="))
+        .unwrap_or_else(|| panic!("no browser process with {profile_arg}"))
+        .pid
+}
+
+/// The names of process `pid`'s environment variables (`args`: its
+/// arguments, which ps prints the environment after on macOS).
+fn environment(pid: u32, args: &str) -> Vec<String> {
+    let text = if cfg!(target_os = "macos") {
+        let with_env = Command::new("/bin/ps")
+            .args(["-wwE", "-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        let with_env = String::from_utf8_lossy(&with_env.stdout).into_owned();
+        with_env.trim().strip_prefix(args).unwrap().to_string()
+    } else {
+        String::from_utf8_lossy(&fs::read(format!("/proc/{pid}/environ")).unwrap())
+            .replace('\0', " ")
+    };
+    text.split(' ')
+        .filter_map(|v| v.split_once('='))
+        .map(|v| v.0.to_string())
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        })
+        .collect()
+}
+
+/// How many TCP listeners `exec` sees on this machine, and which of
+/// `pids` hold one: from exec's lsof on macOS; on Linux from exec's
+/// `/proc/net`, matched to the sockets each pid holds.
+fn tcp_listeners(state: &Path, area: &Path, pids: &[u32]) -> (usize, Vec<u32>) {
+    if cfg!(target_os = "macos") {
+        let (_, listening) = exec(state, area, "lsof -nP -iTCP -sTCP:LISTEN -F p");
+        let listeners: Vec<u32> = listening
+            .lines()
+            .filter_map(|line| line.strip_prefix('p')?.parse().ok())
+            .collect();
+        let held = pids
+            .iter()
+            .copied()
+            .filter(|p| listeners.contains(p))
+            .collect();
+        return (listeners.len(), held);
+    }
+    let (_, tables) = exec(state, area, "cat /proc/net/tcp /proc/net/tcp6");
+    // Each socket's line: state (0A: listening) is the 4th field, its inode the 10th.
+    let listening: Vec<String> = tables
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .filter(|fields| fields.len() > 9 && fields[3] == "0A")
+        .map(|fields| format!("socket:[{}]", fields[9]))
+        .collect();
+    let held = pids
+        .iter()
+        .copied()
+        .filter(|pid| {
+            fs::read_dir(format!("/proc/{pid}/fd"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|fd| fs::read_link(fd.path()).ok())
+                .any(|link| listening.contains(&link.display().to_string()))
+        })
+        .collect();
+    (listening.len(), held)
 }
 
 /// The parent of process `pid`.
@@ -279,10 +405,10 @@ fn test_state_taking(
             &super::engine::CAMOUFOX.version,
             super::engine::CAMOUFOX.folder(&installed),
         ),
-        _ => (
-            &super::engine::CFT.version,
-            super::engine::CFT.folder(&installed),
-        ),
+        _ => {
+            let pin = super::engine::cdp_pin(engine).unwrap();
+            (&pin.version, pin.folder(&installed))
+        }
     };
     assert!(
         engine_folder.join("manifest.json").is_file(),
@@ -317,11 +443,20 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
             .await
             .unwrap();
     println!("ready: {}", session.ready);
-    let browser = session.ready["pid"].as_u64().unwrap() as u32;
     let data = profile::root(&state)
         .join("b1/data")
         .canonicalize()
         .unwrap();
+    let cft = engine_name != "camoufox";
+    let (pipe, profile_arg) = if cft {
+        (
+            "--remote-debugging-pipe",
+            format!("--user-data-dir={}", data.display()),
+        )
+    } else {
+        ("-juggler-pipe", format!("-profile {}", data.display()))
+    };
+    let browser = host_pid(session.ready["pid"].as_u64().unwrap() as u32, &profile_arg);
     let scratch = session.scratch().canonicalize().unwrap();
 
     let url = local_page();
@@ -338,46 +473,37 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
     let all = processes();
     let mut engine: Vec<&Process> = all.iter().filter(|p| p.pgid == browser).collect();
     let main = *engine.iter().find(|p| p.pid == browser).unwrap();
-    println!(
-        "browser {}: sandboxed by Seatbelt: {}",
-        main.pid,
-        sandboxed(main.pid)
-    );
-    assert!(
-        !sandboxed(main.pid),
-        "the engine runs outside latch's Seatbelt"
-    );
-    let cft = engine_name == "cft";
-    let (pipe, profile_arg) = if cft {
-        (
-            "--remote-debugging-pipe",
-            format!("--user-data-dir={}", data.display()),
-        )
-    } else {
-        ("-juggler-pipe", format!("-profile {}", data.display()))
+    #[cfg(target_os = "macos")]
+    {
+        println!(
+            "browser {}: sandboxed by Seatbelt: {}",
+            main.pid,
+            sandboxed(main.pid)
+        );
+        assert!(
+            !sandboxed(main.pid),
+            "the engine runs outside latch's Seatbelt"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    let main_confinement = {
+        let ours = confinement(std::process::id());
+        let theirs = confinement(main.pid);
+        println!(
+            "browser {}: user namespace {}, seccomp {}; this test's {}",
+            main.pid, theirs.0, theirs.1, ours.0
+        );
+        assert!(
+            theirs.0 != ours.0 && theirs.1 == "2",
+            "the engine runs inside latch's bubblewrap, with its filter on"
+        );
+        theirs
     };
     assert!(main.args.contains(pipe), "{}", main.args);
     assert!(main.args.contains(&profile_arg), "{}", main.args);
     // Its environment: only a plain PATH, and variables naming the scratch
-    // folder or the engine's own settings (ps -E prints them after the
-    // arguments).
-    let with_env = Command::new("/bin/ps")
-        .args(["-wwE", "-o", "command=", "-p", &browser.to_string()])
-        .output()
-        .unwrap();
-    let with_env = String::from_utf8_lossy(&with_env.stdout);
-    let env = with_env.trim().strip_prefix(main.args.as_str()).unwrap();
-    let names: Vec<&str> = env
-        .split(' ')
-        .filter_map(|v| v.split_once('='))
-        .map(|v| v.0)
-        .filter(|name| {
-            !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-        })
-        .collect();
+    // folder or the engine's own settings.
+    let names = environment(browser, &main.args);
     println!("engine environment: {names:?}");
     if cft {
         assert_eq!(names, ["BREAKPAD_DUMP_LOCATION", "HOME", "PATH", "TMPDIR"]);
@@ -389,8 +515,11 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
             "PATH",
             "TMPDIR",
         ];
-        assert!(names.iter().all(|n| allowed.contains(n)), "{names:?}");
-        assert!(names.contains(&"CAMOU_CONFIG_1") && names.contains(&"HOME"));
+        assert!(
+            names.iter().all(|n| allowed.contains(&n.as_str())),
+            "{names:?}"
+        );
+        assert!(names.iter().any(|n| n == "CAMOU_CONFIG_1") && names.iter().any(|n| n == "HOME"));
         // The helper, the engine's parent, gets the same few.
         let helper = all.iter().find(|p| p.pid == helper_of(browser)).unwrap();
         assert!(
@@ -408,31 +537,54 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
                 .split(' ')
                 .find_map(|arg| arg.strip_prefix("--type="))
                 .unwrap_or("?");
-            let client = p.args.contains("--seatbelt-client=");
-            println!(
-                "helper {} --type={kind}: --seatbelt-client {client}, sandboxed by Seatbelt: {}",
-                p.pid,
-                sandboxed(p.pid)
-            );
-            if kind == "renderer" {
-                helpers += 1;
-                assert!(
-                    client && sandboxed(p.pid),
-                    "Chrome's sandbox holds the renderer"
+            #[cfg(target_os = "macos")]
+            {
+                let client = p.args.contains("--seatbelt-client=");
+                println!(
+                    "helper {} --type={kind}: --seatbelt-client {client}, sandboxed by Seatbelt: {}",
+                    p.pid,
+                    sandboxed(p.pid)
                 );
+                if kind == "renderer" {
+                    helpers += 1;
+                    assert!(
+                        client && sandboxed(p.pid),
+                        "Chrome's sandbox holds the renderer"
+                    );
+                }
+            }
+            // Chrome's own namespace sandbox, nested in latch's.
+            #[cfg(target_os = "linux")]
+            {
+                let (namespace, seccomp) = confinement(p.pid);
+                println!(
+                    "helper {} --type={kind}: user namespace {namespace}, seccomp {seccomp}",
+                    p.pid
+                );
+                if kind == "renderer" {
+                    helpers += 1;
+                    assert!(
+                        namespace != main_confinement.0 && seccomp == "2",
+                        "Chrome's sandbox holds the renderer"
+                    );
+                }
             }
         } else {
             // Firefox's web content processes: `plugin-container … tab`.
-            let content = p.args.contains("plugin-container") && p.args.ends_with(" tab");
-            println!(
-                "process {}: web content {content}, sandboxed by Seatbelt: {}: {}",
-                p.pid,
-                sandboxed(p.pid),
-                p.args.split(" ").last().unwrap_or_default()
-            );
-            if content {
-                helpers += 1;
-                assert!(sandboxed(p.pid), "Firefox's sandbox holds web content");
+            // Camoufox is pinned for macOS only.
+            #[cfg(target_os = "macos")]
+            {
+                let content = p.args.contains("plugin-container") && p.args.ends_with(" tab");
+                println!(
+                    "process {}: web content {content}, sandboxed by Seatbelt: {}: {}",
+                    p.pid,
+                    sandboxed(p.pid),
+                    p.args.split(" ").last().unwrap_or_default()
+                );
+                if content {
+                    helpers += 1;
+                    assert!(sandboxed(p.pid), "Firefox's sandbox holds web content");
+                }
             }
         }
     }
@@ -461,25 +613,11 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
 
     // No engine process listens on TCP, seen from inside exec, and exec
     // can read neither the profile nor anything else of the state folder.
-    let (_, listening) = exec(&state, &area, "lsof -nP -iTCP -sTCP:LISTEN -F p");
-    let listeners: Vec<u32> = listening
-        .lines()
-        .filter_map(|line| line.strip_prefix('p')?.parse().ok())
-        .collect();
-    println!(
-        "exec: {} processes listen on TCP; engine pids among them: {:?}",
-        listeners.len(),
-        engine
-            .iter()
-            .filter(|p| listeners.contains(&p.pid))
-            .map(|p| p.pid)
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        !listeners.is_empty(),
-        "exec's lsof sees other processes' listeners"
-    );
-    assert!(engine.iter().all(|p| !listeners.contains(&p.pid)));
+    let pids: Vec<u32> = engine.iter().map(|p| p.pid).collect();
+    let (listeners, held) = tcp_listeners(&state, &area, &pids);
+    println!("exec: {listeners} TCP listeners; engine pids among them: {held:?}");
+    assert!(listeners > 0, "exec sees other processes' listeners");
+    assert!(held.is_empty());
     // The engine's own settings file in the profile: Chrome's preferences,
     // or the fingerprint Camoufox keeps for the profile.
     let preferences = if cft {
@@ -497,10 +635,7 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
     ] {
         let (ok, text) = exec(&state, &area, &script);
         println!("exec: {script}: {}", text.trim());
-        assert!(
-            !ok && text.contains("Operation not permitted"),
-            "{script}: {text}"
-        );
+        assert!(!ok && text.contains(HIDDEN), "{script}: {text}");
     }
 
     let shot = session.call(json!({"op": "screenshot"})).await.unwrap();
@@ -552,7 +687,14 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
     assert_eq!(kept["autofill"]["profile_enabled"], false);
 }
 
+/// Linux: no app is in front of an Xvfb display or a headless browser.
+#[cfg(target_os = "linux")]
+fn front_apps() -> std::sync::Arc<std::sync::Mutex<Vec<u32>>> {
+    Default::default()
+}
+
 /// Watches the front app (by pid) every 40 ms, for as long as the test runs.
+#[cfg(target_os = "macos")]
 fn front_apps() -> std::sync::Arc<std::sync::Mutex<Vec<u32>>> {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let log = seen.clone();
@@ -977,7 +1119,10 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
         std::io::BufRead::read_line(&mut output, &mut line).unwrap();
         serde_json::from_str::<serde_json::Value>(&line).unwrap_or_default()
     };
-    let browser = answer()["ok"]["pid"].as_i64().unwrap() as libc::pid_t;
+    let data = profile::root(&state).join("hang-stuck/data");
+    let profile_arg = format!("--user-data-dir={}", data.canonicalize().unwrap().display());
+    let browser =
+        host_pid(answer()["ok"]["pid"].as_u64().unwrap() as u32, &profile_arg) as libc::pid_t;
     let mut call = |line: serde_json::Value| {
         writeln!(input, "{line}").unwrap();
         input.flush().unwrap();

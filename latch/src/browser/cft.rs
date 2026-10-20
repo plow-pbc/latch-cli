@@ -1,5 +1,6 @@
 //! The Chrome for Testing driver: the driver contract (`driver.rs`) over
-//! CDP on the engine's private pipe.
+//! CDP on the engine's private pipe. It drives Debian's Chromium the same
+//! way, from that engine's own pin.
 //!
 //! One browser serves every session on its profile. Each session's share
 //! is the windows it opened and every tab opened from them (a page target
@@ -26,7 +27,7 @@ use serde_json::{Value, json};
 
 use super::cdp::{self, Cdp, Pipes};
 use super::driver::{self, Download, Driver, Event, Frame, KEY_NAMES, Runtime, Tab};
-use super::engine::{CFT, Engine};
+use super::engine::{Engine, Pin};
 use super::profile;
 use crate::failure::{Exit, Failure};
 
@@ -119,33 +120,36 @@ pub struct Cft {
     scratch: PathBuf,
     /// When the call under way must have its answer (`Driver::limit`).
     deadline: Option<Instant>,
+    /// The engine's pin: CfT's or Chromium's.
+    pin: &'static Pin,
     _lock: profile::Lock,
 }
 
 impl Cft {
-    /// Starts the engine on its profile; with `headless`, in Chrome's
-    /// headless mode, with no window.
+    /// Starts the engine `pin` names on its profile; with `headless`, in
+    /// Chrome's headless mode, with no window.
     pub fn launch(
+        pin: &'static Pin,
         state_dir: &Path,
         profile_name: &str,
         scratch: &Path,
         headless: bool,
         display: Option<&str>,
     ) -> Result<Self, Failure> {
-        if CFT.driver_contract != driver::CONTRACT {
+        if pin.driver_contract != driver::CONTRACT {
             return Err(Failure::failed(
                 "engine_unverified",
                 format!(
                     "the {} plugin speaks driver contract {}, this latch {}",
-                    CFT.engine,
-                    CFT.driver_contract,
+                    pin.engine,
+                    pin.driver_contract,
                     driver::CONTRACT
                 ),
             ));
         }
-        let profile = profile::open(state_dir, profile_name, &CFT.engine)?;
+        let profile = profile::open(state_dir, profile_name, &pin.engine)?;
         let lock = profile::lock(&profile)?;
-        let engine = CFT.verified(state_dir)?;
+        let engine = pin.verified(state_dir)?;
         let Pipes {
             chrome_reads,
             chrome_writes,
@@ -174,6 +178,7 @@ impl Cft {
             unassigned: Vec::new(),
             scratch: scratch.to_path_buf(),
             deadline: None,
+            pin,
             _lock: lock,
         };
         if let Err(failure) = browser.listen() {
@@ -1456,7 +1461,7 @@ impl Driver for Cft {
     }
 
     fn capabilities(&self) -> Vec<String> {
-        CFT.capabilities.clone()
+        self.pin.capabilities.clone()
     }
 
     /// The page as the engine draws it, and how its pixels map to the

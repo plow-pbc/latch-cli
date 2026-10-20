@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::{CALLER, exec, latch, test_state, test_state_alone};
+use super::{CALLER, HIDDEN, cdp_engine, exec, latch, test_state, test_state_alone};
 use crate::browser::host::{self, Browsers};
 use crate::vault::host::Vault;
 use crate::vault::item::{CARD, IDENTITY, Item, LOGIN, Raw};
@@ -730,7 +730,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
 /// The vault's files from inside `exec` and a file worker: never readable.
 #[test]
 fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
-    let (_dir, state, area) = test_state("cft", &[]);
+    let (_dir, state, area) = test_state(cdp_engine(), &[]);
     let vault = Vault::new(state.clone());
     vault
         .with(|s| {
@@ -748,7 +748,7 @@ fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
         assert!(path.exists());
         let (ok, text) = exec(&state, &area, &format!("cat '{}'", path.display()));
         println!("exec: cat {file}: {}", text.trim());
-        assert!(!ok && text.contains("Operation not permitted"));
+        assert!(!ok && text.contains(HIDDEN), "{text}");
         let out = std::process::Command::new(latch())
             .args(["worker", "--area"])
             .arg(&area)
@@ -762,7 +762,13 @@ fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
             .unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         println!("file worker: read {file}: {}", stderr.trim());
-        assert!(!out.status.success() && stderr.contains("sandbox_denied"));
+        // Seatbelt refuses the read; Linux's bubblewrap leaves the file out.
+        let refused = if cfg!(target_os = "macos") {
+            "sandbox_denied"
+        } else {
+            "not_found"
+        };
+        assert!(!out.status.success() && stderr.contains(refused));
         assert!(out.stdout.is_empty());
     }
 }

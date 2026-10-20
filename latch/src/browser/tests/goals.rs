@@ -11,7 +11,7 @@ use sha2::Digest;
 
 use super::shop::serve_shop;
 use super::steps::Harness;
-use super::test_state;
+use super::{cdp_engine, test_state};
 use crate::browser::model::{Answer, Asked, CallMeta, Kind, Provider, Question};
 use crate::browser::plan::{Plan, short_step};
 use crate::failure::Failure;
@@ -263,7 +263,7 @@ fn sent(answer: &Value) -> usize {
 
 #[tokio::test]
 async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let (_dir, state, _area) = test_state(cdp_engine(), &["default"]);
     let site = serve_shop();
     let told = Arc::new(Told::default());
     let mut h = Harness::start(&state, Some(told.clone())).await;
@@ -878,7 +878,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
 
 #[tokio::test]
 async fn with_no_model_an_instruction_step_sends_nothing() {
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let (_dir, state, _area) = test_state(cdp_engine(), &["default"]);
     let site = serve_shop();
     let mut h = Harness::start(&state, None).await;
     h.open(&format!("{site}/index.html")).await;

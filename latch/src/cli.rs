@@ -309,14 +309,16 @@ pub enum ProfileCommand {
     /// directory (the host's, when run as the host)
     Create {
         name: String,
-        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
-        engine: EngineArg,
+        /// Default: the platform's own (cft, or chromium on Linux arm64)
+        #[arg(long, value_enum)]
+        engine: Option<EngineArg>,
     },
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum EngineArg {
     Cft,
+    Chromium,
     Camoufox,
 }
 

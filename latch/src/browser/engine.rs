@@ -1,9 +1,13 @@
 //! The browser engines a host runs, as plugins: Chrome for Testing (CfT),
 //! the release pinned in `cft.json`, which install.sh downloads into the
 //! state directory's plugins folder, `<state-dir>/plugins/cft/<version>/`,
-//! beside older versions, with that pin copied in as `manifest.json`; and
-//! Camoufox, pinned in `camoufox.json` with the Node and Playwright runtime
-//! its helper runs on, which install.sh adds only with `--with-camoufox`.
+//! beside older versions, with that pin copied in as `manifest.json`;
+//! Debian's Chromium, pinned in `chromium.json` for Linux arm64 (CfT's
+//! build there crashes on the Pi), unpacked from its packages into
+//! `<state-dir>/plugins/chromium/<version>/` the same way and driven by the
+//! same driver; and Camoufox, pinned in `camoufox.json` with the Node and
+//! Playwright runtime its helper runs on, which install.sh adds only with
+//! `--with-camoufox`.
 //!
 //! The pin is compiled into latch and is what counts: before every launch
 //! latch hashes the installed build's whole folder (`tree_hash`) and refuses
@@ -39,14 +43,12 @@ pub struct Pin {
     pub capabilities: Vec<String>,
 }
 
+/// What install.sh downloads and checks for a build (CfT's `url` and
+/// `zip_sha256`, Chromium's `debs` and the `packages` it needs) it reads
+/// from the pin itself.
 #[derive(Deserialize)]
 pub struct Build {
-    /// Checked by install.sh, which downloads the zip.
-    #[allow(dead_code)]
-    pub url: String,
-    #[allow(dead_code)]
-    pub zip_sha256: String,
-    /// The folder the zip unpacks to, inside the version folder.
+    /// The folder the build is unpacked to, inside the version folder.
     pub folder: String,
     /// `tree_hash` of that folder, checked before every launch.
     pub tree_sha256: String,
@@ -56,6 +58,27 @@ pub struct Build {
 
 pub static CFT: LazyLock<Pin> =
     LazyLock::new(|| serde_json::from_str(include_str!("cft.json")).expect("CfT pin"));
+
+pub static CHROMIUM: LazyLock<Pin> =
+    LazyLock::new(|| serde_json::from_str(include_str!("chromium.json")).expect("Chromium pin"));
+
+/// The pin of a profile's engine, if latch drives it over CDP.
+pub fn cdp_pin(engine: &str) -> Option<&'static Pin> {
+    match engine {
+        "cft" => Some(&CFT),
+        "chromium" => Some(&CHROMIUM),
+        _ => None,
+    }
+}
+
+/// The engine a profile gets when none is named: the CDP engine pinned for
+/// this platform, CfT where there is none.
+pub fn default_pin() -> &'static Pin {
+    [&*CFT, &*CHROMIUM]
+        .into_iter()
+        .find(|pin| platform().is_some_and(|key| pin.builds.contains_key(key)))
+        .unwrap_or(&CFT)
+}
 
 pub static CAMOUFOX: LazyLock<CamoufoxPin> =
     LazyLock::new(|| serde_json::from_str(include_str!("camoufox.json")).expect("Camoufox pin"));
@@ -347,9 +370,23 @@ mod tests {
         assert!(forbidden("--remote-debugging-port=9222"));
         assert!(forbidden("--headless=new"));
         assert!(forbidden("--no-sandbox"));
-        for key in ["mac_arm64", "mac_x64", "linux_arm64"] {
+        for key in ["mac_arm64", "mac_x64"] {
             assert!(CFT.builds.contains_key(key), "{key}");
         }
+        assert!(CHROMIUM.builds.contains_key("linux_arm64"));
+        assert!(!CHROMIUM.recipe.iter().any(|arg| forbidden(arg)));
+        assert_eq!(CHROMIUM.recipe[0], "--remote-debugging-pipe");
+    }
+
+    #[test]
+    fn each_platform_defaults_to_the_engine_pinned_for_it() {
+        let expected = match platform() {
+            Some("linux_arm64") => "chromium",
+            _ => "cft",
+        };
+        assert_eq!(default_pin().engine, expected);
+        assert_eq!(cdp_pin("chromium").unwrap().engine, "chromium");
+        assert!(cdp_pin("camoufox").is_none());
     }
 
     /// The same tree through `scripts/cft-pin.py`'s `tree_hash` gives this
@@ -415,19 +452,19 @@ mod tests {
     #[test]
     fn a_changed_build_is_refused_before_launch() {
         let state = tempfile::tempdir().unwrap();
-        let Some(key) = platform() else {
-            let none = CFT.verified(state.path()).err().unwrap();
+        let pin = default_pin();
+        let Some(build) = platform().and_then(|key| pin.builds.get(key)) else {
+            let none = pin.verified(state.path()).err().unwrap();
             assert_eq!(none.code, "unsupported_platform");
             return;
         };
-        let build = &CFT.builds[key];
-        let root = CFT.folder(state.path()).join(&build.folder);
-        let missing = CFT.verified(state.path()).err().unwrap();
+        let root = pin.folder(state.path()).join(&build.folder);
+        let missing = pin.verified(state.path()).err().unwrap();
         assert_eq!(missing.code, "engine_not_installed");
         let exe = root.join(&build.executable);
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
         fs::write(&exe, b"not chrome").unwrap();
-        let changed = CFT.verified(state.path()).err().unwrap();
+        let changed = pin.verified(state.path()).err().unwrap();
         assert_eq!(
             (changed.exit, changed.code.as_str()),
             (Exit::Denied, "engine_unverified")

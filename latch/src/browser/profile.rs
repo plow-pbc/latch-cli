@@ -146,7 +146,7 @@ fn create(profile: &Profile, engine: &str) -> io::Result<()> {
         .recursive(true)
         .mode(0o700)
         .create(profile.data())?;
-    if engine == "cft" {
+    if super::engine::cdp_pin(engine).is_some() {
         fs::create_dir_all(profile.data().join("Default"))?;
         let preferences = json!({
             "credentials_enable_service": false,

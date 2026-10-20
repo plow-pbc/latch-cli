@@ -41,7 +41,7 @@ pub mod runtime;
 pub mod session;
 mod steps;
 pub mod tags;
-// Uses macOS's own sandbox query; the Linux engine has its own tests.
-#[cfg(all(test, target_os = "macos"))]
+// Real engines: on macOS always, on Linux only where one is installed.
+#[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
 mod tests;
 pub mod worker;

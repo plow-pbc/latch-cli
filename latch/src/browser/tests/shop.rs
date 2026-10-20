@@ -25,7 +25,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{HEADLESS, latch, test_state};
+use super::{HEADLESS, cdp_engine, latch, test_state};
 use crate::browser::plan::{self, Plan};
 use crate::browser::session::Session;
 
@@ -304,7 +304,7 @@ fn the_plan_suite_is_well_formed() {
 
 #[tokio::test]
 async fn each_checker_tells_its_right_state_from_the_near_misses() {
-    let (_dir, state, _area) = test_state("cft", &["b5c-shop"]);
+    let (_dir, state, _area) = test_state(cdp_engine(), &["b5c-shop"]);
     let site = serve_shop();
     let mut session = Session::start_with(
         &latch(),
@@ -370,7 +370,7 @@ async fn each_checker_tells_its_right_state_from_the_near_misses() {
 
 #[tokio::test]
 async fn the_view_shows_what_a_decision_needs() {
-    let (_dir, state, _area) = test_state("cft", &["b5c-view"]);
+    let (_dir, state, _area) = test_state(cdp_engine(), &["b5c-view"]);
     let site = serve_shop();
     let mut session = Session::start_with(
         &latch(),
@@ -610,7 +610,7 @@ async fn the_plan_suite_on_the_decision_model() {
             .to_string(),
     );
     std::fs::create_dir_all(&run).unwrap();
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let (_dir, state, _area) = test_state(cdp_engine(), &["default"]);
     let site = serve_shop();
     let mut h = Harness::start(&state, Some(std::sync::Arc::new(plow))).await;
     let card = h

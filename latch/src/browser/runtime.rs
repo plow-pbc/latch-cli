@@ -161,7 +161,7 @@ impl Runtime {
         })
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
     pub fn scratch(&self) -> std::path::PathBuf {
         self.worker
             .try_lock()

@@ -264,7 +264,7 @@ impl Browsers {
     }
 
     /// Tests only: the session `id`, whoever opened it.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
     pub(super) async fn session_for_test(&self, id: &str) -> Arc<Entry> {
         self.get(id).await.expect("a live session")
     }
