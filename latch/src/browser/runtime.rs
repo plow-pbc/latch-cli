@@ -123,8 +123,8 @@ impl Runtime {
         if headless {
             command.arg("--headless");
         }
-        if let Some(display) = super::display::for_runtime(headless) {
-            command.arg("--display").arg(display);
+        if super::display::for_runtime(headless) {
+            command.arg("--private-display");
         }
         let mut child = command
             .env_clear()

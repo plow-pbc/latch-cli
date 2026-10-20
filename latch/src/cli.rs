@@ -500,9 +500,9 @@ pub struct BrowserWorkerArgs {
     /// Run the engine with no window (the host's `--headless-browsers`)
     #[arg(long)]
     pub headless: bool,
-    /// Linux: the X display for the engine, or `private` to start one
+    /// Linux: start a private Xvfb display for the engine
     #[arg(long)]
-    pub display: Option<String>,
+    pub private_display: bool,
 }
 
 /// Arguments the host gives a worker (see `worker.rs`).

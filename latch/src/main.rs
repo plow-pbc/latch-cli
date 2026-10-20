@@ -76,7 +76,7 @@ fn main() -> ExitCode {
                     Duration::from_secs(args.idle_timeout),
                     Duration::from_secs(args.call_limit),
                     args.headless,
-                    args.display.as_deref(),
+                    args.private_display,
                 ),
                 Err(failure) => {
                     eprintln!("{}", failure.to_json());

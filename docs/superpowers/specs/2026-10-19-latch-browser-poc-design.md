@@ -54,7 +54,7 @@ In scope: §1, on macOS hosts first and Linux hosts (the Pi) second. Not in the 
 
 - **Engine / driver:** the browser program, and the code controlling one family of engines.
 - **Profile:** a latch-owned browser data folder, bound to one engine for life. It holds logins, cookies and site storage.
-- **Profile runtime:** the one running browser on a profile, with its worker and, on a screenless host, its display. It is started by the first session that needs it, and it ends when the profile's last session closes.
+- **Profile runtime:** the one running browser on a profile, with its worker and, on Linux, its display. It is started by the first session that needs it, and it ends when the profile's last session closes.
 - **Session:** one task's share of a profile runtime.
   - Its own background window, the tabs its actions open, its snapshots, downloads, plans and trail.
   - Reachable only by the caller that opened it, and only with its id (§5.1).
@@ -581,11 +581,11 @@ This holds for the standalone `fill`, a literal `fill` step and a chosen bundle 
   - **Only `handoff` brings a window to the front.** A plan stop, a dialog, a download or a popup never does.
   - Anti-throttling switches keep background windows rendering normally.
   - This is a conformance test on each headed host (§10).
-- **On a screenless Linux host,** each profile runtime's worker starts **one private Xvfb display**.
+- **On a Linux host,** each headed profile runtime's worker starts **one private Xvfb display**, inside the runtime's bubblewrap.
   - The runtime's sessions are windows on it.
   - The display lives as long as the runtime: closing one session never tears it down while another session still uses the runtime.
   - Each profile runtime has its own display.
-  - A Pi with a monitor uses its desktop.
+  - **A Linux host never uses its desktop,** even with a monitor: the engine never gets the host's `DISPLAY`, so a Linux host always answers `handoff` with `no_screen` (sous, 2026-10-20).
 
 ## 9. The vault
 
@@ -643,7 +643,7 @@ This holds for the standalone `fill`, a literal `fill` step and a chosen bundle 
 
 - two sessions on one runtime keep their tabs, downloads (same file name at once) and dialogs apart, while sharing cookies;
 - a pause holds across both sessions;
-- closing one session leaves the other's browser (and, on a screenless host, its display) working;
+- closing one session leaves the other's browser (and, on Linux, its display) working;
 - **headed focus:** with another app frontmost, nothing activates the browser: launch, a new session window, a new tab, a popup, a download, a dialog, a page's modal passkey prompt (B5d). Only `handoff` does.
 
 ## 11. Audit
@@ -1001,7 +1001,7 @@ Done when: on the Mac a handoff pauses the agent, the dashboard shows it, `latch
 ### Chunk B7: Linux and the Pi
 Implements: §8's one Xvfb display per profile runtime; §12 Linux install (CfT linux-arm64, Xvfb); the bubblewrap browser worker per profile runtime. Answers §14 questions 1 and 3 for Linux.
 Interfaces: consumes B1–B6 and B2b · produces a working Linux/Pi browser host.
-Done when: on the Pi dev host (`~/latch-dev/`), CfT runs headed on a private Xvfb display inside bubblewrap with Chrome's sandbox on; a client on the Mac opens a public site, observes, acts, and receives a screenshot from the Pi; a vault login works there with the 0600 key; `handoff` returns `needs_owner` with `no_screen` at once; the exec-side port and key checks pass. On the Pi, two sessions on one profile share one runtime and one display; closing one leaves the other's browser and display working; a session on a second profile gets its own runtime and display. If CfT linux-arm64 fails, stop and report before switching to Debian Chromium.
+Done when: on the Pi dev host (`~/latch-dev/`), CfT runs headed on a private Xvfb display inside bubblewrap with Chrome's sandbox on, and never on the host's own `DISPLAY`, even when the serving shell has one; a client on the Mac opens a public site, observes, acts, and receives a screenshot from the Pi; a vault login works there with the 0600 key; `handoff` returns `needs_owner` with `no_screen` at once; the exec-side port and key checks pass. On the Pi, two sessions on one profile share one runtime and one display; closing one leaves the other's browser and display working; a session on a second profile gets its own runtime and display. If CfT linux-arm64 fails, stop and report before switching to Debian Chromium.
 
 ### Chunk B8: Camoufox as the second engine
 Implements: §10 Camoufox engine (Node helper, pinned runtime, JSON-lines driver ops), `install.sh --with-camoufox`; the conformance suite as a reusable runner for any driver.

@@ -17,9 +17,9 @@
 //! the handoff ends, by `done` or by its deadline, every ref from before it
 //! is refused and the answer carries a fresh look at the page.
 //!
-//! A host with no screen a person could use (a screenless Linux host, its
-//! browsers on a private display, or a host whose browsers run headless)
-//! answers `needs_owner` with reason `no_screen` at once.
+//! A host with no screen a person could use (a Linux host, its browsers on
+//! private displays, or a host whose browsers run headless) answers
+//! `needs_owner` with reason `no_screen` at once.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,12 +49,8 @@ pub fn screen(headless: bool) -> bool {
         return false;
     }
     // A Mac host runs in its owner's login session, on its screen. A Linux
-    // host has one only with a display of its own: a runtime's private
-    // Xvfb display is nobody's screen.
+    // host's browsers are on private Xvfb displays, nobody's screen.
     cfg!(target_os = "macos")
-        || ["DISPLAY", "WAYLAND_DISPLAY"]
-            .iter()
-            .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
 }
 
 /// The answer on a host with no screen: only the owner could do this, and
@@ -295,9 +291,14 @@ mod tests {
     #[test]
     fn a_headless_host_has_no_screen_to_hand_off_on() {
         assert!(!screen(true));
-        if cfg!(target_os = "macos") {
-            assert!(screen(false));
-        }
+        // A Linux host has none whatever its environment says: its
+        // headed runtimes are on private displays.
+        assert_eq!(screen(false), cfg!(target_os = "macos"));
+        assert_eq!(
+            super::super::display::for_runtime(false),
+            cfg!(target_os = "linux")
+        );
+        assert!(!super::super::display::for_runtime(true));
         let failure = no_screen("this needs the owner (captcha)");
         assert_eq!(
             (failure.code.as_str(), &failure.details["reason"]),

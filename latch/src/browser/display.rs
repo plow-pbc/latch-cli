@@ -1,4 +1,4 @@
-//! A screenless Linux host's private display: one Xvfb server per profile
+//! A Linux host's private display: one Xvfb server per headed profile
 //! runtime, started by its worker before the engine and stopped with it.
 //! The runtime's sessions are windows on it; closing one session leaves it
 //! up while another still uses the runtime, and each runtime has its own.
@@ -8,8 +8,8 @@
 //! abstract socket, which anything sharing the host's network could reach.
 //! The engine is given that file's path, never `:N`, which X clients look
 //! up as an abstract socket first and would find another server's there.
-//! A Linux host with a screen passes its own `DISPLAY` instead; a Mac needs
-//! neither.
+//! A Linux host never gives the engine its own `DISPLAY`, screen or not; a
+//! Mac needs no display.
 
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -19,21 +19,10 @@ use std::time::{Duration, Instant};
 
 use crate::failure::Failure;
 
-/// What the host asks the worker for: `private` for a display of its own.
-pub const PRIVATE: &str = "private";
-
-/// The display a headed runtime's engine uses: none on a Mac; on Linux,
-/// the host's own (`DISPLAY`), or a private one when it has none.
-pub fn for_runtime(headless: bool) -> Option<String> {
-    if headless || cfg!(target_os = "macos") {
-        return None;
-    }
-    Some(
-        std::env::var("DISPLAY")
-            .ok()
-            .filter(|display| !display.is_empty())
-            .unwrap_or_else(|| PRIVATE.to_string()),
-    )
+/// Whether a runtime's worker starts a private display: on Linux, for
+/// every headed runtime.
+pub fn for_runtime(headless: bool) -> bool {
+    !headless && cfg!(target_os = "linux")
 }
 
 /// How long Xvfb may take to say which display it took.

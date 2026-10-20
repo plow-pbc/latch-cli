@@ -411,17 +411,17 @@ answer is `handed_back` with a fresh look at the page; every ref from
 before the handoff is refused with `stale_snapshot`. At the deadline the
 session is the agent's again (`timeout`), its old refs refused the same.
 
-A host with no screen a person could use (a Linux host without a display
-of its own, or any host started with `--headless-browsers`) answers
-`handoff` with `needs_owner` and `"reason": "no_screen"` at once. On such a
-Linux host,
-each profile runtime's worker starts a private Xvfb display (`-displayfd`)
+A host with no screen a person could use (any Linux host, or any host
+started with `--headless-browsers`) answers `handoff` with `needs_owner`
+and `"reason": "no_screen"` at once. On Linux, each headed profile
+runtime's worker starts a private Xvfb display (`-displayfd`)
 for its engine, up for as long as the runtime. It listens only on its
 socket file in the runtime's private `/tmp`: no TCP port and no abstract
 socket, which anything on the host's network namespace could reach. The
 engine's `DISPLAY` is that file's path, not `:N`, which X clients look up
 as an abstract socket first and could find another server's there. A
-Linux host with a screen gives the engine its own `DISPLAY`.
+Linux host never gives the engine its own `DISPLAY`, even with a monitor
+attached: its desktop is outside the runtime's bubblewrap.
 
 ## The engine is not inside latch's Seatbelt
 
