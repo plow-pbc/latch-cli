@@ -13,7 +13,6 @@ use serde::Serialize;
 
 use crate::cli::{BUILD_API_URL, LoginArgs};
 use crate::credential;
-use crate::devices;
 use crate::failure::Failure;
 use crate::heartbeat;
 use crate::plow::{Peer, Plow, Registration};
@@ -27,9 +26,6 @@ const POLL: Duration = Duration::from_secs(3);
 pub struct LoginOutput {
     pub peer: Peer,
     pub key_created: bool,
-    /// The machine this login took the name from, if it replaced one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub replaced: Option<Peer>,
 }
 
 /// Where this login's credential comes from.
@@ -123,7 +119,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
         ..registration
     };
-    let (peer, replaced) = match plow.register(&registration).await {
+    let peer = match plow.register(&registration).await {
         // Two agents may share a name: unless one was asked for, try once
         // more as the name plus the start of this agent's uid.
         Err(failure) if failure.code == "conflict" && !owner && !named => {
@@ -136,7 +132,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
                 name: Some(format!("{name}-{}", &me.uid[..6.min(me.uid.len())])),
                 ..registration.clone()
             };
-            (plow.register(&suffixed).await?, None)
+            plow.register(&suffixed).await?
         }
         // Another of the owner's machines may hold the name.
         Err(failure) if failure.code == "conflict" && owner => {
@@ -152,16 +148,15 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             match plow.register(&take_over).await {
                 Ok(peer) => {
                     eprintln!("The name {name} now points to this machine.");
-                    (peer, None)
+                    peer
                 }
                 Err(failure) if failure.code == "conflict" => {
-                    let replaced = replace_machine(&plow, name, &registration.key).await?;
-                    (plow.register(&registration).await?, Some(replaced))
+                    return Err(clash(&plow, name, &registration.key).await);
                 }
                 Err(failure) => return Err(failure),
             }
         }
-        result => (result?, None),
+        result => result?,
     };
 
     // Save only after Plow accepted us, so a failed first login leaves no
@@ -174,11 +169,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         api_url,
         peer: peer.clone(),
     })?;
-    Ok(LoginOutput {
-        peer,
-        key_created,
-        replaced,
-    })
+    Ok(LoginOutput { peer, key_created })
 }
 
 /// Registers this peer again as it last was, when Plow no longer lists it:
@@ -262,40 +253,27 @@ fn open_messages(send_to: &str, text: &str) {
     }
 }
 
-/// The name is taken. If another of the owner's machines holds it, a person
-/// at the terminal may replace that machine, which signs it out; otherwise
-/// the login stops and says what to do. A name an agent holds is never
-/// offered for replacement.
-async fn replace_machine(plow: &Plow, name: &str, key: &str) -> Result<Peer, Failure> {
-    let peers = plow.list_peers().await?;
+/// The name is taken by another peer: the login stops and says by whom
+/// and what to do. It never renames this machine or replaces the other.
+async fn clash(plow: &Plow, name: &str, key: &str) -> Failure {
+    let peers = plow.list_peers().await.unwrap_or_default();
     let holder = peers.iter().find(|peer| peer.name == name);
-    let Some(machine) = holder.filter(|peer| peer.kind == "device" && peer.key != key) else {
-        let message = match holder {
-            Some(peer) if peer.kind == "agent" => {
-                format!("the name {name:?} belongs to an agent; choose another --name")
-            }
-            _ => format!(
-                "this key or the name {name:?} is taken by another peer; choose another --name"
-            ),
-        };
-        return Err(Failure::usage("conflict", message));
+    let message = match holder {
+        Some(peer) if peer.kind == "agent" => {
+            format!("the name {name:?} belongs to an agent; choose another --name")
+        }
+        Some(machine) if machine.key != key => {
+            let last_seen = machine.last_seen_at.as_deref().unwrap_or("never");
+            format!(
+                "a machine named {name:?} already exists (last seen {last_seen}); \
+                 remove it with `latch devices remove {name}`, or choose another --name"
+            )
+        }
+        _ => {
+            format!("this key or the name {name:?} is taken by another peer; choose another --name")
+        }
     };
-    let last_seen = machine.last_seen_at.as_deref().unwrap_or("never");
-    if !term::interactive() {
-        let message = format!(
-            "a machine named {name:?} already exists (last seen {last_seen}); \
-             remove it with `latch devices remove {name}`, or choose another --name"
-        );
-        return Err(Failure::usage("conflict", message));
-    }
-    let question = format!(
-        "A machine named {name} already exists (last seen {last_seen}). Replace it? This signs that machine out."
-    );
-    if !term::confirm(&question) {
-        let message = format!("kept the machine named {name:?}; choose another --name");
-        return Err(Failure::usage("conflict", message));
-    }
-    devices::remove_from_plow(plow, machine).await
+    Failure::usage("conflict", message)
 }
 
 /// `text` percent-encoded for a URL: letters, digits and `-._~` stay as

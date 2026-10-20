@@ -78,6 +78,10 @@ fn test_dir() -> tempfile::TempDir {
 /// `latch --state-dir STATE ARGS...`, with none of the caller's latch or
 /// Plow environment leaking in.
 fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
+    latch_command(state, args, env).output().unwrap()
+}
+
+fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
         .env_remove("PLOW_API_URL")
@@ -91,7 +95,43 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
     for (name, value) in env {
         command.env(name, value);
     }
-    command.output().unwrap()
+    command
+}
+
+/// Runs latch with its stdin and stderr on a terminal (a pty) with `typed`
+/// already typed, as a person would. Returns the exit code and everything
+/// the terminal showed.
+fn latch_at_a_terminal(state: &Path, args: &[&str], typed: &str) -> (Option<i32>, String) {
+    use std::os::fd::FromRawFd;
+    let (mut main, mut side) = (0, 0);
+    let (name, settings, size) = (
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    );
+    // SAFETY: openpty fills in two new descriptors, which we then own.
+    let opened = unsafe { libc::openpty(&mut main, &mut side, name, settings, size) };
+    assert_eq!(opened, 0);
+    let (mut main, side) = unsafe { (fs::File::from_raw_fd(main), fs::File::from_raw_fd(side)) };
+    let mut command = latch_command(state, args, &[]);
+    command
+        .stdin(side.try_clone().unwrap())
+        .stderr(side.try_clone().unwrap())
+        .stdout(std::process::Stdio::null());
+    let mut child = command.spawn().unwrap();
+    drop(command);
+    drop(side);
+    main.write_all(typed.as_bytes()).unwrap();
+    let mut reading = main.try_clone().unwrap();
+    let shown = thread::spawn(move || {
+        let mut shown = Vec::new();
+        // Ends with an error once the last holder of the other side exits.
+        let _ = reading.read_to_end(&mut shown);
+        String::from_utf8_lossy(&shown).to_string()
+    });
+    let code = child.wait().unwrap().code();
+    drop(main);
+    (code, shown.join().unwrap())
 }
 
 /// Plow's answer to `GET /v1/agents/me`.
@@ -434,6 +474,39 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
 }
 
 #[test]
+fn a_name_clash_stops_a_login_at_a_terminal_too() {
+    let holder = peer(json!("c".repeat(64)), "mac", "device", Value::Null);
+    let (api_url, server) = fake_plow(vec![
+        (409, json!({})),
+        (409, json!({})),
+        (200, json!({"data": [holder]})),
+    ]);
+    let dir = test_dir();
+    let owner_token = dir.path().join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let state = dir.path().join("state");
+    let owner = owner_token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &api_url,
+        "--token-file",
+        owner,
+        "--name",
+        "mac",
+    ];
+
+    // Even a person ready to say yes is not asked to replace the machine.
+    let (code, shown) = latch_at_a_terminal(&state, &args, "y\n");
+    assert_eq!(code, Some(2), "{shown}");
+    assert!(shown.contains("\"conflict\""), "{shown}");
+    assert!(shown.contains("latch devices remove mac"), "{shown}");
+    assert!(!shown.contains("Replace it?"), "{shown}");
+    assert!(!state.join("config.json").exists());
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+#[test]
 fn serving_before_any_login_says_to_log_in() {
     let dir = test_dir();
     let area = dir.path().join("shared");
@@ -625,4 +698,323 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "stdin_timeout");
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// One HTTP request as a fake reads it: the head (request line and
+/// headers, lowercased names) and the body.
+struct Http {
+    head: String,
+    body: Vec<u8>,
+}
+
+impl Http {
+    fn read(reader: &mut impl BufRead) -> Option<Http> {
+        let mut head = String::new();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).ok()? == 0 {
+                return None;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().ok()?;
+            }
+            head.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).ok()?;
+        Some(Http { head, body })
+    }
+
+    fn line(&self) -> &str {
+        self.head.lines().next().unwrap_or_default()
+    }
+
+    fn bearer(&self) -> Option<String> {
+        self.head.lines().find_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower
+                .strip_prefix("authorization: bearer ")
+                .map(|_| line["authorization: bearer ".len()..].trim().to_string())
+        })
+    }
+}
+
+fn respond(socket: &mut impl Write, status: u16, body: &Value) {
+    let body = body.to_string();
+    let head = format!(
+        "HTTP/1.1 {status} Fake\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = socket.write_all(head.as_bytes());
+    let _ = socket.write_all(body.as_bytes());
+}
+
+const AGENT_UID: &str = "0123456789abcdef0123456789abcdef";
+
+/// A fake Plow with state, for as many requests as come: one owner login
+/// and one agent whose credential can be rotated. Like Plow, it lists and
+/// looks up only peers whose credential is still live, and a registration
+/// with a live credential replaces a dead row with the same key.
+#[derive(Clone)]
+struct LivePlow {
+    url: String,
+    state: std::sync::Arc<std::sync::Mutex<LiveState>>,
+}
+
+struct LiveState {
+    owner: String,
+    agent: String,
+    /// Each peer with the credential that registered it.
+    peers: Vec<(Value, String)>,
+    /// Request lines and their bearers, in order.
+    seen: Vec<(String, Option<String>)>,
+}
+
+impl LivePlow {
+    fn start() -> LivePlow {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let plow = LivePlow {
+            url: format!("http://{}", listener.local_addr().unwrap()),
+            state: std::sync::Arc::new(std::sync::Mutex::new(LiveState {
+                owner: "owner-login".to_string(),
+                agent: "agent-credential".to_string(),
+                peers: Vec::new(),
+                seen: Vec::new(),
+            })),
+        };
+        let serving = plow.clone();
+        thread::spawn(move || {
+            for socket in listener.incoming() {
+                let plow = serving.clone();
+                thread::spawn(move || {
+                    let mut socket = socket.unwrap();
+                    let mut reader = BufReader::new(socket.try_clone().unwrap());
+                    if let Some(request) = Http::read(&mut reader) {
+                        let (status, body) = plow.answer(&request);
+                        respond(&mut socket, status, &body);
+                    }
+                });
+            }
+        });
+        plow
+    }
+
+    /// The agent's credential is replaced: the old one stops working, and
+    /// its peer is no longer live.
+    fn rotate(&self, new: &str) {
+        self.state.lock().unwrap().agent = new.to_string();
+    }
+
+    fn seen(&self) -> Vec<(String, Option<String>)> {
+        self.state.lock().unwrap().seen.clone()
+    }
+
+    fn answer(&self, request: &Http) -> (u16, Value) {
+        let mut state = self.state.lock().unwrap();
+        let bearer = request.bearer();
+        state
+            .seen
+            .push((request.line().to_string(), bearer.clone()));
+        let token = bearer.unwrap_or_default();
+        let kind = if token == state.owner {
+            "device"
+        } else if token == state.agent {
+            "agent"
+        } else {
+            return (401, json!({}));
+        };
+        let live = |state: &LiveState, credential: &String| {
+            *credential == state.owner || *credential == state.agent
+        };
+        let mut words = request.line().split(' ');
+        let (method, path) = (words.next().unwrap(), words.next().unwrap());
+        match (method, path) {
+            ("POST", "/v1/latch/peers") => {
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                let name = sent["name"].as_str().unwrap_or("agent");
+                let peer = peer(sent["key"].clone(), name, kind, sent["relay_url"].clone());
+                let taken = state.peers.iter().any(|(other, credential)| {
+                    other["key"] == sent["key"] && live(&state, credential) && *credential != token
+                });
+                if taken {
+                    return (409, json!({}));
+                }
+                state.peers.retain(|(other, _)| other["key"] != sent["key"]);
+                state.peers.push((peer.clone(), token));
+                (200, peer)
+            }
+            ("GET", "/v1/latch/peers") => {
+                let listed: Vec<Value> = state
+                    .peers
+                    .iter()
+                    .filter(|(_, credential)| live(&state, credential))
+                    .map(|(peer, _)| peer.clone())
+                    .collect();
+                (200, json!({"data": listed}))
+            }
+            ("GET", "/v1/agents/me") if kind == "agent" => (
+                200,
+                json!({"agent": {"uid": AGENT_UID, "name": "Research bot"}}),
+            ),
+            ("GET", path) if path.starts_with("/v1/latch/peers/") => {
+                let key = &path["/v1/latch/peers/".len()..];
+                let found = state
+                    .peers
+                    .iter()
+                    .find(|(peer, credential)| peer["key"] == key && live(&state, credential));
+                match found {
+                    Some((peer, _)) => {
+                        let uid = (peer["kind"] == "agent").then_some(AGENT_UID);
+                        (
+                            200,
+                            json!({"key": key, "kind": peer["kind"], "name": peer["name"],
+                                   "agent_uid": uid, "permissions": {"call": true}}),
+                        )
+                    }
+                    None => (404, json!({})),
+                }
+            }
+            ("POST", path) if path.ends_with("/offline") => (200, json!({})),
+            _ => (404, json!({})),
+        }
+    }
+}
+
+/// A stand-in for exe.dev's proxy: every request it forwards to `upstream`
+/// gains the agent's credential as a bearer, as the VM never holds it.
+fn adding_proxy(upstream: &str, credential: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = upstream.trim_start_matches("http://").to_string();
+    let header = format!("Authorization: Bearer {credential}\r\n");
+    thread::spawn(move || {
+        for socket in listener.incoming() {
+            let mut socket = socket.unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let Some(request) = Http::read(&mut reader) else {
+                continue;
+            };
+            let (line, rest) = request.head.split_once("\r\n").unwrap();
+            let mut forwarded = std::net::TcpStream::connect(&upstream).unwrap();
+            let head = format!("{line}\r\n{header}{rest}");
+            forwarded.write_all(head.as_bytes()).unwrap();
+            forwarded.write_all(&request.body).unwrap();
+            let mut answer = Vec::new();
+            forwarded.read_to_end(&mut answer).unwrap();
+            socket.write_all(&answer).unwrap();
+        }
+    });
+    url
+}
+
+#[test]
+fn a_cloud_agent_logs_in_through_a_proxy_that_adds_its_credential() {
+    let plow = LivePlow::start();
+    let proxy = adding_proxy(&plow.url, "agent-credential");
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let env = [
+        ("PLOW_API_BASE", Path::new(&proxy)),
+        ("PLOW_TOKEN_FILE", &dir.path().join("none")),
+    ];
+
+    let login = latch(&state, &["login"], &env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let output: Value = serde_json::from_slice(&login.stdout).unwrap();
+    assert_eq!(output["peer"]["kind"], "agent");
+    assert_eq!(output["peer"]["name"], "Research bot");
+    let status = latch(&state, &["status"], &env);
+    assert_eq!(status.status.code(), Some(0), "{status:?}");
+
+    // Plow saw the proxy's credential on every call; latch sent none.
+    let seen = plow.seen();
+    assert!(seen.len() >= 3, "{seen:?}");
+    for (line, bearer) in seen {
+        assert_eq!(bearer.as_deref(), Some("agent-credential"), "{line}");
+    }
+}
+
+#[test]
+#[ignore = "needs the internet: runs a real `latch serve` on iroh's public relays"]
+fn a_rotated_agent_registers_again_and_its_next_call_runs() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let owner_token = dir.path().join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let (host, agent) = (dir.path().join("host"), dir.path().join("agent"));
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let owner = owner_token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner,
+        "--name",
+        "host",
+    ];
+    assert_eq!(latch(&host, &args, &[]).status.code(), Some(0));
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+
+    // The host, until it has registered its relay.
+    let mut serve = Command::new(env!("CARGO_BIN_EXE_latch"))
+        .args([
+            "--state-dir",
+            host.to_str().unwrap(),
+            "serve",
+            "--no-dashboard",
+        ])
+        .arg(&share)
+        .env_remove("LATCH_HOST")
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut log = BufReader::new(serve.stderr.take().unwrap());
+    loop {
+        let mut line = String::new();
+        assert_ne!(log.read_line(&mut line).unwrap(), 0, "serve stopped");
+        if line.contains("heartbeat: registered") {
+            break;
+        }
+    }
+    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    let exec = |word: &str| {
+        latch(
+            &agent,
+            &["exec", "--host", "host", "--", "echo", word],
+            &agent_env,
+        )
+    };
+
+    let before = exec("before");
+    assert_eq!(before.status.code(), Some(0), "{before:?}");
+
+    // Rotated: Plow forgets the agent's peer until it registers again.
+    plow.rotate("agent-rotated");
+    fs::write(&agent_token, "agent-rotated\n").unwrap();
+    let after = exec("after");
+
+    // SAFETY: signals our own child.
+    unsafe { libc::kill(serve.id() as i32, libc::SIGTERM) };
+    serve.wait().unwrap();
+    assert_eq!(after.status.code(), Some(0), "{after:?}");
+    let result: Value = serde_json::from_slice(&after.stdout).unwrap();
+    assert_eq!(result["stdout"], "after\n");
+    let seen = plow.seen();
+    let again = seen.iter().position(|(line, bearer)| {
+        line.starts_with("POST /v1/latch/peers ") && bearer.as_deref() == Some("agent-rotated")
+    });
+    assert!(
+        again.is_some(),
+        "no registration with the new credential: {seen:?}"
+    );
 }
