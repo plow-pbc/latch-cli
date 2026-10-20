@@ -44,8 +44,8 @@ pub struct RuleFiles {
 }
 
 impl RuleFiles {
-    /// The rules folder in `state_dir`, checked once: every file is the
-    /// host's or a Plow agent uid's, none resolves into a shared folder
+    /// The rules folder in `state_dir`, checked once: every `.txt` file is
+    /// the host's or a Plow agent uid's, none resolves into a shared folder
     /// (where an agent could rewrite it), and no agent's rules come to
     /// more than [`MAX_RULES`].
     pub fn new(state_dir: &Path, shared: &[PathBuf]) -> Result<RuleFiles, Failure> {
@@ -63,7 +63,11 @@ impl RuleFiles {
                 .map_err(|err| refuse(format!("cannot read {}: {err}", dir.display())))?
                 .path();
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            let agent = name.strip_suffix(".txt").filter(|a| is_agent_uid(a));
+            // Only `.txt` files are rules; others here are not the gatekeeper's.
+            let Some(stem) = name.strip_suffix(".txt") else {
+                continue;
+            };
+            let agent = Some(stem).filter(|a| is_agent_uid(a));
             if name != HOST_FILE && agent.is_none() {
                 return Err(refuse(format!(
                     "{} is neither {HOST_FILE} nor <agent uid>.txt, with a Plow agent uid (32 lowercase hex characters)",

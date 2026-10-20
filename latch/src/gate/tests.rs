@@ -720,7 +720,6 @@ fn serve_refuses_rules_it_could_not_trust_or_use() {
         "ag_7Hk2.txt",
         "0123456789ABCDEF0123456789ABCDEF.txt",
         "juno.txt",
-        "notes.md",
     ] {
         write(bad, 10);
         assert!(refused().unwrap().contains("Plow agent uid"), "{bad}");
@@ -733,8 +732,11 @@ fn serve_refuses_rules_it_could_not_trust_or_use() {
     std::os::unix::fs::symlink(&inside, &link).unwrap();
     assert!(refused().unwrap().contains("inside the shared folder"));
     std::fs::remove_file(&link).unwrap();
-    std::os::unix::fs::symlink(&shared, rules.join("linked")).unwrap();
-    assert!(refused().is_some(), "a folder link is refused too");
+
+    // Files that are not `.txt` are not rules, and are left alone.
+    write(&format!("{AGENT}.peer"), 20_000);
+    write("notes.md", 10);
+    assert_eq!(refused(), None);
 }
 
 #[tokio::test]
