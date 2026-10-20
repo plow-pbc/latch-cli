@@ -1070,7 +1070,7 @@ impl Provider for Jev {
 
 /// Jev as Plow's decision route asks it on OpenRouter.
 pub const PLOW_MODEL: &str = "typesafe/jev-1.13";
-const PLOW_ROUTE: &str = "/v1/latch/decide";
+const PLOW_ROUTE: &str = "/v1/decisions";
 
 /// Plow's decision route, on the host's own Plow login: the host holds no
 /// model key. Plow asks Jev and passes its answers back.
@@ -1127,7 +1127,9 @@ impl Provider for Plow {
             let status = response.status();
             if !status.is_success() {
                 return Err(match status.as_u16() {
-                    429 => "Plow's decision route is rate limited for this host".to_string(),
+                    402 => "this host's Plow account is out of credits for the decision model"
+                        .to_string(),
+                    403 => "this host's Plow login may not ask the decision model".to_string(),
                     code => format!("Plow's decision route answered HTTP {code}"),
                 });
             }
@@ -1591,7 +1593,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn plow_asks_jev_on_the_hosts_login_and_its_answers_are_checked_the_same() {
-        let reply = json!({"model": "typesafe/jev-1.13", "request_id": "dec_0a1b",
+        let reply = json!({"model": "typesafe/jev-1.13", "request_id": "req_made_up",
                            "answers": {"risky": {"noul": 0.93}}});
         let (url, seen) = plow_route(200, reply);
         let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
@@ -1605,7 +1607,7 @@ pub mod tests {
             .unwrap();
         assert_eq!(p, 0.93);
         let sent = seen.recv().unwrap();
-        assert!(sent.starts_with("POST /v1/latch/decide "), "{sent}");
+        assert!(sent.starts_with("POST /v1/decisions "), "{sent}");
         assert!(
             sent.contains("authorization: Bearer made-up-login")
                 || sent.contains("Authorization: Bearer made-up-login")
@@ -1618,7 +1620,7 @@ pub mod tests {
         let call = &m.calls[0];
         assert_eq!(call["provider"], "plow");
         assert_eq!(call["model"], "typesafe/jev-1.13");
-        assert_eq!(call["model_request"], "dec_0a1b");
+        assert_eq!(call["model_request"], "req_made_up");
 
         // A bad answer through Plow is refused like any provider's.
         let (url, _seen) = plow_route(200, json!({"answers": {"risky": {"noul": 1.5}}}));
@@ -1633,6 +1635,12 @@ pub mod tests {
         let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
         assert!(m.risky("t", "click", &[]).await.is_err());
         assert!(m.why_off().contains("HTTP 503"), "{}", m.why_off());
+        for (status, says) in [(402, "out of credits"), (403, "may not ask")] {
+            let (url, _seen) = plow_route(status, json!({"detail": "made-up refusal"}));
+            let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
+            assert!(m.risky("t", "click", &[]).await.is_err());
+            assert!(m.why_off().contains(says), "{}", m.why_off());
+        }
         assert_eq!(
             m.calls[0]["provider"], "plow",
             "a failed call still names its provider"
