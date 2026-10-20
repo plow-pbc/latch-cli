@@ -226,6 +226,7 @@ impl Provider for Told {
             model: "told-1".into(),
             request_id: None,
             latency_ms: 1,
+            cost: None,
         };
         Box::pin(async move { Ok((answers, meta)) })
     }

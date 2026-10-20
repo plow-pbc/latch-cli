@@ -48,6 +48,7 @@ async fn receive(
     let request = Request {
         op: "file_get".to_string(),
         args: json!({ "remote_path": remote_path }),
+        chat: None,
     };
     let (start, done, sha256) = download(connection, &request, local).await?;
     Ok(json!({
@@ -102,6 +103,7 @@ async fn send(
     let request = Request {
         op: "file_put".to_string(),
         args: json!({ "remote_path": remote_path, "size": size, "name": name }),
+        chat: None,
     };
     let (done, sha256) = upload(connection, &request, file, size).await?;
     check_same(&done, &sha256)?;
@@ -233,6 +235,7 @@ mod tests {
         let request = Request {
             op: "file_get".into(),
             args: json!({}),
+            chat: None,
         };
         let ((), result) = tokio::join!(serving, download(&connection, &request, local));
         client.close().await;

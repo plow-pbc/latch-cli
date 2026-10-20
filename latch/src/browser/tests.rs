@@ -1558,6 +1558,7 @@ impl super::model::Provider for Calm {
             model: "calm-1".into(),
             request_id: None,
             latency_ms: 0,
+            cost: None,
         };
         Box::pin(async move { Ok((answers, meta)) })
     }

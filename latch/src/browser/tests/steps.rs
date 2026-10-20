@@ -174,6 +174,7 @@ impl Provider for Fake {
             model: "fake-1".into(),
             request_id: Some("fake".into()),
             latency_ms: 1,
+            cost: None,
         };
         let slow = if answers.contains_key("risky") {
             self.slow.load(Ordering::SeqCst)

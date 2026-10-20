@@ -86,6 +86,7 @@ async fn exchange(
     let request = wire::Request {
         op: "google".into(),
         args: serde_json::to_value(&request).expect("request serializes"),
+        chat: None,
     };
     let (mut send, mut recv) = dial::start(connection, &request).await?;
     let first = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;

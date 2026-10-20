@@ -26,6 +26,8 @@ use crate::dashboard::{self, Dashboard, Row};
 use crate::exec;
 use crate::failure::Failure;
 use crate::files;
+use crate::gate::Gatekeeper;
+use crate::gate::rules::RuleFiles;
 use crate::heartbeat;
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
@@ -49,6 +51,9 @@ struct Host {
     /// Our own endpoint and name, which a phone link points at.
     endpoint: Endpoint,
     name: String,
+    /// Judges agents' operations against the owner's chat and rules.
+    #[allow(dead_code)] // no operation is gated yet
+    gatekeeper: Gatekeeper,
 }
 
 /// How an allowed operation ended: the final answer for the client, and
@@ -101,6 +106,7 @@ pub async fn run(
         areas: shared_folders(folders)?,
         state_dir,
     };
+    let rules = RuleFiles::new(&state.path, &workers.areas)?;
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
         Failure::failed("sandbox_unavailable", message)
@@ -115,7 +121,15 @@ pub async fn run(
     } else {
         None
     };
-    let result = run_host(state, config, workers, dashboard.clone(), headless_browsers).await;
+    let result = run_host(
+        state,
+        config,
+        workers,
+        dashboard.clone(),
+        headless_browsers,
+        rules,
+    )
+    .await;
     if let Some(dashboard) = &dashboard {
         dashboard.stop();
     }
@@ -128,8 +142,15 @@ async fn run_host(
     workers: WorkerSetup,
     dashboard: Option<Dashboard>,
     headless_browsers: bool,
+    rules: RuleFiles,
 ) -> Result<(), Failure> {
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
+    let gatekeeper = Gatekeeper::new(
+        plow.clone(),
+        Gatekeeper::provider_for_host(&state.path)
+            .map_err(|why| Failure::failed("not_logged_in", why))?,
+        Box::new(rules),
+    );
     let audit = AuditLog::open(state.path.join("audit.ndjson"))?;
     log(&format!("audit log verified: {} records", audit.len()));
     let names: Vec<String> = workers
@@ -196,6 +217,7 @@ async fn run_host(
         vault,
         endpoint: endpoint.clone(),
         name,
+        gatekeeper,
     });
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
