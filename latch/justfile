@@ -37,8 +37,10 @@ phone:
 phone-serve port="8731" bind="127.0.0.1":
     python3 -m http.server {{port}} --bind {{bind}} --directory phone/dist
 
-# The phone link end to end in WebKit as an iPhone, against a running HOST,
-# with LATCH the owner's latch (phone/e2e/run.sh). Not a gate: it needs the
+# The phone link end to end against a running HOST on this machine: saved
+# from WebKit as an iPhone, used by a browser login on the host, and looked
+# for in the host's and client's files. Needs LATCH, CLIENT_STATE,
+# HOST_STATE and HOST_LOG (see phone/e2e/run.sh). Not a gate: it needs the
 # live host and its relay.
 phone-e2e host: phone
     phone/e2e/run.sh {{host}}
