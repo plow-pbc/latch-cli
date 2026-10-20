@@ -36,6 +36,7 @@ mod fill;
 pub mod handoff;
 pub mod host;
 mod journal;
+mod judged;
 pub mod model;
 pub mod plan;
 pub mod profile;

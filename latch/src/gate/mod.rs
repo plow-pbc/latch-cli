@@ -93,10 +93,32 @@ struct Done {
 
 /// One judgment: `Ok` to run the operation or the failure the agent gets,
 /// and the audit's `gate` object.
-#[allow(dead_code)] // no operation is gated yet
 pub struct Judgment {
     pub verdict: Result<(), Failure>,
     pub gate: Value,
+}
+
+/// One agent's gate, for the operations of one request: the host's
+/// gatekeeper, the agent's verified uid, and the chat it named.
+#[derive(Clone, Copy)]
+pub struct Gate<'a> {
+    pub keeper: &'a Gatekeeper,
+    pub agent: &'a str,
+    pub chat: Option<&'a str>,
+}
+
+impl Gate<'_> {
+    /// Whether the owner asked for `action`, in the judge's words for it.
+    pub async fn judge(&self, action: &impl Serialize) -> Judgment {
+        let action = serde_json::value::to_raw_value(action).expect("an action serializes");
+        self.keeper.judge(self.agent, self.chat, &action).await
+    }
+
+    /// Records `what` the agent ran, and how it ended.
+    pub fn did(&self, what: &impl Serialize, outcome: &str) {
+        let what = serde_json::to_value(what).expect("an action serializes");
+        self.keeper.did(self.agent, what, outcome);
+    }
 }
 
 /// What a judgment is built from, read fresh each time.
@@ -123,7 +145,6 @@ impl Gatekeeper {
 
     /// Whether the owner asked for `action` by agent `agent` (its verified
     /// uid), in `chat` when the agent named one.
-    #[allow(dead_code)] // no operation is gated yet
     pub async fn judge(&self, agent: &str, chat: Option<&str>, action: &RawValue) -> Judgment {
         let started = Instant::now();
         let mut gate = json!({});
@@ -138,7 +159,6 @@ impl Gatekeeper {
 
     /// Records an operation the gatekeeper let `agent` run, and how it
     /// ended, for the judge's "already done".
-    #[allow(dead_code)] // no operation is gated yet
     pub fn did(&self, agent: &str, what: Value, outcome: &str) {
         let mut done = self.done.lock().expect("gatekeeper history lock");
         let list = done.entry(agent.to_string()).or_default();

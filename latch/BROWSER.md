@@ -222,6 +222,40 @@ storage, polling); files record name, size and sha256; an
 `unsupported_capability` refusal records the capability, engine, origin
 and command.
 
+## The gatekeeper
+
+An agent's browser commands pass the host's gatekeeper, which asks
+whether the owner asked for them, in the owner's Plow chat with that
+agent and the owner's rules on the host. The owner's own devices are
+never judged. Judged, each before anything of it reaches the page:
+
+- opening a site this session has not been judged for: `open URL`, or
+  `tab new URL` on another site;
+- each plan (`do`): its steps as written with each step's values, the
+  page it starts on (URL and title), the sites it names and the vault
+  items it may fill (kind and title). A plan of one click, keypress or
+  scroll, as `act` sends, is not a plan;
+- every vault fill: a `fill`, each fill a plan makes (a literal fill step
+  or one a goal chose), and every `do --confirm` that releases a card or
+  identity: the item's kind and title, the fields and the site, never a
+  value. A refused fill in a plan stops the plan at that step, the reason
+  in its `stop`;
+- every `eval` (its script), upload and download (the file's name and
+  size).
+
+Clicks, typing, `act`, page reads, screenshots and the `--confirm` of an
+ordinary click are not judged: the risk decision, confirmations and the
+fill and pause checks above still hold. A refusal is exit 4,
+`gatekeeper_denied`, and nothing was sent: with reason `not_covered`, ask
+the owner in chat, saying exactly what you will do, then retry; with
+`owner_said_no`, don't. A gatekeeper that can't judge (the chat or the
+model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs.
+An agent whose line has more than one chat names the one it acts for
+with `--chat C` or `LATCH_CHAT`. The call's audit record holds the
+judgment as `gate` (verdict, probabilities, model, cost, latency, the
+message ids read), never chat text. `just gated-shopping HOST_STATE OUT`
+measures a shopping task's judgments on the decision model.
+
 ## Plans, literal steps and confirmations
 
 The agent writes every step and every piece of text; latch's decision
