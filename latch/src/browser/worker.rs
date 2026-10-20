@@ -32,8 +32,10 @@
 //!
 //! While a vault fill holds one session (from its first step until its
 //! cleanup is confirmed), every other session's call is refused with
-//! `session_paused`. A session with no call for `--idle-timeout` seconds
-//! ends; the browser closes when the last one has, and at the end of stdin.
+//! `session_paused`. A session ends `--idle-timeout` seconds after its
+//! last call ended; the browser closes when the last one has, and at the
+//! end of stdin. Every call's waits for the browser end by its
+//! limit (`Call::limit`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -166,6 +168,9 @@ pub fn run(
             _ => None,
         };
         let key = line["session"].as_str().unwrap_or_default().to_string();
+        // Every wait for the engine in this call, together, ends by then.
+        let deadline = Instant::now() + call.limit();
+        browser.borrow_mut().limit(Some(deadline));
         let held = sessions
             .iter()
             .any(|(other, live)| *other != key && live.core.is_paused());
@@ -210,7 +215,7 @@ pub fn run(
                 // touches a page.
                 Some(_) if held && !matches!(call, Call::Tabs | Call::Forget) => Err(paused()),
                 Some(live) => {
-                    live.last = Instant::now();
+                    live.core.limit(deadline);
                     let reserved: Vec<&str> = line["reserved"]
                         .as_array()
                         .into_iter()
@@ -225,7 +230,7 @@ pub fn run(
                             .into_iter()
                             .find(|site| reserved.contains(&site.as_str()))
                     };
-                    match busy {
+                    let reply = match busy {
                         Some(site) => Err(site_busy(&site)),
                         None => live.core.call(call, input).map_err(|mut failure| {
                             if failure.code != "browser_gone" {
@@ -233,10 +238,16 @@ pub fn run(
                             }
                             failure
                         }),
-                    }
+                    };
+                    // Idle from the end of its call: a call that took
+                    // longer than the idle timeout does not end it.
+                    live.last = Instant::now();
+                    reply
                 }
             },
         };
+        browser.borrow_mut().limit(None);
+        last_call = Instant::now();
         match reply {
             Ok(done) => {
                 let mut reply = json!({"result": done.result, "audit": done.audit});
