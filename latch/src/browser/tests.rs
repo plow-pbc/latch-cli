@@ -20,6 +20,7 @@ use super::host::{self, Browsers};
 use super::profile;
 
 mod fills;
+mod shop;
 mod steps;
 use super::session::Session;
 

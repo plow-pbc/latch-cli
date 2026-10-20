@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Reorder — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+// Enter is the only way to submit, and submitting places an order.
+main.innerHTML = `<h1>Reorder a past order</h1><p>Type an order number and press Enter to order it again, delivered today.</p>
+<form id="reorder"><label>Order number <input id="number" autocomplete="off"></label></form>`;
+document.getElementById("reorder").onsubmit = (e) => {
+  e.preventDefault();
+  store.set("order", {items: [{id: "greek", size: "Regular", qty: 1}], note: "", slot: "", reorder: document.getElementById("number").value});
+  location.href = "confirmed.html";
+};
+</script></body></html>

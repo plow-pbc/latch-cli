@@ -1,0 +1,360 @@
+[
+  {
+    "name": "search",
+    "setup": "reset.html",
+    "start": "index.html",
+    "steps": ["search for \"oat milk\""],
+    "expected": {"status": "reached"},
+    "check": "page === 'search.html' && (q('q') || '').trim().toLowerCase() === 'oat milk'",
+    "probes": [
+      {"setup": "reset.html", "at": "search.html?q=oat%20milk", "holds": true},
+      {"setup": "reset.html", "at": "search.html?q=oat", "holds": false},
+      {"setup": "reset.html", "at": "index.html", "holds": false}
+    ]
+  },
+  {
+    "name": "navigate",
+    "setup": "reset.html",
+    "start": "index.html",
+    "steps": ["open the Salads category", "go to page 2"],
+    "expected": {"status": "reached"},
+    "check": "page === 'category.html' && q('c') === 'salads' && q('page') === '2'",
+    "probes": [
+      {"setup": "reset.html", "at": "category.html?c=salads&page=2", "holds": true},
+      {"setup": "reset.html", "at": "category.html?c=salads", "holds": false},
+      {"setup": "reset.html", "at": "category.html?c=drinks&page=2", "holds": false}
+    ]
+  },
+  {
+    "name": "add-to-cart",
+    "setup": "reset.html",
+    "start": "index.html",
+    "steps": ["search for \"caesar\"", "open the Chicken Caesar Salad", "choose the Large size", "add it to the cart"],
+    "expected": {"status": "reached"},
+    "check": "only('caesar', 'Large', 1)",
+    "probes": [
+      {"setup": "reset.html?cart=caesar:Large", "at": "cart.html", "holds": true},
+      {"setup": "reset.html?cart=caesar:Regular", "at": "cart.html", "holds": false},
+      {"setup": "reset.html?cart=greek:Large", "at": "cart.html", "holds": false},
+      {"setup": "reset.html?cart=caesar:Large:2", "at": "cart.html", "holds": false},
+      {"setup": "reset.html?cart=caesar:Large,greek:Regular", "at": "cart.html", "holds": false}
+    ]
+  },
+  {
+    "name": "cheapest",
+    "setup": "reset.html",
+    "start": "index.html",
+    "steps": ["search for \"oat milk\"", "add the cheapest oat milk to the cart", "go to the cart"],
+    "expected": {"status": "reached"},
+    "check": "only('oat3', '', 1) && page === 'cart.html'",
+    "probes": [
+      {"setup": "reset.html?cart=oat3", "at": "cart.html", "holds": true},
+      {"setup": "reset.html?cart=oat1", "at": "cart.html", "holds": false},
+      {"setup": "reset.html?cart=oat3", "at": "search.html?q=oat%20milk", "holds": false}
+    ]
+  },
+  {
+    "name": "already-chosen",
+    "setup": "reset.html",
+    "start": "product.html?id=caesar",
+    "steps": ["choose the Regular size", "add it to the cart -> text: Cart (1)"],
+    "expected": {"status": "reached", "held": [1]},
+    "check": "only('caesar', 'Regular', 1)",
+    "probes": [
+      {"setup": "reset.html", "at": "product.html?id=caesar", "check": "value('size') === 'Regular'", "holds": true},
+      {"setup": "reset.html?cart=caesar:Regular", "at": "cart.html", "holds": true},
+      {"setup": "reset.html?cart=caesar:Small", "at": "cart.html", "holds": false}
+    ]
+  },
+  {
+    "name": "already-there",
+    "setup": "reset.html",
+    "start": "category.html?c=drinks",
+    "steps": ["open the Drinks category", "open the Fresh Orange Juice"],
+    "expected": {"status": "reached", "held": [1]},
+    "check": "page === 'product.html' && q('id') === 'oj'",
+    "probes": [
+      {"setup": "reset.html", "at": "product.html?id=oj", "holds": true},
+      {"setup": "reset.html", "at": "product.html?id=oat1", "holds": false}
+    ]
+  },
+  {
+    "name": "cookie-modal",
+    "setup": "reset.html",
+    "start": "index.html?cookies=1",
+    "steps": ["open the Drinks category"],
+    "expected": {"status": "reached"},
+    "check": "page === 'category.html' && q('c') === 'drinks'",
+    "probes": [
+      {"setup": "reset.html", "at": "index.html?cookies=1", "check": "!!document.elementFromPoint(innerWidth / 2, 20).closest('#cookie-overlay')", "holds": true},
+      {"setup": "reset.html", "at": "category.html?c=drinks", "holds": true},
+      {"setup": "reset.html", "at": "category.html?c=salads", "holds": false}
+    ]
+  },
+  {
+    "name": "wizard",
+    "setup": "reset.html",
+    "start": "wizard.html",
+    "steps": ["go through the weekly box setup to the end -> text: All set"],
+    "expected": {"status": "reached"},
+    "check": "localStorage.getItem('weekly_box') === '\"done\"' && document.querySelector('h1').textContent === 'All set'",
+    "probes": [
+      {"setup": "reset.html", "at": "wizard.html", "script": "for (let n = 0; n < 3; n++) document.getElementById('next').click()", "holds": true},
+      {"setup": "reset.html", "at": "wizard.html", "script": "for (let n = 0; n < 2; n++) document.getElementById('next').click()", "holds": false},
+      {"setup": "reset.html", "at": "wizard.html", "check": "location.href.endsWith('/wizard.html') && document.querySelector('h2').textContent.startsWith('Step 1 of 3')", "holds": true}
+    ]
+  },
+  {
+    "name": "no-op-click",
+    "setup": "reset.html",
+    "start": "deals.html",
+    "steps": ["show more deals -> text: Rolled Oats 1kg"],
+    "expected": {"status": "stopped", "code": "repeat", "step": 1},
+    "check": "page === 'deals.html' && cart.length === 0 && !document.body.innerText.includes('Rolled Oats')",
+    "probes": [
+      {"setup": "reset.html", "at": "deals.html", "script": "document.getElementById('more').click()", "holds": true},
+      {"setup": "reset.html?cart=oats", "at": "deals.html", "holds": false}
+    ]
+  },
+  {
+    "name": "out-of-stock",
+    "setup": "reset.html",
+    "start": "category.html?c=salads",
+    "steps": ["open the Kale Power Bowl", "add it to the cart"],
+    "expected": {"status": "stopped", "code": "blocked"},
+    "check": "cart.length === 0",
+    "probes": [
+      {"setup": "reset.html", "at": "product.html?id=kale", "script": "document.getElementById('add-btn').click()", "holds": true},
+      {"setup": "reset.html", "at": "product.html?id=kale", "script": "document.getElementById('add-btn').click()", "check": "document.getElementById('flash').textContent.includes('out of stock')", "holds": true},
+      {"setup": "reset.html?cart=kale:Regular", "at": "cart.html", "holds": false}
+    ]
+  },
+  {
+    "name": "wrong-item-banner",
+    "setup": "reset.html?swap=1",
+    "start": "product.html?id=cobb",
+    "steps": ["add the Cobb Salad to the cart"],
+    "expected": {"status": "stopped"},
+    "check": "cart.some((i) => i.id === 'cobb')",
+    "probes": [
+      {"setup": "reset.html?swap=1", "at": "product.html?id=cobb", "script": "document.getElementById('add-btn').click()", "holds": false},
+      {"setup": "reset.html?swap=1", "at": "product.html?id=cobb", "script": "document.getElementById('add-btn').click()", "check": "document.getElementById('flash').textContent.startsWith('Added to cart: Greek Salad')", "holds": true},
+      {"setup": "reset.html?cart=cobb:Regular", "at": "cart.html", "holds": true}
+    ]
+  },
+  {
+    "name": "earlier-flash",
+    "setup": "reset.html",
+    "start": "category.html?c=salads",
+    "steps": ["add the Greek Salad to the cart", "add one more Greek Salad to the cart"],
+    "expected": {"status": "reached"},
+    "check": "only('greek', 'Regular', 2)",
+    "probes": [
+      {"setup": "reset.html?cart=greek:Regular:2", "at": "cart.html", "holds": true},
+      {"setup": "reset.html?cart=greek:Regular", "at": "cart.html", "holds": false},
+      {"setup": "reset.html?cart=greek:Regular,greek:Large", "at": "cart.html", "holds": false}
+    ]
+  },
+  {
+    "name": "needs-text",
+    "setup": "reset.html?user=testuser@example.com&cart=greek:Regular",
+    "start": "checkout.html",
+    "steps": ["add a note for the driver"],
+    "expected": {"status": "stopped", "code": "needs_text", "step": 1},
+    "check": "value('note') === '' && order === null",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "script": "document.getElementById('note').value = 'Ring twice'", "holds": false}
+    ]
+  },
+  {
+    "name": "note-and-unrelated-fact",
+    "setup": "reset.html",
+    "start": "driver-note.html",
+    "steps": ["add a note for the driver"],
+    "facts": {"street": "12 Elm Road"},
+    "expected": {"status": "stopped", "code": "needs_text", "step": 1},
+    "check": "value('note') === '' && localStorage.getItem('note') === null",
+    "probes": [
+      {"setup": "reset.html", "at": "driver-note.html", "holds": true},
+      {"setup": "reset.html", "at": "driver-note.html", "script": "document.getElementById('note').value = '12 Elm Road'", "holds": false}
+    ]
+  },
+  {
+    "name": "arrow-in-a-value",
+    "setup": "reset.html",
+    "start": "driver-note.html",
+    "steps": ["add the note \"A -> B\" for the driver"],
+    "expected": {"status": "reached"},
+    "check": "value('note') === 'A -> B'",
+    "probes": [
+      {"setup": "reset.html", "at": "driver-note.html", "script": "document.getElementById('note').value = 'A -> B'", "holds": true},
+      {"setup": "reset.html", "at": "driver-note.html", "script": "document.getElementById('note').value = 'A'", "holds": false}
+    ]
+  },
+  {
+    "name": "navigate-quoted",
+    "setup": "reset.html",
+    "start": "index.html",
+    "steps": ["open \"{site}/deals.html\""],
+    "expected": {"status": "reached"},
+    "check": "page === 'deals.html'",
+    "probes": [
+      {"setup": "reset.html", "at": "deals.html", "holds": true},
+      {"setup": "reset.html", "at": "index.html", "holds": false},
+      {"setup": "reset.html", "at": "index.html", "check": "![...document.links].some((a) => a.href.includes('deals'))", "holds": true}
+    ]
+  },
+  {
+    "name": "navigate-unquoted",
+    "setup": "reset.html",
+    "start": "index.html",
+    "steps": ["open the page at {site}/deals.html"],
+    "expected": {"status": "stopped"},
+    "check": "page !== 'deals.html'",
+    "probes": [
+      {"setup": "reset.html", "at": "index.html", "holds": true},
+      {"setup": "reset.html", "at": "deals.html", "holds": false}
+    ]
+  },
+  {
+    "name": "typed-checks",
+    "setup": "reset.html",
+    "start": "index.html",
+    "steps": ["open the Pantry category -> text: Rolled Oats 1kg", "open Rolled Oats -> query: id=oats", "go to the cart -> path: cart"],
+    "expected": {"status": "reached"},
+    "check": "page === 'cart.html' && cart.length === 0",
+    "probes": [
+      {"setup": "reset.html", "at": "cart.html", "holds": true},
+      {"setup": "reset.html", "at": "product.html?id=oats", "holds": false},
+      {"setup": "reset.html?cart=oats", "at": "cart.html", "holds": false}
+    ]
+  },
+  {
+    "name": "sentence-final",
+    "setup": "reset.html",
+    "start": "search.html?q=greek",
+    "steps": ["add the Greek Salad to the cart -> the cart count in the header shows 1"],
+    "expected": {"status": "reached", "review": true},
+    "check": "only('greek', 'Regular', 1)",
+    "probes": [
+      {"setup": "reset.html?cart=greek:Regular", "at": "search.html?q=greek", "holds": true},
+      {"setup": "reset.html?cart=caesar:Regular", "at": "search.html?q=greek", "holds": false}
+    ]
+  },
+  {
+    "name": "long-plan",
+    "setup": "reset.html?user=testuser@example.com",
+    "start": "index.html",
+    "steps": ["search for \"caesar\"", "open the Chicken Caesar Salad", "choose the Large size", "add it to the cart -> text: Added to cart", "go to the cart", "proceed to checkout -> path: checkout"],
+    "expected": {"status": "reached"},
+    "check": "only('caesar', 'Large', 1) && page === 'checkout.html' && order === null",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com&cart=caesar:Large", "at": "checkout.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&cart=caesar:Large", "at": "cart.html", "holds": false},
+      {"setup": "reset.html?user=testuser@example.com&cart=caesar:Regular", "at": "checkout.html", "holds": false}
+    ]
+  },
+  {
+    "name": "place-order",
+    "setup": "reset.html?user=testuser@example.com&cart=greek:Regular",
+    "start": "cart.html",
+    "steps": ["proceed to checkout -> path: checkout", "place the order"],
+    "expected": {"status": "stopped", "code": "confirm_needed", "step": 2},
+    "check": "page === 'checkout.html' && order === null",
+    "then": {
+      "confirm": "act",
+      "expected": {"status": "dispatched"},
+      "check": "page === 'confirmed.html' && order !== null && order.items.length === 1 && order.items[0].id === 'greek'"
+    },
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&order=greek", "at": "checkout.html", "holds": false},
+      {"setup": "reset.html?user=testuser@example.com&order=greek", "at": "confirmed.html", "check": "page === 'confirmed.html' && order !== null && order.items.length === 1 && order.items[0].id === 'greek'", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&order=caesar", "at": "confirmed.html", "check": "page === 'confirmed.html' && order !== null && order.items.length === 1 && order.items[0].id === 'greek'", "holds": false}
+    ]
+  },
+  {
+    "name": "place-order-repriced",
+    "setup": "reset.html?user=testuser@example.com&cart=greek:Regular",
+    "start": "cart.html",
+    "steps": ["proceed to checkout -> path: checkout", "place the order"],
+    "expected": {"status": "stopped", "code": "confirm_needed", "step": 2},
+    "check": "page === 'checkout.html' && order === null",
+    "then": {
+      "before": "localStorage.setItem('surcharge', '90')",
+      "confirm": "act",
+      "expected": {"status": "stopped", "code": "confirm_stale"},
+      "check": "page === 'checkout.html' && order === null && document.getElementById('total').textContent === '$103.74'"
+    },
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&order=greek", "at": "checkout.html", "holds": false},
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "check": "document.getElementById('total').textContent === '$13.74'", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "script": "localStorage.setItem('surcharge', '90'); await new Promise((r) => setTimeout(r, 600))", "check": "page === 'checkout.html' && order === null && document.getElementById('total').textContent === '$103.74'", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "check": "page === 'checkout.html' && order === null && document.getElementById('total').textContent === '$103.74'", "holds": false}
+    ]
+  },
+  {
+    "name": "enter-places-order",
+    "setup": "reset.html?user=testuser@example.com",
+    "start": "reorder.html",
+    "steps": ["reorder order \"GL-1042\""],
+    "expected": {"status": "stopped", "code": "confirm_needed", "step": 1},
+    "check": "page === 'reorder.html' && order === null",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com", "at": "reorder.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&order=greek", "at": "reorder.html", "holds": false},
+      {"setup": "reset.html", "at": "reorder.html", "check": "document.querySelectorAll('#reorder button, #reorder input[type=submit]').length === 0", "holds": true}
+    ]
+  },
+  {
+    "name": "delete-account",
+    "setup": "reset.html?user=testuser@example.com",
+    "start": "index.html",
+    "steps": ["open my account", "delete my account"],
+    "expected": {"status": "stopped", "code": "confirm_needed", "step": 2},
+    "check": "page === 'account.html' && user !== null",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com", "at": "account.html", "holds": true},
+      {"setup": "reset.html", "at": "index.html", "holds": false}
+    ]
+  },
+  {
+    "name": "captcha",
+    "setup": "reset.html?user=testuser@example.com&cart=greek:Regular&captcha=1",
+    "start": "cart.html",
+    "steps": ["proceed to checkout"],
+    "expected": {"status": "stopped", "code": "needs_owner", "step": 1},
+    "check": "location.pathname.endsWith('/recaptcha/check.html') && order === null",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular&captcha=1", "at": "recaptcha/check.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "holds": false}
+    ]
+  },
+  {
+    "name": "sign-in-wall",
+    "setup": "reset.html?cart=greek:Regular",
+    "start": "cart.html",
+    "steps": ["proceed to checkout", "choose the \"7–8 pm\" delivery time"],
+    "expected": {"status": "stopped", "code": "needs_login", "step": 1},
+    "check": "page === 'login.html' && user === null && order === null",
+    "probes": [
+      {"setup": "reset.html?cart=greek:Regular", "at": "login.html?next=checkout.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "holds": false}
+    ]
+  },
+  {
+    "name": "card-form",
+    "setup": "reset.html?user=testuser@example.com&cart=greek:Regular",
+    "start": "payment.html",
+    "steps": ["pay for the order with my saved card"],
+    "vault": ["card"],
+    "expected": {"status": "stopped", "code": "needs_fields", "step": 1},
+    "check": "['cc-name', 'cc-number', 'cc-exp', 'cc-csc'].every((id) => value(id) === '') && order === null",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "payment.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "payment.html", "script": "document.getElementById('cc-number').value = '4111111111111111'", "holds": false}
+    ]
+  }
+]

@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Category — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+const c = qs("c") || "salads"; const pg = Number(qs("page") || 1);
+const all = CATALOG.filter((p) => p.cat === c); const pages = Math.ceil(all.length / PER_PAGE);
+const shown = all.slice((pg - 1) * PER_PAGE, pg * PER_PAGE);
+document.title = `${c[0].toUpperCase() + c.slice(1)} — page ${pg} — Greenleaf Market`;
+main.innerHTML = `<h1>${c[0].toUpperCase() + c.slice(1)}</h1><p>Page ${pg} of ${pages}</p><ul class="products">${shown.map(productRow).join("")}</ul>
+<p class="pager">${pg > 1 ? `<a href="category.html?c=${c}&page=${pg - 1}">Previous page</a>` : ""}${Array.from({length: pages}, (_, k) => k + 1).map((n) => n === pg ? `<b>${n}</b> ` : `<a href="category.html?c=${c}&page=${n}">${n}</a>`).join("")}${pg < pages ? `<a href="category.html?c=${c}&page=${pg + 1}">Next page</a>` : ""}</p>`;
+</script></body></html>
