@@ -252,7 +252,7 @@ impl Harness {
         self.call("open", json!({"url": url})).await
     }
 
-    async fn text(&mut self) -> String {
+    pub(super) async fn text(&mut self) -> String {
         self.call("text", json!({})).await["text"]
             .as_str()
             .unwrap()

@@ -232,9 +232,10 @@ pub async fn run(
 ) -> Result<Value, Failure> {
     let request = request_id(args)?;
     audit.insert("request".into(), json!(request));
-    let plan: Plan = serde_json::from_value(args["plan"].clone())
+    let mut plan: Plan = serde_json::from_value(args["plan"].clone())
         .map_err(|err| usage(format!("the plan is malformed: {err}")))?;
     plan.validate().map_err(usage)?;
+    plan.resolve_facts();
     let confirm = args["confirm"].as_str().map(str::to_string);
     if plan.steps.is_empty() && confirm.is_none() {
         return Err(usage("a plan needs a step".into()));
@@ -343,7 +344,6 @@ pub async fn run(
                 Work::Goal(step) => step.goal.clone().unwrap_or_default(),
             })
             .collect(),
-        facts: plan.facts.clone(),
         items: plan.items.clone(),
     };
     let journal = Journal::start(

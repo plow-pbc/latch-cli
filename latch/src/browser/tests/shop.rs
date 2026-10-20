@@ -54,8 +54,14 @@ pub(super) struct Expected {
     pub status: String,
     #[serde(default)]
     pub code: Option<String>,
+    /// Stop codes any one of which is the listed outcome.
+    #[serde(default)]
+    pub codes: Vec<String>,
     #[serde(default)]
     pub step: Option<usize>,
+    /// The most actions the plan may have sent.
+    #[serde(default)]
+    pub max_actions: Option<usize>,
     /// Exactly the steps that end `already_held`.
     #[serde(default)]
     pub held: Vec<usize>,
@@ -123,6 +129,8 @@ pub(super) fn plan_of(case: &Case, site: &str) -> Result<Plan, String> {
         ..Plan::default()
     };
     plan.validate()?;
+    let mut plan = plan;
+    plan.resolve_facts();
     Ok(plan)
 }
 
@@ -204,7 +212,7 @@ const STOP_CODES: [&str; 29] = [
 fn expected_is_sound(name: &str, expected: &Expected, steps: usize) {
     match expected.status.as_str() {
         "reached" | "dispatched" => assert!(
-            expected.code.is_none() && expected.step.is_none(),
+            expected.code.is_none() && expected.codes.is_empty() && expected.step.is_none(),
             "{name}: only a stop has a code and a step"
         ),
         "stopped" => {
@@ -212,7 +220,11 @@ fn expected_is_sound(name: &str, expected: &Expected, steps: usize) {
                 !expected.review,
                 "{name}: only a result that reached is for review"
             );
-            if let Some(code) = &expected.code {
+            assert!(
+                expected.code.is_none() || expected.codes.is_empty(),
+                "{name}: one code, or a list of codes"
+            );
+            for code in expected.code.iter().chain(&expected.codes) {
                 assert!(
                     STOP_CODES.contains(&code.as_str()),
                     "{name}: no stop code {code}"
@@ -481,6 +493,12 @@ fn outcome_of(
         "step": answer["stop"]["step"],
         "held": held,
         "review": answer["review"] == true,
+        "actions": answer["trail"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| t["result"] == "dispatched")
+            .count(),
     });
     (got, answer)
 }
@@ -510,6 +528,25 @@ fn differences(expected: &Expected, got: &serde_json::Value) -> Vec<String> {
         && got["code"] != code.as_str()
     {
         wrong.push(format!("code {} (expected {code})", got["code"]));
+    }
+    if !expected.codes.is_empty()
+        && !expected
+            .codes
+            .iter()
+            .any(|code| got["code"] == code.as_str())
+    {
+        wrong.push(format!(
+            "code {} (expected one of {:?})",
+            got["code"], expected.codes
+        ));
+    }
+    if let Some(most) = expected.max_actions
+        && got["actions"].as_u64().unwrap_or(0) > most as u64
+    {
+        wrong.push(format!(
+            "{} actions sent (expected at most {most})",
+            got["actions"]
+        ));
     }
     if let Some(step) = expected.step
         && got["step"] != step
@@ -632,7 +669,8 @@ async fn the_plan_suite_on_the_decision_model() {
             wrong.push("its checker does not hold".into());
         }
         let mut record = json!({"name": case.name, "expected": {
-            "status": case.expected.status, "code": case.expected.code, "step": case.expected.step,
+            "status": case.expected.status, "code": case.expected.code, "codes": case.expected.codes,
+            "max_actions": case.expected.max_actions, "step": case.expected.step,
             "held": case.expected.held, "review": case.expected.review},
             "got": got, "checker": checked, "seconds": started.elapsed().as_secs_f64(),
             "answer": answer});

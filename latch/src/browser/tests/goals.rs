@@ -61,8 +61,9 @@ type Questions = Vec<(String, Vec<(String, String)>)>;
 struct Told {
     mind: Mutex<Option<Mind>>,
     asked: Mutex<Vec<Questions>>,
-    /// Each pass's request size.
+    /// Each pass's request size, and its state.
     sizes: Mutex<Vec<usize>>,
+    states: Mutex<Vec<Value>>,
 }
 
 impl Told {
@@ -70,6 +71,7 @@ impl Told {
         *self.mind.lock().unwrap() = Some(Box::new(mind));
         self.asked.lock().unwrap().clear();
         self.sizes.lock().unwrap().clear();
+        self.states.lock().unwrap().clear();
     }
 
     /// The options of question `id` on pass `n`.
@@ -109,6 +111,7 @@ impl Provider for Told {
                 .lock()
                 .unwrap()
                 .push(crate::browser::model::request_size(state, questions));
+            self.states.lock().unwrap().push(state.clone());
             self.asked.lock().unwrap().push(
                 questions
                     .iter()
@@ -366,12 +369,101 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     let (code, _) = stop(h.send(plan(&["add it to the cart"], &site, &[], &[])).await);
     assert_eq!(code, "already_true");
 
-    // A click that changes nothing is not sent again.
-    h.open(&at("deals.html")).await;
-    told.tell(|_| choose("click", Some("Show more deals")));
-    let (code, details) = stop(h.send(plan(&["show more deals"], &site, &[], &[])).await);
-    assert_eq!(code, "repeat", "{details:#}");
-    assert_eq!(sent(&details), 1);
+    // A click that changes nothing is not sent again: with a typed check,
+    // on the same page state; without one, never in the same step.
+    for step in [
+        "show more deals -> text: Rolled Oats 1kg",
+        "show more deals",
+    ] {
+        h.open(&at("reset.html")).await;
+        h.open(&at("deals.html")).await;
+        told.tell(|_| choose("click", Some("Show more deals")));
+        let (code, details) = stop(h.send(plan(&[step], &site, &[], &[])).await);
+        assert_eq!(code, "repeat", "{step}: {details:#}");
+        assert_eq!(sent(&details), 1, "{step}");
+        assert!(
+            !h.text().await.contains("Rolled Oats"),
+            "{step}: the click did nothing"
+        );
+    }
+
+    // Without a typed check, a control that changed the page is still not
+    // clicked again in the step: one more Greek Salad is one. A message
+    // the click writes again, even with the same words, reads as new.
+    h.open(&at("reset.html")).await;
+    h.open(&at("category.html?c=salads")).await;
+    told.tell(|_| choose("click", Some("button \"Add to cart\" — in: Greek Salad")));
+    let (code, details) = stop(
+        h.send(plan(
+            &[
+                "add the Greek Salad to the cart",
+                "add one more Greek Salad to the cart",
+            ],
+            &site,
+            &[],
+            &[],
+        ))
+        .await,
+    );
+    assert_eq!(
+        (code.as_str(), details["stop"]["step"].as_u64()),
+        ("repeat", Some(1))
+    );
+    let cart = h
+        .call("eval", json!({"script": "localStorage.getItem('cart')"}))
+        .await;
+    assert!(
+        cart["value"].as_str().unwrap().contains("\"qty\":1"),
+        "{cart}"
+    );
+    told.tell(|s| {
+        let added = s["page"]["new_since_the_step_began"]
+            .to_string()
+            .contains("Added to cart");
+        if s["current_step"].as_str().unwrap().contains("one more") && added {
+            complete("[screen] Added to cart", "done")
+        } else if s["current_step"].as_str().unwrap().contains("one more")
+            || s["actions_in_this_step"].as_array().unwrap().is_empty()
+        {
+            choose("click", Some("button \"Add to cart\" — in: Greek Salad"))
+        } else {
+            complete("[screen] Added to cart", "done")
+        }
+    });
+    h.open(&at("reset.html")).await;
+    h.open(&at("category.html?c=salads")).await;
+    let two = h
+        .send(plan(
+            &[
+                "add the Greek Salad to the cart",
+                "add one more Greek Salad to the cart",
+            ],
+            &site,
+            &[],
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(two["status"], "reached", "{two:#}");
+    assert_eq!(sent(&two), 2);
+    let states = told.states.lock().unwrap().clone();
+    // Step 2's first pass: the message step 1 left is old; after its click,
+    // the same words, written again, are new.
+    let step_two: Vec<&Value> = states
+        .iter()
+        .filter(|s| s["current_step"].as_str().unwrap().contains("one more"))
+        .collect();
+    let new = |s: &Value| s["page"]["new_since_the_step_began"].to_string();
+    assert!(
+        !new(step_two[0]).contains("Added to cart"),
+        "{}",
+        step_two[0]
+    );
+    assert!(
+        new(step_two[1]).contains("Added to cart"),
+        "{}",
+        step_two[1]
+    );
 
     // A same-URL wizard: the same "Next" on a changed page is progress.
     h.open(&at("reset.html")).await;
@@ -391,7 +483,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
 
     // A note was asked for, and only a street address supplied.
     h.open(&at("driver-note.html")).await;
-    told.tell(|_| choose("type", Some("none, then Note for the driver")));
+    told.tell(|_| choose("type", Some("textbox \"Note for the driver\"")));
     let (code, details) = stop(
         h.send(plan(
             &["add a note for the driver"],
@@ -405,11 +497,40 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     assert_eq!(details["stop"]["field"]["name"], "Note for the driver");
     assert!(details["stop"]["field"]["ref"].is_string());
     assert_eq!(sent(&details), 0);
+    // A step types only its own values: a fact it does not name is not one.
+    assert!(told.offered(0, "type").is_empty());
+    assert!(
+        !told.states.lock().unwrap()[0]
+            .to_string()
+            .contains("12 Elm Road")
+    );
+    // A fact it names as {NAME} is.
+    told.tell(|s| {
+        if fields(s).contains("12 Elm Road") {
+            complete(
+                "[field] textbox \"Note for the driver\": \"12 Elm Road\"",
+                "done",
+            )
+        } else {
+            choose("type", Some("textbox \"Note for the driver\""))
+        }
+    });
+    let named = h
+        .send(plan(
+            &["write {street} as the note for the driver"],
+            &site,
+            &[("street", "12 Elm Road")],
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(named["status"], "reached", "{named:#}");
     assert!(
         told.offered(0, "type")
             .iter()
             .any(|o| o.contains("\"12 Elm Road\" (the plan's fact \"street\")"))
     );
+    h.open(&at("driver-note.html")).await;
 
     // A value is typed as written, ` -> ` and all.
     told.tell(|s| {

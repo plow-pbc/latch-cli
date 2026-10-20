@@ -255,13 +255,19 @@ impl<D: Driver> Core<D> {
     /// The page as one pass of an instruction step sees it, in a snapshot
     /// of latch's own: its elements, each with the kind of input it takes,
     /// a dropdown's options, its form and whether something covers it; the
-    /// lines on screen, then the page's other lines; its fields as lines;
+    /// lines on screen (with `step`, whether each was written since that
+    /// step began: `fresh`), then the page's other lines; its fields as lines;
     /// the scroll position; a CAPTCHA or password field on it; whether it
     /// shows sign-in fields (a password field, or a lone username or email
     /// field, the first page of two); and `state`,
     /// which changes whenever the document, a field, the lines on screen or
     /// the scroll position does.
-    pub(super) fn view(&mut self, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
+    pub(super) fn view(
+        &mut self,
+        step: Option<&str>,
+        begin: bool,
+        audit: &mut Map<String, Value>,
+    ) -> Result<Value, Failure> {
         self.no_dialog()?;
         let mut result = self.page(audit)?;
         let wall = self.wall()?;
@@ -303,11 +309,11 @@ impl<D: Driver> Core<D> {
             }
         }
         let main = self.main_frame()?;
-        let on_screen: Vec<String> = strings(
-            &self
-                .driver
-                .run(&main, &format!("__latch.screenLines({PAGE_LINES})"))?,
-        );
+        let screen = self.driver.run(
+            &main,
+            &format!("__latch.screenView({PAGE_LINES}, {}, {begin})", json!(step)),
+        )?;
+        let on_screen = strings(&screen["lines"]);
         let mut seen: HashSet<String> = on_screen.iter().cloned().collect();
         let mut lines = Vec::new();
         for line in self.first_lines(usize::MAX)? {
@@ -331,6 +337,9 @@ impl<D: Driver> Core<D> {
             result.insert("truncated".into(), json!(true));
         }
         result.insert("on_screen".into(), json!(on_screen));
+        if step.is_some() {
+            result.insert("fresh".into(), screen["fresh"].clone());
+        }
         result.insert("lines".into(), json!(lines));
         result.insert("fields".into(), json!(fields));
         result.insert("scroll".into(), scroll);

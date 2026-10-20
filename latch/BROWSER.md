@@ -240,9 +240,11 @@ are from any page latch returned to the session (`--snapshot`, else the
 latest); each is pinned to its snapshot before anything runs.
 
 **Instruction steps.** Any other step is a goal in words, such as
-`add the Greek Salad to the cart -> text: Added`; its quoted texts are the
-only ones it may type (with the plan's `facts`, `--fact NAME=TEXT`), and a
-quoted URL is the only place it may `navigate` to. `--item vN` names a
+`add the Greek Salad to the cart -> text: Added`; its quoted texts, and
+the plan's facts (`--fact NAME=TEXT`) it names as `{NAME}` outside quotes,
+are the only texts it may type (a `{NAME}` the plan has no fact for is
+refused before anything runs), and a quoted URL is the only place it may
+`navigate` to. `--item vN` names a
 vault item the plan may fill from. `--dry-run` prints the canonical plan
 and sends nothing; `--output F` writes the page as the plan ended (or
 stopped) to F on this machine. Each pass reads the page and asks the
@@ -262,9 +264,12 @@ below p 0.5 (`ambiguous_target`, with candidate refs), text that was not
 supplied (`needs_text`, naming the field), a sign-in form
 (`needs_login`), a form a saved card or identity fits (`needs_fields`,
 with the form's refs, for a literal `fill`), the same action on an
-unchanged page (`repeat`) or two actions that change nothing
+unchanged page, or, in a step without a typed check, a second click or
+submit of the same control (`repeat`), or two actions that change nothing
 (`no_progress`), and a click or Enter that can't be undone
-(`confirm_needed`). With no decision model, an instruction step stops
+(`confirm_needed`). Lines written since the step began, even with the
+same words as before (a message an add-to-cart writes again), are marked
+as new for the model. With no decision model, an instruction step stops
 `model_unavailable` before anything is sent.
 
 **Checks**, decided by latch's code and waited for up to 10 s after the

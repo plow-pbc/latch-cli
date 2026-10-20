@@ -109,7 +109,7 @@
     "setup": "reset.html",
     "start": "deals.html",
     "steps": ["show more deals -> text: Rolled Oats 1kg"],
-    "expected": {"status": "stopped", "code": "repeat", "step": 1},
+    "expected": {"status": "stopped", "codes": ["repeat", "no_progress", "stuck"], "step": 1, "max_actions": 1},
     "check": "page === 'deals.html' && cart.length === 0 && !document.body.innerText.includes('Rolled Oats')",
     "probes": [
       {"setup": "reset.html", "at": "deals.html", "script": "document.getElementById('more').click()", "holds": true},

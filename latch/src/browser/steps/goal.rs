@@ -15,13 +15,16 @@
 //! 5. budgets: 8 actions a step, 30 a plan, the plan's time (and 2 waits
 //!    a step, after which waiting is not offered);
 //! 6. a chosen target below p 0.5: `ambiguous_target`;
-//! 7. typing with no supplied text that fits: `needs_text` (a plan's
-//!    fact, unlike a text quoted in the step, also needs the model's yes
-//!    that this step asks for it in that field);
+//! 7. typing with none of the step's own values fitting: `needs_text`
+//!    (a step's values are its quoted texts and the plan's facts it names
+//!    as `{NAME}`; it types nothing else);
 //! 8. signing in: `needs_login`;
 //! 9. a vault fill: `needs_fields`, with the form's refs;
-//! 10. the same action on the same page state again: `repeat`; two
-//!     actions in a row that leave it unchanged: `no_progress`;
+//! 10. in a step without a typed check, a second click or submit of the
+//!     same control: `repeat` (whether the first did the step is the
+//!     model's to judge); the same action on the same page state again:
+//!     `repeat`; two actions in a row that leave it unchanged:
+//!     `no_progress`;
 //! 11. a click or Enter that can't be undone: `confirm_needed`, through
 //!     the same risk decision and confirmations as a literal step.
 //!
@@ -46,8 +49,6 @@ const STEP_WAITS: usize = 2;
 const WAIT: Duration = Duration::from_millis(1500);
 /// A chosen target needs at least this probability.
 const TARGET_P: f64 = 0.5;
-/// A plan's fact is typed into a field only at this yes or above.
-const FITS_P: f64 = 0.5;
 /// The most options one target question offers.
 const MAX_OFFERS: usize = 250;
 /// The most lines a pass marks as new since its step began.
@@ -57,13 +58,12 @@ const NEW_LINES: usize = 20;
 pub(super) struct Context {
     /// Each step in words, in order.
     pub plan: Vec<String>,
-    /// The plan's facts, by name.
-    pub facts: BTreeMap<String, String>,
     /// The vault items the plan names.
     pub items: Vec<String>,
 }
 
 /// One target the model may choose, and what acting on it takes.
+#[derive(Clone)]
 struct Target {
     offer: Offer,
     /// The element's ref, or the URL for `navigate`.
@@ -81,6 +81,7 @@ struct Seen {
     view: Value,
     clicks: Vec<Target>,
     types: Vec<Target>,
+    fields: Vec<Target>,
     selects: Vec<Target>,
     urls: Vec<Target>,
     /// Card and identity items that fit the page, by handle and title.
@@ -107,17 +108,22 @@ impl Run<'_> {
             .as_ref()
             .filter(|c| c.kind == CheckKind::Sentence)
             .map(|c| c.value.clone());
-        // Each text with where it came from, as the model reads it.
+        // Each of the step's values with where it came from, as the model
+        // reads it: quoted in the step, or a plan's fact it names.
         let values: Vec<(String, String)> = step
             .values
-            .values()
-            .map(|text| ("quoted in this step".to_string(), text.clone()))
-            .chain(
-                context
-                    .facts
-                    .iter()
-                    .map(|(name, text)| (format!("the plan's fact {name:?}"), text.clone())),
-            )
+            .iter()
+            .map(|(name, text)| {
+                let quoted = name
+                    .strip_prefix('v')
+                    .is_some_and(|n| n.parse::<u32>().is_ok());
+                let from = if quoted {
+                    "quoted in this step".to_string()
+                } else {
+                    format!("the plan's fact {name:?}")
+                };
+                (from, text.clone())
+            })
             .collect();
         let anchor = Literal {
             snapshot: None,
@@ -149,8 +155,13 @@ impl Run<'_> {
         let mut unchanged = 0;
         // The field typed into last, for Enter.
         let mut typed_into: Option<(String, String, String)> = None;
-        // The page's lines when the step began.
+        // The page's lines when the step began, and the mark the worker
+        // counts what is written since by.
         let mut began: Option<HashSet<String>> = None;
+        let mark = format!("{}-{n}", self.request);
+        // The controls this step has clicked or submitted: without a typed
+        // check, each at most once.
+        let mut tried: HashSet<String> = HashSet::new();
         loop {
             if self.left().is_zero() {
                 return Err(stopped(
@@ -159,17 +170,30 @@ impl Run<'_> {
                 ));
             }
             let epoch = self.entry.runtime.pauses.load(Ordering::SeqCst);
-            let seen = self.see(step, &values, context).await?;
+            let seen = self
+                .see((&mark, began.is_none()), step, &values, context)
+                .await?;
             let view = &seen.view;
             let state = view["state"].as_str().unwrap_or_default().to_string();
-            let shown: Vec<String> = strings(&view["on_screen"])
-                .into_iter()
+            // New since the step began: a line written on screen since (its
+            // text set again counts, even unchanged), or text that was not
+            // on the page then.
+            let on_screen = strings(&view["on_screen"]);
+            let fresh: Vec<bool> = view["fresh"]
+                .as_array()
+                .map(|f| f.iter().map(|b| b == true).collect())
+                .unwrap_or_default();
+            let shown: Vec<String> = on_screen
+                .iter()
+                .cloned()
                 .chain(strings(&view["lines"]))
                 .collect();
             let began = began.get_or_insert_with(|| shown.iter().cloned().collect());
             let new_lines: Vec<String> = shown
-                .into_iter()
-                .filter(|line| !began.contains(line))
+                .iter()
+                .enumerate()
+                .filter(|(k, line)| fresh.get(*k) == Some(&true) || !began.contains(*line))
+                .map(|(_, line)| line.clone())
                 .take(NEW_LINES)
                 .collect();
             if let Some(was) = before.take() {
@@ -362,46 +386,20 @@ impl Run<'_> {
                     .iter()
                     .flat_map(|p| &p.likeliest)
                     .find_map(|(id, _)| seen.types.iter().find(|t| &t.offer.id == id))
+                    .or_else(|| {
+                        let id = &decision.type_field.as_ref()?.id;
+                        seen.fields.iter().find(|t| &t.offer.id == id)
+                    })
                     .map(|t| json!({"ref": t.at, "role": t.role, "name": t.name}))
                     .or_else(|| first_field(view));
                 let mut failure = stopped(
                     "needs_text",
                     format!(
-                        "step {n} needs text that was not supplied; nothing was typed. Supply it in quotes, or as a fact"
+                        "step {n} needs text that was not supplied; nothing was typed. Supply it in quotes in the step, or name a fact of the plan as {{NAME}}"
                     ),
                 );
                 failure.details = json!({"field": field});
                 return Err(failure);
-            }
-
-            // 7. A fact, supplied for the plan as a whole, is typed only
-            // where this step asks for it.
-            if op == "type"
-                && let Some(t) = chosen
-                && let Some(k) = t
-                    .offer
-                    .id
-                    .rsplit('#')
-                    .next()
-                    .and_then(|k| k.parse::<usize>().ok())
-                && k >= step.values.len()
-                && let Some((source, text)) = values.get(k)
-            {
-                let judged = self.model.fits(&goal, &t.label, source, text).await;
-                record_model(&self.model, self.audit);
-                let p =
-                    judged.map_err(|_| model_unavailable(&self.model, "an instruction step"))?;
-                if p < FITS_P {
-                    let mut failure = stopped(
-                        "needs_text",
-                        format!(
-                            "step {n} needs text that was not supplied; nothing was typed. Supply it in quotes, or as a fact"
-                        ),
-                    );
-                    failure.details = json!({"field": {"ref": t.at, "role": t.role, "name": t.name},
-                                             "fits_p": model::round(p)});
-                    return Err(failure);
-                }
             }
 
             // 8. Signing in.
@@ -527,6 +525,24 @@ impl Run<'_> {
                 continue;
             }
 
+            // 10. Without a typed check, a control is clicked or submitted
+            // once: whether that did the step is the model's to say, not a
+            // second try's.
+            let control = matches!(op.as_str(), "click" | "press_enter").then(|| key.clone());
+            if typed.is_none()
+                && let Some(control) = &control
+                && tried.contains(control)
+            {
+                let mut failure = stopped(
+                    "repeat",
+                    format!(
+                        "step {n} would {line} a second time; nothing was sent. If the step needs it, say so in a new step, or give it a typed check"
+                    ),
+                );
+                failure.details = json!({"action": line});
+                return Err(failure);
+            }
+
             // 10. The same action on the same page again, or no change.
             if !self.dispatched.insert((key, state.clone())) {
                 let mut failure = stopped(
@@ -562,7 +578,10 @@ impl Run<'_> {
             acted += 1;
             before = Some(state);
             match sent {
-                Ok(()) => lines.push(line),
+                Ok(()) => {
+                    lines.push(line);
+                    tried.extend(control);
+                }
                 Err(failure) if retried(&failure) => {
                     lines.push(format!("{line} (not sent: {})", failure.code));
                 }
@@ -579,11 +598,17 @@ impl Run<'_> {
     /// The page, and what this step may do on it.
     async fn see(
         &mut self,
+        mark: (&str, bool),
         step: &Step,
         values: &[(String, String)],
         context: &Context,
     ) -> Result<Seen, Failure> {
-        let (view, _) = call(self.entry, json!({"op": "view"}), self.audit).await?;
+        let (view, _) = call(
+            self.entry,
+            json!({"op": "view", "step": mark.0, "begin": mark.1}),
+            self.audit,
+        )
+        .await?;
         let elements: Vec<&Value> = view["elements"].as_array().into_iter().flatten().collect();
         let usable = |e: &&&Value| {
             e["disabled"] != true
@@ -593,6 +618,7 @@ impl Run<'_> {
         };
         let mut clicks = Vec::new();
         let mut types = Vec::new();
+        let mut fields = Vec::new();
         let mut selects = Vec::new();
         for e in elements.iter().filter(usable) {
             let at = e["ref"].as_str().unwrap_or_default().to_string();
@@ -634,7 +660,7 @@ impl Run<'_> {
                             name: e["name"].clone(),
                         });
                     }
-                    clicks.push(Target {
+                    let field = Target {
                         offer: Offer {
                             id: at.clone(),
                             text: label.clone(),
@@ -644,7 +670,9 @@ impl Run<'_> {
                         label: label.clone(),
                         role: e["role"].clone(),
                         name: e["name"].clone(),
-                    });
+                    };
+                    fields.push(field.clone());
+                    clicks.push(field);
                 }
                 _ => clicks.push(Target {
                     offer: Offer {
@@ -661,6 +689,7 @@ impl Run<'_> {
         }
         clicks.truncate(MAX_OFFERS);
         types.truncate(MAX_OFFERS);
+        fields.truncate(MAX_OFFERS);
         selects.truncate(MAX_OFFERS);
         let urls = step
             .urls
@@ -704,6 +733,7 @@ impl Run<'_> {
             view,
             clicks,
             types,
+            fields,
             selects,
             urls,
             items,
@@ -822,6 +852,7 @@ impl Run<'_> {
             operations,
             clicks: seen.clicks.iter().map(|t| t.offer.clone()).collect(),
             types: seen.types.iter().map(|t| t.offer.clone()).collect(),
+            type_fields: seen.fields.iter().map(|t| t.offer.clone()).collect(),
             selects: seen.selects.iter().map(|t| t.offer.clone()).collect(),
             urls: seen.urls.iter().map(|t| t.offer.clone()).collect(),
         }

@@ -22,7 +22,7 @@ pub const MAX_WITHIN: f64 = 300.0;
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub steps: Vec<Step>,
-    /// Named texts every step may type.
+    /// Named texts a goal step may type where it names them, as `{NAME}`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub facts: BTreeMap<String, String>,
     /// Vault item handles the plan may use.
@@ -197,8 +197,29 @@ impl Plan {
         for (n, step) in self.steps.iter().enumerate() {
             step.validate()
                 .map_err(|message| format!("step {}: {message}", n + 1))?;
+            for name in step.goal.as_deref().map(fact_refs).unwrap_or_default() {
+                if !self.facts.contains_key(&name) {
+                    return Err(format!(
+                        "step {}: {{{name}}} names no fact of this plan; give it with --fact {name}=TEXT",
+                        n + 1
+                    ));
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Each goal step with the facts it names (`{NAME}`) among its values:
+    /// a step types only its own values, and a fact only where it is named.
+    pub fn resolve_facts(&mut self) {
+        let facts = self.facts.clone();
+        for step in &mut self.steps {
+            for name in step.goal.as_deref().map(fact_refs).unwrap_or_default() {
+                if let Some(text) = facts.get(&name) {
+                    step.values.insert(name, text.clone());
+                }
+            }
+        }
     }
 
     pub fn within(&self) -> f64 {
@@ -413,6 +434,38 @@ fn fill_words(words: &[(String, bool)]) -> Result<Literal, String> {
     Ok(literal)
 }
 
+/// The facts a goal names as `{NAME}` outside quotes.
+pub fn fact_refs(goal: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut quoted = false;
+    let mut chars = goal.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if !quoted && OPEN_QUOTES.contains(&c) {
+            quoted = true;
+        } else if quoted && CLOSE_QUOTES.contains(&c) {
+            quoted = false;
+        } else if !quoted && c == '{' {
+            let rest = &goal[at + 1..];
+            if let Some(end) = rest.find('}') {
+                let name = &rest[..end];
+                if !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                {
+                    if !names.iter().any(|n| n == name) {
+                        names.push(name.to_string());
+                    }
+                    while chars.peek().is_some_and(|(i, _)| *i <= at + 1 + end) {
+                        chars.next();
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
 const OPEN_QUOTES: [char; 2] = ['"', '\u{201c}'];
 const CLOSE_QUOTES: [char; 2] = ['"', '\u{201d}'];
 
@@ -528,6 +581,33 @@ mod tests {
                 .contains("--field")
         );
         assert!(short_step("click e1 -> field: amount=3").is_err());
+    }
+
+    #[test]
+    fn a_step_types_a_fact_only_where_it_names_it() {
+        let step = |text: &str| short_step(text).unwrap();
+        let mut plan = Plan {
+            steps: vec![
+                step("deliver to {street} -> text: Saved"),
+                step("add a note for the driver"),
+                step("add the note \"{street}\""),
+            ],
+            facts: [("street".to_string(), "12 Elm Road".to_string())].into(),
+            ..Plan::default()
+        };
+        plan.validate().unwrap();
+        plan.resolve_facts();
+        assert_eq!(plan.steps[0].values["street"], "12 Elm Road");
+        assert!(plan.steps[1].values.is_empty());
+        // Inside quotes it is the step's own text, as written.
+        assert_eq!(plan.steps[2].values.len(), 1);
+        assert_eq!(plan.steps[2].values["v1"], "{street}");
+        plan.steps.push(step("deliver to {town}"));
+        assert!(
+            plan.validate()
+                .unwrap_err()
+                .contains("{town} names no fact")
+        );
     }
 
     #[test]

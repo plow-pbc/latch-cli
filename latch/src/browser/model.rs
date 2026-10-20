@@ -302,41 +302,6 @@ impl Model {
         Ok(Verdict::of(*p, quoted, none))
     }
 
-    /// The chance that the current step asks for `text`, a text the plan
-    /// supplied for its steps in general (`source`), to be typed into
-    /// `field`: a fact is typed only where the step wants it, never just
-    /// because it is the only text there is.
-    pub async fn fits(
-        &mut self,
-        step: &str,
-        field: &str,
-        source: &str,
-        text: &str,
-    ) -> Result<f64, String> {
-        let question = Question {
-            id: "fits".into(),
-            instructions: json!({
-                "current_step": step,
-                "rules": [RULES[0]],
-                "question": format!("Does the current step ask for this text to be typed into this field? The field: {field}. The text, {source}: {text:?}. Answer no if the step needs some other text, or names none."),
-            }),
-            kind: Kind::YesNo,
-        };
-        let state = json!({"current_step": step, "field": field, "text": text, "source": source});
-        let answers = self
-            .ask(
-                "fits",
-                &["plan", "supplied_values", "element_names"],
-                state,
-                vec![question],
-            )
-            .await?;
-        match answers.get("fits") {
-            Some(Answer::Yes(p)) => Ok(*p),
-            _ => Err("no answer came back".into()),
-        }
-    }
-
     /// The chance that `action` (a click on an element, or Enter in a
     /// field, which submits its form) can't be undone: paying, ordering,
     /// sending, publishing, deleting or closing something, signing out,
@@ -466,6 +431,9 @@ pub struct Pass {
     pub clicks: Vec<Offer>,
     /// Field × value pairs; the question always adds `none`.
     pub types: Vec<Offer>,
+    /// The fields text could go into: asked about when there is no value
+    /// to type, so a `needs_text` names the field the step wants filled.
+    pub type_fields: Vec<Offer>,
     /// Dropdown × option pairs, the option already chosen among them.
     pub selects: Vec<Offer>,
     pub urls: Vec<Offer>,
@@ -516,6 +484,8 @@ pub struct Decision {
     pub click: Option<Pick>,
     /// `none`, or a field × value pair.
     pub typed: Option<Pick>,
+    /// With no value to type, the field the step would type into.
+    pub type_field: Option<Pick>,
     pub select: Option<Pick>,
     pub url: Option<Pick>,
     /// How many click targets and page lines were left out so the request
@@ -684,6 +654,15 @@ fn asked(pass: &Pass) -> (Value, Vec<Question>, Vec<(String, String, Line)>) {
             kind: Kind::Choose(pairs),
         });
     }
+    if offered("type") && pass.types.is_empty() && !pass.type_fields.is_empty() {
+        questions.push(Question {
+            id: "type_field".into(),
+            instructions: with(
+                "Assume the next operation types text. Which field should the text go into?",
+            ),
+            kind: Kind::Choose(options(&pass.type_fields)),
+        });
+    }
     if offered("select") && !pass.selects.is_empty() {
         questions.push(Question {
             id: "select".into(),
@@ -822,6 +801,7 @@ impl Model {
             operation,
             click: pick("click"),
             typed,
+            type_field: pick("type_field"),
             select: pick("select"),
             url: pick("navigate"),
             trimmed,

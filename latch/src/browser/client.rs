@@ -498,6 +498,7 @@ fn with_facts(mut plan: Plan, facts: &[String], items: &[String]) -> Result<Plan
         }
     }
     plan.validate().map_err(bad)?;
+    plan.resolve_facts();
     Ok(plan)
 }
 

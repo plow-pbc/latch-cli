@@ -386,12 +386,45 @@
   };
 
   // --- What a plan's decision sees ----------------------------------------
+  // What was written into this document since a step began: `mark(step)`
+  // starts the count, and every element text was put into after it (added,
+  // or set again, even to the same text) is kept until the next mark.
+  let marked = null;
+  const written = new Set();
+  const note = (records) => {
+    for (const record of records) {
+      if (record.type === 'characterData') {
+        if (record.target.parentElement) written.add(record.target.parentElement);
+      } else {
+        for (const added of record.addedNodes) {
+          const el = added.nodeType === 1 ? added : added.parentElement;
+          if (el) written.add(el);
+        }
+      }
+    }
+  };
+  let watcher = null;
+  const mark = (step) => {
+    if (!watcher) {
+      watcher = new MutationObserver(note);
+      watcher.observe(document, { subtree: true, childList: true, characterData: true });
+    }
+    watcher.takeRecords();
+    marked = step;
+    written.clear();
+  };
+
   // The lines of text on screen now, top to bottom: the text of each block
   // (a paragraph, a list item, a cell) that shows in the viewport, one line
   // per block, so "Total: $13.74" stays one line though its parts are
-  // separate elements.
+  // separate elements. With `step`, also whether each line was written
+  // since that step began (`fresh`): all of them on a document the step
+  // did not begin on; none when `begin` starts the step here.
   const SKIP_TEXT = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'OPTION', 'TEXTAREA', 'SELECT']);
-  const screenLines = (max) => {
+  const screenView = (max, step, begin) => {
+    if (step != null && begin) mark(step);
+    if (watcher) note(watcher.takeRecords());
+    const other = step != null && marked !== step;
     const blocks = new Map();
     const blockOf = (el) => {
       if (blocks.has(el)) return blocks.get(el);
@@ -401,17 +434,25 @@
       blocks.set(el, found);
       return found;
     };
-    const out = [];
+    const lines = [];
+    const fresh = [];
     let block = null;
     let line = '';
+    let rewritten = false;
     const push = () => {
       const text = clean(line, 160);
-      if (text && out[out.length - 1] !== text) out.push(text);
+      if (text && lines[lines.length - 1] !== text) {
+        lines.push(text);
+        fresh.push(other || rewritten);
+      } else if (text && rewritten) {
+        fresh[fresh.length - 1] = true;
+      }
       line = '';
+      rewritten = false;
     };
     const root = document.body || document.documentElement;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node && out.length < max; node = walker.nextNode()) {
+    for (let node = walker.nextNode(); node && lines.length < max; node = walker.nextNode()) {
       const parent = node.parentElement;
       if (!parent || SKIP_TEXT.has(parent.tagName) || !node.textContent.trim() || !rendered(parent)) continue;
       const range = document.createRange();
@@ -421,9 +462,10 @@
       const at = blockOf(parent);
       if (at !== block) { push(); block = at; }
       line += ' ' + node.textContent;
+      if (step != null && !other && written.size && [...written].some((el) => el.contains(node))) rewritten = true;
     }
     push();
-    return out.slice(0, max);
+    return { lines: lines.slice(0, max), fresh: fresh.slice(0, max) };
   };
 
   // For each element of snapshot `snap`: what kind of input it takes, a
@@ -493,7 +535,7 @@
 
   globalThis.__latch = {
     fields,
-    screenLines,
+    screenView,
     viewOf,
     scroll,
     review,
