@@ -2,10 +2,11 @@
 
     python3 scripts/cft-pin.py VERSION
 
-Downloads each macOS build of VERSION, takes the zip's sha256 (what
+Downloads each pinned build of VERSION, takes the zip's sha256 (what
 install.sh checks) and, after extracting it as install.sh does, the tree
-hash latch checks before every launch (`browser::engine::tree_hash`). macOS
-only: it extracts with `ditto`, as install.sh does there.
+hash latch checks before every launch (`browser::engine::tree_hash`): with
+`ditto` for the macOS builds and `unzip` for Linux's, as install.sh does on
+each. Run it on a Mac, which has both.
 """
 
 import hashlib
@@ -17,7 +18,13 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-PLATFORMS = {"mac_arm64": "mac-arm64", "mac_x64": "mac-x64"}
+MAC_EXECUTABLE = "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+# Pin key: CfT's platform name, how install.sh unpacks it there, and the program.
+PLATFORMS = {
+    "mac_arm64": ("mac-arm64", ["ditto", "-x", "-k"], MAC_EXECUTABLE),
+    "mac_x64": ("mac-x64", ["ditto", "-x", "-k"], MAC_EXECUTABLE),
+    "linux_arm64": ("linux-arm64", ["unzip", "-q"], "chrome"),
+}
 URL = "https://storage.googleapis.com/chrome-for-testing-public/{version}/{platform}/chrome-{platform}.zip"
 
 
@@ -61,18 +68,21 @@ def main():
     version = sys.argv[1]
     builds = {}
     with tempfile.TemporaryDirectory() as tmp:
-        for key, platform in PLATFORMS.items():
+        for key, (platform, unpack, executable) in PLATFORMS.items():
             zip_path = Path(tmp) / f"chrome-{platform}.zip"
             urllib.request.urlretrieve(URL.format(version=version, platform=platform), zip_path)
             out = Path(tmp) / key
-            subprocess.run(["ditto", "-x", "-k", str(zip_path), str(out)], check=True)
+            if unpack[0] == "unzip":
+                subprocess.run([*unpack, str(zip_path), "-d", str(out)], check=True)
+            else:
+                subprocess.run([*unpack, str(zip_path), str(out)], check=True)
             folder = f"chrome-{platform}"
             builds[key] = {
                 "url": URL.format(version=version, platform=platform),
                 "zip_sha256": file_sha256(zip_path),
                 "folder": folder,
                 "tree_sha256": tree_hash(out / folder),
-                "executable": "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+                "executable": executable,
             }
     print(json.dumps(builds, indent=2))
 

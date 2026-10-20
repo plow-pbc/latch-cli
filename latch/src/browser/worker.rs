@@ -14,6 +14,10 @@
 //! runtime; and an environment of nothing but `PATH`, a home, a temp folder
 //! and a crash-dump folder, all in the runtime's scratch folder.
 //!
+//! On Linux it confines itself first, in bubblewrap (`sandbox::BrowserView`):
+//! of the state directory it sees only its profile and the engine's plugin
+//! folder, and no areas. Chrome's own sandbox nests inside it.
+//!
 //! It talks to the host over its standard streams, one JSON line each way
 //! per call, every answer a `wire::Response`:
 //! - first, unasked: `{"ok": {"engine", "version", "driver_contract",
@@ -59,6 +63,23 @@ use super::engine::CFT;
 use crate::failure::Failure;
 use crate::wire::Response;
 
+/// Confines this worker to its profile runtime's view. The outer copy
+/// becomes bubblewrap and never returns; the copy inside returns once its
+/// filter is on.
+#[cfg(target_os = "linux")]
+fn confine(state_dir: &Path, profile_name: &str, scratch: &Path) -> Result<(), Failure> {
+    let state_dir = state_dir.canonicalize().map_err(cft::io_failure)?;
+    // Made here if new, so the view has it to bind.
+    let profile = super::profile::open(&state_dir, profile_name, &CFT.engine)?;
+    let view = crate::sandbox::BrowserView {
+        profile: profile.dir,
+        plugin: CFT.folder(&state_dir),
+        scratch: scratch.canonicalize().map_err(cft::io_failure)?,
+        state_dir,
+    };
+    crate::sandbox::confine_browser(&view).map_err(|why| Failure::failed("sandbox_failed", why))
+}
+
 pub fn run(
     state_dir: &Path,
     profile_name: &str,
@@ -68,6 +89,11 @@ pub fn run(
     display: Option<&str>,
 ) -> ExitCode {
     let mut stdout = io::stdout().lock();
+    #[cfg(target_os = "linux")]
+    if let Err(failure) = confine(state_dir, profile_name, scratch) {
+        answer(&mut stdout, Response::error(&failure), None);
+        return ExitCode::FAILURE;
+    }
     // A screenless Linux host's runtime gets an Xvfb display of its own,
     // up for as long as this worker.
     let private = match display {

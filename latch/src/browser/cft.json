@@ -16,6 +16,13 @@
       "folder": "chrome-mac-x64",
       "tree_sha256": "d325042222b7f45448c8976f52ab96c2a0f0620dad7e557d515ed1f8a8dc7f6b",
       "executable": "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    },
+    "linux_arm64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/155.0.8059.84/linux-arm64/chrome-linux-arm64.zip",
+      "zip_sha256": "1692a407908867de88eb1f1b2a93ca47c348d8fb2e3c04752d966e0f2e0344b4",
+      "folder": "chrome-linux-arm64",
+      "tree_sha256": "1ab4fcc49f33697e9f74c13bfb73143fdb52253a4afff6f447c9976fee8d4e9c",
+      "executable": "chrome"
     }
   },
   "recipe": [

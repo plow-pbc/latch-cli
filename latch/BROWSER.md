@@ -2,10 +2,12 @@
 
 A host runs Chrome for Testing (CfT), the release pinned in
 `src/browser/cft.json`. latch downloads it, it does not ship it: on macOS
-`install.sh` fetches the zip for the machine's architecture, checks its
-sha256 against the pin, unpacks it with `ditto` into
-`<state-dir>/plugins/cft/<version>/` (beside older versions, as gog's are)
-and copies the pin in as `manifest.json`, which marks the install complete.
+and on Linux arm64 (the Pi) `install.sh` fetches the zip for the machine's
+architecture, checks its sha256 against the pin, unpacks it (`ditto` on
+macOS, `unzip` on Linux) into `<state-dir>/plugins/cft/<version>/` (beside
+older versions, as gog's are) and copies the pin in as `manifest.json`,
+which marks the install complete. On Linux it also installs Xvfb, for
+hosts with no screen.
 
 Before every launch latch hashes the whole unpacked build (every file's
 bytes and execute bit, every link and folder) and refuses one that differs
@@ -309,9 +311,13 @@ A host with no screen a person could use (a Linux host without a display
 of its own, or any host started with `--headless-browsers`) answers
 `handoff` with `needs_owner` and `"reason": "no_screen"` at once. On such a
 Linux host,
-each profile runtime's worker starts a private Xvfb display (`-displayfd`,
-no TCP) for its engine, up for as long as the runtime; a Linux host with a
-screen gives the engine its own `DISPLAY`.
+each profile runtime's worker starts a private Xvfb display (`-displayfd`)
+for its engine, up for as long as the runtime. It listens only on its
+socket file in the runtime's private `/tmp`: no TCP port and no abstract
+socket, which anything on the host's network namespace could reach. The
+engine's `DISPLAY` is that file's path, not `:N`, which X clients look up
+as an abstract socket first and could find another server's there. A
+Linux host with a screen gives the engine its own `DISPLAY`.
 
 ## The engine is not inside latch's Seatbelt
 
@@ -346,6 +352,28 @@ JavaScript dialog still raises its window, and so can a tab the page opens
 purpose. This is the pin's one `focus` switch (`background`; `front` brings
 windows and tab switches forward instead).
 A separate macOS user for engines is the later hardening.
+
+## On Linux the engine runs inside bubblewrap
+
+A Linux browser worker confines itself in bubblewrap before it starts
+Xvfb or the engine, and Chrome's own sandbox runs inside that, in user,
+PID and network namespaces of its own with its seccomp filters on (no
+`--no-sandbox`, ever). The runtime sees:
+
+- the system files the engine and display need, read-only (`/usr`, the
+  loader cache, fonts, name resolution, certificates, the time zone and
+  the CPU list), and no home folder;
+- of the state directory, only its own profile (read-write) and the
+  engine's plugin folder (read-only); everything else there is an empty,
+  read-only folder;
+- its scratch folder (read-write) and a private `/tmp`, which holds the
+  display's socket;
+- its own `/proc`, showing only its own processes;
+- the outbound network, as the engine needs it; latch's seccomp filter
+  still refuses mounts, `ptrace` and VM sockets.
+
+It sees no areas. The worker's environment is still only `PATH`, and the
+engine's the four variables above (and `DISPLAY`).
 
 ## Tests
 

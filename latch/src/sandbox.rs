@@ -45,6 +45,25 @@ pub fn confine(policy: &Policy) -> Result<(), String> {
     platform::confine(policy)
 }
 
+/// What a Linux browser worker sees: the system files its engine and
+/// display need, read-only, and of the state directory only its profile
+/// (read-write) and its engine's plugin folder (read-only); its scratch
+/// folder; a private `/tmp`; and the outbound network. No areas.
+#[cfg(target_os = "linux")]
+pub struct BrowserView {
+    pub state_dir: PathBuf,
+    pub profile: PathBuf,
+    pub plugin: PathBuf,
+    pub scratch: PathBuf,
+}
+
+/// Confines a browser worker as `confine` does other workers, to `view`.
+/// The engine's own sandbox runs inside it, in namespaces of its own.
+#[cfg(target_os = "linux")]
+pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
+    platform::confine_browser(view)
+}
+
 /// Checks, without confining anything, that this system can apply the
 /// worker sandbox at all. The host runs it once at startup, so a kernel
 /// without the sandbox is refused there, not by every call later.

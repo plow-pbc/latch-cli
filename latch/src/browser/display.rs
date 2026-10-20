@@ -3,9 +3,13 @@
 //! The runtime's sessions are windows on it; closing one session leaves it
 //! up while another still uses the runtime, and each runtime has its own.
 //!
-//! Xvfb picks a free display number itself (`-displayfd`) and listens on no
-//! TCP port. A Linux host with a screen passes its own `DISPLAY` instead;
-//! a Mac needs neither.
+//! Xvfb picks a free display number itself (`-displayfd`) and listens only
+//! on its socket file in the worker's private `/tmp`: no TCP port, and no
+//! abstract socket, which anything sharing the host's network could reach.
+//! The engine is given that file's path, never `:N`, which X clients look
+//! up as an abstract socket first and would find another server's there.
+//! A Linux host with a screen passes its own `DISPLAY` instead; a Mac needs
+//! neither.
 
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -37,7 +41,7 @@ const READY: Duration = Duration::from_secs(10);
 
 pub struct Display {
     child: Child,
-    /// `:N`, for the engine's `DISPLAY`.
+    /// The display's socket file, for the engine's `DISPLAY`.
     pub name: String,
 }
 
@@ -127,8 +131,8 @@ fn bound(command: &mut Command) {
     let _ = command;
 }
 
-/// Xvfb's command line: one screen, no TCP, and the display number
-/// written to `fd` once it is ready.
+/// Xvfb's command line: one screen, no TCP or abstract socket, and the
+/// display number written to `fd` once it is ready.
 fn arguments(fd: i32) -> Vec<String> {
     [
         "-displayfd",
@@ -138,16 +142,21 @@ fn arguments(fd: i32) -> Vec<String> {
         "1280x800x24",
         "-nolisten",
         "tcp",
+        "-nolisten",
+        "local",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect()
 }
 
-/// `:N` from what Xvfb wrote to its display fd.
+/// Display N's socket file, from what Xvfb wrote to its display fd.
 fn display_name(said: &[u8]) -> Option<String> {
     let number = std::str::from_utf8(said).ok()?.trim();
-    number.parse::<u32>().ok().map(|n| format!(":{n}"))
+    number
+        .parse::<u32>()
+        .ok()
+        .map(|n| format!("/tmp/.X11-unix/X{n}"))
 }
 
 #[cfg(test)]
@@ -219,11 +228,12 @@ mod tests {
     }
 
     #[test]
-    fn xvfb_takes_a_free_display_and_no_tcp_port() {
+    fn xvfb_takes_a_free_display_and_no_tcp_or_abstract_socket() {
         let args = arguments(7);
         assert_eq!(args[..2], ["-displayfd", "7"]);
         assert!(args.windows(2).any(|w| w == ["-nolisten", "tcp"]));
-        assert_eq!(display_name(b"12"), Some(":12".into()));
+        assert!(args.windows(2).any(|w| w == ["-nolisten", "local"]));
+        assert_eq!(display_name(b"12"), Some("/tmp/.X11-unix/X12".into()));
         assert_eq!(display_name(b"x"), None);
     }
 }

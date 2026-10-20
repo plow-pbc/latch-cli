@@ -90,6 +90,7 @@ pub fn platform() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("mac_arm64"),
         ("macos", "x86_64") => Some("mac_x64"),
+        ("linux", "aarch64") => Some("linux_arm64"),
         _ => None,
     }
 }
@@ -242,7 +243,9 @@ mod tests {
         assert!(forbidden("--remote-debugging-port=9222"));
         assert!(forbidden("--headless=new"));
         assert!(forbidden("--no-sandbox"));
-        assert!(CFT.builds.contains_key("mac_arm64") && CFT.builds.contains_key("mac_x64"));
+        for key in ["mac_arm64", "mac_x64", "linux_arm64"] {
+            assert!(CFT.builds.contains_key(key), "{key}");
+        }
         // The owner's focus is never taken (spec §8); flipping this is the one switch.
         assert_eq!(CFT.focus, Focus::Background);
     }

@@ -16,7 +16,7 @@ use seccompiler::{
     SeccompRule,
 };
 
-use super::Policy;
+use super::{BrowserView, Policy};
 
 type Error = Box<dyn std::error::Error>;
 const INNER: &str = "LATCH_BWRAP_INNER";
@@ -35,7 +35,7 @@ pub fn check() -> Result<(), String> {
 
 pub fn confine(policy: &Policy) -> Result<(), String> {
     let result = if std::env::var_os(INNER).is_some() {
-        filter(policy).and_then(|()| {
+        filter(!policy.exec && policy.program.is_none(), false).and_then(|()| {
             if policy.exec {
                 supervise_exec()?;
             }
@@ -121,6 +121,92 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         Some(file) => launch_exec(&mut command, file),
         None => Err(command.exec().into()),
     }
+}
+
+pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
+    let result = if std::env::var_os(INNER).is_some() {
+        filter(false, true)
+    } else {
+        std::env::current_exe()
+            .and_then(|program| program.canonicalize())
+            .map_err(Error::from)
+            .and_then(|program| browser_command(view, &program))
+            .and_then(|mut command| Err(command.exec().into()))
+    };
+    result.map_err(|err| format!("the bubblewrap sandbox could not be applied: {err}"))
+}
+
+/// What the engine and its display read: libraries and programs (Xvfb and
+/// the xkbcomp it runs), fonts, name resolution, certificates, the time
+/// zone, and the CPU list Chrome sizes itself by.
+const BROWSER_SYSTEM: &[&str] = &[
+    "/usr",
+    "/lib",
+    "/lib64",
+    "/bin",
+    "/etc/ld.so.cache",
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/etc/gai.conf",
+    "/etc/ssl",
+    "/etc/pki",
+    "/etc/localtime",
+    "/etc/fonts",
+    "/var/cache/fontconfig",
+    "/sys/devices/system/cpu",
+];
+
+/// bubblewrap running `program` (this latch) again, as a browser worker
+/// inside `view`. The network is shared, for the engine's outbound
+/// connections. Its own `/proc` shows only the sandbox's processes, which
+/// Chrome's sandbox needs. A private `/tmp` holds the display's socket,
+/// so nothing outside reaches the display.
+fn browser_command(view: &BrowserView, program: &Path) -> Result<Command, Error> {
+    let mut command = Command::new(bubblewrap()?);
+    for path in BROWSER_SYSTEM {
+        if Path::new(path).exists() {
+            mount(&mut command, Path::new(path), true)?;
+        }
+    }
+    command.args([
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--cap-drop",
+        "ALL",
+        "--die-with-parent",
+        "--new-session",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        "/tmp",
+        "--perms",
+        "1777",
+        "--dir",
+        "/tmp/.X11-unix",
+    ]);
+    // Of the state folder, only the profile and the engine's plugin.
+    let state = view.state_dir.canonicalize()?;
+    command.arg("--tmpfs").arg(&state);
+    mount(&mut command, &view.profile, false)?;
+    // Missing until install.sh has run: the worker then says so itself.
+    if view.plugin.exists() {
+        mount(&mut command, &view.plugin, true)?;
+    }
+    command.arg("--remount-ro").arg(&state);
+    mount(&mut command, &view.scratch, false)?;
+    mount(&mut command, program, true)?;
+    command
+        .args(["--remount-ro", "/"])
+        .arg("--chdir")
+        .arg(std::env::current_dir()?)
+        .args(["--setenv", INNER, "1", "--"])
+        .arg(program)
+        .args(std::env::args_os().skip(1));
+    Ok(command)
 }
 
 fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), Error> {
@@ -282,13 +368,18 @@ fn mount(command: &mut Command, path: &Path, readonly: bool) -> Result<(), Error
     Ok(())
 }
 
-fn filter(policy: &Policy) -> Result<(), Error> {
+/// The seccomp filter; `offline` also refuses every socket (file workers).
+/// `namespaces` lets the browser's engine make the namespaces its own
+/// sandbox runs in; no other worker may.
+fn filter(offline: bool, namespaces: bool) -> Result<(), Error> {
     let mut rules = BTreeMap::new();
-    // No new mounts/namespaces or access to processes outside this PID view.
+    if !namespaces {
+        rules.insert(libc::SYS_unshare, vec![]);
+    }
+    // No new mounts or access to processes outside this PID view.
     for syscall in [
         libc::SYS_mount,
         libc::SYS_umount2,
-        libc::SYS_unshare,
         libc::SYS_setns,
         libc::SYS_ptrace,
         libc::SYS_process_vm_readv,
@@ -299,7 +390,7 @@ fn filter(policy: &Policy) -> Result<(), Error> {
     ] {
         rules.insert(syscall, vec![]);
     }
-    if !policy.exec && policy.program.is_none() {
+    if offline {
         for syscall in [
             libc::SYS_socket,
             libc::SYS_socketpair,
@@ -344,6 +435,55 @@ mod tests {
         fs,
         net::{TcpListener, TcpStream},
     };
+
+    #[test]
+    fn a_browser_worker_sees_only_its_profile_plugin_and_scratch_of_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let state = root.join("state");
+        let profile = state.join("browser/profiles/p");
+        let plugin = state.join("plugins/cft/1");
+        let scratch = root.join("scratch");
+        for folder in [&profile, &plugin, &scratch] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        let view = BrowserView {
+            state_dir: state.clone(),
+            profile: profile.clone(),
+            plugin: plugin.clone(),
+            scratch: scratch.clone(),
+        };
+        let program = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let command = browser_command(&view, &program).unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let has = |want: &[&str]| args.windows(want.len()).any(|w| w == want);
+        let s = |path: &Path| path.to_str().unwrap().to_string();
+        let at = |want: &[&str]| args.windows(want.len()).position(|w| w == want).unwrap();
+        // The state folder is an empty tmpfs, with only these two bound in.
+        assert!(has(&["--tmpfs", &s(&state)]));
+        assert!(has(&["--bind", &s(&profile), &s(&profile)]));
+        assert!(has(&["--ro-bind", &s(&plugin), &s(&plugin)]));
+        assert!(has(&["--remount-ro", &s(&state)]));
+        assert!(at(&["--tmpfs", &s(&state)]) < at(&["--bind", &s(&profile), &s(&profile)]));
+        assert!(has(&["--bind", &s(&scratch), &s(&scratch)]));
+        assert!(has(&["--ro-bind", &s(&program), &s(&program)]));
+        // Nothing else of the host's files is writable, or there at all:
+        // no area, no home, not the host's `/` or `/tmp`.
+        let binds: Vec<&String> = args
+            .windows(2)
+            .filter(|w| w[0] == "--bind")
+            .map(|w| &w[1])
+            .collect();
+        assert_eq!(binds, [&s(&profile), &s(&scratch)]);
+        assert!(!has(&["--ro-bind", "/", "/"]));
+        assert!(has(&["--tmpfs", "/tmp"]) && has(&["--remount-ro", "/"]));
+        // Its own processes only; the network is shared, for the web.
+        assert!(has(&["--proc", "/proc"]) && has(&["--unshare-pid"]));
+        assert!(!args.iter().any(|arg| arg == "--unshare-net"));
+    }
 
     #[test]
     fn threads_inherit_the_view_and_network_policy() {

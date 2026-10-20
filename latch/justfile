@@ -18,7 +18,8 @@ cft:
     cargo build --locked
     HOME="$PWD/../.dev/cft-home" sh install.sh --state-dir ../.dev/cft-state "${CARGO_TARGET_DIR:-target}/debug/latch"
 
-# No browser engine on Linux hosts yet.
+# The real-engine browser tests run on macOS only; install.sh puts a Linux
+# host's engine in place.
 [linux]
 cft:
 
