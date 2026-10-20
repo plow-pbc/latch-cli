@@ -132,11 +132,13 @@ impl World {
 }
 
 /// A running synthetic Plow: its URL, its world (which a test may change
-/// between calls), and the requests it saw, as "METHOD /path?query".
+/// between calls), the requests it saw, as "METHOD /path?query", and each
+/// request's `Authorization` headers, in the same order.
 pub struct FakePlow {
     pub url: String,
     pub world: Arc<Mutex<World>>,
     pub seen: Arc<Mutex<Vec<String>>>,
+    pub authorizations: Arc<Mutex<Vec<Vec<String>>>>,
 }
 
 impl FakePlow {
@@ -160,7 +162,8 @@ pub fn serve(world: World) -> FakePlow {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let world = Arc::new(Mutex::new(world));
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let (shared, log) = (world.clone(), seen.clone());
+    let authorizations = Arc::new(Mutex::new(Vec::new()));
+    let (shared, log, auth_log) = (world.clone(), seen.clone(), authorizations.clone());
     std::thread::spawn(move || {
         for socket in listener.incoming() {
             let mut socket = socket.unwrap();
@@ -168,11 +171,17 @@ pub fn serve(world: World) -> FakePlow {
             let mut first = String::new();
             reader.read_line(&mut first).unwrap();
             let mut length = 0;
+            let mut authorization = Vec::new();
             loop {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
                 if line == "\r\n" || line.is_empty() {
                     break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("authorization")
+                {
+                    authorization.push(value.trim().to_string());
                 }
                 if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
                     length = value.trim().parse().unwrap();
@@ -183,6 +192,7 @@ pub fn serve(world: World) -> FakePlow {
             let mut words = first.split(' ');
             let (method, target) = (words.next().unwrap(), words.next().unwrap());
             log.lock().unwrap().push(format!("{method} {target}"));
+            auth_log.lock().unwrap().push(authorization);
             let (status, answer) = shared.lock().unwrap().answer(method, target, &body);
             let answer = answer.to_string();
             let _ = write!(
@@ -192,7 +202,12 @@ pub fn serve(world: World) -> FakePlow {
             );
         }
     });
-    FakePlow { url, world, seen }
+    FakePlow {
+        url,
+        world,
+        seen,
+        authorizations,
+    }
 }
 
 pub fn message(uid: &str, sender: Value, body: &str, minutes_ago: i64) -> Value {

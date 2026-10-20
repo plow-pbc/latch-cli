@@ -16,8 +16,15 @@ use serde_json::value::RawValue;
 
 /// A local Plow serving `world`, and the requests it saw.
 fn plow(world: World) -> (crate::plow::Plow, Arc<Mutex<Vec<String>>>) {
+    let (plow, seen, _) = plow_with_headers(world);
+    (plow, seen)
+}
+
+/// The same, and each request's `Authorization` headers, in order.
+type Headers = Arc<Mutex<Vec<Vec<String>>>>;
+fn plow_with_headers(world: World) -> (crate::plow::Plow, Arc<Mutex<Vec<String>>>, Headers) {
     let fake = fake::serve(world);
-    (fake.client(), fake.seen)
+    (fake.client(), fake.seen, fake.authorizations)
 }
 
 /// The decision model, recording what it was asked and answering with
@@ -185,6 +192,33 @@ async fn only_the_member_plow_calls_the_owner_counts_as_the_owner() {
         ]
     );
     assert_eq!(judgment.gate["owner_messages"], json!(["m1"]));
+}
+
+#[tokio::test]
+async fn every_plow_call_sends_the_credential_once() {
+    let messages = (0..150)
+        .map(|n| message(&format!("m{n:03}"), owner(), "hello", 150 - n))
+        .collect();
+    let (plow, seen, authorizations) = plow_with_headers(World::with_chat("chat_a", messages));
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let judgment = Gatekeeper::new(plow, model, Box::new(Rules::default()))
+        .judge(AGENT, None, &order())
+        .await;
+    assert!(judgment.verdict.is_ok());
+
+    // The agent, its chats and two pages of messages, each with one bearer.
+    let seen = seen.lock().unwrap().clone();
+    assert!(
+        seen[0].starts_with(&format!("GET /v1/agents/{AGENT}")),
+        "{seen:?}"
+    );
+    assert!(seen.iter().any(|t| t == "GET /v1/chats"), "{seen:?}");
+    assert_eq!(seen.iter().filter(|t| t.contains("/messages")).count(), 2);
+    let authorizations = authorizations.lock().unwrap().clone();
+    assert_eq!(authorizations.len(), seen.len());
+    for (target, sent) in seen.iter().zip(authorizations) {
+        assert_eq!(sent, ["Bearer made-up-login"], "{target}");
+    }
 }
 
 #[tokio::test]
