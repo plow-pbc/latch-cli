@@ -1,5 +1,6 @@
-//! A real session on the host: the pinned Chrome for Testing, headed, from
-//! the host's browser worker, run from a logged-in desktop session. It
+//! A real session on the host: the pinned Chrome for Testing, from the
+//! host's browser worker, run from a logged-in desktop session; headless
+//! unless built with `headed-tests` (see `HEADLESS`). It
 //! needs the engine installed where `just cft` (part of `just test`, and a
 //! step in CI) puts it, `.dev/cft-state`, or in the state directory
 //! `LATCH_CFT_STATE` names; without it the test fails, saying so.
@@ -25,6 +26,11 @@ use super::session::Session;
 
 /// The caller every host-level test calls as.
 const CALLER: &str = "test-caller";
+
+/// The engine runs with no window, so a test run never puts a browser over
+/// the owner's screen. `just test-headed` (the `headed-tests` feature) runs
+/// the same tests headed, with a real window behind the owner's.
+const HEADLESS: bool = !cfg!(feature = "headed-tests");
 
 unsafe extern "C" {
     /// macOS: 1 if the process is inside a Seatbelt sandbox (with no
@@ -181,12 +187,13 @@ fn test_state() -> (tempfile::TempDir, PathBuf, PathBuf) {
 }
 
 #[tokio::test]
-async fn cft_runs_headed_from_the_host_with_its_own_sandbox_and_leaves_nothing() {
+async fn cft_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing() {
     let (dir, state, area) = test_state();
 
-    let mut session = Session::start_with(&latch(), &state, "b1", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session =
+        Session::start_with(&latch(), &state, "b1", Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     println!("ready: {}", session.ready);
     let browser = session.ready["pid"].as_u64().unwrap() as u32;
     let data = profile::root(&state)
@@ -270,12 +277,13 @@ async fn cft_runs_headed_from_the_host_with_its_own_sandbox_and_leaves_nothing()
         for off in [
             "--no-sandbox",
             "--remote-debugging-port",
-            "--headless",
             "--single-process",
         ] {
             assert!(!p.args.contains(off), "{} has {off}", p.pid);
         }
     }
+    // Headless only when the host asks for it.
+    assert_eq!(main.args.contains("--headless"), HEADLESS, "{}", main.args);
 
     // No engine process listens on TCP, seen from inside exec, and exec
     // can read neither the profile nor anything else of the state folder.
@@ -433,9 +441,10 @@ fn out_line(result: &serde_json::Value) -> String {
 #[tokio::test]
 async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     let (_dir, state, _area) = test_state();
-    let mut session = Session::start_with(&latch(), &state, "b2", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session =
+        Session::start_with(&latch(), &state, "b2", Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     // Every front app seen while the test runs: the engine must never be one.
     let engine = session.ready["pid"].as_u64().unwrap() as u32;
     let fronted = front_apps();
@@ -679,9 +688,15 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
 #[tokio::test]
 async fn frames_that_come_and_go_while_a_page_loads_break_no_call() {
     let (_dir, state, _area) = test_state();
-    let mut session = Session::start_with(&latch(), &state, "b2-churn", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "b2-churn",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
     let url = test_site().replace("frames.html", "churn.html");
     let mut failures = Vec::new();
     for round in 0..3 {
@@ -711,9 +726,15 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call() {
 #[tokio::test]
 async fn a_frames_target_under_a_parent_page_layer_is_refused() {
     let (_dir, state, _area) = test_state();
-    let mut session = Session::start_with(&latch(), &state, "b2-layer", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "b2-layer",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
     let url = test_site().replace("frames.html", "overlay.html");
     let page = session
         .call(json!({"op": "open", "url": url}))
@@ -745,9 +766,10 @@ async fn a_frames_target_under_a_parent_page_layer_is_refused() {
 #[tokio::test]
 async fn eval_upload_and_download_move_values_and_files() {
     let (_dir, state, _area) = test_state();
-    let mut session = Session::start_with(&latch(), &state, "b3", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session =
+        Session::start_with(&latch(), &state, "b3", Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     let url = test_site().replace("frames.html", "files.html");
     let page = session
         .call(json!({"op": "open", "url": url}))
@@ -861,7 +883,11 @@ async fn another_caller_can_neither_open_nor_use_a_running_session() {
         ("/mine".into(), page("the owner's page")),
         ("/theirs".into(), page("another caller's page")),
     ]);
-    let mut browsers = Browsers::new(state.clone(), crate::vault::host::Vault::new(state.clone()));
+    let mut browsers = Browsers::new(
+        state.clone(),
+        crate::vault::host::Vault::new(state.clone()),
+        HEADLESS,
+    );
     browsers.test = Some((latch(), Vec::new()));
     let call = async |caller: &str, command: &str, args: serde_json::Value| {
         let mut audit = serde_json::Map::new();

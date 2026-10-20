@@ -1,5 +1,6 @@
 //! The browser worker: one long-lived process per session, run as
-//! `latch browser-worker --profile P --scratch DIR` (hidden from `--help`).
+//! `latch browser-worker --profile P --scratch DIR [--headless]` (hidden
+//! from `--help`).
 //! It launches the engine on its profile and drives it over the CDP pipe.
 //!
 //! On macOS it is not inside latch's Seatbelt: a Seatbelt-confined process
@@ -44,12 +45,18 @@ use super::engine::CFT;
 use crate::failure::Failure;
 use crate::wire::Response;
 
-pub fn run(state_dir: &Path, profile_name: &str, scratch: &Path, idle: Duration) -> ExitCode {
+pub fn run(
+    state_dir: &Path,
+    profile_name: &str,
+    scratch: &Path,
+    idle: Duration,
+    headless: bool,
+) -> ExitCode {
     let mut stdout = io::stdout().lock();
     // The engine runs from its scratch folder, so every path it gets is absolute.
     let absolute = |path: &Path| path.canonicalize().map_err(cft::io_failure);
     let launched = absolute(state_dir)
-        .and_then(|state_dir| Cft::launch(&state_dir, profile_name, &absolute(scratch)?));
+        .and_then(|state_dir| Cft::launch(&state_dir, profile_name, &absolute(scratch)?, headless));
     let browser = match launched {
         Ok(browser) => browser,
         Err(failure) => {

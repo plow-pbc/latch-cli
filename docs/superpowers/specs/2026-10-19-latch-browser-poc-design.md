@@ -519,7 +519,7 @@ This holds for the standalone `fill` command and for a literal `fill` step in a 
 ## 8. Screenshots and displays
 
 - Screenshots to the agent are required on every host. They come from the engine, with the screen-to-page coordinate mapping, and are refused while a session is paused.
-- **Engines always run headed, never in headless mode:** headless got blocked on far more sites in the browser-poc site check (9/26 against 24/26 headed).
+- **Hosts run engines headed by default:** headless got blocked on far more sites in the browser-poc site check (9/26 against 24/26 headed). Test suites, and a test host started with `latch serve --headless-browsers`, run headless so test windows never cover the owner's screen; checks that need a real window run only in an opt-in headed test command.
 - On macOS the browser is a real window in the owner's session. It is visible but **never steals focus** (chef, 2026-10-19).
   - No startup window; every window and tab opens in the background; no tab activation.
   - **Only `handoff` brings a window to the front.** A plan stop, a dialog, a download or a popup never does.
@@ -685,7 +685,7 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
 
 - **Product stage:** proof of concept on real hosts, not throwaway (header of this spec). Reviewers size the bar to that: clean, testable code that later work builds on; no hardening §2 defers.
 - **Builds on latch-cli as it is** on branch `latch-cli` (spec `2026-10-14-latch-cli-poc-design.md`): same client/host split, iroh transport, gate, hash-chained audit, exit codes, state directory, plugin layout and `install.sh`. Nothing in §2's non-goals gets built.
-- **One kind of session; no raw commands; no browser password stores or autofill; no headless mode; private pipes only — never a listening debug port.** These hold in every chunk.
+- **One kind of session; no raw commands; no browser password stores or autofill; product hosts headed by default (headless only for tests and test hosts); private pipes only — never a listening debug port.** These hold in every chunk.
 - **No secret** (vault value, TOTP seed or code, decision-model key) ever appears in a result, error, log line, audit record, test output or commit.
 - **Tests and test data:** local test pages and public practice sites, made-up credentials. Exceptions (§13): logged-out visits to the §13 consumer sites for the block matrix and read-only public-site tasks; and real-account logins only on a site the chef has himself added to the vault and explicitly asked to test, read-only (no purchases, sends or account changes). Never the chef's real Chrome or Safari profile, real Keychain items, `~/.latch`, `.dev/latch-prod`, or the Pi's `~/latch-dev/state` except where a chunk needs a dev host there. The jev key is read from `/Users/plucas/.claude-kitchen/plow-latch-cli/secrets/jev-api-key` into the host's state dir for tests, never printed; spend under $2 per chunk.
 - **Host:** the Mac dev host may be restarted for checks. The Pi has exactly one dev build in `~/latch-dev/`; `~/.local/bin/latch` and `~/.latch` stay empty.

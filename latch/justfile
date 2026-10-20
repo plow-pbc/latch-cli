@@ -4,6 +4,13 @@ test: cft
     cargo clippy --locked --all-targets -- -D warnings
     cargo test --locked
 
+# The real-engine browser tests again, headed: each session a real window,
+# behind the owner's. Their focus checks (the engine never becomes the
+# front app) mean something only here. Not part of the gate: windows appear.
+[macos]
+test-headed: cft
+    cargo test --locked --features headed-tests browser::tests
+
 # The pinned Chrome for Testing, where the browser test looks for it. HOME
 # keeps install.sh's copy of latch out of the real ~/.local/bin.
 [macos]
