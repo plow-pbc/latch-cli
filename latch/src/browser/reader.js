@@ -339,6 +339,21 @@
     captcha: CAPTCHA.test(location.href),
   });
 
+  // The page a click on `el`, or the key `key` in it, would load, when that
+  // is known before it happens: a link's address, or the address its form
+  // sends to (a submit button, or Enter in one of the form's fields).
+  // Script on the page can still go anywhere.
+  const leadsTo = (el, key) => {
+    const link = el.closest('a[href], area[href]');
+    if (link) return link.href;
+    const submits = el.matches('button:not([type]), button[type=submit], input[type=submit], input[type=image]');
+    if (submits && el.form && (key == null || key === 'Enter' || key === 'Space')) {
+      return el.hasAttribute('formaction') ? el.formAction : el.form.action;
+    }
+    if (key === 'Enter' && el.form && el.matches('input')) return el.form.action;
+    return null;
+  };
+
   globalThis.__latch = {
     fields,
     wall,
@@ -348,6 +363,9 @@
     isFileInput: (snap, index) => { const el = element(snap, index); return el ? fileInput(el) : null; },
     describeAt: (snap, index) => { const el = element(snap, index); return el ? describe(el) : null; },
     focus: (snap, index) => { const el = element(snap, index); if (!el) return false; el.focus(); return true; },
+    leadsTo: (snap, index, key) => { const el = element(snap, index); return el ? leadsTo(el, key) : null; },
+    leadsToAt: (x, y) => { const el = document.elementFromPoint(x, y); return el ? leadsTo(el, null) : null; },
+    leadsToFocused: (key) => (document.activeElement ? leadsTo(document.activeElement, key) : null),
     selected: (snap, index) => { const el = element(snap, index); return el ? [...el.selectedOptions].map((o) => o.label) : null; },
     text: (max) => {
       const body = document.body ? document.body.innerText : '';

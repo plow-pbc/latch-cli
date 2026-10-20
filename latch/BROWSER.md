@@ -100,8 +100,11 @@ login). While another session on the profile acted on the same site
 carries `shared_site`: that session's id hash and how many seconds ago.
 `open --reserve-site URL` holds URL's site for the session until it
 closes: another session's action there (a click, typing, `eval`, a fill,
-a dialog, or loading a page of the site) gets `site_busy` (exit 1) before
-anything is sent; reading its page goes on. The reservation is this
+a dialog) gets `site_busy` (exit 1) before anything is sent, and so does
+one that would load a page of the site from elsewhere: opening it, `tab
+new` on it, Back to it, or a click, Enter or Space on a link or form that
+leads there. Reading its page goes on. A page's own script can still
+navigate where latch can't tell beforehand, and the reservation is this
 host's only.
 
 A vault fill holds the whole runtime: every session on the profile gets
@@ -240,8 +243,9 @@ owner's session, so the host must run in the logged-in desktop session.
 They stay out of the owner's way: Chrome starts with no window, every tab
 latch opens is a new window behind all others (its page still visible and
 unthrottled), and switching tabs brings nothing to the front. A page's own
-JavaScript dialog still raises its window; `handoff` will bring it forward
-on purpose. This is the pin's one `focus` switch (`background`; `front` brings
+JavaScript dialog still raises its window, and so can a tab the page opens
+(`target=_blank`, `window.open`); `handoff` will bring it forward on
+purpose. This is the pin's one `focus` switch (`background`; `front` brings
 windows and tab switches forward instead).
 A separate macOS user for engines is the later hardening.
 

@@ -66,29 +66,34 @@ fn processes() -> Vec<Process> {
 }
 
 /// Serves `pages` (path, HTML) on 127.0.0.1 for as long as the test runs;
-/// returns the port.
+/// returns the port. Each connection gets its own thread: a browser opens
+/// connections it may not use at once.
 fn serve(pages: Vec<(String, Vec<u8>)>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
+    let pages = Arc::new(pages);
     std::thread::spawn(move || {
         for socket in listener.incoming() {
             let Ok(mut socket) = socket else { continue };
-            let mut request = [0u8; 4096];
-            let n = socket.read(&mut request).unwrap_or(0);
-            let line = String::from_utf8_lossy(&request[..n]);
-            let path = line.split(' ').nth(1).unwrap_or("/");
-            let path = path.split('?').next().unwrap_or("/");
-            let found = pages.iter().find(|(p, _)| p == path);
-            let (status, body) = match found {
-                Some((_, body)) => ("200 OK", body.as_slice()),
-                None => ("404 Not Found", &b""[..]),
-            };
-            let head = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = socket.write_all(head.as_bytes());
-            let _ = socket.write_all(body);
+            let pages = pages.clone();
+            std::thread::spawn(move || {
+                let mut request = [0u8; 4096];
+                let n = socket.read(&mut request).unwrap_or(0);
+                let line = String::from_utf8_lossy(&request[..n]);
+                let path = line.split(' ').nth(1).unwrap_or("/");
+                let path = path.split('?').next().unwrap_or("/");
+                let found = pages.iter().find(|(p, _)| p == path);
+                let (status, body) = match found {
+                    Some((_, body)) => ("200 OK", body.as_slice()),
+                    None => ("404 Not Found", &b""[..]),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(head.as_bytes());
+                let _ = socket.write_all(body);
+            });
         }
     });
     port
@@ -935,7 +940,7 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
     let fronted = front_apps();
 
     // Two callers open the same profile: two sessions, one browser.
-    let (a, page_a) = h
+    let (a, _) = h
         .open(
             CALLER,
             "b2b",
@@ -981,57 +986,6 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
         .unwrap();
     println!("cookie seen in the other session: {cookie}");
     assert!(cookie["value"].as_str().unwrap().contains("signed_in=yes"));
-
-    // A dialog is its own session's: the other reads on and has none.
-    let shown = find(&page_a, "button", "Show alert");
-    let clicked = h
-        .call(CALLER, "act", &a, act(&format!("click {shown}")))
-        .await
-        .unwrap();
-    println!("dialog in a: {}", clicked["events"]);
-    assert_eq!(clicked["events"][0]["event"], "dialog");
-    let seen = h.call(other, "observe", &b, json!({})).await.unwrap();
-    assert_eq!(seen["title"], "latch files test");
-    let none = h
-        .call(other, "dialog", &b, json!({"accept": true}))
-        .await
-        .unwrap_err();
-    println!("dialog accept in b: {}", none.code);
-    assert_eq!(none.code, "no_dialog");
-    h.call(CALLER, "dialog", &a, json!({"accept": true}))
-        .await
-        .unwrap();
-
-    // A popup belongs to the session whose page opened it.
-    let page_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();
-    let link = find(&page_a, "link", "Open next in a new tab");
-    let clicked = h
-        .call(CALLER, "act", &a, act(&format!("click {link}")))
-        .await
-        .unwrap();
-    println!("popup in a: {}", clicked["events"]);
-    let tabs = |seen: &serde_json::Value| {
-        seen["tabs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tab| {
-                tab["url"]
-                    .as_str()
-                    .unwrap()
-                    .rsplit('/')
-                    .next()
-                    .unwrap()
-                    .to_string()
-            })
-            .collect::<Vec<_>>()
-    };
-    let seen_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();
-    let seen_b = h.call(other, "observe", &b, json!({})).await.unwrap();
-    println!("tabs: a {:?}, b {:?}", tabs(&seen_a), tabs(&seen_b));
-    assert_eq!(tabs(&seen_a), ["alert.html", "next.html"]);
-    assert_eq!(seen_a["tabs"][1]["opener"], "t1");
-    assert_eq!(tabs(&seen_b), ["files.html"]);
 
     // Two downloads at once with the same file name, each its own session's.
     let twin = |file: &str| format!("{base}/twin-download.html?file={file}");
@@ -1097,6 +1051,79 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
         assert_eq!(got["name"], "statement.csv");
         assert_eq!(bytes.unwrap(), fs::read(site.join(file)).unwrap());
     }
+
+    // Nothing so far brought the browser to the front: launch, a second
+    // session's window, new tabs, downloads. (A page's own popup or alert
+    // can: Chrome raises the window a page opens or blocks, so this is
+    // checked first.)
+    let seen_front = fronted.lock().unwrap().clone();
+    println!("front apps seen: {seen_front:?}; engine {engine}");
+    assert!(!seen_front.contains(&engine));
+
+    // A popup belongs to the session whose page opened it.
+    h.call(CALLER, "tab", &a, json!({"action": "switch", "tab": "t1"}))
+        .await
+        .unwrap();
+    let page_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();
+    let link = find(&page_a, "link", "Open next in a new tab");
+    let clicked = h
+        .call(CALLER, "act", &a, act(&format!("click {link}")))
+        .await
+        .unwrap();
+    println!("popup in a: {}", clicked["events"]);
+    let tabs = |seen: &serde_json::Value| {
+        seen["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tab| {
+                tab["url"]
+                    .as_str()
+                    .unwrap()
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    };
+    let seen_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();
+    let seen_b = h.call(other, "observe", &b, json!({})).await.unwrap();
+    println!("tabs: a {:?}, b {:?}", tabs(&seen_a), tabs(&seen_b));
+    assert_eq!(
+        tabs(&seen_a),
+        [
+            "alert.html",
+            "twin-download.html?file=report.csv",
+            "next.html"
+        ]
+    );
+    assert_eq!(seen_a["tabs"][2]["opener"], "t1");
+    assert_eq!(
+        tabs(&seen_b),
+        ["files.html", "twin-download.html?file=invoice-2026-09.csv"]
+    );
+
+    // A dialog is its own session's: the other reads on and has none.
+    let page_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();
+    let shown = find(&page_a, "button", "Show alert");
+    let clicked = h
+        .call(CALLER, "act", &a, act(&format!("click {shown}")))
+        .await
+        .unwrap();
+    println!("dialog in a: {}", clicked["events"]);
+    assert_eq!(clicked["events"][0]["event"], "dialog");
+    let seen = h.call(other, "observe", &b, json!({})).await.unwrap();
+    assert_eq!(seen["title"], "latch twin downloads");
+    let none = h
+        .call(other, "dialog", &b, json!({"accept": true}))
+        .await
+        .unwrap_err();
+    println!("dialog accept in b: {}", none.code);
+    assert_eq!(none.code, "no_dialog");
+    h.call(CALLER, "dialog", &a, json!({"accept": true}))
+        .await
+        .unwrap();
 
     // The id is the capability: another caller with the right id gets
     // not_owner for every command, and nothing reaches the session.
@@ -1188,11 +1215,6 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
         h.audits.len(),
         h.audits[0]
     );
-
-    // Nothing above brought the browser to the front.
-    let fronted = fronted.lock().unwrap().clone();
-    println!("front apps seen: {fronted:?}; engine {engine}");
-    assert!(!fronted.contains(&engine));
 
     h.call(CALLER, "close", &c, json!({})).await.unwrap();
 
@@ -1335,6 +1357,89 @@ async fn sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused() {
     h.call(other, "dialog", &b, json!({"accept": true}))
         .await
         .unwrap();
+    h.call(other, "close", &b, json!({})).await.unwrap();
+}
+
+#[tokio::test]
+async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent() {
+    let (_dir, state, _area) = test_state();
+    let frames = test_site();
+    let local = frames.split("/frames.html").next().unwrap().to_string();
+    let cross = frames.split("cross=").nth(1).unwrap();
+    let elsewhere = format!("http://localhost:{cross}");
+    let mut h = Host::new(&state);
+    let other = "another-caller";
+
+    // The other session: a page on 127.0.0.1 it left for localhost, then a
+    // tab on localhost whose link and form lead back to 127.0.0.1.
+    let leave = |from: &str, to: &str| format!("{from}/leave.html?to={to}/next.html");
+    let (b, page) = h
+        .open(
+            other,
+            "b2b-leave",
+            json!({"url": leave(&local, &elsewhere)}),
+        )
+        .await;
+    let go = find(&page, "link", "Go there");
+    h.call(other, "act", &b, act(&format!("click {go}")))
+        .await
+        .unwrap();
+    h.call(
+        other,
+        "tab",
+        &b,
+        json!({"action": "new", "url": leave(&elsewhere, &local)}),
+    )
+    .await
+    .unwrap();
+    let page = h.call(other, "observe", &b, json!({})).await.unwrap();
+
+    // 127.0.0.1 reserved: no way into it is sent.
+    let (r, _) = h
+        .open(
+            CALLER,
+            "b2b-leave",
+            json!({"url": format!("{local}/next.html"), "reserve_site": true}),
+        )
+        .await;
+    let search = find(&page, "textbox", "Search");
+    let mut outcomes = Vec::new();
+    for line in [
+        format!("click {}", find(&page, "link", "Go there")),
+        format!("click {}", find(&page, "button", "Send")),
+        format!("press {search} Enter"),
+    ] {
+        let outcome = h.call(other, "act", &b, act(&line)).await;
+        outcomes.push((line, outcome.map_or_else(|f| f.code, |_| "sent".into())));
+    }
+    let tab = h.call(other, "observe", &b, json!({})).await.unwrap();
+    println!(
+        "into the reserved site from localhost: {outcomes:?}; now on {}",
+        tab["url"]
+    );
+    h.call(other, "tab", &b, json!({"action": "switch", "tab": "t1"}))
+        .await
+        .unwrap();
+    let back = h.call(other, "act", &b, act("back")).await;
+    let back = back.map_or_else(|f| f.code, |_| "sent".into());
+    let stayed = h.call(other, "observe", &b, json!({})).await.unwrap();
+    println!("back into it: {back}; now on {}", stayed["url"]);
+    assert!(outcomes.iter().all(|(_, code)| code == "site_busy"));
+    assert!(tab["url"].as_str().unwrap().starts_with(&elsewhere));
+    assert_eq!(back, "site_busy");
+    assert_eq!(stayed["url"], json!(format!("{elsewhere}/next.html")));
+    // Within localhost, the other session goes on.
+    let home = find(&stayed, "link", "Back to orders");
+    h.call(other, "act", &b, act(&format!("click {home}")))
+        .await
+        .unwrap();
+
+    // Once the reservation ends, so does the refusal.
+    h.call(CALLER, "close", &r, json!({})).await.unwrap();
+    h.call(other, "act", &b, act("back")).await.unwrap();
+    let returned = h.call(other, "act", &b, act("back")).await.unwrap();
+    println!("after close, back: {}", returned["url"]);
+    assert!(returned["url"].as_str().unwrap().starts_with(&local));
     h.call(other, "close", &b, json!({})).await.unwrap();
 }
 

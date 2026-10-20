@@ -127,7 +127,7 @@ pub enum Call {
 
 /// Where a call acts, for a site another session reserved: reading a page
 /// is not acting on it.
-pub enum Acts<'a> {
+enum Acts<'a> {
     No,
     /// On the page in front of the session.
     Page,
@@ -136,7 +136,7 @@ pub enum Acts<'a> {
 }
 
 impl Call {
-    pub fn acts(&self) -> Acts<'_> {
+    fn acts(&self) -> Acts<'_> {
         match self {
             Call::Open { url: Some(url) }
             | Call::Tab {
@@ -371,11 +371,82 @@ impl<D: Driver> Core<D> {
         self.paused
     }
 
-    /// The site of the page in front of the session.
-    pub fn site(&mut self) -> Option<String> {
-        let tabs = self.driver.tabs().ok()?;
-        let active = tabs.into_iter().find(|tab| tab.active)?;
-        crate::vault::sites::site_of(&active.url)
+    /// The sites `call` would act on, for a site another session reserved:
+    /// the page in front of the session, for an action there, and the page
+    /// it would load, wherever that is known before it is sent (a URL to
+    /// open, Back's entry, a link's address, the address a form sends to).
+    /// Script on a page can still take it anywhere.
+    pub fn sites_of(&mut self, call: &Call) -> Vec<String> {
+        let mut urls = Vec::new();
+        match call.acts() {
+            Acts::No => {}
+            Acts::Url(url) => urls.push(url.to_string()),
+            Acts::Page => {
+                let tabs = self.driver.tabs().unwrap_or_default();
+                urls.extend(tabs.into_iter().find(|tab| tab.active).map(|tab| tab.url));
+                if let Call::Act {
+                    snapshot,
+                    action,
+                    target,
+                    text,
+                    at,
+                    ..
+                } = call
+                {
+                    urls.extend(self.leads_to(
+                        snapshot.as_deref(),
+                        *action,
+                        target.as_deref(),
+                        text.as_deref(),
+                        *at,
+                    ));
+                }
+            }
+        }
+        urls.iter()
+            .filter_map(|url| crate::vault::sites::site_of(url))
+            .collect()
+    }
+
+    /// The page an action would load, when that is known before it is
+    /// sent: Back's entry; a link's address, or the address its form sends
+    /// to, for a click, Enter or Space on it (or typed text ending a line).
+    fn leads_to(
+        &mut self,
+        snapshot: Option<&str>,
+        action: Action,
+        target: Option<&str>,
+        text: Option<&str>,
+        at: Option<(f64, f64)>,
+    ) -> Option<String> {
+        let key = match action {
+            Action::Click => None,
+            Action::Press => text,
+            Action::Type if text.is_some_and(|text| text.contains('\n')) => Some("Enter"),
+            Action::Back => return self.driver.back_url().ok().flatten(),
+            Action::Type | Action::Select | Action::Scroll => return None,
+        };
+        let key = json!(key);
+        let found = match (target, at) {
+            (Some(target), None) => {
+                let (snapshot, position) = self.bound(snapshot, target).ok()?;
+                let (frame, index) = self.reference(&snapshot, position).ok()?;
+                let ask = format!("__latch.leadsTo({snapshot:?}, {index}, {key})");
+                self.driver.run(&frame, &ask)
+            }
+            (None, Some((x, y))) => {
+                let main = self.main_frame().ok()?;
+                self.driver
+                    .run(&main, &format!("__latch.leadsToAt({x}, {y})"))
+            }
+            (None, None) => {
+                let main = self.main_frame().ok()?;
+                self.driver
+                    .run(&main, &format!("__latch.leadsToFocused({key})"))
+            }
+            (Some(_), Some(_)) => return None,
+        };
+        found.ok()?.as_str().map(str::to_string)
     }
 
     /// A fresh reading for an error's details, when the page can be read.
@@ -1227,6 +1298,9 @@ mod tests {
             unreachable!()
         }
         fn back(&mut self) -> Result<bool, Failure> {
+            unreachable!()
+        }
+        fn back_url(&mut self) -> Result<Option<String>, Failure> {
             unreachable!()
         }
         fn frames(&mut self) -> Result<Vec<Frame>, Failure> {

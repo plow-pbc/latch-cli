@@ -50,11 +50,10 @@ use serde_json::{Value, json};
 
 use super::cdp;
 use super::cft::{self, Cft, Seat};
-use super::core::{Acts, Answer, Call, Core};
+use super::core::{Answer, Call, Core};
 use super::driver::Driver;
 use super::engine::CFT;
 use crate::failure::Failure;
-use crate::vault::sites;
 use crate::wire::Response;
 
 pub fn run(state_dir: &Path, profile_name: &str, scratch: &Path, idle: Duration) -> ExitCode {
@@ -188,13 +187,14 @@ pub fn run(state_dir: &Path, profile_name: &str, scratch: &Path, idle: Duration)
                         .flatten()
                         .filter_map(Value::as_str)
                         .collect();
-                    let busy = match call.acts() {
-                        _ if reserved.is_empty() => None,
-                        Acts::No => None,
-                        Acts::Page => live.core.site(),
-                        Acts::Url(url) => sites::site_of(url),
-                    }
-                    .filter(|site| reserved.contains(&site.as_str()));
+                    let busy = if reserved.is_empty() {
+                        None
+                    } else {
+                        let sites = live.core.sites_of(&call);
+                        sites
+                            .into_iter()
+                            .find(|site| reserved.contains(&site.as_str()))
+                    };
                     match busy {
                         Some(site) => Err(site_busy(&site)),
                         None => live.core.call(call, input).map_err(|mut failure| {

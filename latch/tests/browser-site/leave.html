@@ -1,0 +1,11 @@
+<!doctype html><title>latch leave test</title>
+<!-- A link and a form, both leading to the page named in ?to=. -->
+<p><a id="go">Go there</a></p>
+<form id="send" method="get">
+  <input name="q" aria-label="Search"> <button>Send</button>
+</form>
+<script>
+  const to = new URLSearchParams(location.search).get('to');
+  document.getElementById('go').href = to;
+  document.getElementById('send').action = to;
+</script>

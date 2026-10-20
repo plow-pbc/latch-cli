@@ -90,6 +90,8 @@ pub trait Driver {
     fn navigate(&mut self, url: &str) -> Result<(), Failure>;
     /// One step back in the active tab's history; false if there is none.
     fn back(&mut self) -> Result<bool, Failure>;
+    /// The address `back` would load, if there is one.
+    fn back_url(&mut self) -> Result<Option<String>, Failure>;
 
     /// Every frame of the active tab, cross-site and sandboxed ones included.
     fn frames(&mut self) -> Result<Vec<Frame>, Failure>;

@@ -984,6 +984,21 @@ impl Driver for Cft {
         Ok(true)
     }
 
+    fn back_url(&mut self) -> Result<Option<String>, Failure> {
+        let session = self.active_state().session.clone();
+        let history = self.cdp.call(
+            "Page.getNavigationHistory",
+            json!({}),
+            Some(&session),
+            Instant::now() + COMMAND,
+        )?;
+        let current = history["currentIndex"].as_u64().unwrap_or(0) as usize;
+        Ok(current
+            .checked_sub(1)
+            .and_then(|at| history["entries"][at]["url"].as_str())
+            .map(str::to_string))
+    }
+
     fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
         self.cdp.pump(Duration::ZERO)?;
         self.absorb()?;
@@ -1518,6 +1533,9 @@ impl Driver for Seat {
     }
     fn back(&mut self) -> Result<bool, Failure> {
         self.cft().back()
+    }
+    fn back_url(&mut self) -> Result<Option<String>, Failure> {
+        self.cft().back_url()
     }
     fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
         self.cft().frames()
