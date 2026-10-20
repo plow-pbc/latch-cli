@@ -283,6 +283,11 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
         "tidied\ntidied\n"
     );
     assert_eq!(t.judged(), 3, "the same exec is judged each time");
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    assert_eq!(
+        asked[2]["already_done_by_agent"], "(nothing since this host started)",
+        "an exec run again is not a one-time action"
+    );
 
     let records = t.audit();
     let gate = &records[2]["gate"];
@@ -301,6 +306,40 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     for said in [ASKED, "yes, go ahead", "May I run", "Sure, I'll look later"] {
         assert!(!log.contains(said), "chat text in the audit: {said}");
     }
+}
+
+fn always_covered(_: &Value) -> Option<[f64; 3]> {
+    Some([0.9, 0.08, 0.02])
+}
+
+#[tokio::test]
+async fn a_google_change_is_already_done_the_next_time_and_a_read_is_not() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let google = |gog_args: &[&str]| json!({"gog_args": gog_args, "account": [], "confirm_conflict": false, "inputs": []});
+    let send = google(&[
+        "gmail",
+        "send",
+        "--to",
+        "a@example.com",
+        "--body",
+        "the body",
+    ]);
+    let search = google(&["gmail", "search", "invoice"]);
+    for args in [&search, &search, &send, &send] {
+        t.call(&agent, "google", args.clone()).await;
+    }
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    assert_eq!(asked.len(), 4);
+    for state in &asked[..3] {
+        assert_eq!(
+            state["already_done_by_agent"],
+            "(nothing since this host started)"
+        );
+    }
+    let done = &asked[3]["already_done_by_agent"]["since this host started"];
+    assert_eq!(done.as_array().unwrap().len(), 1, "{done}");
+    assert_eq!(done[0]["what"]["command"], send["gog_args"]);
 }
 
 #[tokio::test]
@@ -345,8 +384,8 @@ async fn an_agent_with_no_chat_and_no_rules_has_no_intent() {
 }
 
 /// Rules alone, judged by jev itself: an agent with neither chat nor rules
-/// has no intent; with rules allowing only tests, `curl` is never allowed,
-/// and how often `pytest` is allowed is printed. `just gatekeeper-live KEY`
+/// has no intent; with rules allowing only tests, `pytest` is allowed every
+/// time, repeats included, and `curl` never. `just gatekeeper-live KEY`
 /// runs it.
 #[cfg(feature = "live-model")]
 #[tokio::test]
@@ -409,5 +448,5 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
         allowed("pytest"),
         allowed("curl")
     );
-    assert_eq!(allowed("curl"), 0);
+    assert_eq!((allowed("pytest"), allowed("curl")), (5, 0));
 }

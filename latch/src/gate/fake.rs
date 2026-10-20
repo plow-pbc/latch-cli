@@ -28,6 +28,8 @@ pub struct World {
     /// `GET /v1/latch/peers/{key}`'s answer, by key.
     pub callers: HashMap<String, Value>,
     pub decide: Option<Decide>,
+    /// Every state the decision route was asked about, in order.
+    pub asked: Vec<Value>,
 }
 
 impl World {
@@ -42,7 +44,7 @@ impl World {
         self.messages.insert(chat.into(), messages);
     }
 
-    fn answer(&self, method: &str, target: &str, body: &[u8]) -> (u16, Value) {
+    fn answer(&mut self, method: &str, target: &str, body: &[u8]) -> (u16, Value) {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         if self.broken.as_deref() == Some(path) {
             return (500, json!({"detail": "broken"}));
@@ -52,6 +54,7 @@ impl World {
             .collect();
         if method == "POST" && path == "/v1/decisions" {
             let asked: Value = serde_json::from_slice(body).unwrap();
+            self.asked.push(asked["state"].clone());
             let Some([c, n, f]) = self.decide.and_then(|decide| decide(&asked["state"])) else {
                 return (503, json!({"detail": "unavailable"}));
             };

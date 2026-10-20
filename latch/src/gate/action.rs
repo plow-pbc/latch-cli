@@ -14,6 +14,11 @@ pub struct Gated {
     /// What the audit keeps if it is refused: no Google arguments, which
     /// can hold a message body or a search.
     pub audit: Value,
+    /// Whether it is a one-time action, which the judge then sees as
+    /// already done: a Google command that changes something. Running,
+    /// reading or searching again is normal, so exec, files and Google
+    /// reads are not.
+    pub once: bool,
 }
 
 /// The proposed action, its keys in this order.
@@ -50,6 +55,7 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
         accounts: None,
     };
     let first_area = first_area.to_string_lossy();
+    let mut once = false;
     let (action, audit) = match op {
         "exec" => {
             let folder = args["workdir"].as_str().unwrap_or(&first_area);
@@ -92,6 +98,7 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
             let words: Vec<String> =
                 serde_json::from_value(args["gog_args"].clone()).unwrap_or_default();
             let command = crate::google::policy::command_prefix(&words);
+            once = crate::google::policy::parse(&words).map_or(true, |plan| !plan.read_only());
             (action, json!({"command": command}))
         }
         _ => return None,
@@ -99,5 +106,6 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
     Some(Gated {
         action: serde_json::value::to_raw_value(&action).expect("an action serializes"),
         audit,
+        once,
     })
 }

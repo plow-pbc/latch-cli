@@ -464,6 +464,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             };
             if let (Ok(Some(gate)), Some(gated), Some(judgment)) = (&gate, &gated, &judgment)
                 && judgment.verdict.is_ok()
+                && gated.once
             {
                 gate.did(&gated.action, &done.outcome);
             }
