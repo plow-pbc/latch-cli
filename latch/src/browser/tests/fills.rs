@@ -517,6 +517,72 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
     let after = h.call("observe", json!({})).await.unwrap().to_string();
     assert!(!after.contains(NUMBER) && !after.contains(CVV));
 
+    // A confirmed card fill whose page reprices once the number is in: Pay
+    // is not pressed, the values are cleared, and the agent is let back in.
+    let checkout = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/reprice-checkout.html")}),
+        )
+        .await
+        .unwrap();
+    let fields = json!([
+        ["number", [find(&checkout, "textbox", "Card number")]],
+        ["expiry", [find(&checkout, "textbox", "Expiry")]],
+        ["cvv", [find(&checkout, "textbox", "CVV")]],
+    ]);
+    let pay = find(&checkout, "button", "Pay");
+    let (stop, _) = h
+        .gated_fill(json!({"item": card.item, "fields": fields, "press": pay}))
+        .await;
+    let stop = stop.unwrap_err();
+    assert_eq!(stop.code, "confirm_needed");
+    assert!(
+        stop.details["confirmation"]["lines"]
+            .to_string()
+            .contains("$10.00")
+    );
+    let mut audit = Map::new();
+    let repriced = crate::browser::steps::run(
+        &h.browsers,
+        &h.entry,
+        "default",
+        CALLER,
+        &json!({"request": "r-reprice", "plan": {"steps": []},
+                "confirm": stop.details["confirmation"]["id"]}),
+        &mut audit,
+    )
+    .await
+    .unwrap_err();
+    h.shown.push(format!(
+        "{} {} {}",
+        repriced.code, repriced.message, repriced.details
+    ));
+    h.shown.push(Value::Object(audit.clone()).to_string());
+    println!(
+        "repriced during the fill: {} ({})",
+        repriced.code, repriced.message
+    );
+    assert_eq!(
+        (repriced.exit, repriced.code.as_str()),
+        (crate::failure::Exit::Denied, "confirm_stale")
+    );
+    let page = h.text().await;
+    assert!(
+        page.contains("$100.00") && !page.contains("payment:"),
+        "{page}"
+    );
+    // The agent is back (the cleanup was confirmed), and the fields are
+    // empty: eval, refused while one holds anything, reads them.
+    let left = h
+        .call(
+            "eval",
+            json!({"script": "['cc-number', 'cc-exp', 'cc-csc'].map((n) => document.querySelector(`[name=${n}]`).value)"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(left["value"], json!(["", "", ""]));
+
     // An identity's ordinary fields fill without --press; while they are on
     // the page, eval is refused.
     let address = h

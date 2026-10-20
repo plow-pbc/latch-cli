@@ -1348,6 +1348,8 @@ pub async fn confirm_fill(entry: &Entry, args: &Value, audit: &mut Map<String, V
     let id = format!("c{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff);
     let mut fill = args.clone();
     fill["snapshot"] = reviewed["snapshot"].clone();
+    // Its press is made only while the page still shows what was confirmed.
+    fill["guard"] = json!({"fingerprint": fingerprint(&reviewed)});
     entry
         .confirmations
         .lock()

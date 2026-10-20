@@ -193,7 +193,11 @@ fills). A confirmation is used once, in the same session and document, and
 only while the element and the reviewed lines are unchanged; otherwise
 `confirm_stale` with a fresh page (a total that changes from $10.00 to
 $100.00 is refused, even with the same ref, URL and button name). It needs
-no new risk decision, so it still works while the model is down. A step
+no new risk decision, so it still works while the model is down. A
+confirmed fill checks again at its press: if the button or the lines
+around it changed once the values went in (a total that reprices as the
+card number arrives), it does not press, clears the values, and answers
+`confirm_stale`. A step
 whose `new text` check already holds stops before the confirmation is
 spent.
 

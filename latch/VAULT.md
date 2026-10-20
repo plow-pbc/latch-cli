@@ -82,7 +82,9 @@ own format. A fill that includes a secret field needs `--press eN`, the
 button that submits it, and stops with `confirm_needed` (exit 4) before any
 value is released: the confirmation names the item's title, the button and
 the lines around it, and `latch browser do --confirm C` then fills, presses
-and cleans up as one step ([BROWSER.md](BROWSER.md)).
+and cleans up as one step ([BROWSER.md](BROWSER.md)), pressing only while
+the button and the lines around it are as confirmed; otherwise it clears
+the values and answers `confirm_stale`.
 
 While a fill runs, the session is paused: every other call answers
 `session_paused`. Each value is set in one step after the field's element,

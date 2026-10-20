@@ -256,7 +256,7 @@ async fn fill(
     let submitted = prepared["submit"].as_str().map(str::to_string);
     if let Some(submit) = &submitted {
         audit.insert("pressed".into(), json!(submit));
-        let pressed = json!({"op": "fill_submit", "target": submit});
+        let pressed = json!({"op": "fill_submit", "target": submit, "guard": args["guard"]});
         if let Err(failure) = step(session, pressed, audit).await {
             return Err(stop(session, failure, audit).await);
         }

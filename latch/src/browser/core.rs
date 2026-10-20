@@ -128,6 +128,10 @@ pub enum Call {
     },
     FillSubmit {
         target: String,
+        /// A confirmed fill's press: made only while the button and the
+        /// lines around it are as the agent confirmed them.
+        #[serde(default)]
+        guard: Option<Guard>,
     },
     FillCleanup,
     FillResume,
@@ -293,7 +297,7 @@ impl<D: Driver> Core<D> {
             } => self.wait(condition, within_ms, &mut audit),
             Call::PrepareFill(prepare) => self.prepare_fill(prepare, &mut audit),
             Call::SetValue { target, value } => self.set_value(&target, &value),
-            Call::FillSubmit { target } => self.fill_submit(&target),
+            Call::FillSubmit { target, guard } => self.fill_submit(&target, guard.as_ref()),
             Call::FillCleanup => self.fill_cleanup(),
             Call::FillResume => self.fill_resume(&mut audit),
             Call::Open { url } => self.open(url.as_deref(), &mut audit),
