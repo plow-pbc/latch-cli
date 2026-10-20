@@ -176,7 +176,9 @@ impl Cdp {
     /// frames in other processes, dialogs, downloads, and a tab's own
     /// loading. A page whose frames come and go sends thousands of other
     /// events a minute, which are dropped; a frame that attached and
-    /// detached again before anyone looked is dropped too.
+    /// detached again before anyone looked is dropped too. Loading events
+    /// are read for whether one came, so each is queued once per tab
+    /// session and frame; a download keeps only its latest progress.
     fn queue(&mut self, event: Value) {
         let params = &event["params"];
         let text = |key: &str| params[key].as_str().unwrap_or_default().to_string();
@@ -214,14 +216,35 @@ impl Cdp {
                 }
                 false
             }
-            "Page.frameStartedLoading"
+            method @ ("Page.frameStartedLoading"
             | "Page.frameRequestedNavigation"
-            | "Page.frameStoppedLoading" => self.pages.contains(&text("frameId")),
-            "Page.loadEventFired"
-            | "Page.javascriptDialogOpening"
+            | "Page.frameStoppedLoading"
+            | "Page.loadEventFired") => {
+                let tab = method == "Page.loadEventFired" || self.pages.contains(&text("frameId"));
+                tab && !self.events.iter().any(|queued| {
+                    queued["method"] == method
+                        && queued["sessionId"] == event["sessionId"]
+                        && queued["params"]["frameId"] == params["frameId"]
+                })
+            }
+            "Browser.downloadProgress" => {
+                let earlier = self.events.iter_mut().find(|queued| {
+                    queued["method"] == "Browser.downloadProgress"
+                        && queued["params"]["guid"] == params["guid"]
+                });
+                match earlier {
+                    Some(earlier) => {
+                        *earlier = event;
+                        return;
+                    }
+                    None => true,
+                }
+            }
+            // An open dialog blocks its page until latch answers it, so
+            // these come one at a time.
+            "Page.javascriptDialogOpening"
             | "Page.javascriptDialogClosed"
-            | "Browser.downloadWillBegin"
-            | "Browser.downloadProgress" => true,
+            | "Browser.downloadWillBegin" => true,
             _ => false,
         };
         if keep {
@@ -423,5 +446,62 @@ mod tests {
             ]
         );
         assert!(!cdp.removed("F9999"));
+    }
+
+    #[test]
+    fn repeated_loads_and_download_progress_queue_once_each() {
+        let Pipes { mut cdp, .. } = pipes().unwrap();
+        let event = |method: &str, session: &str, params: Value| json!({"method": method, "sessionId": session, "params": params});
+        cdp.queue(event(
+            "Target.targetCreated",
+            "",
+            json!({"targetInfo": {"type": "page", "targetId": "TAB"}}),
+        ));
+        cdp.queue(event(
+            "Browser.downloadWillBegin",
+            "",
+            json!({"guid": "G", "frameId": "TAB"}),
+        ));
+        // A page reloading itself and a download reporting progress, ten
+        // thousand times each.
+        for n in 0..10_000 {
+            for method in [
+                "Page.frameStartedLoading",
+                "Page.frameRequestedNavigation",
+                "Page.frameStoppedLoading",
+            ] {
+                cdp.queue(event(method, "S", json!({"frameId": "TAB"})));
+            }
+            cdp.queue(event("Page.loadEventFired", "S", json!({})));
+            cdp.queue(event(
+                "Browser.downloadProgress",
+                "",
+                json!({"guid": "G", "receivedBytes": n, "state": "inProgress"}),
+            ));
+        }
+        cdp.queue(event(
+            "Browser.downloadProgress",
+            "",
+            json!({"guid": "G", "receivedBytes": 10_000, "state": "completed"}),
+        ));
+        let events = cdp.take_events();
+        let methods: Vec<&str> = events
+            .iter()
+            .map(|e| e["method"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            methods,
+            [
+                "Target.targetCreated",
+                "Browser.downloadWillBegin",
+                "Page.frameStartedLoading",
+                "Page.frameRequestedNavigation",
+                "Page.frameStoppedLoading",
+                "Page.loadEventFired",
+                "Browser.downloadProgress",
+            ]
+        );
+        // The download's latest progress is the one kept.
+        assert_eq!(events[6]["params"]["state"], "completed");
     }
 }
