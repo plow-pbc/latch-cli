@@ -656,7 +656,6 @@ impl<D: Driver> Core<D> {
         let mut result = Map::new();
         result.insert("action".into(), json!("upload"));
         result.insert("target".into(), json!({"ref": target}));
-        result.insert("resolved_by".into(), json!("ref"));
         result.insert("file".into(), json!({"name": name, "size": bytes.len()}));
         result.insert("dispatched".into(), json!(true));
         self.after(&before, events, &mut result)?;
@@ -754,12 +753,10 @@ impl<D: Driver> Core<D> {
                 let element = self.element(&snapshot, position)?;
                 audit.insert("snapshot".into(), json!(snapshot));
                 audit.insert("role".into(), element["role"].clone());
-                audit.insert("resolved_by".into(), json!("ref"));
                 result.insert(
                     "target".into(),
                     json!({"ref": target, "role": element["role"], "name": element["name"], "row": element["row"]}),
                 );
-                result.insert("resolved_by".into(), json!("ref"));
                 if let Some(guard) = guard {
                     let now = self.review(Some(&snapshot), target, guard.enter, &mut Map::new())?;
                     if fingerprint(&now) != guard.fingerprint {

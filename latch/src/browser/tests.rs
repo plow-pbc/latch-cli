@@ -495,7 +495,6 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
         .unwrap();
     println!("click {edit}: {}", clicked["lines"]);
     assert_eq!(clicked["dispatched"], true);
-    assert_eq!(clicked["resolved_by"], "ref");
     assert_eq!(
         out_line(&call(json!({"op": "text"})).await.unwrap()),
         "edited 1001, trusted true"
