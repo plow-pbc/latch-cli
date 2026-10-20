@@ -13,6 +13,7 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -37,6 +38,12 @@ const TEXT_CHARS: usize = 20_000;
 const MAX_EVAL_RESULT: usize = 1024 * 1024;
 /// How far one `scroll` moves, in CSS pixels.
 const SCROLL: f64 = 600.0;
+/// How long one call may take, every wait for the engine in it together;
+/// typing adds time per character, and a wait its own.
+pub const CALL: Duration = Duration::from_secs(60);
+const PER_CHARACTER: Duration = Duration::from_millis(200);
+/// The most frames one snapshot reads; the rest are left out (`truncated`).
+pub const MAX_FRAMES: usize = 50;
 
 /// One call from the host, as the worker reads it.
 #[derive(Deserialize, Debug)]
@@ -154,6 +161,17 @@ enum Acts<'a> {
 }
 
 impl Call {
+    /// How long this call may take, from its line to its answer.
+    pub fn limit(&self) -> Duration {
+        match self {
+            Call::Act {
+                text: Some(text), ..
+            } => CALL + PER_CHARACTER * text.chars().count() as u32,
+            Call::Wait { within_ms, .. } => CALL + Duration::from_millis(*within_ms),
+            _ => CALL,
+        }
+    }
+
     fn acts(&self) -> Acts<'_> {
         match self {
             Call::Open { url: Some(url) }
@@ -256,6 +274,8 @@ pub struct Core<D: Driver> {
     /// The latest snapshot shown the agent: what a ref without
     /// `--snapshot` is read in.
     last_shown: Option<String>,
+    /// When the current call's reading stops starting frames.
+    read_until: Option<Instant>,
 }
 
 /// Where a ref's element is, ready for input.
@@ -279,7 +299,17 @@ impl<D: Driver> Core<D> {
             fill: fill::State::default(),
             quiet: false,
             last_shown: None,
+            read_until: None,
         }
+    }
+
+    /// Bounds the call about to run (`Driver::limit`). A reading stops
+    /// starting frames with a quarter of the call's time left, for the
+    /// rest of the call.
+    pub fn limit(&mut self, deadline: Instant) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        self.read_until = Some(deadline - left / 4);
+        self.driver.limit(Some(deadline));
     }
 
     /// Runs one call. Close is the worker's to do, not the core's.
@@ -1025,8 +1055,15 @@ impl<D: Driver> Core<D> {
         let mut refs = Vec::new();
         let mut elements = Vec::new();
         let mut listed = Vec::new();
-        let mut truncated = false;
-        for (n, frame) in frames.iter().enumerate() {
+        // A scoped reading reads one frame, wherever it is in the tree.
+        let read_at_most = if scoped.is_some() {
+            frames.len()
+        } else {
+            MAX_FRAMES
+        };
+        let mut truncated = frames.len() > read_at_most;
+        let mut out_of_time = None;
+        for (n, frame) in frames.iter().take(read_at_most).enumerate() {
             let label = format!("f{n}");
             let parent = frame
                 .parent
@@ -1043,9 +1080,23 @@ impl<D: Driver> Core<D> {
                 }
                 None => format!("__latch.read({id:?}, {left}, null, 0)"),
             };
-            // A frame that went away while being read is left out.
-            let Ok(read) = self.driver.run(frame, &expression) else {
-                continue;
+            if self.read_until.is_some_and(|end| Instant::now() >= end) {
+                truncated = true;
+                out_of_time.get_or_insert_with(|| {
+                    Failure::failed("timeout", "the page did not answer in time".into())
+                });
+                break;
+            }
+            let read = match self.driver.run(frame, &expression) {
+                Ok(read) => read,
+                // A frame that did not answer in time is left out, and said so.
+                Err(failure) if failure.code == "timeout" => {
+                    truncated = true;
+                    out_of_time = Some(failure);
+                    continue;
+                }
+                // A frame that went away while being read is left out.
+                Err(_) => continue,
             };
             if read["stale"] == true {
                 return Err(stale());
@@ -1075,6 +1126,11 @@ impl<D: Driver> Core<D> {
             if read["more"] == true || refs.len() >= MAX_ELEMENTS {
                 truncated = true;
             }
+        }
+        if listed.is_empty()
+            && let Some(failure) = out_of_time
+        {
+            return Err(failure);
         }
         self.snapshots.push_back(Snapshot {
             id: id.clone(),
@@ -1265,6 +1321,7 @@ mod tests {
     struct Bare;
 
     impl Driver for Bare {
+        fn limit(&mut self, _: Option<Instant>) {}
         fn tabs(&mut self) -> Result<Vec<super::super::driver::Tab>, Failure> {
             Ok(vec![super::super::driver::Tab {
                 tab: "t1".into(),
@@ -1393,5 +1450,168 @@ mod tests {
                 json!({"capability": capability, "tab": "t1", "origin": "https://shop.example", "path": "/cart"})
             );
         }
+    }
+
+    /// A page of `frames` frames, each read taking `each`, as a page
+    /// under heavy load answers; within its own limit every time.
+    struct Slow {
+        frames: usize,
+        each: Duration,
+    }
+
+    impl Driver for Slow {
+        fn limit(&mut self, _: Option<Instant>) {}
+        fn tabs(&mut self) -> Result<Vec<super::super::driver::Tab>, Failure> {
+            Bare.tabs()
+        }
+        fn active_tab(&self) -> String {
+            "t1".into()
+        }
+        fn dialog_open(&self) -> bool {
+            false
+        }
+        fn capabilities(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
+            Ok((0..self.frames)
+                .map(|n| Frame {
+                    id: format!("F{n}"),
+                    parent: (n > 0).then(|| "F0".to_string()),
+                    document: "D".into(),
+                })
+                .collect())
+        }
+        fn run(&mut self, _: &Frame, _: &str) -> Result<Value, Failure> {
+            std::thread::sleep(self.each);
+            Ok(
+                json!({"origin": "https://shop.example", "url": "https://shop.example/", "elements": [], "text": "a page"}),
+            )
+        }
+        fn settle(&mut self) -> Result<Vec<Event>, Failure> {
+            Ok(Vec::new())
+        }
+        fn new_tab(&mut self, _: Option<&str>) -> Result<String, Failure> {
+            unreachable!()
+        }
+        fn switch_tab(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn close_tab(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn navigate(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn back(&mut self) -> Result<bool, Failure> {
+            unreachable!()
+        }
+        fn back_url(&mut self) -> Result<Option<String>, Failure> {
+            unreachable!()
+        }
+        fn call(&mut self, _: &Frame, _: &str, _: Vec<Value>) -> Result<Value, Failure> {
+            unreachable!()
+        }
+        fn reaches(&mut self, _: &Frame, _: f64, _: f64) -> Result<bool, Failure> {
+            unreachable!()
+        }
+        fn frame_offset(&mut self, _: &Frame) -> Result<(f64, f64), Failure> {
+            unreachable!()
+        }
+        fn click(&mut self, _: f64, _: f64) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn type_text(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn select_all(&mut self) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn press(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn wheel(&mut self, _: f64, _: f64, _: f64) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn answer_dialog(&mut self, _: bool, _: Option<&str>) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn eval(&mut self, _: &str) -> Result<Value, Failure> {
+            unreachable!()
+        }
+        fn set_files(
+            &mut self,
+            _: &Frame,
+            _: &str,
+            _: &[std::path::PathBuf],
+        ) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn upload_folder(&self) -> std::path::PathBuf {
+            unreachable!()
+        }
+        fn downloads(&mut self) -> Result<Vec<super::super::driver::Download>, Failure> {
+            unreachable!()
+        }
+        fn download_file(
+            &mut self,
+            _: &str,
+        ) -> Result<(super::super::driver::Download, std::path::PathBuf), Failure> {
+            unreachable!()
+        }
+        fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
+            unreachable!()
+        }
+        fn close(&mut self) -> Value {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_reading_ends_with_its_calls_time_and_says_what_it_left_out() {
+        // Each frame answers in its own time, but 40 of them take 2 s: a
+        // call given 400 ms reads what fits and says the rest is missing.
+        let mut core = Core::new(Slow {
+            frames: 40,
+            each: Duration::from_millis(50),
+        });
+        let started = Instant::now();
+        core.limit(started + Duration::from_millis(400));
+        let observed = core
+            .call(
+                Call::Observe {
+                    tab: None,
+                    scope: None,
+                },
+                None,
+            )
+            .unwrap()
+            .result;
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(500), "took {took:?}");
+        assert_eq!(observed["truncated"], true);
+        let read = observed["frames"].as_array().unwrap().len();
+        assert!((1..40).contains(&read), "{read} frames read");
+    }
+
+    #[test]
+    fn a_snapshot_reads_at_most_max_frames() {
+        let mut core = Core::new(Slow {
+            frames: MAX_FRAMES + 30,
+            each: Duration::ZERO,
+        });
+        core.limit(Instant::now() + CALL);
+        let observed = core
+            .call(
+                Call::Observe {
+                    tab: None,
+                    scope: None,
+                },
+                None,
+            )
+            .unwrap()
+            .result;
+        assert_eq!(observed["truncated"], true);
+        assert_eq!(observed["frames"].as_array().unwrap().len(), MAX_FRAMES);
     }
 }

@@ -8,6 +8,7 @@
 //! `element.click()`.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -79,6 +80,11 @@ pub enum Event {
 }
 
 pub trait Driver {
+    /// Bounds the call under way: until it is lifted (`None`), no wait for
+    /// the engine lasts past `deadline`, however many commands the call
+    /// sends. Each command still has its own, shorter, limit.
+    fn limit(&mut self, deadline: Option<Instant>);
+
     fn tabs(&mut self) -> Result<Vec<Tab>, Failure>;
     /// Opens a tab (on `url`, or blank) and makes it the active one.
     fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure>;

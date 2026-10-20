@@ -3,7 +3,8 @@
      button, other ways in offered first, and the password asked for only
      after the email ("Continue"), in the same document. "Sign in" posts to
      /welcome. With ?cross=PORT, cross-site frames from
-     http://localhost:PORT come and go meanwhile, as trackers' do. -->
+     http://localhost:PORT come and go meanwhile, as trackers' do, each
+     gone within 300 ms. -->
 <h1>Sign in</h1>
 <div>
   <button>Continue with Google</button>
@@ -41,6 +42,7 @@
       frame.width = 10;
       frame.height = 10;
       frame.onload = () => setTimeout(() => frame.remove(), Math.random() * 30);
+      setTimeout(() => frame.remove(), 300);
       frame.src = 'http://localhost:' + cross + '/cross.html?' + added++;
       document.body.appendChild(frame);
     }, 15);
