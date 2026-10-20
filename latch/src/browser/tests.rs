@@ -1403,14 +1403,26 @@ async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent() {
         )
         .await;
     let search = find(&page, "textbox", "Search");
+    // The second form's own action stays on localhost: only its submit
+    // button's formaction leads to 127.0.0.1, and Enter in its field goes
+    // there too.
+    let field = find(&page, "textbox", "Find");
+    let typed = json!({"action": "type", "target": field, "text": "x\n"});
     let mut outcomes = Vec::new();
-    for line in [
+    for (step, args) in [
         format!("click {}", find(&page, "link", "Go there")),
         format!("click {}", find(&page, "button", "Send")),
         format!("press {search} Enter"),
-    ] {
-        let outcome = h.call(other, "act", &b, act(&line)).await;
-        outcomes.push((line, outcome.map_or_else(|f| f.code, |_| "sent".into())));
+        format!("press {field} Enter"),
+    ]
+    .into_iter()
+    .map(|line| (line.clone(), act(&line)))
+    .chain([(
+        format!("type {field} x⏎"),
+        json!({"request": "r-typed", "list": false, "steps": [typed]}),
+    )]) {
+        let outcome = h.call(other, "act", &b, args).await;
+        outcomes.push((step, outcome.map_or_else(|f| f.code, |_| "sent".into())));
     }
     let tab = h.call(other, "observe", &b, json!({})).await.unwrap();
     println!(

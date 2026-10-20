@@ -343,14 +343,22 @@
   // is known before it happens: a link's address, or the address its form
   // sends to (a submit button, or Enter in one of the form's fields).
   // Script on the page can still go anywhere.
+  const SUBMIT = 'button:not([type]), button[type=submit], input[type=submit], input[type=image]';
+  // Where `form` sends what `button` submits: the button's own formaction,
+  // else the form's action.
+  const sendsTo = (form, button) => (button && button.hasAttribute('formaction') ? button.formAction : form.action);
   const leadsTo = (el, key) => {
     const link = el.closest('a[href], area[href]');
     if (link) return link.href;
-    const submits = el.matches('button:not([type]), button[type=submit], input[type=submit], input[type=image]');
-    if (submits && el.form && (key == null || key === 'Enter' || key === 'Space')) {
-      return el.hasAttribute('formaction') ? el.formAction : el.form.action;
+    if (!el.form) return null;
+    if (el.matches(SUBMIT) && (key == null || key === 'Enter' || key === 'Space')) {
+      return sendsTo(el.form, el);
     }
-    if (key === 'Enter' && el.form && el.matches('input')) return el.form.action;
+    // Enter in a field submits its form through the form's default button,
+    // the first submit button it owns, as a click on that button would.
+    if (key === 'Enter' && el.matches('input')) {
+      return sendsTo(el.form, [...el.form.elements].find((owned) => owned.matches(SUBMIT)));
+    }
     return null;
   };
 
