@@ -10,6 +10,7 @@
 //! - `store.rs`: the backend interface, and latch's own sealed store.
 //! - `import.rs`: other password managers' exports, read into items.
 //! - `host.rs`: the host's `vault` operation, for owner devices.
+//! - `link.rs`: phone links, which add an item from the owner's phone.
 //! - `client.rs`: `latch vault …`, the owner's commands.
 
 pub mod classify;
@@ -18,6 +19,7 @@ pub mod dates;
 pub mod host;
 pub mod import;
 pub mod item;
+pub mod link;
 pub mod sites;
 pub mod store;
 pub mod totp;

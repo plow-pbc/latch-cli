@@ -193,46 +193,78 @@ impl Raw {
             ..Raw::default()
         };
         for (label, value) in values {
-            let label = if kind == CARD && (label == "cvv" || label == "security code") {
-                "code"
-            } else {
-                label.as_str()
-            };
-            if value.is_empty() {
-                continue;
-            }
-            if label == "notes" {
-                raw.notes = Some(value.clone());
-                continue;
-            }
-            let Some((_, _, key)) = LABELS.iter().find(|(k, l, _)| *k == kind && *l == label)
-            else {
-                return Err(format!("a {} has no field {label:?}", kind_name(kind)));
-            };
-            let value = Value::String(value.clone());
-            match kind {
-                LOGIN => {
-                    let login = raw.login.get_or_insert_with(Login::default);
-                    let text = value.as_str().map(str::to_string);
-                    match *key {
-                        "username" => login.username = text,
-                        "password" => login.password = text,
-                        _ => login.totp = text,
-                    }
-                }
-                CARD => {
-                    raw.card
-                        .get_or_insert_with(Map::new)
-                        .insert((*key).into(), value);
-                }
-                _ => {
-                    raw.identity
-                        .get_or_insert_with(Map::new)
-                        .insert((*key).into(), value);
-                }
+            if !value.is_empty() {
+                raw.set(label, value)?;
             }
         }
         Ok(raw)
+    }
+
+    /// Bitwarden's key for the field `label` of this item's kind (`cvv`
+    /// for a card's `code`); `notes` is every kind's.
+    fn key(&self, label: &str) -> Result<&'static str, String> {
+        let label = if self.kind == CARD && (label == "cvv" || label == "security code") {
+            "code"
+        } else {
+            label
+        };
+        if label == "notes" {
+            return Ok("notes");
+        }
+        LABELS
+            .iter()
+            .find(|(k, l, _)| *k == self.kind && *l == label)
+            .map(|(_, _, key)| *key)
+            .ok_or_else(|| format!("a {} has no field {label:?}", kind_name(self.kind)))
+    }
+
+    /// Sets the field `label`; an empty value clears it.
+    pub fn set(&mut self, label: &str, value: &str) -> Result<(), String> {
+        let key = self.key(label)?;
+        let text = (!value.is_empty()).then(|| value.to_string());
+        if key == "notes" {
+            self.notes = text;
+            return Ok(());
+        }
+        let part = match self.kind {
+            LOGIN => {
+                let login = self.login.get_or_insert_with(Login::default);
+                match key {
+                    "username" => login.username = text,
+                    "password" => login.password = text,
+                    _ => login.totp = text,
+                }
+                return Ok(());
+            }
+            CARD => self.card.get_or_insert_with(Map::new),
+            _ => self.identity.get_or_insert_with(Map::new),
+        };
+        match text {
+            Some(text) => part.insert(key.into(), Value::String(text)),
+            None => part.remove(key),
+        };
+        Ok(())
+    }
+
+    /// The field `label` as stored, if it holds anything; the vault's own,
+    /// to tell what an edit changed.
+    pub fn get(&self, label: &str) -> Option<String> {
+        let key = self.key(label).ok()?;
+        let login = self.login.as_ref();
+        let value = match (key, self.kind) {
+            ("notes", _) => self.notes.clone(),
+            ("username", LOGIN) => login.and_then(|l| l.username.clone()),
+            ("password", LOGIN) => login.and_then(|l| l.password.clone()),
+            ("totp", LOGIN) => login.and_then(|l| l.totp.clone()),
+            (key, CARD) => self.card.as_ref()?.get(key)?.as_str().map(str::to_string),
+            (key, _) => self
+                .identity
+                .as_ref()?
+                .get(key)?
+                .as_str()
+                .map(str::to_string),
+        };
+        value.filter(|v| !v.is_empty())
     }
 }
 
@@ -376,6 +408,12 @@ mod tests {
             Some("737")
         );
         assert!(Raw::from_labels(CARD, "Visa", &[("ssn".into(), "x".into())]).is_err());
+        let mut edited = item.raw.clone();
+        edited.set("cvv", "").unwrap();
+        edited.set("cardholder name", "A Lovelace").unwrap();
+        assert_eq!(edited.get("code"), None);
+        assert_eq!(edited.get("cardholder name").as_deref(), Some("A Lovelace"));
+        assert_eq!(edited.get("number").as_deref(), Some("4111111111111111"));
         let mut siteless = Item {
             raw: Raw::from_labels(LOGIN, "Mail", &[]).unwrap(),
             ..item.clone()
