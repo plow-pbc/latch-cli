@@ -256,7 +256,9 @@ impl<D: Driver> Core<D> {
     /// of latch's own: its elements, each with the kind of input it takes,
     /// a dropdown's options, its form and whether something covers it; the
     /// lines on screen, then the page's other lines; its fields as lines;
-    /// the scroll position; a sign-in form or CAPTCHA on it; and `state`,
+    /// the scroll position; a CAPTCHA or password field on it; whether it
+    /// shows sign-in fields (a password field, or a lone username or email
+    /// field, the first page of two); and `state`,
     /// which changes whenever the document, a field, the lines on screen or
     /// the scroll position does.
     pub(super) fn view(&mut self, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
@@ -271,8 +273,17 @@ impl<D: Driver> Core<D> {
             .map(|r| (r.frame.clone(), r.index))
             .collect();
         let mut extras: HashMap<String, Vec<Value>> = HashMap::new();
+        let mut sign_in = false;
         for (frame, _) in &refs {
             if !extras.contains_key(&frame.id) {
+                if let Ok(found) = self.driver.run(
+                    frame,
+                    &format!("__latch.loginFields({:?})", reading.snapshot),
+                ) {
+                    sign_in |= [&found["logins"], &found["users"]]
+                        .iter()
+                        .any(|listed| listed.as_array().is_some_and(|l| !l.is_empty()));
+                }
                 let found = self
                     .driver
                     .run(frame, &format!("__latch.viewOf({:?})", reading.snapshot))
@@ -324,6 +335,7 @@ impl<D: Driver> Core<D> {
         result.insert("fields".into(), json!(fields));
         result.insert("scroll".into(), scroll);
         result.insert("wall".into(), json!(wall));
+        result.insert("sign_in".into(), json!(sign_in || wall == Some("login")));
         result.insert("state".into(), json!(state));
         Ok(Value::Object(result))
     }

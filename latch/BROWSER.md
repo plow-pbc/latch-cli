@@ -159,8 +159,9 @@ and command.
 ## Plans, literal steps and confirmations
 
 The agent writes every step and every piece of text; latch's decision
-model only chooses: whether a click or Enter can't be undone, and whether a
-sentence check holds.
+model only chooses: whether a click or Enter can't be undone, whether a
+sentence check holds, and, in a step written as a goal, the next
+operation and its target among those the page offers.
 
 **The plan command** (`do`) runs up to 10 steps in order, within
 `--within S` (default 120, at most 300). In the short form each argument is
@@ -179,11 +180,34 @@ plan object, which every short form compiles to:
 ```
 
 `act` is a plan of one literal step (`click`, `type`, `select`, `press`,
-`scroll`, `back`) with an optional `--check`, and the same answer. Steps
-written as a goal in words (instruction steps) are refused for now with
-`step_not_allowed`. Refs are from any page latch returned to the session
-(`--snapshot`, else the latest); each is pinned to its snapshot before
-anything runs.
+`scroll`, `back`) with an optional `--check`, and the same answer. Refs
+are from any page latch returned to the session (`--snapshot`, else the
+latest); each is pinned to its snapshot before anything runs.
+
+**Instruction steps.** Any other step is a goal in words, such as
+`add the Greek Salad to the cart -> text: Added`; its quoted texts are the
+only ones it may type (with the plan's `facts`), and a quoted URL is the
+only place it may `navigate` to. Each pass reads the page and asks the
+decision model once for the step's status, the line that best shows it is
+complete, the next operation and its target, offering only what the page
+allows: elements not disabled or covered (a cookie modal hides what is
+behind it), field × text pairs always with `none`, dropdown options with
+the one already chosen marked. A typed check decides completion
+(`checked`); otherwise the model's `complete` at p ≥ 0.7 with an evidence
+line (`model_assessed`). Before its first action a step whose result is
+already a field's value, the address or the title ends `already_held`;
+page text alone, such as a message an earlier step left, never counts. A
+pass stops, in this order, at a CAPTCHA (`needs_owner`), `blocked`,
+`unconfirmed`, `stuck` or `already_true`, a budget (8 actions a step, 30 a
+plan, 2 waits a step: `step_budget`, `plan_budget`, `deadline`), a target
+below p 0.5 (`ambiguous_target`, with candidate refs), text that was not
+supplied (`needs_text`, naming the field), a sign-in form
+(`needs_login`), a form a saved card or identity fits (`needs_fields`,
+with the form's refs, for a literal `fill`), the same action on an
+unchanged page (`repeat`) or two actions that change nothing
+(`no_progress`), and a click or Enter that can't be undone
+(`confirm_needed`). With no decision model, an instruction step stops
+`model_unavailable` before anything is sent.
 
 **Checks**, decided by latch's code and waited for up to 10 s after the
 step's action: `origin: https://shop.example` (the origin, whole),
@@ -196,12 +220,13 @@ decision model judges: met at yes ≥ 0.7 with an evidence line chosen while
 "none" stays below 0.3. A sentence that names a task rather than a page
 fact is refused before anything runs (`vague_condition`, exit 2).
 
-**The answer** has `status` (`reached`: every step `checked` or
-`model_assessed`; `dispatched`: every step ran but one had no check;
+**The answer** has `status` (`reached`: every step `checked`,
+`model_assessed` or `already_held`; `dispatched`: every step ran but one had no check;
 `stopped`, with `stop: {step, code, message, …}`), `review: true` when the
 last step rests on the model alone, `steps` (per step: `outcome`, its
 evidence, its action count), `trail` (per action: page URL and title,
-operation, target with role, name and row text, `chosen: ref`, the risk `p`,
+operation, target with role, name and row text, `chosen` (`ref`, or
+`model` with the operation's and target's p), the risk `p`,
 the confirmation used, `result` `dispatched`/`refused`/`unknown`, what
 changed) and `page` (snapshot, URL, title, up to 40 lines, the element
 list). A plan stops at the first step that does not pass, or at its

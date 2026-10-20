@@ -180,8 +180,8 @@ impl Provider for Fake {
     }
 }
 
-struct Harness {
-    browsers: Arc<Browsers>,
+pub(super) struct Harness {
+    pub(super) browsers: Arc<Browsers>,
     /// The session the harness acts in, and its id.
     entry: Arc<host::Entry>,
     id: String,
@@ -192,7 +192,10 @@ struct Harness {
 }
 
 impl Harness {
-    async fn start(state: &std::path::Path, provider: Option<Arc<dyn Provider>>) -> Harness {
+    pub(super) async fn start(
+        state: &std::path::Path,
+        provider: Option<Arc<dyn Provider>>,
+    ) -> Harness {
         let vault = Vault::new(state.to_path_buf());
         let mut browsers = Browsers::new(state.to_path_buf(), vault, super::HEADLESS);
         browsers.test = Some((latch(), Vec::new()));
@@ -211,7 +214,7 @@ impl Harness {
 
     /// A command in the harness's session. An `open` starts a new session,
     /// which takes the place of the one before.
-    async fn call(&mut self, command: &str, args: Value) -> Value {
+    pub(super) async fn call(&mut self, command: &str, args: Value) -> Value {
         let mut audit = Map::new();
         let name = if command == "open" {
             "default"
@@ -238,7 +241,7 @@ impl Harness {
         result
     }
 
-    async fn open(&mut self, url: &str) -> Value {
+    pub(super) async fn open(&mut self, url: &str) -> Value {
         self.call("open", json!({"url": url})).await
     }
 
@@ -256,7 +259,7 @@ impl Harness {
     }
 
     /// One request to the executor, as the host passes it on.
-    async fn send(&mut self, mut args: Value) -> Result<Value, Failure> {
+    pub(super) async fn send(&mut self, mut args: Value) -> Result<Value, Failure> {
         if args["request"].is_null() {
             args["request"] = json!(self.request());
         }
@@ -295,7 +298,7 @@ impl Harness {
     }
 
     /// The plan command's short form, as the client compiles it.
-    async fn short(&mut self, steps: &[&str]) -> Result<Value, Failure> {
+    pub(super) async fn short(&mut self, steps: &[&str]) -> Result<Value, Failure> {
         let steps: Vec<String> = steps.iter().map(|s| s.to_string()).collect();
         let plan = do_plan(&steps, None, false, None).unwrap();
         self.send(json!({"plan": plan})).await
@@ -309,7 +312,7 @@ impl Harness {
         self.send(json!({"plan": plan})).await
     }
 
-    async fn confirm(&mut self, id: &str) -> Result<Value, Failure> {
+    pub(super) async fn confirm(&mut self, id: &str) -> Result<Value, Failure> {
         self.send(json!({"plan": {"steps": []}, "confirm": id}))
             .await
     }

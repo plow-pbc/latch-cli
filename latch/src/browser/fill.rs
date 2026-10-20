@@ -81,6 +81,7 @@ pub async fn run(
     if entry.runtime.filling.swap(true, Ordering::SeqCst) {
         return Err(paused());
     }
+    entry.runtime.pauses.fetch_add(1, Ordering::SeqCst);
     let mut session = entry.session.lock().await;
     let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
     entry.runtime.filling.store(false, Ordering::SeqCst);

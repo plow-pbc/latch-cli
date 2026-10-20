@@ -445,10 +445,6 @@ pub enum Line {
     Action,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "instruction steps do not run yet")
-)]
 impl Line {
     pub fn is_state(self) -> bool {
         matches!(self, Line::Title | Line::Address | Line::Field)
@@ -484,10 +480,6 @@ pub struct Decision {
     pub url: Option<Pick>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "instruction steps do not run yet")
-)]
 impl Decision {
     /// The step is complete at status `complete` ≥ 0.7, with an evidence
     /// line chosen while `none` stays below 0.3.
@@ -504,10 +496,6 @@ impl Model {
     /// best shows it is complete, the next operation among those offered,
     /// and a target for each kind of operation offered. Each question is
     /// answered on its own, so each states the operation it assumes.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "instruction steps do not run yet")
-    )]
     pub async fn decide(&mut self, pass: &Pass) -> Result<Decision, String> {
         let base = json!({"current_step": pass.step, "rules": STEP_RULES});
         let with = |question: &str| {
