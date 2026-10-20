@@ -15,6 +15,8 @@
 //! never chat text, rules text or a secret.
 
 mod chat;
+pub mod client;
+pub(crate) mod owner;
 pub mod rules;
 #[cfg(test)]
 mod tests;

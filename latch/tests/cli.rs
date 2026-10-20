@@ -47,7 +47,7 @@ fn fake_plow(answers: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<Stri
             if body["key"].is_null() && !sent["key"].is_null() {
                 body["key"] = sent["key"].clone();
             }
-            if let Some(peers) = body["data"].as_array_mut() {
+            if let Some(peers) = body.get_mut("data").and_then(Value::as_array_mut) {
                 for peer in peers.iter_mut().filter(|peer| peer["key"] == "REGISTERED") {
                     peer["key"] = registered.clone();
                 }
@@ -524,4 +524,181 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "stdin_timeout");
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// A host's own state, logged in as the owner's device `studio`. Returns
+/// the test folder, the state and its key.
+fn owner_host() -> (tempfile::TempDir, PathBuf, String) {
+    let relay = json!("https://relay.example/");
+    let (url, server) = fake_plow(vec![(200, peer(Value::Null, "studio", "device", relay))]);
+    let dir = test_dir();
+    let owner_token = dir.path().join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let state = dir.path().join("state");
+    let token = owner_token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &url,
+        "--token-file",
+        token,
+        "--name",
+        "studio",
+    ];
+    let login = latch(&state, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let key = serde_json::from_slice::<Value>(&login.stdout).unwrap()["peer"]["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    server.join().unwrap();
+    (dir, state, key)
+}
+
+/// Points `state`'s later Plow calls at `url`.
+fn use_plow(state: &Path, url: &str) {
+    let config_path = state.join("config.json");
+    let mut config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["api_url"] = json!(url);
+    fs::write(&config_path, config.to_string()).unwrap();
+}
+#[test]
+fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
+    const ADA: &str = "0123456789abcdef0123456789abcdef";
+    let ada_key = "a".repeat(64);
+    let account = [
+        (200, json!([{"uid": ADA, "name": "Ada"}])),
+        (
+            200,
+            json!({"data": [peer(json!(ada_key), "ada-latch", "agent", Value::Null)]}),
+        ),
+        (
+            200,
+            json!({"key": ada_key, "kind": "agent", "name": "ada-latch", "agent_uid": ADA,
+                   "permissions": {"call": true}}),
+        ),
+    ];
+    let (dir, state, key) = owner_host();
+    // `--from`, and the two shows (edit's and the last), each read the account.
+    let (url, server) = fake_plow([account.clone(), account.clone(), account].concat());
+    use_plow(&state, &url);
+
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let set: Value = serde_json::from_slice(&set.stdout).unwrap();
+    assert_eq!(set["host"], "studio");
+    assert_eq!(set["scope"], "every agent");
+    assert_eq!(set["applies"], "applies to the next judgment");
+
+    let rules_file = dir.path().join("bot.txt");
+    fs::write(&rules_file, "Only pytest in ~/work.").unwrap();
+    let file = rules_file.to_str().unwrap();
+    let agent = latch(
+        &state,
+        &["rules", "set", "--from", "ada-latch", "--file", file],
+        &[],
+    );
+    assert_eq!(agent.status.code(), Some(0), "{agent:?}");
+    let agent: Value = serde_json::from_slice(&agent.stdout).unwrap();
+    assert_eq!(
+        (agent["agent_uid"].as_str(), agent["agent_name"].as_str()),
+        (Some(ADA), Some("Ada"))
+    );
+    assert_eq!(
+        fs::read_to_string(state.join(format!("rules/{ADA}.txt"))).unwrap(),
+        "Only pytest in ~/work."
+    );
+    assert_eq!(
+        fs::read_to_string(state.join(format!("rules/{ADA}.peer"))).unwrap(),
+        ada_key
+    );
+
+    // `edit` in $EDITOR: the editor appends a line.
+    let editor = dir.path().join("editor.sh");
+    fs::write(
+        &editor,
+        "#!/bin/sh\nprintf '\\nNever buy anything.' >> \"$1\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let edit = latch(&state, &["rules", "edit"], &[("EDITOR", editor.as_path())]);
+    assert_eq!(edit.status.code(), Some(0), "{edit:?}");
+    assert_eq!(
+        fs::read_to_string(state.join("rules/host.txt")).unwrap(),
+        "Never send email.\nNever buy anything."
+    );
+
+    let show = latch(&state, &["rules", "show"], &[]);
+    assert_eq!(show.status.code(), Some(0), "{show:?}");
+    let show: Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(
+        show["every_agent"]["text"],
+        "Never send email.\nNever buy anything."
+    );
+    assert_eq!(show["agents"][0]["text"], "Only pytest in ~/work.");
+    assert_eq!(
+        show["warning"],
+        "Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."
+    );
+    server.join().unwrap();
+
+    // Every command is in the host's audit log, by this machine's key, with
+    // revisions and never the text.
+    let log = fs::read_to_string(state.join("audit.ndjson")).unwrap();
+    let records: Vec<Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let commands: Vec<&str> = records
+        .iter()
+        .map(|r| r["args"]["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(commands, ["set", "set", "show", "edit", "show"]);
+    assert!(
+        records
+            .iter()
+            .all(|r| r["op"] == "rules" && r["caller"] == key.as_str())
+    );
+    assert_eq!(records[3]["args"]["before"], records[0]["args"]["after"]);
+    assert!(!log.contains("email") && !log.contains("pytest"), "{log}");
+}
+
+#[test]
+fn a_failed_remote_rules_call_writes_no_local_file() {
+    let (_dir, state, key) = owner_host();
+    let relay = json!("https://relay.example/");
+    let (url, server) = fake_plow(vec![(
+        200,
+        json!({"data": [peer(json!(key), "studio", "device", relay)]}),
+    )]);
+    use_plow(&state, &url);
+    let output = latch(
+        &state,
+        &["rules", "set", "--host", "pi", "Anything goes."],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "unknown_host");
+    assert!(!state.join("rules").exists());
+    server.join().unwrap();
+}
+
+#[test]
+fn an_agent_gets_owner_only_for_rules_on_its_own_state() {
+    let (dir, token, server) = logged_in_agent(vec![]);
+    server.join().unwrap();
+    let state = dir.path().join("state");
+    for args in [
+        &["rules", "show"][..],
+        &["rules", "set", "Anything goes."],
+        &["rules", "clear"],
+    ] {
+        let output = latch(&state, args, &[("PLOW_TOKEN_FILE", token.as_path())]);
+        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "owner_only");
+    }
+    assert!(!state.join("rules").exists());
 }

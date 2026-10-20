@@ -62,6 +62,9 @@ pub enum Command {
     Browser(BrowserArgs),
     /// The host's vault: add, list, edit, remove and import items (owner devices only)
     Vault(VaultArgs),
+    /// The owner's standing rules for agents on a host, which the host's
+    /// gatekeeper reads at every judgment (owner devices only)
+    Rules(RulesArgs),
     /// Run this machine as a host, in the foreground, until stopped
     Serve(ServeArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
@@ -482,6 +485,36 @@ pub enum VaultCommand {
 }
 
 /// Arguments the host gives a browser worker (see `browser/worker.rs`).
+#[derive(Args, Debug)]
+pub struct RulesArgs {
+    /// The serving machine the rules are for [default: this machine's own host state]
+    #[arg(long, global = true)]
+    pub host: Option<String>,
+    /// Whose rules: an agent's name, the peer name of the latch it calls
+    /// from, or its agent uid, resolved once to the uid [default: every agent's]
+    #[arg(long, global = true, value_name = "NAME")]
+    pub from: Option<String>,
+    #[command(subcommand)]
+    pub command: RulesCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RulesCommand {
+    /// Replace the rules with TEXT, or with the text of --file F (- reads stdin)
+    Set {
+        #[arg(conflicts_with = "file")]
+        text: Option<String>,
+        #[arg(long, value_name = "F")]
+        file: Option<PathBuf>,
+    },
+    /// Change the rules in $EDITOR; saved only if they did not change meanwhile
+    Edit,
+    /// Remove the rules
+    Clear,
+    /// The rules for every agent and each agent's own, with their revisions
+    Show,
+}
+
 #[derive(Args, Debug)]
 pub struct BrowserWorkerArgs {
     /// The profile the session uses

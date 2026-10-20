@@ -774,6 +774,35 @@ async fn rules_files_are_read_at_each_judgment() {
     assert_eq!(model.calls(), 2);
 }
 
+#[tokio::test]
+async fn an_owner_command_applies_to_the_next_judgment() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let gatekeeper = gatekeeper(
+        World::default(),
+        &model,
+        RuleFiles::new(dir.path(), &[]).unwrap(),
+    );
+    gatekeeper.judge(AGENT, None, &order()).await;
+    assert_eq!(model.calls(), 0, "no rules and no chat: no_intent");
+
+    let set = json!({"command": "set", "text": "Run tests in ~/work."});
+    let done = owner::run(
+        dir.path(),
+        &plow(World::default()).0,
+        "studio",
+        "device",
+        &set,
+    )
+    .await;
+    assert!(matches!(done.response, crate::wire::Response::Ok(_)));
+    gatekeeper.judge(AGENT, None, &order()).await;
+    assert_eq!(
+        model.state()["owner_rules"],
+        json!({"rules for every agent on this host": "Run tests in ~/work."})
+    );
+}
+
 /// The held-out corpus through the judge on jev itself, twice per probe;
 /// one row per decision goes to `$LATCH_TEST_REPLAY_OUT`, to be scored as
 /// v0's runs are. `just gatekeeper-replay KEY OUT` runs it.
