@@ -127,6 +127,12 @@ pub enum BrowserCommand {
         /// Request R's steps, actions and outcomes (an answer that exited 5 names R)
         #[arg(long, value_name = "R", conflicts_with = "steps")]
         history: Option<String>,
+        /// With --history: one of R's screenshots (`final`), written to --output
+        #[arg(long, value_name = "N", requires_all = ["history", "output"])]
+        shot: Option<String>,
+        /// Where --shot's PNG goes on this machine
+        #[arg(long, short, requires = "shot")]
+        output: Option<PathBuf>,
         /// Seconds the whole plan may take (default 120, at most 300)
         #[arg(long, value_name = "S")]
         within: Option<f64>,

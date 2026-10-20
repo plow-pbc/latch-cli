@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use super::core::Action;
+use super::core::{Action, fingerprint};
 use super::host::{Browsers, Entry, paused, take_audit};
 use super::journal::{self, Journal};
 use super::model::{self, CHECKABLE_P, Model, RISKY_P};
@@ -67,8 +67,9 @@ pub struct Confirmation {
 
 enum Confirms {
     Click,
-    /// Enter (the key as written) in a field.
-    Enter(String),
+    /// An Enter in a field: `press` Enter, or `type` text with a line
+    /// break; the op and its text as written.
+    Keys(Op, String),
     /// A fill releasing a secret field, with its arguments.
     Fill(Value),
 }
@@ -500,9 +501,86 @@ pub async fn run(
     for (key, value) in failure.details.as_object().into_iter().flatten() {
         shown[key] = value.clone();
     }
+    if failure.code == "confirm_needed"
+        && let Some(handle) = keep_shot(browsers, entry, session, &request, audit).await
+    {
+        shown["confirmation"]["screenshot"] = handle.clone();
+        out["screenshot"] = handle;
+    }
     out["stop"] = shown;
     failure.details = out;
     Err(failure)
+}
+
+/// A screenshot of the page now, kept with request `request` as its
+/// `final` shot; its handle, which `do --history R --shot final` fetches,
+/// or none if the page could not be shot.
+async fn keep_shot(
+    browsers: &Browsers,
+    entry: &Entry,
+    session: &str,
+    request: &str,
+    audit: &mut Map<String, Value>,
+) -> Option<Value> {
+    let reply = entry
+        .session
+        .lock()
+        .await
+        .call(json!({"op": "screenshot"}))
+        .await
+        .ok()?;
+    let png = reply.bytes?;
+    journal::save_shot(&browsers.state_dir(), session, request, "final", &png).ok()?;
+    audit.insert(
+        "screenshot".into(),
+        json!({"shot": "final", "size": png.len(), "sha256": to_hex(&Sha256::digest(&png))}),
+    );
+    Some(json!({"request": request, "shot": "final"}))
+}
+
+/// A standalone `fill` that releases a secret field: journaled as a request
+/// of one step that stopped for a confirmation, with a screenshot of the
+/// page.
+pub async fn stop_fill(
+    browsers: &Browsers,
+    entry: &Entry,
+    session: &str,
+    caller: &str,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Failure {
+    let request = match request_id(args) {
+        Ok(request) => request,
+        Err(failure) => return failure,
+    };
+    audit.insert("request".into(), json!(request));
+    let started = Journal::start(
+        &browsers.state_dir(),
+        session,
+        caller,
+        &request,
+        json!([{"step": 1, "op": "fill"}]),
+    );
+    let mut journal = match started {
+        Ok(journal) => journal,
+        Err(failure) => return failure,
+    };
+    let mut failure = confirm_fill(entry, args, audit).await;
+    let stop = json!({"step": 1, "code": failure.code});
+    let journaled = journal
+        .write(json!({"t": "step", "step": 1, "op": "fill", "outcome": "stopped", "code": failure.code}))
+        .and_then(|()| journal.write(json!({"t": "end", "status": "stopped", "stop": stop})));
+    if let Err(lost) = journaled {
+        return lost;
+    }
+    if failure.code == "confirm_needed"
+        && let Some(handle) = keep_shot(browsers, entry, session, &request, audit).await
+    {
+        failure.details["confirmation"]["screenshot"] = handle.clone();
+        failure.details["screenshot"] = handle;
+    }
+    failure.details["request"] = json!(request);
+    failure
 }
 
 /// A step that passed: its outcome, and the evidence for it.
@@ -576,12 +654,9 @@ impl Run<'_> {
                 self.fill(n, literal).await?;
                 Value::Null
             }
-            Op::Click => self.risky(n, literal, None).await?,
-            Op::Press if literal.text.as_deref().is_some_and(is_enter) => {
-                let key = literal.text.clone().unwrap_or_default();
-                self.risky(n, literal, Some(key)).await?
-            }
-            _ => self.dispatch(n, literal, None, None).await?,
+            Op::Click => self.risky(n, literal, false).await?,
+            _ if presses_enter(literal) => self.risky(n, literal, true).await?,
+            _ => self.dispatch(n, literal, None, None, None).await?,
         };
         let done = self.check(n, literal, check, besides).await?;
         if !last {
@@ -591,18 +666,14 @@ impl Run<'_> {
     }
 
     /// A click or Enter: the model's risk decision on what it would act on,
-    /// then the action, or a confirmation in its place.
-    async fn risky(
-        &mut self,
-        n: usize,
-        literal: &Literal,
-        enter: Option<String>,
-    ) -> Result<Value, Failure> {
-        let reviewed = self.review(literal, enter.is_some()).await?;
+    /// then the action, made only if that is still what the page shows, or a
+    /// confirmation in its place.
+    async fn risky(&mut self, n: usize, literal: &Literal, enter: bool) -> Result<Value, Failure> {
+        let reviewed = self.review(literal, enter).await?;
         if !self.model.is_on() {
             return Err(model_unavailable(&self.model, "a click or Enter"));
         }
-        let what = action_line(&reviewed, enter.is_some());
+        let what = action_line(&reviewed, enter, literal.op == Op::Type);
         let lines = strings(&reviewed["lines"]);
         let judged = self
             .model
@@ -615,12 +686,24 @@ impl Run<'_> {
         record_model(&self.model, self.audit);
         let p = judged.map_err(|_| model_unavailable(&self.model, "a click or Enter"))?;
         if p < RISKY_P {
-            return self.dispatch(n, literal, Some(p), None).await;
+            let guard = fingerprint(&reviewed);
+            return match self
+                .dispatch(n, literal, Some(p), None, Some((&guard, enter)))
+                .await
+            {
+                Err(failure) if failure.code == "context_changed" => Err(stopped(
+                    "stale_snapshot",
+                    format!(
+                        "{what} was judged on a page that changed while latch judged it; nothing was sent. Look at the page again"
+                    ),
+                )),
+                acted => acted,
+            };
         }
-        let is_click = enter.is_none();
+        let is_click = !enter;
         let kind = match enter {
-            Some(key) => Confirms::Enter(key),
-            None => Confirms::Click,
+            true => Confirms::Keys(literal.op, literal.text.clone().unwrap_or_default()),
+            false => Confirms::Click,
         };
         let id = self.issue(kind, &reviewed);
         self.records.push(json!({"step": n, "op": literal.op, "ref": literal.target,
@@ -693,6 +776,27 @@ impl Run<'_> {
         act: Option<(String, String)>,
         check: Option<&Check>,
     ) -> Result<Done, Failure> {
+        // A check that must change is checked before the confirmation is
+        // spent, as for any step.
+        if let Some(check) = check
+            && check.require_change
+        {
+            let before = Literal {
+                snapshot: act.as_ref().map(|(snapshot, _)| snapshot.clone()),
+                ..Literal::click("e1")
+            };
+            if self
+                .holds(check, &before, Vec::new(), Duration::ZERO)
+                .await?
+            {
+                return Err(stopped(
+                    "check_not_met",
+                    format!(
+                        "step {n}'s check already holds before the step, and it must change; nothing was sent, and confirmation {id} is still unused"
+                    ),
+                ));
+            }
+        }
         let taken = {
             let mut all = self.entry.confirmations.lock().expect("confirmations lock");
             all.iter_mut().find(|c| c.id == id).map(|c| {
@@ -700,7 +804,7 @@ impl Run<'_> {
                 c.used = true;
                 let kind = match &c.kind {
                     Confirms::Click => Confirms::Click,
-                    Confirms::Enter(key) => Confirms::Enter(key.clone()),
+                    Confirms::Keys(op, text) => Confirms::Keys(*op, text.clone()),
                     Confirms::Fill(args) => Confirms::Fill(args.clone()),
                 };
                 (
@@ -731,7 +835,7 @@ impl Run<'_> {
             return Err(stale("was already used"));
         }
         let (snapshot, target) = act.unwrap_or((snapshot, target));
-        let enter = matches!(kind, Confirms::Enter(_));
+        let enter = matches!(kind, Confirms::Keys(..));
         let press = match &kind {
             Confirms::Fill(args) => args["press"].as_str().unwrap_or_default().to_string(),
             _ => target.clone(),
@@ -765,38 +869,55 @@ impl Run<'_> {
             Some(c) if c.kind == CheckKind::Download => self.downloads().await?,
             _ => Vec::new(),
         };
-        match kind {
-            Confirms::Click => {
-                self.dispatch(n, &literal, None, Some(id)).await?;
-            }
-            Confirms::Enter(key) => {
+        let guard = Some((print.as_str(), enter));
+        let sent = match kind {
+            Confirms::Click => self
+                .dispatch(n, &literal, None, Some(id), guard)
+                .await
+                .map(|_| ()),
+            Confirms::Keys(op, text) => {
                 let literal = Literal {
-                    op: Op::Press,
-                    text: Some(key),
+                    op,
+                    text: Some(text),
                     ..literal.clone()
                 };
-                self.dispatch(n, &literal, None, Some(id)).await?;
+                self.dispatch(n, &literal, None, Some(id), guard)
+                    .await
+                    .map(|_| ())
             }
-            Confirms::Fill(args) => {
-                self.fill_now(n, args, Some(id)).await?;
+            Confirms::Fill(args) => self.fill_now(n, args, Some(id)).await,
+        };
+        match sent {
+            Err(failure) if failure.code == "context_changed" => {
+                return Err(stale(
+                    "no longer matches the page: the element or the lines around it changed",
+                ));
             }
+            sent => sent?,
         }
         self.check(n, &literal, check, besides).await
     }
 
     /// One action, journaled before it is sent and once its result is known.
+    /// With `guard` (a reviewed context's fingerprint, and whether it was
+    /// reviewed as an Enter), the worker makes it only while the page still
+    /// shows that context.
     async fn dispatch(
         &mut self,
         n: usize,
         literal: &Literal,
         risk_p: Option<f64>,
         confirmation: Option<&str>,
+        guard: Option<(&str, bool)>,
     ) -> Result<Value, Failure> {
         let action = self.begin(n, literal.op, json!({"ref": literal.target}))?;
-        let act = json!({
+        let mut act = json!({
             "op": "act", "action": action_of(literal.op), "quiet": true,
             "snapshot": literal.snapshot, "target": literal.target, "text": literal.text,
         });
+        if let Some((fingerprint, enter)) = guard {
+            act["guard"] = json!({"fingerprint": fingerprint, "enter": enter});
+        }
         let reply = call(self.entry, act, self.audit).await;
         let mut record = json!({"step": n, "action": action, "op": literal.op, "chosen": "ref"});
         if let Some(target) = &literal.target {
@@ -1087,11 +1208,19 @@ fn refused(failure: &Failure) -> bool {
                 | "session_paused"
                 | "origin_mismatch"
                 | "no_such_item"
+                | "context_changed"
         )
 }
 
-fn is_enter(key: &str) -> bool {
-    key.eq_ignore_ascii_case("enter")
+/// Whether a step presses Enter in a field: `press` Enter, or `type` text
+/// with a line break, which the engine types as Enter.
+fn presses_enter(literal: &Literal) -> bool {
+    let text = literal.text.as_deref().unwrap_or_default();
+    match literal.op {
+        Op::Press => text.eq_ignore_ascii_case("enter"),
+        Op::Type => text.contains(['\n', '\r']),
+        _ => false,
+    }
 }
 
 fn action_of(op: Op) -> Action {
@@ -1136,7 +1265,7 @@ fn condition(check: &Check, snapshot: Option<&str>, besides: Vec<String>) -> Val
 }
 
 /// What a click or Enter would do, in one line, for the risk question.
-fn action_line(reviewed: &Value, enter: bool) -> String {
+fn action_line(reviewed: &Value, enter: bool, typing: bool) -> String {
     let element = &reviewed["element"];
     let named = |e: &Value| {
         format!(
@@ -1146,7 +1275,14 @@ fn action_line(reviewed: &Value, enter: bool) -> String {
         )
     };
     let mut line = if enter {
-        let mut line = format!("press Enter in {}", named(element));
+        let mut line = if typing {
+            format!(
+                "type text with a line break, which presses Enter, in {}",
+                named(element)
+            )
+        } else {
+            format!("press Enter in {}", named(element))
+        };
         match reviewed["acts_on"].as_object() {
             Some(_) if reviewed["acts_on"]["role"] == "form" => {
                 line.push_str(", which submits its form")
@@ -1165,19 +1301,6 @@ fn action_line(reviewed: &Value, enter: bool) -> String {
         line.push_str(&format!(" — in: {row}"));
     }
     line
-}
-
-/// The reviewed context a confirmation is bound to, hashed.
-fn fingerprint(reviewed: &Value) -> String {
-    let bound = json!([
-        reviewed["document"],
-        reviewed["uid"],
-        reviewed["element"],
-        reviewed["acts_on"],
-        reviewed["title"],
-        reviewed["lines"],
-    ]);
-    to_hex(&Sha256::digest(bound.to_string().as_bytes()))
 }
 
 /// A confirmation as the agent sees it: its id, the target and the context
@@ -1262,6 +1385,18 @@ pub async fn confirm_fill(entry: &Entry, args: &Value, audit: &mut Map<String, V
     );
     failure.details = json!({"confirmation": shown});
     failure
+}
+
+/// `do --history R --shot N`: one of request R's screenshots, for the
+/// caller that sent it.
+pub fn shot(
+    browsers: &Browsers,
+    session: &str,
+    caller: &str,
+    request: &str,
+    shot: &str,
+) -> Result<Vec<u8>, Failure> {
+    journal::shot(&browsers.state_dir(), session, caller, request, shot)
 }
 
 /// `do --history R`: request R's steps, actions and outcomes, from its
@@ -1382,13 +1517,13 @@ mod tests {
         repriced["lines"][0] = json!("Total $100.00");
         assert_ne!(fingerprint(&reviewed), fingerprint(&repriced));
         assert_eq!(
-            action_line(&reviewed, false),
+            action_line(&reviewed, false, false),
             "click button \"Place order\""
         );
         let enter = json!({"element": {"role": "textbox", "name": "Gift note"},
                            "acts_on": {"role": "button", "name": "Place order"}});
         assert_eq!(
-            action_line(&enter, true),
+            action_line(&enter, true, false),
             "press Enter in textbox \"Gift note\", which submits its form with button \"Place order\""
         );
     }

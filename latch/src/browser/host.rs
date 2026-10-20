@@ -275,7 +275,7 @@ pub async fn run(
     }
     let result = match command.as_str() {
         "login" | "fill" | "fill_code" => match browsers.session(&name, caller).await {
-            Ok(entry) => fill(browsers, &entry, &command, &args, &mut audit)
+            Ok(entry) => fill(browsers, &entry, &name, caller, &command, &args, &mut audit)
                 .await
                 .map(|result| (result, None)),
             Err(failure) => Err(failure),
@@ -284,8 +284,17 @@ pub async fn run(
         "do_history" => {
             let request = args["request"].as_str().unwrap_or_default();
             audit.insert("request".into(), json!(request));
-            super::steps::history(browsers, &name, caller, request)
-                .map(|result| (with_session(result, &name), None))
+            match args["shot"].as_str() {
+                Some(shot) => {
+                    audit.insert("shot".into(), json!(shot));
+                    super::steps::shot(browsers, &name, caller, request, shot).map(|png| {
+                        let meta = json!({"request": request, "shot": shot, "size": png.len()});
+                        (meta, Some(png))
+                    })
+                }
+                None => super::steps::history(browsers, &name, caller, request)
+                    .map(|result| (with_session(result, &name), None)),
+            }
         }
         "do" | "find" | "wait" => match browsers.session(&name, caller).await {
             Ok(entry) => match command.as_str() {
@@ -360,6 +369,8 @@ pub async fn run(
 pub(super) async fn fill(
     browsers: &Browsers,
     entry: &Entry,
+    session: &str,
+    caller: &str,
     command: &str,
     args: &Value,
     audit: &mut Map<String, Value>,
@@ -372,7 +383,9 @@ pub(super) async fn fill(
             }
             let mut args = args.clone();
             args["item_title"] = json!(title);
-            return Err(super::steps::confirm_fill(entry, &args, audit).await);
+            return Err(
+                super::steps::stop_fill(browsers, entry, session, caller, &args, audit).await,
+            );
         }
     }
     super::fill::run(browsers, entry, command, args, audit).await

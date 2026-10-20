@@ -10,7 +10,9 @@
 //! that is not running reads as `interrupted`.
 //!
 //! It holds what the agent's own answer held: operations, targets and
-//! outcomes. Typed text is kept as its length.
+//! outcomes. A stop that asks for a confirmation keeps a screenshot of the
+//! page beside it (`<request>/final.png`), which `do --history R --shot
+//! final` streams to the client.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -84,6 +86,65 @@ impl Journal {
     }
 }
 
+fn plain(request: &str) -> bool {
+    !request.is_empty()
+        && request
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Keeps a screenshot of request `request`'s page as `shot`, readable by
+/// the host's user only.
+pub fn save_shot(
+    state_dir: &Path,
+    session: &str,
+    request: &str,
+    shot: &str,
+    png: &[u8],
+) -> Result<(), Failure> {
+    let folder = folder(state_dir, session).join(request);
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&folder)
+        .map_err(lost)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(folder.join(format!("{shot}.png")))
+        .map_err(lost)?;
+    file.write_all(png).map_err(lost)
+}
+
+/// Request `request`'s screenshot `shot`, for the caller that sent it.
+pub fn shot(
+    state_dir: &Path,
+    session: &str,
+    caller: &str,
+    request: &str,
+    shot: &str,
+) -> Result<Vec<u8>, Failure> {
+    // Its owner is the request's: a missing or foreign request reads as none.
+    history(state_dir, session, caller, request, false)?;
+    let missing = || {
+        Failure::failed(
+            "no_such_shot",
+            format!("request {request} has no screenshot {shot:?}"),
+        )
+    };
+    if !plain(shot) {
+        return Err(missing());
+    }
+    fs::read(
+        folder(state_dir, session)
+            .join(request)
+            .join(format!("{shot}.png")),
+    )
+    .map_err(|_| missing())
+}
+
 /// Request `request`'s history, for its caller: its status, each step's
 /// outcome and each action's result.
 pub fn history(
@@ -99,10 +160,7 @@ pub fn history(
             format!("this session has no request {request}"),
         )
     };
-    if !request
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+    if !plain(request) {
         return Err(missing());
     }
     let text = fs::read_to_string(folder(state_dir, session).join(format!("{request}.jsonl")))
@@ -226,6 +284,23 @@ mod tests {
         assert_eq!(read["actions"][0]["result"], "dispatched");
         assert_eq!(read["steps"][0]["outcome"], "dispatched");
         assert_eq!(read["stop"]["code"], "deadline");
+        save_shot(dir.path(), "default", "r1", "final", b"png").unwrap();
+        assert_eq!(
+            shot(dir.path(), "default", "k1", "r1", "final").unwrap(),
+            b"png"
+        );
+        assert_eq!(
+            shot(dir.path(), "default", "k2", "r1", "final")
+                .unwrap_err()
+                .code,
+            "no_such_request"
+        );
+        assert_eq!(
+            shot(dir.path(), "default", "k1", "r1", "../r1")
+                .unwrap_err()
+                .code,
+            "no_such_shot"
+        );
         let mode = fs::metadata(folder(dir.path(), "default").join("r1.jsonl"))
             .unwrap()
             .permissions();

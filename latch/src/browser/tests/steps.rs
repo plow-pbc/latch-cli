@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -102,6 +102,8 @@ fn site() -> String {
 #[derive(Default)]
 struct Fake {
     down: AtomicBool,
+    /// Milliseconds each risk answer takes.
+    slow: AtomicU64,
 }
 
 const FAKE_RISKY: [&str; 1] = ["Place order"];
@@ -166,7 +168,15 @@ impl Provider for Fake {
             request_id: Some("fake".into()),
             latency_ms: 1,
         };
-        Box::pin(async move { Ok((answers, meta)) })
+        let slow = if answers.contains_key("risky") {
+            self.slow.load(Ordering::SeqCst)
+        } else {
+            0
+        };
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(slow)).await;
+            Ok((answers, meta))
+        })
     }
 }
 
@@ -493,7 +503,8 @@ async fn literal_steps_take_effect_and_their_checks_decide_the_outcome() {
 async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewed() {
     let (_dir, state, _area) = test_state();
     let site = site();
-    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let slow = Arc::new(Fake::default());
+    let fake: Arc<dyn Provider> = slow.clone();
     let mut h = Harness::start(&state, Some(fake)).await;
     let page = h.open(&format!("{site}/order.html")).await;
     let place = find(&page, "button", "Place order");
@@ -510,6 +521,40 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
     assert!(issued["risk_p"].as_f64().unwrap() >= 0.5);
     assert!(failure.details["trail"].as_array().unwrap().is_empty());
     assert_eq!(failure.details["page"]["title"], "Checkout · Shop");
+    // With a screenshot of the page, fetched by its handle.
+    let handle = &issued["screenshot"];
+    assert_eq!(handle["shot"], "final");
+    assert_eq!(failure.details["screenshot"], *handle);
+    let png = steps::shot(
+        &h.browsers,
+        "default",
+        CALLER,
+        handle["request"].as_str().unwrap(),
+        "final",
+    )
+    .unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    assert_eq!(
+        steps::shot(
+            &h.browsers,
+            "default",
+            "another-caller",
+            handle["request"].as_str().unwrap(),
+            "final"
+        )
+        .unwrap_err()
+        .code,
+        "no_such_request"
+    );
+
+    // A check that must change and already holds stops before the
+    // confirmation is spent.
+    let failure = h
+        .act(ActAction::Click, &[&place], Some("new text: Total"))
+        .await
+        .unwrap_err();
+    assert_eq!(refused(&failure), (Exit::Failed, "check_not_met"));
+    assert!(failure.details["trail"].as_array().unwrap().is_empty());
 
     // `act click` on that ref confirms it, once.
     let placed = h
@@ -542,6 +587,42 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
             .contains("$100.00")
     );
     assert!(!h.text().await.contains("Order placed"));
+
+    // A line break in typed text is an Enter: judged as the form's submit.
+    let page = h.open(&format!("{site}/order.html")).await;
+    let note = find(&page, "textbox", "Gift note");
+    let failure = h
+        .act(ActAction::Type, &[&note, "for Ada\n"], None)
+        .await
+        .unwrap_err();
+    stopped("b5-type-newline.json", &failure);
+    assert_eq!(refused(&failure), (Exit::Denied, "confirm_needed"));
+    let issued = confirmation(&failure);
+    assert_eq!(issued["acts_on"]["name"], "Place order");
+    assert!(!h.text().await.contains("Order placed"));
+    let placed = h.confirm(issued["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(placed["trail"][0]["op"], "type");
+    assert_eq!(placed["page"]["title"], "Order · Shop");
+
+    // A total that changes while the model judges a click: not sent.
+    let page = h.open(&format!("{site}/order.html")).await;
+    let soon = find(&page, "button", "Reprice in a moment");
+    let upgrade = find(&page, "button", "Upgrade to express shipping");
+    h.act(ActAction::Click, &[&soon], None).await.unwrap();
+    slow.slow.store(3000, Ordering::SeqCst);
+    let failure = h
+        .act(ActAction::Click, &[&upgrade], None)
+        .await
+        .unwrap_err();
+    slow.slow.store(0, Ordering::SeqCst);
+    stopped("b5-changed-while-judged.json", &failure);
+    assert_eq!(refused(&failure), (Exit::Failed, "stale_snapshot"));
+    assert_eq!(failure.details["trail"][0]["result"], "refused");
+    assert!(
+        failure.details["page"]["lines"]
+            .to_string()
+            .contains("$100.00")
+    );
 
     // Enter in the checkout form's field: judged as its submit.
     let page = h.open(&format!("{site}/order.html")).await;

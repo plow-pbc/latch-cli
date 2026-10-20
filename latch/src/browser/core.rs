@@ -22,7 +22,7 @@ use super::driver::{Driver, Event, Frame};
 mod fill;
 mod look;
 use crate::failure::{Exit, Failure};
-pub use look::Condition;
+pub use look::{Condition, fingerprint};
 
 /// The most elements one snapshot lists, across all frames.
 pub const MAX_ELEMENTS: usize = 200;
@@ -60,6 +60,10 @@ pub enum Call {
         /// latest snapshot shown the agent stays what it was.
         #[serde(default)]
         quiet: bool,
+        /// What the host judged: the action is made only if what it acts
+        /// on, and the lines around it, still hash to this.
+        #[serde(default)]
+        guard: Option<Guard>,
     },
     /// The elements with `role`, read afresh, and those whose accessible
     /// name is exactly `name`: `find`. The agent sees only the candidates.
@@ -128,6 +132,15 @@ pub enum Call {
     FillCleanup,
     FillResume,
     Close,
+}
+
+/// The reviewed context an action was judged on (`Call::Review`, with
+/// `enter`), as its [`fingerprint`].
+#[derive(Deserialize, Debug)]
+pub struct Guard {
+    pub fingerprint: String,
+    #[serde(default)]
+    pub enter: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
@@ -295,11 +308,13 @@ impl<D: Driver> Core<D> {
                 target,
                 text,
                 quiet: _,
+                guard,
             } => self.act(
                 snapshot.as_deref(),
                 action,
                 target.as_deref(),
                 text.as_deref(),
+                guard.as_ref(),
                 &mut audit,
             ),
             Call::Tab { action, tab, url } => {
@@ -554,6 +569,7 @@ impl<D: Driver> Core<D> {
         action: Action,
         target: Option<&str>,
         text: Option<&str>,
+        guard: Option<&Guard>,
         audit: &mut Map<String, Value>,
     ) -> Result<Value, Failure> {
         audit.insert("action".into(), json!(action));
@@ -599,6 +615,15 @@ impl<D: Driver> Core<D> {
                     json!({"ref": target, "role": element["role"], "name": element["name"], "row": element["row"]}),
                 );
                 result.insert("resolved_by".into(), json!("ref"));
+                if let Some(guard) = guard {
+                    let now = self.review(Some(&snapshot), target, guard.enter, &mut Map::new())?;
+                    if fingerprint(&now) != guard.fingerprint {
+                        return Err(Failure::failed(
+                            "context_changed",
+                            "what this action acts on, or the lines around it, changed after latch judged it; nothing was sent".into(),
+                        ));
+                    }
+                }
                 self.dispatch(action, &snapshot, position, text)?;
             }
             _ => {

@@ -37,6 +37,7 @@ latch browser --host my-mac do 'type e3 "Acme" -> field: e3=Acme' 'click e7 -> p
 latch browser --host my-mac do --plan-file plan.json    # the canonical plan (- for stdin)
 latch browser --host my-mac do --confirm c4f1a09b2e3d7  # carry out a confirmation, then any steps
 latch browser --host my-mac do --history r3f09a1c2b7e4  # what a request did, step by step
+latch browser --host my-mac do --history r3f09a1c2b7e4 --shot final --output stop.png
 latch browser --host my-mac act click e7 --check "text: Added to cart"
 latch browser --host my-mac act type e3 "Ada Lovelace"
 latch browser --host my-mac act select e5 Blue
@@ -174,9 +175,16 @@ would pay, place an order, send, publish, delete or close something, sign
 out, create credentials or otherwise can't be undone, judged on the exact
 element, its row text, the page title and the lines of the form or section
 around it; an Enter in a field is judged as its form's submit (the form's
-submit control, else the form). At p ≥ 0.5 the step stops with
+submit control, else the form), and so is `type` text with a line break,
+which the engine types as Enter. The action is then made only if the
+worker, at dispatch, still finds that element and those lines unchanged;
+a page that changed while the model answered stops with `stale_snapshot`,
+nothing sent. At p ≥ 0.5 the step stops with
 `confirm_needed` (exit 4) before anything is sent, with a confirmation: its
-id, the target's ref and snapshot, and the reviewed context. A `fill` that
+id, the target's ref and snapshot, the reviewed context, and a screenshot
+of the page as a handle (`{"request": R, "shot": "final"}`), which
+`do --history R --shot final --output F` streams to the client with
+matching sha256. A `fill` that
 releases a secret field (card number, CVV, identity numbers) always stops
 so, before any value is released, with the item's title and the `--press`
 button, whether it came standalone or as a plan step. The agent confirms
@@ -185,7 +193,9 @@ fills). A confirmation is used once, in the same session and document, and
 only while the element and the reviewed lines are unchanged; otherwise
 `confirm_stale` with a fresh page (a total that changes from $10.00 to
 $100.00 is refused, even with the same ref, URL and button name). It needs
-no new risk decision, so it still works while the model is down.
+no new risk decision, so it still works while the model is down. A step
+whose `new text` check already holds stops before the confirmation is
+spent.
 
 **No model, no pass.** With no model reachable, a click or Enter that needs
 a risk decision, and a sentence check, stop with `model_unavailable` and

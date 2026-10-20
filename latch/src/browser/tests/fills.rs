@@ -244,7 +244,18 @@ impl Harness {
         args: Value,
     ) -> (Result<Value, crate::failure::Failure>, Map<String, Value>) {
         let mut audit = Map::new();
-        let result = host::fill(&self.browsers, &self.entry, "fill", &args, &mut audit).await;
+        let mut args = args;
+        args["request"] = json!(format!("r-fill-{}", self.shown.len()));
+        let result = host::fill(
+            &self.browsers,
+            &self.entry,
+            "default",
+            CALLER,
+            "fill",
+            &args,
+            &mut audit,
+        )
+        .await;
         self.shown.push(Value::Object(audit.clone()).to_string());
         if let Err(failure) = &result {
             self.shown.push(format!(
@@ -455,6 +466,16 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
     assert_eq!(issued["item_title"], "Test Visa");
     assert_eq!(issued["target"]["name"], "Pay");
     assert!(issued["title"].is_string() && issued["lines"].is_array());
+    let handle = &issued["screenshot"];
+    let png = crate::browser::steps::shot(
+        &h.browsers,
+        "default",
+        CALLER,
+        handle["request"].as_str().unwrap(),
+        handle["shot"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert!(png.starts_with(b"\x89PNG"), "the confirmation's screenshot");
     let untouched = h.call("observe", json!({})).await.unwrap();
     assert!(
         untouched["elements"]

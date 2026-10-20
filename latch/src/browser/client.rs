@@ -32,6 +32,10 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
         BrowserCommand::Screenshot { output }
         | BrowserCommand::Download {
             command: DownloadCommand::Get { output, .. },
+        }
+        | BrowserCommand::Do {
+            output: Some(output),
+            ..
         } => Some(Transfer::Into(output.clone())),
         BrowserCommand::Upload { file, .. } => Some(Transfer::From(open_upload(file).await?)),
         _ => None,
@@ -49,6 +53,7 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
             confirm,
             history: None,
             within,
+            ..
         } => Some(do_plan(
             steps,
             plan_file.as_deref(),
@@ -253,9 +258,12 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
         // Its plan is in the request already.
         BrowserCommand::Act { .. } => "do",
         BrowserCommand::Do {
-            history: Some(id), ..
+            history: Some(id),
+            shot,
+            ..
         } => {
             set(request, "request", json!(id));
+            set(request, "shot", json!(shot));
             "do_history"
         }
         BrowserCommand::Do { confirm, .. } => {
@@ -360,6 +368,8 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "item", json!(item));
             set(request, "fields", json!(pairs));
             set(request, "press", json!(press));
+            // A fill that stops for a confirmation is kept as a request.
+            set(request, "request", json!(new_request_id()));
             "fill"
         }
         BrowserCommand::FillCode {

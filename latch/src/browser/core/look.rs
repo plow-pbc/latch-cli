@@ -7,10 +7,12 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 
 use super::{Core, TEXT_CHARS, document_key};
 use crate::browser::driver::Driver;
 use crate::failure::{Exit, Failure};
+use crate::state::to_hex;
 
 /// The most page lines a judgement gets.
 const MAX_LINES: usize = 120;
@@ -379,6 +381,22 @@ impl<D: Driver> Core<D> {
         }
         Ok(login.then_some("login"))
     }
+}
+
+/// A reviewed context (`Core::review`) hashed: the document, the element's
+/// identity and what it acts on, the page title and the lines around it.
+/// A confirmation, and an action judged on that context, hold only while it
+/// is unchanged.
+pub fn fingerprint(reviewed: &Value) -> String {
+    let bound = json!([
+        reviewed["document"],
+        reviewed["uid"],
+        reviewed["element"],
+        reviewed["acts_on"],
+        reviewed["title"],
+        reviewed["lines"],
+    ]);
+    to_hex(&Sha256::digest(bound.to_string().as_bytes()))
 }
 
 /// Whether the page at `url` meets a URL condition, by component: the
