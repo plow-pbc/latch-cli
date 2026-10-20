@@ -111,17 +111,20 @@ latch browser --host my-mac eval --script-file check.js   # its JSON value
 latch browser --host my-mac upload e4 ./invoice.pdf
 latch browser --host my-mac downloads                    # d1, d2, …
 latch browser --host my-mac download get d1 --output report.csv
-latch browser --host my-mac login --item v1                # a vault login; latch finds the form
+latch browser --host my-mac fill --item v1 --suggested s3f2a1c09bd   # a mapping observe suggested
+latch browser --host my-mac fill --item v1 --field username=e4 --field password=e5 --press e6
+latch browser --host my-mac fill --item v1 --field otp=e7 --press e8   # the current authenticator code
 latch browser --host my-mac fill --item v2 --field number=e4 --field expiry=e5 --field cvv=e6 --press e7   # stops for a confirmation
-latch browser --host my-mac fill-code --item v1            # the current authenticator code
 latch browser --host my-mac handoff --reason captcha      # the owner takes over; waits until handed back
 latch browser handoff done [HASH]                          # on the host: hand the session back
 latch browser --host my-mac sessions | close
 latch browser --host my-mac open --profile shop --task basket --reserve-site https://shop.example/
 ```
 
-`login`, `fill` and `fill-code` take values from the host's vault without
-the agent ever seeing one; [VAULT.md](VAULT.md) has the rules.
+`fill` takes values from the host's vault without the agent ever seeing
+one, into the elements the agent maps or latch suggested; `observe` shows
+the items that fit, what the page asks for and latch's suggestions.
+[VAULT.md](VAULT.md) has the rules.
 
 `open` answers the new session's id, once: 128 random bits, never derived
 from the profile (`--profile` defaults to `default`). Every other session
@@ -221,7 +224,7 @@ operation and its target among those the page offers.
 **The plan command** (`do`) runs up to 10 steps in order, within
 `--within S` (default 120, at most 300). In the short form each argument is
 one step: `click|type|select|press eN ["text"]`, or
-`fill --item vN --field F=eN… [--press eN]`; text to type goes in double
+`fill --item vN (--field F=eN… | --suggested S) [--press eN]`; text to type goes in double
 quotes (straight or curly). A step's check follows its last ` -> ` outside
 quotes, so `type e3 "A -> B"` has none. `--plan-file` takes the canonical
 plan object, which every short form compiles to:
@@ -245,7 +248,9 @@ the plan's facts (`--fact NAME=TEXT`) it names as `{NAME}` outside quotes,
 are the only texts it may type (a `{NAME}` the plan has no fact for is
 refused before anything runs), and a quoted URL is the only place it may
 `navigate` to. `--item vN` names a
-vault item the plan may fill from. `--dry-run` prints the canonical plan
+vault item the plan may fill from: the model may then choose one of
+latch's suggestions for it (item, mapping and button, or `none`), never a
+field or a ref of its own; a plan that names none never fills. `--dry-run` prints the canonical plan
 and sends nothing; `--output F` writes the page as the plan ended (or
 stopped) to F on this machine. Each pass reads the page and asks the
 decision model once for the step's status, the line that best shows it is
@@ -257,17 +262,23 @@ the one already chosen marked. A typed check decides completion
 line (`model_assessed`). Before its first action a step whose result is
 already a field's value, the address or the title ends `already_held`;
 page text alone, such as a message an earlier step left, never counts. A
-pass stops, in this order, at a CAPTCHA (`needs_owner`), `blocked`,
+pass stops, in this order, at a CAPTCHA (`needs_owner`), a code stage
+or a passkey stage (`needs_fields`, before the model is asked; a passkey
+stage goes on when a named item that fits holds a password, so the model
+can take the page's password path), `blocked`,
 `unconfirmed`, `stuck` or `already_true`, a budget (8 actions a step, 30 a
 plan, 2 waits a step: `step_budget`, `plan_budget`, `deadline`), a target
 below p 0.5 (`ambiguous_target`, with candidate refs), text that was not
-supplied (`needs_text`, naming the field), a sign-in form
-(`needs_login`), a form a saved card or identity fits (`needs_fields`,
-with the form's refs, for a literal `fill`), the same action on an
+supplied (`needs_text`, naming the field), a sign-in form whose login
+the plan doesn't name (`needs_login`, with the items that fit), a fill
+with no suggestion chosen (`needs_fields`, with the page's fields, offers
+and other controls, for a literal `fill`), the same action on an
 unchanged page, or, in a step without a typed check, a second click or
 submit of the same control (`repeat`), or two actions that change nothing
 (`no_progress`), and a click or Enter that can't be undone
-(`confirm_needed`). Lines written since the step began, even with the
+(`confirm_needed`, as does a chosen fill that releases a card or identity
+secret). A page a step's click opens in a new tab is followed: the plan
+goes on there, nothing comes to the front. Lines written since the step began, even with the
 same words as before (a message an add-to-cart writes again), are marked
 as new for the model. With no decision model, an instruction step stops
 `model_unavailable` before anything is sent.
@@ -314,9 +325,11 @@ id, the target's ref and snapshot, the reviewed context, and a screenshot
 of the page as a handle (`{"request": R, "shot": "final"}`), which
 `do --history R --shot final --output F` streams to the client with
 matching sha256. A `fill` that
-releases a secret field (card number, CVV, identity numbers) always stops
-so, before any value is released, with the item's title and the `--press`
-button, whether it came standalone or as a plan step. The agent confirms
+releases a card or identity secret field (card number, CVV, identity
+numbers) always stops so, before any value is released, with the item's
+title, the exact mapping, each destination frame's site and the press
+button, whether it came standalone, as a plan step or as the model's
+choice. The agent confirms
 with `do --confirm C [STEP…]`, and only so: a click sent any other way,
 `act click` on the same ref included, is judged again and stops with a new
 confirmation if it still looks consequential. A confirmation is used once, in the same session and document, and

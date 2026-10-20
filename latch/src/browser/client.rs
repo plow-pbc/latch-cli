@@ -681,6 +681,8 @@ mod tests {
         for argv in [
             &["act", "click", "Place order"][..],
             &["act", "type", "the amount field", "12.50"],
+            &["login", "--item", "v1"],
+            &["fill-code", "--item", "v1", "--field", "e4"],
         ] {
             let cli = Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).unwrap();
             let Command::Browser(args) = cli.command else {
@@ -688,11 +690,12 @@ mod tests {
             };
             let failure = run(&state, args).await.unwrap_err();
             assert_eq!(failure.exit, Exit::Usage, "{argv:?}");
-            assert!(
-                failure.message.contains("latch browser do"),
-                "{}",
-                failure.message
-            );
+            let points_to = if argv[0] == "act" {
+                "latch browser do"
+            } else {
+                "latch browser fill"
+            };
+            assert!(failure.message.contains(points_to), "{}", failure.message);
         }
     }
 

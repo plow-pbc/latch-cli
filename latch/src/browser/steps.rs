@@ -931,8 +931,28 @@ impl Run<'_> {
                 if let Some(events) = result.get("events") {
                     shown["events"] = events.clone();
                 }
+                Ok(popup_of(&result))
+            }
+            Err(failure) => Err(failure),
+        };
+        // A page the action opened from the session's tab is where the plan
+        // goes on: the session now acts in it, and nothing comes to the
+        // front.
+        let outcome = match outcome {
+            Ok(Some(tab)) => {
+                let switched = call(
+                    self.entry,
+                    json!({"op": "tab", "action": "switch", "tab": tab}),
+                    self.audit,
+                )
+                .await;
+                if switched.is_ok() {
+                    shown["followed"] = json!(tab);
+                    record["followed"] = json!(tab);
+                }
                 Ok(())
             }
+            Ok(None) => Ok(()),
             Err(failure) => Err(failure),
         };
         let result = match &outcome {
@@ -1350,6 +1370,17 @@ fn reviewed_json(id: &str, reviewed: &Value) -> Value {
         shown["acts_on"] = reviewed["acts_on"].clone();
     }
     shown
+}
+
+/// The tab an action's page opened, from its events: a new tab with an
+/// opener (the driver reports one only to the session whose tab opened it).
+fn popup_of(result: &Value) -> Option<String> {
+    result["events"]
+        .as_array()?
+        .iter()
+        .find(|event| event["event"] == "new_tab" && event["opener"].is_string())
+        .and_then(|event| event["tab"].as_str())
+        .map(str::to_string)
 }
 
 /// A literal fill as `fill.rs` takes its arguments.

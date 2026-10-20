@@ -372,12 +372,12 @@ pub fn suggest(item: &Meta, snapshot: &str, controls: &[Control]) -> Vec<Suggest
             }
         }
         "card" => {
-            if let Some((fields, evidence)) = token_map(item, controls, &CARD_TOKENS, None) {
-                if fields.iter().any(|(label, _)| label == "number") {
-                    let forms = forms_of(controls, &fields);
-                    let press = press_of(controls, &forms);
-                    made.push(build(item, snapshot, controls, fields, evidence, press));
-                }
+            if let Some((fields, evidence)) = token_map(item, controls, &CARD_TOKENS, None)
+                && fields.iter().any(|(label, _)| label == "number")
+            {
+                let forms = forms_of(controls, &fields);
+                let press = press_of(controls, &forms);
+                made.push(build(item, snapshot, controls, fields, evidence, press));
             }
         }
         "identity" => {

@@ -62,7 +62,7 @@ pub fn releases_secret(browsers: &Browsers, args: &Value) -> Result<Option<Strin
             .fields
             .iter()
             .any(|(label, _)| suggest::secret_field(&meta, label));
-    Ok(secret.then(|| meta.title))
+    Ok(secret.then_some(meta.title))
 }
 
 fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {

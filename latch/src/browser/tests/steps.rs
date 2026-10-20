@@ -216,6 +216,8 @@ impl Harness {
         let vault = Vault::new(state.to_path_buf());
         let mut browsers = Browsers::new(state.to_path_buf(), vault, super::HEADLESS);
         browsers.test = Some((latch(), origins));
+        // The owner's screen is there, for a handoff.
+        browsers.screen = Some(true);
         browsers.provider = provider;
         let browsers = Arc::new(browsers);
         let (id, entry) = browsers.open("default", CALLER, None).await.unwrap();

@@ -1452,10 +1452,25 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
         assert_eq!(bytes.unwrap(), fs::read(site.join(file)).unwrap());
     }
 
+    // A page that asks for a passkey as it loads, with no conditional
+    // mediation: the browser's or the OS's own sheet.
+    h.call(
+        CALLER,
+        "tab",
+        &a,
+        json!({"action": "new", "url": format!("{base}/passkey-prompt.html")}),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    h.call(CALLER, "tab", &a, json!({"action": "close"}))
+        .await
+        .unwrap();
+
     // Nothing so far brought the browser to the front: launch, a second
-    // session's window, new tabs, downloads. (A page's own popup or alert
-    // can: Chrome raises the window a page opens or blocks, so this is
-    // checked first.)
+    // session's window, new tabs, downloads, a passkey prompt. (A page's
+    // own popup or alert can: Chrome raises the window a page opens or
+    // blocks, so this is checked first.)
     let seen_front = fronted.lock().unwrap().clone();
     println!("front apps seen: {seen_front:?}; engine {engine}");
     assert!(!seen_front.contains(&engine));
@@ -1503,6 +1518,12 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
         tabs(&seen_b),
         ["files.html", "twin-download.html?file=invoice-2026-09.csv"]
     );
+
+    // The plan went on in the popup; back to the first tab.
+    assert_eq!(seen_a["tab"], clicked["trail"][0]["followed"]);
+    h.call(CALLER, "tab", &a, json!({"action": "switch", "tab": "t1"}))
+        .await
+        .unwrap();
 
     // A dialog is its own session's: the other reads on and has none.
     let page_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();

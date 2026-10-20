@@ -1085,7 +1085,13 @@ impl Run<'_> {
         }
         operations.push("stuck");
         let mut notes = Vec::new();
-        for item in seen.fill["items"].as_array().into_iter().flatten() {
+        let fill_offered = operations.contains(&"fill");
+        for item in seen.fill["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|_| fill_offered)
+        {
             let fields: Vec<&str> = item["fields"]
                 .as_array()
                 .into_iter()

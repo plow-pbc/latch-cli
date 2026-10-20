@@ -610,6 +610,16 @@ mod tests {
                 .unwrap_err()
                 .contains("--field")
         );
+        let step = short_step("fill --item v1 --suggested s3f2a1c09bd -> path: /account").unwrap();
+        let literal = step.literal.unwrap();
+        assert_eq!(literal.suggestion.as_deref(), Some("s3f2a1c09bd"));
+        assert!(literal.fields.is_empty());
+        assert!(
+            short_step("fill --item v1 --suggested s3f2 --field password=e4")
+                .unwrap_err()
+                .contains("not both")
+        );
+        assert!(short_step("fill --item v1 --suggested e4").is_err());
         assert!(short_step("click e1 -> field: amount=3").is_err());
     }
 
