@@ -18,7 +18,8 @@ use crate::dial::{self, ANSWER_MARGIN, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
 use crate::hosts;
 use crate::state::StateDir;
-use crate::wire::{self, Request};
+use crate::transfer;
+use crate::wire::Request;
 
 pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> {
     let mut request = json!({
@@ -171,20 +172,14 @@ fn read_script(path: &Path) -> Result<String, Failure> {
         .map_err(|_| Failure::usage("local_file", "the script is not UTF-8 text".into()))
 }
 
-/// An upload: wait for the host's go-ahead, send the bytes, and check the
-/// host saw the same sha256.
+/// An upload: the bytes, then the host's answer, given this side's sha256.
 async fn send(
     connection: &iroh::endpoint::Connection,
     request: &Request,
     upload: &mut Upload,
 ) -> Result<Value, Failure> {
-    let (mut send, mut recv) = dial::start(connection, request).await?;
-    dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    let sha256 = wire::copy(&mut upload.file, &mut send, upload.size)
-        .await
-        .map_err(|_| dial::lost(connection, true))?;
-    send.finish().map_err(|_| dial::lost(connection, true))?;
-    let mut result = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
+    let (mut result, sha256) =
+        transfer::upload(connection, request, &mut upload.file, upload.size).await?;
     result["file"]["sha256"] = json!(sha256);
     Ok(result)
 }
@@ -473,34 +468,7 @@ async fn receive(
     request: &Request,
     path: &Path,
 ) -> Result<Value, Failure> {
-    let (mut send, mut recv) = dial::start(connection, request).await?;
-    send.finish().map_err(|_| dial::lost(connection, true))?;
-    let mut meta = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    let size = meta["size"].as_u64().ok_or_else(|| {
-        Failure::new(
-            Exit::Unknown,
-            "bad_response",
-            "the host sent no size".into(),
-        )
-    })?;
-    let mut file = File::create(path)
-        .await
-        .map_err(|err| Failure::usage("local_file", format!("{}: {err}", path.display())))?;
-    let Ok(sha256) = wire::copy(&mut recv, &mut file, size).await else {
-        let _ = tokio::fs::remove_file(path).await;
-        return Err(dial::lost(connection, true));
-    };
-    let done = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    if done["sha256"] != sha256.as_str() {
-        let _ = tokio::fs::remove_file(path).await;
-        return Err(Failure::failed(
-            "checksum_mismatch",
-            format!(
-                "the host sent sha256 {}, this side got {sha256}",
-                done["sha256"]
-            ),
-        ));
-    }
+    let (mut meta, done, sha256) = transfer::download(connection, request, path).await?;
     meta["path"] = json!(path);
     meta["sha256"] = json!(sha256);
     meta["audit_id"] = done["audit_id"].clone();
