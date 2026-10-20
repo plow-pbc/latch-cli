@@ -50,6 +50,9 @@ pub struct Camoufox {
     /// The browser's own process, which Playwright starts in a process
     /// group of its own.
     browser: u32,
+    /// With no window: nothing to bring to the front.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    headless: bool,
     /// The session the driver contract acts for.
     current: String,
     /// When the call under way must end (`Driver::limit`).
@@ -122,6 +125,7 @@ impl Camoufox {
             buffer: Vec::new(),
             next_id: 0,
             browser: 0,
+            headless,
             current: String::new(),
             deadline: None,
             unanswered: false,
@@ -294,8 +298,19 @@ impl Driver for Camoufox {
             .map(drop)
     }
 
+    /// The session's tab to the front of its window, then the app to the
+    /// front of the owner's screen: Playwright's `bringToFront` only
+    /// switches the tab.
     fn front(&mut self) -> Result<(), Failure> {
-        self.ask::<Value>("front", json!({})).map(drop)
+        self.ask::<Value>("front", json!({}))?;
+        #[cfg(target_os = "macos")]
+        if !self.headless && !activate(self.browser) {
+            crate::log::log(&format!(
+                "browser: macOS did not bring Camoufox ({}) to the front for a handoff",
+                self.browser
+            ));
+        }
+        Ok(())
     }
 
     fn active_tab(&self) -> String {
@@ -548,9 +563,40 @@ fn io_failure(err: std::io::Error) -> Failure {
     Failure::failed("engine_failed", err.to_string())
 }
 
+/// Makes `pid`'s app the front one; false if it is no app or macOS
+/// declined.
+#[cfg(target_os = "macos")]
+fn activate(pid: u32) -> bool {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    // `NSRunningApplication` lives in AppKit.
+    #[link(name = "AppKit", kind = "framework")]
+    unsafe extern "C" {}
+
+    objc2::rc::autoreleasepool(|_| {
+        let Some(class) = AnyClass::get(c"NSRunningApplication") else {
+            return false;
+        };
+        // SAFETY: a class method that returns an autoreleased
+        // NSRunningApplication or nil.
+        let app: *mut AnyObject =
+            unsafe { msg_send![class, runningApplicationWithProcessIdentifier: pid as i32] };
+        // SAFETY: `app` is a live NSRunningApplication; options 0 brings its
+        // frontmost window.
+        !app.is_null() && unsafe { msg_send![app, activateWithOptions: 0usize] }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_process_that_is_no_app_is_not_brought_forward() {
+        assert!(!activate(std::process::id()));
+    }
 
     /// A Camoufox whose helper is `script`, run by `sh`.
     fn with_helper(state: &Path, script: &str) -> Camoufox {
@@ -568,6 +614,7 @@ mod tests {
             buffer: Vec::new(),
             next_id: 0,
             browser: 0,
+            headless: true,
             current: "k1".into(),
             deadline: None,
             unanswered: false,
