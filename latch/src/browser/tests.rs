@@ -204,6 +204,7 @@ conformance!(
     sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused,
     navigating_into_a_reserved_site_is_refused_before_it_is_sent,
     one_sessions_wait_does_not_hold_the_browser_for_another,
+    a_call_longer_than_the_idle_timeout_does_not_end_its_session,
 );
 
 /// At most this many tests drive a real engine at once: two engines' worth
@@ -864,14 +865,20 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
     .unwrap();
     let url = test_site().replace("frames.html", "churn.html");
     let mut failures = Vec::new();
+    let mut slowest = Duration::ZERO;
     for round in 0..3 {
         // Each load, and each reading after it, while cross-site frames
         // attach and go away underneath.
-        let opened = session.call(json!({"op": "open", "url": url})).await;
-        let mut calls = vec![opened];
-        for _ in 0..8 {
-            calls.push(session.call(json!({"op": "observe"})).await);
-            calls.push(session.call(json!({"op": "text"})).await);
+        let mut calls = Vec::new();
+        for n in 0..17 {
+            let call = match n {
+                0 => json!({"op": "open", "url": url}),
+                _ if n % 2 == 1 => json!({"op": "observe"}),
+                _ => json!({"op": "text"}),
+            };
+            let started = std::time::Instant::now();
+            calls.push(session.call(call).await);
+            slowest = slowest.max(started.elapsed());
         }
         for call in calls {
             if let Err(failure) = call {
@@ -882,9 +889,44 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
             }
         }
     }
+    println!("slowest call: {slowest:?}");
+    assert!(failures.is_empty(), "{failures:#?}");
     let text = session.call(json!({"op": "text"})).await.unwrap().result;
     println!("{}", text["text"].as_str().unwrap_or_default().trim());
-    assert!(failures.is_empty(), "{failures:#?}");
+    session.close().await.unwrap();
+}
+
+async fn a_call_longer_than_the_idle_timeout_does_not_end_its_session(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["hang-idle"]);
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "hang-idle",
+        Duration::from_secs(2),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
+    session
+        .call(json!({"op": "open", "url": local_page()}))
+        .await
+        .unwrap();
+    // One call that takes longer than the session may sit idle...
+    let waited = session
+        .call(json!({
+            "op": "wait",
+            "condition": {"kind": "text", "text": "never on this page"},
+            "within_ms": 3000,
+        }))
+        .await
+        .unwrap();
+    assert_eq!(waited.result["met"], false);
+    // ...and the next one, right after it, still finds the session.
+    let text = session.call(json!({"op": "text"})).await.unwrap().result;
+    assert!(
+        text["text"].as_str().unwrap().contains("local page"),
+        "{text}"
+    );
     session.close().await.unwrap();
 }
 

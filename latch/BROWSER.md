@@ -69,10 +69,16 @@ started it, found from its frame; its file is staged under the download's
 guid, so two sessions can download the same file name at once. One that no
 session's page started is never listed.
 
+A call has 60 seconds, every wait for the browser in it together (typing
+adds 200 ms a character, a wait its own time): a page too busy to answer
+gets `timeout`, never a call that hangs. A worker that has not answered
+30 seconds past that is stopped (`browser_gone`).
+
 Profiles live in `<state-dir>/browser/profiles/<name>/`: `profile.json`
 binds the profile to its engine for life, `lock` is held by its runtime,
 and `data/` is the engine's data folder (Chrome's, created with password
-saving and autofill off, or Firefox's). A session closes after 30 minutes without a call, and
+saving and autofill off, or Firefox's). A session closes after 30 minutes
+without a call (counted from the end of its last one), and
 closing one never touches the others; the runtime closes with its last
 session, and the profile stays. `exec` and file workers are denied the
 whole state directory, profiles included.
@@ -153,7 +159,9 @@ value (never for a password or secret-looking field, which is marked
 row or card. Every frame is read, cross-site and sandboxed ones included,
 and listed with its effective origin (`self.origin` in latch's isolated
 world; `opaque` for a sandboxed frame). A snapshot lists at most 200
-elements (`truncated`), or one element's subtree with `observe --scope eN`.
+elements, reads at most 50 frames, and leaves out a frame that does not
+answer before the call's time is three quarters gone; any of these marks
+it `truncated`. `observe --scope eN` lists one element's subtree.
 
 A ref is bound to its frame's document: after a navigation, a ref from
 before it is refused with `stale_snapshot`, with a fresh element list in

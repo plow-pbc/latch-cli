@@ -16,12 +16,14 @@ use std::sync::Mutex as Shared;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
+use super::core::{self, Call};
 use crate::failure::{Exit, Failure};
 use crate::wire::Response;
 
@@ -30,6 +32,15 @@ const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// A session closes after this long without a call; its profile stays.
 pub const IDLE: Duration = Duration::from_secs(30 * 60);
+
+/// How long past its own limit (`Call::limit`) a call's answer may take:
+/// the worker ends its waits by the limit, and answers soon after.
+const ANSWER_GRACE: Duration = Duration::from_secs(30);
+
+/// How long the whole of `call` may take: its limit, and the grace.
+fn within(call: &Value) -> Duration {
+    Call::deserialize(call).map_or(core::CALL, |call| call.limit()) + ANSWER_GRACE
+}
 
 /// How long a session's activity on a site counts for `shared_site`.
 const SHARED_SITE: Duration = Duration::from_secs(15 * 60);
@@ -49,6 +60,8 @@ pub struct Runtime {
     next_key: AtomicU32,
     /// Sites a session reserved (`--reserve-site`), and its key.
     reserved: Shared<HashMap<String, String>>,
+    /// How long a call (its line, upload, answer and bytes) may take.
+    within: fn(&Value) -> Duration,
     /// When each session (by id hash) last acted on each site.
     acted: Shared<HashMap<String, HashMap<String, Instant>>>,
 }
@@ -135,6 +148,7 @@ impl Runtime {
             agent_code: Shared::new(super::profile::agent_code_sites(state_dir, profile)),
             state_dir: state_dir.to_path_buf(),
             next_key: AtomicU32::new(0),
+            within,
             reserved: Shared::new(HashMap::new()),
             acted: Shared::new(HashMap::new()),
         })
@@ -167,28 +181,50 @@ impl Runtime {
     /// One call (a `core::Call` as JSON, naming its session), with an
     /// upload's bytes after it. Bytes the worker sends back (a screenshot,
     /// a download) come back as `bytes`.
+    /// A worker that has not finished the call well past its limit is
+    /// stuck, and is stopped.
     pub async fn call(&self, call: Value, input: Option<&[u8]>) -> Result<Reply, Failure> {
+        let within = (self.within)(&call);
         let mut worker = self.worker.lock().await;
-        worker.send(call).await?;
-        if let Some(input) = input {
-            worker.stdin.write_all(input).await.map_err(|_| lost())?;
-        }
-        let answer = worker.answer().await?;
-        let mut reply = Reply {
-            result: answer["result"].clone(),
-            audit: answer["audit"].clone(),
-            bytes: None,
+        // The whole exchange: a worker that stops reading its upload or
+        // sending its bytes is as stuck as one that never answers.
+        let exchange = async {
+            worker.send(call).await?;
+            if let Some(input) = input {
+                worker.stdin.write_all(input).await.map_err(|_| lost())?;
+            }
+            let answer = worker.answer().await?;
+            let mut reply = Reply {
+                result: answer["result"].clone(),
+                audit: answer["audit"].clone(),
+                bytes: None,
+            };
+            if let Some(size) = answer["bytes"].as_u64() {
+                let mut bytes = vec![0; size as usize];
+                worker
+                    .stdout
+                    .read_exact(&mut bytes)
+                    .await
+                    .map_err(|_| lost())?;
+                reply.bytes = Some(bytes);
+            }
+            Ok(reply)
         };
-        if let Some(size) = answer["bytes"].as_u64() {
-            let mut bytes = vec![0; size as usize];
-            worker
-                .stdout
-                .read_exact(&mut bytes)
-                .await
-                .map_err(|_| lost())?;
-            reply.bytes = Some(bytes);
+        match tokio::time::timeout(within, exchange).await {
+            Ok(reply) => reply,
+            Err(_) => {
+                worker.stop();
+                let _ = worker.child.wait().await;
+                Err(Failure::new(
+                    Exit::Failed,
+                    "browser_gone",
+                    format!(
+                        "the browser did not finish a call within {} s, and was stopped",
+                        within.as_secs()
+                    ),
+                ))
+            }
         }
-        Ok(reply)
     }
 
     /// Closes the browser and waits for the worker to end.
@@ -270,6 +306,15 @@ impl Runtime {
 }
 
 impl Worker {
+    fn stop(&mut self) {
+        if let Some(pid) = self.child.id() {
+            // The worker leads its own group; the browser, in a group of its
+            // own, exits when the worker's end of its pipe closes.
+            // SAFETY: killpg sends a signal and touches no Rust memory.
+            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+
     async fn send(&mut self, call: Value) -> Result<(), Failure> {
         let mut line = serde_json::to_vec(&call).expect("JSON");
         line.push(b'\n');
@@ -300,12 +345,7 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        if let Some(pid) = self.child.id() {
-            // The worker leads its own group; the browser, in a group of its
-            // own, exits when the worker's end of its pipe closes.
-            // SAFETY: killpg sends a signal and touches no Rust memory.
-            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
-        }
+        self.stop();
     }
 }
 
@@ -315,4 +355,62 @@ fn lost() -> Failure {
         "browser_gone",
         "the browser worker stopped".into(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use serde_json::json;
+
+    use super::*;
+
+    /// A runtime whose worker is `script`, a shell script that has
+    /// answered its first line; each call may take 300 ms.
+    async fn stuck(script: &str) -> (TempDir, Runtime) {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = dir.path().join("worker");
+        let ready = r#"echo '{"ok": {"pid": 1}}'"#;
+        std::fs::write(&worker, format!("#!/bin/sh\n{ready}\n{script}\n")).unwrap();
+        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut runtime = Runtime::start_with(&worker, dir.path(), "p", IDLE, true)
+            .await
+            .unwrap();
+        runtime.within = |_| Duration::from_millis(300);
+        (dir, runtime)
+    }
+
+    async fn stopped_in_time(runtime: &Runtime, input: Option<&[u8]>) {
+        let started = Instant::now();
+        let call = runtime.call(json!({"op": "upload", "session": "k1"}), input);
+        let failure = tokio::time::timeout(Duration::from_secs(5), call)
+            .await
+            .expect("the call ended by its limit")
+            .err()
+            .unwrap();
+        assert_eq!(failure.code, "browser_gone");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!runtime.alive());
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_takes_no_upload_is_stopped_by_the_calls_limit() {
+        // It never reads: the upload fills the pipe and the write waits.
+        let (_dir, runtime) = stuck("sleep 600").await;
+        stopped_in_time(&runtime, Some(&vec![0; 4 << 20])).await;
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_never_sends_its_bytes_is_stopped_by_the_calls_limit() {
+        // It answers with bytes to come, and sends none.
+        let (_dir, runtime) =
+            stuck(r#"echo '{"ok": {"result": {}, "audit": {}, "bytes": 100}}'; sleep 600"#).await;
+        stopped_in_time(&runtime, None).await;
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_never_answers_is_stopped_by_the_calls_limit() {
+        let (_dir, runtime) = stuck("sleep 600").await;
+        stopped_in_time(&runtime, None).await;
+    }
 }

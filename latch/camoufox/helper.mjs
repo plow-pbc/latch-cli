@@ -66,6 +66,8 @@ let focus;
 const shares = new Map();
 /// The session the current operation acts for.
 let current = null;
+/// When the current operation must have answered (`within_ms`).
+let due = Infinity;
 /// The page the browser started with, until a session takes it.
 let spare = null;
 /// Pages latch itself is opening: they are not the page's new tabs.
@@ -83,6 +85,7 @@ let nextDocument = 0;
 /// left to finish then.
 async function guarded(work, { ms = COMMAND, onDialog = "fail" } = {}) {
   work.catch(() => {});
+  ms = Math.max(0, Math.min(ms, due - Date.now()));
   // Only a dialog in this session's own tabs stops its work.
   const mine = shares.get(current);
   if (mine?.dialog && onDialog === "fail") throw dialogOpen();
@@ -542,7 +545,7 @@ const ops = {
     await sleep(NAVIGATION_STARTS);
     const mine = share();
     const t = mine.tabs.find((each) => each.id === mine.active);
-    const deadline = Date.now() + LOADING;
+    const deadline = Math.min(Date.now() + LOADING, due);
     while (t?.started && t.loading && !mine.dialog && Date.now() < deadline) await sleep(100);
     if (t) t.started = false;
     await sleep(150);
@@ -596,7 +599,7 @@ const ops = {
   async download_file({ download: id }) {
     const entry = share().downloads.find((d) => d.download === id);
     if (!entry) throw new Failure("no_such_download", `no download ${id}`);
-    await Promise.race([entry.done, sleep(LOADING)]);
+    await Promise.race([entry.done, sleep(Math.min(LOADING, due - Date.now()))]);
     if (entry.state === "canceled") throw new Failure("download_failed", `download ${id} was canceled`);
     if (entry.state !== "completed") {
       throw new Failure("download_incomplete", `download ${id} is still in progress; ask again later`);
@@ -620,9 +623,10 @@ const ops = {
   },
 };
 
-async function answer({ id, op, session, ...params }) {
+async function answer({ id, op, session, within_ms, ...params }) {
   const reply = { id };
   current = session ?? null;
+  due = within_ms === undefined ? Infinity : Date.now() + within_ms;
   try {
     const run = ops[op];
     if (!run) throw new Failure("bad_request", `no operation ${op}`);

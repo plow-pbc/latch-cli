@@ -52,6 +52,8 @@ pub struct Camoufox {
     browser: u32,
     /// The session the driver contract acts for.
     current: String,
+    /// When the call under way must end (`Driver::limit`).
+    deadline: Option<Instant>,
     /// What the helper said about each session with its latest answer:
     /// whether a dialog blocks it, and its active tab.
     seen: HashMap<String, (bool, String)>,
@@ -118,6 +120,7 @@ impl Camoufox {
             next_id: 0,
             browser: 0,
             current: String::new(),
+            deadline: None,
             seen: HashMap::new(),
             scratch: scratch.to_path_buf(),
             _lock: lock,
@@ -178,10 +181,17 @@ impl Camoufox {
         params["id"] = json!(id);
         params["op"] = json!(op);
         params["session"] = json!(self.current);
+        let own = Instant::now() + wait;
+        let deadline = self.deadline.map_or(own, |limit| limit.min(own));
+        // The helper ends its own waits by then too.
+        params["within_ms"] = json!(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+        );
         let mut line = serde_json::to_vec(&params).expect("JSON");
         line.push(b'\n');
         self.to_helper.write_all(&line).map_err(|_| gone())?;
-        let deadline = Instant::now() + wait;
         loop {
             let answer = self.read_line(deadline, op)?;
             // An answer to an operation that timed out earlier is dropped.
@@ -250,6 +260,10 @@ impl Camoufox {
 }
 
 impl Driver for Camoufox {
+    fn limit(&mut self, deadline: Option<Instant>) {
+        self.deadline = deadline;
+    }
+
     fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
         self.ask("tabs", json!({}))
     }
