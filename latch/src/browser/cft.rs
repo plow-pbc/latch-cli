@@ -688,7 +688,40 @@ impl Cft {
         owner_session: Option<&str>,
         frames: &mut Vec<Frame>,
     ) -> Result<(), Failure> {
-        let tree = self.frame_command("Page.getFrameTree", json!({}), session, self.by(COMMAND))?;
+        // A page held by a dialog does not answer for its frames until the
+        // dialog is answered: one open already, or one opening meanwhile.
+        let blocked = || {
+            Failure::failed(
+                "dialog_open",
+                "a dialog is open; answer it with `dialog accept|dismiss`".into(),
+            )
+        };
+        let held = self.shares.values().any(|share| {
+            share.dialog.as_ref().is_some_and(|tab| {
+                share
+                    .tabs
+                    .iter()
+                    .any(|t| &t.id == tab && t.session == session)
+            })
+        });
+        if held {
+            return Err(blocked());
+        }
+        let here = [session.to_string()];
+        let opened = |event: &Value| dialog_in(event, &here);
+        let tree = match self.session_call(
+            "Page.getFrameTree",
+            json!({}),
+            session,
+            self.by(COMMAND),
+            opened,
+        ) {
+            Ok(Reply::Answer(tree)) => tree,
+            Ok(Reply::Stopped) => return Err(blocked()),
+            Ok(Reply::Gone) => return Err(stale()),
+            Err(failure) if failure.code == "engine_error" => return Err(stale()),
+            Err(failure) => return Err(failure),
+        };
         let mut stack = vec![(tree["frameTree"].clone(), true)];
         while let Some((node, root)) = stack.pop() {
             let frame = &node["frame"];

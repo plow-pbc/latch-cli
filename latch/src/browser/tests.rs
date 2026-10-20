@@ -209,6 +209,7 @@ conformance!(
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
     a_browser_that_leaves_calls_unanswered_is_closed,
+    a_dialog_that_opens_between_calls_is_refused_at_once,
     back_into_a_reserved_site_is_refused_after_a_return_visit,
 );
 
@@ -1066,6 +1067,46 @@ async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
     browser.close();
     assert_eq!(tabs.unwrap()[0].title, "");
     assert!(missed);
+}
+
+/// A dialog the page opens on its own, between two calls, holds the page
+/// until it is answered: every call before then is refused with
+/// dialog_open at once, never left waiting on the blocked page.
+async fn a_dialog_that_opens_between_calls_is_refused_at_once(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["dialog-idle"]);
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "dialog-idle",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
+    session
+        .call(json!({"op": "open", "url": local_page()}))
+        .await
+        .unwrap();
+    session
+        .call(json!({"op": "eval", "script": "setTimeout(() => alert('later'), 2500); 1"}))
+        .await
+        .unwrap();
+    // Long enough for the eval's own call to have ended first.
+    tokio::time::sleep(Duration::from_millis(4500)).await;
+    for op in ["observe", "observe", "observe", "text"] {
+        let started = std::time::Instant::now();
+        let refused = session.call(json!({"op": op})).await.err().expect(op);
+        let took = started.elapsed();
+        println!("{op}: {} after {took:?}", refused.code);
+        assert_eq!(refused.code, "dialog_open", "{op}: {}", refused.message);
+        assert!(took < Duration::from_secs(5), "{op} took {took:?}");
+    }
+    session
+        .call(json!({"op": "dialog", "accept": true}))
+        .await
+        .unwrap();
+    session.call(json!({"op": "observe"})).await.unwrap();
+    session.close().await.unwrap();
 }
 
 async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {
