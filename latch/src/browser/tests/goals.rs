@@ -1065,6 +1065,33 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
             .contains("testuser@example.com")
     );
 
+    // A sign-in form for the named login with no complete suggestion (two
+    // submit buttons, so none to press): needs_fields with the form's
+    // fields, not needs_login.
+    h.open(&at("reset.html")).await;
+    h.open(&at("login-two-buttons.html")).await;
+    told.tell(|_| choose("fill", None));
+    let (code, details) = stop(
+        h.send(plan(
+            &["sign in -> path: account.html"],
+            &site,
+            &[],
+            std::slice::from_ref(&login),
+        ))
+        .await,
+    );
+    println!(
+        "named login, no complete suggestion: {code}; {}",
+        details["stop"]
+    );
+    assert_eq!(code, "needs_fields");
+    assert!(
+        details["stop"]["candidates"]
+            .to_string()
+            .contains("Password")
+    );
+    assert!(details["stop"]["suggestions"][0]["press"].is_null());
+
     // A code stage: needs_fields before the model is asked, the code field
     // named; the agent's literal fill of `otp` then goes on.
     h.open(&at("reset.html?user=testuser@example.com")).await;

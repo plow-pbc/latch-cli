@@ -540,8 +540,20 @@ impl Run<'_> {
 
             // 8. and 9. A fill: one of latch's suggestions, or a stop.
             if op == "fill" {
+                // needs_login only when the plan names no fitting login; one
+                // it names with no complete suggestion is a needs_fields.
                 let sign_in = suggest::sign_in(&offers);
-                let named_login = seen.bundles.iter().any(|b| b.args["kind"] == "login");
+                let named_login = seen.fill["items"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|item| {
+                        item["kind"] == "login"
+                            && context
+                                .items
+                                .iter()
+                                .any(|named| item["item"] == named.as_str())
+                    });
                 if sign_in && !named_login {
                     let mut failure = stopped(
                         "needs_login",

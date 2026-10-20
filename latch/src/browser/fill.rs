@@ -438,12 +438,13 @@ impl Plan {
         Ok(Plan { fields, press })
     }
 
-    /// An identifier stage: a login's username mapped alone, with its
-    /// button, for an item that holds a password.
+    /// An identifier stage: a login's username (by any of its names) mapped
+    /// alone, with its button, for an item that holds a password.
     fn identifier_stage(&self, meta: &Meta) -> bool {
         meta.kind == "login"
             && self.press.is_some()
-            && matches!(self.fields.as_slice(), [(label, _)] if label != "password" && label != "otp")
+            && matches!(self.fields.as_slice(),
+                        [(label, _)] if matches!(label.as_str(), "username" | "email" | "login" | "user"))
             && meta.fields.iter().any(|f| f.label == "password")
     }
 }
@@ -923,6 +924,42 @@ fn split(value: &str, boxes: &[Value]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::item::{Custom, LOGIN, Raw};
+
+    #[test]
+    fn only_a_username_fill_goes_on_to_the_password_stage() {
+        let mut raw = Raw::from_labels(
+            LOGIN,
+            "Shop",
+            &[
+                ("username".into(), "ada@shop.example".into()),
+                ("password".into(), "made-up".into()),
+            ],
+        )
+        .unwrap();
+        raw.fields.push(Custom {
+            name: Some("account number".into()),
+            value: Some("1234".into()),
+            kind: 0,
+            linked_id: None,
+        });
+        let meta = Item {
+            id: "v1".into(),
+            revision: 1,
+            sites: vec!["shop.example".into()],
+            other_top_sites: vec![],
+            raw,
+        }
+        .meta();
+        let plan = |label: &str| Plan {
+            fields: vec![(label.to_string(), vec!["e1".to_string()])],
+            press: Some("e2".into()),
+        };
+        assert!(plan("username").identifier_stage(&meta));
+        assert!(plan("email").identifier_stage(&meta));
+        assert!(!plan("account number").identifier_stage(&meta));
+        assert!(!plan("otp").identifier_stage(&meta));
+    }
 
     #[test]
     fn values_split_by_box_length_or_one_character_each() {
