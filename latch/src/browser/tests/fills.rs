@@ -56,8 +56,15 @@ fn form(body: &str) -> Vec<(String, String)> {
 /// what arrived was right, never the value.
 fn site() -> u16 {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-site");
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    // The port is in every origin an agent and the audit see; one holding
+    // the CVV's digits (`50319`) would read as a leaked value.
+    let (listener, port) = loop {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        if !port.to_string().contains(CVV) {
+            break (listener, port);
+        }
+    };
     std::thread::spawn(move || {
         for socket in listener.incoming() {
             let Ok(socket) = socket else { continue };
