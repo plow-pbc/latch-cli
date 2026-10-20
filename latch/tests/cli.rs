@@ -895,6 +895,8 @@ fn a_local_rules_command_on_an_audit_log_it_cannot_write_changes_nothing() {
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "audit_io");
     assert!(!state.join("rules/host.txt").exists());
+}
+
 /// One HTTP request as a fake reads it: the head (request line and
 /// headers, lowercased names) and the body.
 struct Http {
