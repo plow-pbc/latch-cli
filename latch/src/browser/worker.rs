@@ -137,7 +137,7 @@ fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration, call_limit: Durat
     let browser = Rc::new(RefCell::new(browser));
     let mut sessions: HashMap<String, Live<B>> = HashMap::new();
     let mut last_call = Instant::now();
-    let mut unanswered = 0;
+    let mut unanswered = Unanswered::default();
 
     // Standard input unbuffered by std, so `buffer()` below is the only
     // buffer: a line already in it is not waited for again.
@@ -283,20 +283,11 @@ fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration, call_limit: Durat
         browser.borrow_mut().limit(None);
         last_call = Instant::now();
         let missed = browser.borrow_mut().unanswered();
-        let reply = match reply {
-            Err(failure) if failure.code == "timeout" && missed => {
-                unanswered += 1;
-                if unanswered >= UNANSWERED_IN_A_ROW {
-                    Err(stuck())
-                } else {
-                    Err(failure)
-                }
-            }
-            Ok(done) => {
-                unanswered = 0;
-                Ok(done)
-            }
-            other => other,
+        let timed_out = matches!(&reply, Err(failure) if failure.code == "timeout");
+        let reply = if unanswered.after(timed_out, missed) {
+            Err(stuck())
+        } else {
+            reply
         };
         match reply {
             Ok(done) => {
@@ -335,6 +326,24 @@ fn paused() -> Failure {
     failure
 }
 
+/// Calls in a row that timed out on a browser that left a command
+/// unanswered.
+#[derive(Default)]
+struct Unanswered(usize);
+
+impl Unanswered {
+    /// Counts a call that ended, and says whether the browser is now gone.
+    fn after(&mut self, timed_out: bool, missed: bool) -> bool {
+        // Any other end, an error included, is the browser answering.
+        if timed_out && missed {
+            self.0 += 1;
+        } else {
+            self.0 = 0;
+        }
+        self.0 >= UNANSWERED_IN_A_ROW
+    }
+}
+
 fn stuck() -> Failure {
     Failure::failed(
         "browser_gone",
@@ -365,4 +374,27 @@ fn answer(stdout: &mut impl Write, response: Response, bytes: Option<&[u8]>) {
         let _ = stdout.write_all(bytes);
     }
     let _ = stdout.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_browser_is_gone_after_unanswered_calls_in_a_row_only() {
+        let mut count = Unanswered::default();
+        // Two unanswered calls, then one the browser answered, if only
+        // with an error: the count starts again.
+        assert!(!count.after(true, true));
+        assert!(!count.after(true, true));
+        assert!(!count.after(false, false));
+        assert!(!count.after(true, true));
+        assert!(!count.after(true, true));
+        // A call that timed out with every command answered (a page that
+        // never loaded) is the browser answering too.
+        assert!(!count.after(true, false));
+        assert!(!count.after(true, true));
+        assert!(!count.after(true, true));
+        assert!(count.after(true, true));
+    }
 }
