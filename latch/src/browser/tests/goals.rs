@@ -408,7 +408,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     assert!(
         told.offered(0, "type")
             .iter()
-            .any(|o| o.contains("\"12 Elm Road\" (street)"))
+            .any(|o| o.contains("\"12 Elm Road\" (the plan's fact \"street\")"))
     );
 
     // A value is typed as written, ` -> ` and all.

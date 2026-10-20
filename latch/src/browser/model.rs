@@ -302,6 +302,41 @@ impl Model {
         Ok(Verdict::of(*p, quoted, none))
     }
 
+    /// The chance that the current step asks for `text`, a text the plan
+    /// supplied for its steps in general (`source`), to be typed into
+    /// `field`: a fact is typed only where the step wants it, never just
+    /// because it is the only text there is.
+    pub async fn fits(
+        &mut self,
+        step: &str,
+        field: &str,
+        source: &str,
+        text: &str,
+    ) -> Result<f64, String> {
+        let question = Question {
+            id: "fits".into(),
+            instructions: json!({
+                "current_step": step,
+                "rules": [RULES[0]],
+                "question": format!("Does the current step ask for this text to be typed into this field? The field: {field}. The text, {source}: {text:?}. Answer no if the step needs some other text, or names none."),
+            }),
+            kind: Kind::YesNo,
+        };
+        let state = json!({"current_step": step, "field": field, "text": text, "source": source});
+        let answers = self
+            .ask(
+                "fits",
+                &["plan", "supplied_values", "element_names"],
+                state,
+                vec![question],
+            )
+            .await?;
+        match answers.get("fits") {
+            Some(Answer::Yes(p)) => Ok(*p),
+            _ => Err("no answer came back".into()),
+        }
+    }
+
     /// The chance that `action` (a click on an element, or Enter in a
     /// field, which submits its form) can't be undone: paying, ordering,
     /// sending, publishing, deleting or closing something, signing out,
@@ -417,6 +452,8 @@ pub struct Pass {
     pub on_screen: Vec<String>,
     /// The page's other lines.
     pub lines: Vec<String>,
+    /// The page's lines that were not there when the step began.
+    pub new_lines: Vec<String>,
     pub fields: Vec<String>,
     /// `top`, `middle` or `bottom`.
     pub scroll: &'static str,
@@ -643,7 +680,7 @@ fn asked(pass: &Pass) -> (Value, Vec<Question>, Vec<(String, String, Line)>) {
         ));
         questions.push(Question {
             id: "type".into(),
-            instructions: with("Assume the next operation types text. Which supplied text goes into which field? Only the supplied texts can be typed; choose none if the step needs text that was not supplied."),
+            instructions: with("Assume the next operation types text. Which supplied text goes into which field? Only the supplied texts can be typed, and only into a field that asks for that very text: a text supplied for another purpose never goes into a field just because it is the only one. Choose none if the step needs text that was not supplied."),
             kind: Kind::Choose(pairs),
         });
     }
@@ -671,6 +708,9 @@ fn asked(pass: &Pass) -> (Value, Vec<Question>, Vec<(String, String, Line)>) {
     });
     if pass.on_screen.is_empty() && pass.lines.is_empty() {
         page["note"] = json!("the page shows no text");
+    }
+    if !pass.new_lines.is_empty() {
+        page["new_since_the_step_began"] = json!(pass.new_lines);
     }
     let mut state = json!({
         "plan": pass.plan.iter().map(|(step, status)| json!({"step": step, "status": status})).collect::<Vec<_>>(),

@@ -9,13 +9,15 @@
 //!    `already_held` only when that line is a state line: a field, the
 //!    address or the title);
 //! 3. `cannot`: `blocked`;
-//! 4. `done`: `unconfirmed` (or, with a typed check, that check within
-//!    10 s); `stuck`: `stuck`, or `already_true` when the step's result
-//!    shows only in page text before it acted;
-//! 5. budgets: 8 actions a step, 30 a plan, 2 waits a step, the plan's
-//!    time;
+//! 4. `done` (offered only to a step without a typed check, once it has
+//!    acted): `unconfirmed`; `stuck`: `stuck`, or `already_true` when the
+//!    step's result shows only in page text before it acted;
+//! 5. budgets: 8 actions a step, 30 a plan, the plan's time (and 2 waits
+//!    a step, after which waiting is not offered);
 //! 6. a chosen target below p 0.5: `ambiguous_target`;
-//! 7. typing with no supplied text that fits: `needs_text`;
+//! 7. typing with no supplied text that fits: `needs_text` (a plan's
+//!    fact, unlike a text quoted in the step, also needs the model's yes
+//!    that this step asks for it in that field);
 //! 8. signing in: `needs_login`;
 //! 9. a vault fill: `needs_fields`, with the form's refs;
 //! 10. the same action on the same page state again: `repeat`; two
@@ -28,7 +30,7 @@
 //! is dropped and the page read again. Every typed string is a supplied
 //! value or fact.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde_json::{Value, json};
 
@@ -44,8 +46,12 @@ const STEP_WAITS: usize = 2;
 const WAIT: Duration = Duration::from_millis(1500);
 /// A chosen target needs at least this probability.
 const TARGET_P: f64 = 0.5;
+/// A plan's fact is typed into a field only at this yes or above.
+const FITS_P: f64 = 0.5;
 /// The most options one target question offers.
 const MAX_OFFERS: usize = 250;
+/// The most lines a pass marks as new since its step began.
+const NEW_LINES: usize = 20;
 
 /// What every instruction step of a plan sees of the plan.
 pub(super) struct Context {
@@ -101,11 +107,17 @@ impl Run<'_> {
             .as_ref()
             .filter(|c| c.kind == CheckKind::Sentence)
             .map(|c| c.value.clone());
+        // Each text with where it came from, as the model reads it.
         let values: Vec<(String, String)> = step
             .values
-            .iter()
-            .chain(&context.facts)
-            .map(|(name, text)| (name.clone(), text.clone()))
+            .values()
+            .map(|text| ("quoted in this step".to_string(), text.clone()))
+            .chain(
+                context
+                    .facts
+                    .iter()
+                    .map(|(name, text)| (format!("the plan's fact {name:?}"), text.clone())),
+            )
             .collect();
         let anchor = Literal {
             snapshot: None,
@@ -137,6 +149,8 @@ impl Run<'_> {
         let mut unchanged = 0;
         // The field typed into last, for Enter.
         let mut typed_into: Option<(String, String, String)> = None;
+        // The page's lines when the step began.
+        let mut began: Option<HashSet<String>> = None;
         loop {
             if self.left().is_zero() {
                 return Err(stopped(
@@ -148,6 +162,16 @@ impl Run<'_> {
             let seen = self.see(step, &values, context).await?;
             let view = &seen.view;
             let state = view["state"].as_str().unwrap_or_default().to_string();
+            let shown: Vec<String> = strings(&view["on_screen"])
+                .into_iter()
+                .chain(strings(&view["lines"]))
+                .collect();
+            let began = began.get_or_insert_with(|| shown.iter().cloned().collect());
+            let new_lines: Vec<String> = shown
+                .into_iter()
+                .filter(|line| !began.contains(line))
+                .take(NEW_LINES)
+                .collect();
             if let Some(was) = before.take() {
                 unchanged = if was == state { unchanged + 1 } else { 0 };
             }
@@ -182,6 +206,8 @@ impl Run<'_> {
 
             let pass = self.pass(
                 typed,
+                new_lines,
+                waits,
                 at,
                 &goal,
                 &sentence,
@@ -246,22 +272,6 @@ impl Run<'_> {
             // 4. Done, or stuck.
             match decision.operation.id.as_str() {
                 "done" => {
-                    if let Some(check) = typed {
-                        let within = CHECK_WITHIN.min(self.left());
-                        if self.holds(check, &anchor, besides.clone(), within).await? {
-                            return Ok(Done {
-                                outcome: "checked",
-                                evidence: Some(json!({"check": check.kind, "value": check.value})),
-                            });
-                        }
-                        let mut failure = stopped(
-                            "check_not_met",
-                            format!("step {n}'s check did not hold within {}s", within.as_secs()),
-                        );
-                        failure.details =
-                            json!({"evidence": {"check": check.kind, "value": check.value}});
-                        return Err(failure);
-                    }
                     let mut failure = stopped(
                         "unconfirmed",
                         format!(
@@ -362,6 +372,36 @@ impl Run<'_> {
                 );
                 failure.details = json!({"field": field});
                 return Err(failure);
+            }
+
+            // 7. A fact, supplied for the plan as a whole, is typed only
+            // where this step asks for it.
+            if op == "type"
+                && let Some(t) = chosen
+                && let Some(k) = t
+                    .offer
+                    .id
+                    .rsplit('#')
+                    .next()
+                    .and_then(|k| k.parse::<usize>().ok())
+                && k >= step.values.len()
+                && let Some((source, text)) = values.get(k)
+            {
+                let judged = self.model.fits(&goal, &t.label, source, text).await;
+                record_model(&self.model, self.audit);
+                let p =
+                    judged.map_err(|_| model_unavailable(&self.model, "an instruction step"))?;
+                if p < FITS_P {
+                    let mut failure = stopped(
+                        "needs_text",
+                        format!(
+                            "step {n} needs text that was not supplied; nothing was typed. Supply it in quotes, or as a fact"
+                        ),
+                    );
+                    failure.details = json!({"field": {"ref": t.at, "role": t.role, "name": t.name},
+                                             "fits_p": model::round(p)});
+                    return Err(failure);
+                }
             }
 
             // 8. Signing in.
@@ -676,6 +716,8 @@ impl Run<'_> {
     fn pass(
         &self,
         typed: Option<&Check>,
+        new_lines: Vec<String>,
+        waits: usize,
         at: usize,
         goal: &str,
         sentence: &Option<String>,
@@ -718,14 +760,19 @@ impl Run<'_> {
         if y > 5.0 {
             operations.push("scroll_up");
         }
-        operations.extend(["back", "wait"]);
+        operations.push("back");
+        // Once a step has waited its fill, waiting is no longer possible.
+        if waits < STEP_WAITS {
+            operations.push("wait");
+        }
         if view["sign_in"] == true {
             operations.push("login");
         }
         if !seen.items.is_empty() && !seen.form.is_empty() {
             operations.push("fill");
         }
-        if acted > 0 {
+        // With a typed check, latch decides when the step is done.
+        if acted > 0 && typed.is_none() {
             operations.push("done");
         }
         operations.push("stuck");
@@ -767,6 +814,7 @@ impl Run<'_> {
             title: view["title"].as_str().unwrap_or_default().to_string(),
             on_screen: strings(&view["on_screen"]),
             lines: strings(&view["lines"]),
+            new_lines,
             fields: strings(&view["fields"]),
             scroll,
             actions: lines.iter().rev().take(8).rev().cloned().collect(),

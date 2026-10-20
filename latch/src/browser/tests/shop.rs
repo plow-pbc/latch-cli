@@ -603,10 +603,21 @@ async fn the_plan_suite_on_the_decision_model() {
     let made = |h: &Harness| {
         h.audits
             .last()
-            .and_then(|a| a["model_calls"].as_array().map(Vec::len))
+            .and_then(|a| {
+                a.get("model_calls")
+                    .and_then(|c| c.as_array())
+                    .map(Vec::len)
+            })
             .unwrap_or(0)
     };
+    // `LATCH_SUITE_CASES=a,b` runs only those cases.
+    let only: Vec<String> = std::env::var("LATCH_SUITE_CASES")
+        .map(|names| names.split(',').map(str::to_string).collect())
+        .unwrap_or_default();
     for case in suite() {
+        if !only.is_empty() && !only.contains(&case.name) {
+            continue;
+        }
         h.open(&format!("{site}/{}", case.setup)).await;
         h.open(&format!("{site}/{}", case.start)).await;
         let mut plan = plan_of(&case, &site).unwrap();
@@ -682,6 +693,12 @@ async fn the_plan_suite_on_the_decision_model() {
             failed.push(case.name.clone());
         }
         results.push(record);
+        // Kept as it goes, so a run that ends early keeps what it did.
+        std::fs::write(
+            run.join("cases.json"),
+            serde_json::to_string_pretty(&results).unwrap(),
+        )
+        .unwrap();
     }
     std::fs::write(
         run.join("cases.json"),
