@@ -5,7 +5,7 @@
 //! is the windows it opened and every tab opened from them (a page target
 //! whose opener is no session's tab is never adopted), its dialogs, and its
 //! downloads, found from the frame that started them; the driver contract
-//! acts for one session at a time (`Seat`).
+//! acts for one session at a time (`driver::Seat`).
 //!
 //! Each tab is a page target with a flattened CDP session. Cross-site and
 //! sandboxed frames run in other processes, as targets of their own; they
@@ -13,7 +13,6 @@
 //! kept by frame. latch's script runs in an isolated world it creates per
 //! frame document. `Runtime.enable` is never sent.
 
-use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
@@ -21,13 +20,12 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use super::cdp::{self, Cdp, Pipes};
-use super::driver::{self, Download, Driver, Event, Frame, Tab};
+use super::driver::{self, Download, Driver, Event, Frame, KEY_NAMES, Runtime, Tab};
 use super::engine::{CFT, Engine};
 use super::profile;
 use crate::failure::{Exit, Failure};
@@ -132,6 +130,7 @@ impl Cft {
         profile_name: &str,
         scratch: &Path,
         headless: bool,
+        display: Option<&str>,
     ) -> Result<Self, Failure> {
         if CFT.driver_contract != driver::CONTRACT {
             return Err(Failure::failed(
@@ -157,6 +156,7 @@ impl Cft {
             &profile.data(),
             scratch,
             headless,
+            display,
             &chrome_reads,
             &chrome_writes,
         )?;
@@ -208,65 +208,6 @@ impl Cft {
             deadline,
         )?;
         Ok(())
-    }
-
-    /// Starts session `key` with a window of its own, and makes it the one
-    /// the driver contract acts for.
-    pub fn begin(&mut self, key: &str) -> Result<(), Failure> {
-        let folder = self.scratch.join("sessions").join(key);
-        fs::create_dir_all(&folder).map_err(io_failure)?;
-        self.shares.insert(
-            key.to_string(),
-            Share {
-                tabs: Vec::new(),
-                active: String::new(),
-                next_tab: 0,
-                dialog: None,
-                pending: Vec::new(),
-                mouse: (0.0, 0.0),
-                downloads: Vec::new(),
-                folder,
-            },
-        );
-        self.select(key);
-        let opened = self
-            .new_window(self.by(COMMAND))
-            .and_then(|target| self.adopt(key, &target, None));
-        match opened {
-            Ok(tab) => {
-                self.share_mut().active = tab;
-                Ok(())
-            }
-            Err(failure) => {
-                self.end(key);
-                Err(failure)
-            }
-        }
-    }
-
-    /// Ends session `key`: closes every tab it has, and forgets its
-    /// downloads (their files too) and its folder. The others go on.
-    pub fn end(&mut self, key: &str) {
-        let Some(share) = self.shares.remove(key) else {
-            return;
-        };
-        for tab in &share.tabs {
-            let _ = self.cdp.call(
-                "Target.closeTarget",
-                json!({"targetId": tab.target}),
-                None,
-                self.by(COMMAND),
-            );
-        }
-        for (guid, _) in &share.downloads {
-            let _ = fs::remove_file(self.scratch.join("downloads").join(guid));
-        }
-        let _ = fs::remove_dir_all(&share.folder);
-    }
-
-    /// Makes session `key` the one the driver contract acts for.
-    pub fn select(&mut self, key: &str) {
-        self.current = key.to_string();
     }
 
     fn share(&self) -> &Share {
@@ -903,6 +844,67 @@ impl Cft {
     }
 }
 
+impl Runtime for Cft {
+    /// Starts session `key` with a window of its own, and makes it the one
+    /// the driver contract acts for.
+    fn begin(&mut self, key: &str) -> Result<(), Failure> {
+        let folder = self.scratch.join("sessions").join(key);
+        fs::create_dir_all(&folder).map_err(io_failure)?;
+        self.shares.insert(
+            key.to_string(),
+            Share {
+                tabs: Vec::new(),
+                active: String::new(),
+                next_tab: 0,
+                dialog: None,
+                pending: Vec::new(),
+                mouse: (0.0, 0.0),
+                downloads: Vec::new(),
+                folder,
+            },
+        );
+        self.select(key);
+        let opened = self
+            .new_window(self.by(COMMAND))
+            .and_then(|target| self.adopt(key, &target, None));
+        match opened {
+            Ok(tab) => {
+                self.share_mut().active = tab;
+                Ok(())
+            }
+            Err(failure) => {
+                self.end(key);
+                Err(failure)
+            }
+        }
+    }
+
+    /// Ends session `key`: closes every tab it has, and forgets its
+    /// downloads (their files too) and its folder. The others go on.
+    fn end(&mut self, key: &str) {
+        let Some(share) = self.shares.remove(key) else {
+            return;
+        };
+        for tab in &share.tabs {
+            let _ = self.cdp.call(
+                "Target.closeTarget",
+                json!({"targetId": tab.target}),
+                None,
+                self.by(COMMAND),
+            );
+        }
+        for (guid, _) in &share.downloads {
+            let _ = fs::remove_file(self.scratch.join("downloads").join(guid));
+        }
+        let _ = fs::remove_dir_all(&share.folder);
+    }
+
+    /// Makes session `key` the one the driver contract acts for.
+    fn select(&mut self, key: &str) {
+        self.current = key.to_string();
+    }
+}
+
 impl Driver for Cft {
     fn limit(&mut self, deadline: Option<Instant>) {
         self.deadline = deadline;
@@ -949,6 +951,18 @@ impl Driver for Cft {
     fn switch_tab(&mut self, tab: &str) -> Result<(), Failure> {
         self.tab(tab)?;
         self.share_mut().active = tab.to_string();
+        Ok(())
+    }
+
+    /// The session's active tab to the front: the owner is to act in it.
+    fn front(&mut self) -> Result<(), Failure> {
+        let target = self.tab(&self.share().active.clone())?.target.clone();
+        self.cdp.call(
+            "Target.activateTarget",
+            json!({"targetId": target}),
+            None,
+            self.by(COMMAND),
+        )?;
         Ok(())
     }
 
@@ -1512,132 +1526,6 @@ impl Driver for Cft {
     }
 }
 
-/// One session's view of a shared browser: the driver contract on that
-/// session's own tabs, downloads and dialogs. The worker keeps one per
-/// session, all on the one browser, and makes one call at a time.
-pub struct Seat {
-    browser: Rc<RefCell<Cft>>,
-    key: String,
-}
-
-impl Seat {
-    /// Starts session `key` in `browser`, with a window of its own.
-    pub fn begin(browser: &Rc<RefCell<Cft>>, key: &str) -> Result<Seat, Failure> {
-        browser.borrow_mut().begin(key)?;
-        Ok(Seat {
-            browser: browser.clone(),
-            key: key.to_string(),
-        })
-    }
-
-    fn cft(&self) -> RefMut<'_, Cft> {
-        let mut cft = self.browser.borrow_mut();
-        cft.select(&self.key);
-        cft
-    }
-}
-
-impl Driver for Seat {
-    fn limit(&mut self, deadline: Option<Instant>) {
-        self.browser.borrow_mut().limit(deadline);
-    }
-    fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
-        self.cft().tabs()
-    }
-    fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure> {
-        self.cft().new_tab(url)
-    }
-    fn switch_tab(&mut self, tab: &str) -> Result<(), Failure> {
-        self.cft().switch_tab(tab)
-    }
-    fn close_tab(&mut self, tab: &str) -> Result<(), Failure> {
-        self.cft().close_tab(tab)
-    }
-    fn active_tab(&self) -> String {
-        self.cft().active_tab()
-    }
-    fn navigate(&mut self, url: &str) -> Result<(), Failure> {
-        self.cft().navigate(url)
-    }
-    fn back(&mut self) -> Result<bool, Failure> {
-        self.cft().back()
-    }
-    fn back_url(&mut self) -> Result<Option<String>, Failure> {
-        self.cft().back_url()
-    }
-    fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
-        self.cft().frames()
-    }
-    fn run(&mut self, frame: &Frame, expression: &str) -> Result<Value, Failure> {
-        self.cft().run(frame, expression)
-    }
-    fn call(&mut self, frame: &Frame, function: &str, args: Vec<Value>) -> Result<Value, Failure> {
-        self.cft().call(frame, function, args)
-    }
-    fn reaches(&mut self, frame: &Frame, x: f64, y: f64) -> Result<bool, Failure> {
-        self.cft().reaches(frame, x, y)
-    }
-    fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure> {
-        self.cft().frame_offset(frame)
-    }
-    fn click(&mut self, x: f64, y: f64) -> Result<(), Failure> {
-        self.cft().click(x, y)
-    }
-    fn type_text(&mut self, text: &str) -> Result<(), Failure> {
-        self.cft().type_text(text)
-    }
-    fn select_all(&mut self) -> Result<(), Failure> {
-        self.cft().select_all()
-    }
-    fn press(&mut self, key: &str) -> Result<(), Failure> {
-        self.cft().press(key)
-    }
-    fn wheel(&mut self, x: f64, y: f64, delta_y: f64) -> Result<(), Failure> {
-        self.cft().wheel(x, y, delta_y)
-    }
-    fn settle(&mut self) -> Result<Vec<Event>, Failure> {
-        self.cft().settle()
-    }
-    fn dialog_open(&self) -> bool {
-        self.cft().dialog_open()
-    }
-    fn answer_dialog(&mut self, accept: bool, text: Option<&str>) -> Result<(), Failure> {
-        self.cft().answer_dialog(accept, text)
-    }
-    fn eval(&mut self, script: &str) -> Result<Value, Failure> {
-        self.cft().eval(script)
-    }
-    fn set_files(
-        &mut self,
-        frame: &Frame,
-        element: &str,
-        files: &[PathBuf],
-    ) -> Result<(), Failure> {
-        self.cft().set_files(frame, element, files)
-    }
-    fn upload_folder(&self) -> PathBuf {
-        self.cft().upload_folder()
-    }
-    fn downloads(&mut self) -> Result<Vec<Download>, Failure> {
-        self.cft().downloads()
-    }
-    fn download_file(&mut self, id: &str) -> Result<(Download, PathBuf), Failure> {
-        self.cft().download_file(id)
-    }
-    fn capabilities(&self) -> Vec<String> {
-        self.cft().capabilities()
-    }
-    fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
-        self.cft().screenshot()
-    }
-    /// Ends this session only: its tabs close, the browser and the other
-    /// sessions go on.
-    fn close(&mut self) -> Value {
-        self.browser.borrow_mut().end(&self.key);
-        json!({"closed": true})
-    }
-}
-
 /// Frames reordered so each comes right after its parent's earlier
 /// siblings' subtrees: the main frame first, then depth first.
 fn tree_order(frames: Vec<Frame>) -> Vec<Frame> {
@@ -1670,23 +1558,6 @@ struct Key<'a> {
     key_code: i64,
     text: &'a str,
 }
-
-const KEY_NAMES: &[&str] = &[
-    "Enter",
-    "Tab",
-    "Escape",
-    "Backspace",
-    "Delete",
-    "Space",
-    "ArrowUp",
-    "ArrowDown",
-    "ArrowLeft",
-    "ArrowRight",
-    "Home",
-    "End",
-    "PageUp",
-    "PageDown",
-];
 
 fn named_key(name: &str) -> Option<Key<'static>> {
     let (key, code, key_code, text) = match name {
@@ -1758,6 +1629,7 @@ fn start(
     data: &Path,
     scratch: &Path,
     headless: bool,
+    display: Option<&str>,
     reads: &impl AsRawFd,
     writes: &impl AsRawFd,
 ) -> Result<Child, Failure> {
@@ -1786,6 +1658,9 @@ fn start(
         .stdout(Stdio::null())
         .stderr(log)
         .process_group(0);
+    if let Some(display) = display {
+        command.env("DISPLAY", display);
+    }
     // SAFETY: between fork and exec, only async-signal-safe calls: the two
     // ends are first copied above fd 4 (so neither is overwritten by the
     // other's move), then onto 3 and 4, which exec keeps open.

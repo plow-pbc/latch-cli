@@ -575,6 +575,9 @@ mod tests {
 
     impl Driver for Broken {
         fn limit(&mut self, _: Option<std::time::Instant>) {}
+        fn front(&mut self) -> Result<(), Failure> {
+            unreachable!()
+        }
         fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
             Ok(vec![Tab {
                 tab: "t1".into(),

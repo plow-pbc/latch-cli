@@ -1,7 +1,9 @@
-//! The browser engine a host runs, as a plugin: Chrome for Testing (CfT),
+//! The browser engines a host runs, as plugins: Chrome for Testing (CfT),
 //! the release pinned in `cft.json`, which install.sh downloads into the
 //! state directory's plugins folder, `<state-dir>/plugins/cft/<version>/`,
-//! beside older versions, with that pin copied in as `manifest.json`.
+//! beside older versions, with that pin copied in as `manifest.json`; and
+//! Camoufox, pinned in `camoufox.json` with the Node and Playwright runtime
+//! its helper runs on, which install.sh adds only with `--with-camoufox`.
 //!
 //! The pin is compiled into latch and is what counts: before every launch
 //! latch hashes the installed build's whole folder (`tree_hash`) and refuses
@@ -54,6 +56,123 @@ pub struct Build {
 
 pub static CFT: LazyLock<Pin> =
     LazyLock::new(|| serde_json::from_str(include_str!("cft.json")).expect("CfT pin"));
+
+pub static CAMOUFOX: LazyLock<CamoufoxPin> =
+    LazyLock::new(|| serde_json::from_str(include_str!("camoufox.json")).expect("Camoufox pin"));
+
+/// The Camoufox release, and the runtime its helper (`camoufox/helper.mjs`)
+/// runs on: a pinned Node, and the helper's packages (Playwright and
+/// camoufox-js) as its lockfile pins them. install.sh puts each part in its
+/// own folder of `<state-dir>/plugins/camoufox/<version>/`: `camoufox/`
+/// (the app and the version.json camoufox-js reads), `node/` and
+/// `runtime/` (the package, installed with `npm ci`).
+#[derive(Deserialize)]
+pub struct CamoufoxPin {
+    pub engine: String,
+    pub version: String,
+    pub driver_contract: u32,
+    pub builds: BTreeMap<String, CamoufoxBuild>,
+    /// The operating system the fingerprint claims: always the host's own.
+    pub os: String,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CamoufoxBuild {
+    pub camoufox: Download,
+    pub node: Download,
+    /// `tree_hash` of the installed runtime folder.
+    pub runtime_tree_sha256: String,
+}
+
+/// One downloaded part: install.sh checks the archive's sha256, latch the
+/// unpacked folder's tree hash before every launch.
+#[derive(Deserialize)]
+pub struct Download {
+    #[allow(dead_code)]
+    pub url: String,
+    #[allow(dead_code)]
+    pub sha256: String,
+    pub tree_sha256: String,
+}
+
+/// An installed, checked Camoufox, ready to launch.
+pub struct CamoufoxEngine {
+    pub node: PathBuf,
+    pub runtime: PathBuf,
+    /// The folder camoufox-js reads the build from (`CAMOUFOX_INSTALL_DIR`).
+    pub install: PathBuf,
+    pub executable: PathBuf,
+}
+
+impl CamoufoxPin {
+    pub fn folder(&self, state_dir: &Path) -> PathBuf {
+        state_dir
+            .join("plugins")
+            .join(&self.engine)
+            .join(&self.version)
+    }
+
+    /// Finds this machine's build in the state directory and checks every
+    /// part against the pin. Run right before each launch.
+    pub fn verified(&self, state_dir: &Path) -> Result<CamoufoxEngine, Failure> {
+        let Some(build) = platform().and_then(|key| self.builds.get(key)) else {
+            return Err(Failure::failed(
+                "unsupported_platform",
+                format!(
+                    "no {} build for {}/{}",
+                    self.engine,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                ),
+            ));
+        };
+        let root = self.folder(state_dir);
+        let engine = CamoufoxEngine {
+            node: root.join("node/bin/node"),
+            runtime: root.join("runtime"),
+            install: root.join("camoufox"),
+            executable: root.join("camoufox/Camoufox.app/Contents/MacOS/camoufox"),
+        };
+        if !root.join("manifest.json").is_file() {
+            return Err(Failure::failed(
+                "engine_not_installed",
+                format!(
+                    "{} {} is not installed in {}; run install.sh --with-camoufox",
+                    self.engine,
+                    self.version,
+                    root.display()
+                ),
+            ));
+        }
+        for (part, pinned) in [
+            ("camoufox", &build.camoufox.tree_sha256),
+            ("node", &build.node.tree_sha256),
+            ("runtime", &build.runtime_tree_sha256),
+        ] {
+            let folder = root.join(part);
+            let hash = tree_hash(&folder).map_err(|err| {
+                Failure::new(
+                    Exit::Denied,
+                    "engine_unverified",
+                    format!("{} at {}: {err}", self.engine, folder.display()),
+                )
+            })?;
+            if hash != *pinned {
+                return Err(Failure::new(
+                    Exit::Denied,
+                    "engine_unverified",
+                    format!(
+                        "{} at {}: tree sha256 {hash} is not the pinned {pinned}",
+                        self.engine,
+                        folder.display()
+                    ),
+                ));
+            }
+        }
+        Ok(engine)
+    }
+}
 
 /// Launch arguments that would undo what latch relies on: Chrome's own
 /// sandbox, the private pipe as the only control channel, a headed window
@@ -259,6 +378,31 @@ mod tests {
         let before = tree_hash(root).unwrap();
         fs::set_permissions(root.join("ABOUT"), fs::Permissions::from_mode(0o755)).unwrap();
         assert_ne!(tree_hash(root).unwrap(), before);
+    }
+
+    #[test]
+    fn a_changed_camoufox_part_is_refused_before_launch() {
+        let state = tempfile::tempdir().unwrap();
+        if platform().is_none() {
+            let none = CAMOUFOX.verified(state.path()).err().unwrap();
+            assert_eq!(none.code, "unsupported_platform");
+            return;
+        }
+        let missing = CAMOUFOX.verified(state.path()).err().unwrap();
+        assert_eq!(missing.code, "engine_not_installed");
+        let root = CAMOUFOX.folder(state.path());
+        for part in ["camoufox", "node", "runtime"] {
+            fs::create_dir_all(root.join(part)).unwrap();
+        }
+        fs::write(root.join("manifest.json"), b"{}").unwrap();
+        let changed = CAMOUFOX.verified(state.path()).err().unwrap();
+        assert_eq!(
+            (changed.exit, changed.code.as_str()),
+            (Exit::Denied, "engine_unverified")
+        );
+        assert!(changed.message.contains("camoufox"), "{}", changed.message);
+        // The fingerprint claims the host's own OS.
+        assert_eq!(CAMOUFOX.os, "macos");
     }
 
     #[test]

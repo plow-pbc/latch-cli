@@ -36,6 +36,7 @@ use super::host::{Browsers, Entry, paused, take_audit};
 use super::journal::{self, Journal};
 use super::model::{self, CHECKABLE_P, Model, RISKY_P};
 use super::plan::{Check, CheckKind, Literal, Op, Plan};
+use super::session::Session;
 use crate::failure::{Exit, Failure};
 use crate::state::to_hex;
 
@@ -95,15 +96,35 @@ async fn poll(
     }
 }
 
-/// One worker call; its audit fills in what the request's audit lacks
-/// (tab, origin, path), and is returned for the action's own record. The
-/// session is held only for the call.
-async fn call(
+/// One worker call for the agent; its audit fills in what the request's
+/// audit lacks (tab, origin, path), and is returned for the action's own
+/// record. The session is held only for the call, and refused while the
+/// owner has it (`handoff`): a plan under way sends nothing more.
+pub(super) async fn call(
     entry: &Entry,
     call: Value,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Map<String, Value>), Failure> {
-    let reply = entry.session.lock().await.call(call).await;
+    let mut session = entry.agent_session().await?;
+    send(&mut session, call, audit).await
+}
+
+/// A handoff's own worker call, made while the owner has the session.
+pub(super) async fn owner_call(
+    entry: &Entry,
+    call: Value,
+    audit: &mut Map<String, Value>,
+) -> Result<(Value, Map<String, Value>), Failure> {
+    let mut session = entry.session.lock().await;
+    send(&mut session, call, audit).await
+}
+
+async fn send(
+    session: &mut Session,
+    call: Value,
+    audit: &mut Map<String, Value>,
+) -> Result<(Value, Map<String, Value>), Failure> {
+    let reply = session.call(call).await;
     let (outcome, worker) = match reply {
         Ok(reply) => {
             let worker = reply.audit.as_object().cloned().unwrap_or_default();
