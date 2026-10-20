@@ -3,7 +3,7 @@
 Every crate `latch` depends on directly, and why. The usage numbers are from
 the library audit (crates.io and GitHub APIs, pulled 2026-10-14). `rand` is not in
 the audit; its row was pulled from the same APIs on 2026-10-15, and the vault's six
-(`aes-gcm` to `zip`, named in the browser spec) on 2026-10-19. Downloads
+(`aes-gcm` to `zip`, named in the browser spec) on 2026-10-19, and `qrcode` on 2026-10-19. Downloads
 are all-time / last 90 days. The bar for a new crate: widely used, actively
 maintained, from a known owner. Add a row here in the same change that adds a
 crate to `Cargo.toml`.
@@ -28,6 +28,7 @@ crate to `Cargo.toml`.
 | `totp-rs` (std) | The vault: authenticator codes (checked against RFC 6238's vectors) | 11M / 3.1M | 277 | constantoine | 6.0.0 (2026-08-06) | MIT |
 | `url` | The vault: reading sites and origins | 969M / 219M | 1.6k | servo org | 2.5.8 (2026-01-05) | MIT/Apache-2.0 |
 | `zip` (deflate) | The vault: reading 1Password's 1PUX exports | 307M / 87M | 360 | zip-rs org | 8.6.0 (2026-04-25) | MIT |
+| `qrcode` (no default features) | `latch vault link`'s QR code in the terminal | 23M / 6.0M | 563 | kennytm | 0.14.1 (2024-07-05); the last release, small and finished rather than abandoned (repository active 2025-08) | MIT/Apache-2.0 |
 
 TLS comes with reqwest and iroh: `rustls` (1,003M / 232M downloads, 7.7k
 stars, rustls org) on its `aws-lc-rs` backend (262M / 98M, aws org). iroh is

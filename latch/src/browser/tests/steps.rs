@@ -182,7 +182,9 @@ impl Provider for Fake {
 
 struct Harness {
     browsers: Arc<Browsers>,
+    /// The session the harness acts in, and its id.
     entry: Arc<host::Entry>,
+    id: String,
     state: std::path::PathBuf,
     requests: u32,
     /// Every audit record, for the checks on what it holds.
@@ -196,29 +198,43 @@ impl Harness {
         browsers.test = Some((latch(), Vec::new()));
         browsers.provider = provider;
         let browsers = Arc::new(browsers);
-        let entry = browsers.open("default", CALLER).await.unwrap();
+        let (id, entry) = browsers.open("default", CALLER, None).await.unwrap();
         Harness {
             browsers,
             entry,
+            id,
             state: state.to_path_buf(),
             requests: 0,
             audits: Vec::new(),
         }
     }
 
+    /// A command in the harness's session. An `open` starts a new session,
+    /// which takes the place of the one before.
     async fn call(&mut self, command: &str, args: Value) -> Value {
         let mut audit = Map::new();
+        let name = if command == "open" {
+            "default"
+        } else {
+            &self.id
+        };
         let (result, _) = host::call(
             &self.browsers,
-            CALLER,
+            CALLER.into(),
             command,
-            "default",
+            name,
             &args,
             None,
             &mut audit,
         )
         .await
         .unwrap();
+        if command == "open" {
+            let id = result["session"].as_str().unwrap().to_string();
+            self.entry = self.browsers.session(&id, CALLER).await.unwrap();
+            let before = std::mem::replace(&mut self.id, id);
+            self.browsers.close(&before, CALLER).await.unwrap();
+        }
         result
     }
 
@@ -248,7 +264,7 @@ impl Harness {
         let result = steps::run(
             &self.browsers,
             &self.entry,
-            "default",
+            &self.id,
             CALLER,
             &args,
             &mut audit,
@@ -299,7 +315,7 @@ impl Harness {
     }
 
     fn history(&self, request: &str) -> Value {
-        steps::history(&self.browsers, "default", CALLER, request).unwrap()
+        steps::history(&self.browsers, &self.id, CALLER, request).unwrap()
     }
 
     fn policy(&self, policy: &str) {
@@ -527,7 +543,7 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
     assert_eq!(failure.details["screenshot"], *handle);
     let png = steps::shot(
         &h.browsers,
-        "default",
+        &h.id,
         CALLER,
         handle["request"].as_str().unwrap(),
         "final",
@@ -537,7 +553,7 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
     assert_eq!(
         steps::shot(
             &h.browsers,
-            "default",
+            &h.id,
             "another-caller",
             handle["request"].as_str().unwrap(),
             "final"
@@ -796,15 +812,16 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent() 
 
     // The host stops while the click is in flight.
     let args = json!({"request": "r-crash", "plan": do_plan(&[format!("click {slowly}")], None, false, None).unwrap()});
-    let (browsers, entry) = (h.browsers.clone(), h.entry.clone());
+    let (browsers, entry, crashed) = (h.browsers.clone(), h.entry.clone(), h.id.clone());
+    let session = crashed.clone();
     let running = tokio::spawn(async move {
         let mut audit = Map::new();
-        steps::run(&browsers, &entry, "default", CALLER, &args, &mut audit).await
+        steps::run(&browsers, &entry, &session, CALLER, &args, &mut audit).await
     });
     let mut in_flight = Value::Null;
     for _ in 0..100 {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        if let Ok(now) = steps::history(&h.browsers, "default", CALLER, "r-crash") {
+        if let Ok(now) = steps::history(&h.browsers, &crashed, CALLER, "r-crash") {
             in_flight = now;
             if in_flight["actions"][0]["result"] == "unknown" {
                 break;
@@ -817,9 +834,10 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent() 
     drop(h);
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // A new host on the same state directory reads the journal.
+    // A new host on the same state directory reads the journal, for the
+    // crashed session's id.
     let mut h = Harness::start(&state, Some(fake)).await;
-    let after = h.history("r-crash");
+    let after = steps::history(&h.browsers, &crashed, CALLER, "r-crash").unwrap();
     evidence("b5-history-after-restart.json", &after);
     assert_eq!(after["status"], "interrupted");
     assert_eq!(after["actions"][0]["result"], "unknown");
@@ -841,7 +859,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent() 
     assert_eq!(refused(&again), (Exit::Usage, "duplicate_request"));
     assert!(h.text().await.contains("Added: 1"), "one click, never two");
     assert_eq!(
-        steps::history(&h.browsers, "default", "another-caller", "r-lost")
+        steps::history(&h.browsers, &h.id, "another-caller", "r-lost")
             .unwrap_err()
             .code,
         "no_such_request"

@@ -135,7 +135,41 @@ pub enum Call {
     },
     FillCleanup,
     FillResume,
+    /// Starts the call's session with a window of its own.
+    Begin,
+    /// Ends the call's session: its tabs close, the others go on.
+    End,
+    /// Closes the browser, ending every session.
     Close,
+}
+
+/// Where a call acts, for a site another session reserved: reading a page
+/// is not acting on it.
+enum Acts<'a> {
+    No,
+    /// On the page in front of the session.
+    Page,
+    /// On the page it loads.
+    Url(&'a str),
+}
+
+impl Call {
+    fn acts(&self) -> Acts<'_> {
+        match self {
+            Call::Open { url: Some(url) }
+            | Call::Tab {
+                action: TabAction::New,
+                url: Some(url),
+                ..
+            } => Acts::Url(url),
+            Call::Act { .. }
+            | Call::Dialog { .. }
+            | Call::Eval { .. }
+            | Call::Upload { .. }
+            | Call::PrepareFill(_) => Acts::Page,
+            _ => Acts::No,
+        }
+    }
 }
 
 /// The reviewed context an action was judged on (`Call::Review`, with
@@ -341,7 +375,9 @@ impl<D: Driver> Core<D> {
             ),
             Call::Downloads => self.downloads(&mut audit),
             Call::DownloadGet { download } => self.download_get(&download, &mut audit),
-            Call::Close => unreachable!("the worker closes the session"),
+            Call::Begin | Call::End | Call::Close => {
+                unreachable!("the worker starts, ends and closes sessions")
+            }
         };
         match result {
             Ok(result) => Ok(Answer {
@@ -356,6 +392,81 @@ impl<D: Driver> Core<D> {
                 Err(failure)
             }
         }
+    }
+
+    /// Whether a fill holds this session: while it does, no other session
+    /// on the browser may read or act either.
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// The sites `call` would act on, for a site another session reserved:
+    /// the page in front of the session, for an action there, and the page
+    /// it would load, wherever that is known before it is sent (a URL to
+    /// open, Back's entry, a link's address, the address a form sends to).
+    /// Script on a page can still take it anywhere.
+    pub fn sites_of(&mut self, call: &Call) -> Vec<String> {
+        let mut urls = Vec::new();
+        match call.acts() {
+            Acts::No => {}
+            Acts::Url(url) => urls.push(url.to_string()),
+            Acts::Page => {
+                let tabs = self.driver.tabs().unwrap_or_default();
+                urls.extend(tabs.into_iter().find(|tab| tab.active).map(|tab| tab.url));
+                if let Call::Act {
+                    snapshot,
+                    action,
+                    target,
+                    text,
+                    ..
+                } = call
+                {
+                    urls.extend(self.leads_to(
+                        snapshot.as_deref(),
+                        *action,
+                        target.as_deref(),
+                        text.as_deref(),
+                    ));
+                }
+            }
+        }
+        urls.iter()
+            .filter_map(|url| crate::vault::sites::site_of(url))
+            .collect()
+    }
+
+    /// The page an action would load, when that is known before it is
+    /// sent: Back's entry; a link's address, or the address its form sends
+    /// to, for a click, Enter or Space on it (or typed text ending a line).
+    fn leads_to(
+        &mut self,
+        snapshot: Option<&str>,
+        action: Action,
+        target: Option<&str>,
+        text: Option<&str>,
+    ) -> Option<String> {
+        let key = match action {
+            Action::Click => None,
+            Action::Press => text,
+            Action::Type if text.is_some_and(|text| text.contains('\n')) => Some("Enter"),
+            Action::Back => return self.driver.back_url().ok().flatten(),
+            Action::Type | Action::Select | Action::Scroll => return None,
+        };
+        let key = json!(key);
+        let found = match target {
+            Some(target) => {
+                let (snapshot, position) = self.bound(snapshot, target).ok()?;
+                let (frame, index) = self.reference(&snapshot, position).ok()?;
+                let ask = format!("__latch.leadsTo({snapshot:?}, {index}, {key})");
+                self.driver.run(&frame, &ask)
+            }
+            None => {
+                let main = self.main_frame().ok()?;
+                self.driver
+                    .run(&main, &format!("__latch.leadsToFocused({key})"))
+            }
+        };
+        found.ok()?.as_str().map(str::to_string)
     }
 
     /// A fresh reading for an error's details, when the page can be read.
@@ -1191,6 +1302,9 @@ mod tests {
             unreachable!()
         }
         fn back(&mut self) -> Result<bool, Failure> {
+            unreachable!()
+        }
+        fn back_url(&mut self) -> Result<Option<String>, Failure> {
             unreachable!()
         }
         fn frames(&mut self) -> Result<Vec<Frame>, Failure> {

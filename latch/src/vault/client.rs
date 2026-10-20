@@ -61,6 +61,91 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             }));
             dial::call(state, &host, &request, ANSWER_WITHIN).await
         }
+        VaultCommand::Edit {
+            item,
+            revision,
+            title,
+            site,
+            no_sites,
+            other_top_site,
+            no_other_top_sites,
+            field,
+            ask,
+        } => {
+            let sites = replaced(site, no_sites);
+            let other_top_sites = replaced(other_top_site, no_other_top_sites);
+            if title.is_none()
+                && sites.is_none()
+                && other_top_sites.is_none()
+                && field.is_empty()
+                && ask.is_empty()
+            {
+                return Err(Failure::usage(
+                    "bad_arguments",
+                    "say what to change: --title, --site, --no-sites, --other-top-site, \
+                     --no-other-top-sites, --field or --ask"
+                        .into(),
+                ));
+            }
+            // The item's kind says which fields it has and which are secret.
+            let listed = dial::call(
+                state,
+                &host,
+                &call(json!({"command": "list"})),
+                ANSWER_WITHIN,
+            )
+            .await?;
+            let kind = listed["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|meta| meta["item"] == item.as_str())
+                .and_then(|meta| meta["kind"].as_str())
+                .ok_or_else(|| Failure::usage("no_such_item", format!("there is no item {item}")))?
+                .to_string();
+            let values = edits(&kind, &field, &ask)?;
+            let mut request = json!({
+                "command": "edit",
+                "item": item,
+                "revision": revision,
+                "values": values,
+            });
+            if let Some(title) = title {
+                request["title"] = json!(title);
+            }
+            if let Some(sites) = sites {
+                request["sites"] = json!(sites);
+            }
+            if let Some(tops) = other_top_sites {
+                request["other_top_sites"] = json!(tops);
+            }
+            dial::call(state, &host, &call(request), ANSWER_WITHIN).await
+        }
+        VaultCommand::Link {
+            kind,
+            title,
+            site,
+            field,
+            ask,
+            page,
+        } => {
+            let values = given(&kind, &field)?;
+            let request = call(json!({
+                "command": "link",
+                "kind": kind,
+                "title": title,
+                "sites": site,
+                "values": values,
+                "ask": ask,
+            }));
+            let opened = dial::call(state, &host, &request, ANSWER_WITHIN).await?;
+            let url = link_url(&page, &opened);
+            if term::interactive() {
+                eprintln!("{}", qr(&url));
+                eprintln!("Open on your phone; it works once, for 15 minutes.");
+            }
+            Ok(json!({"url": url, "link": opened["link"], "expires_in": opened["expires_in"]}))
+        }
         VaultCommand::Import { file } => {
             let link = dial::connect(state, &host).await?;
             let result = import(&link.connection, &file).await;
@@ -70,47 +155,21 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
     }
 }
 
-/// An item's values: ordinary ones from `--field`, secret ones typed at a
-/// prompt without echo. A secret on the command line is refused.
+/// An edit's new site list: the sites given, or none when cleared; `None`
+/// leaves the item's list as it is.
+fn replaced(given: Vec<String>, clear: bool) -> Option<Vec<String>> {
+    (clear || !given.is_empty()).then_some(given)
+}
+
+/// A new item's values: ordinary ones from `--field`, secret ones typed at
+/// a prompt without echo. A secret on the command line is refused.
 fn values(
     kind: &str,
     fields: &[String],
     ask: &[String],
     totp: bool,
 ) -> Result<Map<String, Value>, Failure> {
-    let code = kind_code(kind).ok_or_else(|| {
-        Failure::usage("bad_item", "--kind is login, card, identity or note".into())
-    })?;
-    let labels = entry_labels(code);
-    let known = |label: &str| {
-        labels
-            .iter()
-            .find(|(l, _)| *l == label || (kind == "card" && label == "cvv" && *l == "code"))
-    };
-    let mut values = Map::new();
-    for pair in fields {
-        let (label, value) = pair.split_once('=').ok_or_else(|| {
-            Failure::usage(
-                "bad_arguments",
-                format!("--field takes LABEL=VALUE, not {pair:?}"),
-            )
-        })?;
-        let Some((_, secret)) = known(label) else {
-            return Err(Failure::usage(
-                "bad_item",
-                format!("a {kind} has no field {label:?}"),
-            ));
-        };
-        if *secret {
-            return Err(Failure::usage(
-                "secret_in_argv",
-                format!(
-                    "{label} is secret: it is asked for at a prompt, never given on the command line"
-                ),
-            ));
-        }
-        values.insert(label.to_string(), json!(value));
-    }
+    let mut values = given(kind, fields)?;
     // What every kind is asked for, and what the owner adds with --ask.
     let mut asked: Vec<String> = match kind {
         "login" => vec!["password".into()],
@@ -121,24 +180,112 @@ fn values(
         asked.push("totp".into());
     }
     asked.extend(ask.iter().cloned());
+    values.extend(prompted(kind, &asked, false)?);
+    Ok(values)
+}
+
+/// An edit's changed values: `--field` ones (empty clears), and the
+/// `--ask` ones typed at a prompt, where typing nothing is refused.
+fn edits(kind: &str, fields: &[String], ask: &[String]) -> Result<Map<String, Value>, Failure> {
+    let mut values = given(kind, fields)?;
+    values.extend(prompted(kind, ask, true)?);
+    Ok(values)
+}
+
+/// The labels a `kind` has, and whether each is secret.
+fn labels(kind: &str) -> Result<Vec<(&'static str, bool)>, Failure> {
+    let code = kind_code(kind).ok_or_else(|| {
+        Failure::usage("bad_item", "--kind is login, card, identity or note".into())
+    })?;
+    Ok(entry_labels(code))
+}
+
+fn known(labels: &[(&'static str, bool)], kind: &str, label: &str) -> Option<(&'static str, bool)> {
+    labels
+        .iter()
+        .find(|(l, _)| *l == label || (kind == "card" && label == "cvv" && *l == "code"))
+        .copied()
+}
+
+/// `--field LABEL=VALUE` values; a secret label is refused, its value unread.
+fn given(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failure> {
+    let labels = labels(kind)?;
+    let mut values = Map::new();
+    for pair in fields {
+        let (label, value) = pair.split_once('=').ok_or_else(|| {
+            Failure::usage(
+                "bad_arguments",
+                format!("--field takes LABEL=VALUE, not {pair:?}"),
+            )
+        })?;
+        let Some((_, secret)) = known(&labels, kind, label) else {
+            return Err(Failure::usage(
+                "bad_item",
+                format!("a {kind} has no field {label:?}"),
+            ));
+        };
+        if secret {
+            return Err(Failure::usage(
+                "secret_in_argv",
+                format!(
+                    "{label} is secret: it is asked for at a prompt, never given on the command line"
+                ),
+            ));
+        }
+        values.insert(label.to_string(), json!(value));
+    }
+    Ok(values)
+}
+
+/// Values typed at a prompt without echo, one per label. With `required`,
+/// typing nothing is refused rather than read as "leave it out".
+fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, Value>, Failure> {
+    let labels = labels(kind)?;
     for label in asked {
-        if known(&label).is_none() && label != "notes" {
+        if known(&labels, kind, label).is_none() {
             return Err(Failure::usage(
                 "bad_item",
                 format!("a {kind} has no field {label:?}"),
             ));
         }
+    }
+    let mut values = Map::new();
+    for label in asked {
         let prompt = if label == "totp" {
-            "authenticator key (or otpauth:// link)".to_string()
+            "authenticator key (or otpauth:// link)"
         } else {
-            label.clone()
+            label.as_str()
         };
         let value = term::ask_secret(&format!("{prompt}: "));
-        if !value.is_empty() {
-            values.insert(label, json!(value));
+        if value.is_empty() {
+            if required {
+                return Err(Failure::usage(
+                    "nothing_typed",
+                    format!("nothing was typed for {label}; leave out --ask {label} to keep it"),
+                ));
+            }
+            continue;
         }
+        values.insert(label.clone(), json!(value));
     }
     Ok(values)
+}
+
+/// The phone link: the page's address, then the host's key, its relay and
+/// the code after `#`, which a browser never sends to the page's server.
+fn link_url(page: &str, opened: &Value) -> String {
+    let page = page.split('#').next().unwrap_or_default();
+    let part = |key: &str| opened[key].as_str().unwrap_or_default().to_string();
+    let relay: String = url::form_urlencoded::byte_serialize(part("relay").as_bytes()).collect();
+    format!("{page}#h={}&r={relay}&c={}", part("host"), part("code"))
+}
+
+/// The link as a QR code, two rows to a line of text.
+fn qr(url: &str) -> String {
+    let code = qrcode::QrCode::new(url.as_bytes()).expect("a link fits in a QR code");
+    code.render::<qrcode::render::unicode::Dense1x2>()
+        .quiet_zone(true)
+        .build()
 }
 
 /// Sends the export, shows the preview, asks which rows to import, and
@@ -290,6 +437,15 @@ mod tests {
     }
 
     #[test]
+    fn the_link_carries_everything_after_the_hash() {
+        let opened = json!({"host": "ab12", "relay": "https://relay.example/", "code": "c0de"});
+        assert_eq!(
+            link_url("http://localhost:8731/#old", &opened),
+            "http://localhost:8731/#h=ab12&r=https%3A%2F%2Frelay.example%2F&c=c0de"
+        );
+    }
+
+    #[test]
     fn secrets_are_never_taken_from_argv() {
         let refused = values("login", &["password=hunter2".into()], &[], false)
             .err()
@@ -305,6 +461,38 @@ mod tests {
                 .err()
                 .unwrap()
                 .code,
+            "bad_item"
+        );
+    }
+
+    #[test]
+    fn a_site_list_is_kept_replaced_or_cleared() {
+        assert_eq!(replaced(vec![], false), None);
+        assert_eq!(
+            replaced(vec!["shop.example".into()], false),
+            Some(vec!["shop.example".to_string()])
+        );
+        assert_eq!(replaced(vec![], true), Some(vec![]));
+    }
+
+    #[test]
+    fn an_edit_takes_no_secret_from_argv_and_clears_with_an_empty_value() {
+        for (kind, field) in [
+            ("login", "password=made-up-9f3k"),
+            ("login", "totp=JBSWY3DPEHPK3PXP"),
+            ("card", "number=4242424242424242"),
+            ("identity", "ssn=078-05-1120"),
+        ] {
+            let refused = edits(kind, &[field.into()], &[]).err().unwrap();
+            assert_eq!(refused.code, "secret_in_argv", "{field}");
+            let value = field.split_once('=').unwrap().1;
+            assert!(!refused.message.contains(value));
+        }
+        let cleared = edits("login", &["username=".into()], &[]).unwrap();
+        assert_eq!(cleared["username"], "");
+        // A field the kind lacks is refused before anything is asked.
+        assert_eq!(
+            edits("login", &[], &["code".into()]).err().unwrap().code,
             "bad_item"
         );
     }

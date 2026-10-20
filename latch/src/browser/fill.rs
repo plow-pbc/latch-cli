@@ -7,8 +7,9 @@
 //!    secret leaves the page before the agent is back. It is also
 //!    confirmed by the agent before any value is released (`steps.rs`,
 //!    [`releases_secret`]); this runs once it is.
-//! 2. **Pause and prepare.** The session is held: every other call gets
-//!    `session_paused`. The worker reports where each value would go.
+//! 2. **Pause and prepare.** The browser is held: every other call, in
+//!    any session on the profile, gets `session_paused`. The worker
+//!    reports where each value would go.
 //! 3. **Match.** Each field frame's origin and the top-level origin must
 //!    pass the item kind's site rule (`vault::sites`). Only then is a value
 //!    released, one at a time, into the worker's private pipe.
@@ -23,8 +24,8 @@
 //!
 //! The result says `submitted`, never "logged in". The audit records the
 //! item, its kind, the fields by label, both origins (a second page's under
-//! `password_step`), whether agent code ran in the session before, and the
-//! outcome: never a value.
+//! `password_step`), whether agent code ever ran on those sites in the
+//! profile (`agent_code_before_fill`), and the outcome: never a value.
 
 use std::sync::atomic::Ordering;
 
@@ -77,16 +78,12 @@ pub async fn run(
     audit.insert("kind".into(), json!(meta.kind));
     let plan = Plan::of(command, &item, args)?;
     audit.insert("fields".into(), json!(plan.labels()));
-    if entry.filling.swap(true, Ordering::SeqCst) {
+    if entry.runtime.filling.swap(true, Ordering::SeqCst) {
         return Err(paused());
     }
-    audit.insert(
-        "agent_code_before_fill".into(),
-        json!(entry.agent_code.load(Ordering::SeqCst)),
-    );
     let mut session = entry.session.lock().await;
     let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
-    entry.filling.store(false, Ordering::SeqCst);
+    entry.runtime.filling.store(false, Ordering::SeqCst);
     result
 }
 
@@ -417,6 +414,18 @@ async fn release_and_set(
             }
         }
     }
+    // Agent code that ran on these sites, in any session, may have left a
+    // service worker or stored script to see what is filled now.
+    let touched: Vec<String> = frame_origins
+        .iter()
+        .map(String::as_str)
+        .chain([top])
+        .filter_map(sites::site_of)
+        .collect();
+    audit.insert(
+        "agent_code_before_fill".into(),
+        json!(session.runtime.agent_code_on(&touched)),
+    );
     for field in &fields {
         let label = field["field"].as_str().unwrap_or_default();
         let boxes: Vec<Value> = field["boxes"].as_array().cloned().unwrap_or_default();
