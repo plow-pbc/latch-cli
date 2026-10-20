@@ -1140,7 +1140,7 @@ impl Provider for Plow {
             let meta = CallMeta {
                 provider: "plow",
                 model: reply["model"].as_str().unwrap_or(PLOW_MODEL).to_string(),
-                request_id: reply["request_id"].as_str().map(str::to_string),
+                request_id: reply["id"].as_str().map(str::to_string),
                 latency_ms,
             };
             Ok((system_one_answers(&reply, questions), meta))
@@ -1593,8 +1593,8 @@ pub mod tests {
 
     #[tokio::test]
     async fn plow_asks_jev_on_the_hosts_login_and_its_answers_are_checked_the_same() {
-        let reply = json!({"model": "typesafe/jev-1.13", "request_id": "req_made_up",
-                           "answers": {"risky": {"noul": 0.93}}});
+        let reply = json!({"model": "typesafe/jev-1.13", "id": "req_made_up",
+                           "answers": {"risky": {"type": "noul", "noul": 0.93}}});
         let (url, seen) = plow_route(200, reply);
         let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
         let p = m
