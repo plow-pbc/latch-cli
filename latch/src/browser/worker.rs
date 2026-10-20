@@ -37,7 +37,8 @@
 //! `session_paused`. A session ends `--idle-timeout` seconds after its
 //! last call ended; the browser closes when the last one has, and at the
 //! end of stdin. Every call's waits for the browser end by its
-//! limit (`Call::limit`).
+//! limit (`Call::limit`, from `--call-limit`), and a browser that leaves
+//! several calls in a row unanswered is closed as gone.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -63,11 +64,17 @@ use super::profile;
 use crate::failure::Failure;
 use crate::wire::Response;
 
+/// Calls in a row that time out on a browser that did not answer before
+/// the worker counts it gone: it closes it and ends, and the next session
+/// starts a new one.
+const UNANSWERED_IN_A_ROW: usize = 3;
+
 pub fn run(
     state_dir: &Path,
     profile_name: &str,
     scratch: &Path,
     idle: Duration,
+    call_limit: Duration,
     headless: bool,
     display: Option<&str>,
 ) -> ExitCode {
@@ -99,7 +106,7 @@ pub fn run(
                         "driver_contract": CAMOUFOX.driver_contract,
                         "pid": browser.pid(),
                     });
-                    serve(ready, browser, idle)
+                    serve(ready, browser, idle, call_limit)
                 }
                 _ => {
                     let browser =
@@ -110,7 +117,7 @@ pub fn run(
                         "driver_contract": CFT.driver_contract,
                         "pid": browser.pid(),
                     });
-                    serve(ready, browser, idle)
+                    serve(ready, browser, idle, call_limit)
                 }
             },
         )
@@ -124,12 +131,13 @@ pub fn run(
 /// Says the browser is up, then answers each session's calls until the host
 /// closes the browser, stops writing, or every session has gone quiet for
 /// `idle`.
-fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration) -> ExitCode {
+fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration, call_limit: Duration) -> ExitCode {
     let mut stdout = io::stdout().lock();
     answer(&mut stdout, Response::Ok(ready), None);
     let browser = Rc::new(RefCell::new(browser));
     let mut sessions: HashMap<String, Live<B>> = HashMap::new();
     let mut last_call = Instant::now();
+    let mut unanswered = Unanswered::default();
 
     // Standard input unbuffered by std, so `buffer()` below is the only
     // buffer: a line already in it is not waited for again.
@@ -190,8 +198,9 @@ fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration) -> ExitCode {
         };
         let key = line["session"].as_str().unwrap_or_default().to_string();
         // Every wait for the engine in this call, together, ends by then.
-        let deadline = Instant::now() + call.limit();
+        let deadline = Instant::now() + call.limit(call_limit);
         browser.borrow_mut().limit(Some(deadline));
+        browser.borrow_mut().unanswered();
         let held = sessions
             .iter()
             .any(|(other, live)| *other != key && live.core.is_paused());
@@ -273,6 +282,13 @@ fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration) -> ExitCode {
         };
         browser.borrow_mut().limit(None);
         last_call = Instant::now();
+        let missed = browser.borrow_mut().unanswered();
+        let timed_out = matches!(&reply, Err(failure) if failure.code == "timeout");
+        let reply = if unanswered.after(timed_out, missed) {
+            Err(stuck())
+        } else {
+            reply
+        };
         match reply {
             Ok(done) => {
                 let mut reply = json!({"result": done.result, "audit": done.audit});
@@ -310,6 +326,33 @@ fn paused() -> Failure {
     failure
 }
 
+/// Calls in a row that timed out on a browser that left a command
+/// unanswered.
+#[derive(Default)]
+struct Unanswered(usize);
+
+impl Unanswered {
+    /// Counts a call that ended, and says whether the browser is now gone.
+    fn after(&mut self, timed_out: bool, missed: bool) -> bool {
+        // Any other end, an error included, is the browser answering.
+        if timed_out && missed {
+            self.0 += 1;
+        } else {
+            self.0 = 0;
+        }
+        self.0 >= UNANSWERED_IN_A_ROW
+    }
+}
+
+fn stuck() -> Failure {
+    Failure::failed(
+        "browser_gone",
+        format!(
+            "the browser left {UNANSWERED_IN_A_ROW} calls in a row unanswered; latch closed it, and the next session starts a new one"
+        ),
+    )
+}
+
 /// Refused before it is sent: the call would act on `site`, which another
 /// session reserved, or (None) on a page that is not known.
 fn site_busy(site: Option<&str>) -> Failure {
@@ -331,4 +374,27 @@ fn answer(stdout: &mut impl Write, response: Response, bytes: Option<&[u8]>) {
         let _ = stdout.write_all(bytes);
     }
     let _ = stdout.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_browser_is_gone_after_unanswered_calls_in_a_row_only() {
+        let mut count = Unanswered::default();
+        // Two unanswered calls, then one the browser answered, if only
+        // with an error: the count starts again.
+        assert!(!count.after(true, true));
+        assert!(!count.after(true, true));
+        assert!(!count.after(false, false));
+        assert!(!count.after(true, true));
+        assert!(!count.after(true, true));
+        // A call that timed out with every command answered (a page that
+        // never loaded) is the browser answering too.
+        assert!(!count.after(true, false));
+        assert!(!count.after(true, true));
+        assert!(!count.after(true, true));
+        assert!(count.after(true, true));
+    }
 }

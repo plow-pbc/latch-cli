@@ -71,8 +71,10 @@ session's page started is never listed.
 
 A call has 60 seconds, every wait for the browser in it together (typing
 adds 200 ms a character, a wait its own time): a page too busy to answer
-gets `timeout`, never a call that hangs. A worker that has not answered
-30 seconds past that is stopped (`browser_gone`).
+gets `timeout`, never a call that hangs. A browser that leaves three
+calls in a row unanswered is closed (`browser_gone` on the third; the next
+`open` starts a new one), and a worker that has not answered 30 seconds
+past a call's time is stopped (`browser_gone`).
 
 Profiles live in `<state-dir>/browser/profiles/<name>/`: `profile.json`
 binds the profile to its engine for life, `lock` is held by its runtime,

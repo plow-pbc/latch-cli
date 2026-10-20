@@ -208,6 +208,7 @@ conformance!(
     navigating_into_a_reserved_site_is_refused_before_it_is_sent,
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
+    a_browser_that_leaves_calls_unanswered_is_closed,
     back_into_a_reserved_site_is_refused_after_a_return_visit,
 );
 
@@ -230,30 +231,46 @@ impl std::ops::Deref for TestDir {
     }
 }
 
-struct Turn;
+/// `n` of the `ENGINES_AT_ONCE` places.
+struct Turn(usize);
 
 impl Turn {
-    fn wait() -> Turn {
+    fn wait(n: usize) -> Turn {
         let mut running = RUNNING.lock().unwrap();
-        while *running >= ENGINES_AT_ONCE {
+        while *running + n > ENGINES_AT_ONCE {
             running = FREED.wait(running).unwrap();
         }
-        *running += 1;
-        Turn
+        *running += n;
+        Turn(n)
     }
 }
 
 impl Drop for Turn {
     fn drop(&mut self) {
-        *RUNNING.lock().unwrap() -= 1;
-        FREED.notify_one();
+        *RUNNING.lock().unwrap() -= self.0;
+        FREED.notify_all();
     }
 }
 
 /// A fresh state directory for one test, sharing only the installed
 /// plugins, with `profiles` made for `engine`, and a folder to share with
-/// `exec`. The engine must be installed (see the top of this file).
+/// `exec`. The engine must be installed (see the top of this file). Waits
+/// for its turn at the engines (`ENGINES_AT_ONCE`).
 fn test_state(engine: &str, profiles: &[&str]) -> (TestDir, PathBuf, PathBuf) {
+    test_state_taking(engine, profiles, 1)
+}
+
+/// `test_state` for a test whose page keeps the browser busy (frames
+/// coming and going all the time): it runs with no other engine test.
+fn test_state_alone(engine: &str, profiles: &[&str]) -> (TestDir, PathBuf, PathBuf) {
+    test_state_taking(engine, profiles, ENGINES_AT_ONCE)
+}
+
+fn test_state_taking(
+    engine: &str,
+    profiles: &[&str],
+    places: usize,
+) -> (TestDir, PathBuf, PathBuf) {
     let installed = std::env::var_os("LATCH_CFT_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
@@ -276,7 +293,7 @@ fn test_state(engine: &str, profiles: &[&str]) -> (TestDir, PathBuf, PathBuf) {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
     let dir = TestDir {
-        _turn: Turn::wait(),
+        _turn: Turn::wait(places),
         dir: tempfile::tempdir_in(parent).unwrap(),
     };
     let state = dir.path().join("state");
@@ -856,7 +873,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input(engine_name: &
 }
 
 async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["b2-churn"]);
+    let (_dir, state, _area) = test_state_alone(engine, &["b2-churn"]);
     let mut session = Session::start_with(
         &latch(),
         &state,
@@ -867,12 +884,11 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
     .await
     .unwrap();
     let url = test_site().replace("frames.html", "churn.html");
-    let mut failures = Vec::new();
     let mut slowest = Duration::ZERO;
     for round in 0..3 {
         // Each load, and each reading after it, while cross-site frames
-        // attach and go away underneath.
-        let mut calls = Vec::new();
+        // attach and go away underneath. The first call that fails ends
+        // the test: the ones after it would only wait out their time.
         for n in 0..17 {
             let call = match n {
                 0 => json!({"op": "open", "url": url}),
@@ -880,20 +896,20 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
                 _ => json!({"op": "text"}),
             };
             let started = std::time::Instant::now();
-            calls.push(session.call(call).await);
+            let done = session.call(call.clone()).await;
             slowest = slowest.max(started.elapsed());
-        }
-        for call in calls {
-            if let Err(failure) = call {
-                failures.push(format!(
-                    "round {round}: {} {}",
-                    failure.code, failure.message
-                ));
+            if let Err(failure) = done {
+                panic!(
+                    "round {round}, call {n} ({}) after {:?}: {} {}",
+                    call["op"],
+                    started.elapsed(),
+                    failure.code,
+                    failure.message
+                );
             }
         }
     }
     println!("slowest call: {slowest:?}");
-    assert!(failures.is_empty(), "{failures:#?}");
     let text = session.call(json!({"op": "text"})).await.unwrap().result;
     println!("{}", text["text"].as_str().unwrap_or_default().trim());
     session.close().await.unwrap();
@@ -931,6 +947,62 @@ async fn a_call_longer_than_the_idle_timeout_does_not_end_its_session(engine: &s
         "{text}"
     );
     session.close().await.unwrap();
+}
+
+async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["hang-stuck"]);
+    let scratch = tempfile::tempdir().unwrap();
+    let mut command = Command::new(latch());
+    command
+        .arg("--state-dir")
+        .arg(&state)
+        .args(["browser-worker", "--profile", "hang-stuck", "--scratch"])
+        .arg(scratch.path())
+        .args(["--call-limit", "2"]);
+    if HEADLESS {
+        command.arg("--headless");
+    }
+    let mut worker = command
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .current_dir(scratch.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = worker.stdin.take().unwrap();
+    let mut output = std::io::BufReader::new(worker.stdout.take().unwrap());
+    let mut answer = || {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut output, &mut line).unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap_or_default()
+    };
+    let browser = answer()["ok"]["pid"].as_i64().unwrap() as libc::pid_t;
+    let mut call = |line: serde_json::Value| {
+        writeln!(input, "{line}").unwrap();
+        input.flush().unwrap();
+    };
+    call(json!({"op": "begin", "session": "k1"}));
+    assert!(answer()["ok"].is_object());
+    call(json!({"op": "open", "session": "k1", "url": local_page()}));
+    assert!(answer()["ok"].is_object());
+
+    // The browser stops answering anything.
+    // SAFETY: kill sends a signal and touches no Rust memory.
+    unsafe { libc::kill(browser, libc::SIGSTOP) };
+    let mut codes = Vec::new();
+    for _ in 0..3 {
+        call(json!({"op": "observe", "session": "k1"}));
+        codes.push(answer()["error"]["code"].clone());
+    }
+    // SAFETY: as above.
+    unsafe { libc::kill(browser, libc::SIGCONT) };
+    // Two calls time out; the third finds the browser gone, and the worker
+    // closes it and ends.
+    assert_eq!(codes, ["timeout", "timeout", "browser_gone"]);
+    drop(input);
+    let ended = worker.wait().unwrap();
+    assert!(ended.success(), "{ended:?}");
 }
 
 async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {

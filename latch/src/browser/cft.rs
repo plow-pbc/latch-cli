@@ -903,6 +903,10 @@ impl Runtime for Cft {
     fn select(&mut self, key: &str) {
         self.current = key.to_string();
     }
+
+    fn unanswered(&mut self) -> bool {
+        self.cdp.take_unanswered()
+    }
 }
 
 impl Driver for Cft {

@@ -500,6 +500,10 @@ pub struct BrowserWorkerArgs {
     /// Seconds without a call before the session closes
     #[arg(long, default_value_t = 1800)]
     pub idle_timeout: u64,
+    /// Seconds a call may take, before time for typing or waiting; shorter
+    /// only in tests
+    #[arg(long, default_value_t = crate::browser::core::CALL.as_secs())]
+    pub call_limit: u64,
     /// Run the engine with no window (the host's `--headless-browsers`)
     #[arg(long)]
     pub headless: bool,

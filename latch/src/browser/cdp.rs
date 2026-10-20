@@ -25,6 +25,8 @@ pub struct Cdp {
     pages: HashSet<String>,
     /// Frames removed from their page since the events were last taken.
     removed: HashSet<String>,
+    /// A reply did not come in time since this was last asked.
+    unanswered: bool,
 }
 
 /// The two pipes for one Chrome: the ends Chrome gets (to become its fd 3
@@ -50,6 +52,7 @@ pub fn pipes() -> io::Result<Pipes> {
             events: VecDeque::new(),
             pages: HashSet::new(),
             removed: HashSet::new(),
+            unanswered: false,
         },
     })
 }
@@ -121,7 +124,9 @@ impl Cdp {
             return Ok(None);
         }
         loop {
-            let message = self.read(deadline, method)?;
+            let message = self.read(deadline, method).inspect_err(|failure| {
+                self.unanswered |= failure.code == "timeout";
+            })?;
             if message["id"] == id {
                 if let Some(error) = message.get("error") {
                     return Err(Failure::failed(
@@ -158,6 +163,11 @@ impl Cdp {
                 Err(failure) => return Err(failure),
             }
         }
+    }
+
+    /// Whether a reply did not come in time since this was last asked.
+    pub fn take_unanswered(&mut self) -> bool {
+        std::mem::take(&mut self.unanswered)
     }
 
     /// The events read so far, oldest first, leaving none queued.

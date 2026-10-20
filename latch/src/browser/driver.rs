@@ -193,6 +193,9 @@ pub trait Runtime: Driver {
     fn end(&mut self, key: &str);
     /// Makes session `key` the one the driver contract acts for.
     fn select(&mut self, key: &str);
+    /// Whether the engine left a command unanswered in time since this
+    /// was last asked.
+    fn unanswered(&mut self) -> bool;
 }
 
 /// One session's view of a shared browser: the driver contract on that
