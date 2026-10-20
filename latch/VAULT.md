@@ -32,6 +32,8 @@ latch vault add --host my-mac --kind login --title Shop --site shop.example \
 latch vault add --host my-mac --kind card --title Visa \
   --field "cardholder name=Ada Lovelace" --field "expiry month=4" --field "expiry year=2031"
 latch vault list --host my-mac                         # metadata only
+latch vault edit --host my-mac v3 --revision 2 --title "Shop (work)" \
+  --field username=ada@work.example --ask password      # asks for the new password
 latch vault remove --host my-mac v3 --revision 2
 latch vault import --host my-mac export.1pux           # shows rows, imports the ones you pick
 ```
@@ -39,6 +41,13 @@ latch vault import --host my-mac export.1pux           # shows rows, imports the
 Secrets are typed at a prompt without echo, never taken from the command
 line or the environment. `--ask LABEL` asks for another field the same way;
 `--totp` asks for a login's authenticator key.
+
+`edit` changes an item at the revision `list` shows: `--title`, `--site`
+and `--other-top-site` (each list given replaces the old one), `--field
+LABEL=VALUE` for a non-secret field (an empty value clears it), and `--ask
+LABEL` to type a new secret (`--ask totp` for the authenticator key). The
+kind never changes. The answer and the audit name the fields that changed
+and the new revision, never a value.
 
 `import` reads 1Password's 1PUX, CSV and "Copy item JSON", Apple Passwords'
 CSV, Chrome's CSV and Bitwarden's CSV and unencrypted JSON. It shows every

@@ -1189,3 +1189,67 @@ async fn the_button_that_ends_a_step_is_picked_only_when_one_fits() {
     assert!(!everything.contains(PASSWORD));
     h.call("close", json!({})).await.ok();
 }
+
+#[tokio::test]
+async fn a_login_after_an_edit_fills_the_new_password() {
+    const OLD: &str = "made-up-old-q8zr";
+    let (_dir, state, _area) = test_state();
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", OLD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let browsers = Arc::new(browsers);
+    let entry = browsers.open("default", CALLER).await.unwrap();
+    let mut h = Harness {
+        browsers,
+        entry,
+        shown: Vec::new(),
+    };
+
+    h.call("open", json!({"url": format!("{local}/login.html")}))
+        .await
+        .unwrap();
+    let (before, _) = h.fill("login", json!({"item": login.item})).await;
+    assert_eq!(before.unwrap()["submitted"], true);
+    let page = h.text().await;
+    println!("before the edit: {page}");
+    assert!(page.contains("password rejected"));
+
+    let mut audit = Map::new();
+    let edited = crate::vault::host::edit(
+        &vault,
+        &json!({"item": login.item, "revision": login.revision,
+                "values": {"password": PASSWORD}}),
+        &mut audit,
+    )
+    .unwrap();
+    h.shown.push(edited.to_string());
+    h.shown.push(Value::Object(audit.clone()).to_string());
+    println!("edit audit: {}", Value::Object(audit));
+
+    h.call("open", json!({"url": format!("{local}/login.html")}))
+        .await
+        .unwrap();
+    let (after, _) = h.fill("login", json!({"item": login.item})).await;
+    assert_eq!(after.unwrap()["submitted"], true);
+    let page = h.text().await;
+    println!("after the edit: {page}");
+    assert!(page.contains("password accepted"));
+    let everything = h.shown.join("\n");
+    assert!(!everything.contains(PASSWORD) && !everything.contains(OLD));
+    h.call("close", json!({})).await.ok();
+}

@@ -60,7 +60,7 @@ pub enum Command {
     Exec(ExecArgs),
     /// Drive a real browser on a host: open, observe, act by ref
     Browser(BrowserArgs),
-    /// The host's vault: add, list, remove and import items (owner devices only)
+    /// The host's vault: add, list, edit, remove and import items (owner devices only)
     Vault(VaultArgs),
     /// Run this machine as a host, in the foreground, until stopped
     Serve(ServeArgs),
@@ -356,6 +356,30 @@ pub enum VaultCommand {
         /// Also ask for a login's authenticator key
         #[arg(long)]
         totp: bool,
+    },
+    /// Change an item at its current revision: its title, sites and fields.
+    /// Its secrets are asked for at a prompt, never taken from the command
+    /// line or the environment; its kind never changes
+    Edit {
+        item: String,
+        /// The revision `vault list` shows; an older one is refused
+        #[arg(long)]
+        revision: u64,
+        #[arg(long)]
+        title: Option<String>,
+        /// Replaces the item's sites (repeatable)
+        #[arg(long)]
+        site: Vec<String>,
+        /// Replaces a login's other top-level sites (repeatable)
+        #[arg(long)]
+        other_top_site: Vec<String>,
+        /// A non-secret field: LABEL=VALUE; an empty VALUE clears it
+        #[arg(long)]
+        field: Vec<String>,
+        /// Ask for this field at a prompt: password, totp (a login's
+        /// authenticator key), a card's number or code, …
+        #[arg(long)]
+        ask: Vec<String>,
     },
     /// Remove an item at its current revision
     Remove {
