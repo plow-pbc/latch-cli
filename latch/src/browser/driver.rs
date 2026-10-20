@@ -1,17 +1,20 @@
 //! The driver contract: what the shared core (`core.rs`) needs from an
 //! engine. Each engine family implements it once (`cft.rs` for Chrome for
-//! Testing); everything above it, the page reader, snapshots and refs,
+//! Testing, `camoufox.rs` for Camoufox); everything above it, the page
+//! reader, snapshots and refs,
 //! actions and results, is written once for all of them.
 //!
 //! All coordinates are CSS pixels in the active tab's viewport. Input is
 //! the engine's own ("trusted") mouse and keyboard, never a script's
 //! `element.click()`.
 
+use std::cell::{RefCell, RefMut};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Instant;
 
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::failure::Failure;
 
@@ -19,12 +22,12 @@ use crate::failure::Failure;
 /// driver speaks.
 pub const CONTRACT: u32 = 1;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Tab {
     pub tab: String,
     pub url: String,
     pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opener: Option<String>,
     pub active: bool,
 }
@@ -41,7 +44,7 @@ pub struct Frame {
 
 /// A download the session's browser started, as a handle; its file stays on
 /// the host until `download get` brings it to the client.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Download {
     pub download: String,
     /// The name the site suggested.
@@ -50,12 +53,12 @@ pub struct Download {
     /// `in_progress`, `completed` or `canceled`. Only a completed one counts.
     pub state: String,
     pub bytes: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total: Option<u64>,
 }
 
 /// Something the page did that the agent should hear about.
-#[derive(Clone, Serialize, PartialEq, Debug)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     Dialog {
@@ -66,7 +69,7 @@ pub enum Event {
     NewTab {
         tab: String,
         url: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         opener: Option<String>,
     },
     TabClosed {
@@ -79,6 +82,24 @@ pub enum Event {
     },
 }
 
+/// The keys `press` takes, by name.
+pub const KEY_NAMES: &[&str] = &[
+    "Enter",
+    "Tab",
+    "Escape",
+    "Backspace",
+    "Delete",
+    "Space",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+];
+
 pub trait Driver {
     /// Bounds the call under way: until it is lifted (`None`), no wait for
     /// the engine lasts past `deadline`, however many commands the call
@@ -89,6 +110,9 @@ pub trait Driver {
     /// Opens a tab (on `url`, or blank) and makes it the active one.
     fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure>;
     fn switch_tab(&mut self, tab: &str) -> Result<(), Failure>;
+    /// Brings the session's active tab, its window and the browser to the
+    /// front, for the owner: what only a handoff does.
+    fn front(&mut self) -> Result<(), Failure>;
     fn close_tab(&mut self, tab: &str) -> Result<(), Failure>;
     fn active_tab(&self) -> String;
 
@@ -96,7 +120,8 @@ pub trait Driver {
     fn navigate(&mut self, url: &str) -> Result<(), Failure>;
     /// One step back in the active tab's history; false if there is none.
     fn back(&mut self) -> Result<bool, Failure>;
-    /// The address `back` would load, if there is one.
+    /// The address `back` would load, if there is one; an error when the
+    /// engine can't tell (Camoufox, when that entry is another origin's).
     fn back_url(&mut self) -> Result<Option<String>, Failure>;
 
     /// Every frame of the active tab, cross-site and sandboxed ones included.
@@ -155,4 +180,149 @@ pub trait Driver {
     fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure>;
     /// Closes the browser and reaps every process it started.
     fn close(&mut self) -> Value;
+}
+
+/// One profile's browser, shared by the sessions on it: the driver
+/// contract acts for the selected session, on its own tabs, downloads and
+/// dialogs.
+pub trait Runtime: Driver {
+    /// Starts session `key` with a window of its own, and selects it.
+    fn begin(&mut self, key: &str) -> Result<(), Failure>;
+    /// Ends session `key`: closes every tab it has, and forgets its
+    /// downloads (their files too). The others go on.
+    fn end(&mut self, key: &str);
+    /// Makes session `key` the one the driver contract acts for.
+    fn select(&mut self, key: &str);
+    /// Whether the engine left a command unanswered in time since this
+    /// was last asked.
+    fn unanswered(&mut self) -> bool;
+}
+
+/// One session's view of a shared browser: the driver contract on that
+/// session's own tabs, downloads and dialogs. The worker keeps one per
+/// session, all on the one browser, and makes one call at a time.
+pub struct Seat<B> {
+    browser: Rc<RefCell<B>>,
+    key: String,
+}
+
+impl<B: Runtime> Seat<B> {
+    /// Starts session `key` in `browser`, with a window of its own.
+    pub fn begin(browser: &Rc<RefCell<B>>, key: &str) -> Result<Seat<B>, Failure> {
+        browser.borrow_mut().begin(key)?;
+        Ok(Seat {
+            browser: browser.clone(),
+            key: key.to_string(),
+        })
+    }
+
+    fn browser(&self) -> RefMut<'_, B> {
+        let mut browser = self.browser.borrow_mut();
+        browser.select(&self.key);
+        browser
+    }
+}
+
+impl<B: Runtime> Driver for Seat<B> {
+    fn limit(&mut self, deadline: Option<Instant>) {
+        self.browser.borrow_mut().limit(deadline);
+    }
+    fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
+        self.browser().tabs()
+    }
+    fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure> {
+        self.browser().new_tab(url)
+    }
+    fn switch_tab(&mut self, tab: &str) -> Result<(), Failure> {
+        self.browser().switch_tab(tab)
+    }
+    fn close_tab(&mut self, tab: &str) -> Result<(), Failure> {
+        self.browser().close_tab(tab)
+    }
+    fn front(&mut self) -> Result<(), Failure> {
+        self.browser().front()
+    }
+    fn active_tab(&self) -> String {
+        self.browser().active_tab()
+    }
+    fn navigate(&mut self, url: &str) -> Result<(), Failure> {
+        self.browser().navigate(url)
+    }
+    fn back(&mut self) -> Result<bool, Failure> {
+        self.browser().back()
+    }
+    fn back_url(&mut self) -> Result<Option<String>, Failure> {
+        self.browser().back_url()
+    }
+    fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
+        self.browser().frames()
+    }
+    fn run(&mut self, frame: &Frame, expression: &str) -> Result<Value, Failure> {
+        self.browser().run(frame, expression)
+    }
+    fn call(&mut self, frame: &Frame, function: &str, args: Vec<Value>) -> Result<Value, Failure> {
+        self.browser().call(frame, function, args)
+    }
+    fn reaches(&mut self, frame: &Frame, x: f64, y: f64) -> Result<bool, Failure> {
+        self.browser().reaches(frame, x, y)
+    }
+    fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure> {
+        self.browser().frame_offset(frame)
+    }
+    fn click(&mut self, x: f64, y: f64) -> Result<(), Failure> {
+        self.browser().click(x, y)
+    }
+    fn type_text(&mut self, text: &str) -> Result<(), Failure> {
+        self.browser().type_text(text)
+    }
+    fn select_all(&mut self) -> Result<(), Failure> {
+        self.browser().select_all()
+    }
+    fn press(&mut self, key: &str) -> Result<(), Failure> {
+        self.browser().press(key)
+    }
+    fn wheel(&mut self, x: f64, y: f64, delta_y: f64) -> Result<(), Failure> {
+        self.browser().wheel(x, y, delta_y)
+    }
+    fn settle(&mut self) -> Result<Vec<Event>, Failure> {
+        self.browser().settle()
+    }
+    fn dialog_open(&self) -> bool {
+        self.browser().dialog_open()
+    }
+    fn answer_dialog(&mut self, accept: bool, text: Option<&str>) -> Result<(), Failure> {
+        self.browser().answer_dialog(accept, text)
+    }
+    fn eval(&mut self, script: &str) -> Result<Value, Failure> {
+        self.browser().eval(script)
+    }
+    fn set_files(
+        &mut self,
+        frame: &Frame,
+        element: &str,
+        files: &[PathBuf],
+    ) -> Result<(), Failure> {
+        self.browser().set_files(frame, element, files)
+    }
+    fn upload_folder(&self) -> PathBuf {
+        self.browser().upload_folder()
+    }
+    fn downloads(&mut self) -> Result<Vec<Download>, Failure> {
+        self.browser().downloads()
+    }
+    fn download_file(&mut self, id: &str) -> Result<(Download, PathBuf), Failure> {
+        self.browser().download_file(id)
+    }
+    fn capabilities(&self) -> Vec<String> {
+        self.browser().capabilities()
+    }
+    fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
+        self.browser().screenshot()
+    }
+    /// Ends this session only: its tabs close, the browser and the other
+    /// sessions go on.
+    fn close(&mut self) -> Value {
+        self.browser.borrow_mut().end(&self.key);
+        json!({"closed": true})
+    }
 }

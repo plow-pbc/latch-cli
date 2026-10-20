@@ -175,6 +175,20 @@ pub enum BrowserCommand {
         #[arg(long, hide = true)]
         history: Option<String>,
     },
+    /// Hand this session to the owner, who acts in its window (a CAPTCHA, a
+    /// texted code, a passkey, a sign-in): waits until they hand it back.
+    /// On the host, `handoff done [HASH]` hands a session back.
+    Handoff {
+        /// `done`: on the host, hand a pending session back to its agent
+        action: Option<HandoffAction>,
+        /// With `done`: the session's hash, when several are pending
+        hash: Option<String>,
+        #[arg(long)]
+        reason: Option<HandoffReason>,
+        /// Seconds to wait for the owner (default 600)
+        #[arg(long, value_name = "S")]
+        within: Option<u64>,
+    },
     /// Candidate refs by role and exact name; never acts
     Find {
         #[arg(long)]
@@ -290,6 +304,28 @@ pub enum BrowserCommand {
     /// End the session (its profile, and other sessions on it, stay); an
     /// owner device may name any session by the hash the host's dashboard shows
     Close,
+    /// Owner only, on the host itself: the host's browser profiles
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProfileCommand {
+    /// Make profile NAME, bound to ENGINE for life, in this machine's state
+    /// directory (the host's, when run as the host)
+    Create {
+        name: String,
+        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
+        engine: EngineArg,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum EngineArg {
+    Cft,
+    Camoufox,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
@@ -300,6 +336,31 @@ pub enum ActAction {
     Press,
     Scroll,
     Back,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum HandoffAction {
+    Done,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum HandoffReason {
+    Captcha,
+    #[value(name = "2fa")]
+    TwoFactor,
+    Passkey,
+    Signin,
+}
+
+impl HandoffReason {
+    pub fn name(self) -> &'static str {
+        match self {
+            HandoffReason::Captcha => "captcha",
+            HandoffReason::TwoFactor => "2fa",
+            HandoffReason::Passkey => "passkey",
+            HandoffReason::Signin => "signin",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -454,6 +515,9 @@ pub struct BrowserWorkerArgs {
     /// Run the engine with no window (the host's `--headless-browsers`)
     #[arg(long)]
     pub headless: bool,
+    /// Linux: the X display for the engine, or `private` to start one
+    #[arg(long)]
+    pub display: Option<String>,
 }
 
 /// Arguments the host gives a worker (see `worker.rs`).

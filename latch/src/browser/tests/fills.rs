@@ -26,6 +26,37 @@ const NUMBER: &str = "4242424242424242";
 const CVV: &str = "319";
 const KEY: &str = "JBSWY3DPEHPK3PXP";
 
+conformance!(
+    vault_fills_go_only_where_the_item_allows_and_never_show_a_value,
+    a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out,
+    observe_lists_items_by_the_frames_that_hold_fields,
+    an_identifier_first_login_fills_both_steps_in_one_pause,
+    the_button_that_ends_a_step_is_picked_only_when_one_fits,
+    a_fill_in_one_session_pauses_every_session_on_its_browser,
+    agent_code_is_noted_per_site_and_kept_with_the_profile,
+    a_login_after_an_edit_fills_the_new_password,
+);
+
+/// `text` without its sha256 digests (a screenshot's, in a confirmation):
+/// 64 hex digits hold the three-digit CVV by chance, and are no value.
+fn without_digests(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut run = String::new();
+    for ch in text.chars().chain(std::iter::once(' ')) {
+        if ch.is_ascii_hexdigit() {
+            run.push(ch);
+            continue;
+        }
+        if run.len() != 64 {
+            out.push_str(&run);
+        }
+        run.clear();
+        out.push(ch);
+    }
+    out.pop();
+    out
+}
+
 /// Form fields from a POST body.
 fn form(body: &str) -> Vec<(String, String)> {
     body.split('&')
@@ -306,9 +337,8 @@ fn find(result: &Value, role: &str, name: &str) -> String {
     super::find(result, role, name)
 }
 
-#[tokio::test]
-async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
-    let (_dir, state, _area) = test_state();
+async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -678,7 +708,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
         .iter()
         .map(|t| params.code(*t))
         .collect();
-    let everything = h.shown.join("\n");
+    let everything = without_digests(&h.shown.join("\n"));
     for value in [PASSWORD, NUMBER, CVV, KEY]
         .iter()
         .map(|s| s.to_string())
@@ -700,7 +730,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
 /// The vault's files from inside `exec` and a file worker: never readable.
 #[test]
 fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
-    let (_dir, state, area) = test_state();
+    let (_dir, state, area) = test_state("cft", &[]);
     let vault = Vault::new(state.clone());
     vault
         .with(|s| {
@@ -741,9 +771,8 @@ fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
 /// submit and keeps the value. Nothing is filled without a way to send it,
 /// no reading shows a filled value, and a fill that cannot confirm the
 /// value left the page keeps the agent out.
-#[tokio::test]
-async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out() {
-    let (_dir, state, _area) = test_state();
+async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -882,7 +911,7 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out() {
         "session_paused",
         "still paused after the later fill"
     );
-    let everything = h.shown.join("\n");
+    let everything = without_digests(&h.shown.join("\n"));
     for value in [PASSWORD, NUMBER, CVV] {
         assert!(
             !everything.contains(value),
@@ -895,9 +924,8 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out() {
 /// A fill in one session holds the whole browser: every other session on
 /// the profile gets session_paused until the fill's cleanup is confirmed,
 /// and stays out while a value a fill could not clear may be on a page.
-#[tokio::test]
-async fn a_fill_in_one_session_pauses_every_session_on_its_browser() {
-    let (_dir, state, _area) = test_state();
+async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -1033,7 +1061,7 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser() {
 
     call_b("close", &b, json!({})).await.unwrap();
 
-    let everything = format!("{}\n{}", h.shown.join("\n"), shown_b.join("\n"));
+    let everything = without_digests(&format!("{}\n{}", h.shown.join("\n"), shown_b.join("\n")));
     for value in [PASSWORD, NUMBER, CVV] {
         assert!(
             !everything.contains(value),
@@ -1045,9 +1073,8 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser() {
 /// Agent code is noted per site, with the profile: a fill's audit says
 /// whether `eval` ever ran on its sites, in any session, before this
 /// runtime or in it, and not when it ran only on another site.
-#[tokio::test]
-async fn agent_code_is_noted_per_site_and_kept_with_the_profile() {
-    let (_dir, state, _area) = test_state();
+async fn agent_code_is_noted_per_site_and_kept_with_the_profile(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -1107,9 +1134,8 @@ async fn agent_code_is_noted_per_site_and_kept_with_the_profile() {
 /// Observe lists a login whose form sits in a frame on its own site, under
 /// a page it allows as another top-level site: the rule is applied to the
 /// origins of the frames that hold fields, not to the page alone.
-#[tokio::test]
-async fn observe_lists_items_by_the_frames_that_hold_fields() {
-    let (_dir, state, _area) = test_state();
+async fn observe_lists_items_by_the_frames_that_hold_fields(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let embedded = vault
         .with(|s| {
@@ -1170,9 +1196,8 @@ async fn observe_lists_items_by_the_frames_that_hold_fields() {
     h.call("close", json!({})).await.ok();
 }
 
-#[tokio::test]
-async fn an_identifier_first_login_fills_both_steps_in_one_pause() {
-    let (_dir, state, _area) = test_state_alone();
+async fn an_identifier_first_login_fills_both_steps_in_one_pause(engine: &str) {
+    let (_dir, state, _area) = test_state_alone(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -1297,9 +1322,8 @@ async fn an_identifier_first_login_fills_both_steps_in_one_pause() {
     h.call("close", json!({})).await.ok();
 }
 
-#[tokio::test]
-async fn the_button_that_ends_a_step_is_picked_only_when_one_fits() {
-    let (_dir, state, _area) = test_state();
+async fn the_button_that_ends_a_step_is_picked_only_when_one_fits(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -1400,10 +1424,9 @@ async fn the_button_that_ends_a_step_is_picked_only_when_one_fits() {
     h.call("close", json!({})).await.ok();
 }
 
-#[tokio::test]
-async fn a_login_after_an_edit_fills_the_new_password() {
+async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {
     const OLD: &str = "made-up-old-q8zr";
-    let (_dir, state, _area) = test_state();
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs a latch binary you already have into ~/.local/bin.
 #
-#   sh install.sh [--state-dir DIR] path/to/latch
+#   sh install.sh [--state-dir DIR] [--with-camoufox] path/to/latch
 #
 # It also installs gog, the Google CLI a host runs for `latch google`: the
 # release pinned in src/google/pin.json next to this script (the pin latch
@@ -16,6 +16,12 @@
 # <state-dir>/plugins/cft/<version>/, beside older versions, with the pin
 # copied in as manifest.json. That download needs curl and ditto.
 #
+# With --with-camoufox (macOS), it also installs Camoufox, the second
+# browser engine, pinned in src/browser/camoufox.json: the Camoufox build,
+# the Node it runs its helper on, and the helper's runtime (Playwright and
+# camoufox-js, from camoufox/'s lockfile, with `npm ci`), into
+# <state-dir>/plugins/camoufox/<version>/. About 1 GB on disk.
+#
 # On Linux it also installs bubblewrap, which `latch serve` uses to sandbox
 # its workers, and on Ubuntu 24.04 and later the AppArmor profile that lets
 # bubblewrap create user namespaces there. Those need root, so it asks for
@@ -27,13 +33,23 @@ set -eu
 say() { printf 'install.sh: %s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 
-usage="usage: sh install.sh [--state-dir DIR] path/to/latch"
+usage="usage: sh install.sh [--state-dir DIR] [--with-camoufox] path/to/latch"
 state_dir="$HOME/.latch"
-if [ "${1-}" = --state-dir ]; then
-  [ $# -ge 2 ] || die "$usage"
-  state_dir=$2
-  shift 2
-fi
+with_camoufox=""
+while [ $# -gt 1 ]; do
+  case "$1" in
+    --state-dir)
+      [ $# -ge 3 ] || die "$usage"
+      state_dir=$2
+      shift 2
+      ;;
+    --with-camoufox)
+      with_camoufox=1
+      shift
+      ;;
+    *) die "$usage" ;;
+  esac
+done
 [ $# -eq 1 ] || die "$usage"
 src=$1
 [ -f "$src" ] && [ -x "$src" ] || die "$src is not an executable file"
@@ -95,7 +111,7 @@ else
   (umask 077 && mkdir -p "$state_dir")
   mkdir -p "$gog_dir"
   tmp=$(mktemp -d "$gog_dir/.download.XXXXXX")
-  trap 'rm -rf ${tmp:+"$tmp"} ${cft_tmp:+"$cft_tmp"}' EXIT
+  trap 'rm -rf ${tmp:+"$tmp"} ${cft_tmp:+"$cft_tmp"} ${fox_tmp:+"$fox_tmp"}' EXIT
   curl -fsSL --proto '=https' -o "$tmp/gog.tar.gz" "$url" || die "could not download $url"
   # Only the one file, written by this script, so the archive chooses no
   # path, owner or mode.
@@ -131,7 +147,7 @@ if [ "$(uname -s)" = Darwin ]; then
     (umask 077 && mkdir -p "$state_dir")
     mkdir -p "$cft_dir"
     cft_tmp=$(mktemp -d "$cft_dir/.download.XXXXXX")
-    trap 'rm -rf ${tmp:+"$tmp"} ${cft_tmp:+"$cft_tmp"}' EXIT
+    trap 'rm -rf ${tmp:+"$tmp"} ${cft_tmp:+"$cft_tmp"} ${fox_tmp:+"$fox_tmp"}' EXIT
     say "downloading Chrome for Testing $cft_version (about 200 MB)"
     curl -fsSL --proto '=https' -o "$cft_tmp/cft.zip" "$cft_url" || die "could not download $cft_url"
     got=$(sha256 "$cft_tmp/cft.zip")
@@ -145,9 +161,65 @@ if [ "$(uname -s)" = Darwin ]; then
   fi
 fi
 
+# 4. macOS, with --with-camoufox: the pinned Camoufox, Node and the helper's
+# runtime, each checked as it arrives (the archives' sha256, `npm ci`'s
+# lockfile integrity); latch hashes each unpacked part before every launch.
+# No package's install script runs. The manifest goes in last.
+if [ -n "$with_camoufox" ]; then
+  [ "$(uname -s)" = Darwin ] || die "--with-camoufox: Camoufox is pinned for macOS hosts only"
+  fox_pin="$(dirname "$0")/src/browser/camoufox.json"
+  fox_package="$(dirname "$0")/camoufox"
+  [ -f "$fox_pin" ] && [ -f "$fox_package/package-lock.json" ] || die "$fox_pin or $fox_package not found; run install.sh from the latch workspace"
+  fox() { plutil -extract "$1" raw -o - "$fox_pin" 2>/dev/null || die "$fox_pin has no $1"; }
+  case "$(uname -m)" in
+    arm64) fox_build=builds.mac_arm64 ;;
+    x86_64) fox_build=builds.mac_x64 ;;
+    *) die "no Camoufox build for $(uname -m)" ;;
+  esac
+  fox_version=$(fox version)
+  fox_dir="$state_dir/plugins/camoufox/$fox_version"
+  if [ -f "$fox_dir/manifest.json" ] && [ "$(cksum < "$fox_pin")" = "$(cksum < "$fox_dir/manifest.json")" ]; then
+    say "Camoufox $fox_version already installed in $fox_dir"
+  else
+    command -v curl >/dev/null 2>&1 || die "need curl to download Camoufox"
+    (umask 077 && mkdir -p "$state_dir")
+    mkdir -p "$fox_dir"
+    # Absolute: npm runs from inside it.
+    fox_tmp=$(cd "$(mktemp -d "$fox_dir/.download.XXXXXX")" && pwd)
+    trap 'rm -rf ${tmp:+"$tmp"} ${cft_tmp:+"$cft_tmp"} ${fox_tmp:+"$fox_tmp"}' EXIT
+    fetch() { # URL SHA256 FILE
+      curl -fsSL --proto '=https' -o "$3" "$1" || die "could not download $1"
+      got=$(sha256 "$3")
+      [ "$got" = "$2" ] || die "$1 has sha256 $got, not the pinned $2; nothing installed"
+    }
+    say "downloading Camoufox $fox_version (about 300 MB) and Node"
+    fetch "$(fox "$fox_build.camoufox.url")" "$(fox "$fox_build.camoufox.sha256")" "$fox_tmp/camoufox.zip"
+    fetch "$(fox "$fox_build.node.url")" "$(fox "$fox_build.node.sha256")" "$fox_tmp/node.tar.gz"
+    mkdir "$fox_tmp/camoufox"
+    ditto -x -k "$fox_tmp/camoufox.zip" "$fox_tmp/camoufox" || die "could not unpack Camoufox"
+    # What camoufox-js reads to know the build; scripts/camoufox-pin.py
+    # writes the same bytes.
+    printf '{"version":"%s","build":"%s"}' "${fox_version%%-*}" "${fox_version#*-}" > "$fox_tmp/camoufox/version.json"
+    tar -xzf "$fox_tmp/node.tar.gz" -C "$fox_tmp" || die "could not unpack Node"
+    mv "$fox_tmp/$(fox "$fox_build.node.folder")" "$fox_tmp/node"
+    mkdir "$fox_tmp/runtime"
+    cp -R "$fox_package/package.json" "$fox_package/package-lock.json" "$fox_package/sqlite" "$fox_tmp/runtime/"
+    (cd "$fox_tmp/runtime" && env -i PATH="$fox_tmp/node/bin:/usr/bin:/bin" HOME="$fox_tmp" \
+      npm_config_cache="$fox_tmp/npm-cache" npm_config_update_notifier=false \
+      "$fox_tmp/node/bin/node" "$fox_tmp/node/lib/node_modules/npm/bin/npm-cli.js" \
+      ci --ignore-scripts --omit=dev --no-audit --no-fund >&2) || die "npm ci of the Camoufox runtime failed"
+    for part in camoufox node runtime; do
+      rm -rf "${fox_dir:?}/$part"
+      mv "$fox_tmp/$part" "$fox_dir/$part"
+    done
+    cp "$fox_pin" "$fox_dir/manifest.json"
+    say "installed Camoufox $fox_version to $fox_dir"
+  fi
+fi
+
 [ "$(uname -s)" = Linux ] || exit 0
 
-# 4. Linux: work out what needs root, then run it all under one sudo.
+# 5. Linux: work out what needs root, then run it all under one sudo.
 packages=""
 want() { packages="${packages:+$packages }$1"; }
 command -v bwrap >/dev/null 2>&1 || want bubblewrap

@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
@@ -22,7 +22,28 @@ use super::host::{self, Browsers};
 use super::profile;
 use crate::failure::Failure;
 
+/// The engines the conformance checks run on, each its own test:
+/// `browser::tests::cft::NAME` and `browser::tests::camoufox::NAME` (and
+/// the same under `fills` and `steps`). `just conformance ENGINE` runs one
+/// engine's.
+macro_rules! conformance {
+    ($($check:ident),* $(,)?) => {
+        mod cft {
+            $(#[tokio::test]
+            async fn $check() {
+                super::$check("cft").await
+            })*
+        }
+        mod camoufox {
+            $(#[tokio::test]
+            async fn $check() {
+                super::$check("camoufox").await
+            })*
+        }
+    };
+}
 mod fills;
+mod handoff;
 mod steps;
 use super::session::Session;
 
@@ -69,6 +90,15 @@ fn processes() -> Vec<Process> {
             })
         })
         .collect()
+}
+
+/// The parent of process `pid`.
+fn helper_of(pid: u32) -> u32 {
+    let out = Command::new("/bin/ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
 }
 
 /// Serves `pages` (path, HTML) on 127.0.0.1 for as long as the test runs;
@@ -165,78 +195,105 @@ fn exec(state: &Path, area: &Path, script: &str) -> (bool, String) {
     (out.status.success(), text)
 }
 
-/// How many of these tests run a browser at once. Each is a whole Chrome,
-/// and on a loaded machine many at once make calls run out of time.
-const BROWSERS_AT_ONCE: usize = 4;
+conformance!(
+    the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing,
+    the_core_reads_frames_and_acts_by_ref_with_trusted_input,
+    frames_that_come_and_go_while_a_page_loads_break_no_call,
+    a_frames_target_under_a_parent_page_layer_is_refused,
+    eval_upload_and_download_move_values_and_files,
+    sessions_on_one_profile_share_logins_and_nothing_else,
+    sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused,
+    navigating_into_a_reserved_site_is_refused_before_it_is_sent,
+    one_sessions_wait_does_not_hold_the_browser_for_another,
+    a_call_longer_than_the_idle_timeout_does_not_end_its_session,
+    a_browser_that_leaves_calls_unanswered_is_closed,
+    back_into_a_reserved_site_is_refused_after_a_return_visit,
+);
 
-/// The browsers running, out of `BROWSERS_AT_ONCE`.
-static RUNNING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+/// At most this many tests drive a real engine at once: two engines' worth
+/// of browsers, all at once, starve each other and time out.
+const ENGINES_AT_ONCE: usize = 6;
+static RUNNING: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static FREED: std::sync::Condvar = std::sync::Condvar::new();
 
-/// A test's share of `BROWSERS_AT_ONCE`, given back when it ends.
-struct Slots(usize);
-
-impl Slots {
-    /// Waits until `wanted` slots are free, and takes them.
-    fn take(wanted: usize) -> Slots {
-        let (running, freed) = &RUNNING;
-        let mut running = running.lock().unwrap_or_else(|e| e.into_inner());
-        while *running + wanted > BROWSERS_AT_ONCE {
-            running = freed.wait(running).unwrap_or_else(|e| e.into_inner());
-        }
-        *running += wanted;
-        Slots(wanted)
-    }
-}
-
-impl Drop for Slots {
-    fn drop(&mut self) {
-        let (running, freed) = &RUNNING;
-        *running.lock().unwrap_or_else(|e| e.into_inner()) -= self.0;
-        freed.notify_all();
-    }
-}
-
-/// A test's folder, and its slot for a browser: both last as long as it.
+/// A test's folder, and its turn at the engines, both given back on drop.
 struct TestDir {
     dir: tempfile::TempDir,
-    _slots: Slots,
+    _turn: Turn,
 }
 
-impl TestDir {
-    fn path(&self) -> &Path {
-        self.dir.path()
+impl std::ops::Deref for TestDir {
+    type Target = tempfile::TempDir;
+    fn deref(&self) -> &Self::Target {
+        &self.dir
+    }
+}
+
+/// `n` of the `ENGINES_AT_ONCE` places.
+struct Turn(usize);
+
+impl Turn {
+    fn wait(n: usize) -> Turn {
+        let mut running = RUNNING.lock().unwrap();
+        while *running + n > ENGINES_AT_ONCE {
+            running = FREED.wait(running).unwrap();
+        }
+        *running += n;
+        Turn(n)
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        *RUNNING.lock().unwrap() -= self.0;
+        FREED.notify_all();
     }
 }
 
 /// A fresh state directory for one test, sharing only the installed
-/// plugins, and a folder to share with `exec`. The engine must be
-/// installed (see the top of this file). Waits for a slot to run a
-/// browser in (`BROWSERS_AT_ONCE`).
-fn test_state() -> (TestDir, PathBuf, PathBuf) {
-    test_state_with(Slots::take(1))
+/// plugins, with `profiles` made for `engine`, and a folder to share with
+/// `exec`. The engine must be installed (see the top of this file). Waits
+/// for its turn at the engines (`ENGINES_AT_ONCE`).
+fn test_state(engine: &str, profiles: &[&str]) -> (TestDir, PathBuf, PathBuf) {
+    test_state_taking(engine, profiles, 1)
 }
 
 /// `test_state` for a test whose page keeps the browser busy (frames
-/// coming and going all the time): it runs with no other browser test.
-fn test_state_alone() -> (TestDir, PathBuf, PathBuf) {
-    test_state_with(Slots::take(BROWSERS_AT_ONCE))
+/// coming and going all the time): it runs with no other engine test.
+fn test_state_alone(engine: &str, profiles: &[&str]) -> (TestDir, PathBuf, PathBuf) {
+    test_state_taking(engine, profiles, ENGINES_AT_ONCE)
 }
 
-fn test_state_with(slots: Slots) -> (TestDir, PathBuf, PathBuf) {
+fn test_state_taking(
+    engine: &str,
+    profiles: &[&str],
+    places: usize,
+) -> (TestDir, PathBuf, PathBuf) {
     let installed = std::env::var_os("LATCH_CFT_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
-    let engine_folder = super::engine::CFT.folder(&installed);
+    let (version, engine_folder) = match engine {
+        "camoufox" => (
+            &super::engine::CAMOUFOX.version,
+            super::engine::CAMOUFOX.folder(&installed),
+        ),
+        _ => (
+            &super::engine::CFT.version,
+            super::engine::CFT.folder(&installed),
+        ),
+    };
     assert!(
         engine_folder.join("manifest.json").is_file(),
-        "Chrome for Testing {} is not installed at {}: run `just cft` in latch/ \
+        "{engine} {version} is not installed at {}: run `just cft` in latch/ \
          (or install.sh --state-dir into LATCH_CFT_STATE)",
-        super::engine::CFT.version,
         engine_folder.display()
     );
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
-    let dir = tempfile::tempdir_in(parent).unwrap();
+    let dir = TestDir {
+        _turn: Turn::wait(places),
+        dir: tempfile::tempdir_in(parent).unwrap(),
+    };
     let state = dir.path().join("state");
     let area = dir.path().join("area");
     fs::create_dir_all(&state).unwrap();
@@ -244,12 +301,14 @@ fn test_state_with(slots: Slots) -> (TestDir, PathBuf, PathBuf) {
     // This test's own state directory, sharing only the installed plugins.
     let plugins = installed.canonicalize().unwrap().join("plugins");
     std::os::unix::fs::symlink(&plugins, state.join("plugins")).unwrap();
-    (TestDir { dir, _slots: slots }, state, area)
+    for name in profiles {
+        profile::open(&state, name, engine).unwrap();
+    }
+    (dir, state, area)
 }
 
-#[tokio::test]
-async fn cft_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing() {
-    let (dir, state, area) = test_state();
+async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(engine_name: &str) {
+    let (dir, state, area) = test_state(engine_name, &["b1"]);
 
     let mut session =
         Session::start_with(&latch(), &state, "b1", Duration::from_secs(120), HEADLESS)
@@ -272,12 +331,11 @@ async fn cft_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing() {
     println!("open: {}", page["title"]);
     assert_eq!(page["title"], "latch local page");
 
-    // Every engine process is in the browser's own process group.
-    let engine: Vec<Process> = processes()
-        .into_iter()
-        .filter(|p| p.pgid == browser)
-        .collect();
-    let main = engine.iter().find(|p| p.pid == browser).unwrap();
+    // Every engine process is in the browser's own process group, and
+    // Camoufox's helper in one of its own.
+    let all = processes();
+    let mut engine: Vec<&Process> = all.iter().filter(|p| p.pgid == browser).collect();
+    let main = *engine.iter().find(|p| p.pid == browser).unwrap();
     println!(
         "browser {}: sandboxed by Seatbelt: {}",
         main.pid,
@@ -287,64 +345,117 @@ async fn cft_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing() {
         !sandboxed(main.pid),
         "the engine runs outside latch's Seatbelt"
     );
-    assert!(main.args.contains("--remote-debugging-pipe"));
-    assert!(
-        main.args
-            .contains(&format!("--user-data-dir={}", data.display()))
-    );
-    // Its environment: four variables, all naming the scratch folder or a
-    // plain PATH (ps -E prints them after the arguments).
+    let cft = engine_name == "cft";
+    let (pipe, profile_arg) = if cft {
+        (
+            "--remote-debugging-pipe",
+            format!("--user-data-dir={}", data.display()),
+        )
+    } else {
+        ("-juggler-pipe", format!("-profile {}", data.display()))
+    };
+    assert!(main.args.contains(pipe), "{}", main.args);
+    assert!(main.args.contains(&profile_arg), "{}", main.args);
+    // Its environment: only a plain PATH, and variables naming the scratch
+    // folder or the engine's own settings (ps -E prints them after the
+    // arguments).
     let with_env = Command::new("/bin/ps")
         .args(["-wwE", "-o", "command=", "-p", &browser.to_string()])
         .output()
         .unwrap();
     let with_env = String::from_utf8_lossy(&with_env.stdout);
-    // The engine's arguments end with its profile folder.
-    let last_arg = format!("--user-data-dir={} ", data.display());
-    let env = with_env.trim().split_once(&last_arg).unwrap().1;
+    let env = with_env.trim().strip_prefix(main.args.as_str()).unwrap();
     let names: Vec<&str> = env
         .split(' ')
         .filter_map(|v| v.split_once('='))
         .map(|v| v.0)
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        })
         .collect();
-    println!(
-        "engine environment: {}",
-        env.replace(&scratch.display().to_string(), "<scratch>")
-    );
-    assert_eq!(names, ["BREAKPAD_DUMP_LOCATION", "HOME", "PATH", "TMPDIR"]);
+    println!("engine environment: {names:?}");
+    if cft {
+        assert_eq!(names, ["BREAKPAD_DUMP_LOCATION", "HOME", "PATH", "TMPDIR"]);
+    } else {
+        let allowed = [
+            "CAMOU_CONFIG_1",
+            "HOME",
+            "MOZ_CRASHREPORTER_DISABLE",
+            "PATH",
+            "TMPDIR",
+        ];
+        assert!(names.iter().all(|n| allowed.contains(n)), "{names:?}");
+        assert!(names.contains(&"CAMOU_CONFIG_1") && names.contains(&"HOME"));
+        // The helper, the engine's parent, gets the same few.
+        let helper = all.iter().find(|p| p.pid == helper_of(browser)).unwrap();
+        assert!(
+            helper
+                .args
+                .contains(&scratch.join("helper.mjs").display().to_string())
+        );
+        engine.push(helper);
+    }
     let mut helpers = 0;
     for p in engine.iter().filter(|p| p.pid != browser) {
-        let kind = p
-            .args
-            .split(' ')
-            .find_map(|arg| arg.strip_prefix("--type="))
-            .unwrap_or("?");
-        let client = p.args.contains("--seatbelt-client=");
-        println!(
-            "helper {} --type={kind}: --seatbelt-client {client}, sandboxed by Seatbelt: {}",
-            p.pid,
-            sandboxed(p.pid)
-        );
-        if kind == "renderer" {
-            helpers += 1;
-            assert!(
-                client && sandboxed(p.pid),
-                "Chrome's sandbox holds the renderer"
+        if cft {
+            let kind = p
+                .args
+                .split(' ')
+                .find_map(|arg| arg.strip_prefix("--type="))
+                .unwrap_or("?");
+            let client = p.args.contains("--seatbelt-client=");
+            println!(
+                "helper {} --type={kind}: --seatbelt-client {client}, sandboxed by Seatbelt: {}",
+                p.pid,
+                sandboxed(p.pid)
             );
+            if kind == "renderer" {
+                helpers += 1;
+                assert!(
+                    client && sandboxed(p.pid),
+                    "Chrome's sandbox holds the renderer"
+                );
+            }
+        } else {
+            // Firefox's web content processes: `plugin-container … tab`.
+            let content = p.args.contains("plugin-container") && p.args.ends_with(" tab");
+            println!(
+                "process {}: web content {content}, sandboxed by Seatbelt: {}: {}",
+                p.pid,
+                sandboxed(p.pid),
+                p.args.split(" ").last().unwrap_or_default()
+            );
+            if content {
+                helpers += 1;
+                assert!(sandboxed(p.pid), "Firefox's sandbox holds web content");
+            }
         }
     }
-    assert!(helpers > 0, "a renderer is running");
-    for p in &engine {
-        for off in [
+    assert!(helpers > 0, "a web content process is running");
+    let refused: &[&str] = if cft {
+        &[
             "--no-sandbox",
             "--remote-debugging-port",
             "--single-process",
-        ] {
+        ]
+    } else {
+        &[
+            "-start-debugger-server",
+            "-marionette",
+            "--remote-debugging-port",
+        ]
+    };
+    for p in &engine {
+        for off in refused {
             assert!(!p.args.contains(off), "{} has {off}", p.pid);
         }
     }
     // Headless only when the host asks for it.
-    assert_eq!(main.args.contains("--headless"), HEADLESS, "{}", main.args);
+    let headless_arg = if cft { "--headless" } else { "-headless" };
+    assert_eq!(main.args.contains(headless_arg), HEADLESS, "{}", main.args);
 
     // No engine process listens on TCP, seen from inside exec, and exec
     // can read neither the profile nor anything else of the state folder.
@@ -367,7 +478,13 @@ async fn cft_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing() {
         "exec's lsof sees other processes' listeners"
     );
     assert!(engine.iter().all(|p| !listeners.contains(&p.pid)));
-    let preferences = data.join("Default/Preferences");
+    // The engine's own settings file in the profile: Chrome's preferences,
+    // or the fingerprint Camoufox keeps for the profile.
+    let preferences = if cft {
+        data.join("Default/Preferences")
+    } else {
+        data.parent().unwrap().join("camoufox.json")
+    };
     for script in [
         format!("cat '{}'", preferences.display()),
         format!("ls '{}'", data.display()),
@@ -414,8 +531,17 @@ async fn cft_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing() {
     assert!(left.is_empty(), "{left:#?}");
     assert!(!scratch.exists(), "the session's scratch folder is removed");
 
-    // The profile stays, with password saving and autofill still off.
+    // The profile stays, with password saving and autofill still off
+    // (Camoufox ships with them off), and Camoufox's fingerprint private.
     let kept: serde_json::Value = serde_json::from_slice(&fs::read(&preferences).unwrap()).unwrap();
+    if !cft {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&preferences).unwrap().permissions().mode();
+        println!("profile kept: camoufox.json mode {:o}", mode & 0o777);
+        assert_eq!(mode & 0o077, 0);
+        assert!(kept["env"]["CAMOU_CONFIG_1"].is_string());
+        return;
+    }
     println!(
         "profile kept: credentials_enable_service {}, autofill.profile_enabled {}",
         kept["credentials_enable_service"], kept["autofill"]["profile_enabled"]
@@ -499,9 +625,8 @@ fn out_line(result: &serde_json::Value) -> String {
         .to_string()
 }
 
-#[tokio::test]
-async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
-    let (_dir, state, _area) = test_state();
+async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input(engine_name: &str) {
+    let (_dir, state, _area) = test_state(engine_name, &["b2"]);
     let mut session =
         Session::start_with(&latch(), &state, "b2", Duration::from_secs(120), HEADLESS)
             .await
@@ -746,9 +871,8 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     assert_eq!(closed["closed"], true);
 }
 
-#[tokio::test]
-async fn frames_that_come_and_go_while_a_page_loads_break_no_call() {
-    let (_dir, state, _area) = test_state_alone();
+async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) {
+    let (_dir, state, _area) = test_state_alone(engine, &["b2-churn"]);
     let mut session = Session::start_with(
         &latch(),
         &state,
@@ -790,9 +914,8 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call() {
     session.close().await.unwrap();
 }
 
-#[tokio::test]
-async fn a_call_longer_than_the_idle_timeout_does_not_end_its_session() {
-    let (_dir, state, _area) = test_state();
+async fn a_call_longer_than_the_idle_timeout_does_not_end_its_session(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["hang-idle"]);
     let mut session = Session::start_with(
         &latch(),
         &state,
@@ -825,9 +948,8 @@ async fn a_call_longer_than_the_idle_timeout_does_not_end_its_session() {
     session.close().await.unwrap();
 }
 
-#[test]
-fn a_browser_that_leaves_calls_unanswered_is_closed() {
-    let (_dir, state, _area) = test_state();
+async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["hang-stuck"]);
     let scratch = tempfile::tempdir().unwrap();
     let mut command = Command::new(latch());
     command
@@ -882,9 +1004,8 @@ fn a_browser_that_leaves_calls_unanswered_is_closed() {
     assert!(ended.success(), "{ended:?}");
 }
 
-#[tokio::test]
-async fn a_frames_target_under_a_parent_page_layer_is_refused() {
-    let (_dir, state, _area) = test_state();
+async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["b2-layer"]);
     let mut session = Session::start_with(
         &latch(),
         &state,
@@ -922,9 +1043,8 @@ async fn a_frames_target_under_a_parent_page_layer_is_refused() {
     session.close().await.unwrap();
 }
 
-#[tokio::test]
-async fn eval_upload_and_download_move_values_and_files() {
-    let (_dir, state, _area) = test_state();
+async fn eval_upload_and_download_move_values_and_files(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["b3"]);
     let mut session =
         Session::start_with(&latch(), &state, "b3", Duration::from_secs(120), HEADLESS)
             .await
@@ -1144,9 +1264,8 @@ impl super::model::Provider for Calm {
     }
 }
 
-#[tokio::test]
-async fn sessions_on_one_profile_share_logins_and_nothing_else() {
-    let (_dir, state, _area) = test_state();
+async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["b2b"]);
     let base = test_site()
         .split("/frames.html")
         .next()
@@ -1471,9 +1590,8 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
     assert!(!entry_b.runtime.alive());
 }
 
-#[tokio::test]
-async fn sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused() {
-    let (_dir, state, _area) = test_state();
+async fn sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["b2b-site"]);
     let frames = test_site();
     let base = frames.split("/frames.html").next().unwrap().to_string();
     let cross = frames.split("cross=").nth(1).unwrap();
@@ -1577,9 +1695,8 @@ async fn sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused() {
     h.call(other, "close", &b, json!({})).await.unwrap();
 }
 
-#[tokio::test]
-async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent() {
-    let (_dir, state, _area) = test_state();
+async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["b2b-leave"]);
     let frames = test_site();
     let local = frames.split("/frames.html").next().unwrap().to_string();
     let cross = frames.split("cross=").nth(1).unwrap();
@@ -1671,9 +1788,55 @@ async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent() {
     h.call(other, "close", &b, json!({})).await.unwrap();
 }
 
-#[tokio::test]
-async fn one_sessions_wait_does_not_hold_the_browser_for_another() {
-    let (_dir, state, _area) = test_state();
+/// Back is checked against the tab's real history: after A, B and A
+/// again, Back leads to B, not to whatever came before the first A.
+async fn back_into_a_reserved_site_is_refused_after_a_return_visit(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["b8-back"]);
+    let frames = test_site();
+    let a = frames.replace("frames.html", "next.html");
+    let cross = frames.split("cross=").nth(1).unwrap();
+    let b = format!("http://localhost:{cross}/next.html");
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "b8-back",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
+    for url in [&a, &b, &a] {
+        session
+            .call(json!({"op": "open", "url": url}))
+            .await
+            .unwrap();
+    }
+    // Another session on the profile reserves B's site.
+    let holder = Session::begin(&session.runtime).await.unwrap();
+    let site = crate::vault::sites::site_of(&b).unwrap();
+    assert!(session.runtime.reserve(&site, holder.key()));
+    let back = session.call(json!({"op": "act", "action": "back"})).await;
+    let back = back.map_or_else(|f| f.code, |_| "sent".into());
+    let now = session.call(json!({"op": "observe"})).await.unwrap().result;
+    println!("back from the return visit: {back}; now on {}", now["url"]);
+    assert_eq!(back, "site_busy");
+    assert_eq!(now["url"], json!(a));
+    // A page of A's own site first: Back leads back to A, and goes.
+    let a2 = a.replace("next.html", "alert.html");
+    session
+        .call(json!({"op": "open", "url": a2}))
+        .await
+        .unwrap();
+    let back = session.call(json!({"op": "act", "action": "back"})).await;
+    let back = back.map_or_else(|f| f.code, |_| "sent".into());
+    let now = session.call(json!({"op": "observe"})).await.unwrap().result;
+    println!("back within A's site: {back}; now on {}", now["url"]);
+    assert_eq!((back.as_str(), &now["url"]), ("sent", &json!(a)));
+    session.close().await.unwrap();
+}
+
+async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["b2b-turns"]);
     let frames = test_site();
     let base = frames.split("/frames.html").next().unwrap().to_string();
     let cross = frames.split("cross=").nth(1).unwrap();

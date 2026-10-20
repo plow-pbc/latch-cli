@@ -120,24 +120,45 @@ pub fn open(state_dir: &Path, name: &str, engine: &str) -> Result<Profile, Failu
     Ok(profile)
 }
 
+/// The engine profile `name` is bound to; None if there is no such profile.
+pub fn engine_of(state_dir: &Path, name: &str) -> Result<Option<String>, Failure> {
+    let binding = root(state_dir).join(name).join("profile.json");
+    match fs::read(&binding) {
+        Ok(bytes) => serde_json::from_slice::<Binding>(&bytes)
+            .map(|bound| Some(bound.engine))
+            .map_err(|err| {
+                Failure::failed("profile_failed", format!("{}: {err}", binding.display()))
+            }),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(Failure::failed(
+            "profile_failed",
+            format!("{}: {err}", binding.display()),
+        )),
+    }
+}
+
 /// A new profile folder, private to this user, with the engine's password
-/// saving and autofill off from the first launch. The binding is written
-/// last, so a half-made profile is made again rather than used.
+/// saving and autofill off from the first launch (Camoufox ships with
+/// them off). The binding is written last, so a half-made profile is made
+/// again rather than used.
 fn create(profile: &Profile, engine: &str) -> io::Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(profile.data().join("Default"))?;
-    let preferences = json!({
-        "credentials_enable_service": false,
-        "credentials_enable_autosignin": false,
-        "profile": {"password_manager_enabled": false},
-        "autofill": {"enabled": false, "profile_enabled": false, "credit_card_enabled": false},
-    });
-    fs::write(
-        profile.data().join("Default/Preferences"),
-        serde_json::to_vec(&preferences).expect("JSON"),
-    )?;
+        .create(profile.data())?;
+    if engine == "cft" {
+        fs::create_dir_all(profile.data().join("Default"))?;
+        let preferences = json!({
+            "credentials_enable_service": false,
+            "credentials_enable_autosignin": false,
+            "profile": {"password_manager_enabled": false},
+            "autofill": {"enabled": false, "profile_enabled": false, "credit_card_enabled": false},
+        });
+        fs::write(
+            profile.data().join("Default/Preferences"),
+            serde_json::to_vec(&preferences).expect("JSON"),
+        )?;
+    }
     let binding = serde_json::to_vec(&Binding {
         engine: engine.to_string(),
     })
@@ -206,6 +227,15 @@ mod tests {
             open(state.path(), "../x", "cft").err().unwrap().code,
             "bad_profile"
         );
+
+        // A Camoufox profile gets no Chrome preferences; its binding is read back.
+        let fox = open(state.path(), "fox", "camoufox").unwrap();
+        assert!(!fox.data().join("Default").exists());
+        assert_eq!(
+            engine_of(state.path(), "fox").unwrap().as_deref(),
+            Some("camoufox")
+        );
+        assert_eq!(engine_of(state.path(), "none").unwrap(), None);
 
         let held = lock(&profile).unwrap();
         assert_eq!(lock(&profile).err().unwrap().code, "profile_busy");
