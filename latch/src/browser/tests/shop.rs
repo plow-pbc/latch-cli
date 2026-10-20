@@ -592,7 +592,8 @@ const SUITE_PER_MINUTE: usize = 30;
 /// host's own `do`, with the model reached through Plow's decision route
 /// on the login of the host in `LATCH_SUITE_HOST_STATE` (a dev Plow stack's:
 /// prod Plow has no such route). Each run's cases, audit records and
-/// metrics go to a new folder under `LATCH_SUITE_OUT`.
+/// metrics go to a new folder under `LATCH_SUITE_OUT`. The profile is on the
+/// engine `LATCH_SUITE_ENGINE` names, Chrome for Testing if none.
 #[tokio::test]
 #[ignore = "calls the decision model through a dev Plow stack: `just plan-suite`"]
 async fn the_plan_suite_on_the_decision_model() {
@@ -610,7 +611,8 @@ async fn the_plan_suite_on_the_decision_model() {
             .to_string(),
     );
     std::fs::create_dir_all(&run).unwrap();
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let engine = std::env::var("LATCH_SUITE_ENGINE").unwrap_or_else(|_| "cft".into());
+    let (_dir, state, _area) = test_state(&engine, &["default"]);
     let site = serve_shop();
     let mut h = Harness::start(&state, Some(std::sync::Arc::new(plow))).await;
     let card = h
