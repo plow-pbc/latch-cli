@@ -79,21 +79,65 @@ latch serve ~/work --deny-exec=ag_7Hk2      # this agent may not (repeatable)
 
 ## 6a. Host rules
 
+The owner writes standing rules in plain text with `latch rules`, from any of their own machines. The rules are stored on the host they apply to.
+
 ```
-latch serve ~/work --rules ~/.latch/rules.txt                    # rules for every agent on this host
-latch serve ~/work --agent-rules ag_7Hk2=$HOME/.latch/ag_7Hk2.txt  # rules for this agent (repeatable)
+latch rules set|edit|clear|show [--from NAME] [--host HOST] [TEXT | --file F]
+
+latch rules set 'Run tests and git in ~/work. Never send email. Never buy anything.'
+latch rules set --host my-vm --from 'Research bot' 'Read files and browse for research. Never modify files.'
+latch rules set --host mac --from ag_7Hk2 --file bot.txt      # --file - reads stdin
+latch rules edit --host mac --from ag_7Hk2                    # in $EDITOR
+latch rules show --host mac
+latch rules clear --host mac --from ag_7Hk2
 ```
 
-- A rules file is plain text in the owner's own words, e.g. "Run tests and git in ~/work. Never send email. Never buy anything."
-- Per-agent rules are keyed by verified `agent_uid`, never a name. Both files apply when both exist. `--agent-rules` always takes `AGENT_UID=FILE` as one value (write the path in full; a shell doesn't expand `~` after `=`).
-- Rules are judged with the chat (§3), or alone when the agent has no chat. Rules can allow and can forbid. A chat message doesn't lift a rule's prohibition, but the judge reads that; only `--deny-exec` is enforced in code.
-- `serve` refuses to start if a rules file is missing, if the rules for any agent exceed 8 KiB in all, if an agent id is invalid, or if a file resolves (symlinks followed) inside a shared folder. A file there could be rewritten by an agent.
-- The files are read at each judgment, so edits apply at once. An unreadable file at that moment gives `gatekeeper_unavailable`.
-- Devices are never judged, so rules don't apply to them.
+- **`--host HOST`** is the serving machine the rules are for. Without it, the command acts on this machine's own host state.
+- **`--from NAME`** is which caller the rules are for. Without it, the rules are for every caller.
+  - NAME is an agent's name, the peer name of the latch it calls from, or an `agent_uid`.
+  - It is resolved once, at `set` time, to the `agent_uid`, through `GET /v1/agents` and the peer list. The rules are stored under that uid, so a later rename never moves them.
+  - A name several agents share is exit 2, listing their uids.
+  - A device's name is refused: devices are never judged.
+- **Storage.**
+  - Rules live in the host's state folder: `<state>/rules/host.txt` for every caller, and `<state>/rules/<agent_uid>.txt` for one.
+  - The sandboxed workers can't read or write the state folder (`sandbox.rs`), so neither can an agent through exec or files.
+  - Writes are atomic (a temporary file, then a rename) and taken under one lock.
+  - The gatekeeper re-reads the files at every judgment, so a change applies to the next call with no restart.
+- **Remote use.** With `--host`, `set`, `edit`, `clear` and `show` are a host operation, `rules`, over the existing peer connection.
+  - The operation is owner-only, like vault edits: a device may call it; an agent gets exit 4 `owner_only`, whatever its chat says.
+  - A failed remote call never falls back to a local file.
+- **Writing.**
+  - `set` replaces the selected text; it never appends.
+  - `edit` opens the current text in `$EDITOR` and saves only if the text's revision (its sha256) is unchanged since it was read. Otherwise it keeps the current text and says so.
+  - Empty text is refused: use `clear`.
+  - Host text plus any one agent's text may not exceed 8 KiB together. A host change is checked against every stored agent's text. A refused write changes nothing.
+  - Success prints the host, the scope, the resolved uid with Plow's current agent name, the new revision, and "applies to the next judgment".
+- **What applies.**
+  - Both texts apply together, with no precedence between them, and a "never" in either holds.
+  - The per-caller text can add allowances. It can't cancel a "never" in the every-caller text.
+  - Chat can't lift a rule's "never" (§2.2).
+  - Unreadable rules at judgment time give `gatekeeper_unavailable`.
+- **A new host starts with no rules.** Then the chat alone is judged, and with no chat either the call is refused `no_intent` (§5). There is no rule for all hosts at once; that needs Plow and comes later.
+- **`show`:**
+  - prints the two texts separately, each with its revision;
+  - prints "Freeform rules are judged, not guaranteed. --deny-exec is enforced in code.";
+  - marks rules whose agent no longer exists (re-provisioned or deleted), so the owner can re-point them;
+  - notes when an agent's latch has moved machines. `set` and `edit` with `--from` store the agent's current peer key next to its text (`<state>/rules/<agent_uid>.peer`, from the peer list). `show` compares that with the agent's current peer key; a different key means it moved. An agent with no peer at `set` time stores none and shows "no latch registered when set". A new key for the same agent relies on Plow replacing an agent's old peer when it registers a new key, a separate Plow PR that this spec depends on and does not include.
+- **Audit.** Every rules change is audited with the scope, the uid, and the sha256 before and after; never the text.
+- **Devices are never judged,** so rules don't apply to them.
 
 ## 7. Names
 
-A device's name defaults to its hostname, with `--name` to override, and no prompt. A clash stops the login; it never renames or replaces silently. Agents keep their Plow name. A name is a label, never authentication.
+- **Devices:** a device's name defaults to its hostname, with `--name` to override, and no prompt. A clash stops the login; it never renames or replaces silently.
+- **Agents:** an agent's latch registers under the agent's own Plow name automatically. On a name clash it retries once as the name plus the first 6 characters of its uid (from `GET /v1/agents/me`).
+- **Hosts display Plow's current agent name,** from `GET /v1/agents/{uid}`, which the gatekeeper already calls, not the peer label, which keeps the name from registration.
+- A name is a label, never authentication.
+- **Agent login fixes (latch, in scope):**
+  - `latch login` follows Plow's cloud-agent contract, with `PLOW_API_BASE` as the API URL when set. The agent credential is taken in this order:
+    1. `PLOW_AGENT_TOKEN`, when set;
+    2. else the token file (`$PLOW_TOKEN_FILE`, else `/config/secrets/plow-api-token`);
+    3. else no bearer at all, relying on the exe.dev integration to add it. This happens only when `PLOW_API_BASE` is set; otherwise login stops with `no_credential`.
+  - Before dialing, if Plow's live peer list lacks this machine's key, the client registers again first; a failed registration stops with its own error. The list and the host's lookup share the same live-credential filter (Plow `latch.py:247`/`264`), so a key missing from the list is one the host would refuse `not_found`, and a rotated credential heals itself before anything is sent.
 
 ## 8. Audit
 
@@ -101,7 +145,9 @@ Every agent operation's audit record gains a `gate` object:
 - verdict and the three probabilities, model, Plow request id and `usage.cost`;
 - chat uid, the message window read (first and last ids, count, truncated or not), and the ids of the owner messages shown;
 - latency;
-- `source` (`chat`, `chat_and_rules` or `rules`) and the sha256 of each rules file used (`rules: {host, agent}`). Never the rules text.
+- `source` (`chat`, `chat_and_rules` or `rules`) and the revision (sha256) of each rules text used (`rules: {host, agent}`). Never the rules text.
+
+Rules changes are audited too (§6a).
 
 No chat text and no secret values are recorded. The shared model client is extended to keep Plow's `usage.cost`, which it drops today.
 
@@ -126,10 +172,11 @@ If exec cost hurts, the levers are `--deny-exec` now, or a coarser exec descript
 - **"Already done" covers this `serve` run only.**
 - **A device login placed where an agent runs bypasses the gate.** Agents must use their own credential; the docs say so.
 - **Rules are judged, not enforced.** A freeform "never" is as reliable as the judge, about the same as a "never" in chat. Only `--deny-exec` is a guarantee.
+- **The host's state folder is protected only from latch's sandboxed workers.** Its rules and vault files can be written by root, and by any process running as the host's OS user outside latch, such as an unsandboxed agent on the same machine. On a shared machine, run `latch serve` as a separate OS user.
 
 ## 11. Out of scope
 
-Structured ask records, use-once approvals, long-chat retrieval, member approval, per-area switches beyond exec, host-issued pairing for non-Plow agents, MCP, typed rules (operation or site lists, schedules), rules stored in Plow.
+Structured ask records, use-once approvals, long-chat retrieval, member approval, per-area switches beyond exec, host-issued pairing for non-Plow agents, MCP, typed rules (operation or site lists, schedules), rules stored in Plow, a rule for all hosts at once, `latch rules test` (a dry-run judgment). Plow's "an agent's new key replaces its old peer" is a separate Plow PR that §6a depends on.
 
 ## Chunks
 
@@ -143,23 +190,28 @@ Structured ask records, use-once approvals, long-chat retrieval, member approval
 - Tests and test hosts are headless. Synthetic chats only; never the owner's real chats.
 
 ### Chunk G1: Chat context and the v0 judge
-Implements: §3, §2.2, §6a, §8 (cost, source and rules fields)
+Implements: §3, §2.2, §6a (reading the rules from the state folder), §8 (cost, source and rules fields)
 Interfaces: consumes Plow agents, chats and messages routes and `POST /v1/decisions` · produces `judge(agent, chat, action) → allow | deny{reason} | unavailable{code}` and wire field `Request.chat`
-Done when: fixture tests of synthetic Plow responses cover owner classification, pagination, truncation, and missing, ambiguous and wrong chats; fixture tests cover the four source cases in §3 (chat and rules, chat only, rules only, neither → `no_intent` with no model call), an unreadable rules file → `gatekeeper_unavailable`, and startup refusals for a missing file, rules over 8 KiB, an invalid agent id and a file inside a shared folder (including through a symlink); for every probe in the v0 held-out corpus, the Rust judge builds a `/v1/decisions` request whose question, rules, state and threshold are equal to `v0.py`'s plus the one added sentence of §2.2 (a deterministic comparison, no model call); and one replay of the corpus through the Rust judge on jev-1.14 is reported with false allows and false blocks separately, next to v0's 12/164 and 4/52 (reporting only, not a pass bar).
+Done when: fixture tests of synthetic Plow responses cover owner classification, pagination, truncation, and missing, ambiguous and wrong chats; fixture tests cover the four source cases in §3 (chat and rules, chat only, rules only, neither → `no_intent` with no model call), rules read from `<state>/rules/host.txt` and `<state>/rules/<agent_uid>.txt` at each judgment (a change between two calls applies to the second), and an unreadable rules file → `gatekeeper_unavailable`; for every probe in the v0 held-out corpus, the Rust judge builds a `/v1/decisions` request whose question, rules, state and threshold are equal to `v0.py`'s plus the one added sentence of §2.2 (a deterministic comparison, no model call); and one replay of the corpus through the Rust judge on jev-1.14 is reported with false allows and false blocks separately, next to v0's 12/164 and 4/52 (reporting only, not a pass bar).
 
 ### Chunk G2a: exec, files and Google
 Implements: §4 (exec, files, Google rows), §5, §8
 Interfaces: consumes G1's `judge` · produces gated `serve_operation` for agents
-Done when: on a headless test host with synthetic chats, a refused exec, file and Google call each dispatch nothing and return no data; an unavailable judge does the same; an owner reply lets the retry through; the same exec twice is judged twice; the audit holds the `gate` object with no chat text or secrets; on the same host, an agent with no chat and `--agent-rules` saying "run tests in ~/work, nothing else" gets `exec pytest` allowed and `exec curl …` refused, and an agent with neither chat nor rules gets `no_intent`.
+Done when: on a headless test host with synthetic chats, a refused exec, file and Google call each dispatch nothing and return no data; an unavailable judge does the same; an owner reply lets the retry through; the same exec twice is judged twice; the audit holds the `gate` object with no chat text or secrets; on the same host, an agent with no chat and rules set with `latch rules set --from` saying "run tests in ~/work, nothing else" gets `exec pytest` allowed and `exec curl …` refused, and an agent with neither chat nor rules gets `no_intent`.
 
 ### Chunk G2b: browser sites, plans, vault use, code and files
 Implements: §4 (browser rows), §5, §8
 Interfaces: consumes G1's `judge` · produces gated browser host operations
 Done when: on a headless test host with synthetic chats, a refused open, plan, fill, eval, upload and download each dispatch nothing; clicks and page reads inside an allowed session make no judge calls; an owner "stop" refuses the next plan; a real browser shopping task's judge calls, cost and added time are measured and reported against §9.
 
-### Chunk G3: `--deny-exec`, default names, docs
+### Chunk G3: `--deny-exec`, names, agent login, docs
 Implements: §6, §7, §5 (docs)
-Interfaces: consumes agent identity from the peer lookup · produces the `serve` flag and login naming
-Done when: global and per-agent denies hold across agent renames and leave devices alone; `latch serve ~/a --deny-exec ~/b` parses as two folders; a device login with no `--name` takes the hostname and stops on a clash; `--help` and the client docs show deny → ask the owner → retry and say an agent must never use a device login; `--help` and the client docs show `--rules` and `--agent-rules`, with the warning that rules are judged, not enforced.
+Interfaces: consumes agent identity from the peer lookup, `GET /v1/agents/me` and `GET /v1/agents/{uid}` · produces the `serve` flag, login naming, the cloud-agent credential contract and re-register-before-dial
+Done when: global and per-agent denies hold across agent renames and leave devices alone; `latch serve ~/a --deny-exec ~/b` parses as two folders; a device login with no `--name` takes the hostname and stops on a clash; an agent login with no `--name` registers under the agent's Plow name, and on a clash as the name plus 6 uid characters; the host's dashboard shows Plow's current agent name after a rename; `latch login` with only `PLOW_API_BASE` set (no token, no file) registers through a test proxy that adds the bearer; with `PLOW_AGENT_TOKEN` set it sends that token, even when a token file exists; with only a token file (no `PLOW_AGENT_TOKEN`) it sends the file's token; with neither a token, a file nor `PLOW_API_BASE` it stops with `no_credential`; after the agent's credential is rotated, the next call finds its key missing from Plow's live peer list, registers again, then dials and succeeds; with the key present it dials without registering; a failed re-registration stops with that registration's error and dials nothing; `--help` and the client docs show deny → ask the owner → retry and say an agent must never use a device login.
 
-Order: G1 → G2a ∥ G2b; G3 any time.
+### Chunk G4: `latch rules`
+Implements: §6a (commands, storage, remote owner-only operation, `show`, audit)
+Interfaces: consumes the peer connection and owner check (as vault), `GET /v1/agents`, the peer list · produces `latch rules set|edit|clear|show` and the host operation `rules`
+Done when: tests cover each behavior: `set` replaces and prints scope, uid, current name and revision; `--from` resolves an agent name, a peer name and a uid to the same uid, a shared name is exit 2 listing uids, and a device name is refused; a rename after `set` leaves the rules applied to the same uid; `edit` saves on an unchanged revision and refuses on a changed one, keeping the current text; empty text is refused; an agent text that would push host plus agent past 8 KiB, and a host text that would push any stored agent past it, are refused and change nothing; writes are atomic (an interrupted write leaves the old text); `clear` removes only its scope; with `--host`, the same commands work over the peer connection from a device, an agent gets `owner_only` for every subcommand including `show`, and a failed remote call writes no local file; a change applies to the next judgment with no restart; exec and file operations from an agent can't read or write `<state>/rules`; `show` prints both texts, the warning line, marks rules of a deleted agent, and notes an agent whose current peer key differs from the one stored at `set` (moved machines), but not one whose key is unchanged; every change is audited with before and after hashes and no text.
+
+Order: G1 → G2a ∥ G2b; G3 and G4 any time (G4's rules are read by G1).
