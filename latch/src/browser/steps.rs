@@ -205,8 +205,9 @@ fn record_model(model: &Model, audit: &mut Map<String, Value>) {
 
 /// One step of a run: a confirmation to carry out, or a literal action.
 enum Work {
-    /// Confirmation C, on the ref `act` named, or its own.
-    Confirm(String, Option<(String, String)>),
+    /// Confirmation C, on the ref `act` named (with the act's check), or
+    /// its own.
+    Confirm(String, Option<(String, String)>, Option<Check>),
     Literal(Literal, Option<Check>),
 }
 
@@ -272,7 +273,7 @@ pub async fn run(
     // Every ref pinned to the snapshot it is read in, before anything runs.
     let mut work = Vec::new();
     if let Some(id) = &confirm {
-        work.push(Work::Confirm(id.clone(), None));
+        work.push(Work::Confirm(id.clone(), None, None));
     }
     for (n, step) in plan.steps.iter().enumerate() {
         let mut literal = step.literal.clone().expect("goals were refused");
@@ -304,9 +305,10 @@ pub async fn run(
         .is_empty();
     if via_act
         && issued
-        && let [Work::Literal(literal, _)] = work.as_slice()
+        && let [Work::Literal(literal, check)] = work.as_slice()
         && literal.op == Op::Click
     {
+        let check = check.clone();
         let target = literal.target.clone().unwrap_or_default();
         let snapshot = literal.snapshot.clone().unwrap_or_default();
         let (reviewed, _) = call(
@@ -328,7 +330,7 @@ pub async fn run(
             })
             .map(|c| c.id.clone());
         if let Some(id) = found {
-            work = vec![Work::Confirm(id, Some((snapshot, target)))];
+            work = vec![Work::Confirm(id, Some((snapshot, target)), check)];
         }
     }
 
@@ -371,7 +373,7 @@ pub async fn run(
         .iter()
         .enumerate()
         .map(|(n, step)| match step {
-            Work::Confirm(id, _) => json!({"step": n + 1, "confirm": id}),
+            Work::Confirm(id, ..) => json!({"step": n + 1, "confirm": id}),
             Work::Literal(literal, check) => {
                 let mut summary = json!({"step": n + 1, "op": literal.op, "ref": literal.target});
                 if let Some(check) = check {
@@ -408,9 +410,9 @@ pub async fn run(
         let mut shown = json!({"step": step_no, "actions": 0});
         let before = run.actions;
         let outcome = match step {
-            Work::Confirm(id, act) => {
+            Work::Confirm(id, act, check) => {
                 shown["confirm"] = json!(id);
-                run.confirmed(step_no, &id, act).await
+                run.confirmed(step_no, &id, act, check.as_ref()).await
             }
             Work::Literal(literal, check) => {
                 shown["op"] = json!(literal.op);
@@ -683,12 +685,13 @@ impl Run<'_> {
     }
 
     /// Carries out confirmation `id`: once, on the element and context it
-    /// was issued for, with no new risk decision.
+    /// was issued for, with no new risk decision; then `check`, if any.
     async fn confirmed(
         &mut self,
         n: usize,
         id: &str,
         act: Option<(String, String)>,
+        check: Option<&Check>,
     ) -> Result<Done, Failure> {
         let taken = {
             let mut all = self.entry.confirmations.lock().expect("confirmations lock");
@@ -758,6 +761,10 @@ impl Run<'_> {
             snapshot: Some(snapshot),
             ..Literal::click(&target)
         };
+        let besides = match check {
+            Some(c) if c.kind == CheckKind::Download => self.downloads().await?,
+            _ => Vec::new(),
+        };
         match kind {
             Confirms::Click => {
                 self.dispatch(n, &literal, None, Some(id)).await?;
@@ -766,7 +773,7 @@ impl Run<'_> {
                 let literal = Literal {
                     op: Op::Press,
                     text: Some(key),
-                    ..literal
+                    ..literal.clone()
                 };
                 self.dispatch(n, &literal, None, Some(id)).await?;
             }
@@ -774,10 +781,7 @@ impl Run<'_> {
                 self.fill_now(n, args, Some(id)).await?;
             }
         }
-        Ok(Done {
-            outcome: "dispatched",
-            evidence: None,
-        })
+        self.check(n, &literal, check, besides).await
     }
 
     /// One action, journaled before it is sent and once its result is known.

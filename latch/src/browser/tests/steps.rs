@@ -517,6 +517,8 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
         .await
         .unwrap();
     evidence("b5-confirmed.json", &placed);
+    assert_eq!(placed["status"], "reached", "the act's own check ran");
+    assert_eq!(placed["steps"][0]["outcome"], "checked");
     assert_eq!(placed["steps"][0]["confirm"], issued["id"]);
     assert_eq!(placed["trail"][0]["confirmation"], issued["id"]);
     assert_eq!(placed["page"]["title"], "Order · Shop");
