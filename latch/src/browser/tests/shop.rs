@@ -352,3 +352,111 @@ async fn each_checker_tells_its_right_state_from_the_near_misses() {
         "checkers that judged a probe wrongly: {wrong:#?}"
     );
 }
+
+#[tokio::test]
+async fn the_view_shows_what_a_decision_needs() {
+    let (_dir, state, _area) = test_state();
+    let site = serve_shop();
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "b5c-view",
+        Duration::from_secs(300),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
+    let mut call = async |call: serde_json::Value| {
+        session
+            .call(call)
+            .await
+            .unwrap_or_else(|f| panic!("{}", f.message))
+            .result
+    };
+    let open = |page: &str| json!({"op": "open", "url": format!("{site}/{page}")});
+    let view = json!({"op": "view"});
+    let named = |view: &serde_json::Value, role: &str, name: &str| {
+        view["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["role"] == role && e["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {role} {name:?} in {:#}", view["elements"]))
+    };
+
+    // A dropdown is named by its label alone, never its options, and lists
+    // them; its value is a field line.
+    call(open("reset.html")).await;
+    let opened = call(open("product.html?id=greek")).await;
+    let product = call(view.clone()).await;
+    let size = named(&product, "combobox", "Size");
+    assert_eq!(size["options"], json!(["Small", "Regular", "Large"]));
+    assert_eq!(size["kind"], "select");
+    assert_eq!(named(&product, "spinbutton", "Quantity")["kind"], "text");
+    assert!(
+        product["fields"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("combobox \"Size\": \"Regular\"")),
+        "{:#}",
+        product["fields"]
+    );
+    assert_eq!(product["scroll"]["y"], 0);
+    assert!(product["wall"].is_null());
+    // The view is latch's own: a ref without a snapshot is still read in
+    // the page the agent was shown.
+    let pinned = call(json!({"op": "pin", "target": "e1"})).await;
+    assert_eq!(pinned["snapshot"], opened["snapshot"]);
+
+    // The lines on screen keep a sentence whole across its elements.
+    call(open("reset.html?cart=greek:Regular:1")).await;
+    call(open("checkout.html")).await;
+    let checkout = call(view.clone()).await;
+    assert!(
+        checkout["on_screen"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("1 item(s), total $13.74 including $3.99 delivery.")),
+        "{:#}",
+        checkout["on_screen"]
+    );
+
+    // A cookie modal covers the page behind it, not its own buttons.
+    call(open("reset.html")).await;
+    call(open("index.html?cookies=1")).await;
+    let covered = call(view.clone()).await;
+    assert!(named(&covered, "button", "Accept all cookies")["covered"].is_null());
+    let behind = covered["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["covered"] == true)
+        .count();
+    assert!(behind > 0, "{:#}", covered["elements"]);
+
+    // The page's state holds still on an unchanged page, and changes with
+    // the scroll position, and with a same-URL wizard's next stage.
+    call(open("reset.html")).await;
+    call(open("wizard.html")).await;
+    let first = call(view.clone()).await;
+    let again = call(view.clone()).await;
+    assert_eq!(first["state"], again["state"]);
+    let next = named(&again, "button", "Next");
+    call(json!({"op": "act", "action": "click", "quiet": true,
+                "snapshot": again["snapshot"], "target": next["ref"]}))
+    .await;
+    let stage = call(view.clone()).await;
+    assert_eq!(stage["url"], first["url"]);
+    assert_ne!(stage["state"], first["state"]);
+    call(open("reset.html")).await;
+    call(open("category.html?cat=salads")).await;
+    call(json!({"op": "eval", "script": "document.body.style.minHeight = '4000px'"})).await;
+    let top = call(view.clone()).await;
+    call(json!({"op": "act", "action": "scroll", "quiet": true, "text": "down"})).await;
+    let scrolled = call(view.clone()).await;
+    assert!(scrolled["scroll"]["y"].as_i64().unwrap() > 0);
+    assert_ne!(top["state"], scrolled["state"]);
+    drop(call);
+    session.close().await.unwrap();
+}

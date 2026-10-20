@@ -56,6 +56,15 @@
     return SECRET.test(marks);
   };
 
+  // A label or row's text without the options of a dropdown inside it,
+  // which are its choices, not its name.
+  const ownText = (el) => {
+    if (!el.querySelector('select, textarea')) return el.innerText || el.textContent;
+    const copy = el.cloneNode(true);
+    copy.querySelectorAll('select, textarea').forEach((control) => control.remove());
+    return copy.textContent;
+  };
+
   const byIds = (ids) => ids.split(/\s+/)
     .map((id) => document.getElementById(id))
     .filter(Boolean)
@@ -68,7 +77,7 @@
     const label = el.getAttribute('aria-label');
     if (label && label.trim()) return clean(label);
     if (el.labels && el.labels.length) {
-      const text = clean([...el.labels].map((l) => l.innerText || l.textContent).join(' '));
+      const text = clean([...el.labels].map(ownText).join(' '));
       if (text) return text;
     }
     if (el.localName === 'input') {
@@ -120,7 +129,7 @@
     if (!rendered(el)) item.hidden = true;
     const row = el.parentElement && el.parentElement.closest(ROWS);
     if (row) {
-      const text = clean(row.innerText, 160);
+      const text = clean(ownText(row), 160);
       if (text && text !== item.name) item.row = text;
     }
     return item;
@@ -362,6 +371,77 @@
     return { uid: uid(el), element: { role: r, name: n, row }, acts_on: actsOn, lines };
   };
 
+  // --- What a plan's decision sees ----------------------------------------
+  // The lines of text on screen now, top to bottom: the text of each block
+  // (a paragraph, a list item, a cell) that shows in the viewport, one line
+  // per block, so "Total: $13.74" stays one line though its parts are
+  // separate elements.
+  const SKIP_TEXT = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'OPTION', 'TEXTAREA', 'SELECT']);
+  const screenLines = (max) => {
+    const blocks = new Map();
+    const blockOf = (el) => {
+      if (blocks.has(el)) return blocks.get(el);
+      const display = getComputedStyle(el).display;
+      const found = (display.startsWith('inline') || display === 'contents') && el.parentElement
+        ? blockOf(el.parentElement) : el;
+      blocks.set(el, found);
+      return found;
+    };
+    const out = [];
+    let block = null;
+    let line = '';
+    const push = () => {
+      const text = clean(line, 160);
+      if (text && out[out.length - 1] !== text) out.push(text);
+      line = '';
+    };
+    const root = document.body || document.documentElement;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && out.length < max; node = walker.nextNode()) {
+      const parent = node.parentElement;
+      if (!parent || SKIP_TEXT.has(parent.tagName) || !node.textContent.trim() || !rendered(parent)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const rect = range.getBoundingClientRect();
+      if ((rect.width === 0 && rect.height === 0) || rect.bottom < 0 || rect.top > innerHeight) continue;
+      const at = blockOf(parent);
+      if (at !== block) { push(); block = at; }
+      line += ' ' + node.textContent;
+    }
+    push();
+    return out.slice(0, max);
+  };
+
+  // For each element of snapshot `snap`: what kind of input it takes, a
+  // dropdown's options, its form (an index into the document's forms) and
+  // whether something else, such as a modal or a banner, covers it so a
+  // click could not reach it now. Off-screen elements are never covered:
+  // a click scrolls them into view first.
+  const viewOf = (snap) => (snaps.get(snap) || []).map((el) => {
+    if (!el.isConnected) return { gone: true };
+    const item = {
+      kind: el.localName === 'select' ? 'select' : fileInput(el) ? 'file' : textLike(el) ? 'text' : 'other',
+    };
+    if (el.localName === 'select') item.options = [...el.options].slice(0, 50).map((o) => clean(o.label, 80));
+    const form = el.form || el.closest('form');
+    if (form) item.form = [...document.forms].indexOf(form);
+    const rect = el.getBoundingClientRect();
+    if (rendered(el) && !offscreen(rect)) {
+      const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
+      const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
+      const hit = document.elementFromPoint(x, y);
+      const reaches = !hit || hit === el || el.contains(hit) || hit.contains(el)
+        || (el.labels && [...el.labels].some((l) => l.contains(hit)));
+      if (!reaches) item.covered = true;
+    }
+    return item;
+  });
+
+  const scroll = () => ({
+    y: Math.round(scrollY),
+    max: Math.max(0, Math.round(document.documentElement.scrollHeight - innerHeight)),
+  });
+
   // What a plan must stop at: a sign-in form, or a CAPTCHA's frame.
   const CAPTCHA = /\/recaptcha\/|hcaptcha\.com|challenges\.cloudflare\.com/;
   const wall = () => ({
@@ -394,6 +474,9 @@
 
   globalThis.__latch = {
     fields,
+    screenLines,
+    viewOf,
+    scroll,
     review,
     wall,
     read,

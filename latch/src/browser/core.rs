@@ -90,6 +90,8 @@ pub enum Call {
     Glance,
     /// The page's lines and its non-secret field values, for a judgement.
     Lines,
+    /// The page as one pass of an instruction step sees it.
+    View,
     /// Waits up to `within_ms` for `condition`.
     Wait {
         condition: Condition,
@@ -311,6 +313,7 @@ impl<D: Driver> Core<D> {
             Call::Act { quiet: true, .. }
                 | Call::Resolve { .. }
                 | Call::Lines
+                | Call::View
                 | Call::Wait { .. }
                 | Call::Pin { .. }
                 | Call::Review { .. }
@@ -325,6 +328,7 @@ impl<D: Driver> Core<D> {
             } => self.review(snapshot.as_deref(), &target, enter, &mut audit),
             Call::Glance => self.glance(&mut audit),
             Call::Lines => self.lines(&mut audit),
+            Call::View => self.view(&mut audit),
             Call::Wait {
                 condition,
                 within_ms,

@@ -337,6 +337,394 @@ impl Model {
     }
 }
 
+/// What an instruction step's operations do, as the model reads them.
+const OPERATIONS: [(&str, &str); 14] = [
+    (
+        "click",
+        "Click one element (a link, button, checkbox, tab, menu item or result).",
+    ),
+    (
+        "type",
+        "Type text into a text field (choose this whenever the step needs typing).",
+    ),
+    ("select", "Choose an option in a dropdown."),
+    (
+        "press_enter",
+        "Press Enter in the field just typed into, to submit it.",
+    ),
+    (
+        "navigate",
+        "Go to one of the addresses supplied with the plan.",
+    ),
+    (
+        "scroll_down",
+        "Scroll down one screen to see more of the page.",
+    ),
+    ("scroll_up", "Scroll up one screen."),
+    ("back", "Go back to the previous page."),
+    ("wait", "Wait for the page to finish loading or updating."),
+    (
+        "login",
+        "Sign in with the saved login for this site: latch fills the sign-in fields and submits them. Use it on any sign-in or password page.",
+    ),
+    (
+        "fill_code",
+        "Fill the one-time code field from the saved login's authenticator and submit it.",
+    ),
+    (
+        "fill",
+        "Fill the form on the page from a saved card or identity.",
+    ),
+    (
+        "done",
+        "Nothing more to do: the actions taken have finished the current step.",
+    ),
+    (
+        "stuck",
+        "No offered operation can make progress on the current step.",
+    ),
+];
+
+const STEP_RULES: [&str; 2] = [
+    RULES[0],
+    "Work only on the current step; earlier steps are done, later steps come after it.",
+];
+
+/// One option a target question offers: its id, and how it reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Offer {
+    pub id: String,
+    pub text: String,
+}
+
+/// What one pass of an instruction step shows the model, and what it may
+/// choose: only operations and targets possible now.
+#[derive(Debug, Clone, Default)]
+pub struct Pass {
+    /// Every step of the plan in words, and where it stands: `done`,
+    /// `current` or `later`.
+    pub plan: Vec<(String, &'static str)>,
+    pub step: String,
+    /// The step's sentence check: what its completion is judged on.
+    pub check: Option<String>,
+    /// What the step may type, by name: its values, then the plan's facts.
+    pub values: Vec<(String, String)>,
+    pub url: String,
+    pub title: String,
+    pub on_screen: Vec<String>,
+    /// The page's other lines.
+    pub lines: Vec<String>,
+    pub fields: Vec<String>,
+    /// `top`, `middle` or `bottom`.
+    pub scroll: &'static str,
+    /// The actions this step has taken, one line each.
+    pub actions: Vec<String>,
+    /// Such as a saved login that fits the page.
+    pub notes: Vec<String>,
+    /// The operations possible now, from those `OPERATIONS` names.
+    pub operations: Vec<&'static str>,
+    pub clicks: Vec<Offer>,
+    /// Field × value pairs; the question always adds `none`.
+    pub types: Vec<Offer>,
+    /// Dropdown × option pairs, the option already chosen among them.
+    pub selects: Vec<Offer>,
+    pub urls: Vec<Offer>,
+}
+
+/// Where an evidence line comes from. Only a state line (a field's
+/// value, the page's address or its title) shows that a step's result
+/// was already there before it acted; page text may be left over from an
+/// earlier step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Line {
+    Title,
+    Address,
+    Screen,
+    Page,
+    Field,
+    Action,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "instruction steps do not run yet")
+)]
+impl Line {
+    pub fn is_state(self) -> bool {
+        matches!(self, Line::Title | Line::Address | Line::Field)
+    }
+}
+
+/// A chosen option and its probability, with the likeliest options, best
+/// first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pick {
+    pub id: String,
+    pub p: f64,
+    pub likeliest: Vec<(String, f64)>,
+}
+
+/// The model's answers for one pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Decision {
+    /// `complete`, `not_yet` or `cannot`, and its probability.
+    pub status: String,
+    pub status_p: f64,
+    /// The line chosen as the best evidence the step is complete, if any.
+    pub evidence: Option<(String, Line)>,
+    /// The probability that no line shows it.
+    pub none_p: f64,
+    /// The likeliest evidence lines, best first.
+    pub top_lines: Vec<String>,
+    pub operation: Pick,
+    pub click: Option<Pick>,
+    /// `none`, or a field × value pair.
+    pub typed: Option<Pick>,
+    pub select: Option<Pick>,
+    pub url: Option<Pick>,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "instruction steps do not run yet")
+)]
+impl Decision {
+    /// The step is complete at status `complete` ≥ 0.7, with an evidence
+    /// line chosen while `none` stays below 0.3.
+    pub fn complete(&self) -> bool {
+        self.status == "complete"
+            && self.status_p >= MET_P
+            && self.evidence.is_some()
+            && self.none_p < NONE_P
+    }
+}
+
+impl Model {
+    /// One pass's decision, in one call: the step's status, the line that
+    /// best shows it is complete, the next operation among those offered,
+    /// and a target for each kind of operation offered. Each question is
+    /// answered on its own, so each states the operation it assumes.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "instruction steps do not run yet")
+    )]
+    pub async fn decide(&mut self, pass: &Pass) -> Result<Decision, String> {
+        let base = json!({"current_step": pass.step, "rules": STEP_RULES});
+        let with = |question: &str| {
+            let mut instructions = base.clone();
+            instructions["question"] = json!(question);
+            instructions
+        };
+        let address = pass.url.split('#').next().unwrap_or_default();
+        let mut evidence: Vec<(String, String, Line)> = vec![
+            ("t0".into(), format!("[title] {}", pass.title), Line::Title),
+            ("a1".into(), format!("[address] {address}"), Line::Address),
+        ];
+        for (tag, kind, group) in [
+            ("screen", Line::Screen, &pass.on_screen),
+            ("page", Line::Page, &pass.lines),
+            ("field", Line::Field, &pass.fields),
+            ("action", Line::Action, &pass.actions),
+        ] {
+            for line in group {
+                let id = format!("{}{}", &tag[..1], evidence.len());
+                evidence.push((id, format!("[{tag}] {line}"), kind));
+            }
+        }
+        let mut evidence_options: Vec<(String, String)> = evidence
+            .iter()
+            .map(|(id, line, _)| (id.clone(), line.clone()))
+            .collect();
+        evidence_options.push((
+            "none".into(),
+            "Nothing on the page or in the actions shows the step is complete.".into(),
+        ));
+        let (what, complete) = match &pass.check {
+            Some(check) => (
+                format!("{check} is true"),
+                format!("The page shows that {check}."),
+            ),
+            None => (
+                "the current step is complete".to_string(),
+                "The page or the actions taken show the step's result.".to_string(),
+            ),
+        };
+        let offered = |op: &str| pass.operations.contains(&op);
+        let mut questions = vec![
+            Question {
+                id: "status".into(),
+                instructions: with("What is the status of the current step?"),
+                kind: Kind::Choose(vec![
+                    ("complete".into(), complete),
+                    (
+                        "not_yet".into(),
+                        "Something still has to be done for this step.".into(),
+                    ),
+                    (
+                        "cannot".into(),
+                        "The step cannot be done here (an error, an unavailable item, or missing information).".into(),
+                    ),
+                ]),
+            },
+            Question {
+                id: "evidence".into(),
+                instructions: with(&format!(
+                    "Which single line best shows that {what}? Choose none if nothing shows it."
+                )),
+                kind: Kind::Choose(evidence_options),
+            },
+            Question {
+                id: "operation".into(),
+                instructions: with("Which single operation should come next for the current step?"),
+                kind: Kind::Choose(
+                    OPERATIONS
+                        .iter()
+                        .filter(|(op, _)| offered(op))
+                        .map(|(op, what)| (op.to_string(), what.to_string()))
+                        .collect(),
+                ),
+            },
+        ];
+        let options = |offers: &[Offer]| -> Vec<(String, String)> {
+            offers
+                .iter()
+                .map(|o| (o.id.clone(), o.text.clone()))
+                .collect()
+        };
+        if offered("click") && !pass.clicks.is_empty() {
+            questions.push(Question {
+                id: "click".into(),
+                instructions: with("Assume the next operation is a click. Which element should be clicked to make progress on the current step?"),
+                kind: Kind::Choose(options(&pass.clicks)),
+            });
+        }
+        if offered("type") && !pass.types.is_empty() {
+            let mut pairs = options(&pass.types);
+            pairs.push((
+                "none".into(),
+                "None of the supplied texts belongs in any field for this step.".into(),
+            ));
+            questions.push(Question {
+                id: "type".into(),
+                instructions: with("Assume the next operation types text. Which supplied text goes into which field? Only the supplied texts can be typed; choose none if the step needs text that was not supplied."),
+                kind: Kind::Choose(pairs),
+            });
+        }
+        if offered("select") && !pass.selects.is_empty() {
+            questions.push(Question {
+                id: "select".into(),
+                instructions: with(
+                    "Assume the next operation chooses a dropdown option. Which option in which dropdown?",
+                ),
+                kind: Kind::Choose(options(&pass.selects)),
+            });
+        }
+        if offered("navigate") && !pass.urls.is_empty() {
+            questions.push(Question {
+                id: "navigate".into(),
+                instructions: with("Assume the next operation goes to an address. Which of the supplied addresses?"),
+                kind: Kind::Choose(options(&pass.urls)),
+            });
+        }
+        let mut page = json!({
+            "url": pass.url, "title": pass.title, "on_screen": pass.on_screen,
+            "fields": pass.fields, "scroll": pass.scroll,
+        });
+        if pass.on_screen.is_empty() && pass.lines.is_empty() {
+            page["note"] = json!("the page shows no text");
+        }
+        let mut state = json!({
+            "plan": pass.plan.iter().map(|(step, status)| json!({"step": step, "status": status})).collect::<Vec<_>>(),
+            "current_step": pass.step,
+            "supplied_texts": pass.values.iter().map(|(name, text)| json!({"name": name, "text": text})).collect::<Vec<_>>(),
+            "page": page,
+            "actions_in_this_step": pass.actions,
+        });
+        if let Some(check) = &pass.check {
+            state["expected_outcome"] = json!(check);
+        }
+        if !pass.notes.is_empty() {
+            state["notes"] = json!(pass.notes);
+        }
+        let answers = self
+            .ask(
+                "decide",
+                &[
+                    "plan",
+                    "supplied_values",
+                    "page_lines",
+                    "field_values",
+                    "element_names",
+                    "row_text",
+                ],
+                state,
+                questions,
+            )
+            .await?;
+        let pick = |id: &str| -> Option<Pick> {
+            match answers.get(id) {
+                Some(Answer::Chose {
+                    choice,
+                    probabilities,
+                }) => {
+                    let mut likeliest = probabilities.clone();
+                    likeliest.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    let p = likeliest
+                        .iter()
+                        .find(|(o, _)| o == choice)
+                        .map_or(0.0, |(_, p)| *p);
+                    likeliest.truncate(3);
+                    Some(Pick {
+                        id: choice.clone(),
+                        p,
+                        likeliest,
+                    })
+                }
+                _ => None,
+            }
+        };
+        let missing = || "no answer came back".to_string();
+        let status = pick("status").ok_or_else(missing)?;
+        let operation = pick("operation").ok_or_else(missing)?;
+        let Some(Answer::Chose { probabilities, .. }) = answers.get("evidence") else {
+            return Err(missing());
+        };
+        let chosen = pick("evidence").ok_or_else(missing)?;
+        let line_of = |id: &str| evidence.iter().find(|(option, ..)| option == id);
+        let none_p = probabilities
+            .iter()
+            .find(|(o, _)| o == "none")
+            .map_or(1.0, |(_, p)| *p);
+        let mut ranked = probabilities.clone();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let typed = if offered("type") && pass.types.is_empty() {
+            Some(Pick {
+                id: "none".into(),
+                p: 1.0,
+                likeliest: vec![("none".into(), 1.0)],
+            })
+        } else {
+            pick("type")
+        };
+        Ok(Decision {
+            status: status.id,
+            status_p: status.p,
+            evidence: line_of(&chosen.id).map(|(_, line, kind)| (line.clone(), *kind)),
+            none_p,
+            top_lines: ranked
+                .iter()
+                .filter_map(|(id, _)| line_of(id).map(|(_, line, _)| line.clone()))
+                .take(3)
+                .collect(),
+            operation,
+            click: pick("click"),
+            typed,
+            select: pick("select"),
+            url: pick("navigate"),
+        })
+    }
+}
+
 /// A judged sentence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Verdict {
@@ -728,6 +1116,193 @@ pub mod tests {
         let mut m = Model::off("this host has no decision model");
         assert!(m.risky("t", "click", &[]).await.is_err());
         assert!(m.calls.is_empty());
+    }
+
+    /// A provider that answers from a script and keeps the latest call's
+    /// questions, as (id, offered options), for tests.
+    struct Recorded {
+        answers: Mutex<Vec<HashMap<String, Answer>>>,
+        asked: Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl Provider for Recorded {
+        fn ask<'a>(&'a self, _: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+            *self.asked.lock().unwrap() = questions
+                .iter()
+                .map(|q| {
+                    let options = match &q.kind {
+                        Kind::Choose(options) => options.iter().map(|(o, _)| o.clone()).collect(),
+                        Kind::YesNo => Vec::new(),
+                    };
+                    (q.id.clone(), options)
+                })
+                .collect();
+            let next = self.answers.lock().unwrap().remove(0);
+            Box::pin(async move {
+                Ok((
+                    next,
+                    CallMeta {
+                        provider: "recorded",
+                        model: "test".into(),
+                        request_id: None,
+                        latency_ms: 1,
+                    },
+                ))
+            })
+        }
+    }
+
+    fn offer(id: &str) -> Offer {
+        Offer {
+            id: id.into(),
+            text: format!("element {id}"),
+        }
+    }
+
+    fn pass() -> Pass {
+        Pass {
+            plan: vec![("add a note".into(), "current")],
+            step: "add a note".into(),
+            values: vec![("street".into(), "12 Elm Road".into())],
+            url: "http://shop.test/driver-note.html#top".into(),
+            title: "Note for the driver".into(),
+            on_screen: vec!["Note for the driver".into()],
+            lines: vec!["Contact us".into()],
+            fields: vec!["textbox \"Note for the driver\": empty".into()],
+            scroll: "top",
+            operations: vec!["click", "type", "scroll_down", "back", "wait", "stuck"],
+            clicks: vec![offer("e1"), offer("e2")],
+            types: vec![offer("e3=street")],
+            ..Pass::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_decision_offers_only_what_is_possible_and_reads_its_evidence_by_kind() {
+        let answers = vec![
+            (
+                "status",
+                chose(
+                    "complete",
+                    &[("complete", 0.8), ("not_yet", 0.15), ("cannot", 0.05)],
+                ),
+            ),
+            (
+                // The evidence options: t0, a1, s2, p3, f4 and none.
+                "evidence",
+                chose(
+                    "f4",
+                    &[
+                        ("t0", 0.1),
+                        ("a1", 0.0),
+                        ("s2", 0.05),
+                        ("p3", 0.0),
+                        ("f4", 0.75),
+                        ("none", 0.1),
+                    ],
+                ),
+            ),
+            (
+                "operation",
+                chose(
+                    "type",
+                    &[
+                        ("click", 0.1),
+                        ("type", 0.8),
+                        ("scroll_down", 0.0),
+                        ("back", 0.0),
+                        ("wait", 0.0),
+                        ("stuck", 0.1),
+                    ],
+                ),
+            ),
+            ("click", chose("e2", &[("e1", 0.4), ("e2", 0.6)])),
+            ("type", chose("none", &[("e3=street", 0.2), ("none", 0.8)])),
+        ];
+        let provider = std::sync::Arc::new(Recorded {
+            answers: Mutex::new(vec![
+                answers
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            ]),
+            asked: Mutex::new(Vec::new()),
+        });
+        let mut m = Model::new(Box::new(provider.clone()));
+        let decision = m.decide(&pass()).await.unwrap();
+        let asked = provider.asked.lock().unwrap().clone();
+        let ids: Vec<&str> = asked.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["status", "evidence", "operation", "click", "type"]);
+        let options = |id: &str| asked.iter().find(|(q, _)| q == id).unwrap().1.clone();
+        assert_eq!(
+            options("operation"),
+            ["click", "type", "scroll_down", "back", "wait", "stuck"]
+        );
+        assert_eq!(options("evidence"), ["t0", "a1", "s2", "p3", "f4", "none"]);
+        // A field × value question always offers none, even with one pair.
+        assert_eq!(options("type"), ["e3=street", "none"]);
+        assert!(decision.complete());
+        assert_eq!(
+            decision.evidence,
+            Some((
+                "[field] textbox \"Note for the driver\": empty".to_string(),
+                Line::Field
+            ))
+        );
+        assert!(decision.evidence.as_ref().unwrap().1.is_state());
+        assert_eq!(
+            decision.top_lines[0],
+            "[field] textbox \"Note for the driver\": empty"
+        );
+        assert_eq!(decision.operation.id, "type");
+        assert_eq!(decision.typed.as_ref().unwrap().id, "none");
+        let click = decision.click.unwrap();
+        assert_eq!((click.id.as_str(), click.p), ("e2", 0.6));
+        assert_eq!(click.likeliest[1], ("e1".to_string(), 0.4));
+        assert_eq!(m.calls[0]["purpose"], "decide");
+    }
+
+    #[tokio::test]
+    async fn typing_with_nothing_supplied_is_none_and_needs_no_question() {
+        let answers = vec![
+            (
+                "status",
+                chose(
+                    "not_yet",
+                    &[("complete", 0.1), ("not_yet", 0.9), ("cannot", 0.0)],
+                ),
+            ),
+            (
+                "evidence",
+                chose("none", &[("t0", 0.0), ("a1", 0.0), ("none", 1.0)]),
+            ),
+            (
+                "operation",
+                chose("type", &[("type", 0.9), ("done", 0.0), ("stuck", 0.1)]),
+            ),
+        ];
+        let provider = std::sync::Arc::new(Recorded {
+            answers: Mutex::new(vec![
+                answers
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            ]),
+            asked: Mutex::new(Vec::new()),
+        });
+        let mut m = Model::new(Box::new(provider.clone()));
+        let empty = Pass {
+            step: "add a note".into(),
+            operations: vec!["type", "done", "stuck"],
+            actions: Vec::new(),
+            ..Pass::default()
+        };
+        let decision = m.decide(&empty).await.unwrap();
+        let asked = provider.asked.lock().unwrap().clone();
+        assert!(asked.iter().all(|(id, _)| id != "type"));
+        assert_eq!(decision.typed.as_ref().unwrap().id, "none");
+        assert_eq!(decision.evidence, None);
+        assert!(!decision.complete());
     }
 
     #[test]

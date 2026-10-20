@@ -3,6 +3,7 @@
 //! the waits for typed conditions, and the pinning of a plan's refs. The
 //! decision model itself runs in the host.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -10,14 +11,22 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::{Core, TEXT_CHARS, document_key};
-use crate::browser::driver::Driver;
+use crate::browser::driver::{Driver, Frame};
 use crate::failure::{Exit, Failure};
 use crate::state::to_hex;
 
 /// The most page lines a judgement gets.
 const MAX_LINES: usize = 120;
-/// The most page lines a plan's answer shows.
+/// The most page lines a plan's answer shows, and the most on-screen
+/// lines a decision gets.
 const PAGE_LINES: usize = 40;
+/// The most page lines a decision may quote as evidence, on-screen ones
+/// included.
+const VIEW_LINES: usize = 100;
+/// The most field lines a frame gives a judgement, and a decision gets.
+const FIELD_LINES: usize = 40;
+/// The longest page line a decision gets.
+const LINE_CHARS: usize = 160;
 /// How often a wait looks again.
 const POLL: Duration = Duration::from_millis(250);
 
@@ -214,18 +223,109 @@ impl<D: Driver> Core<D> {
             .filter(|line| !line.is_empty())
             .take(MAX_LINES)
             .collect();
-        let mut fields = Vec::new();
-        for frame in self.driver.frames()? {
-            if let Ok(listed) = self.driver.run(&frame, "__latch.fields(40)") {
-                fields.extend(listed.as_array().cloned().unwrap_or_default());
-            }
-        }
+        let fields = self.field_lines()?;
         let (origin, path) = super::origin_and_path(page["url"].as_str().unwrap_or_default());
         Ok(json!({
             "page": {"origin": origin, "path": path, "title": page["title"]},
             "lines": lines,
             "fields": fields,
         }))
+    }
+
+    /// Every frame's non-secret fields as lines (`combobox "Size": "Large"`).
+    fn field_lines(&mut self) -> Result<Vec<String>, Failure> {
+        let mut fields = Vec::new();
+        for frame in self.driver.frames()? {
+            if let Ok(listed) = self
+                .driver
+                .run(&frame, &format!("__latch.fields({FIELD_LINES})"))
+            {
+                fields.extend(
+                    listed
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|line| line.as_str().map(str::to_string)),
+                );
+            }
+        }
+        Ok(fields)
+    }
+
+    /// The page as one pass of an instruction step sees it, in a snapshot
+    /// of latch's own: its elements, each with the kind of input it takes,
+    /// a dropdown's options, its form and whether something covers it; the
+    /// lines on screen, then the page's other lines; its fields as lines;
+    /// the scroll position; a sign-in form or CAPTCHA on it; and `state`,
+    /// which changes whenever the document, a field, the lines on screen or
+    /// the scroll position does.
+    pub(super) fn view(&mut self, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
+        self.no_dialog()?;
+        let mut result = self.page(audit)?;
+        let wall = self.wall()?;
+        let reading = self.read(None)?;
+        let refs: Vec<(Frame, usize)> = self
+            .snapshot(&reading.snapshot)?
+            .refs
+            .iter()
+            .map(|r| (r.frame.clone(), r.index))
+            .collect();
+        let mut extras: HashMap<String, Vec<Value>> = HashMap::new();
+        for (frame, _) in &refs {
+            if !extras.contains_key(&frame.id) {
+                let found = self
+                    .driver
+                    .run(frame, &format!("__latch.viewOf({:?})", reading.snapshot))
+                    .ok()
+                    .and_then(|found| found.as_array().cloned())
+                    .unwrap_or_default();
+                extras.insert(frame.id.clone(), found);
+            }
+        }
+        let mut elements = reading.elements;
+        for (element, (frame, index)) in elements.iter_mut().zip(&refs) {
+            let Some(extra) = extras.get(&frame.id).and_then(|found| found.get(*index)) else {
+                continue;
+            };
+            for (key, value) in extra.as_object().into_iter().flatten() {
+                element[key] = value.clone();
+            }
+        }
+        let main = self.main_frame()?;
+        let on_screen: Vec<String> = strings(
+            &self
+                .driver
+                .run(&main, &format!("__latch.screenLines({PAGE_LINES})"))?,
+        );
+        let mut seen: HashSet<String> = on_screen.iter().cloned().collect();
+        let mut lines = Vec::new();
+        for line in self.first_lines(usize::MAX)? {
+            if on_screen.len() + lines.len() >= VIEW_LINES {
+                break;
+            }
+            let line = clip(&line, LINE_CHARS);
+            if seen.insert(line.clone()) {
+                lines.push(line);
+            }
+        }
+        let mut fields = self.field_lines()?;
+        fields.truncate(FIELD_LINES);
+        let scroll = self.driver.run(&main, "__latch.scroll()")?;
+        let document = document_key(&main);
+        let state = page_state(&document, &fields, &on_screen, &scroll["y"]);
+        result.insert("snapshot".into(), json!(reading.snapshot));
+        result.insert("document".into(), json!(document));
+        result.insert("elements".into(), json!(elements));
+        if reading.truncated {
+            result.insert("truncated".into(), json!(true));
+        }
+        result.insert("on_screen".into(), json!(on_screen));
+        result.insert("lines".into(), json!(lines));
+        result.insert("fields".into(), json!(fields));
+        result.insert("scroll".into(), scroll);
+        result.insert("wall".into(), json!(wall));
+        result.insert("state".into(), json!(state));
+        Ok(Value::Object(result))
     }
 
     pub(super) fn wait(
@@ -381,6 +481,31 @@ impl<D: Driver> Core<D> {
         }
         Ok(login.then_some("login"))
     }
+}
+
+/// The page's state as the repeat guard compares it: the same document,
+/// field values, lines on screen and scroll position hash the same.
+fn page_state(document: &str, fields: &[String], on_screen: &[String], scroll_y: &Value) -> String {
+    let state = json!([document, fields, on_screen, scroll_y]);
+    to_hex(&Sha256::digest(state.to_string().as_bytes()))
+}
+
+fn strings(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|line| line.as_str().map(str::to_string))
+        .collect()
+}
+
+/// `line` cut to `max` characters, the cut marked.
+fn clip(line: &str, max: usize) -> String {
+    if line.chars().count() <= max {
+        return line.to_string();
+    }
+    let kept: String = line.chars().take(max - 1).collect();
+    format!("{kept}…")
 }
 
 /// A reviewed context (`Core::review`) hashed: the document, the element's
