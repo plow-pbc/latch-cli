@@ -51,21 +51,24 @@ pub struct AuditLog {
 
 impl AuditLog {
     /// Opens (or starts) the log and checks the whole chain first. A broken
-    /// chain is an error: the host refuses to run on a tampered log. The
-    /// log is read under its lock, shared, so a record another process is
-    /// appending is read whole or not at all.
+    /// chain is an error: the host refuses to run on a tampered log. It is
+    /// opened for appending, so a log that can't be written to is an error
+    /// now, before anything that needs it runs, and read under its lock,
+    /// shared, so a record another process is appending is read whole or
+    /// not at all.
     pub fn open(path: PathBuf) -> Result<AuditLog, Failure> {
-        let text = match File::open(&path) {
-            Ok(mut file) => {
-                let mut text = String::new();
-                file.lock_shared()
-                    .and_then(|()| file.read_to_string(&mut text))
-                    .map_err(|err| io_failure(&path, err))?;
-                text
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(err) => return Err(io_failure(&path, err)),
-        };
+        let mut text = String::new();
+        fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut file| {
+                file.lock_shared()?;
+                file.read_to_string(&mut text)
+            })
+            .map_err(|err| io_failure(&path, err))?;
         let (records, _) = verify(&text).map_err(|problem| {
             let message = format!("{}: {problem}", path.display());
             Failure::failed("audit_broken", message)

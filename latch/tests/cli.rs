@@ -713,3 +713,17 @@ fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
     assert_eq!(error["error"]["code"], "audit_broken");
     assert!(!state.join("rules/host.txt").exists());
 }
+
+#[test]
+fn a_local_rules_command_on_an_audit_log_it_cannot_write_changes_nothing() {
+    let (_dir, state, _key) = owner_host();
+    let show = latch(&state, &["rules", "show"], &[]);
+    assert_eq!(show.status.code(), Some(0), "{show:?}");
+    let log = state.join("audit.ndjson");
+    fs::set_permissions(&log, std::os::unix::fs::PermissionsExt::from_mode(0o400)).unwrap();
+    let output = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "audit_io");
+    assert!(!state.join("rules/host.txt").exists());
+}
