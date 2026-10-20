@@ -369,7 +369,6 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                     crate::vault::host::run(
                         &host.vault,
                         &host.here(),
-                        caller,
                         &identity.kind,
                         request.args,
                         &mut send,

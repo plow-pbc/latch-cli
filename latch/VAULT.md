@@ -54,7 +54,9 @@ and the new revision, never a value.
 CSV, Chrome's CSV and Bitwarden's CSV and unencrypted JSON. It shows every
 row (values reduced to whether they are there), marks rows the vault
 already holds or that would update a changed password, and imports only
-the rows you pick; nothing is picked by default.
+the rows you pick; nothing is picked by default. The export stays on the
+host only while the command runs: if you quit, the connection drops, or
+you pick nothing within 15 minutes, it is dropped and nothing is saved.
 
 ## From your phone: a link (prototype)
 
