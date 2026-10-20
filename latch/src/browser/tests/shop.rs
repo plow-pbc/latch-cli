@@ -405,7 +405,7 @@ async fn the_view_shows_what_a_decision_needs() {
     assert_eq!(pinned["snapshot"], opened["snapshot"]);
 
     // The lines on screen keep a sentence whole across its elements.
-    call(open("reset.html?cart=greek:Regular:1")).await;
+    call(open("reset.html?user=testuser@example.com&cart=greek:Regular")).await;
     call(open("checkout.html")).await;
     let checkout = call(view.clone()).await;
     assert!(
