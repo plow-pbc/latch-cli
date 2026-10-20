@@ -26,8 +26,8 @@ use crate::dashboard::{self, Dashboard, Row};
 use crate::exec;
 use crate::failure::Failure;
 use crate::files;
-use crate::gate::Gatekeeper;
 use crate::gate::rules::RuleFiles;
+use crate::gate::{Gate, Gatekeeper};
 use crate::heartbeat;
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
@@ -53,7 +53,6 @@ struct Host {
     name: String,
     deny_exec: DenyExec,
     /// Judges agents' operations against the owner's chat and rules.
-    #[allow(dead_code)] // no operation is gated yet
     gatekeeper: Gatekeeper,
 }
 
@@ -476,17 +475,25 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                     )
                     .await
                 }
-                "browser" => {
-                    crate::browser::host::run(
-                        &host.browsers,
-                        caller,
-                        &identity.kind,
-                        request.args,
-                        &mut send,
-                        &mut recv,
-                    )
-                    .await
-                }
+                "browser" => match host.gate(&identity, request.chat.as_deref()) {
+                    Ok(gate) => {
+                        crate::browser::host::run(
+                            &host.browsers,
+                            caller,
+                            &identity.kind,
+                            gate,
+                            request.args,
+                            &mut send,
+                            &mut recv,
+                        )
+                        .await
+                    }
+                    Err(failure) => Done {
+                        response: Response::error(&failure),
+                        audit_args: Value::Null,
+                        outcome: failure.code,
+                    },
+                },
                 "google" => {
                     crate::google::host::run(
                         &host.workers,
@@ -658,6 +665,31 @@ impl Host {
     /// Asks Plow who `caller` is. Returns the caller's identity if it may
     /// call, or why not. Nothing is cached: every check asks Plow again, so
     /// a revoked key stops working at once.
+    /// The gate an agent's operations pass, in the chat it named; none for
+    /// the owner's own devices, which are never judged. An agent Plow
+    /// gives no uid can't be judged, so nothing of it runs.
+    fn gate<'a>(
+        &'a self,
+        identity: &'a Identity,
+        chat: Option<&'a str>,
+    ) -> Result<Option<Gate<'a>>, Failure> {
+        if identity.kind == "device" {
+            return Ok(None);
+        }
+        match identity.agent_uid.as_deref() {
+            Some(agent) => Ok(Some(Gate {
+                keeper: &self.gatekeeper,
+                agent,
+                chat,
+            })),
+            None => Err(Failure::new(
+                crate::failure::Exit::Unreachable,
+                "gatekeeper_unavailable",
+                "The gatekeeper could not judge this, so it did not run: Plow names no agent for this caller".to_string(),
+            )),
+        }
+    }
+
     async fn check(&self, caller: &str) -> Result<Identity, Denial> {
         match self.plow.lookup(caller).await {
             Ok(identity) if identity.permissions.call => Ok(identity),
