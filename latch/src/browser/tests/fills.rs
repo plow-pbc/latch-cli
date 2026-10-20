@@ -265,6 +265,35 @@ impl Harness {
         (result, audit)
     }
 
+    /// `fill` as the host gates it: one releasing a secret field stops for
+    /// a confirmation first.
+    async fn gated_fill(
+        &mut self,
+        args: Value,
+    ) -> (Result<Value, crate::failure::Failure>, Map<String, Value>) {
+        let mut audit = Map::new();
+        let mut args = args;
+        args["request"] = json!(format!("r-fill-{}", self.shown.len()));
+        let result = host::fill(
+            &self.browsers,
+            &self.entry,
+            &self.id,
+            CALLER,
+            "fill",
+            &args,
+            &mut audit,
+        )
+        .await;
+        self.shown.push(Value::Object(audit.clone()).to_string());
+        if let Err(failure) = &result {
+            self.shown.push(format!(
+                "{} {} {}",
+                failure.code, failure.message, failure.details
+            ));
+        }
+        (result, audit)
+    }
+
     async fn text(&mut self) -> String {
         self.call("text", json!({})).await.unwrap()["text"]
             .as_str()
@@ -435,7 +464,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
         ["cvv", [find(&checkout, "textbox", "CVV")]],
     ]);
     let (no_press, _) = h
-        .fill("fill", json!({"item": card.item, "fields": fields}))
+        .gated_fill(json!({"item": card.item, "fields": fields}))
         .await;
     let no_press = no_press.unwrap_err();
     println!("card without --press: {}", no_press.code);
@@ -443,17 +472,61 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
         (no_press.exit, no_press.code.as_str()),
         (crate::failure::Exit::Denied, "press_required")
     );
+    // With --press, it stops for the agent's confirmation before any value
+    // is released; the confirmation fills, presses and cleans up.
     let pay = find(&checkout, "button", "Pay");
-    let (paid, audit) = h
-        .fill(
-            "fill",
-            json!({"item": card.item, "fields": fields, "press": pay}),
-        )
+    let (stop, _) = h
+        .gated_fill(json!({"item": card.item, "fields": fields, "press": pay}))
         .await;
-    let paid = paid.unwrap();
+    let stop = stop.unwrap_err();
+    println!("card with --press: {} {}", stop.code, stop.details);
+    assert_eq!(
+        (stop.exit, stop.code.as_str()),
+        (crate::failure::Exit::Denied, "confirm_needed")
+    );
+    let issued = &stop.details["confirmation"];
+    assert_eq!(issued["item_title"], "Test Visa");
+    assert_eq!(issued["target"]["name"], "Pay");
+    assert!(issued["title"].is_string() && issued["lines"].is_array());
+    let handle = &issued["screenshot"];
+    let png = crate::browser::steps::shot(
+        &h.browsers,
+        &h.id,
+        CALLER,
+        handle["request"].as_str().unwrap(),
+        handle["shot"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert!(png.starts_with(b"\x89PNG"), "the confirmation's screenshot");
+    let untouched = h.call("observe", json!({})).await.unwrap();
+    assert!(
+        untouched["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["filled"].is_null() && e["value"].is_null()),
+        "nothing was released before the confirmation"
+    );
+    let mut audit = Map::new();
+    let paid = crate::browser::steps::run(
+        &h.browsers,
+        &h.entry,
+        &h.id,
+        CALLER,
+        &json!({"request": "r-card", "plan": {"steps": []}, "confirm": issued["id"]}),
+        &mut audit,
+    )
+    .await
+    .unwrap();
+    h.shown.push(paid.to_string());
+    h.shown.push(Value::Object(audit.clone()).to_string());
+    println!("card confirmed: {}", paid["trail"]);
+    assert_eq!(paid["trail"][0]["op"], "fill");
+    assert_eq!(paid["trail"][0]["submitted"], true);
+    let audit = audit["step_records"][0].as_object().unwrap().clone();
     println!(
-        "card: submitted {}; audit sites: top {} frames {}",
-        paid["submitted"], audit["top_origin"], audit["frame_origins"]
+        "card: audit sites: top {} frames {}",
+        audit["top_origin"], audit["frame_origins"]
     );
     let page = h.text().await;
     println!("checkout answered: {page}");
@@ -465,6 +538,72 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
     assert_eq!(audit["frame_origins"], json!([local]));
     let after = h.call("observe", json!({})).await.unwrap().to_string();
     assert!(!after.contains(NUMBER) && !after.contains(CVV));
+
+    // A confirmed card fill whose page reprices once the number is in: Pay
+    // is not pressed, the values are cleared, and the agent is let back in.
+    let checkout = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/reprice-checkout.html")}),
+        )
+        .await
+        .unwrap();
+    let fields = json!([
+        ["number", [find(&checkout, "textbox", "Card number")]],
+        ["expiry", [find(&checkout, "textbox", "Expiry")]],
+        ["cvv", [find(&checkout, "textbox", "CVV")]],
+    ]);
+    let pay = find(&checkout, "button", "Pay");
+    let (stop, _) = h
+        .gated_fill(json!({"item": card.item, "fields": fields, "press": pay}))
+        .await;
+    let stop = stop.unwrap_err();
+    assert_eq!(stop.code, "confirm_needed");
+    assert!(
+        stop.details["confirmation"]["lines"]
+            .to_string()
+            .contains("$10.00")
+    );
+    let mut audit = Map::new();
+    let repriced = crate::browser::steps::run(
+        &h.browsers,
+        &h.entry,
+        &h.id,
+        CALLER,
+        &json!({"request": "r-reprice", "plan": {"steps": []},
+                "confirm": stop.details["confirmation"]["id"]}),
+        &mut audit,
+    )
+    .await
+    .unwrap_err();
+    h.shown.push(format!(
+        "{} {} {}",
+        repriced.code, repriced.message, repriced.details
+    ));
+    h.shown.push(Value::Object(audit.clone()).to_string());
+    println!(
+        "repriced during the fill: {} ({})",
+        repriced.code, repriced.message
+    );
+    assert_eq!(
+        (repriced.exit, repriced.code.as_str()),
+        (crate::failure::Exit::Denied, "confirm_stale")
+    );
+    let page = h.text().await;
+    assert!(
+        page.contains("$100.00") && !page.contains("payment:"),
+        "{page}"
+    );
+    // The agent is back (the cleanup was confirmed), and the fields are
+    // empty: eval, refused while one holds anything, reads them.
+    let left = h
+        .call(
+            "eval",
+            json!({"script": "['cc-number', 'cc-exp', 'cc-csc'].map((n) => document.querySelector(`[name=${n}]`).value)"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(left["value"], json!(["", "", ""]));
 
     // An identity's ordinary fields fill without --press; while they are on
     // the page, eval is refused.

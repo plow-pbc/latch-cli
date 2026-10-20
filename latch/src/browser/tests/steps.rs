@@ -1,31 +1,33 @@
-//! Step lists, targets by name and description, expectations, risky
-//! clicks and request history, on the pinned engine through the host's own
-//! `act`, `find` and `wait`, on the test site's expenses and shop pages.
+//! The step executor on the pinned engine, through the host's own `do`
+//! (and `act`, a plan of one step), on the test site's expense, checkout
+//! and counter pages: literal steps and their checks, confirmations, the
+//! decision model's absence, the step policy, and the journal.
 //!
-//! Without a decision model (no key in the state directory): exact names,
-//! typed checks, the word list's review, and history. With one: a fake
-//! provider answering from fixed facts about the test site, in every run;
-//! and, built only with `--features live-model` (`just test-model`), the
-//! same task on jev itself.
+//! The decision model is a fake provider answering from fixed facts about
+//! the test site, in every run, with a switch that makes it unreachable;
+//! built only with `--features live-model` (`just test-model`), the
+//! confirmation task runs on jev itself.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::{CALLER, latch, test_state};
-use crate::browser::client::read_steps;
+use super::{CALLER, find, latch, test_state};
+use crate::browser::client::{act_literal, do_plan};
 use crate::browser::host::{self, Browsers};
 use crate::browser::model::{Answer, Asked, CallMeta, Kind, Provider, Question};
+use crate::browser::plan::{Check, Plan, Step};
 use crate::browser::steps;
+use crate::cli::ActAction;
 use crate::failure::{Exit, Failure};
 use crate::vault::host::Vault;
 
-/// The test site, plus the answers to its expense and order forms and a
-/// page that takes three seconds.
+/// The test site, plus the answers to its expense and order forms.
 fn site() -> String {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-site");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -55,40 +57,20 @@ fn site() -> String {
                     body.split('&')
                         .find_map(|pair| pair.strip_prefix(&format!("{name}=")))
                         .unwrap_or_default()
-                        .replace("%24", "$")
+                        .to_string()
                 };
-                let path = line.split(' ').nth(1).unwrap_or("/").to_string();
+                let path = line.split(' ').nth(1).unwrap_or("/");
+                let path = path.split('?').next().unwrap_or("/").to_string();
                 let answer = |title: &str, text: String| {
                     format!("<!doctype html><meta charset=\"utf-8\"><title>{title}</title><h1>{title}</h1><p>{text}</p>")
                         .into_bytes()
                 };
                 let page = match path.as_str() {
-                    "/expense-save" => {
-                        let amount = field("amount");
-                        let plain = !amount.is_empty()
-                            && amount.chars().all(|c| c.is_ascii_digit() || c == '.');
-                        Some(if !plain {
-                            answer(
-                                "New expense · Expenses",
-                                "Amount must be a plain number, like 12.50. Your expense was not saved.".into(),
-                            )
-                        } else if field("go") == "submit" {
-                            answer(
-                                "Expense · Expenses",
-                                format!("Expense submitted for approval. Amount: ${amount}"),
-                            )
-                        } else {
-                            answer(
-                                "Expense · Expenses",
-                                format!("Draft saved. Amount: ${amount}"),
-                            )
-                        })
-                    }
+                    "/expense-save" => Some(answer(
+                        "Expense · Expenses",
+                        format!("Draft saved. Amount: {}", field("amount")),
+                    )),
                     "/placed" => Some(answer("Order · Shop", "Order placed.".into())),
-                    "/slow" => {
-                        std::thread::sleep(Duration::from_secs(3));
-                        Some(answer("Slow · Shop", "Slow page loaded.".into()))
-                    }
                     file => std::fs::read(folder.join(file.trim_start_matches('/'))).ok(),
                 };
                 let mut socket = socket;
@@ -96,8 +78,13 @@ fn site() -> String {
                     Some(page) => ("200 OK", page),
                     None => ("404 Not Found", Vec::new()),
                 };
+                let kind = if path.ends_with(".csv") {
+                    "text/csv"
+                } else {
+                    "text/html"
+                };
                 let head = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     page.len()
                 );
                 let _ = socket.write_all(head.as_bytes());
@@ -108,402 +95,26 @@ fn site() -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-struct Harness {
-    browsers: Arc<Browsers>,
-    /// The session the harness acts in, and its id.
-    entry: Arc<host::Entry>,
-    id: String,
-    requests: u32,
-    /// Every audit record, for the checks on what it holds.
-    audits: Vec<Map<String, Value>>,
-}
-
-impl Harness {
-    async fn start(state: &std::path::Path, provider: Option<Arc<dyn Provider>>) -> Harness {
-        let vault = Vault::new(state.to_path_buf());
-        let mut browsers = Browsers::new(state.to_path_buf(), vault);
-        browsers.test = Some((latch(), Vec::new()));
-        browsers.provider = provider;
-        let browsers = Arc::new(browsers);
-        let (id, entry) = browsers.open("default", CALLER, None).await.unwrap();
-        Harness {
-            browsers,
-            entry,
-            id,
-            requests: 0,
-            audits: Vec::new(),
-        }
-    }
-
-    /// A new session on `url`, which takes the place of the one before.
-    async fn open(&mut self, url: &str) -> Value {
-        let mut audit = Map::new();
-        let (opened, _) = host::call(
-            &self.browsers,
-            CALLER.into(),
-            "open",
-            "default",
-            &json!({"url": url}),
-            None,
-            &mut audit,
-        )
-        .await
-        .unwrap();
-        let id = opened["session"].as_str().unwrap().to_string();
-        self.entry = self.browsers.session(&id, CALLER).await.unwrap();
-        let before = std::mem::replace(&mut self.id, id);
-        self.browsers.close(&before, CALLER).await.unwrap();
-        opened
-    }
-
-    fn request(&mut self) -> String {
-        self.requests += 1;
-        format!("r{}", self.requests)
-    }
-
-    /// `act --steps`, as the client sends it: the lines parsed by the
-    /// client's own reader.
-    async fn steps(&mut self, lines: &str) -> (String, Result<Value, Failure>) {
-        let request = self.request();
-        let args = json!({"request": request, "list": true, "steps": read_steps(lines).unwrap()});
-        (request.clone(), self.act(args).await)
-    }
-
-    /// One `act`.
-    async fn act_one(&mut self, line: &str) -> Result<Value, Failure> {
-        let request = self.request();
-        let args = json!({"request": request, "list": false, "steps": read_steps(line).unwrap()});
-        self.act(args).await
-    }
-
-    async fn act(&mut self, args: Value) -> Result<Value, Failure> {
-        let mut audit = Map::new();
-        let result = steps::act(&self.browsers, &self.entry, &args, &mut audit).await;
-        self.audits.push(audit);
-        result
-    }
-
-    async fn find(&mut self, args: Value) -> Result<Value, Failure> {
-        let mut audit = Map::new();
-        let result = steps::find(&self.browsers, &self.entry, &args, &mut audit).await;
-        self.audits.push(audit);
-        result
-    }
-
-    async fn wait(&mut self, args: Value) -> Result<Value, Failure> {
-        let mut audit = Map::new();
-        let result = steps::wait(&self.browsers, &self.entry, &args, &mut audit).await;
-        self.audits.push(audit);
-        result
-    }
-
-    fn history(&self, request: &str) -> Value {
-        steps::history(&self.entry, request).unwrap()
-    }
-}
-
-/// Keeps `value` as `name` in `LATCH_BROWSER_EVIDENCE`, when it is set.
-fn evidence(name: &str, value: &Value) {
-    if let Some(dir) = std::env::var_os("LATCH_BROWSER_EVIDENCE") {
-        let text = serde_json::to_string_pretty(value).unwrap();
-        std::fs::write(std::path::Path::new(&dir).join(name), text).unwrap();
-    }
-}
-
-fn stopped(name: &str, failure: &Failure) {
-    let shown = json!({"exit": u8::from(failure.exit), "code": failure.code,
-                       "message": failure.message, "details": failure.details});
-    evidence(name, &shown);
-}
-
-fn row_ref(result: &Value, role: &str, name: &str, row: &str) -> String {
-    result["elements"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| {
-            e["role"] == role && e["name"] == name && e["row"].as_str().unwrap_or("").contains(row)
-        })
-        .unwrap_or_else(|| panic!("no {role} {name:?} in row {row:?}"))["ref"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
-
-fn dispatched(trace: &Value) -> Vec<String> {
-    trace
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["dispatch"].as_str().unwrap_or_default().to_string())
-        .collect()
-}
-
-#[tokio::test]
-async fn without_a_model_names_resolve_exactly_and_risky_clicks_need_a_ref() {
-    let (_dir, state, _area) = test_state();
-    let site = site();
-    let mut h = Harness::start(&state, None).await;
-    h.open(&format!("{site}/invoices.html")).await;
-
-    // An exact name, no model call.
-    let done = h.act_one(r#"click "New expense""#).await.unwrap();
-    assert_eq!(done["resolved_by"], "name");
-    assert_eq!(done["dispatch"], "dispatched");
-    assert_eq!(done["target"]["name"], "New expense");
-    assert_eq!(done["title"], "New expense · Expenses");
-    assert!(done["elements"].as_array().unwrap().len() >= 6);
-
-    // A description resolves by exact name only, and says why.
-    let failure = h.act_one(r#"type "amount" 12.50"#).await.unwrap_err();
-    assert_eq!(
-        (failure.exit, failure.code.as_str()),
-        (Exit::Failed, "no_such_target")
-    );
-    assert!(failure.message.contains("exactly"), "{}", failure.message);
-    assert_eq!(failure.details["dispatch"], "not_sent");
-    assert!(failure.details["elements"].is_array());
-
-    // A sentence is refused before anything runs.
-    let (request, result) = h
-        .steps("type Merchant \"Acme Hosting\"\nclick \"Save draft\" --expect \"the draft was saved\"\n")
-        .await;
-    let failure = result.unwrap_err();
-    assert_eq!(failure.code, "assist_off");
-    assert!(
-        steps::history(&h.entry, &request).is_err(),
-        "nothing ran, so nothing was kept"
-    );
-
-    // Typed checks need no model: a whole form by exact names, in one list.
-    let (request, result) = h
-        .steps(
-            "type Merchant \"Acme Hosting\" --expect-field e1=\"Acme Hosting\"\n\
-             type \"Amount (USD)\" 388.50\n\
-             select Category \"Office supplies\"\n\
-             click \"Save draft\" --expect-text \"Draft saved\"\n",
-        )
-        .await;
-    let done = result.unwrap();
-    assert_eq!(done["status"], "done");
-    assert_eq!(done["executed"], 4);
-    assert_eq!(done["trace"][0]["expect"][0]["result"], "met");
-    assert_eq!(
-        done["trace"][3]["expect"][0],
-        json!({"kind": "text", "result": "met"})
-    );
-    assert_eq!(h.history(&request)["status"], "done");
-
-    // "Place order", on a page the agent hasn't seen, stops for a ref,
-    // however it was named.
-    h.open(&format!("{site}/basket.html")).await;
-    let (request, result) = h
-        .steps("click \"Continue to checkout\"\nclick \"Place order\"\n")
-        .await;
-    let failure = result.unwrap_err();
-    assert_eq!(
-        (failure.exit, failure.code.as_str()),
-        (Exit::Denied, "confirm_target")
-    );
-    assert_eq!(
-        dispatched(&failure.details["trace"]),
-        ["dispatched", "not_sent"]
-    );
-    assert_eq!(failure.details["review"]["by"], "words");
-    let target = failure.details["target"].clone();
-    assert_eq!(target["name"], "Place order");
-    assert_eq!(h.history(&request)["status"], "confirm_target");
-    // Now seen, the click by ref goes through.
-    let line = format!(
-        "--snapshot {} click {} --expect-text \"Order placed\"",
-        target["snapshot"].as_str().unwrap(),
-        target["ref"].as_str().unwrap()
-    );
-    let done = h.act_one(&line).await.unwrap();
-    assert_eq!(done["resolved_by"], "ref");
-    assert_eq!(done["expect"][0]["result"], "met");
-
-    // A position click names no element to review: on a page the agent
-    // hasn't seen it is refused, never sent.
-    h.open(&format!("{site}/basket.html")).await;
-    let (_, result) = h
-        .steps("click \"Continue to checkout\"\nclick --at 10,10\n")
-        .await;
-    let failure = result.unwrap_err();
-    assert_eq!(
-        (failure.exit, failure.code.as_str()),
-        (Exit::Denied, "confirm_target")
-    );
-    assert_eq!(
-        dispatched(&failure.details["trace"]),
-        ["dispatched", "not_sent"]
-    );
-    // Shown now, it goes through.
-    assert_eq!(
-        h.act_one("click --at 10,10").await.unwrap()["dispatch"],
-        "dispatched"
-    );
-
-    // find by role and exact name; wait for typed conditions.
-    let invoices = h.open(&format!("{site}/invoices.html")).await;
-    let found = h
-        .find(json!({"role": "link", "name": "Download"}))
-        .await
-        .unwrap();
-    assert_eq!(found["candidates"].as_array().unwrap().len(), 2);
-    let found = h
-        .find(json!({"description": "the unpaid invoice"}))
-        .await
-        .unwrap();
-    assert_eq!(found["assist"], "off");
-    let waited = h
-        .wait(json!({"text": "Outstanding balance", "within": 2}))
-        .await
-        .unwrap();
-    assert_eq!(waited["met"], true);
-    let failure = h
-        .wait(json!({"text": "never here", "within": 1}))
-        .await
-        .unwrap_err();
-    assert_eq!(failure.code, "timeout");
-    let failure = h
-        .wait(json!({"for": "the invoices are listed", "within": 1}))
-        .await
-        .unwrap_err();
-    assert_eq!(failure.code, "assist_off");
-
-    // A field ref from a page that has gone is stale, not "not met".
-    let ran = h.request();
-    let steps = read_steps(r#"click "New expense""#).unwrap();
-    h.act(json!({"request": ran, "list": false, "steps": steps}))
-        .await
-        .unwrap();
-    let line = format!(
-        "--snapshot {} scroll down --expect-field e1=x",
-        invoices["snapshot"].as_str().unwrap()
-    );
-    let failure = h.act_one(&line).await.unwrap_err();
-    assert_eq!(failure.code, "stale_snapshot");
-
-    // A request id is never run twice.
-    let again = json!({"request": ran, "list": false, "steps": read_steps("scroll down").unwrap()});
-    assert_eq!(h.act(again).await.unwrap_err().code, "duplicate_request");
-
-    // The audit: per-step records, never typed text or what was expected.
-    let audits = serde_json::to_string(&h.audits).unwrap();
-    for never in ["Acme Hosting", "388.50", "Draft saved", "Order placed"] {
-        assert!(!audits.contains(never), "the audit holds {never:?}");
-    }
-    assert!(audits.contains("text_sha256"));
-}
-
-#[tokio::test]
-async fn a_lost_reply_leaves_the_requests_history_to_read() {
-    let (_dir, state, _area) = test_state();
-    let site = site();
-    let mut h = Harness::start(&state, None).await;
-    h.open(&format!("{site}/basket.html")).await;
-    let request = h.request();
-    let args = json!({"request": request, "list": true, "steps": read_steps(
-        "click \"Slow page\"\nscroll down --expect-text \"not on this page\" --within 3\nback\n"
-    ).unwrap()});
-    let (browsers, entry) = (h.browsers.clone(), h.entry.clone());
-    let running = tokio::spawn(async move {
-        let mut audit = Map::new();
-        steps::act(&browsers, &entry, &args, &mut audit).await
-    });
-    // The reply is dropped: nobody waits for it. The history says how far
-    // the list got while it still runs: a step whose action went out says
-    // so while its expectation is still being waited for.
-    let mut waiting_after_dispatch = false;
-    for _ in 0..150 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let now = h.history(&request);
-        if now["status"] != "running" {
-            break;
-        }
-        let steps = dispatched(&now["trace"]);
-        assert_eq!(steps[2], "not_sent");
-        if steps[1] == "dispatched" {
-            waiting_after_dispatch = true;
-        }
-    }
-    assert!(
-        waiting_after_dispatch,
-        "step 2 read as dispatched while it waited"
-    );
-    drop(running);
-    let mut finished = Value::Null;
-    for _ in 0..100 {
-        finished = h.history(&request);
-        if finished["status"] != "running" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(finished["status"], "expect_not_met");
-    assert_eq!(
-        dispatched(&finished["trace"]),
-        ["dispatched", "dispatched", "not_sent"]
-    );
-    assert_eq!(finished["trace"][0]["target"]["name"], "Slow page");
-    assert_eq!(finished["trace"][1]["expect"][0]["result"], "not_met");
-}
-
 /// A decision model that answers from fixed facts about the test site, so
-/// the model's paths run in every `just test`: which element each
-/// description means (by a piece of its one-line description), which page
-/// line proves each sentence, which sentences are vague, and which clicks
-/// can't be undone.
-struct Fake;
-
-const FAKE_TARGETS: [(&str, &str); 5] = [
-    ("amount", "\"Amount (USD)\""),
-    ("date of the expense", "\"Date\""),
-    ("the button that saves a draft", "\"Save draft\""),
-    ("place the order", "\"Place order\""),
-    ("the download for the unpaid invoice", "Unpaid"),
-];
-const FAKE_FACTS: [(&str, &str); 3] = [
-    ("a form for a new expense is shown", "New expense"),
-    ("the expense was saved as a draft", "Draft saved"),
-    ("an outstanding balance is shown", "Outstanding balance"),
-];
-const FAKE_VAGUE: [&str; 1] = ["finish the expense report"];
-
-/// The option whose description holds `want` (else "none"), with
-/// probabilities that cover every option, sum to 1 and peak at it.
-fn fake_pick(options: &[(String, String)], want: Option<&str>) -> Answer {
-    let choice = want
-        .and_then(|want| {
-            options
-                .iter()
-                .find(|(o, what)| o != "none" && what.contains(want))
-        })
-        .map_or("none".to_string(), |(o, _)| o.clone());
-    let probabilities = options
-        .iter()
-        .map(|(o, _)| {
-            let p = if choice == "none" {
-                if o == "none" { 1.0 } else { 0.0 }
-            } else if *o == choice {
-                0.95
-            } else if o == "none" {
-                0.05
-            } else {
-                0.0
-            };
-            (o.clone(), p)
-        })
-        .collect();
-    Answer::Chose {
-        choice,
-        probabilities,
-    }
+/// the model's paths run in every `just test`: which actions can't be
+/// undone, which page line proves each sentence, and which sentences are
+/// vague. `down` makes it unreachable.
+#[derive(Default)]
+struct Fake {
+    down: AtomicBool,
+    /// Milliseconds each risk answer takes.
+    slow: AtomicU64,
 }
+
+const FAKE_RISKY: [&str; 1] = ["Place order"];
+const FAKE_FACTS: [(&str, &str); 1] = [("the draft was saved", "Draft saved")];
+const FAKE_VAGUE: [&str; 1] = ["finish the expense report"];
 
 impl Provider for Fake {
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+        if self.down.load(Ordering::SeqCst) {
+            return Box::pin(async { Err("the fake model could not be reached".to_string()) });
+        }
         let sentence = state["condition"].as_str().unwrap_or_default();
         let fact = FAKE_FACTS
             .iter()
@@ -512,26 +123,31 @@ impl Provider for Fake {
         let mut answers = HashMap::new();
         for question in questions {
             let answer = match (question.id.as_str(), &question.kind) {
-                ("target", Kind::Choose(options)) => {
-                    let said = state["agent_description"].as_str().unwrap_or_default();
-                    let want = FAKE_TARGETS
+                ("evidence", Kind::Choose(options)) => {
+                    let choice = fact
+                        .and_then(|line| {
+                            options
+                                .iter()
+                                .find(|(o, what)| o != "none" && what.contains(line))
+                        })
+                        .map_or("none".to_string(), |(o, _)| o.clone());
+                    let probabilities = options
                         .iter()
-                        .find(|(d, _)| *d == said)
-                        .map(|(_, w)| *w);
-                    fake_pick(options, want)
+                        .map(|(o, _)| (o.clone(), if *o == choice { 1.0 } else { 0.0 }))
+                        .collect();
+                    Answer::Chose {
+                        choice,
+                        probabilities,
+                    }
                 }
-                ("evidence", Kind::Choose(options)) => fake_pick(options, fact),
                 ("met", Kind::YesNo) => {
                     let shown = fact.is_some_and(|line| state["lines"].to_string().contains(line));
-                    Answer::Yes(if shown { 0.97 } else { 0.03 })
+                    Answer::Yes(if shown { 0.95 } else { 0.05 })
                 }
                 ("risky", Kind::YesNo) => {
-                    let element = state["element"].as_str().unwrap_or_default();
-                    Answer::Yes(if element.contains("Place order") {
-                        0.9
-                    } else {
-                        0.1
-                    })
+                    let action = state["action"].as_str().unwrap_or_default();
+                    let risky = FAKE_RISKY.iter().any(|r| action.contains(r));
+                    Answer::Yes(if risky { 0.92 } else { 0.04 })
                 }
                 (id, Kind::YesNo) => {
                     let n: usize = id.trim_start_matches('c').parse().unwrap();
@@ -552,22 +168,710 @@ impl Provider for Fake {
             request_id: Some("fake".into()),
             latency_ms: 1,
         };
-        Box::pin(async move { Ok((answers, meta)) })
+        let slow = if answers.contains_key("risky") {
+            self.slow.load(Ordering::SeqCst)
+        } else {
+            0
+        };
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(slow)).await;
+            Ok((answers, meta))
+        })
     }
 }
 
-#[tokio::test]
-async fn a_list_with_descriptions_and_expectations_runs_a_task_in_one_request() {
-    let (_dir, state, _area) = test_state();
-    task_in_one_request(&state, Some(Arc::new(Fake)), "fake").await;
+struct Harness {
+    browsers: Arc<Browsers>,
+    /// The session the harness acts in, and its id.
+    entry: Arc<host::Entry>,
+    id: String,
+    state: std::path::PathBuf,
+    requests: u32,
+    /// Every audit record, for the checks on what it holds.
+    audits: Vec<Map<String, Value>>,
 }
 
-/// The same task on jev itself, built only with `--features live-model`
-/// (`just test-model KEYFILE`): the key file is copied into the test's own
-/// state directory.
+impl Harness {
+    async fn start(state: &std::path::Path, provider: Option<Arc<dyn Provider>>) -> Harness {
+        let vault = Vault::new(state.to_path_buf());
+        let mut browsers = Browsers::new(state.to_path_buf(), vault);
+        browsers.test = Some((latch(), Vec::new()));
+        browsers.provider = provider;
+        let browsers = Arc::new(browsers);
+        let (id, entry) = browsers.open("default", CALLER, None).await.unwrap();
+        Harness {
+            browsers,
+            entry,
+            id,
+            state: state.to_path_buf(),
+            requests: 0,
+            audits: Vec::new(),
+        }
+    }
+
+    /// A command in the harness's session. An `open` starts a new session,
+    /// which takes the place of the one before.
+    async fn call(&mut self, command: &str, args: Value) -> Value {
+        let mut audit = Map::new();
+        let name = if command == "open" {
+            "default"
+        } else {
+            &self.id
+        };
+        let (result, _) = host::call(
+            &self.browsers,
+            CALLER.into(),
+            command,
+            name,
+            &args,
+            None,
+            &mut audit,
+        )
+        .await
+        .unwrap();
+        if command == "open" {
+            let id = result["session"].as_str().unwrap().to_string();
+            self.entry = self.browsers.session(&id, CALLER).await.unwrap();
+            let before = std::mem::replace(&mut self.id, id);
+            self.browsers.close(&before, CALLER).await.unwrap();
+        }
+        result
+    }
+
+    async fn open(&mut self, url: &str) -> Value {
+        self.call("open", json!({"url": url})).await
+    }
+
+    async fn text(&mut self) -> String {
+        self.call("text", json!({})).await["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// A fresh request id, as the client makes one.
+    fn request(&mut self) -> String {
+        self.requests += 1;
+        format!("r{:08x}{}", rand::random::<u32>(), self.requests)
+    }
+
+    /// One request to the executor, as the host passes it on.
+    async fn send(&mut self, mut args: Value) -> Result<Value, Failure> {
+        if args["request"].is_null() {
+            args["request"] = json!(self.request());
+        }
+        let mut audit = Map::new();
+        let result = steps::run(
+            &self.browsers,
+            &self.entry,
+            &self.id,
+            CALLER,
+            &args,
+            &mut audit,
+        )
+        .await;
+        self.audits.push(audit);
+        result
+    }
+
+    /// `act`, as the client builds it.
+    async fn act(
+        &mut self,
+        action: ActAction,
+        words: &[&str],
+        check: Option<&str>,
+    ) -> Result<Value, Failure> {
+        let word = |n: usize| words.get(n).map(|w| w.to_string());
+        let literal = act_literal(Some(action), None, word(0), word(1)).unwrap();
+        let plan = Plan {
+            steps: vec![Step {
+                literal: Some(literal),
+                check: check.map(|c| Check::parse(c).unwrap()),
+                ..Step::default()
+            }],
+            ..Plan::default()
+        };
+        self.send(json!({"via": "act", "plan": plan})).await
+    }
+
+    /// The plan command's short form, as the client compiles it.
+    async fn short(&mut self, steps: &[&str]) -> Result<Value, Failure> {
+        let steps: Vec<String> = steps.iter().map(|s| s.to_string()).collect();
+        let plan = do_plan(&steps, None, false, None).unwrap();
+        self.send(json!({"plan": plan})).await
+    }
+
+    /// `do --plan-file`, as the client reads it.
+    async fn plan_file(&mut self, plan: Value) -> Result<Value, Failure> {
+        let file = self.state.join("plan.json");
+        std::fs::write(&file, plan.to_string()).unwrap();
+        let plan = do_plan(&[], Some(&file), false, None).unwrap();
+        self.send(json!({"plan": plan})).await
+    }
+
+    async fn confirm(&mut self, id: &str) -> Result<Value, Failure> {
+        self.send(json!({"plan": {"steps": []}, "confirm": id}))
+            .await
+    }
+
+    fn history(&self, request: &str) -> Value {
+        steps::history(&self.browsers, &self.id, CALLER, request).unwrap()
+    }
+
+    fn policy(&self, policy: &str) {
+        let file = self.state.join(steps::POLICY_FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, json!({"literal_steps": policy}).to_string()).unwrap();
+    }
+}
+
+/// Keeps `value` as `name` in `LATCH_BROWSER_EVIDENCE`, when it is set.
+fn evidence(name: &str, value: &Value) {
+    if let Some(dir) = std::env::var_os("LATCH_BROWSER_EVIDENCE") {
+        let text = serde_json::to_string_pretty(value).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join(name), text).unwrap();
+    }
+}
+
+fn stopped(name: &str, failure: &Failure) {
+    let shown = json!({"exit": u8::from(failure.exit), "code": failure.code,
+                       "message": failure.message, "details": failure.details});
+    evidence(name, &shown);
+}
+
+fn refused(failure: &Failure) -> (Exit, &str) {
+    (failure.exit, failure.code.as_str())
+}
+
+fn confirmation(failure: &Failure) -> Value {
+    failure.details["stop"]["confirmation"].clone()
+}
+
+#[tokio::test]
+async fn literal_steps_take_effect_and_their_checks_decide_the_outcome() {
+    let (_dir, state, _area) = test_state();
+    let site = site();
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let mut h = Harness::start(&state, Some(fake)).await;
+    let page = h
+        .open(&format!("{site}/expense-new.html?from=invoices"))
+        .await;
+    let merchant = find(&page, "textbox", "Merchant");
+    let category = find(&page, "combobox", "Category");
+    let amount = find(&page, "textbox", "Amount (USD)");
+    let save = find(&page, "button", "Save draft");
+
+    // type and select, each with a field check.
+    let typed = h
+        .act(
+            ActAction::Type,
+            &[&merchant, "Acme Hosting"],
+            Some(&format!("field: {merchant}=Acme Hosting")),
+        )
+        .await
+        .unwrap();
+    evidence("b5-act-type.json", &typed);
+    assert_eq!(typed["status"], "reached");
+    assert_eq!(typed["steps"][0]["outcome"], "checked");
+    assert_eq!(typed["trail"][0]["result"], "dispatched");
+    assert_eq!(typed["trail"][0]["chosen"], "ref");
+    assert!(
+        typed["trail"][0]["risk_p"].is_null(),
+        "typing needs no risk decision"
+    );
+    let selected = h
+        .act(
+            ActAction::Select,
+            &[&category, "Office supplies"],
+            Some(&format!("field: {category}=Office supplies")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected["status"], "reached");
+    let shown = h.call("observe", json!({})).await;
+    let field = shown["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "Category")
+        .unwrap();
+    assert_eq!(field["value"], "Office supplies", "the option changed");
+
+    // No check: only dispatched, never reached.
+    let sent = h
+        .act(ActAction::Type, &[&amount, "388.50"], None)
+        .await
+        .unwrap();
+    assert_eq!(sent["status"], "dispatched");
+    assert_eq!(sent["steps"][0]["outcome"], "dispatched");
+
+    // URL checks by component, typed and plan-file routes alike.
+    let held = h
+        .act(ActAction::Scroll, &["down"], Some("query: from=invoices"))
+        .await
+        .unwrap();
+    assert_eq!(held["steps"][0]["evidence"]["check"], "query");
+    let failure = h
+        .plan_file(json!({"within": 3, "steps": [{"literal": {"op": "scroll", "text": "up"},
+                                                  "check": {"kind": "path", "value": "invoices"}}]}))
+        .await
+        .unwrap_err();
+    stopped("b5-check-not-met.json", &failure);
+    assert_eq!(refused(&failure), (Exit::Failed, "check_not_met"));
+    assert_eq!(failure.details["status"], "stopped");
+    assert_eq!(failure.details["steps"][0]["outcome"], "stopped");
+    assert_eq!(failure.details["trail"][0]["result"], "dispatched");
+
+    // A click gets a risk decision; "Save draft" is fine. `new text` must
+    // not hold before, and must after.
+    let saved = h
+        .act(ActAction::Click, &[&save], Some("new text: Draft saved"))
+        .await
+        .unwrap();
+    evidence("b5-act-click.json", &saved);
+    assert_eq!(saved["status"], "reached");
+    assert!(saved["trail"][0]["risk_p"].as_f64().unwrap() < 0.5);
+    assert_eq!(saved["page"]["title"], "Expense · Expenses");
+    let failure = h
+        .act(ActAction::Scroll, &["down"], Some("new text: Draft saved"))
+        .await
+        .unwrap_err();
+    assert_eq!(refused(&failure), (Exit::Failed, "check_not_met"));
+    assert!(
+        failure.details["trail"].as_array().unwrap().is_empty(),
+        "nothing was sent"
+    );
+
+    // A sentence check, judged by the model: model_assessed, for review.
+    let page = h.open(&format!("{site}/expense-new.html")).await;
+    let save = find(&page, "button", "Save draft");
+    let judged = h
+        .short(&[&format!("click {save} -> the draft was saved")])
+        .await
+        .unwrap();
+    assert_eq!(judged["status"], "reached");
+    assert_eq!(judged["steps"][0]["outcome"], "model_assessed");
+    assert!(
+        judged["steps"][0]["evidence"]["evidence"]
+            .as_str()
+            .unwrap()
+            .contains("Draft saved")
+    );
+    assert_eq!(judged["review"], true);
+    let failure = h
+        .short(&[&format!("click {save} -> finish the expense report")])
+        .await
+        .unwrap_err();
+    assert_eq!(refused(&failure), (Exit::Usage, "vague_condition"));
+
+    // A download the step starts, and the origin.
+    let page = h.open(&format!("{site}/invoices.html")).await;
+    let link = page["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "Download" && e["row"].as_str().unwrap_or("").contains("September"))
+        .unwrap()["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let downloaded = h
+        .short(&[&format!("click {link} -> download: complete")])
+        .await
+        .unwrap();
+    assert!(downloaded["steps"][0]["evidence"]["download"].is_string());
+    let here = h
+        .act(
+            ActAction::Scroll,
+            &["down"],
+            Some(&format!("origin: {site}")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(here["status"], "reached");
+
+    // The audit: the request, each action's record, never typed text,
+    // page text or what a check looked for.
+    let audits = serde_json::to_string(&h.audits).unwrap();
+    for never in [
+        "Acme Hosting",
+        "388.50",
+        "Draft saved",
+        "Office supplies",
+        "from=invoices",
+    ] {
+        assert!(!audits.contains(never), "the audit holds {never:?}");
+    }
+    let click = h
+        .audits
+        .iter()
+        .find(|a| a["step_records"][0]["op"] == "click")
+        .unwrap();
+    evidence("b5-audit-click.json", &Value::Object(click.clone()));
+    let record = &click["step_records"][0];
+    assert_eq!(record["chosen"], "ref");
+    assert_eq!(record["dispatch"], "sent");
+    assert!(record["risk_p"].is_number());
+    assert!(audits.contains("text_sha256"));
+}
+
+#[tokio::test]
+async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewed() {
+    let (_dir, state, _area) = test_state();
+    let site = site();
+    let slow = Arc::new(Fake::default());
+    let fake: Arc<dyn Provider> = slow.clone();
+    let mut h = Harness::start(&state, Some(fake)).await;
+    let page = h.open(&format!("{site}/order.html")).await;
+    let place = find(&page, "button", "Place order");
+
+    // "Place order" stops before anything is sent, with what was reviewed.
+    let failure = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
+    stopped("b5-confirm-needed.json", &failure);
+    assert_eq!(refused(&failure), (Exit::Denied, "confirm_needed"));
+    let issued = confirmation(&failure);
+    assert_eq!(issued["target"]["name"], "Place order");
+    assert_eq!(issued["target"]["ref"], place);
+    assert_eq!(issued["title"], "Checkout · Shop");
+    assert!(issued["lines"].to_string().contains("Total $10.00"));
+    assert!(issued["risk_p"].as_f64().unwrap() >= 0.5);
+    assert!(failure.details["trail"].as_array().unwrap().is_empty());
+    assert_eq!(failure.details["page"]["title"], "Checkout · Shop");
+    // With a screenshot of the page, fetched by its handle.
+    let handle = &issued["screenshot"];
+    assert_eq!(handle["shot"], "final");
+    assert_eq!(failure.details["screenshot"], *handle);
+    let png = steps::shot(
+        &h.browsers,
+        &h.id,
+        CALLER,
+        handle["request"].as_str().unwrap(),
+        "final",
+    )
+    .unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    assert_eq!(
+        steps::shot(
+            &h.browsers,
+            &h.id,
+            "another-caller",
+            handle["request"].as_str().unwrap(),
+            "final"
+        )
+        .unwrap_err()
+        .code,
+        "no_such_request"
+    );
+
+    // A check that must change and already holds stops before the
+    // confirmation is spent.
+    let failure = h
+        .act(ActAction::Click, &[&place], Some("new text: Total"))
+        .await
+        .unwrap_err();
+    assert_eq!(refused(&failure), (Exit::Failed, "check_not_met"));
+    assert!(failure.details["trail"].as_array().unwrap().is_empty());
+
+    // `act click` on that ref confirms it, once.
+    let placed = h
+        .act(ActAction::Click, &[&place], Some("text: Order placed"))
+        .await
+        .unwrap();
+    evidence("b5-confirmed.json", &placed);
+    assert_eq!(placed["status"], "reached", "the act's own check ran");
+    assert_eq!(placed["steps"][0]["outcome"], "checked");
+    assert_eq!(placed["steps"][0]["confirm"], issued["id"]);
+    assert_eq!(placed["trail"][0]["confirmation"], issued["id"]);
+    assert_eq!(placed["page"]["title"], "Order · Shop");
+    let again = h.confirm(issued["id"].as_str().unwrap()).await.unwrap_err();
+    assert_eq!(refused(&again), (Exit::Denied, "confirm_stale"));
+    assert!(again.message.contains("already used"));
+
+    // Repriced from $10 to $100 on the same page, same ref and name: stale.
+    let page = h.open(&format!("{site}/order.html")).await;
+    let place = find(&page, "button", "Place order");
+    let upgrade = find(&page, "button", "Upgrade to express shipping");
+    let failure = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
+    assert_eq!(failure.code, "confirm_needed");
+    h.act(ActAction::Click, &[&upgrade], None).await.unwrap();
+    let stale = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
+    stopped("b5-confirm-stale.json", &stale);
+    assert_eq!(refused(&stale), (Exit::Denied, "confirm_stale"));
+    assert!(
+        stale.details["page"]["lines"]
+            .to_string()
+            .contains("$100.00")
+    );
+    assert!(!h.text().await.contains("Order placed"));
+
+    // A line break in typed text is an Enter: judged as the form's submit.
+    let page = h.open(&format!("{site}/order.html")).await;
+    let note = find(&page, "textbox", "Gift note");
+    let failure = h
+        .act(ActAction::Type, &[&note, "for Ada\n"], None)
+        .await
+        .unwrap_err();
+    stopped("b5-type-newline.json", &failure);
+    assert_eq!(refused(&failure), (Exit::Denied, "confirm_needed"));
+    let issued = confirmation(&failure);
+    assert_eq!(issued["acts_on"]["name"], "Place order");
+    assert!(!h.text().await.contains("Order placed"));
+    let placed = h.confirm(issued["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(placed["trail"][0]["op"], "type");
+    assert_eq!(placed["page"]["title"], "Order · Shop");
+
+    // A total that changes while the model judges a click: not sent.
+    let page = h.open(&format!("{site}/order.html")).await;
+    let soon = find(&page, "button", "Reprice in a moment");
+    let upgrade = find(&page, "button", "Upgrade to express shipping");
+    h.act(ActAction::Click, &[&soon], None).await.unwrap();
+    slow.slow.store(3000, Ordering::SeqCst);
+    let failure = h
+        .act(ActAction::Click, &[&upgrade], None)
+        .await
+        .unwrap_err();
+    slow.slow.store(0, Ordering::SeqCst);
+    stopped("b5-changed-while-judged.json", &failure);
+    assert_eq!(refused(&failure), (Exit::Failed, "stale_snapshot"));
+    assert_eq!(failure.details["trail"][0]["result"], "refused");
+    assert!(
+        failure.details["page"]["lines"]
+            .to_string()
+            .contains("$100.00")
+    );
+
+    // Enter in the checkout form's field: judged as its submit.
+    let page = h.open(&format!("{site}/order.html")).await;
+    let note = find(&page, "textbox", "Gift note");
+    let failure = h
+        .act(ActAction::Press, &[&note, "Enter"], None)
+        .await
+        .unwrap_err();
+    stopped("b5-enter.json", &failure);
+    assert_eq!(refused(&failure), (Exit::Denied, "confirm_needed"));
+    let issued = confirmation(&failure);
+    assert_eq!(issued["acts_on"]["name"], "Place order");
+    let placed = h.confirm(issued["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(placed["trail"][0]["op"], "press");
+    assert_eq!(placed["page"]["title"], "Order · Shop");
+
+    let audits = serde_json::to_string(&h.audits).unwrap();
+    assert!(audits.contains("\"confirmation\""));
+    assert!(!audits.contains("$10.00") && !audits.contains("Sharp Objects"));
+}
+
+#[tokio::test]
+async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_dispatch() {
+    let (_dir, state, _area) = test_state();
+    let site = site();
+    let fake = Arc::new(Fake::default());
+    let provider: Arc<dyn Provider> = fake.clone();
+    let mut h = Harness::start(&state, Some(provider)).await;
+    let page = h.open(&format!("{site}/order.html")).await;
+    let place = find(&page, "button", "Place order");
+    let note = find(&page, "textbox", "Gift note");
+    let upgrade = find(&page, "button", "Upgrade to express shipping");
+    let issued = confirmation(&h.act(ActAction::Click, &[&place], None).await.unwrap_err());
+
+    fake.down.store(true, Ordering::SeqCst);
+    for (action, words) in [
+        (ActAction::Click, vec![upgrade.as_str()]),
+        (ActAction::Press, vec![note.as_str(), "Enter"]),
+    ] {
+        let failure = h.act(action, &words, None).await.unwrap_err();
+        stopped("b5-no-model.json", &failure);
+        assert_eq!(refused(&failure), (Exit::Failed, "model_unavailable"));
+        assert!(failure.details["trail"].as_array().unwrap().is_empty());
+    }
+    assert!(
+        h.text().await.contains("$10.00"),
+        "the upgrade was not clicked"
+    );
+    // Typing needs no model, nor does a typed check.
+    let typed = h
+        .act(
+            ActAction::Type,
+            &[&note, "for Ada"],
+            Some(&format!("field: {note}=for Ada")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(typed["status"], "reached");
+    // A sentence check can't be judged: refused before anything runs.
+    let failure = h
+        .short(&[&format!("type {note} \"x\" -> the note was saved")])
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "model_unavailable");
+    // A confirmation issued before the outage still dispatches.
+    let placed = h.confirm(issued["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(placed["page"]["title"], "Order · Shop");
+
+    // With no model at all (no key in the state directory), the same.
+    drop(h);
+    let mut bare = Harness::start(&state, None).await;
+    let page = bare.open(&format!("{site}/order.html")).await;
+    let place = find(&page, "button", "Place order");
+    let failure = bare
+        .act(ActAction::Click, &[&place], None)
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "model_unavailable");
+    assert!(
+        failure.message.contains("no decision model"),
+        "{}",
+        failure.message
+    );
+}
+
+#[tokio::test]
+async fn the_step_policy_holds_on_every_route_and_confirmations_still_pass() {
+    let (_dir, state, _area) = test_state();
+    let site = site();
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let mut h = Harness::start(&state, Some(fake)).await;
+    let page = h.open(&format!("{site}/order.html")).await;
+    let place = find(&page, "button", "Place order");
+    let note = find(&page, "textbox", "Gift note");
+    let first = confirmation(&h.act(ActAction::Click, &[&place], None).await.unwrap_err());
+
+    // `none`: no literal step, through act, the short form or a plan file.
+    h.policy("none");
+    let routes = [
+        h.act(ActAction::Type, &[&note, "x"], None).await,
+        h.short(&[&format!("type {note} \"x\"")]).await,
+        h.plan_file(json!({"steps": [{"literal": {"op": "type", "ref": note, "text": "x"}}]}))
+            .await,
+    ];
+    for refused_step in routes {
+        let failure = refused_step.unwrap_err();
+        stopped("b5-policy-none.json", &failure);
+        assert_eq!(refused(&failure), (Exit::Denied, "step_not_allowed"));
+    }
+    assert_eq!(
+        h.audits.last().unwrap()["step_not_allowed"]["policy"],
+        "none"
+    );
+    let shown = h.call("observe", json!({})).await;
+    assert!(
+        shown["elements"]
+            .to_string()
+            .contains("\"name\":\"Gift note\"")
+            && !shown["elements"].to_string().contains("\"value\":\"x\""),
+        "nothing was typed"
+    );
+    // A confirmation still works, by its own ref.
+    let placed = h.act(ActAction::Click, &[&place], None).await.unwrap();
+    assert_eq!(placed["steps"][0]["confirm"], first["id"]);
+
+    // `stop`: only refs from the page the latest stop returned.
+    let page = h.open(&format!("{site}/order.html")).await;
+    h.policy("stop");
+    let note = find(&page, "textbox", "Gift note");
+    let failure = h
+        .act(ActAction::Type, &[&note, "x"], None)
+        .await
+        .unwrap_err();
+    assert_eq!(refused(&failure), (Exit::Denied, "step_not_allowed"));
+    let failure = h.confirm("c000000000000").await.unwrap_err();
+    assert_eq!(refused(&failure), (Exit::Denied, "confirm_stale"));
+    let note = find(&failure.details["page"], "textbox", "Gift note");
+    let typed = h
+        .act(ActAction::Type, &[&note, "for Ada"], None)
+        .await
+        .unwrap();
+    assert_eq!(typed["status"], "dispatched");
+    // That answer was no stop: its page's refs are not allowed.
+    let place = find(&typed["page"], "button", "Place order");
+    let failure = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
+    assert_eq!(refused(&failure), (Exit::Denied, "step_not_allowed"));
+    // A confirmation passes under `stop` too.
+    let stop = h.confirm("c000000000000").await.unwrap_err();
+    let place = find(&stop.details["page"], "button", "Place order");
+    let second = confirmation(&h.act(ActAction::Click, &[&place], None).await.unwrap_err());
+    h.open(&format!("{site}/order.html")).await;
+    let failure = h.confirm(second["id"].as_str().unwrap()).await.unwrap_err();
+    assert_eq!(
+        failure.code, "confirm_stale",
+        "issued on a page since replaced"
+    );
+    let place = find(&failure.details["page"], "button", "Place order");
+    let third = confirmation(&h.act(ActAction::Click, &[&place], None).await.unwrap_err());
+    let placed = h.confirm(third["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(placed["page"]["title"], "Order · Shop");
+}
+
+#[tokio::test]
+async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent() {
+    let (_dir, state, _area) = test_state();
+    let site = site();
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let mut h = Harness::start(&state, Some(fake.clone())).await;
+    let page = h.open(&format!("{site}/counter.html")).await;
+    let slowly = find(&page, "button", "Add one slowly");
+
+    // The host stops while the click is in flight.
+    let args = json!({"request": "r-crash", "plan": do_plan(&[format!("click {slowly}")], None, false, None).unwrap()});
+    let (browsers, entry, crashed) = (h.browsers.clone(), h.entry.clone(), h.id.clone());
+    let session = crashed.clone();
+    let running = tokio::spawn(async move {
+        let mut audit = Map::new();
+        steps::run(&browsers, &entry, &session, CALLER, &args, &mut audit).await
+    });
+    let mut in_flight = Value::Null;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(now) = steps::history(&h.browsers, &crashed, CALLER, "r-crash") {
+            in_flight = now;
+            if in_flight["actions"][0]["result"] == "unknown" {
+                break;
+            }
+        }
+    }
+    assert_eq!(in_flight["status"], "running");
+    assert_eq!(in_flight["actions"][0]["result"], "unknown");
+    running.abort();
+    drop(h);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // A new host on the same state directory reads the journal, for the
+    // crashed session's id.
+    let mut h = Harness::start(&state, Some(fake)).await;
+    let after = steps::history(&h.browsers, &crashed, CALLER, "r-crash").unwrap();
+    evidence("b5-history-after-restart.json", &after);
+    assert_eq!(after["status"], "interrupted");
+    assert_eq!(after["actions"][0]["result"], "unknown");
+    assert_eq!(after["actions"][0]["op"], "click");
+    assert_eq!(after["steps"][0]["outcome"], "not_run");
+
+    // A reply that never arrived: the history answers, and the request id
+    // can't be sent again.
+    let page = h.open(&format!("{site}/counter.html")).await;
+    let add = find(&page, "button", "Add one");
+    let args = json!({"request": "r-lost", "plan": do_plan(&[format!("click {add}")], None, false, None).unwrap()});
+    let _lost = h.send(args.clone()).await;
+    let read = h.history("r-lost");
+    evidence("b5-history-lost-reply.json", &read);
+    assert_eq!(read["status"], "dispatched");
+    assert_eq!(read["actions"][0]["result"], "dispatched");
+    assert_eq!(read["actions"][0]["target"]["name"], "Add one");
+    let again = h.send(args).await.unwrap_err();
+    assert_eq!(refused(&again), (Exit::Usage, "duplicate_request"));
+    assert!(h.text().await.contains("Added: 1"), "one click, never two");
+    assert_eq!(
+        steps::history(&h.browsers, &h.id, "another-caller", "r-lost")
+            .unwrap_err()
+            .code,
+        "no_such_request"
+    );
+}
+
+/// The risk decision and a sentence check on jev itself, built only with `--features
+/// live-model` (`just test-model KEYFILE`): the key file is copied into the
+/// test's own state directory.
 #[cfg(feature = "live-model")]
 #[tokio::test]
-async fn live_jev_runs_the_task_in_one_request() {
+async fn live_jev_asks_for_a_confirmation_only_where_one_is_needed() {
     use std::os::unix::fs::PermissionsExt;
     let (_dir, state, _area) = test_state();
     let key = std::env::var_os("LATCH_TEST_JEV_KEY")
@@ -575,150 +879,40 @@ async fn live_jev_runs_the_task_in_one_request() {
     let path = state.join(crate::browser::model::JEV_KEY_FILE);
     std::fs::copy(key, &path).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    task_in_one_request(&state, None, "typesafe").await;
-}
-
-/// Seven actions in one request, a staged surprise, a vague sentence, a
-/// risky click by description, `find` and `wait`, with `provider` (or the
-/// host's own) as the decision model.
-async fn task_in_one_request(
-    state: &std::path::Path,
-    provider: Option<Arc<dyn Provider>>,
-    expected_provider: &str,
-) {
     let site = site();
-    let mut h = Harness::start(state, provider).await;
-    let opened = h.open(&format!("{site}/invoices.html")).await;
-    let september = row_ref(&opened, "link", "Download", "September");
-
-    // Seven actions in one request, across a page load, with descriptions,
-    // typed checks and sentences.
-    let snapshot = opened["snapshot"].as_str().unwrap();
-    let (request, result) = h
-        .steps(&format!(
-            "--snapshot {snapshot} click {september} --expect-download complete\n\
-             click \"New expense\" --expect \"a form for a new expense is shown\"\n\
-             type Merchant \"Acme Hosting\"\n\
-             type \"amount\" 388.50\n\
-             type \"date of the expense\" 2026-09-30\n\
-             select Category \"Office supplies\"\n\
-             click \"the button that saves a draft\" --expect-text \"Draft saved\" --expect \"the expense was saved as a draft\"\n"
-        ))
-        .await;
-    let done = result.unwrap_or_else(|f| panic!("{} {} {:#}", f.code, f.message, f.details));
-    evidence("b5-list.json", &done);
-    evidence(
-        "b5-list-audit.json",
-        &Value::Object(h.audits.last().unwrap().clone()),
+    let mut h = Harness::start(&state, None).await;
+    let page = h.open(&format!("{site}/order.html")).await;
+    let back = find(&page, "link", "Back to basket");
+    let place = find(&page, "button", "Place order");
+    let note = find(&page, "textbox", "Gift note");
+    let failure = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
+    println!(
+        "place order: {} {}",
+        failure.code,
+        confirmation(&failure)["risk_p"]
     );
-    assert_eq!(done["status"], "done");
-    assert_eq!(done["executed"], 7);
-    let trace = &done["trace"];
-    assert_eq!(trace[0]["expect"][0]["result"], "met");
-    assert!(trace[0]["expect"][0]["download"].is_string());
-    assert_eq!(trace[1]["resolved_by"], "name");
-    assert_eq!(trace[1]["expect"][0]["kind"], "sentence");
-    assert_eq!(trace[1]["expect"][0]["result"], "met");
-    assert!(trace[1]["expect"][0]["evidence"].is_string());
-    assert_eq!(trace[3]["resolved_by"], "model");
-    assert_eq!(trace[3]["target"]["name"], "Amount (USD)");
-    assert!(trace[3]["p"].as_f64().unwrap() >= 0.8);
-    assert_eq!(trace[6]["expect"][1]["result"], "met");
-    assert_eq!(h.history(&request)["status"], "done");
-    let audit = h.audits.last().unwrap().clone();
-    let calls = audit["model_calls"].as_array().unwrap();
-    assert!(calls.iter().any(|c| c["purpose"] == "resolve"));
-    assert!(calls.iter().any(|c| c["purpose"] == "judge"));
-    assert!(calls.iter().all(|c| c["provider"] == expected_provider));
-    assert!(
-        calls
-            .iter()
-            .all(|c| c["latency_ms"].is_u64() && c["model_request"].is_string())
+    assert_eq!(failure.code, "confirm_needed");
+    let failure = h
+        .act(ActAction::Press, &[&note, "Enter"], None)
+        .await
+        .unwrap_err();
+    println!(
+        "enter: {} {}",
+        failure.code,
+        confirmation(&failure)["risk_p"]
     );
-
-    // A staged surprise: the site refuses the amount. The list stops at the
-    // unmet expectation, with the trace and an element list.
-    h.open(&format!("{site}/expense-new.html")).await;
-    let (_, result) = h
-        .steps(
-            "type Merchant \"Acme Hosting\"\n\
-             type \"amount\" \"$388.50\"\n\
-             click \"Save draft\" --expect \"the expense was saved as a draft\"\n\
-             click \"New expense\"\n",
-        )
-        .await;
-    let failure = result.unwrap_err();
-    stopped("b5-surprise.json", &failure);
-    assert!(
-        ["expect_not_met", "expect_unsure"].contains(&failure.code.as_str()),
-        "{}",
-        failure.code
-    );
-    assert_eq!(failure.details["step"], 3);
-    assert_eq!(
-        dispatched(&failure.details["trace"]),
-        ["dispatched", "dispatched", "dispatched"]
-    );
-    assert!(failure.details["elements"].is_array());
-    assert!(
-        failure.details["lines"]
-            .to_string()
-            .contains("plain number")
-    );
-
-    // A vague expectation is refused before anything runs.
-    let (_, result) = h
-        .steps("type Merchant x\nclick \"Save draft\" --expect \"finish the expense report\"\n")
-        .await;
-    let failure = result.unwrap_err();
-    stopped("b5-vague.json", &failure);
-    assert_eq!(
-        (failure.exit, failure.code.as_str()),
-        (Exit::Usage, "vague_condition")
-    );
-
-    // "Place order" by description, on a page the agent hasn't seen.
-    h.open(&format!("{site}/basket.html")).await;
-    let (_, result) = h
-        .steps("click \"Continue to checkout\"\nclick \"place the order\"\n")
-        .await;
-    let failure = result.unwrap_err();
-    stopped("b5-confirm.json", &failure);
-    assert_eq!(
-        (failure.exit, failure.code.as_str()),
-        (Exit::Denied, "confirm_target")
-    );
-    assert_eq!(failure.details["review"]["by"], "model");
-    assert_eq!(failure.details["target"]["name"], "Place order");
-    assert_eq!(failure.details["trace"][1]["resolved_by"], "model");
-
-    // find by description, and wait for a sentence.
-    h.open(&format!("{site}/invoices.html")).await;
-    let found = h
-        .find(json!({"description": "the download for the unpaid invoice"}))
+    assert_eq!(failure.code, "confirm_needed");
+    let fine = h.act(ActAction::Click, &[&back], None).await.unwrap();
+    println!("back to basket: risk {}", fine["trail"][0]["risk_p"]);
+    assert_eq!(fine["page"]["title"], "Basket · Shop");
+    let page = h.open(&format!("{site}/expense-new.html")).await;
+    let save = find(&page, "button", "Save draft");
+    let saved = h
+        .short(&[&format!("click {save} -> the draft was saved")])
         .await
         .unwrap();
-    assert_eq!(found["resolved_by"], "model");
-    assert!(
-        found["candidates"][0]["row"]
-            .as_str()
-            .unwrap()
-            .contains("Unpaid")
-    );
-    let waited = h
-        .wait(json!({"for": "an outstanding balance is shown", "within": 5}))
-        .await
-        .unwrap();
-    assert_eq!(waited["verdict"]["result"], "met");
-
-    // Model calls are audited by kind of data, never content.
-    let audits = serde_json::to_string(&h.audits).unwrap();
-    for never in [
-        "Acme Hosting",
-        "the expense was saved",
-        "place the order",
-        "Outstanding",
-    ] {
-        assert!(!audits.contains(never), "the audit holds {never:?}");
-    }
+    println!("save draft: {}", saved["steps"][0]);
+    assert_eq!(saved["steps"][0]["outcome"], "model_assessed");
+    let calls = serde_json::to_string(&h.audits).unwrap();
+    assert!(calls.contains("\"provider\":\"typesafe\""));
 }

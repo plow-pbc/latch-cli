@@ -10,7 +10,7 @@
 //! Each answer carries the result for the agent and, separately, what the
 //! host's audit may record: never page text, field values or typed text.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
 
@@ -22,12 +22,13 @@ use super::driver::{Driver, Event, Frame};
 mod fill;
 mod look;
 use crate::failure::{Exit, Failure};
-pub use look::Condition;
+pub use look::{Condition, fingerprint};
 
 /// The most elements one snapshot lists, across all frames.
 pub const MAX_ELEMENTS: usize = 200;
-/// Snapshots kept per session; refs in older ones are stale. A step list
-/// reads the page for each described target, so this keeps several.
+/// Snapshots kept per session; refs in older ones are stale. A plan's
+/// steps may each name a ref from a page latch returned earlier, so this
+/// keeps several.
 const KEEP: usize = 16;
 /// Page text: `observe`'s preview and `text`'s whole answer.
 const PREVIEW_CHARS: usize = 1500;
@@ -55,22 +56,35 @@ pub enum Call {
         action: Action,
         target: Option<String>,
         text: Option<String>,
-        at: Option<(f64, f64)>,
-        /// A step of a list: the answer carries no element list, and the
-        /// page is not counted as seen by the agent.
+        /// A step of a plan: the answer carries no element list, and the
+        /// latest snapshot shown the agent stays what it was.
         #[serde(default)]
         quiet: bool,
-        /// The host has judged this click on an unseen page safe to make.
+        /// What the host judged: the action is made only if what it acts
+        /// on, and the lines around it, still hash to this.
         #[serde(default)]
-        reviewed: bool,
+        guard: Option<Guard>,
     },
-    /// The elements that fit `action` (or have `role`), read afresh, and
-    /// those whose accessible name is exactly `name`: how the host turns a
-    /// name or description into a ref. The agent does not see this reading.
+    /// The elements with `role`, read afresh, and those whose accessible
+    /// name is exactly `name`: `find`. The agent sees only the candidates.
     Resolve {
-        action: Option<Action>,
-        role: Option<String>,
-        name: Option<String>,
+        role: String,
+        name: String,
+    },
+    /// The snapshot a ref is read in (`snapshot`, else the latest shown),
+    /// checked to hold it: how a plan pins its refs before it runs.
+    Pin {
+        snapshot: Option<String>,
+        target: String,
+    },
+    /// What a click (or, with `enter`, an Enter in a field) would act on,
+    /// and the lines around it: what the host judges the action's
+    /// consequence on, and binds a confirmation to.
+    Review {
+        snapshot: Option<String>,
+        target: String,
+        #[serde(default)]
+        enter: bool,
     },
     /// The page now: where it is, its first lines and an element list.
     Glance,
@@ -114,6 +128,10 @@ pub enum Call {
     },
     FillSubmit {
         target: String,
+        /// A confirmed fill's press: made only while the button and the
+        /// lines around it are as the agent confirmed them.
+        #[serde(default)]
+        guard: Option<Guard>,
     },
     FillCleanup,
     FillResume,
@@ -152,6 +170,15 @@ impl Call {
             _ => Acts::No,
         }
     }
+}
+
+/// The reviewed context an action was judged on (`Call::Review`, with
+/// `enter`), as its [`fingerprint`].
+#[derive(Deserialize, Debug)]
+pub struct Guard {
+    pub fingerprint: String,
+    #[serde(default)]
+    pub enter: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
@@ -224,10 +251,6 @@ pub struct Core<D: Driver> {
     /// be confirmed.
     paused: bool,
     fill: fill::State,
-    /// The documents (frame id and document) an element list has shown
-    /// the agent. A click that can't be undone, on a page not among them,
-    /// goes back to the host for review first.
-    shown: HashSet<String>,
     /// The current call's readings are latch's own, not shown the agent.
     quiet: bool,
     /// The latest snapshot shown the agent: what a ref without
@@ -254,7 +277,6 @@ impl<D: Driver> Core<D> {
             uploads: 0,
             paused: false,
             fill: fill::State::default(),
-            shown: HashSet::new(),
             quiet: false,
             last_shown: None,
         }
@@ -286,12 +308,21 @@ impl<D: Driver> Core<D> {
         }
         self.quiet = matches!(
             call,
-            Call::Act { quiet: true, .. } | Call::Resolve { .. } | Call::Lines | Call::Wait { .. }
+            Call::Act { quiet: true, .. }
+                | Call::Resolve { .. }
+                | Call::Lines
+                | Call::Wait { .. }
+                | Call::Pin { .. }
+                | Call::Review { .. }
         );
         let result = match call {
-            Call::Resolve { action, role, name } => {
-                self.resolve(action, role.as_deref(), name.as_deref(), &mut audit)
-            }
+            Call::Resolve { role, name } => self.resolve(&role, &name, &mut audit),
+            Call::Pin { snapshot, target } => self.pin(snapshot.as_deref(), &target),
+            Call::Review {
+                snapshot,
+                target,
+                enter,
+            } => self.review(snapshot.as_deref(), &target, enter, &mut audit),
             Call::Glance => self.glance(&mut audit),
             Call::Lines => self.lines(&mut audit),
             Call::Wait {
@@ -300,7 +331,7 @@ impl<D: Driver> Core<D> {
             } => self.wait(condition, within_ms, &mut audit),
             Call::PrepareFill(prepare) => self.prepare_fill(prepare, &mut audit),
             Call::SetValue { target, value } => self.set_value(&target, &value),
-            Call::FillSubmit { target } => self.fill_submit(&target),
+            Call::FillSubmit { target, guard } => self.fill_submit(&target, guard.as_ref()),
             Call::FillCleanup => self.fill_cleanup(),
             Call::FillResume => self.fill_resume(&mut audit),
             Call::Open { url } => self.open(url.as_deref(), &mut audit),
@@ -314,16 +345,14 @@ impl<D: Driver> Core<D> {
                 action,
                 target,
                 text,
-                at,
                 quiet: _,
-                reviewed,
+                guard,
             } => self.act(
                 snapshot.as_deref(),
                 action,
                 target.as_deref(),
                 text.as_deref(),
-                at,
-                reviewed,
+                guard.as_ref(),
                 &mut audit,
             ),
             Call::Tab { action, tab, url } => {
@@ -389,7 +418,6 @@ impl<D: Driver> Core<D> {
                     action,
                     target,
                     text,
-                    at,
                     ..
                 } = call
                 {
@@ -398,7 +426,6 @@ impl<D: Driver> Core<D> {
                         *action,
                         target.as_deref(),
                         text.as_deref(),
-                        *at,
                     ));
                 }
             }
@@ -417,7 +444,6 @@ impl<D: Driver> Core<D> {
         action: Action,
         target: Option<&str>,
         text: Option<&str>,
-        at: Option<(f64, f64)>,
     ) -> Option<String> {
         let key = match action {
             Action::Click => None,
@@ -427,24 +453,18 @@ impl<D: Driver> Core<D> {
             Action::Type | Action::Select | Action::Scroll => return None,
         };
         let key = json!(key);
-        let found = match (target, at) {
-            (Some(target), None) => {
+        let found = match target {
+            Some(target) => {
                 let (snapshot, position) = self.bound(snapshot, target).ok()?;
                 let (frame, index) = self.reference(&snapshot, position).ok()?;
                 let ask = format!("__latch.leadsTo({snapshot:?}, {index}, {key})");
                 self.driver.run(&frame, &ask)
             }
-            (None, Some((x, y))) => {
-                let main = self.main_frame().ok()?;
-                self.driver
-                    .run(&main, &format!("__latch.leadsToAt({x}, {y})"))
-            }
-            (None, None) => {
+            None => {
                 let main = self.main_frame().ok()?;
                 self.driver
                     .run(&main, &format!("__latch.leadsToFocused({key})"))
             }
-            (Some(_), Some(_)) => return None,
         };
         found.ok()?.as_str().map(str::to_string)
     }
@@ -452,7 +472,7 @@ impl<D: Driver> Core<D> {
     /// A fresh reading for an error's details, when the page can be read.
     pub fn reading_for(&mut self, failure: &mut Failure) {
         // During a fill the page may hold a vault value: no reading goes out.
-        // A step of a list gets its reading from the host, once the list stops.
+        // A step of a plan gets its reading from the host, once the plan ends.
         if self.paused
             || self.quiet
             || !matches!(
@@ -658,15 +678,13 @@ impl<D: Driver> Core<D> {
         Ok(meta)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn act(
         &mut self,
         snapshot: Option<&str>,
         action: Action,
         target: Option<&str>,
         text: Option<&str>,
-        at: Option<(f64, f64)>,
-        reviewed: bool,
+        guard: Option<&Guard>,
         audit: &mut Map<String, Value>,
     ) -> Result<Value, Failure> {
         audit.insert("action".into(), json!(action));
@@ -674,8 +692,12 @@ impl<D: Driver> Core<D> {
         let before = self.page(audit)?;
         let mut result = Map::new();
         result.insert("action".into(), json!(action));
-        match (action, target, at) {
-            (Action::Back, ..) => {
+        result.insert(
+            "page".into(),
+            json!({"url": before["url"], "title": before["title"]}),
+        );
+        match (action, target) {
+            (Action::Back, _) => {
                 if !self.driver.back()? {
                     return Err(Failure::failed(
                         "no_history",
@@ -683,24 +705,7 @@ impl<D: Driver> Core<D> {
                     ));
                 }
             }
-            (Action::Click, None, Some((x, y))) => {
-                audit.insert("at".into(), json!([x, y]));
-                // A position names no element latch could review, so on a
-                // page the agent hasn't seen it is refused outright.
-                let main = self.main_frame()?;
-                if !self.shown.contains(&document_key(&main)) {
-                    return Err(Failure::new(
-                        Exit::Denied,
-                        "confirm_target",
-                        "click --at on a page you haven't seen; observe it first, then click"
-                            .into(),
-                    ));
-                }
-                self.driver.click(x, y)?;
-                result.insert("target".into(), json!({"at": [x, y]}));
-                result.insert("resolved_by".into(), json!("position"));
-            }
-            (Action::Scroll, None | Some("page"), None) => {
+            (Action::Scroll, None | Some("page")) => {
                 let main = self.main_frame()?;
                 let size = self.driver.run(&main, "[innerWidth, innerHeight]")?;
                 let (x, y) = (
@@ -710,11 +715,7 @@ impl<D: Driver> Core<D> {
                 self.driver.wheel(x, y, scroll_delta(text)?)?;
                 result.insert("target".into(), json!("page"));
             }
-            (Action::Press, None, None) => {
-                self.driver
-                    .press(required(text, "press needs a key, such as Enter")?)?;
-            }
-            (_, Some(target), None) => {
+            (_, Some(target)) => {
                 audit.insert("target".into(), json!(target));
                 if let Some(snapshot) = snapshot {
                     audit.insert("snapshot".into(), json!(snapshot));
@@ -726,18 +727,24 @@ impl<D: Driver> Core<D> {
                 audit.insert("resolved_by".into(), json!("ref"));
                 result.insert(
                     "target".into(),
-                    json!({"ref": target, "role": element["role"], "name": element["name"]}),
+                    json!({"ref": target, "role": element["role"], "name": element["name"], "row": element["row"]}),
                 );
                 result.insert("resolved_by".into(), json!("ref"));
-                if action == Action::Click && !reviewed {
-                    self.seen_or_review(&snapshot, position, target, &element)?;
+                if let Some(guard) = guard {
+                    let now = self.review(Some(&snapshot), target, guard.enter, &mut Map::new())?;
+                    if fingerprint(&now) != guard.fingerprint {
+                        return Err(Failure::failed(
+                            "context_changed",
+                            "what this action acts on, or the lines around it, changed after latch judged it; nothing was sent".into(),
+                        ));
+                    }
                 }
                 self.dispatch(action, &snapshot, position, text)?;
             }
             _ => {
                 return Err(Failure::usage(
                     "bad_target",
-                    "act takes a ref (eN) from the latest snapshot, or `click --at X,Y`".into(),
+                    "act takes a ref (eN) from a page latch returned".into(),
                 ));
             }
         }
@@ -774,15 +781,15 @@ impl<D: Driver> Core<D> {
         if moved {
             result.insert("changed".into(), Value::Object(changed));
         }
-        // A step of a list that brought a new page: is it a login wall or a
-        // CAPTCHA, which the list must stop at?
+        // A step of a plan that brought a new page: is it a login wall or a
+        // CAPTCHA, which the plan must stop at?
         if self.quiet {
             if moved && let Some(wall) = self.wall()? {
                 result.insert("wall".into(), json!(wall));
             }
             return Ok(());
         }
-        result.insert("lines".into(), json!(self.first_lines()?));
+        result.insert("lines".into(), json!(self.first_lines(5)?));
         self.read(None)?.into_json(result);
         Ok(())
     }
@@ -1054,9 +1061,6 @@ impl<D: Driver> Core<D> {
                 entry["parent"] = json!(parent);
             }
             listed.push(entry);
-            if !self.quiet {
-                self.shown.insert(document_key(frame));
-            }
             for (index, element) in read["elements"]
                 .as_array()
                 .into_iter()
@@ -1207,7 +1211,7 @@ pub fn origin_and_path(url: &str) -> (String, String) {
     }
 }
 
-/// A frame's document, as `shown` keeps it.
+/// A frame's document, as a confirmation is bound to it.
 fn document_key(frame: &Frame) -> String {
     format!("{}/{}", frame.id, frame.document)
 }
@@ -1253,10 +1257,10 @@ mod tests {
                 ..
             }
         ));
-        let call: Call =
-            serde_json::from_value(json!({"op": "act", "action": "click", "at": [10.0, 20.5]}))
-                .unwrap();
-        assert!(matches!(call, Call::Act { at: Some((x, _)), .. } if x == 10.0));
+        assert!(
+            serde_json::from_value::<Call>(json!({"op": "review", "target": "e3", "enter": true}))
+                .is_ok()
+        );
         assert!(serde_json::from_value::<Call>(json!({"op": "act", "action": "hover"})).is_err());
         assert_eq!(scroll_delta(Some("up")).unwrap(), -SCROLL);
         assert!(scroll_delta(Some("left")).is_err());

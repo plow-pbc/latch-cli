@@ -120,33 +120,72 @@ pub enum BrowserCommand {
         #[arg(long, short)]
         output: PathBuf,
     },
-    /// One action, or a list of them: `act click e7`, `act click "New expense"`,
-    /// `act type "amount" 12.50`, `act select e5 Blue`, `act press Enter`,
-    /// `act scroll down`, `act back`; `act --steps FILE` for several, one per
-    /// line in the same form; `act --history R` for what request R did
+    /// The plan command: up to 10 steps in order, each `click|type|select|press
+    /// eN ["text"]` or `fill --item vN --field F=eN… [--press eN]`, with an
+    /// optional check after ` -> `: `do 'click e7 -> path: /cart'`
+    Do {
+        /// The steps, one argument each
+        steps: Vec<String>,
+        /// The canonical plan object, from FILE (or - for stdin)
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["steps", "history"])]
+        plan_file: Option<PathBuf>,
+        /// Carry out confirmation C from a `confirm_needed` stop, then the steps
+        #[arg(long, value_name = "C", conflicts_with = "history")]
+        confirm: Option<String>,
+        /// Request R's steps, actions and outcomes (an answer that exited 5 names R)
+        #[arg(long, value_name = "R", conflicts_with = "steps")]
+        history: Option<String>,
+        /// With --history: one of R's screenshots (`final`), written to --output
+        #[arg(long, value_name = "N", requires_all = ["history", "output"])]
+        shot: Option<String>,
+        /// Where --shot's PNG goes on this machine
+        #[arg(long, short, requires = "shot")]
+        output: Option<PathBuf>,
+        /// Seconds the whole plan may take (default 120, at most 300)
+        #[arg(long, value_name = "S")]
+        within: Option<f64>,
+    },
+    /// One literal step on a ref from the last page latch returned:
+    /// `act click e7`, `act type e3 "Acme"`, `act select e5 Large`,
+    /// `act press e4 Enter`, `act scroll [eN] down`, `act back`; run as a
+    /// plan of one step
     Act {
-        #[command(flatten)]
-        step: StepArgs,
-        /// Several steps, one per line in act's own form, from FILE (or - for stdin)
-        #[arg(long, value_name = "FILE", conflicts_with = "history")]
-        steps: Option<PathBuf>,
-        /// The per-step trace of request R (an `act` that exited 5 names it)
-        #[arg(long, value_name = "R")]
+        /// The snapshot the ref is from (default: the latest)
+        #[arg(long)]
+        snapshot: Option<String>,
+        action: Option<ActAction>,
+        /// A ref such as e7 (or a direction for scroll)
+        target: Option<String>,
+        /// The text to type, option to choose, key to press or direction
+        text: Option<String>,
+        /// What the step must lead to: `path: /cart`, `text: Saved`,
+        /// `field: e3=Large`, `download: complete`, … or a sentence
+        #[arg(long, value_name = "CHECK")]
+        check: Option<String>,
+        /// Removed: coordinate clicks
+        #[arg(long, hide = true)]
+        at: Option<String>,
+        /// Removed: use --check, or the plan command
+        #[arg(long, hide = true)]
+        expect: Option<String>,
+        /// Removed: use the plan command
+        #[arg(long, hide = true)]
+        steps: Option<String>,
+        /// Removed: use `do --history R`
+        #[arg(long, hide = true)]
         history: Option<String>,
     },
-    /// Candidate refs for a description, or for a role and exact name; never acts
+    /// Candidate refs by role and exact name; never acts
     Find {
-        /// What the element is, in words: "the September invoice's download button"
-        description: Option<String>,
         #[arg(long)]
         role: Option<String>,
         #[arg(long)]
         name: Option<String>,
-        /// The action the element is for (click, type, select …; default click)
-        #[arg(long)]
-        action: Option<ActAction>,
+        /// Removed: a description in words
+        #[arg(hide = true)]
+        description: Option<String>,
     },
-    /// Wait for an element's state, text, a URL, or a sentence, with a deadline
+    /// Wait for an element's state, text or a path, with a deadline
     Wait {
         /// An element by ref, with --state
         #[arg(long = "ref", value_name = "eN")]
@@ -160,11 +199,11 @@ pub enum BrowserCommand {
         /// Text the page shows
         #[arg(long)]
         text: Option<String>,
-        /// A URL the page's starts with
-        #[arg(long)]
-        url: Option<String>,
-        /// A sentence about what the page shows, judged by the decision model
-        #[arg(long = "for", value_name = "SENTENCE")]
+        /// Text that is part of the page's path
+        #[arg(long, value_name = "P")]
+        url_path: Option<String>,
+        /// Removed: a sentence
+        #[arg(long = "for", hide = true)]
         sentence: Option<String>,
         /// Seconds to wait (default 10)
         #[arg(long, value_name = "S")]
@@ -220,7 +259,9 @@ pub enum BrowserCommand {
         submit: Option<String>,
     },
     /// Fill a card, identity or note's fields: --field number=e4 --field
-    /// expiry=e5 …; a secret field needs --press eN, the button that submits it
+    /// expiry=e5 …; a secret field needs --press eN, the button that submits
+    /// it, and stops for a confirmation (`do --confirm C`) before any value
+    /// is released
     Fill {
         #[arg(long)]
         snapshot: Option<String>,
@@ -261,19 +302,6 @@ pub enum ActAction {
     Back,
 }
 
-impl ActAction {
-    pub fn name(self) -> &'static str {
-        match self {
-            ActAction::Click => "click",
-            ActAction::Type => "type",
-            ActAction::Select => "select",
-            ActAction::Press => "press",
-            ActAction::Scroll => "scroll",
-            ActAction::Back => "back",
-        }
-    }
-}
-
 #[derive(Subcommand, Debug)]
 pub enum TabCommand {
     /// A new tab, on URL or blank; it becomes the active one
@@ -298,60 +326,6 @@ pub enum DownloadCommand {
 pub enum DialogAction {
     Accept,
     Dismiss,
-}
-
-/// One step of `act`: on the command line, or one line of `--steps`.
-#[derive(Args, Debug, Clone, Default)]
-pub struct StepArgs {
-    /// The snapshot a ref is from (default: the latest)
-    #[arg(long)]
-    pub snapshot: Option<String>,
-    pub action: Option<ActAction>,
-    /// A ref such as e7, an element's exact name, or a description of it
-    /// (or a key for press, a direction for scroll)
-    pub target: Option<String>,
-    /// The text to type, option to choose, key to press or direction
-    pub text: Option<String>,
-    /// For click: a position in the page's CSS pixels instead of a target
-    #[arg(long, value_parser = parse_at, value_name = "X,Y")]
-    pub at: Option<(f64, f64)>,
-    /// What the page will show after the step, in a sentence the decision
-    /// model judges: "a form for a new expense is shown"
-    #[arg(long, value_name = "SENTENCE")]
-    pub expect: Option<String>,
-    /// The page's URL will start with this
-    #[arg(long, value_name = "URL")]
-    pub expect_url: Option<String>,
-    /// The page will show this text
-    #[arg(long, value_name = "TEXT")]
-    pub expect_text: Option<String>,
-    /// A field will hold a value, or be checked or unchecked
-    #[arg(long, value_name = "eN=VALUE")]
-    pub expect_field: Option<String>,
-    /// A download the step starts will complete
-    #[arg(long, value_parser = ["complete"])]
-    pub expect_download: Option<String>,
-    /// Seconds the expectations may take (default 10)
-    #[arg(long, value_name = "S")]
-    pub within: Option<f64>,
-}
-
-/// One line of `act --steps`, parsed as `act`'s own arguments.
-#[derive(clap::Parser, Debug)]
-#[command(no_binary_name = true, name = "step")]
-pub struct StepLine {
-    #[command(flatten)]
-    pub step: StepArgs,
-}
-
-fn parse_at(text: &str) -> Result<(f64, f64), String> {
-    let (x, y) = text.split_once(',').ok_or("write the position as X,Y")?;
-    let number = |n: &str| {
-        n.trim()
-            .parse::<f64>()
-            .map_err(|_| format!("{n:?} is not a number"))
-    };
-    Ok((number(x)?, number(y)?))
 }
 
 #[derive(Args, Debug)]

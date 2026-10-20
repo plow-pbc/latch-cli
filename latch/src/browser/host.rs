@@ -23,7 +23,7 @@
 //! never page text, field values or typed text: `type` records the text's
 //! length and sha256.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -60,6 +60,9 @@ pub struct Browsers {
     /// Open sessions, by id.
     sessions: Mutex<HashMap<String, Arc<Entry>>>,
     pub(super) vault: Arc<Vault>,
+    /// Plan requests under way, as `session/request`: a journal with no
+    /// end reads as running while its request is here, else interrupted.
+    running: std::sync::Mutex<HashSet<String>>,
     /// Tests only: the latch binary to start workers with, and local test
     /// origins read as the HTTPS sites they stand in for.
     #[cfg(test)]
@@ -99,8 +102,14 @@ pub(super) struct Entry {
     task: Option<String>,
     /// When the session last had a call, and the site its page was on.
     seen: std::sync::Mutex<(Instant, Option<String>)>,
-    /// Each `act` request's per-step outcomes, for `act --history`.
-    pub(super) history: std::sync::Mutex<super::steps::History>,
+    /// One plan request at a time; the session itself is held only for
+    /// each worker call, never while the decision model answers.
+    pub(super) serial: Mutex<()>,
+    /// The confirmations issued in this session, used or not.
+    pub(super) confirmations: std::sync::Mutex<Vec<super::steps::Confirmation>>,
+    /// The snapshot of the page the latest stop returned, for the `stop`
+    /// step policy.
+    pub(super) last_stop: std::sync::Mutex<Option<String>>,
 }
 
 impl Entry {
@@ -126,11 +135,29 @@ impl Browsers {
             runtimes: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             vault,
+            running: Default::default(),
             #[cfg(test)]
             test: None,
             #[cfg(test)]
             provider: None,
         }
+    }
+
+    pub(super) fn state_dir(&self) -> PathBuf {
+        self.state_dir.clone()
+    }
+
+    pub(super) fn running(&self, request: &str, on: bool) {
+        let mut running = self.running.lock().expect("running lock");
+        if on {
+            running.insert(request.to_string());
+        } else {
+            running.remove(request);
+        }
+    }
+
+    pub(super) fn is_running(&self, request: &str) -> bool {
+        self.running.lock().expect("running lock").contains(request)
     }
 
     /// The decision model for one request.
@@ -223,7 +250,9 @@ impl Browsers {
             hash: hash_of(&id),
             task: task.map(str::to_string),
             seen: std::sync::Mutex::new((Instant::now(), None)),
-            history: Default::default(),
+            serial: Mutex::new(()),
+            confirmations: Default::default(),
+            last_stop: Default::default(),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
@@ -441,6 +470,33 @@ pub async fn run(
     }
 }
 
+/// `login`, `fill-code`, and a `fill`: one that releases a secret field
+/// stops for the agent's confirmation before any value is released.
+pub(super) async fn fill(
+    browsers: &Browsers,
+    entry: &Entry,
+    session: &str,
+    caller: &str,
+    command: &str,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    if command == "fill" {
+        audit.insert("item".into(), args["item"].clone());
+        if let Some(title) = super::fill::releases_secret(browsers, args)? {
+            if entry.runtime.filling.load(Ordering::SeqCst) {
+                return Err(paused());
+            }
+            let mut args = args.clone();
+            args["item_title"] = json!(title);
+            return Err(
+                super::steps::stop_fill(browsers, entry, session, caller, &args, audit).await,
+            );
+        }
+    }
+    super::fill::run(browsers, entry, command, args, audit).await
+}
+
 /// One command for `caller`: `open` on profile `name`, `sessions`, or a
 /// command on session `name` (its id). An owner device may also `close`
 /// any session by its hash.
@@ -466,25 +522,38 @@ pub(super) async fn call(
     }
     // The id a call names is recorded only as its hash, refused or not.
     audit.insert("session".into(), json!(hash_of(name)));
+    // A request's history outlives its session and the host's restarts: it
+    // is read by the session's id and the caller that sent it.
+    if command == "do_history" {
+        let request = args["request"].as_str().unwrap_or_default();
+        audit.insert("request".into(), json!(request));
+        return match args["shot"].as_str() {
+            Some(shot) => {
+                audit.insert("shot".into(), json!(shot));
+                super::steps::shot(browsers, name, key, request, shot).map(|png| {
+                    let meta = json!({"request": request, "shot": shot, "size": png.len()});
+                    (meta, Some(png))
+                })
+            }
+            None => {
+                super::steps::history(browsers, name, key, request).map(|result| (result, None))
+            }
+        };
+    }
     let entry = browsers.session(name, key).await?;
     entry.note(audit);
     let result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
-        "login" | "fill" | "fill_code" => super::fill::run(browsers, &entry, command, args, audit)
+        "login" | "fill" | "fill_code" => fill(browsers, &entry, name, key, command, args, audit)
             .await
             .map(|result| (result, None)),
-        "act" => super::steps::act(browsers, &entry, args, audit)
+        "do" => super::steps::run(browsers, &entry, name, key, args, audit)
             .await
             .map(|result| (result, None)),
-        "act_history" => {
-            let request = args["request"].as_str().unwrap_or_default();
-            audit.insert("request".into(), json!(request));
-            super::steps::history(&entry, request).map(|result| (result, None))
-        }
-        "find" => super::steps::find(browsers, &entry, args, audit)
+        "find" => super::steps::find(&entry, args, audit)
             .await
             .map(|result| (result, None)),
-        "wait" => super::steps::wait(browsers, &entry, args, audit)
+        "wait" => super::steps::wait(&entry, args, audit)
             .await
             .map(|result| (result, None)),
         _ => worker(browsers, &entry, command, args, input, audit).await,

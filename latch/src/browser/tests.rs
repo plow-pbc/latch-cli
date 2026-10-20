@@ -481,7 +481,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
             .starts_with('f')
     );
 
-    let clicked = call(json!({"op": "act", "action": "click", "target": edit}))
+    let clicked = call(json!({"op": "do", "action": "click", "target": edit}))
         .await
         .unwrap();
     println!("click {edit}: {}", clicked["lines"]);
@@ -493,10 +493,9 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     );
 
     let name = find(&clicked, "textbox", "Name");
-    let typed =
-        call(json!({"op": "act", "action": "type", "target": name, "text": "Ada Lovelace"}))
-            .await
-            .unwrap();
+    let typed = call(json!({"op": "do", "action": "type", "target": name, "text": "Ada Lovelace"}))
+        .await
+        .unwrap();
     println!(
         "type {name}: {}",
         out_line(&call(json!({"op": "text"})).await.unwrap())
@@ -511,7 +510,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     );
 
     let password = find(&typed, "textbox", "Password");
-    let refused = call(json!({"op": "act", "action": "type", "target": password, "text": "x"}))
+    let refused = call(json!({"op": "do", "action": "type", "target": password, "text": "x"}))
         .await
         .unwrap_err();
     assert_eq!(
@@ -520,7 +519,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     );
 
     let colour = find(&typed, "combobox", "Colour");
-    let selected = call(json!({"op": "act", "action": "select", "target": colour, "text": "Blue"}))
+    let selected = call(json!({"op": "do", "action": "select", "target": colour, "text": "Blue"}))
         .await
         .unwrap();
     println!(
@@ -531,14 +530,14 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
         out_line(&call(json!({"op": "text"})).await.unwrap()),
         "colour Blue, trusted true"
     );
-    let missing = call(json!({"op": "act", "action": "select", "target": find(&selected, "combobox", "Colour"), "text": "Purple"}))
+    let missing = call(json!({"op": "do", "action": "select", "target": find(&selected, "combobox", "Colour"), "text": "Purple"}))
         .await
         .unwrap_err();
     assert_eq!(missing.code, "no_such_target");
     assert_eq!(missing.details["options"], json!(["Red", "Green", "Blue"]));
 
     let agree = find(&selected, "checkbox", "I agree");
-    let checked = call(json!({"op": "act", "action": "click", "target": agree}))
+    let checked = call(json!({"op": "do", "action": "click", "target": agree}))
         .await
         .unwrap();
     assert_eq!(
@@ -557,7 +556,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
         ("Same-origin button", "same pressed true"),
     ] {
         let target = find(&checked, "button", button);
-        let after = call(json!({"op": "act", "action": "click", "target": target}))
+        let after = call(json!({"op": "do", "action": "click", "target": target}))
             .await
             .unwrap();
         println!(
@@ -576,11 +575,11 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     let observed = call(json!({"op": "observe"})).await.unwrap();
     let old_edit = find(&observed, "button", "Edit");
     let next = find(&observed, "link", "Next page");
-    let moved = call(json!({"op": "act", "action": "click", "target": next}))
+    let moved = call(json!({"op": "do", "action": "click", "target": next}))
         .await
         .unwrap();
     assert_eq!(moved["changed"]["title"], "latch next page");
-    let stale = call(json!({"op": "act", "action": "click", "target": old_edit, "snapshot": observed["snapshot"]}))
+    let stale = call(json!({"op": "do", "action": "click", "target": old_edit, "snapshot": observed["snapshot"]}))
         .await
         .unwrap_err();
     println!("stale: {} {}", stale.code, stale.message);
@@ -590,7 +589,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
         "a fresh list comes with the refusal"
     );
 
-    let back = call(json!({"op": "act", "action": "back"})).await.unwrap();
+    let back = call(json!({"op": "do", "action": "back"})).await.unwrap();
     assert_eq!(back["changed"]["title"], "latch frames test");
 
     // A tab latch opens is a window of its own, in the background: both
@@ -633,12 +632,12 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
 
     // A dialog blocks the page until it is answered; a link opens a tab.
     let dialogs = call(
-        json!({"op": "act", "action": "click", "target": find(&back, "link", "Dialogs and tabs")}),
+        json!({"op": "do", "action": "click", "target": find(&back, "link", "Dialogs and tabs")}),
     )
     .await
     .unwrap();
     let alerted = call(
-        json!({"op": "act", "action": "click", "target": find(&dialogs, "button", "Show alert")}),
+        json!({"op": "do", "action": "click", "target": find(&dialogs, "button", "Show alert")}),
     )
     .await
     .unwrap();
@@ -656,7 +655,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
         "alert closed"
     );
 
-    let opened = call(json!({"op": "act", "action": "click", "target": find(&answered, "link", "Open next in a new tab")}))
+    let opened = call(json!({"op": "do", "action": "click", "target": find(&answered, "link", "Open next in a new tab")}))
         .await
         .unwrap();
     println!("new tab: {}", opened["events"]);
@@ -730,7 +729,7 @@ async fn a_frames_target_under_a_parent_page_layer_is_refused() {
     for button in ["Same-origin button", "Cross-site button"] {
         let target = find(&page, "button", button);
         let refused = session
-            .call(json!({"op": "act", "action": "click", "target": target, "snapshot": page["snapshot"]}))
+            .call(json!({"op": "do", "action": "click", "target": target, "snapshot": page["snapshot"]}))
             .await
             .err()
             .expect("the click is refused");
@@ -818,14 +817,14 @@ async fn eval_upload_and_download_move_values_and_files() {
     let link = find(&uploaded, "link", "Download the report");
     let started = std::time::Instant::now();
     let clicked = session
-        .call(json!({"op": "act", "action": "click", "target": link}))
+        .call(json!({"op": "do", "action": "click", "target": link}))
         .await
         .unwrap()
         .result;
     println!(
         "click events after {:?}: {}",
         started.elapsed(),
-        clicked["events"]
+        clicked["trail"][0]["events"]
     );
     // A download is no page load to wait out.
     assert!(
@@ -833,7 +832,7 @@ async fn eval_upload_and_download_move_values_and_files() {
         "{:?}",
         started.elapsed()
     );
-    assert_eq!(clicked["events"][0]["event"], "download");
+    assert_eq!(clicked["trail"][0]["events"][0]["event"], "download");
     let got = session
         .call(json!({"op": "download_get", "download": "d1"}))
         .await
@@ -872,6 +871,7 @@ impl Host {
             crate::vault::host::Vault::new(state.to_path_buf()),
         );
         browsers.test = Some((latch(), Vec::new()));
+        browsers.provider = Some(Arc::new(Calm));
         Host {
             browsers,
             audits: Vec::new(),
@@ -918,13 +918,55 @@ async fn run_as(
     (result, serde_json::Value::Object(audit))
 }
 
-/// `act` with one step written as the client writes it.
+/// `act ACTION [REF] [TEXT]`, with a check after ` -> `, as the client
+/// compiles it: a plan of one literal step.
 fn act(line: &str) -> serde_json::Value {
+    let (head, check) = match line.split_once(" -> ") {
+        Some((head, check)) => (head, Some(super::plan::Check::parse(check).unwrap())),
+        None => (line, None),
+    };
+    let mut words = head.splitn(3, ' ').map(str::to_string);
+    let action =
+        <crate::cli::ActAction as clap::ValueEnum>::from_str(&words.next().unwrap(), true).unwrap();
+    let literal =
+        super::client::act_literal(Some(action), None, words.next(), words.next()).unwrap();
+    let step = super::plan::Step {
+        literal: Some(literal),
+        check,
+        ..Default::default()
+    };
     json!({
         "request": format!("r{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff),
-        "list": false,
-        "steps": super::client::read_steps(line).unwrap(),
+        "via": "do",
+        "plan": super::plan::Plan { steps: vec![step], ..Default::default() },
     })
+}
+
+/// A decision model that finds nothing risky: these tests are about
+/// sessions, not confirmations.
+struct Calm;
+
+impl super::model::Provider for Calm {
+    fn ask<'a>(
+        &'a self,
+        _: &'a serde_json::Value,
+        questions: &'a [super::model::Question],
+    ) -> super::model::Asked<'a> {
+        let answers = questions
+            .iter()
+            .map(|question| match question.id.as_str() {
+                "risky" => (question.id.clone(), super::model::Answer::Yes(0.02)),
+                id => panic!("the calm model has no answer for {id}"),
+            })
+            .collect();
+        let meta = super::model::CallMeta {
+            provider: "calm",
+            model: "calm-1".into(),
+            request_id: None,
+            latency_ms: 0,
+        };
+        Box::pin(async move { Ok((answers, meta)) })
+    }
 }
 
 #[tokio::test]
@@ -1009,14 +1051,14 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
         run_as(
             &h.browsers,
             CALLER.into(),
-            "act",
+            "do",
             &a,
             act(&format!("click {}", links[0]))
         ),
         run_as(
             &h.browsers,
             other.into(),
-            "act",
+            "do",
             &b,
             act(&format!("click {}", links[1]))
         ),
@@ -1067,10 +1109,10 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
     let page_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();
     let link = find(&page_a, "link", "Open next in a new tab");
     let clicked = h
-        .call(CALLER, "act", &a, act(&format!("click {link}")))
+        .call(CALLER, "do", &a, act(&format!("click {link}")))
         .await
         .unwrap();
-    println!("popup in a: {}", clicked["events"]);
+    println!("popup in a: {}", clicked["trail"][0]["events"]);
     let tabs = |seen: &serde_json::Value| {
         seen["tabs"]
             .as_array()
@@ -1108,11 +1150,11 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
     let page_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();
     let shown = find(&page_a, "button", "Show alert");
     let clicked = h
-        .call(CALLER, "act", &a, act(&format!("click {shown}")))
+        .call(CALLER, "do", &a, act(&format!("click {shown}")))
         .await
         .unwrap();
-    println!("dialog in a: {}", clicked["events"]);
-    assert_eq!(clicked["events"][0]["event"], "dialog");
+    println!("dialog in a: {}", clicked["trail"][0]["events"]);
+    assert_eq!(clicked["trail"][0]["events"][0]["event"], "dialog");
     let seen = h.call(other, "observe", &b, json!({})).await.unwrap();
     assert_eq!(seen["title"], "latch twin downloads");
     let none = h
@@ -1137,7 +1179,7 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
         "eval",
         "downloads",
         "download_get",
-        "act",
+        "do",
         "find",
         "wait",
         "login",
@@ -1167,7 +1209,7 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
     let hash_a = h.audits[0]["session"].as_str().unwrap().to_string();
     for (command, args) in [
         ("observe", json!({})),
-        ("act", act("scroll down")),
+        ("do", act("scroll down")),
         ("close", json!({})),
     ] {
         for id in [&guessed, &hash_a] {
@@ -1297,7 +1339,7 @@ async fn sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused() {
     let page = h.call(other, "observe", &b, json!({})).await.unwrap();
     let shown = find(&page, "button", "Show alert");
     let busy = h
-        .call(other, "act", &b, act(&format!("click {shown}")))
+        .call(other, "do", &b, act(&format!("click {shown}")))
         .await
         .unwrap_err();
     println!(
@@ -1350,10 +1392,10 @@ async fn sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused() {
         .await
         .unwrap();
     let clicked = h
-        .call(other, "act", &b, act(&format!("click {shown}")))
+        .call(other, "do", &b, act(&format!("click {shown}")))
         .await
         .unwrap();
-    println!("after close: {}", clicked["events"]);
+    println!("after close: {}", clicked["trail"][0]["events"]);
     h.call(other, "dialog", &b, json!({"accept": true}))
         .await
         .unwrap();
@@ -1381,7 +1423,7 @@ async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent() {
         )
         .await;
     let go = find(&page, "link", "Go there");
-    h.call(other, "act", &b, act(&format!("click {go}")))
+    h.call(other, "do", &b, act(&format!("click {go}")))
         .await
         .unwrap();
     h.call(
@@ -1407,22 +1449,16 @@ async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent() {
     // button's formaction leads to 127.0.0.1, and Enter in its field goes
     // there too.
     let field = find(&page, "textbox", "Find");
-    let typed = json!({"action": "type", "target": field, "text": "x\n"});
     let mut outcomes = Vec::new();
-    for (step, args) in [
+    for line in [
         format!("click {}", find(&page, "link", "Go there")),
         format!("click {}", find(&page, "button", "Send")),
         format!("press {search} Enter"),
         format!("press {field} Enter"),
-    ]
-    .into_iter()
-    .map(|line| (line.clone(), act(&line)))
-    .chain([(
-        format!("type {field} x⏎"),
-        json!({"request": "r-typed", "list": false, "steps": [typed]}),
-    )]) {
-        let outcome = h.call(other, "act", &b, args).await;
-        outcomes.push((step, outcome.map_or_else(|f| f.code, |_| "sent".into())));
+        format!("type {field} x\n"),
+    ] {
+        let outcome = h.call(other, "do", &b, act(&line)).await;
+        outcomes.push((line, outcome.map_or_else(|f| f.code, |_| "sent".into())));
     }
     let tab = h.call(other, "observe", &b, json!({})).await.unwrap();
     println!(
@@ -1432,7 +1468,7 @@ async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent() {
     h.call(other, "tab", &b, json!({"action": "switch", "tab": "t1"}))
         .await
         .unwrap();
-    let back = h.call(other, "act", &b, act("back")).await;
+    let back = h.call(other, "do", &b, act("back")).await;
     let back = back.map_or_else(|f| f.code, |_| "sent".into());
     let stayed = h.call(other, "observe", &b, json!({})).await.unwrap();
     println!("back into it: {back}; now on {}", stayed["url"]);
@@ -1442,16 +1478,21 @@ async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent() {
     assert_eq!(stayed["url"], json!(format!("{elsewhere}/next.html")));
     // Within localhost, the other session goes on.
     let home = find(&stayed, "link", "Back to orders");
-    h.call(other, "act", &b, act(&format!("click {home}")))
+    h.call(other, "do", &b, act(&format!("click {home}")))
         .await
         .unwrap();
 
     // Once the reservation ends, so does the refusal.
     h.call(CALLER, "close", &r, json!({})).await.unwrap();
-    h.call(other, "act", &b, act("back")).await.unwrap();
-    let returned = h.call(other, "act", &b, act("back")).await.unwrap();
-    println!("after close, back: {}", returned["url"]);
-    assert!(returned["url"].as_str().unwrap().starts_with(&local));
+    h.call(other, "do", &b, act("back")).await.unwrap();
+    let returned = h.call(other, "do", &b, act("back")).await.unwrap();
+    println!("after close, back: {}", returned["page"]["url"]);
+    assert!(
+        returned["page"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with(&local)
+    );
     h.call(other, "close", &b, json!({})).await.unwrap();
 }
 
@@ -1481,9 +1522,9 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another() {
         let (result, _) = run_as(
             &h.browsers,
             CALLER.into(),
-            "act",
+            "do",
             &a,
-            act("scroll down --expect-text \"never on this page\" --within 4"),
+            act("scroll down -> text: never on this page"),
         )
         .await;
         (result, started.elapsed())
@@ -1492,7 +1533,7 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another() {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let mut done = Vec::new();
         for line in ["scroll down", "scroll up", "scroll down"] {
-            let (result, _) = run_as(&h.browsers, CALLER.into(), "act", &b, act(line)).await;
+            let (result, _) = run_as(&h.browsers, CALLER.into(), "do", &b, act(line)).await;
             result.unwrap();
             done.push(started.elapsed());
         }
@@ -1503,8 +1544,9 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another() {
         "a's step stopped {} after {slow_took:?}; b's three steps done at {quick:?}",
         slow.unwrap_err().code
     );
+    // A's check waits out its 10 s; b's steps don't wait for it.
     assert!(quick.last().unwrap() < &Duration::from_secs(3));
-    assert!(slow_took >= Duration::from_secs(4));
+    assert!(slow_took >= Duration::from_secs(9));
     for id in [&a, &b] {
         h.call(CALLER, "close", id, json!({})).await.unwrap();
     }
