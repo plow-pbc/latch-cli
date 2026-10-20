@@ -2,9 +2,8 @@
 //! literal step), confirmations, `find` and `wait`.
 //!
 //! **Before anything is sent** the whole plan is checked: its shape, every
-//! ref pinned to the snapshot it is read in, every sentence check (refused
-//! as `vague_condition`, or `model_unavailable` with no model), and the
-//! host's step policy (`step_not_allowed`).
+//! ref pinned to the snapshot it is read in, and every sentence check
+//! (refused as `vague_condition`, or `model_unavailable` with no model).
 //!
 //! **Each literal step** then runs in order: a click, or an Enter in a
 //! field, first gets the decision model's risk decision on exactly what it
@@ -20,13 +19,12 @@
 //! **A confirmation** is used once, in the session and document it was
 //! issued in, and only while its element and the lines around it are
 //! unchanged: otherwise `confirm_stale`. It is carried out by
-//! `do --confirm C`, or by `act click` on its own ref, and never needs a new
-//! risk decision.
+//! `do --confirm C` only, and never needs a new risk decision; a click sent
+//! any other way, on the same ref too, is judged again.
 //!
 //! The decision model (`model.rs`) runs here, never in the worker, and the
 //! worker is not held while it answers.
 
-use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -50,8 +48,6 @@ const WAIT_POLL: Duration = Duration::from_millis(250);
 /// `wait`'s default and largest deadline, in seconds.
 const WAIT_WITHIN: f64 = 10.0;
 const MAX_WAIT: f64 = 120.0;
-/// Where the host's step policy is set, in the state directory.
-pub const POLICY_FILE: &str = "browser/policy.json";
 
 /// An issued confirmation: what it lets through, and what it is bound to.
 pub struct Confirmation {
@@ -74,47 +70,6 @@ enum Confirms {
     Keys(Op, String),
     /// A fill releasing a secret field, with its arguments.
     Fill(Value),
-}
-
-/// Which literal steps a session may run (a host setting).
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Policy {
-    /// Refs from any page latch returned to the session.
-    Any,
-    /// Only refs returned in the session's latest stop.
-    Stop,
-    /// None.
-    None,
-}
-
-impl Policy {
-    fn name(self) -> &'static str {
-        match self {
-            Policy::Any => "any",
-            Policy::Stop => "stop",
-            Policy::None => "none",
-        }
-    }
-}
-
-/// The host's step policy: `{"literal_steps": "any" | "stop" | "none"}` in
-/// `browser/policy.json`, `any` without one.
-fn policy(state_dir: &Path) -> Result<Policy, Failure> {
-    let bad = |why: String| Failure::failed("bad_policy", format!("{POLICY_FILE}: {why}"));
-    let text = match std::fs::read_to_string(state_dir.join(POLICY_FILE)) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::Any),
-        Err(err) => return Err(bad(err.to_string())),
-    };
-    let set: Value = serde_json::from_str(&text).map_err(|err| bad(err.to_string()))?;
-    match set["literal_steps"].as_str() {
-        None | Some("any") => Ok(Policy::Any),
-        Some("stop") => Ok(Policy::Stop),
-        Some("none") => Ok(Policy::None),
-        Some(other) => Err(bad(format!(
-            "literal_steps is any, stop or none, not {other:?}"
-        ))),
-    }
 }
 
 /// Waits until `deadline` for `condition`, checking it a few times a
@@ -231,9 +186,7 @@ fn record_model(model: &Model, audit: &mut Map<String, Value>) {
 
 /// One step of a run: a confirmation to carry out, or a literal action.
 enum Work {
-    /// Confirmation C, on the ref `act` named (with the act's check), or
-    /// its own.
-    Confirm(String, Option<(String, String)>, Option<Check>),
+    Confirm(String),
     Literal(Literal, Option<Check>),
 }
 
@@ -249,8 +202,6 @@ pub async fn run(
 ) -> Result<Value, Failure> {
     let request = request_id(args)?;
     audit.insert("request".into(), json!(request));
-    let via_act = args["via"] == "act";
-    audit.insert("via".into(), json!(if via_act { "act" } else { "do" }));
     let plan: Plan = serde_json::from_value(args["plan"].clone())
         .map_err(|err| usage(format!("the plan is malformed: {err}")))?;
     plan.validate().map_err(usage)?;
@@ -299,7 +250,7 @@ pub async fn run(
     // Every ref pinned to the snapshot it is read in, before anything runs.
     let mut work = Vec::new();
     if let Some(id) = &confirm {
-        work.push(Work::Confirm(id.clone(), None, None));
+        work.push(Work::Confirm(id.clone()));
     }
     for (n, step) in plan.steps.iter().enumerate() {
         let mut literal = step.literal.clone().expect("goals were refused");
@@ -323,83 +274,11 @@ pub async fn run(
         work.push(Work::Literal(literal, step.check.clone()));
     }
 
-    // `act click` on a confirmation's own ref carries it out.
-    let issued = !entry
-        .confirmations
-        .lock()
-        .expect("confirmations lock")
-        .is_empty();
-    if via_act
-        && issued
-        && let [Work::Literal(literal, check)] = work.as_slice()
-        && literal.op == Op::Click
-    {
-        let check = check.clone();
-        let target = literal.target.clone().unwrap_or_default();
-        let snapshot = literal.snapshot.clone().unwrap_or_default();
-        let (reviewed, _) = call(
-            entry,
-            json!({"op": "review", "snapshot": snapshot, "target": target}),
-            audit,
-        )
-        .await?;
-        let found = entry
-            .confirmations
-            .lock()
-            .expect("confirmations lock")
-            .iter()
-            .rev()
-            .find(|c| {
-                matches!(c.kind, Confirms::Click)
-                    && c.document == reviewed["document"]
-                    && c.uid == reviewed["uid"]
-            })
-            .map(|c| c.id.clone());
-        if let Some(id) = found {
-            work = vec![Work::Confirm(id, Some((snapshot, target)), check)];
-        }
-    }
-
-    // The step policy, before anything is sent. Confirmations always pass.
-    let policy = policy(&browsers.state_dir())?;
-    audit.insert("policy".into(), json!(policy.name()));
-    let last_stop = entry.last_stop.lock().expect("last stop lock").clone();
-    for (n, step) in work.iter().enumerate() {
-        let Work::Literal(literal, _) = step else {
-            continue;
-        };
-        let allowed = match policy {
-            Policy::Any => true,
-            Policy::None => false,
-            Policy::Stop => {
-                literal.target.is_none() && literal.op != Op::Fill
-                    || literal.snapshot.is_some() && literal.snapshot == last_stop
-            }
-        };
-        if !allowed {
-            audit.insert(
-                "step_not_allowed".into(),
-                json!({"step": n + 1, "policy": policy.name()}),
-            );
-            let why = match policy {
-                Policy::None => "this host allows no literal steps".to_string(),
-                _ => "this host allows literal steps only on refs from the latest stop".to_string(),
-            };
-            let mut failure = Failure::new(
-                Exit::Denied,
-                "step_not_allowed",
-                format!("step {}: {why}; nothing was sent", n + 1),
-            );
-            failure.details = json!({"step": n + 1, "policy": policy.name()});
-            return Err(failure);
-        }
-    }
-
     let summaries: Vec<Value> = work
         .iter()
         .enumerate()
         .map(|(n, step)| match step {
-            Work::Confirm(id, ..) => json!({"step": n + 1, "confirm": id}),
+            Work::Confirm(id) => json!({"step": n + 1, "confirm": id}),
             Work::Literal(literal, check) => {
                 let mut summary = json!({"step": n + 1, "op": literal.op, "ref": literal.target});
                 if let Some(check) = check {
@@ -436,14 +315,13 @@ pub async fn run(
         let mut shown = json!({"step": step_no, "actions": 0});
         let before = run.actions;
         let outcome = match step {
-            Work::Confirm(id, act, check) => {
+            Work::Confirm(id) => {
                 shown["confirm"] = json!(id);
-                run.confirmed(step_no, &id, act, check.as_ref()).await
+                run.confirmed(step_no, &id).await
             }
             Work::Literal(literal, check) => {
                 shown["op"] = json!(literal.op);
-                run.literal(step_no, &literal, check.as_ref(), n + 1 == summaries.len())
-                    .await
+                run.literal(step_no, &literal, check.as_ref()).await
             }
         };
         shown["actions"] = json!(run.actions - before);
@@ -520,8 +398,6 @@ pub async fn run(
         return Ok(out);
     };
     audit.insert("stop".into(), json!({"step": step, "code": failure.code}));
-    *entry.last_stop.lock().expect("last stop lock") =
-        page["snapshot"].as_str().map(str::to_string);
     let mut shown = json!({"step": step, "code": failure.code, "message": failure.message});
     for (key, value) in failure.details.as_object().into_iter().flatten() {
         shown[key] = value.clone();
@@ -649,7 +525,6 @@ impl Run<'_> {
         n: usize,
         literal: &Literal,
         check: Option<&Check>,
-        last: bool,
     ) -> Result<Done, Failure> {
         if self.left().is_zero() {
             return Err(stopped(
@@ -674,26 +549,21 @@ impl Run<'_> {
             Some(c) if c.kind == CheckKind::Download => self.downloads().await?,
             _ => Vec::new(),
         };
-        let acted = match literal.op {
-            Op::Fill => {
-                self.fill(n, literal).await?;
-                Value::Null
-            }
+        match literal.op {
+            Op::Fill => self.fill(n, literal).await?,
             Op::Click => self.risky(n, literal, false).await?,
             _ if presses_enter(literal) => self.risky(n, literal, true).await?,
-            _ => self.dispatch(n, literal, None, None, None).await?,
-        };
-        let done = self.check(n, literal, check, besides).await?;
-        if !last {
-            wall(&acted, self.browsers.screen())?;
+            _ => {
+                self.dispatch(n, literal, None, None, None).await?;
+            }
         }
-        Ok(done)
+        self.check(n, literal, check, besides).await
     }
 
     /// A click or Enter: the model's risk decision on what it would act on,
     /// then the action, made only if that is still what the page shows, or a
     /// confirmation in its place.
-    async fn risky(&mut self, n: usize, literal: &Literal, enter: bool) -> Result<Value, Failure> {
+    async fn risky(&mut self, n: usize, literal: &Literal, enter: bool) -> Result<(), Failure> {
         let reviewed = self.review(literal, enter).await?;
         if !self.model.is_on() {
             return Err(model_unavailable(&self.model, "a click or Enter"));
@@ -725,7 +595,6 @@ impl Run<'_> {
                 acted => acted,
             };
         }
-        let is_click = !enter;
         let kind = match enter {
             true => Confirms::Keys(literal.op, literal.text.clone().unwrap_or_default()),
             false => Confirms::Click,
@@ -737,15 +606,7 @@ impl Run<'_> {
             Exit::Denied,
             "confirm_needed",
             format!(
-                "{what} looks like it can't be undone; nothing was sent. If it is what the task needs, confirm it with `latch browser do --confirm {id}`{}",
-                if is_click {
-                    format!(
-                        " or `latch browser act click {}`",
-                        literal.target.as_deref().unwrap_or_default()
-                    )
-                } else {
-                    String::new()
-                }
+                "{what} looks like it can't be undone; nothing was sent. If it is what the task needs, confirm it with `latch browser do --confirm {id}`"
             ),
         );
         let mut shown = reviewed_json(&id, &reviewed);
@@ -793,35 +654,8 @@ impl Run<'_> {
     }
 
     /// Carries out confirmation `id`: once, on the element and context it
-    /// was issued for, with no new risk decision; then `check`, if any.
-    async fn confirmed(
-        &mut self,
-        n: usize,
-        id: &str,
-        act: Option<(String, String)>,
-        check: Option<&Check>,
-    ) -> Result<Done, Failure> {
-        // A check that must change is checked before the confirmation is
-        // spent, as for any step.
-        if let Some(check) = check
-            && check.require_change
-        {
-            let before = Literal {
-                snapshot: act.as_ref().map(|(snapshot, _)| snapshot.clone()),
-                ..Literal::click("e1")
-            };
-            if self
-                .holds(check, &before, Vec::new(), Duration::ZERO)
-                .await?
-            {
-                return Err(stopped(
-                    "check_not_met",
-                    format!(
-                        "step {n}'s check already holds before the step, and it must change; nothing was sent, and confirmation {id} is still unused"
-                    ),
-                ));
-            }
-        }
+    /// was issued for, with no new risk decision.
+    async fn confirmed(&mut self, n: usize, id: &str) -> Result<Done, Failure> {
         let taken = {
             let mut all = self.entry.confirmations.lock().expect("confirmations lock");
             all.iter_mut().find(|c| c.id == id).map(|c| {
@@ -859,7 +693,6 @@ impl Run<'_> {
         if used {
             return Err(stale("was already used"));
         }
-        let (snapshot, target) = act.unwrap_or((snapshot, target));
         let enter = matches!(kind, Confirms::Keys(..));
         let press = match &kind {
             Confirms::Fill(args) => args["press"].as_str().unwrap_or_default().to_string(),
@@ -890,25 +723,16 @@ impl Run<'_> {
             snapshot: Some(snapshot),
             ..Literal::click(&target)
         };
-        let besides = match check {
-            Some(c) if c.kind == CheckKind::Download => self.downloads().await?,
-            _ => Vec::new(),
-        };
         let guard = Some((print.as_str(), enter));
         let sent = match kind {
-            Confirms::Click => self
-                .dispatch(n, &literal, None, Some(id), guard)
-                .await
-                .map(|_| ()),
+            Confirms::Click => self.dispatch(n, &literal, None, Some(id), guard).await,
             Confirms::Keys(op, text) => {
                 let literal = Literal {
                     op,
                     text: Some(text),
                     ..literal.clone()
                 };
-                self.dispatch(n, &literal, None, Some(id), guard)
-                    .await
-                    .map(|_| ())
+                self.dispatch(n, &literal, None, Some(id), guard).await
             }
             Confirms::Fill(args) => self.fill_now(n, args, Some(id)).await,
         };
@@ -920,7 +744,7 @@ impl Run<'_> {
             }
             sent => sent?,
         }
-        self.check(n, &literal, check, besides).await
+        self.check(n, &literal, None, Vec::new()).await
     }
 
     /// One action, journaled before it is sent and once its result is known.
@@ -934,7 +758,7 @@ impl Run<'_> {
         risk_p: Option<f64>,
         confirmation: Option<&str>,
         guard: Option<(&str, bool)>,
-    ) -> Result<Value, Failure> {
+    ) -> Result<(), Failure> {
         let action = self.begin(n, literal.op, json!({"ref": literal.target}))?;
         let mut act = json!({
             "op": "act", "action": action_of(literal.op), "quiet": true,
@@ -983,7 +807,7 @@ impl Run<'_> {
                 if let Some(events) = result.get("events") {
                     shown["events"] = events.clone();
                 }
-                Ok(result)
+                Ok(())
             }
             Err(failure) => Err(failure),
         };
@@ -1191,29 +1015,6 @@ impl Run<'_> {
             outcome: "model_assessed",
             evidence: Some(evidence),
         })
-    }
-}
-
-/// A step that led to a sign-in form or a CAPTCHA stops the plan there; a
-/// CAPTCHA on a host with no screen, where no handoff can help, says so.
-fn wall(acted: &Value, screen: bool) -> Result<(), Failure> {
-    match acted["wall"].as_str() {
-        Some("login") => Err(stopped(
-            "needs_login",
-            "this step led to a sign-in form; the rest of the plan did not run: sign in with `login`, then go on".into(),
-        )),
-        Some("captcha") if !screen => Err(super::handoff::no_screen(
-            "this step led to a CAPTCHA; the rest of the plan did not run",
-        )),
-        Some("captcha") => {
-            let mut failure = stopped(
-                "needs_owner",
-                "this step led to a CAPTCHA; the rest of the plan did not run: hand off to the owner".into(),
-            );
-            failure.details = json!({"reason": "captcha"});
-            Err(failure)
-        }
-        _ => Ok(()),
     }
 }
 
@@ -1511,38 +1312,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_captcha_on_a_host_with_no_screen_says_so() {
-        let acted = json!({"wall": "captcha"});
-        assert_eq!(wall(&acted, true).unwrap_err().details["reason"], "captcha");
-        let failure = wall(&acted, false).unwrap_err();
-        assert_eq!(
-            (failure.code.as_str(), &failure.details["reason"]),
-            ("needs_owner", &json!("no_screen"))
-        );
-        assert_eq!(
-            wall(&json!({"wall": "login"}), false).unwrap_err().code,
-            "needs_login"
-        );
-        assert!(wall(&json!({}), false).is_ok());
-    }
-
-    #[test]
     fn request_ids_are_the_clients_own() {
         assert!(request_id(&json!({})).is_err());
         assert!(request_id(&json!({"request": "r 1"})).is_err());
         assert_eq!(request_id(&json!({"request": "r1a2"})).unwrap(), "r1a2");
-    }
-
-    #[test]
-    fn the_step_policy_is_a_host_setting() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(policy(dir.path()).unwrap(), Policy::Any);
-        std::fs::create_dir_all(dir.path().join("browser")).unwrap();
-        let file = dir.path().join(POLICY_FILE);
-        std::fs::write(&file, r#"{"literal_steps": "stop"}"#).unwrap();
-        assert_eq!(policy(dir.path()).unwrap(), Policy::Stop);
-        std::fs::write(&file, r#"{"literal_steps": "some"}"#).unwrap();
-        assert_eq!(policy(dir.path()).unwrap_err().code, "bad_policy");
     }
 
     #[test]

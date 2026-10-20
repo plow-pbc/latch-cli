@@ -186,7 +186,7 @@ impl<D: Driver> Core<D> {
         let deadline = Instant::now() + PASSWORD_STEP;
         loop {
             for frame in self.driver.frames()? {
-                if self.driver.run(&frame, "__latch.wall().password").ok() == Some(json!(true)) {
+                if self.driver.run(&frame, "__latch.passwordShown()").ok() == Some(json!(true)) {
                     return Ok(());
                 }
             }

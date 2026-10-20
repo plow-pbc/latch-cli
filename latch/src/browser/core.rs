@@ -787,16 +787,10 @@ impl<D: Driver> Core<D> {
                 changed.insert(key.into(), page[key].clone());
             }
         }
-        let moved = !changed.is_empty();
-        if moved {
+        if !changed.is_empty() {
             result.insert("changed".into(), Value::Object(changed));
         }
-        // A step of a plan that brought a new page: is it a login wall or a
-        // CAPTCHA, which the plan must stop at?
         if self.quiet {
-            if moved && let Some(wall) = self.wall()? {
-                result.insert("wall".into(), json!(wall));
-            }
             return Ok(());
         }
         result.insert("lines".into(), json!(self.first_lines(5)?));

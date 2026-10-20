@@ -57,8 +57,8 @@ pub fn screen(headless: bool) -> bool {
             .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
 }
 
-/// The answer on a host with no screen, and on a sign-in wall or CAPTCHA
-/// there: only the owner could get past it, and not at this host.
+/// The answer on a host with no screen: only the owner could do this, and
+/// not at this host.
 pub fn no_screen(why: &str) -> Failure {
     let mut failure = Failure::failed(
         "needs_owner",
