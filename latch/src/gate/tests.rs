@@ -3,134 +3,28 @@
 //! the decision model. No real chat is ever read.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
-use jiff::{SignedDuration, Timestamp};
+use jiff::Timestamp;
 use serde_json::{Value, json};
 
+use super::fake::{self, AGENT, LINE, World, agent_self, member, message, owner};
 use super::rules::{RULES_DIR, RuleFiles, Rules, RulesSource};
 use super::*;
 use crate::browser::model::{Asked, CallMeta, system_one};
 use serde_json::value::RawValue;
 
-const AGENT: &str = "0123456789abcdef0123456789abcdef";
-const LINE: &str = "line_agent";
-
-/// What the synthetic Plow holds: the agent's line, each chat's line, and
-/// each chat's messages, oldest first.
-#[derive(Clone, Default)]
-struct World {
-    chats: Vec<(String, String)>,
-    messages: HashMap<String, Vec<Value>>,
-    /// A path answered with HTTP 500.
-    broken: Option<String>,
-}
-
-impl World {
-    fn with_chat(chat: &str, messages: Vec<Value>) -> World {
-        let mut world = World::default();
-        world.add(chat, LINE, messages);
-        world
-    }
-
-    fn add(&mut self, chat: &str, line: &str, messages: Vec<Value>) {
-        self.chats.push((chat.into(), line.into()));
-        self.messages.insert(chat.into(), messages);
-    }
-
-    fn answer(&self, target: &str) -> (u16, Value) {
-        let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        if self.broken.as_deref() == Some(path) {
-            return (500, json!({"detail": "broken"}));
-        }
-        let query: HashMap<String, String> = url::form_urlencoded::parse(query.as_bytes())
-            .into_owned()
-            .collect();
-        if path == format!("/v1/agents/{AGENT}") {
-            return (
-                200,
-                json!({"uid": AGENT, "name": "Juno", "provider": "exe",
-                                "line": {"uid": LINE, "provider_type": "imessage", "provider_key": "+14155550100"}}),
-            );
-        }
-        if path == "/v1/chats" {
-            let data: Vec<Value> = self
-                .chats
-                .iter()
-                .map(|(chat, line)| json!({"uid": chat, "object": "chat", "status": "active", "trusted": true,
-                    "participants": [
-                        {"type": "agent", "relationship": "self",
-                         "line": {"uid": line, "provider_type": "imessage", "provider_key": "+14155550100"}},
-                        {"type": "member", "uid": "cp_owner", "object": "chat_participant", "status": "active",
-                         "display_name": "Morgan", "role": "owner", "provider_type": "imessage",
-                         "provider_key": "+14155550199"},
-                    ]}))
-                .collect();
-            return (
-                200,
-                json!({"object": "list", "data": data, "has_more": false, "url": "/v1/chats"}),
-            );
-        }
-        let chat = path
-            .strip_prefix("/v1/chats/")
-            .and_then(|rest| rest.strip_suffix("/messages"));
-        if let Some(messages) = chat.and_then(|chat| self.messages.get(chat)) {
-            assert_eq!(query["format"], "text_decorations");
-            let limit: usize = query["limit"].parse().unwrap();
-            let newest_first: Vec<&Value> = messages.iter().rev().collect();
-            let start = match query.get("starting_after") {
-                Some(uid) => newest_first.iter().position(|m| m["uid"] == **uid).unwrap() + 1,
-                None => 0,
-            };
-            let page: Vec<&Value> = newest_first
-                .iter()
-                .skip(start)
-                .take(limit)
-                .copied()
-                .collect();
-            let has_more = start + page.len() < newest_first.len();
-            return (
-                200,
-                json!({"object": "list", "data": page, "has_more": has_more, "url": path}),
-            );
-        }
-        (404, json!({"detail": "not found"}))
-    }
-}
-
 /// A local Plow serving `world`, and the requests it saw.
 fn plow(world: World) -> (crate::plow::Plow, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let log = seen.clone();
-    std::thread::spawn(move || {
-        for socket in listener.incoming() {
-            let mut socket = socket.unwrap();
-            let mut reader = BufReader::new(socket.try_clone().unwrap());
-            let mut first = String::new();
-            reader.read_line(&mut first).unwrap();
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line == "\r\n" || line.is_empty() {
-                    break;
-                }
-            }
-            let target = first.split(' ').nth(1).unwrap().to_string();
-            log.lock().unwrap().push(target.clone());
-            let (status, body) = world.answer(&target);
-            let body = body.to_string();
-            let _ = write!(
-                socket,
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-        }
-    });
-    (crate::plow::Plow::new(&url, "made-up-login"), seen)
+    let (plow, seen, _) = plow_with_headers(world);
+    (plow, seen)
+}
+
+/// The same, and each request's `Authorization` headers, in order.
+type Headers = Arc<Mutex<Vec<Vec<String>>>>;
+fn plow_with_headers(world: World) -> (crate::plow::Plow, Arc<Mutex<Vec<String>>>, Headers) {
+    let fake = fake::serve(world);
+    (fake.client(), fake.seen, fake.authorizations)
 }
 
 /// The decision model, recording what it was asked and answering with
@@ -220,28 +114,6 @@ fn gatekeeper(
     Gatekeeper::new(plow(world).0, model.clone(), Box::new(rules))
 }
 
-fn message(uid: &str, sender: Value, body: &str, minutes_ago: i64) -> Value {
-    let at = Timestamp::now() - SignedDuration::from_mins(minutes_ago);
-    json!({"uid": uid, "object": "message", "chat_uid": "chat_a", "direction": "inbound",
-           "body": body, "mentions": null, "effect": null, "status": "received",
-           "sender": sender, "reactions": [], "attachments": [], "created_at": at.to_string()})
-}
-
-fn owner() -> Value {
-    json!({"type": "member", "uid": "cp_owner", "display_name": "Morgan", "role": "owner",
-           "provider_key": "+14155550199"})
-}
-
-fn member(name: &str) -> Value {
-    json!({"type": "member", "uid": "cp_x", "display_name": name, "role": "member",
-           "provider_key": "+14155550142"})
-}
-
-fn agent_self() -> Value {
-    json!({"type": "agent", "relationship": "self",
-           "line": {"uid": LINE, "provider_type": "imessage", "provider_key": "+14155550100"}})
-}
-
 fn order() -> Box<RawValue> {
     serde_json::value::to_raw_value(
         &json!({"op": "exec", "argv": ["pytest"], "cwd": "/Users/morgan/work"}),
@@ -320,6 +192,33 @@ async fn only_the_member_plow_calls_the_owner_counts_as_the_owner() {
         ]
     );
     assert_eq!(judgment.gate["owner_messages"], json!(["m1"]));
+}
+
+#[tokio::test]
+async fn every_plow_call_sends_the_credential_once() {
+    let messages = (0..150)
+        .map(|n| message(&format!("m{n:03}"), owner(), "hello", 150 - n))
+        .collect();
+    let (plow, seen, authorizations) = plow_with_headers(World::with_chat("chat_a", messages));
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let judgment = Gatekeeper::new(plow, model, Box::new(Rules::default()))
+        .judge(AGENT, None, &order())
+        .await;
+    assert!(judgment.verdict.is_ok());
+
+    // The agent, its chats and two pages of messages, each with one bearer.
+    let seen = seen.lock().unwrap().clone();
+    assert!(
+        seen[0].starts_with(&format!("GET /v1/agents/{AGENT}")),
+        "{seen:?}"
+    );
+    assert!(seen.iter().any(|t| t == "GET /v1/chats"), "{seen:?}");
+    assert_eq!(seen.iter().filter(|t| t.contains("/messages")).count(), 2);
+    let authorizations = authorizations.lock().unwrap().clone();
+    assert_eq!(authorizations.len(), seen.len());
+    for (target, sent) in seen.iter().zip(authorizations) {
+        assert_eq!(sent, ["Bearer made-up-login"], "{target}");
+    }
 }
 
 #[tokio::test]
