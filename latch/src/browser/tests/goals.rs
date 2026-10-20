@@ -465,6 +465,64 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
         step_two[1]
     );
 
+    // A typed check is waited for after the step's last action: what a
+    // click brings two seconds later still completes the step.
+    h.open(&at("reset.html")).await;
+    h.open(&at("slow.html")).await;
+    told.tell(|s| {
+        if s["actions_in_this_step"].as_array().unwrap().is_empty() {
+            choose("click", Some("Show more deals"))
+        } else {
+            choose("stuck", None)
+        }
+    });
+    let slow = h
+        .send(plan(
+            &["show more deals -> text: Rolled Oats 1kg"],
+            &site,
+            &[],
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(slow["steps"][0]["outcome"], "checked", "{slow:#}");
+    // And one the model calls complete that never holds is not met.
+    h.open(&at("deals.html")).await;
+    told.tell(|s| {
+        if s["actions_in_this_step"].as_array().unwrap().is_empty() {
+            choose("click", Some("Show more deals"))
+        } else {
+            complete("[action] clicked button", "stuck")
+        }
+    });
+    let (code, details) = stop(
+        h.send(plan(
+            &["show more deals -> text: Rolled Oats 1kg"],
+            &site,
+            &[],
+            &[],
+        ))
+        .await,
+    );
+    assert_eq!(code, "check_not_met", "{details:#}");
+
+    // A control is one control whether it is clicked or submitted with
+    // Enter: after "Send message", Enter in its form is a second try.
+    h.open(&at("contact.html")).await;
+    told.tell(
+        |s| match s["actions_in_this_step"].as_array().unwrap().len() {
+            0 => choose("click", Some("button \"Send message\"")),
+            1 => choose("type", Some("textbox \"Your name\"")),
+            _ => choose("press_enter", None),
+        },
+    );
+    let (code, details) = stop(
+        h.send(plan(&["send the message as \"Ada\""], &site, &[], &[]))
+            .await,
+    );
+    assert_eq!(code, "repeat", "{details:#}");
+    assert_eq!(sent(&details), 2);
+
     // A same-URL wizard: the same "Next" on a changed page is progress.
     h.open(&at("reset.html")).await;
     h.open(&at("wizard.html")).await;

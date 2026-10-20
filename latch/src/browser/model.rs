@@ -505,9 +505,12 @@ pub fn request_size(state: &Value, questions: &[Question]) -> usize {
 
 /// `pass` cut to fit `budget`: the page's other lines go first, then click
 /// targets from the end of the page, then field and dropdown pairs, then
-/// on-screen lines, a quarter at a time; a note tells the model what was
-/// left out. Also how many click targets and page lines were left out.
-fn fit(pass: &Pass, budget: usize) -> (Pass, Option<(usize, usize)>) {
+/// on-screen lines, then field lines and the step's action lines, a quarter
+/// at a time; a note tells the model what was left out. Also how many
+/// click targets and page lines were left out. What is never cut (the
+/// plan, the step's own values, the address and title) may still not fit:
+/// then the size it comes to, and nothing is to be sent.
+fn fit(pass: &Pass, budget: usize) -> Result<(Pass, Option<(usize, usize)>), usize> {
     fn shrink<T>(list: &mut Vec<T>, floor: usize) -> bool {
         if list.len() <= floor {
             return false;
@@ -527,7 +530,13 @@ fn fit(pass: &Pass, budget: usize) -> (Pass, Option<(usize, usize)>) {
             || shrink(&mut cut.selects, 10)
             || shrink(&mut cut.on_screen, 10)
             || shrink(&mut cut.clicks, 0)
-            || shrink(&mut cut.on_screen, 0);
+            || shrink(&mut cut.on_screen, 0)
+            || shrink(&mut cut.types, 0)
+            || shrink(&mut cut.selects, 0)
+            || shrink(&mut cut.type_fields, 0)
+            || shrink(&mut cut.fields, 0)
+            || shrink(&mut cut.new_lines, 0)
+            || shrink(&mut cut.actions, 0);
         if !shrunk {
             break;
         }
@@ -536,17 +545,29 @@ fn fit(pass: &Pass, budget: usize) -> (Pass, Option<(usize, usize)>) {
         pass.clicks.len() - cut.clicks.len(),
         pass.lines.len() + pass.on_screen.len() - cut.lines.len() - cut.on_screen.len(),
     );
-    if left_out == (0, 0)
+    let whole = left_out == (0, 0)
         && cut.types.len() == pass.types.len()
         && cut.selects.len() == pass.selects.len()
-    {
-        return (cut, None);
+        && cut.fields.len() == pass.fields.len()
+        && cut.actions.len() == pass.actions.len();
+    if !whole {
+        cut.notes.push(format!(
+            "to fit, {} elements and {} page lines were left out; scroll to bring others into view",
+            left_out.0, left_out.1
+        ));
     }
-    cut.notes.push(format!(
-        "to fit, {} elements and {} page lines were left out; scroll to bring others into view",
-        left_out.0, left_out.1
-    ));
-    (cut, Some(left_out))
+    let (state, questions, _) = asked(&cut);
+    let size = request_size(&state, &questions);
+    if size > budget {
+        return Err(size);
+    }
+    Ok((cut, (!whole).then_some(left_out)))
+}
+
+/// The size a pass's request comes to when even everything that can be
+/// left out does not make it fit `REQUEST_BUDGET`; none when it fits.
+pub fn too_large(pass: &Pass) -> Option<usize> {
+    fit(pass, REQUEST_BUDGET).err()
 }
 
 /// One pass's request: its state, its questions, and its evidence lines
@@ -724,7 +745,11 @@ impl Model {
     /// and a target for each kind of operation offered. Each question is
     /// answered on its own, so each states the operation it assumes.
     pub async fn decide(&mut self, pass: &Pass) -> Result<Decision, String> {
-        let (pass, trimmed) = fit(pass, REQUEST_BUDGET);
+        let (pass, trimmed) = fit(pass, REQUEST_BUDGET).map_err(|size| {
+            format!(
+                "the decision request is too large: {size} bytes even with every element and page line left out, and at most {REQUEST_BUDGET} are sent; nothing was sent"
+            )
+        })?;
         let pass = &pass;
         let offered = |op: &str| pass.operations.contains(&op);
         let (state, questions, evidence) = asked(pass);
@@ -1457,12 +1482,35 @@ pub mod tests {
             "{state}"
         );
         // A page that fits is sent whole, with no note.
-        let (cut, trimmed) = fit(&pass(), REQUEST_BUDGET);
+        let (cut, trimmed) = fit(&pass(), REQUEST_BUDGET).unwrap();
         assert_eq!((cut.clicks.len(), trimmed), (pass().clicks.len(), None));
-        let (_, trimmed) = fit(&big, REQUEST_BUDGET);
+        let (_, trimmed) = fit(&big, REQUEST_BUDGET).unwrap();
         let (elements, lines) = trimmed.unwrap();
         assert_eq!(elements, 250 - clicks);
         assert!(lines >= 60, "the page's other lines go first: {lines}");
+    }
+
+    #[tokio::test]
+    async fn a_request_that_cannot_be_cut_to_fit_is_never_sent() {
+        // A supplied text is never left out: one this long can't fit.
+        let long = "x".repeat(70 * 1024);
+        let huge = Pass {
+            values: vec![("quoted in this step".into(), long.clone())],
+            ..pass()
+        };
+        let provider = std::sync::Arc::new(Recorded {
+            answers: Mutex::new(Vec::new()),
+            asked: Mutex::new(Vec::new()),
+            sent: Mutex::new((0, Value::Null)),
+        });
+        let mut m = Model::new(Box::new(provider.clone()));
+        let err = m.decide(&huge).await.unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+        assert_eq!(provider.sent.lock().unwrap().0, 0, "nothing was sent");
+        assert!(m.calls.is_empty());
+        assert!(m.is_on(), "the model itself is still there");
+        assert!(too_large(&huge).is_some());
+        assert!(too_large(&pass()).is_none());
     }
 
     #[test]

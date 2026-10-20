@@ -180,7 +180,7 @@ latch never reports "done" for the user's task. `reached` means every step's own
 | Exit | Meaning | Codes |
 |---|---|---|
 | 0 | `reached` or `dispatched` | — |
-| 1 | stopped | `check_not_met`, `unconfirmed`, `already_true`, `needs_text`, `needs_fields`, `needs_login`, `needs_owner`, `blocked`, `stuck`, `repeat`, `no_progress`, `ambiguous_target`, `step_budget`, `plan_budget`, `deadline`, `stale_snapshot`, `covered_target`, `session_paused`, `site_busy`, `model_unavailable`, `no_such_session`, `unsupported_capability`, `timeout` |
+| 1 | stopped | `check_not_met`, `unconfirmed`, `already_true`, `needs_text`, `needs_fields`, `needs_login`, `needs_owner`, `blocked`, `stuck`, `repeat`, `no_progress`, `ambiguous_target`, `step_budget`, `plan_budget`, `deadline`, `stale_snapshot`, `covered_target`, `session_paused`, `site_busy`, `model_unavailable`, `request_too_large`, `no_such_session`, `unsupported_capability`, `timeout` |
 | 2 | usage | bad arguments, a malformed plan, `vague_condition`, a removed form, unknown host |
 | 3 | host unreachable; nothing sent | — |
 | 4 | refused | `confirm_needed`, `confirm_stale`, `step_not_allowed`, `not_owner`, `origin_mismatch`, `secret_on_page` |
@@ -316,7 +316,7 @@ Each pass observes the page and makes **one decision-model request**. In that re
 
   A target choice is dropped only where the host has already established the single eligible target by itself. So `login` and `fill_code` take no target head. Every model-chosen field × value pair keeps its `none`.
 
-  **Size.** A request that would pass the route's 64 KiB is cut to fit (latch budgets 60 KiB): the page's other lines first, then click targets from the end of the page, then field and dropdown pairs, then on-screen lines. The request says what was left out, and so does the action's trail entry.
+  **Size.** A request that would pass the route's 64 KiB is cut to fit (latch budgets 60 KiB): the page's other lines first, then click targets from the end of the page, then field and dropdown pairs, then on-screen lines, then field lines and the step's action lines. The request says what was left out, and so does the action's trail entry. What is never cut (the plan, the step's own values, the page's address and title) may still not fit: then the step stops `request_too_large` and nothing is sent.
 
 ### 6.3 When a step is complete
 

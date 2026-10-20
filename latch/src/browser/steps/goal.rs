@@ -4,7 +4,10 @@
 //!
 //! 1. a CAPTCHA page: `needs_owner`;
 //! 2. completion: a typed check that holds (`checked`, or `already_held`
-//!    before the first action), or else the model's `complete` with an
+//!    before the first action; once the step has acted and is about to
+//!    stop, the check gets up to 10 s, and where the model judged the step
+//!    complete and it does not hold, `check_not_met`), or else the model's
+//!    `complete` with an
 //!    evidence line (`model_assessed`; before the first action
 //!    `already_held` only when that line is a state line: a field, the
 //!    address or the title);
@@ -21,8 +24,9 @@
 //! 8. signing in: `needs_login`;
 //! 9. a vault fill: `needs_fields`, with the form's refs;
 //! 10. in a step without a typed check, a second click or submit of the
-//!     same control: `repeat` (whether the first did the step is the
-//!     model's to judge); the same action on the same page state again:
+//!     same control (Enter in a field is its form's submit control, as a
+//!     click on that control is): `repeat` (whether the first did the step
+//!     is the model's to judge); the same action on the same page state again:
 //!     `repeat`; two actions in a row that leave it unchanged:
 //!     `no_progress`;
 //! 11. a click or Enter that can't be undone: `confirm_needed`, through
@@ -90,13 +94,54 @@ struct Seen {
 }
 
 impl Run<'_> {
-    /// Carries out instruction step `n` (`at` in `context.plan`).
+    /// Carries out instruction step `n` (`at` in `context.plan`). A step
+    /// with a typed check that stops once it has acted is the end of that
+    /// step's actions: its check gets up to 10 s to hold, and holds, or the
+    /// stop stands (`check_not_met` where the model judged it complete).
     pub(super) async fn goal(
         &mut self,
         n: usize,
         at: usize,
         step: &Step,
         context: &Context,
+    ) -> Result<Done, Failure> {
+        let mut acted = 0;
+        let outcome = self.passes(n, at, step, context, &mut acted).await;
+        let typed = step
+            .check
+            .as_ref()
+            .filter(|c| c.kind != CheckKind::Sentence);
+        let (Some(check), Err(failure)) = (typed, &outcome) else {
+            return outcome;
+        };
+        if acted == 0 || failure.exit == Exit::Unknown {
+            return outcome;
+        }
+        let besides = match check.kind {
+            CheckKind::Download => self.downloads().await.unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let anchor = Literal {
+            snapshot: None,
+            ..Literal::click("e1")
+        };
+        let within = CHECK_WITHIN.min(self.left());
+        if self.holds(check, &anchor, besides, within).await? {
+            return Ok(Done {
+                outcome: "checked",
+                evidence: Some(json!({"check": check.kind, "value": check.value})),
+            });
+        }
+        outcome
+    }
+
+    async fn passes(
+        &mut self,
+        n: usize,
+        at: usize,
+        step: &Step,
+        context: &Context,
+        acted: &mut usize,
     ) -> Result<Done, Failure> {
         let goal = step.goal.clone().unwrap_or_default();
         let typed = step
@@ -146,7 +191,6 @@ impl Run<'_> {
                 ),
             ));
         }
-        let mut acted = 0;
         let mut waits = 0;
         let mut lines: Vec<String> = Vec::new();
         // The page state before the latest action, and how many actions in
@@ -213,13 +257,13 @@ impl Run<'_> {
             // 2. A typed check decides completion. One that must change is
             // never held before the step acts.
             if let Some(check) = typed
-                && (acted > 0 || !check.require_change)
+                && (*acted > 0 || !check.require_change)
                 && self
                     .holds(check, &anchor, besides.clone(), Duration::ZERO)
                     .await?
             {
                 return Ok(Done {
-                    outcome: if acted == 0 {
+                    outcome: if *acted == 0 {
                         "already_held"
                     } else {
                         "checked"
@@ -238,12 +282,23 @@ impl Run<'_> {
                 &values,
                 &seen,
                 &lines,
-                acted,
+                *acted,
                 &typed_into,
                 context,
             );
             if !self.model.is_on() {
                 return Err(model_unavailable(&self.model, "an instruction step"));
+            }
+            if let Some(size) = model::too_large(&pass) {
+                let mut failure = stopped(
+                    "request_too_large",
+                    format!(
+                        "step {n}'s decision request comes to {size} bytes even with every element and page line left out, more than the {} the decision route takes; nothing was sent. Shorten the plan or the step's texts",
+                        model::REQUEST_BUDGET
+                    ),
+                );
+                failure.details = json!({"size": size, "budget": model::REQUEST_BUDGET});
+                return Err(failure);
             }
             let decided = self.model.decide(&pass).await;
             record_model(&self.model, self.audit);
@@ -260,13 +315,29 @@ impl Run<'_> {
                 evidence
             };
 
-            // 2. The model's completion.
+            // 2. The model's completion. With a typed check it is the check's
+            // to decide: once the step has acted, it gets its wait (`goal`).
+            if let Some(check) = typed
+                && *acted > 0
+                && decision.complete()
+            {
+                let mut failure = stopped(
+                    "check_not_met",
+                    format!(
+                        "step {n} was judged complete, and its check did not hold within {}s",
+                        CHECK_WITHIN.as_secs()
+                    ),
+                );
+                failure.details = json!({"evidence": {"check": check.kind, "value": check.value,
+                                                      "model": model_evidence(&decision)}});
+                return Err(failure);
+            }
             if typed.is_none() && decision.complete() {
                 let state_line = decision
                     .evidence
                     .as_ref()
                     .is_some_and(|(_, kind)| kind.is_state());
-                if acted > 0 {
+                if *acted > 0 {
                     return Ok(Done {
                         outcome: "model_assessed",
                         evidence: Some(model_evidence(&decision)),
@@ -307,7 +378,7 @@ impl Run<'_> {
                     return Err(failure);
                 }
                 "stuck" => {
-                    if acted == 0 && typed.is_none() && decision.complete() {
+                    if *acted == 0 && typed.is_none() && decision.complete() {
                         let mut failure = stopped(
                             "already_true",
                             format!(
@@ -341,7 +412,7 @@ impl Run<'_> {
                 lines.push("waited".into());
                 continue;
             }
-            if acted >= STEP_ACTIONS {
+            if *acted >= STEP_ACTIONS {
                 return Err(stopped(
                     "step_budget",
                     format!("step {n} took {STEP_ACTIONS} actions without finishing"),
@@ -436,7 +507,7 @@ impl Run<'_> {
                         ..Literal::click(&t.at)
                     },
                     format!("clicked {}", t.label),
-                    format!("click|{}", identity(view, &t.at)),
+                    identity(view, &t.at),
                 ),
                 ("type", Some(t)) => {
                     let text = t.text.clone().unwrap_or_default();
@@ -471,6 +542,9 @@ impl Run<'_> {
                             format!("step {n}: there is no field to press Enter in"),
                         ));
                     };
+                    // Enter is the control it submits: the same key as a
+                    // click on it.
+                    let control = self.submits(view, &field_snapshot, &field).await;
                     (
                         Literal {
                             op: Op::Press,
@@ -479,7 +553,7 @@ impl Run<'_> {
                             ..Literal::click(&field)
                         },
                         format!("pressed Enter in {label}"),
-                        format!("enter|{label}"),
+                        control,
                     )
                 }
                 ("scroll_down" | "scroll_up", _) => {
@@ -575,7 +649,7 @@ impl Run<'_> {
                 _ => self.dispatch(n, &literal, None, None, None).await,
             };
             self.choice = None;
-            acted += 1;
+            *acted += 1;
             before = Some(state);
             match sent {
                 Ok(()) => {
@@ -856,6 +930,37 @@ impl Run<'_> {
             selects: seen.selects.iter().map(|t| t.offer.clone()).collect(),
             urls: seen.urls.iter().map(|t| t.offer.clone()).collect(),
         }
+    }
+
+    /// What Enter in `field` submits, keyed as the control a click would
+    /// act on: its form's submit control as the page lists it, else its
+    /// form, by the field.
+    async fn submits(&mut self, view: &Value, snapshot: &str, field: &str) -> String {
+        let reviewed = call(
+            self.entry,
+            json!({"op": "review", "snapshot": snapshot, "target": field, "enter": true}),
+            self.audit,
+        )
+        .await
+        .map(|(reviewed, _)| reviewed)
+        .unwrap_or_default();
+        let acts = &reviewed["acts_on"];
+        if acts["role"] != "form" && acts["name"].as_str().is_some_and(|n| !n.is_empty()) {
+            let listed = view["elements"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|e| e["role"] == acts["role"] && e["name"] == acts["name"]);
+            return match listed {
+                Some(e) => identity(view, e["ref"].as_str().unwrap_or_default()),
+                None => format!("{}|{}|null", acts["role"], acts["name"]),
+            };
+        }
+        let element = &reviewed["element"];
+        format!(
+            "form of {}|{}|{}",
+            element["role"], element["name"], element["row"]
+        )
     }
 
     /// Goes to one of the step's URLs, journaled as an action.

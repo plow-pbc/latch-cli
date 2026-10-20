@@ -180,7 +180,7 @@ pub(super) fn serve_shop() -> String {
 }
 
 /// The stop codes a plan can end with (exit 1 and exit 4).
-const STOP_CODES: [&str; 29] = [
+const STOP_CODES: [&str; 30] = [
     "check_not_met",
     "unconfirmed",
     "already_true",
@@ -201,6 +201,7 @@ const STOP_CODES: [&str; 29] = [
     "session_paused",
     "site_busy",
     "model_unavailable",
+    "request_too_large",
     "no_such_session",
     "unsupported_capability",
     "timeout",
