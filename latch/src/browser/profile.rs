@@ -10,11 +10,17 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::failure::Failure;
+
+/// How long `lock` waits for a lock that may be on its way out: a lock
+/// dropped a moment ago is still held by any process another thread was
+/// starting at the time, through its copy of the descriptor, until it execs.
+const LOCK_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Serialize, Deserialize)]
 struct Binding {
@@ -126,12 +132,16 @@ pub fn lock(profile: &Profile) -> Result<Lock, Failure> {
         .mode(0o600)
         .open(profile.lock_path())
         .map_err(|err| Failure::failed("profile_failed", err.to_string()))?;
+    let deadline = Instant::now() + LOCK_WAIT;
     // SAFETY: flock only reads the descriptor, which `file` keeps open.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(Failure::failed(
-            "profile_busy",
-            format!("profile {} is in use by another session", profile.name),
-        ));
+    while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        if Instant::now() >= deadline {
+            return Err(Failure::failed(
+                "profile_busy",
+                format!("profile {} is in use by another session", profile.name),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
     Ok(Lock(file))
 }
@@ -169,5 +179,30 @@ mod tests {
         assert_eq!(lock(&profile).err().unwrap().code, "profile_busy");
         drop(held);
         lock(&profile).unwrap();
+    }
+
+    #[test]
+    fn a_dropped_lock_is_free_while_other_threads_start_processes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let state = tempfile::tempdir().unwrap();
+        let profile = open(state.path(), "default", "cft").unwrap();
+        // A process starting meanwhile holds a copy of every descriptor,
+        // the lock's included, until it execs.
+        let done = AtomicBool::new(false);
+        let busy = std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    while !done.load(Ordering::Relaxed) {
+                        let _ = std::process::Command::new("/bin/sh")
+                            .args(["-c", ":"])
+                            .status();
+                    }
+                });
+            }
+            let busy = (0..2000).filter(|_| lock(&profile).is_err()).count();
+            done.store(true, Ordering::Relaxed);
+            busy
+        });
+        assert_eq!(busy, 0, "a dropped lock was still held");
     }
 }
