@@ -1,12 +1,13 @@
 //! Profiles: latch-owned browser data folders in the host's state
 //! directory, `<state-dir>/browser/profiles/<name>/`, each bound to one
 //! engine for life. A profile folder holds `profile.json` (the binding),
-//! `lock` (held by the one session using it) and `data/`, the engine's own
-//! data folder. `exec` and file workers are denied the whole state
-//! directory, profiles included.
+//! `lock` (held by the runtime using it), `data/`, the engine's own data
+//! folder, and `agent-code.json`, the sites agent code ran on. `exec` and
+//! file workers are denied the whole state directory, profiles included.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -41,6 +42,37 @@ impl Profile {
     pub fn lock_path(&self) -> PathBuf {
         self.dir.join("lock")
     }
+}
+
+/// The sites agent code (`eval`) has run on in a profile, in any session,
+/// kept as `agent-code.json`: service workers and site storage outlive
+/// sessions, so what a script left on a site may still be there when a
+/// value is filled there.
+const AGENT_CODE: &str = "agent-code.json";
+
+pub fn agent_code_sites(state_dir: &Path, name: &str) -> BTreeSet<String> {
+    fs::read(root(state_dir).join(name).join(AGENT_CODE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Replaces the profile's agent-code sites with `sites`, atomically.
+pub fn keep_agent_code_sites(
+    state_dir: &Path,
+    name: &str,
+    sites: &BTreeSet<String>,
+) -> io::Result<()> {
+    let path = root(state_dir).join(name).join(AGENT_CODE);
+    let temp = path.with_extension("tmp");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temp)?;
+    file.write_all(&serde_json::to_vec(sites).expect("JSON"))?;
+    fs::rename(&temp, &path)
 }
 
 /// `<state-dir>/browser/profiles`.

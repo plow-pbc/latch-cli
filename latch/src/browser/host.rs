@@ -69,6 +69,21 @@ pub struct Browsers {
     pub(super) provider: Option<Arc<dyn super::model::Provider>>,
 }
 
+/// Who a command comes from: the client key the gate verified, and whether
+/// Plow knows it as one of the owner's devices.
+#[derive(Clone, Copy)]
+pub(super) struct Caller<'a> {
+    pub(super) key: &'a str,
+    pub(super) device: bool,
+}
+
+/// A caller that is not one of the owner's devices: an agent.
+impl<'a> From<&'a str> for Caller<'a> {
+    fn from(key: &'a str) -> Self {
+        Caller { key, device: false }
+    }
+}
+
 /// One open session, and what the host knows about it between calls.
 pub(super) struct Entry {
     /// Held for the whole of each request: a session's requests take turns.
@@ -276,6 +291,27 @@ impl Browsers {
         self.end(&entry).await
     }
 
+    /// Ends the session whose id hashes to `hash`, whoever opened it: how
+    /// an owner device ends a session it sees on the dashboard. None when
+    /// no session has that hash.
+    async fn close_by_hash(
+        &self,
+        hash: &str,
+        audit: &mut Map<String, Value>,
+    ) -> Option<Result<Value, Failure>> {
+        let entry = {
+            let mut sessions = self.sessions.lock().await;
+            let id = sessions
+                .iter()
+                .find(|(_, entry)| entry.hash == hash)
+                .map(|(id, _)| id.clone())?;
+            sessions.remove(&id)?
+        };
+        entry.note(audit);
+        audit.insert("by_owner_device".into(), json!(true));
+        Some(self.end(&entry).await)
+    }
+
     /// A session the map no longer has: its windows close, and with its
     /// runtime's last session, the runtime. Its site is free again.
     async fn end(&self, entry: &Entry) -> Result<Value, Failure> {
@@ -314,6 +350,7 @@ impl Browsers {
 pub async fn run(
     browsers: &Browsers,
     caller: &str,
+    kind: &str,
     args: Value,
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -349,6 +386,10 @@ pub async fn run(
             }
         }
     }
+    let caller = Caller {
+        key: caller,
+        device: kind == "device",
+    };
     let result = call(
         browsers,
         caller,
@@ -401,30 +442,34 @@ pub async fn run(
 }
 
 /// One command for `caller`: `open` on profile `name`, `sessions`, or a
-/// command on session `name` (its id).
+/// command on session `name` (its id). An owner device may also `close`
+/// any session by its hash.
 pub(super) async fn call(
     browsers: &Browsers,
-    caller: &str,
+    caller: Caller<'_>,
     command: &str,
     name: &str,
     args: &Value,
     input: Option<&[u8]>,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
+    let key = caller.key;
     match command {
-        "sessions" => return Ok((browsers.list(caller).await, None)),
-        "open" => return open(browsers, caller, name, args, audit).await,
+        "sessions" => return Ok((browsers.list(key).await, None)),
+        "open" => return open(browsers, key, name, args, audit).await,
+        "close" if caller.device => {
+            if let Some(closed) = browsers.close_by_hash(name, audit).await {
+                return closed.map(|closed| (closed, None));
+            }
+        }
         _ => {}
     }
     // The id a call names is recorded only as its hash, refused or not.
     audit.insert("session".into(), json!(hash_of(name)));
-    let entry = browsers.session(name, caller).await?;
+    let entry = browsers.session(name, key).await?;
     entry.note(audit);
     let result = match command {
-        "close" => browsers
-            .close(name, caller)
-            .await
-            .map(|closed| (closed, None)),
+        "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
         "login" | "fill" | "fill_code" => super::fill::run(browsers, &entry, command, args, audit)
             .await
             .map(|result| (result, None)),
@@ -525,21 +570,31 @@ async fn worker(
     if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
-    if command == "eval" {
-        entry.runtime.agent_code.store(true, Ordering::SeqCst);
-    }
     let mut session = entry.session.lock().await;
     audit.insert("engine".into(), session.ready["engine"].clone());
     let reply = match session.call_with(call, input).await {
-        Ok(reply) => reply,
+        Ok(reply) => {
+            if let Some(worker) = reply.audit.as_object() {
+                audit.extend(worker.clone());
+            }
+            Ok(reply)
+        }
         Err(mut failure) => {
             take_audit(&mut failure, audit);
-            return Err(failure);
+            Err(failure)
         }
     };
-    if let Some(worker) = reply.audit.as_object() {
-        audit.extend(worker.clone());
+    // Agent code was sent to this page's site: it is noted with the
+    // profile, refused or not, for every later fill there.
+    if command == "eval"
+        && let Some(site) = audit
+            .get("origin")
+            .and_then(Value::as_str)
+            .and_then(sites::site_of)
+    {
+        entry.runtime.note_agent_code(&site);
     }
+    let reply = reply?;
     let mut result = reply.result;
     if command == "observe" {
         let page = audit["origin"]

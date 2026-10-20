@@ -223,8 +223,16 @@ pub fn describe(op: &str, args: &Value, outcome: &str, took: Duration) -> (Strin
                 args["origin"].as_str().unwrap_or_default(),
                 args["path"].as_str().unwrap_or_default()
             );
+            // The session's id hash first, so a narrow screen keeps it: an
+            // owner device closes a session by it.
+            let session = args["session"]
+                .as_str()
+                .map(|hash| format!("{hash} "))
+                .unwrap_or_default();
             (
-                format!("{command}{action} {page}").trim().to_string(),
+                format!("{session}{command}{action} {page}")
+                    .trim()
+                    .to_string(),
                 format!("{outcome} · {took}"),
             )
         }
@@ -310,6 +318,11 @@ mod tests {
         assert_eq!(
             describe("file_get", &refused, "sandbox_denied", took).1,
             "sandbox_denied"
+        );
+        let browser = json!({"command": "act", "session": "dkcfhoeamlpb", "origin": "https://shop.example", "path": "/cart"});
+        assert_eq!(
+            describe("browser", &browser, "ok", took).0,
+            "dkcfhoeamlpb act https://shop.example/cart"
         );
     }
 }

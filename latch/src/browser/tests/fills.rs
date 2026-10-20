@@ -213,7 +213,7 @@ impl Harness {
         };
         let result = host::call(
             &self.browsers,
-            CALLER,
+            CALLER.into(),
             command,
             name,
             &args,
@@ -799,9 +799,17 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser() {
     let mut shown_b = Vec::new();
     let mut call_b = async |command: &str, name: &str, args: Value| {
         let mut audit = Map::new();
-        let result = host::call(&browsers, other, command, name, &args, None, &mut audit)
-            .await
-            .map(|(result, _)| result);
+        let result = host::call(
+            &browsers,
+            other.into(),
+            command,
+            name,
+            &args,
+            None,
+            &mut audit,
+        )
+        .await
+        .map(|(result, _)| result);
         shown_b.push(format!("{} {result:?}", Value::Object(audit)));
         result
     };
@@ -893,6 +901,68 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser() {
             "a value reached a result, an error or the audit"
         );
     }
+}
+
+/// Agent code is noted per site, with the profile: a fill's audit says
+/// whether `eval` ever ran on its sites, in any session, before this
+/// runtime or in it, and not when it ran only on another site.
+#[tokio::test]
+async fn agent_code_is_noted_per_site_and_kept_with_the_profile() {
+    let (_dir, state, _area) = test_state();
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let elsewhere = format!("http://localhost:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers).await;
+    let login_once = async |h: &mut Harness| {
+        h.call("open", json!({"url": format!("{local}/login.html")}))
+            .await
+            .unwrap();
+        let (signed_in, audit) = h.fill("login", json!({"item": login.item})).await;
+        assert_eq!(signed_in.unwrap()["submitted"], true);
+        audit["agent_code_before_fill"].clone()
+    };
+
+    // Agent code on another site: a fill here is not flagged.
+    h.call("open", json!({"url": format!("{elsewhere}/next.html")}))
+        .await
+        .unwrap();
+    h.call("eval", json!({"script": "1"})).await.unwrap();
+    let flagged = login_once(&mut h).await;
+    println!("after eval on localhost, a fill on 127.0.0.1: agent_code_before_fill {flagged}");
+    assert_eq!(flagged, false);
+
+    // On this site, in a session since closed, in a runtime since ended:
+    // a later fill is flagged.
+    h.call("eval", json!({"script": "1"})).await.unwrap();
+    h.call("close", json!({})).await.unwrap();
+    let kept: Value = serde_json::from_slice(
+        &std::fs::read(state.join("browser/profiles/default/agent-code.json")).unwrap(),
+    )
+    .unwrap();
+    println!("kept with the profile: {kept}");
+    assert_eq!(kept, json!(["127.0.0.1", "localhost"]));
+    let (id, entry) = h.browsers.open("default", CALLER, None).await.unwrap();
+    (h.id, h.entry) = (id, entry);
+    let flagged = login_once(&mut h).await;
+    println!("in a new runtime, a fill on 127.0.0.1: agent_code_before_fill {flagged}");
+    assert_eq!(flagged, true);
+    h.call("close", json!({})).await.unwrap();
 }
 
 /// Observe lists a login whose form sits in a frame on its own site, under

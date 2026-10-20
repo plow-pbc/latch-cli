@@ -96,9 +96,13 @@ browser, and an element list marks a field holding a filled value as
 `submitted`, not "logged in".
 
 The audit records the item, kind, fields by label, both origins, whether
-agent code (`eval`) ran in the session before, and the outcome: never a
-value. An agent script that ran before a fill could read the value it puts
-on the page: an accepted risk for now, flagged on every fill.
+agent code (`eval`) ever ran on those sites in the profile, in any session
+(`agent_code_before_fill`), and the outcome: never a value. An agent script
+that ran on the site before a fill could read the value it puts on the
+page, through what it left behind (a service worker, stored script): an
+accepted risk for now, flagged on every such fill. The sites are kept with
+the profile (`agent-code.json`), so the flag outlives the session and the
+browser.
 
 ## Storage
 

@@ -140,7 +140,7 @@ impl Harness {
         let mut audit = Map::new();
         let (opened, _) = host::call(
             &self.browsers,
-            CALLER,
+            CALLER.into(),
             "open",
             "default",
             &json!({"url": url}),

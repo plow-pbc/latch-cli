@@ -881,7 +881,7 @@ impl Host {
         name: &str,
         args: serde_json::Value,
     ) -> Result<serde_json::Value, Failure> {
-        let (result, audit) = run_as(&self.browsers, caller, command, name, args).await;
+        let (result, audit) = run_as(&self.browsers, caller.into(), command, name, args).await;
         self.audits.push(audit);
         result
     }
@@ -901,7 +901,7 @@ impl Host {
 /// One command as the host runs it, and its audit record.
 async fn run_as(
     browsers: &Browsers,
-    caller: &str,
+    caller: host::Caller<'_>,
     command: &str,
     name: &str,
     args: serde_json::Value,
@@ -1054,14 +1054,14 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
     let (got_a, got_b) = tokio::join!(
         run_as(
             &h.browsers,
-            CALLER,
+            CALLER.into(),
             "act",
             &a,
             act(&format!("click {}", links[0]))
         ),
         run_as(
             &h.browsers,
-            other,
+            other.into(),
             "act",
             &b,
             act(&format!("click {}", links[1]))
@@ -1077,7 +1077,7 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
         let mut audit = serde_json::Map::new();
         let (got, bytes) = host::call(
             &h.browsers,
-            caller,
+            caller.into(),
             "download_get",
             id,
             &json!({"download": "d1"}),
@@ -1195,7 +1195,36 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else() {
     assert!(!fronted.contains(&engine));
 
     h.call(CALLER, "close", &c, json!({})).await.unwrap();
-    h.call(other, "close", &b, json!({})).await.unwrap();
+
+    // An owner device ends any session by its hash, as the dashboard shows
+    // it; an agent can't, and nobody closes another's session by its id.
+    let hash_b = h.audits[1]["session"].as_str().unwrap().to_string();
+    let device = host::Caller {
+        key: "owner-device",
+        device: true,
+    };
+    let agent = h
+        .call(CALLER, "close", &hash_b, json!({}))
+        .await
+        .unwrap_err();
+    let (by_id, _) = run_as(&h.browsers, device, "close", &b, json!({})).await;
+    println!(
+        "close b: an agent by hash {}, the device by id {}",
+        agent.code,
+        by_id.as_ref().unwrap_err().code
+    );
+    assert_eq!(agent.code, "no_such_session");
+    assert_eq!(by_id.unwrap_err().code, "not_owner");
+    let (closed, record) = run_as(&h.browsers, device, "close", &hash_b, json!({})).await;
+    println!(
+        "the device by hash: {}; audit {record}",
+        closed.as_ref().unwrap()
+    );
+    assert_eq!(closed.unwrap()["closed"], true);
+    assert_eq!(record["session"], json!(hash_b));
+    assert_eq!(record["by_owner_device"], true);
+    let gone = h.call(other, "observe", &b, json!({})).await.unwrap_err();
+    assert_eq!(gone.code, "no_such_session");
     println!(
         "runtime after the last close: alive {}",
         entry_b.runtime.alive()
@@ -1334,7 +1363,7 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another() {
     let slow = async {
         let (result, _) = run_as(
             &h.browsers,
-            CALLER,
+            CALLER.into(),
             "act",
             &a,
             act("scroll down --expect-text \"never on this page\" --within 4"),
@@ -1346,7 +1375,7 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another() {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let mut done = Vec::new();
         for line in ["scroll down", "scroll up", "scroll down"] {
-            let (result, _) = run_as(&h.browsers, CALLER, "act", &b, act(line)).await;
+            let (result, _) = run_as(&h.browsers, CALLER.into(), "act", &b, act(line)).await;
             result.unwrap();
             done.push(started.elapsed());
         }

@@ -246,7 +246,8 @@ pub enum BrowserCommand {
     },
     /// Your open sessions, without their ids
     Sessions,
-    /// End the session (its profile, and other sessions on it, stay)
+    /// End the session (its profile, and other sessions on it, stay); an
+    /// owner device may name any session by the hash the host's dashboard shows
     Close,
 }
 

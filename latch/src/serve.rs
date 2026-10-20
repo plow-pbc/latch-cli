@@ -360,6 +360,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                     crate::browser::host::run(
                         &host.browsers,
                         caller,
+                        &identity.kind,
                         request.args,
                         &mut send,
                         &mut recv,

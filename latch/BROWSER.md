@@ -89,7 +89,10 @@ session, and neither can reach the other's without its id. `sessions` lists
 the caller's sessions without their ids: task label (`open --task`),
 profile, the site it was last on, its state and how long since its last
 call. The audit records a short hash of an id, never the id, with the
-task label.
+task label, and the host's dashboard shows that hash on each row. An owner
+device (a `device`-kind client of the host's account) ends any session by
+it: `latch browser close --session <hash>`; for anyone else a hash is no
+id.
 
 Sessions on one profile share each site's account state (one cart, one
 login). While another session on the profile acted on the same site

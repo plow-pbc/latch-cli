@@ -1,15 +1,16 @@
 //! A profile runtime as the host keeps it: the one browser worker on a
 //! profile (`worker.rs`), started by the first session that needs it and
 //! closed once its last session has, and what the host knows about the
-//! profile's sessions together: the fill pause, agent code, the sites each
-//! session acted on lately, and site reservations.
+//! profile's sessions together: the fill pause, the sites agent code ran on
+//! (kept with the profile), the sites each session acted on lately, and
+//! site reservations.
 //!
 //! The worker makes one call at a time, for whichever session sends it, so
 //! sessions take turns call by call: one session's long request never holds
 //! the browser between its calls.
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex as Shared;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -41,9 +42,10 @@ pub struct Runtime {
     /// A vault fill holds the browser: every session's call is answered
     /// `session_paused` at once rather than waiting for it.
     pub filling: AtomicBool,
-    /// Agent code (`eval`) has run in a session on this browser, so a value
-    /// filled later, in any session, may have been seen by it.
-    pub agent_code: AtomicBool,
+    /// The sites agent code (`eval`) has run on in this profile, in any
+    /// session: a value filled there later may be seen by what it left.
+    agent_code: Shared<BTreeSet<String>>,
+    state_dir: PathBuf,
     next_key: AtomicU32,
     /// Sites a session reserved (`--reserve-site`), and its key.
     reserved: Shared<HashMap<String, String>>,
@@ -123,7 +125,8 @@ impl Runtime {
             worker: Mutex::new(worker),
             ready,
             filling: AtomicBool::new(false),
-            agent_code: AtomicBool::new(false),
+            agent_code: Shared::new(super::profile::agent_code_sites(state_dir, profile)),
+            state_dir: state_dir.to_path_buf(),
             next_key: AtomicU32::new(0),
             reserved: Shared::new(HashMap::new()),
             acted: Shared::new(HashMap::new()),
@@ -188,6 +191,26 @@ impl Runtime {
         let closed = worker.answer().await?;
         let _ = worker.child.wait().await;
         Ok(closed["result"].clone())
+    }
+
+    /// Agent code ran on `site`: kept with the profile, for every later fill.
+    pub fn note_agent_code(&self, site: &str) {
+        let mut sites = self.agent_code.lock().expect("agent code lock");
+        if sites.insert(site.to_string())
+            && let Err(err) =
+                super::profile::keep_agent_code_sites(&self.state_dir, &self.profile, &sites)
+        {
+            crate::log::log(&format!(
+                "browser: profile {}: could not keep the sites agent code ran on: {err}",
+                self.profile
+            ));
+        }
+    }
+
+    /// Whether agent code ever ran on one of `sites` in this profile.
+    pub fn agent_code_on(&self, sites: &[String]) -> bool {
+        let ran = self.agent_code.lock().expect("agent code lock");
+        sites.iter().any(|site| ran.contains(site))
     }
 
     /// Reserves `site` for session `key`, unless another session holds it.
