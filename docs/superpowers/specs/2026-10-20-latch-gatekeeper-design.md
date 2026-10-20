@@ -31,10 +31,11 @@ For an agent's request, the host reads that agent's chat with the owner through 
 | chat → messages | `GET /v1/chats/{uid}/messages`, paginated back to the start of the chat or until the state would exceed the 64 KiB `/v1/decisions` limit |
 
 - **Which chat.** If the agent's line has one chat, that one. Otherwise the client names it (`--chat` or `$LATCH_CHAT`), and it must be on the agent's line; with none, the call is refused `which_chat`.
-- **Who is the owner.** A message counts when Plow classifies its sender as the account owner. Messages stored through the test-injection route (`inbound-self:` keys) are dropped. Members, the agent and Plow are context, never permission.
+- **Who is the owner.** A message counts when Plow classifies its sender as the account owner. Members, the agent and Plow are context, never permission. Plow's message routes don't expose how a message arrived, so owner-looking messages written through Plow's test-injection route (`POST /v1/chats/{uid}/inbound`, which needs a device or test credential) can't be told apart in v0. That is a named limit (§10), fixed later with proper provenance, which needs a Plow change.
 - **Truncation is named.** If older messages don't fit, the judge is told so. A missing older "never do X" can cause a wrong allow; that is a stated limit, not a claim of safety.
 - **Already done.** The judge also sees this agent's operations dispatched since `serve` started, with outcomes (newest 20), labeled as this run only.
 - **Every judgment reads the chat fresh,** so an owner's "stop" always counts. There is no reuse cache.
+- **Where the chat goes.** The judge's input (the chat window and the action, never vault values) goes to jev through Plow's `/v1/decisions`, which routes to OpenRouter with zero data retention. That is the product's one outside data flow, and the owner's own credits pay for it.
 
 ## 4. What is judged
 
@@ -104,7 +105,7 @@ If exec cost hurts, the levers are `--deny-exec` now, or a coarser exec descript
 
 - **The judge's own leaks:** acting before the time the owner set, amounts beyond what they said, weak replies like "ok cool" read as yes. These are about 7% of held-out decisions.
 - **Single browser actions on an allowed site run unjudged.** `act` and clicks outside a plan rely on the browser's risk check. A click that navigates to a new site isn't treated as opening one.
-- **Owner provenance is Plow's classification,** not proven ingress. The test-injection route is excluded; proper provenance is later.
+- **Owner provenance is Plow's classification,** not proven ingress. Messages injected through Plow's test seam with a device or test credential look like the owner's and are not excluded in v0. Proper provenance needs a Plow change and comes later.
 - **A cancellation in a different chat with the same agent isn't seen.**
 - **"Already done" covers this `serve` run only.**
 - **A device login placed where an agent runs bypasses the gate.** Agents must use their own credential; the docs say so.
@@ -119,16 +120,15 @@ Structured ask records, use-once approvals, long-chat retrieval, member approval
 
 - Product stage: internal tool, early users. Simple and understandable beats complete.
 - No Plow changes. Use only routes on Plow `main`.
-- Never send chat text or secret values to the audit, the logs or the judge's answers; only the judge's input contains chat text.
+- Chat text reaches only the judge's input (§3). Never put chat text or secret values in the audit or the logs.
 - Fail closed: if the gatekeeper can't judge, nothing is dispatched and no data is returned.
 - Devices (the owner's own logins) are never judged.
 - Tests and test hosts are headless. Synthetic chats only; never the owner's real chats.
-- Never send the owner's email or other personal data to outside services.
 
 ### Chunk G1: Chat context and the v0 judge
 Implements: §3, §2.2, §8 (cost field)
 Interfaces: consumes Plow agents, chats and messages routes and `POST /v1/decisions` · produces `judge(agent, chat, action) → allow | deny{reason} | unavailable{code}` and wire field `Request.chat`
-Done when: fixture tests of synthetic Plow responses cover owner classification, dropped injected rows, pagination, truncation, and missing, ambiguous and wrong chats; the v0 held-out corpus replayed through the Rust judge reports false allows and false blocks separately, within noise of `v0.py` (jev-1.14: 12/164 and 4/52).
+Done when: fixture tests of synthetic Plow responses cover owner classification, pagination, truncation, and missing, ambiguous and wrong chats; for every probe in the v0 held-out corpus, the Rust judge builds a `/v1/decisions` request whose question, rules, state and threshold are equal to `v0.py`'s (a deterministic comparison, no model call); and one replay of the corpus through the Rust judge on jev-1.14 is reported with false allows and false blocks separately, next to v0's 12/164 and 4/52 (reporting only, not a pass bar).
 
 ### Chunk G2a: exec, files and Google
 Implements: §4 (exec, files, Google rows), §5, §8
