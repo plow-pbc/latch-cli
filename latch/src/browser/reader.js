@@ -442,12 +442,13 @@
     max: Math.max(0, Math.round(document.documentElement.scrollHeight - innerHeight)),
   });
 
-  // What a plan must stop at: a sign-in form, or a CAPTCHA's frame.
+  // Whether this frame shows a password field: a two-page login's second page.
+  const passwordShown = () => [...document.querySelectorAll('input[type=password]')].some(rendered);
+
+  // What an instruction step stops at, or offers to sign in on: a CAPTCHA's
+  // frame, and a password field.
   const CAPTCHA = /\/recaptcha\/|hcaptcha\.com|challenges\.cloudflare\.com/;
-  const wall = () => ({
-    password: [...document.querySelectorAll('input[type=password]')].some(rendered),
-    captcha: CAPTCHA.test(location.href),
-  });
+  const wall = () => ({ password: passwordShown(), captcha: CAPTCHA.test(location.href) });
 
   // The page a click on `el`, or the key `key` in it, would load, when that
   // is known before it happens: a link's address, or the address its form
@@ -478,6 +479,7 @@
     viewOf,
     scroll,
     review,
+    passwordShown,
     wall,
     read,
     locate,

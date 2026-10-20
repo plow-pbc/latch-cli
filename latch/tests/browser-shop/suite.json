@@ -263,7 +263,6 @@
     "expected": {"status": "stopped", "code": "confirm_needed", "step": 2},
     "check": "page === 'checkout.html' && order === null",
     "then": {
-      "confirm": "act",
       "expected": {"status": "dispatched"},
       "check": "page === 'confirmed.html' && order !== null && order.items.length === 1 && order.items[0].id === 'greek'"
     },
@@ -283,7 +282,6 @@
     "check": "page === 'checkout.html' && order === null",
     "then": {
       "before": "localStorage.setItem('surcharge', '90')",
-      "confirm": "act",
       "expected": {"status": "stopped", "code": "confirm_stale"},
       "check": "page === 'checkout.html' && order === null && document.getElementById('total').textContent === '$103.74'"
     },

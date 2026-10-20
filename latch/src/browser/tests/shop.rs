@@ -8,7 +8,8 @@
 //! page that knows the right item, not just the right kind of page. A case
 //! that stops for a confirmation may go on (`then`): something on the
 //! page changes (`before`, as the shop's server might), the agent
-//! confirms, and that has its own outcome and checker. A sign-in wall
+//! confirms with `do --confirm C`, and that has its own outcome and
+//! checker. A sign-in wall
 //! stops `needs_login` until plans can sign in.
 //!
 //! The checkers are tested here against states set up directly
@@ -67,8 +68,6 @@ pub(super) struct Expected {
 pub(super) struct Then {
     #[serde(default)]
     pub before: Option<String>,
-    /// `act` (a click on the confirmation's ref) or `do` (`--confirm C`).
-    pub confirm: String,
     pub expected: Expected,
     pub check: String,
 }
@@ -242,10 +241,6 @@ fn the_plan_suite_is_well_formed() {
                 case.expected.code.as_deref(),
                 Some("confirm_needed"),
                 "{name}: only a confirmation goes on"
-            );
-            assert!(
-                ["act", "do"].contains(&then.confirm.as_str()),
-                "{name}: confirm by act or do"
             );
             expected_is_sound(name, &then.expected, 1);
             assert!(

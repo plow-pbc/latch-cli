@@ -328,6 +328,22 @@ impl<D: Driver> Core<D> {
         Ok(Value::Object(result))
     }
 
+    /// A CAPTCHA's frame on the page now, or else a password field: what an
+    /// instruction step stops at, or may sign in on.
+    fn wall(&mut self) -> Result<Option<&'static str>, Failure> {
+        let mut login = false;
+        for frame in self.driver.frames()? {
+            let Ok(found) = self.driver.run(&frame, "__latch.wall()") else {
+                continue;
+            };
+            if found["captcha"] == true {
+                return Ok(Some("captcha"));
+            }
+            login |= found["password"] == true;
+        }
+        Ok(login.then_some("login"))
+    }
+
     pub(super) fn wait(
         &mut self,
         condition: Condition,
@@ -465,21 +481,6 @@ impl<D: Driver> Core<D> {
             Err(failure) if failure.code == "stale_snapshot" => Ok(None),
             Err(failure) => Err(failure),
         }
-    }
-
-    /// A login wall or CAPTCHA on the page now, if there is one.
-    pub(super) fn wall(&mut self) -> Result<Option<&'static str>, Failure> {
-        let mut login = false;
-        for frame in self.driver.frames()? {
-            let Ok(found) = self.driver.run(&frame, "__latch.wall()") else {
-                continue;
-            };
-            if found["captcha"] == true {
-                return Ok(Some("captcha"));
-            }
-            login |= found["password"] == true;
-        }
-        Ok(login.then_some("login"))
     }
 }
 

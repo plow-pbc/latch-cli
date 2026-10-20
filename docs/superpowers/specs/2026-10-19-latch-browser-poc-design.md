@@ -269,18 +269,7 @@ The whole plan is validated before anything runs (shape, step count, refs, URLs,
 
 Checks wait up to 10 s after a step's last action.
 
-**Step policy (a host setting, for B9's evaluation; default `any`).** It decides which literal steps a session may run. It is enforced **in the shared step dispatcher**, whether the step came from `act`, from the plan command's short form or from `--plan-file`.
-
-| Policy | Literal steps allowed |
-|---|---|
-| `any` | refs from any page latch returned to the session |
-| `stop` | only refs returned in that session's latest stop |
-| `none` | no literal steps |
-
-- A separate switch turns instruction steps off, for B9's refs-only arm.
-- Any forbidden step is refused with `step_not_allowed` (exit 4) before anything is sent.
-- **Confirmations are never forbidden:** `--confirm C`, or `act click eN` on a confirmation's own ref.
-- B9 decides the shipped policy.
+**Step policy: none until B9.** Every literal step on a ref latch returned to the session runs. B9's agent adoption test adds a host step policy for its arms (`any`, `stop`, `none`), and decides whether one ships.
 
 ### 6.2 One pass of an instruction step
 
@@ -378,8 +367,7 @@ Then:
   - the target's identity and nearby context in its document;
   - the session's ownership;
   - the profile's pause epoch: a decision made before a pause is thrown away, and the page is observed again;
-  - the site reservation;
-  - the step policy.
+  - the site reservation.
 - **Dispatch** uses trusted input. It is journaled before it is sent and after it returns. A click is never sent twice by latch, and an uncertain action is never replayed.
 
 ### 6.5 Confirmations
@@ -400,7 +388,7 @@ The stop returns **a confirmation**:
 - the reviewed context: the target's name and row or card text, the page title, and the lines naming the item, amount or recipient. For a fill, also the item's title and the `--press` button;
 - a screenshot.
 
-The agent confirms with the plan command's `--confirm C [STEP…]`, or with `act click eN` on that same ref (not for fills).
+The agent confirms with the plan command's `--confirm C [STEP…]`, for clicks, Enters and fills alike; there is no other route. A click or Enter sent any other way, `act click` on the confirmation's own ref included, gets a new risk decision: if it still looks like it can't be undone, it stops again with a new confirmation, and the stop's message names `do --confirm`.
 
 A confirmation:
 - **is used once;**
@@ -675,7 +663,7 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
   - at decision time, latch hit-tests the point and records the element there, its document and its reviewed context;
   - it re-checks that the same element is still under the point at dispatch, and refuses with `stale_snapshot` if not;
   - the risk decision and confirmation work as for that element (§6.5);
-  - they obey the step policy.
+  - they obey the step policy, if B9 ships one.
 - **Runner-issued task identity.** A task identity the agent runner issues and the gate verifies, so ownership no longer rests on one client key plus a session id held by convention.
 - **Cross-host site reservations.** An owner-wide reservation record through a Plow API route, so tasks on two serving hosts can't both take the same site. Until then, `--reserve-site` is host-local.
 
@@ -754,7 +742,7 @@ Done when: the bundled `latch` is signed and notarized; the custody key is split
 ### Chunk B5: the shared step contract (reworks the step-list B5 at `7eae741ff`)
 - **Implements:**
   - §5's narrowed `act`, the removed forms, and the results and exit table;
-  - §6.1 literal steps (including `fill`), checks and the step policy;
+  - §6.1 literal steps (including `fill`) and checks;
   - §6.5 confirmations (clicks, Enter, secret fills; `model_unavailable`);
   - §6.6 model interface;
   - §6.7 history and journal;
@@ -762,7 +750,7 @@ Done when: the bundled `latch` is signed and notarized; the custody key is split
   - §11's new records.
 - **Interfaces:**
   - consumes B2 and B4, and B5's existing provider interface, answer validation, risk question, request ids, typed checks and dispatch at `7eae741ff`;
-  - produces the literal-step executor path, typed checks, confirmations, the step policy, the durable journal and the result shape that B5c, B5d and B2b build on.
+  - produces the literal-step executor path, typed checks, confirmations, the durable journal and the result shape that B5c, B5d and B2b build on.
 - **Done when:**
   - **Literal steps take effect:**
     - single `act` steps click, type and select with a real effect (`select` changes the option, shown by the field state);
@@ -772,7 +760,7 @@ Done when: the bundled `latch` is signed and notarized; the custody key is split
     - `path: checkout` doesn't match `https://checkout.invalid/login` or `/login?next=checkout.html`.
   - **Confirmation is enforced:**
     - a literal click on "Place order" stops `confirm_needed` with the reviewed context;
-    - `act click eN` on the returned ref confirms it once, and a second use is refused;
+    - `do --confirm C` with the returned confirmation carries it out once, and a second use is refused;
     - after the fixture's total changes from $10 to $100 (same ref, URL and button name), the confirmation is refused `confirm_stale`;
     - Enter in the checkout form's field stops `confirm_needed`;
     - a standalone `fill … --press` of a card stops `confirm_needed` before any value is released, and its confirmation fills, presses and cleans up.
@@ -780,9 +768,6 @@ Done when: the bundled `latch` is signed and notarized; the custody key is split
     - with the decision model unreachable, a literal click and an Enter stop `model_unavailable` with nothing sent;
     - a confirmation issued before the outage still dispatches;
     - literal `type` and `select` still work.
-  - **The step policy is enforced in the dispatcher:**
-    - under `none` and under `stop`, a forbidden literal step is refused `step_not_allowed` through each route: `act`, the short form and `--plan-file`;
-    - a confirmation still works under both.
   - **The journal survives a crash:**
     - a host killed mid-plan and restarted reports the in-flight action as `unknown` in the plan command's `--history R`;
     - a dropped reply is resolved by request id with no second dispatch.
@@ -914,7 +899,7 @@ Done when: the conformance runner passes every test for CfT, and every non-fill 
   - §12's agent guide and `latch browser --help`;
   - §6.8 metric reporting;
   - §13;
-  - the step-policy decision (§6.1).
+  - the step policy, which this chunk adds for its arms, and the decision whether one ships (§6.1).
 - **Interfaces:**
   - consumes B1–B8, B5c, B5d and B2b;
   - produces the guide, and the shipped step policy.
@@ -923,7 +908,8 @@ Done when: the conformance runner passes every test for CfT, and every non-fill 
     - 12 on new local fixtures, at least 3 of them prelabelled as needing a repair, plus traps (wrong item, repriced confirmation);
     - 4 read-only public tasks;
     - each scored by an independent, identity-sensitive checker.
-  - **Arms,** set by the host's step policy (§6.1) and enforced in the dispatcher for every route:
+  - **The step policy (added here).** A host setting that decides which literal steps a session may run: `any` (refs from any page latch returned to the session), `stop` (only refs returned in that session's latest stop) or `none`. It is enforced in the shared step dispatcher, whether a step came from `act`, the plan command's short form or `--plan-file`; a forbidden step is refused with `step_not_allowed` (exit 4) before anything is sent; `--confirm C` is never forbidden. A separate switch turns instruction steps off, for arm A.
+  - **Arms,** set by the host's step policy and enforced in the dispatcher for every route:
     - **A:** instruction steps off; literal steps on refs from any page; `eval` (the baseline);
     - **B:** plans and confirmations; literal steps `none`;
     - **C:** plans and confirmations; literal steps `stop`;
