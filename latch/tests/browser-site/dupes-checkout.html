@@ -1,0 +1,22 @@
+<!doctype html><title>latch checkout with hidden copies test</title>
+<!-- A checkout as some large shops make it: off-screen copies of the card
+     fields, aria-hidden and out of the tab order, carrying the same tokens;
+     a discount box beside the card; a receipt email, a search box and a
+     gift note. Posts to /pay. -->
+<h1>Checkout</h1>
+<form method="post" action="pay">
+  <div aria-hidden="true" style="position:absolute; left:-9999px">
+    <input name="dup-number" autocomplete="cc-number" tabindex="-1">
+    <input name="dup-exp" autocomplete="cc-exp" tabindex="-1">
+    <input name="dup-csc" autocomplete="cc-csc" tabindex="-1">
+  </div>
+  <p><label>Receipt email <input type="email" name="receipt" autocomplete="email"></label></p>
+  <p><label>Search help <input type="search" name="q"></label></p>
+  <p><label>Gift note <textarea name="note"></textarea></label></p>
+  <p><label>Discount code <input name="reductions" autocomplete="on"></label></p>
+  <p><label>Name on card <input name="cc-name" autocomplete="cc-name"></label></p>
+  <p><label>Card number <input name="cc-number" autocomplete="cc-number" inputmode="numeric"></label></p>
+  <p><label>Expiry <input name="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>CVV <input name="cc-csc" autocomplete="cc-csc" maxlength="4"></label></p>
+  <p><button type="submit">Pay</button></p>
+</form>

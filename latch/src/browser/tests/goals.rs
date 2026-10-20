@@ -15,7 +15,7 @@ use super::test_state;
 use crate::browser::model::{Answer, Asked, CallMeta, Kind, Provider, Question};
 use crate::browser::plan::{Plan, short_step};
 use crate::failure::Failure;
-use crate::vault::item::{CARD, Item, Raw};
+use crate::vault::item::{CARD, Item, LOGIN, Raw};
 use crate::vault::store::Backend;
 
 conformance!(with_no_model_an_instruction_step_sends_nothing);
@@ -182,7 +182,12 @@ impl Provider for Told {
                         continue;
                     }
                     target => {
-                        let named = choice.target.and_then(holding);
+                        // `none` answers the fill question alone.
+                        let named = match (choice.target, target) {
+                            (Some("none"), "fill") => Some("none".to_string()),
+                            (Some("none"), _) => None,
+                            (named, _) => named.and_then(holding),
+                        };
                         let pick = match (named, target) {
                             (Some(pick), _) => pick,
                             (None, "type") => "none".to_string(),
@@ -268,7 +273,12 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     let (_dir, state, _area) = test_state("cft", &["default"]);
     let site = serve_shop();
     let told = Arc::new(Told::default());
-    let mut h = Harness::start(&state, Some(told.clone())).await;
+    let mut h = Harness::start_with(
+        &state,
+        Some(told.clone()),
+        vec![(site.clone(), "https://shop.example".into())],
+    )
+    .await;
     let at = |page: &str| format!("{site}/{page}");
 
     // A cookie modal: nothing behind it is offered until it is accepted.
@@ -726,15 +736,8 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     let (code, _) = stop(h.send(plan(&["add it to the cart"], &site, &[], &[])).await);
     assert_eq!(code, "blocked");
 
-    // A sign-in form, a CAPTCHA, and a card form stop for the agent.
-    h.open(&at("reset.html?cart=greek:Regular")).await;
-    h.open(&at("login.html")).await;
-    told.tell(|_| choose("login", None));
-    let (code, _) = stop(
-        h.send(plan(&["proceed to checkout"], &site, &[], &[]))
-            .await,
-    );
-    assert_eq!(code, "needs_login");
+    // A CAPTCHA, and a card form with no suggestion chosen, stop for the
+    // agent.
     h.open(&at("recaptcha/check.html")).await;
     let asked = told.passes();
     let (code, _) = stop(
@@ -776,7 +779,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     ))
     .await;
     h.open(&at("payment.html")).await;
-    told.tell(|_| choose("fill", None));
+    told.tell(|_| choose("fill", Some("none")));
     let (code, details) = stop(
         h.send(plan(
             &["pay with my saved card"],
@@ -889,5 +892,450 @@ async fn with_no_model_an_instruction_step_sends_nothing(engine: &str) {
         .await
         .unwrap_err();
     assert_eq!(failure.code, "model_unavailable", "{}", failure.message);
+    h.close().await;
+}
+
+/// Fills inside plans: the model chooses one of latch's suggestions for an
+/// item the plan names, or `none`, and never maps a field; a sign-in, a
+/// code and a passkey stop for the agent where the plan can't go on.
+#[tokio::test]
+async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
+    const PASSWORD: &str = "greenleaf-made-up-41";
+    const KEY: &str = "JBSWY3DPEHPK3PXP";
+    const NUMBER: &str = "4242424242424242";
+    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let site = serve_shop();
+    let told = Arc::new(Told::default());
+    let mut h = Harness::start_with(
+        &state,
+        Some(told.clone()),
+        vec![(site.clone(), "https://shop.example".into())],
+    )
+    .await;
+    let at = |page: &str| format!("{site}/{page}");
+    let add = |h: &Harness, kind: u8, title: &str, sites: &[&str], values: &[(&str, &str)]| {
+        h.browsers
+            .vault
+            .with(|s| {
+                s.add(Item {
+                    id: String::new(),
+                    revision: 0,
+                    sites: sites.iter().map(|s| s.to_string()).collect(),
+                    other_top_sites: Vec::new(),
+                    raw: Raw::from_labels(
+                        kind,
+                        title,
+                        &values
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                })
+            })
+            .unwrap()
+            .item
+    };
+    let login = add(
+        &h,
+        LOGIN,
+        "Greenleaf",
+        &["shop.example"],
+        &[
+            ("username", "testuser@example.com"),
+            ("password", PASSWORD),
+            ("totp", KEY),
+        ],
+    );
+    let bare = add(
+        &h,
+        LOGIN,
+        "Greenleaf, no password",
+        &["shop.example"],
+        &[("username", "other@example.com")],
+    );
+    let card = add(
+        &h,
+        CARD,
+        "Test Visa",
+        &[],
+        &[
+            ("cardholder name", "Ada Lovelace"),
+            ("number", NUMBER),
+            ("expiry month", "4"),
+            ("expiry year", "2031"),
+            ("code", "319"),
+        ],
+    );
+    let storage = async |h: &mut Harness, key: &str| {
+        h.call(
+            "eval",
+            json!({"script": format!("localStorage.getItem({key:?})")}),
+        )
+        .await["value"]
+            .clone()
+    };
+
+    // A sign-in wall in the middle of a step, the login not named: the
+    // step stops needs_login, listing it, and fills nothing.
+    h.open(&at("reset.html?cart=greek:Regular")).await;
+    h.open(&at("cart.html")).await;
+    let wall = |s: &Value| {
+        if title(s).starts_with("Sign in") {
+            choose("fill", Some("Greenleaf"))
+        } else {
+            choose("click", Some("Proceed to checkout"))
+        }
+    };
+    told.tell(wall);
+    let (code, details) = stop(
+        h.send(plan(
+            &["proceed to checkout -> path: checkout.html"],
+            &site,
+            &[],
+            &[],
+        ))
+        .await,
+    );
+    println!("the wall, unnamed: {code}; {}", details["stop"]);
+    assert_eq!(code, "needs_login");
+    let listed: Vec<&str> = details["stop"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["item"].as_str())
+        .collect();
+    assert!(listed.contains(&login.as_str()), "{listed:?}");
+    assert!(
+        !details["stop"]["suggestions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        told.offered(1, "fill").is_empty(),
+        "no fill to choose for an unnamed item"
+    );
+
+    // Named: the wall is signed through as one fill, both stages (the
+    // `username webauthn` field, then the password page), and the step goes
+    // on to the checkout.
+    h.open(&at("cart.html")).await;
+    told.tell(wall);
+    let went = h
+        .send(plan(
+            &["proceed to checkout -> path: checkout.html"],
+            &site,
+            &[],
+            std::slice::from_ref(&login),
+        ))
+        .await
+        .unwrap();
+    println!(
+        "the wall, named: {} trail {}",
+        went["status"], went["trail"]
+    );
+    assert_eq!(went["status"], "reached", "{went:#}");
+    let fill = went["trail"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["op"] == "fill")
+        .unwrap();
+    assert_eq!(fill["chosen"], "model");
+    assert_eq!(fill["stages"], 2);
+    assert!(fill["suggestion"].as_str().unwrap().starts_with('s'));
+    let offered = told.offered(1, "fill");
+    println!("offered: {offered:?}");
+    assert!(
+        offered
+            .iter()
+            .any(|o| o.starts_with("\"Greenleaf\" (login)"))
+    );
+    assert!(
+        !offered.iter().any(|o| o.contains("no password")),
+        "only named items"
+    );
+    assert!(offered.last().unwrap().starts_with("None of these"));
+    assert!(
+        storage(&mut h, "user")
+            .await
+            .as_str()
+            .unwrap()
+            .contains("testuser@example.com")
+    );
+
+    // A sign-in form for the named login with no complete suggestion (two
+    // submit buttons, so none to press): needs_fields with the form's
+    // fields, not needs_login.
+    h.open(&at("reset.html")).await;
+    h.open(&at("login-two-buttons.html")).await;
+    told.tell(|_| choose("fill", None));
+    let (code, details) = stop(
+        h.send(plan(
+            &["sign in -> path: account.html"],
+            &site,
+            &[],
+            std::slice::from_ref(&login),
+        ))
+        .await,
+    );
+    println!(
+        "named login, no complete suggestion: {code}; {}",
+        details["stop"]
+    );
+    assert_eq!(code, "needs_fields");
+    assert!(
+        details["stop"]["candidates"]
+            .to_string()
+            .contains("Password")
+    );
+    assert!(details["stop"]["suggestions"][0]["press"].is_null());
+
+    // A code stage: needs_fields before the model is asked, the code field
+    // named; the agent's literal fill of `otp` then goes on.
+    h.open(&at("reset.html?user=testuser@example.com")).await;
+    h.open(&at("verify.html?next=account.html")).await;
+    let asked = told.passes();
+    let (code, details) = stop(
+        h.send(plan(
+            &["enter the verification code"],
+            &site,
+            &[],
+            std::slice::from_ref(&login),
+        ))
+        .await,
+    );
+    println!("code stage: {code}; {}", details["stop"]);
+    assert_eq!(code, "needs_fields");
+    assert_eq!(told.passes(), asked, "stopped before the model was asked");
+    assert_eq!(details["stop"]["page_offers"], json!(["code"]));
+    assert!(
+        details["stop"]["candidates"]
+            .to_string()
+            .contains("Verification code")
+    );
+    let page = h.call("observe", json!({})).await;
+    let step = format!(
+        "fill --item {login} --field otp={} --press {} -> path: account.html",
+        super::find(&page, "textbox", "Verification code"),
+        super::find(&page, "button", "Verify")
+    );
+    let verified = h
+        .send(json!({"plan": {"steps": [short_step(&step).unwrap()]}}))
+        .await
+        .unwrap();
+    println!("literal otp fill: {}", verified["status"]);
+    assert_eq!(verified["status"], "reached", "{verified:#}");
+    assert_eq!(storage(&mut h, "verified").await, "true");
+
+    // A passkey-first page: with no fitting named item that holds a
+    // password, needs_fields before the model is asked; with one, the model
+    // takes the password path and the plan signs in.
+    for items in [vec![], vec![bare.clone()]] {
+        h.open(&at("reset.html")).await;
+        h.open(&at("passkey.html?next=account.html")).await;
+        let asked = told.passes();
+        let (code, details) = stop(
+            h.send(plan(&["sign in -> path: account.html"], &site, &[], &items))
+                .await,
+        );
+        println!(
+            "passkey page, items {items:?}: {code}; offers {}",
+            details["stop"]["page_offers"]
+        );
+        assert_eq!(code, "needs_fields");
+        assert_eq!(told.passes(), asked);
+        assert_eq!(details["stop"]["page_offers"], json!(["passkey"]));
+    }
+    h.open(&at("reset.html")).await;
+    h.open(&at("passkey.html?next=account.html")).await;
+    told.tell(|s| {
+        if title(s).starts_with("Sign in with a passkey") {
+            choose("click", Some("Use your password instead"))
+        } else {
+            choose("fill", Some("Greenleaf"))
+        }
+    });
+    let signed = h
+        .send(plan(
+            &["sign in -> path: account.html"],
+            &site,
+            &[],
+            std::slice::from_ref(&login),
+        ))
+        .await
+        .unwrap();
+    println!(
+        "passkey page, login named: {} trail {}",
+        signed["status"], signed["trail"]
+    );
+    assert_eq!(signed["status"], "reached", "{signed:#}");
+    assert!(!told.offered(0, "operation").contains(&"fill".to_string()));
+
+    // A card the plan names: the model's choice of latch's suggestion stops
+    // for a confirmation showing its mapping; that fills, pays and cleans up.
+    h.open(&at(
+        "reset.html?user=testuser@example.com&cart=greek:Regular",
+    ))
+    .await;
+    h.open(&at("payment.html")).await;
+    told.tell(|_| choose("fill", Some("Test Visa")));
+    let (code, details) = stop(
+        h.send(plan(
+            &["pay for the order with my saved card"],
+            &site,
+            &[],
+            std::slice::from_ref(&card),
+        ))
+        .await,
+    );
+    let confirmation = &details["stop"]["confirmation"];
+    println!(
+        "card, named: {code}; mapping {} frames {}",
+        confirmation["mapping"], confirmation["frames"]
+    );
+    assert_eq!(code, "confirm_needed");
+    assert_eq!(confirmation["mapping"].as_array().unwrap().len(), 4);
+    assert_eq!(confirmation["frames"], json!(["https://shop.example"]));
+    let paid = h
+        .confirm(confirmation["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    println!("confirmed: {} {}", paid["status"], paid["page"]["title"]);
+    assert!(
+        storage(&mut h, "order")
+            .await
+            .as_str()
+            .unwrap()
+            .contains("\"paid\":true")
+    );
+
+    // No value in any decision request or audit record.
+    let states = told
+        .states
+        .lock()
+        .unwrap()
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let audits = h
+        .audits
+        .iter()
+        .map(|a| Value::Object(a.clone()).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for value in [PASSWORD, KEY, NUMBER] {
+        assert!(
+            !states.contains(value) && !audits.contains(value),
+            "a value reached the model or the audit"
+        );
+    }
+    h.close().await;
+}
+
+/// A page a step's click opens in a new tab is followed: the plan goes on
+/// there, in the session's own tab.
+#[tokio::test]
+async fn a_popup_a_step_opens_is_followed() {
+    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let site = serve_shop();
+    let told = Arc::new(Told::default());
+    let mut h = Harness::start(&state, Some(told.clone())).await;
+    h.open(&format!("{site}/recipes.html")).await;
+    told.tell(|_| choose("click", Some("Open the Greek Salad recipe")));
+    let went = h
+        .send(plan(
+            &["open the Greek Salad recipe -> text: Toss the leaves"],
+            &site,
+            &[],
+            &[],
+        ))
+        .await
+        .unwrap();
+    println!("popup: {} trail {}", went["status"], went["trail"]);
+    assert_eq!(went["status"], "reached", "{went:#}");
+    let followed = went["trail"][0]["followed"].as_str().unwrap().to_string();
+    let seen = h.call("observe", json!({})).await;
+    println!("after: {} tabs {}", seen["title"], seen["tabs"]);
+    assert!(
+        seen["title"]
+            .as_str()
+            .unwrap()
+            .starts_with("Recipe: Greek Salad")
+    );
+    let tab = seen["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["tab"] == followed.as_str())
+        .unwrap();
+    assert_eq!(
+        (tab["active"].as_bool(), tab["opener"].as_str()),
+        (Some(true), Some("t1"))
+    );
+    h.close().await;
+}
+
+/// A plan stopped for the owner (a CAPTCHA) goes on in a new plan once the
+/// owner has had the session through `handoff` and handed it back.
+#[tokio::test]
+async fn a_plan_stopped_for_the_owner_goes_on_after_the_handoff() {
+    use crate::browser::handoff;
+    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let site = serve_shop();
+    let told = Arc::new(Told::default());
+    let mut h = Harness::start(&state, Some(told.clone())).await;
+    h.open(&format!(
+        "{site}/reset.html?user=testuser@example.com&cart=greek:Regular&captcha=1"
+    ))
+    .await;
+    h.open(&format!("{site}/cart.html")).await;
+    told.tell(|_| choose("click", Some("Proceed to checkout")));
+    let steps = ["proceed to checkout -> path: checkout.html"];
+    let (code, details) = stop(h.send(plan(&steps, &site, &[], &[])).await);
+    println!("captcha: {code} {}", details["stop"]);
+    assert_eq!(code, "needs_owner");
+
+    // The agent hands the session to the owner, who acts in its window and
+    // hands it back on the host.
+    let waiting = {
+        let (browsers, id) = (h.browsers.clone(), h.id.clone());
+        tokio::spawn(async move {
+            let mut audit = serde_json::Map::new();
+            crate::browser::host::call(
+                &browsers,
+                super::CALLER.into(),
+                "handoff",
+                &id,
+                &json!({"reason": "captcha", "within": 60}),
+                None,
+                &mut audit,
+            )
+            .await
+        })
+    };
+    let started = std::time::Instant::now();
+    while handoff::pending(&state).is_empty() && started.elapsed().as_secs() < 20 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(handoff::pending(&state).len(), 1);
+    handoff::done(&state, None).unwrap();
+    let (handed, _) = waiting.await.unwrap().unwrap();
+    println!("handed back: {}", handed["handed_back"]);
+    assert_eq!(handed["handed_back"], true);
+
+    // What the owner did (the challenge passed), stood in for here; then a
+    // new plan goes on to the checkout.
+    h.call(
+        "eval",
+        json!({"script": "localStorage.removeItem('captcha'); 1"}),
+    )
+    .await;
+    h.open(&format!("{site}/cart.html")).await;
+    let went = h.send(plan(&steps, &site, &[], &[])).await.unwrap();
+    println!("after the handoff: {}", went["status"]);
+    assert_eq!(went["status"], "reached", "{went:#}");
     h.close().await;
 }

@@ -30,8 +30,9 @@ conformance!(
     vault_fills_go_only_where_the_item_allows_and_never_show_a_value,
     a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out,
     observe_lists_items_by_the_frames_that_hold_fields,
-    an_identifier_first_login_fills_both_steps_in_one_pause,
-    the_button_that_ends_a_step_is_picked_only_when_one_fits,
+    a_login_goes_on_to_its_password_stage_in_one_pause,
+    observe_suggests_from_hints_and_the_checks_refuse_contradictions,
+    a_card_confirmation_binds_its_mapping_and_frames,
     a_fill_in_one_session_pauses_every_session_on_its_browser,
     agent_code_is_noted_per_site_and_kept_with_the_profile,
     a_login_after_an_edit_fills_the_new_password,
@@ -323,13 +324,11 @@ impl Harness {
 
     async fn fill(
         &mut self,
-        command: &str,
         args: Value,
     ) -> (Result<Value, crate::failure::Failure>, Map<String, Value>) {
         let mut audit = Map::new();
         let result =
-            crate::browser::fill::run(&self.browsers, &self.entry, command, &args, &mut audit)
-                .await;
+            crate::browser::fill::run(&self.browsers, &self.entry, &args, &mut audit).await;
         self.shown.push(seen(&Value::Object(audit.clone())));
         match &result {
             Ok(value) => self.shown.push(seen(value)),
@@ -352,7 +351,6 @@ impl Harness {
             &self.entry,
             &self.id,
             CALLER,
-            "fill",
             &args,
             &mut audit,
         )
@@ -362,6 +360,29 @@ impl Harness {
             self.shown.push(seen_failure(failure));
         }
         (result, audit)
+    }
+
+    /// latch's suggestion for `item` on the page now, by `observe`: the
+    /// fill's arguments that take it.
+    async fn suggested(&mut self, item: &str) -> Value {
+        let observed = self.call("observe", json!({})).await.unwrap();
+        let suggestion = observed["fill"]["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["item"] == item)
+            .unwrap_or_else(|| panic!("no suggestion for {item}: {}", observed["fill"]))
+            .clone();
+        json!({"item": item, "suggested": suggestion["id"], "snapshot": observed["snapshot"]})
+    }
+
+    /// A sign-in with `item`, taking latch's suggestion for the page.
+    async fn login(
+        &mut self,
+        item: &str,
+    ) -> (Result<Value, crate::failure::Failure>, Map<String, Value>) {
+        let args = self.suggested(item).await;
+        self.fill(args).await
     }
 
     async fn text(&mut self) -> String {
@@ -441,11 +462,12 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     ));
     let mut h = Harness::start(browsers).await;
 
-    // A login on a subdomain of its site: latch picks the fields itself.
+    // A login on a subdomain of its site, through latch's suggestion: the
+    // email field before the password, and the form's one submit button.
     h.call("open", json!({"url": format!("{local}/login.html")}))
         .await
         .unwrap();
-    let (signed_in, audit) = h.fill("login", json!({"item": login.item})).await;
+    let (signed_in, audit) = h.login(&login.item).await;
     let signed_in = signed_in.unwrap();
     println!(
         "login: submitted {} -> {:?}; audit {}",
@@ -456,13 +478,27 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     assert_eq!(signed_in["submitted"], true);
     assert!(h.text().await.contains("password accepted"));
     assert_eq!(audit["agent_code_before_fill"], false);
-    assert_eq!(audit["fields"], json!(["username", "password"]));
+    assert!(audit["mapping"]["username"].is_array() && audit["mapping"]["password"].is_array());
+    assert!(audit["source"].as_str().unwrap().starts_with('s'));
 
     // Refused, with nothing written: a lookalike site, and a sandboxed frame.
-    h.call("open", json!({"url": format!("{evil}/login.html")}))
+    // The login doesn't fit the lookalike, so latch suggests nothing there;
+    // the agent's own mapping is refused.
+    let page = h
+        .call("open", json!({"url": format!("{evil}/login.html")}))
         .await
         .unwrap();
-    let (refused, _) = h.fill("login", json!({"item": login.item})).await;
+    let observed = h.call("observe", json!({})).await.unwrap();
+    assert_eq!(observed["fill"]["suggestions"], json!([]));
+    let mapped = |page: &Value| {
+        json!({
+            "item": login.item,
+            "fields": [["username", [find(page, "textbox", "Email")]],
+                       ["password", [find(page, "textbox", "Password")]]],
+            "press": find(page, "button", "Sign in"),
+        })
+    };
+    let (refused, _) = h.fill(mapped(&page)).await;
     let refused = refused.unwrap_err();
     println!("lookalike: {} ({})", refused.code, refused.message);
     assert_eq!(
@@ -478,13 +514,14 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
             .all(|e| e.get("value").is_none()),
         "nothing filled"
     );
-    h.call(
-        "open",
-        json!({"url": format!("{local}/sandboxed-login.html")}),
-    )
-    .await
-    .unwrap();
-    let (refused, _) = h.fill("login", json!({"item": login.item})).await;
+    let page = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/sandboxed-login.html")}),
+        )
+        .await
+        .unwrap();
+    let (refused, _) = h.fill(mapped(&page)).await;
     let refused = refused.unwrap_err();
     println!("sandboxed frame: {} ({})", refused.code, refused.message);
     assert_eq!(refused.code, "origin_mismatch");
@@ -497,12 +534,11 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     h.call("eval", json!({"script": "document.title"}))
         .await
         .unwrap();
-    let (browsers, entry, id) = (h.browsers.clone(), h.entry.clone(), login.item.clone());
+    let args = h.suggested(&login.item).await;
+    let (browsers, entry) = (h.browsers.clone(), h.entry.clone());
     let filling = tokio::spawn(async move {
         let mut audit = Map::new();
-        let result =
-            crate::browser::fill::run(&browsers, &entry, "login", &json!({"item": id}), &mut audit)
-                .await;
+        let result = crate::browser::fill::run(&browsers, &entry, &args, &mut audit).await;
         (result, audit)
     });
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -555,6 +591,11 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     );
     let issued = &stop.details["confirmation"];
     assert_eq!(issued["item_title"], "Test Visa");
+    // The exact mapping, by the page's names, and where its values go.
+    assert_eq!(issued["mapping"].as_array().unwrap().len(), 4);
+    assert_eq!(issued["mapping"][1]["name"], "Card number");
+    assert_eq!(issued["mapping"][1]["evidence"], "autocomplete=cc-number");
+    assert_eq!(issued["frames"], json!(["https://login.shop.example"]));
     assert_eq!(issued["target"]["name"], "Pay");
     assert!(issued["title"].is_string() && issued["lines"].is_array());
     let handle = &issued["screenshot"];
@@ -695,7 +736,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
         ],
     ]);
     let (shipped, _) = h
-        .fill("fill", json!({"item": identity.item, "fields": fields}))
+        .fill(json!({"item": identity.item, "fields": fields}))
         .await;
     let shipped = shipped.unwrap();
     assert_eq!(shipped["submitted"], false);
@@ -724,12 +765,23 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     );
 
     // An authenticator code, computed on the host and checked by the page.
-    h.call("open", json!({"url": format!("{local}/totp.html")}))
+    // No suggestion for a code field: the agent maps `otp` itself.
+    let page = h
+        .call("open", json!({"url": format!("{local}/totp.html")}))
         .await
         .unwrap();
-    let (verified, audit) = h.fill("fill_code", json!({"item": login.item})).await;
+    let observed = h.call("observe", json!({})).await.unwrap();
+    assert_eq!(observed["fill"]["page_offers"], json!(["code"]));
+    assert_eq!(observed["fill"]["suggestions"], json!([]));
+    let (verified, audit) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&page, "textbox", "Authentication code")]]],
+            "press": find(&page, "button", "Verify"),
+        }))
+        .await;
     assert_eq!(verified.unwrap()["submitted"], true);
-    assert_eq!(audit["fields"], json!(["code"]));
+    assert!(audit["mapping"]["otp"].is_array());
     let page = h.text().await;
     println!("code page answered: {page}");
     assert!(page.contains("code accepted"));
@@ -844,50 +896,47 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
     ));
     let mut h = Harness::start(browsers).await;
 
-    // Named fields without --submit: latch finds the form's own submit.
+    // A password with no press button: refused before any value is
+    // released, whether the agent mapped it or took a suggestion with no
+    // press (a page with no submit button gets one with none).
     let page = h
         .call("open", json!({"url": format!("{local}/login.html")}))
         .await
         .unwrap();
     let (named, _) = h
-        .fill(
-            "login",
-            json!({
-                "item": login.item,
-                "username": find(&page, "textbox", "Email"),
-                "password": find(&page, "textbox", "Password"),
-            }),
-        )
+        .fill(json!({
+            "item": login.item,
+            "fields": [["username", [find(&page, "textbox", "Email")]],
+                       ["password", [find(&page, "textbox", "Password")]]],
+        }))
         .await;
-    let named = named.unwrap();
+    let named = named.unwrap_err();
     println!(
-        "named fields, no --submit: submitted {}",
-        named["submitted"]
+        "named fields, no --press: {} ({})",
+        named.code, named.message
     );
-    assert_eq!(named["submitted"], true);
-    assert!(h.text().await.contains("password accepted"));
-
-    // No submit at all: refused before any value is released.
-    let page = h
-        .call(
-            "open",
-            json!({"url": format!("{local}/no-submit-login.html")}),
-        )
-        .await
-        .unwrap();
-    let (refused, _) = h
-        .fill(
-            "login",
-            json!({
-                "item": login.item,
-                "username": find(&page, "textbox", "Email"),
-                "password": find(&page, "textbox", "Password"),
-            }),
-        )
-        .await;
+    assert_eq!(
+        (named.exit, named.code.as_str()),
+        (crate::failure::Exit::Denied, "press_required")
+    );
+    h.call(
+        "open",
+        json!({"url": format!("{local}/no-submit-login.html")}),
+    )
+    .await
+    .unwrap();
+    let observed = h.call("observe", json!({})).await.unwrap();
+    let suggestion = &observed["fill"]["suggestions"][0];
+    println!("no submit button: suggestion {suggestion}");
+    assert!(suggestion["press"].is_null());
+    let args = h.suggested(&login.item).await;
+    let (refused, _) = h.fill(args).await;
     let refused = refused.unwrap_err();
-    println!("no submit button: {} ({})", refused.code, refused.message);
-    assert_eq!(refused.code, "ambiguous_target");
+    println!(
+        "its suggestion, no --press: {} ({})",
+        refused.code, refused.message
+    );
+    assert_eq!(refused.code, "press_required");
     assert!(
         h.call("eval", json!({"script": "1"})).await.is_ok(),
         "nothing was left on the page"
@@ -908,10 +957,7 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
         ["cvv", [find(&page, "textbox", "CVV")]],
     ]);
     let (trapped, audit) = h
-        .fill(
-            "fill",
-            json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}),
-        )
+        .fill(json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}))
         .await;
     let trapped = trapped.unwrap_err();
     println!(
@@ -932,8 +978,8 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
     // agent back in: the trapped value is still on the page.
     let (later, _) = h
         .fill(
-            "login",
-            json!({"item": login.item, "username": "e99", "password": "e98"}),
+            json!({"item": login.item, "fields": [["username", ["e99"]], ["password", ["e98"]]],
+                     "press": "e97"}),
         )
         .await;
     let later = later.unwrap_err();
@@ -1035,12 +1081,11 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
     h.call("open", json!({"url": format!("{local}/slow-login.html")}))
         .await
         .unwrap();
-    let (browsers, entry, id) = (h.browsers.clone(), h.entry.clone(), login.item.clone());
+    let args = h.suggested(&login.item).await;
+    let (browsers, entry) = (h.browsers.clone(), h.entry.clone());
     let filling = tokio::spawn(async move {
         let mut audit = Map::new();
-        let result =
-            crate::browser::fill::run(&browsers, &entry, "login", &json!({"item": id}), &mut audit)
-                .await;
+        let result = crate::browser::fill::run(&browsers, &entry, &args, &mut audit).await;
         (result, audit)
     });
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -1085,10 +1130,7 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
         ["cvv", [find(&page, "textbox", "CVV")]],
     ]);
     let (trapped, _) = h
-        .fill(
-            "fill",
-            json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}),
-        )
+        .fill(json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}))
         .await;
     assert_eq!(trapped.unwrap_err().code, "session_paused");
     let held = call_b("observe", &b, json!({})).await.unwrap_err();
@@ -1139,7 +1181,7 @@ async fn agent_code_is_noted_per_site_and_kept_with_the_profile(engine: &str) {
         h.call("open", json!({"url": format!("{local}/login.html")}))
             .await
             .unwrap();
-        let (signed_in, audit) = h.fill("login", json!({"item": login.item})).await;
+        let (signed_in, audit) = h.login(&login.item).await;
         assert_eq!(signed_in.unwrap()["submitted"], true);
         audit["agent_code_before_fill"].clone()
     };
@@ -1221,10 +1263,10 @@ async fn observe_lists_items_by_the_frames_that_hold_fields(engine: &str) {
     .unwrap();
     let observed = h.call("observe", json!({})).await.unwrap();
     println!(
-        "portal page embedding the login frame: vault {}",
-        observed["vault"]
+        "portal page embedding the login frame: fill {}",
+        observed["fill"]
     );
-    let listed: Vec<&str> = observed["vault"]
+    let listed: Vec<&str> = observed["fill"]["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -1236,7 +1278,7 @@ async fn observe_lists_items_by_the_frames_that_hold_fields(engine: &str) {
     h.call("close", json!({})).await.ok();
 }
 
-async fn an_identifier_first_login_fills_both_steps_in_one_pause(engine: &str) {
+async fn a_login_goes_on_to_its_password_stage_in_one_pause(engine: &str) {
     let (_dir, state, _area) = test_state_alone(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let login = vault
@@ -1266,72 +1308,95 @@ async fn an_identifier_first_login_fills_both_steps_in_one_pause(engine: &str) {
     ));
     let mut h = Harness::start(browsers).await;
 
-    // One document, no form, no submit button, "Continue with Google"
-    // first, the password shown only after Continue, and cross-site frames
-    // coming and going throughout.
-    h.call(
-        "open",
-        json!({"url": format!("{local}/id-first.html?cross={provider}")}),
-    )
-    .await
-    .unwrap();
-    let (signed_in, audit) = h.fill("login", json!({"item": login.item})).await;
+    // A new document: the identifier stage's suggestion (the `username
+    // webauthn` field and its own submit button), then the password stage,
+    // which latch reads and fills itself, inside the one pause.
+    h.call("open", json!({"url": format!("{local}/idf.html")}))
+        .await
+        .unwrap();
+    let observed = h.call("observe", json!({})).await.unwrap();
+    println!("identifier stage: {}", observed["fill"]);
+    assert_eq!(
+        observed["fill"]["page_offers"],
+        json!(["username_only", "passkey"])
+    );
+    let suggestion = &observed["fill"]["suggestions"][0];
+    assert_eq!(suggestion["fields"].as_object().unwrap().len(), 1);
+    assert_eq!(
+        suggestion["press"],
+        json!(find(&observed, "button", "Continue"))
+    );
+    let (signed_in, audit) = h.login(&login.item).await;
     println!(
-        "same document: {:?}; audit {}",
-        signed_in.as_ref().map(|r| (&r["filled"], &r["submitted"])),
+        "new document: {:?}; audit {}",
+        signed_in.as_ref().map(|r| (&r["fields"], &r["stages"])),
         Value::Object(audit.clone())
     );
     let signed_in = signed_in.unwrap();
-    assert_eq!(signed_in["filled"], json!(["username", "password"]));
+    assert_eq!(signed_in["stages"], 2);
+    assert_eq!(signed_in["fields"][1]["field"], "password");
     assert!(h.text().await.contains("password accepted"));
-    assert_eq!(
-        audit["password_step"]["fields"],
-        json!(["username", "password"])
-    );
 
-    // Two pages, the second on another site: a cross-process navigation
-    // between the steps, with the agent kept out throughout.
-    h.call(
-        "open",
-        json!({"url": format!("{local}/id-first-email.html?next={provider}")}),
-    )
-    .await
-    .unwrap();
-    let (browsers, entry, id) = (h.browsers.clone(), h.entry.clone(), login.item.clone());
+    // The same document: the email form hides, the password form shows.
+    h.call("open", json!({"url": format!("{local}/idf-spa.html")}))
+        .await
+        .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    let signed_in = signed_in.unwrap();
+    println!("same document: stages {}", signed_in["stages"]);
+    assert_eq!(signed_in["stages"], 2);
+    assert!(h.text().await.contains("password accepted"));
+
+    // The agent's own mapping of a page with no tokens, whose second page is
+    // on another of the item's sites a second and a half later: the agent is
+    // kept out between the stages.
+    let page = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/id-first-email.html?next={provider}")}),
+        )
+        .await
+        .unwrap();
+    let args = json!({
+        "item": login.item,
+        "fields": [["username", [find(&page, "textbox", "Email")]]],
+        "press": find(&page, "button", "Next"),
+    });
+    let (browsers, entry, mapped) = (h.browsers.clone(), h.entry.clone(), args.clone());
     let filling = tokio::spawn(async move {
         let mut audit = Map::new();
-        let result =
-            crate::browser::fill::run(&browsers, &entry, "login", &json!({"item": id}), &mut audit)
-                .await;
+        let result = crate::browser::fill::run(&browsers, &entry, &mapped, &mut audit).await;
         (result, audit)
     });
     tokio::time::sleep(Duration::from_millis(1000)).await;
     let paused = h.call("observe", json!({})).await.unwrap_err();
-    println!("observe between the steps: {}", paused.code);
+    println!("observe between the stages: {}", paused.code);
     assert_eq!(paused.code, "session_paused");
     let (signed_in, audit) = filling.await.unwrap();
     h.shown.push(seen(&Value::Object(audit.clone())));
-    println!(
-        "two pages: {:?}; audit {}",
-        signed_in.as_ref().map(|r| (&r["filled"], &r["submitted"])),
-        Value::Object(audit.clone())
-    );
     let signed_in = signed_in.unwrap();
     h.shown.push(seen(&signed_in));
-    assert_eq!(signed_in["filled"], json!(["username", "password"]));
+    assert_eq!(signed_in["stages"], 2);
     assert!(h.text().await.contains("password accepted"));
     assert_eq!(audit["top_origin"], json!(local));
-    assert_eq!(audit["password_step"]["top_origin"], json!(provider_origin));
+    assert_eq!(audit["second_stage"]["top_origin"], json!(provider_origin));
 
-    // The same, with the second page on a lookalike: nothing goes there,
-    // and the agent is let back in.
-    h.call(
-        "open",
-        json!({"url": format!("{local}/id-first-email.html?next={lookalike}")}),
-    )
-    .await
-    .unwrap();
-    let (refused, _) = h.fill("login", json!({"item": login.item})).await;
+    // The second page on a lookalike: nothing goes there, and the agent is
+    // let back in.
+    let page = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/id-first-email.html?next={lookalike}")}),
+        )
+        .await
+        .unwrap();
+    let (refused, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["username", [find(&page, "textbox", "Email")]]],
+            "press": find(&page, "button", "Next"),
+        }))
+        .await;
     let refused = refused.unwrap_err();
     println!(
         "lookalike second page: {} ({})",
@@ -1354,6 +1419,65 @@ async fn an_identifier_first_login_fills_both_steps_in_one_pause(engine: &str) {
         "nothing filled on the lookalike"
     );
 
+    // Second stages latch does not fill by itself: a code, a method chooser,
+    // a form with two submit buttons, and a password with no form or submit
+    // button (cross-site frames coming and going meanwhile). Each ends after
+    // cleanup with needs_fields and the new stage, the password unreleased.
+    for (url, offers) in [
+        (format!("{local}/idf.html?then=code"), json!(["code"])),
+        (format!("{local}/idf.html?then=chooser"), json!([])),
+        (format!("{local}/idf.html?then=two"), json!(["password"])),
+        (
+            format!("{local}/id-first.html?cross={provider}"),
+            json!(["password"]),
+        ),
+    ] {
+        let page = h.call("open", json!({"url": url})).await.unwrap();
+        let (ended, audit) = h
+            .fill(json!({
+                "item": login.item,
+                "fields": [["username", [find(&page, "textbox", "Email")]]],
+                "press": find(&page, "button", "Continue"),
+            }))
+            .await;
+        let ended = ended.unwrap_err();
+        println!(
+            "{url}: {} ({}); offers {}, alternatives {}; second stage {}",
+            ended.code,
+            ended.message,
+            ended.details["fill"]["page_offers"],
+            ended.details["fill"]["alternatives"],
+            audit["second_stage"]
+        );
+        assert_eq!(
+            (ended.exit, ended.code.as_str()),
+            (crate::failure::Exit::Failed, "needs_fields")
+        );
+        assert_eq!(ended.details["first_stage"], "submitted");
+        assert_eq!(ended.details["fill"]["page_offers"], offers);
+        assert!(ended.details["page"]["snapshot"].is_string());
+        if url.contains("chooser") {
+            let names: Vec<&str> = ended.details["fill"]["alternatives"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|a| a["name"].as_str())
+                .collect();
+            assert!(
+                names.contains(&"Text me a code") && names.contains(&"Use your password"),
+                "{names:?}"
+            );
+        } else {
+            assert!(!ended.details["candidates"].as_array().unwrap().is_empty());
+        }
+        let text = h.text().await;
+        assert!(!text.contains("accepted"), "{text}");
+        assert!(
+            h.call("eval", json!({"script": "1"})).await.is_ok(),
+            "the agent is back"
+        );
+    }
+
     let everything = h.shown.join("\n");
     assert!(
         !everything.contains(PASSWORD),
@@ -1362,7 +1486,9 @@ async fn an_identifier_first_login_fills_both_steps_in_one_pause(engine: &str) {
     h.call("close", json!({})).await.ok();
 }
 
-async fn the_button_that_ends_a_step_is_picked_only_when_one_fits(engine: &str) {
+/// What `observe` offers, from the page's own hints only, and the checks a
+/// mapping passes before any value leaves the vault.
+async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine: &str) {
     let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let login = vault
@@ -1371,7 +1497,27 @@ async fn the_button_that_ends_a_step_is_picked_only_when_one_fits(engine: &str) 
                 LOGIN,
                 "Shop",
                 &["shop.example"],
-                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+                &[
+                    ("username", "ada@shop.example"),
+                    ("password", PASSWORD),
+                    ("totp", KEY),
+                ],
+            ))
+        })
+        .unwrap();
+    let card = vault
+        .with(|s| {
+            s.add(item(
+                CARD,
+                "Test Visa",
+                &[],
+                &[
+                    ("cardholder name", "Ada Lovelace"),
+                    ("number", NUMBER),
+                    ("expiry month", "4"),
+                    ("expiry year", "2031"),
+                    ("code", CVV),
+                ],
             ))
         })
         .unwrap();
@@ -1383,84 +1529,475 @@ async fn the_button_that_ends_a_step_is_picked_only_when_one_fits(engine: &str) 
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
     let mut h = Harness::start(browsers).await;
+    let open = async |h: &mut Harness, page: &str| {
+        h.call("open", json!({"url": format!("{local}/{page}")}))
+            .await
+            .unwrap();
+        h.call("observe", json!({})).await.unwrap()
+    };
+    let suggested_for = |observed: &Value, item: &str| -> Vec<Value> {
+        observed["fill"]["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["item"] == item)
+            .cloned()
+            .collect()
+    };
 
-    // "Sign in via LinkedIn" comes first, but only "Continue" is named
-    // plainly for the step's end.
-    let page = h
-        .call(
-            "open",
-            json!({"url": format!("{local}/login-choices.html")}),
-        )
-        .await
+    // The items that fit, with what they hold and never a value.
+    let observed = open(&mut h, "login.html").await;
+    let items = &observed["fill"]["items"];
+    println!("login page items: {items}");
+    let shop = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["item"] == login.item.as_str())
         .unwrap();
-    let (signed_in, audit) = h.fill("login", json!({"item": login.item})).await;
-    println!(
-        "another way in first: {:?}; pressed {} then {}",
-        signed_in.as_ref().map(|r| &r["filled"]),
-        audit["pressed"],
-        audit["password_step"]["pressed"]
+    let ids: Vec<&str> = shop["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["id"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&"username") && ids.contains(&"password") && ids.contains(&"otp"),
+        "{ids:?}"
     );
-    assert_eq!(audit["pressed"], json!(find(&page, "button", "Continue")));
+    assert!(!ids.contains(&"totp"));
+    let otp = shop["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == "otp")
+        .unwrap();
     assert_eq!(
-        signed_in.unwrap()["filled"],
-        json!(["username", "password"])
+        (otp["derived"].as_str(), otp["secret"].as_bool()),
+        (Some("totp"), Some(true))
     );
-    assert!(h.text().await.contains("password accepted"));
+    assert!(
+        !observed["fill"].to_string().contains("ada@shop.example"),
+        "no username shown"
+    );
 
-    // A form whose own submit button is another way in ("Sign in · Yahoo"):
-    // it does not count, whatever its type; the plain "Continue" does.
-    let page = h
-        .call(
-            "open",
-            json!({"url": format!("{local}/login-form-choices.html")}),
-        )
-        .await
-        .unwrap();
-    let (signed_in, audit) = h.fill("login", json!({"item": login.item})).await;
-    println!(
-        "the form's submit is another way in: {:?}; pressed {} then {}",
-        signed_in.as_ref().map(|r| &r["filled"]),
-        audit["pressed"],
-        audit["password_step"]["pressed"]
-    );
-    assert_eq!(audit["pressed"], json!(find(&page, "button", "Continue")));
+    // A suggestion fills exactly its mapping.
+    let [made] = suggested_for(&observed, &login.item).try_into().unwrap();
+    println!("login.html suggestion: {made}");
     assert_eq!(
-        signed_in.unwrap()["filled"],
-        json!(["username", "password"])
+        made["evidence"]
+            .as_object()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>(),
+        json!(["the text field before the password", "type=password"])
+            .as_array()
+            .unwrap()
+            .clone()
     );
-    assert!(h.text().await.contains("password accepted"));
+    let (filled, audit) = h
+        .fill(
+            json!({"item": login.item, "suggested": made["id"], "snapshot": observed["snapshot"]}),
+        )
+        .await;
+    assert_eq!(filled.unwrap()["submitted"], true);
+    assert_eq!(audit["mapping"], made["fields"]);
+    assert_eq!(audit["source"], made["id"]);
 
-    // Two plain buttons ("Continue", "Next"): latch cannot tell, names both,
-    // and releases nothing.
-    let page = h
+    // Two forms with the same tokens: one suggestion each.
+    let observed = open(&mut h, "two-logins.html").await;
+    let made = suggested_for(&observed, &login.item);
+    println!("two forms: {} suggestions", made.len());
+    assert_eq!(made.len(), 2);
+    assert_ne!(made[0]["press"], made[1]["press"]);
+
+    // No suggestion: registration forms, a newsletter box.
+    for page in ["signup.html", "signup.html?two=1", "newsletter.html"] {
+        let observed = open(&mut h, page).await;
+        println!(
+            "{page}: offers {}, suggestions {}",
+            observed["fill"]["page_offers"], observed["fill"]["suggestions"]
+        );
+        assert!(suggested_for(&observed, &login.item).is_empty(), "{page}");
+    }
+    // A passkey-only page: what it asks for, and its other buttons.
+    let observed = open(&mut h, "passkey-only.html").await;
+    let names: Vec<&str> = observed["fill"]["alternatives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["name"].as_str())
+        .collect();
+    println!(
+        "passkey-only: offers {}, alternatives {names:?}",
+        observed["fill"]["page_offers"]
+    );
+    assert_eq!(observed["fill"]["page_offers"], json!(["passkey"]));
+    assert!(names.contains(&"Sign in with a passkey") && names.contains(&"Continue with Google"));
+    let observed = open(&mut h, "idf.html").await;
+    let names: Vec<&str> = observed["fill"]["alternatives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"Sign in with a passkey") && names.contains(&"Continue with Google"),
+        "{names:?}"
+    );
+
+    // Hidden copies of the card fields are never listed, so never suggested.
+    let observed = open(&mut h, "dupes-checkout.html").await;
+    let [made] = suggested_for(&observed, &card.item).try_into().unwrap();
+    println!("checkout with hidden copies: {made}");
+    let listed = observed["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["role"] == "textbox" || e["role"] == "searchbox")
+        .count();
+    let inputs = h
         .call(
-            "open",
-            json!({"url": format!("{local}/login-choices.html?two=1")}),
+            "eval",
+            json!({"script": "document.querySelectorAll('input, textarea').length"}),
         )
         .await
         .unwrap();
-    let (refused, _) = h.fill("login", json!({"item": login.item})).await;
+    println!("fields listed {listed} of {} on the page", inputs["value"]);
+    assert_eq!((listed, inputs["value"].as_u64()), (8, Some(11)));
+    assert_eq!(
+        made["fields"]["number"],
+        json!([find(&observed, "textbox", "Card number")])
+    );
+    assert_eq!(made["press"], json!(find(&observed, "button", "Pay")));
+
+    // Refused, naming the field and why, with nothing released: what the
+    // page's markup contradicts.
+    let pay = find(&observed, "button", "Pay");
+    for (field, target, why) in [
+        (
+            "number",
+            find(&observed, "textbox", "Gift note"),
+            "textarea",
+        ),
+        (
+            "number",
+            find(&observed, "searchbox", "Search help"),
+            "search",
+        ),
+        (
+            "number",
+            find(&observed, "textbox", "Receipt email"),
+            "email",
+        ),
+    ] {
+        let (refused, _) = h
+            .gated_fill(json!({"item": card.item, "fields": [[field, [target]]], "press": pay}))
+            .await;
+        let refused = refused.unwrap_err();
+        println!(
+            "card {field} into {target}: {} ({})",
+            refused.code, refused.message
+        );
+        assert_eq!(
+            (refused.exit, refused.code.as_str()),
+            (crate::failure::Exit::Denied, "bad_target")
+        );
+        assert!(refused.message.contains(why), "{}", refused.message);
+    }
+    let number = find(&observed, "textbox", "Card number");
+    let (twice, _) = h
+        .gated_fill(json!({"item": card.item, "fields": [["number", [number]], ["cvv", [number]]], "press": pay}))
+        .await;
+    let twice = twice.unwrap_err();
+    println!(
+        "two fields into one element: {} ({})",
+        twice.code, twice.message
+    );
+    assert_eq!(twice.code, "bad_target");
+    let observed = open(&mut h, "login.html").await;
+    let (email, password, sign_in) = (
+        find(&observed, "textbox", "Email"),
+        find(&observed, "textbox", "Password"),
+        find(&observed, "button", "Sign in"),
+    );
+    for fields in [
+        json!([["password", [email]]]),
+        json!([["username", [password]], ["password", [email]]]),
+    ] {
+        let (refused, _) = h
+            .fill(json!({"item": login.item, "fields": fields, "press": sign_in}))
+            .await;
+        let refused = refused.unwrap_err();
+        println!("login {fields}: {} ({})", refused.code, refused.message);
+        assert_eq!(refused.code, "bad_target");
+    }
+    let observed = open(&mut h, "signup.html").await;
+    let (refused, _) = h
+        .fill(
+            json!({"item": login.item, "press": find(&observed, "button", "Create account"),
+                     "fields": [["password", [find(&observed, "textbox", "New password")]]]}),
+        )
+        .await;
     let refused = refused.unwrap_err();
     println!(
-        "two plain buttons: {} ({}) {}",
-        refused.code, refused.message, refused.details
+        "a password into new-password: {} ({})",
+        refused.code, refused.message
     );
-    assert_eq!(refused.code, "ambiguous_target");
-    assert_eq!(
-        refused.details["candidates"],
-        json!([
-            find(&page, "button", "Continue"),
-            find(&page, "button", "Next")
-        ])
+    assert!(refused.code == "bad_target" && refused.message.contains("new-password"));
+    let observed = open(&mut h, "idf-password.html").await;
+    let (refused, _) = h
+        .fill(
+            json!({"item": login.item, "press": find(&observed, "button", "Sign in"),
+                     "fields": [["otp", [find(&observed, "textbox", "Password")]]]}),
+        )
+        .await;
+    let refused = refused.unwrap_err();
+    println!(
+        "otp into the password field: {} ({})",
+        refused.code, refused.message
     );
-    assert_eq!(refused.details["snapshot"], page["snapshot"]);
+    assert_eq!(refused.code, "bad_target");
     assert!(
         h.call("eval", json!({"script": "1"})).await.is_ok(),
-        "nothing was left on the page, and the agent is back"
+        "nothing was released"
     );
-    assert!(h.text().await.contains("no other way in taken"));
+
+    // Allowed: a revealed password; an email into a box marked as a phone
+    // number, flagged; an unmarked card field on the agent's map, whose
+    // confirmation shows that map.
+    let observed = open(&mut h, "revealed.html").await;
+    let (filled, _) = h
+        .fill(
+            json!({"item": login.item, "press": find(&observed, "button", "Sign in"),
+                     "fields": [["username", [find(&observed, "textbox", "Email")]],
+                                ["password", [find(&observed, "textbox", "Password")]]]}),
+        )
+        .await;
+    assert_eq!(filled.unwrap()["submitted"], true);
+    assert!(h.text().await.contains("password accepted"));
+    let observed = open(&mut h, "wrong-token.html").await;
+    let (filled, audit) = h
+        .fill(
+            json!({"item": login.item, "press": find(&observed, "button", "Log in"),
+                     "fields": [["username", [find(&observed, "textbox", "Phone number or email")]],
+                                ["password", [find(&observed, "textbox", "Password")]]]}),
+        )
+        .await;
+    let filled = filled.unwrap();
+    println!(
+        "email into tel-national: fields {}; audit hint_mismatch {}",
+        filled["fields"], audit["hint_mismatch"]
+    );
+    assert_eq!(filled["fields"][0]["hint_mismatch"], "tel-national");
+    assert!(audit["hint_mismatch"].is_array());
+    assert!(h.text().await.contains("password accepted"));
+    let observed = open(&mut h, "plain-checkout.html").await;
+    assert!(suggested_for(&observed, &card.item).is_empty());
+    let (stop, _) = h
+        .gated_fill(
+            json!({"item": card.item, "press": find(&observed, "button", "Pay"),
+                           "fields": [["number", [find(&observed, "textbox", "Card number")]],
+                                      ["expiry", [find(&observed, "textbox", "Expiry")]],
+                                      ["cvv", [find(&observed, "textbox", "CVV")]]]}),
+        )
+        .await;
+    let stop = stop.unwrap_err();
+    println!(
+        "unmarked card fields: {} mapping {}",
+        stop.code, stop.details["confirmation"]["mapping"]
+    );
+    assert_eq!(stop.code, "confirm_needed");
+    assert_eq!(
+        stop.details["confirmation"]["mapping"][0]["name"],
+        "Card number"
+    );
+
+    // A suggestion that no longer comes out the same: a moved field, or a
+    // changed item. Refused, with fresh suggestions, nothing released.
+    h.call("open", json!({"url": format!("{local}/login.html")}))
+        .await
+        .unwrap();
+    let args = h.suggested(&login.item).await;
+    h.call("eval", json!({"script": "const e = document.querySelector('[name=email]'); e.replaceWith(e.cloneNode()); 1"}))
+        .await
+        .unwrap();
+    let (stale, _) = h.fill(args).await;
+    let stale = stale.unwrap_err();
+    println!(
+        "moved field: {} ({}); fresh {}",
+        stale.code, stale.message, stale.details["fill"]["suggestions"]
+    );
+    assert_eq!(stale.code, "stale_snapshot");
+    assert_eq!(
+        stale.details["fill"]["suggestions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let args = h.suggested(&login.item).await;
+    crate::vault::host::edit(
+        &vault,
+        &json!({"item": login.item, "revision": login.revision, "values": {"username": "ada2@shop.example"}}),
+        &mut Map::new(),
+    )
+    .unwrap();
+    let (stale, _) = h.fill(args).await;
+    let stale = stale.unwrap_err();
+    println!("changed item: {} ({})", stale.code, stale.message);
+    assert_eq!(stale.code, "stale_snapshot");
+    assert!(!h.text().await.contains("accepted"));
+
     let everything = h.shown.join("\n");
-    assert!(!everything.contains(PASSWORD));
+    for value in [PASSWORD, NUMBER, CVV, KEY] {
+        assert!(
+            !everything.contains(value),
+            "a value reached a result or the audit"
+        );
+    }
+    h.call("close", json!({})).await.ok();
+}
+
+/// A card's confirmation names the exact mapping, the site of the frame its
+/// values go into and the press button, and binds them: used once, and
+/// refused once the frame or a mapped field is swapped.
+async fn a_card_confirmation_binds_its_mapping_and_frames(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let vault = Vault::new(state.clone());
+    let card = vault
+        .with(|s| {
+            s.add(item(
+                CARD,
+                "Test Visa",
+                &[],
+                &[
+                    ("number", NUMBER),
+                    ("expiry month", "4"),
+                    ("expiry year", "2031"),
+                    ("code", CVV),
+                ],
+            ))
+        })
+        .unwrap();
+    let (pages, processor) = (site(), site());
+    let local = format!("http://127.0.0.1:{pages}");
+    let frame = format!("http://localhost:{processor}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![
+            (local.clone(), "https://shop.example".into()),
+            (frame.clone(), "https://js.processor.example".into()),
+        ],
+    ));
+    let mut h = Harness::start(browsers).await;
+    let confirm = async |h: &mut Harness, id: &Value, request: &str| {
+        let mut audit = Map::new();
+        let done = crate::browser::steps::run(
+            &h.browsers,
+            &h.entry,
+            &h.id,
+            CALLER,
+            &json!({"request": request, "plan": {"steps": []}, "confirm": id}),
+            &mut audit,
+        )
+        .await;
+        h.shown.push(seen(&Value::Object(audit)));
+        match &done {
+            Ok(value) => h.shown.push(seen(value)),
+            Err(failure) => h.shown.push(seen_failure(failure)),
+        }
+        done
+    };
+
+    h.call(
+        "open",
+        json!({"url": format!("{local}/processor.html?frame={processor}")}),
+    )
+    .await
+    .unwrap();
+    let args = h.suggested(&card.item).await;
+    let (stop, _) = h.gated_fill(args).await;
+    let stop = stop.unwrap_err();
+    let issued = stop.details["confirmation"].clone();
+    println!(
+        "processor frame: {} ({}); confirmation {issued}",
+        stop.code, stop.message
+    );
+    assert_eq!(stop.code, "confirm_needed");
+    assert_eq!(issued["frames"], json!(["https://js.processor.example"]));
+    assert_eq!(issued["mapping"].as_array().unwrap().len(), 3);
+    assert_eq!(issued["target"]["name"], "Pay $10.00");
+    assert!(issued["suggestion"].is_string());
+    let paid = confirm(&mut h, &issued["id"], "r-frame").await.unwrap();
+    println!("confirmed: trail {}", paid["trail"]);
+    assert_eq!(paid["trail"][0]["submitted"], true);
+    let page = h.text().await;
+    println!("the processor answered: {page}");
+    assert!(
+        page.contains("number ok, expiry ok (04 / 31), cvv ok"),
+        "{page}"
+    );
+    let again = confirm(&mut h, &issued["id"], "r-frame-2")
+        .await
+        .unwrap_err();
+    println!("used again: {} ({})", again.code, again.message);
+    assert_eq!(again.code, "confirm_stale");
+
+    // The frame swapped after the confirmation: refused, nothing paid.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/processor.html?frame={processor}")}),
+    )
+    .await
+    .unwrap();
+    let args = h.suggested(&card.item).await;
+    let (stop, _) = h.gated_fill(args).await;
+    let id = stop.unwrap_err().details["confirmation"]["id"].clone();
+    h.call("eval", json!({"script": "const f = document.getElementById('pay'); f.src = f.src + '?again=1'; 1"}))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let swapped = confirm(&mut h, &id, "r-swap").await.unwrap_err();
+    println!("frame swapped: {} ({})", swapped.code, swapped.message);
+    assert_eq!(swapped.code, "confirm_stale");
+    assert!(!h.text().await.contains("payment:"));
+
+    // A mapped field swapped for a copy: refused, nothing paid.
+    let checkout = h
+        .call("open", json!({"url": format!("{local}/checkout.html")}))
+        .await
+        .unwrap();
+    let (stop, _) = h
+        .gated_fill(
+            json!({"item": card.item, "press": find(&checkout, "button", "Pay"),
+                           "fields": [["number", [find(&checkout, "textbox", "Card number")]],
+                                      ["expiry", [find(&checkout, "textbox", "Expiry")]],
+                                      ["cvv", [find(&checkout, "textbox", "CVV")]]]}),
+        )
+        .await;
+    let id = stop.unwrap_err().details["confirmation"]["id"].clone();
+    h.call("eval", json!({"script": "const e = document.querySelector('[name=cc-number]'); e.replaceWith(e.cloneNode()); 1"}))
+        .await
+        .unwrap();
+    let swapped = confirm(&mut h, &id, "r-field").await.unwrap_err();
+    println!("field swapped: {} ({})", swapped.code, swapped.message);
+    assert_eq!(swapped.code, "confirm_stale");
+    assert!(!h.text().await.contains("payment:"));
+    assert!(
+        h.call("eval", json!({"script": "1"})).await.is_ok(),
+        "the agent is back"
+    );
+
+    let everything = h.shown.join("\n");
+    for value in [NUMBER, CVV] {
+        assert!(
+            !everything.contains(value),
+            "a value reached a result or the audit"
+        );
+    }
     h.call("close", json!({})).await.ok();
 }
 
@@ -1490,7 +2027,7 @@ async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {
     h.call("open", json!({"url": format!("{local}/login.html")}))
         .await
         .unwrap();
-    let (before, _) = h.fill("login", json!({"item": login.item})).await;
+    let (before, _) = h.login(&login.item).await;
     assert_eq!(before.unwrap()["submitted"], true);
     let page = h.text().await;
     println!("before the edit: {page}");
@@ -1511,7 +2048,7 @@ async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {
     h.call("open", json!({"url": format!("{local}/login.html")}))
         .await
         .unwrap();
-    let (after, _) = h.fill("login", json!({"item": login.item})).await;
+    let (after, _) = h.login(&login.item).await;
     assert_eq!(after.unwrap()["submitted"], true);
     let page = h.text().await;
     println!("after the edit: {page}");

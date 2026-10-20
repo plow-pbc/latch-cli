@@ -379,24 +379,11 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "download", json!(download));
             "download_get"
         }
-        BrowserCommand::Login {
-            snapshot,
-            item,
-            username,
-            password,
-            submit,
-        } => {
-            set(request, "snapshot", json!(snapshot));
-            set(request, "item", json!(item));
-            set(request, "username", json!(username));
-            set(request, "password", json!(password));
-            set(request, "submit", json!(submit));
-            "login"
-        }
         BrowserCommand::Fill {
             snapshot,
             item,
             fields,
+            suggested,
             press,
         } => {
             let mut pairs = Vec::new();
@@ -404,31 +391,41 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
                 let (label, refs) = field.rsplit_once('=').ok_or_else(|| {
                     Failure::usage(
                         "bad_arguments",
-                        format!("--field takes LABEL=eN, not {field:?}"),
+                        format!("--field takes FIELD=eN, not {field:?}"),
                     )
                 })?;
                 let refs: Vec<&str> = refs.split(',').map(str::trim).collect();
                 pairs.push(json!([label, refs]));
             }
+            if pairs.is_empty() && suggested.is_none() {
+                return Err(Failure::usage(
+                    "bad_arguments",
+                    "fill needs --field FIELD=eN for each field, or --suggested S from observe"
+                        .into(),
+                ));
+            }
             set(request, "snapshot", json!(snapshot));
             set(request, "item", json!(item));
-            set(request, "fields", json!(pairs));
+            if !pairs.is_empty() {
+                set(request, "fields", json!(pairs));
+            }
+            set(request, "suggested", json!(suggested));
             set(request, "press", json!(press));
             // A fill that stops for a confirmation is kept as a request.
             set(request, "request", json!(new_request_id()));
             "fill"
         }
-        BrowserCommand::FillCode {
-            snapshot,
-            item,
-            field,
-            submit,
-        } => {
-            set(request, "snapshot", json!(snapshot));
-            set(request, "item", json!(item));
-            set(request, "field", json!(field));
-            set(request, "submit", json!(submit));
-            "fill_code"
+        BrowserCommand::Login { .. } => {
+            return Err(Failure::usage(
+                "removed_command",
+                "`login` is folded into `fill`: `latch browser fill --item vN --field username=eN --field password=eN --press eN`, or `--suggested S` from observe".into(),
+            ));
+        }
+        BrowserCommand::FillCode { .. } => {
+            return Err(Failure::usage(
+                "removed_command",
+                "`fill-code` is folded into `fill`: `latch browser fill --item vN --field otp=eN --press eN`".into(),
+            ));
         }
         BrowserCommand::Handoff { reason, within, .. } => {
             let reason = reason.ok_or_else(|| {
@@ -684,6 +681,8 @@ mod tests {
         for argv in [
             &["act", "click", "Place order"][..],
             &["act", "type", "the amount field", "12.50"],
+            &["login", "--item", "v1"],
+            &["fill-code", "--item", "v1", "--field", "e4"],
         ] {
             let cli = Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).unwrap();
             let Command::Browser(args) = cli.command else {
@@ -691,11 +690,12 @@ mod tests {
             };
             let failure = run(&state, args).await.unwrap_err();
             assert_eq!(failure.exit, Exit::Usage, "{argv:?}");
-            assert!(
-                failure.message.contains("latch browser do"),
-                "{}",
-                failure.message
-            );
+            let points_to = if argv[0] == "act" {
+                "latch browser do"
+            } else {
+                "latch browser fill"
+            };
+            assert!(failure.message.contains(points_to), "{}", failure.message);
         }
     }
 

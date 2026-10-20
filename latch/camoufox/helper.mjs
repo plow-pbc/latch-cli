@@ -274,6 +274,15 @@ async function offset(frame) {
   }
 }
 
+// A window a page opens (`window.open`, with or without features, or a
+// `target=_blank` link) becomes a tab that loads in the background: never a
+// new window, nor a tab that takes the front.
+const BACKGROUND_TABS = {
+  "browser.link.open_newwindow": 3,
+  "browser.link.open_newwindow.restriction": 0,
+  "browser.tabs.loadDivertedInBackground": true,
+};
+
 async function launch(params) {
   reader = params.reader;
   // One fingerprint per profile, made on its first launch: a site sees the
@@ -298,7 +307,7 @@ async function launch(params) {
     executablePath: params.executable,
     headless: params.headless,
     env: { ...identity.env, ...params.env },
-    firefoxUserPrefs: identity.prefs,
+    firefoxUserPrefs: { ...identity.prefs, ...BACKGROUND_TABS },
     acceptDownloads: true,
     downloadsPath: params.downloads,
     viewport: null,

@@ -2,7 +2,10 @@
 //! reads the page (`view`), asks the decision model once (`Model::decide`)
 //! and then applies the stop conditions in this order:
 //!
-//! 1. a CAPTCHA page: `needs_owner`;
+//! 1. a CAPTCHA page: `needs_owner`; a code stage, or a passkey stage
+//!    unless an item the plan names fits and holds a password:
+//!    `needs_fields` (latch can't tell a texted code from an
+//!    authenticator code, and holds no passkeys);
 //! 2. completion: a typed check that holds (`checked`, or `already_held`
 //!    before the first action; once the step has acted and is about to
 //!    stop, the check gets up to 10 s, and where the model judged the step
@@ -21,8 +24,12 @@
 //! 7. typing with none of the step's own values fitting: `needs_text`
 //!    (a step's values are its quoted texts and the plan's facts it names
 //!    as `{NAME}`; it types nothing else);
-//! 8. signing in: `needs_login`;
-//! 9. a vault fill: `needs_fields`, with the form's refs;
+//! 8. a fill on a sign-in page whose fitting login the plan does not
+//!    name: `needs_login`;
+//! 9. a fill with no suggestion chosen (`none`, or none complete for an
+//!    item the plan names): `needs_fields`, with the form's refs; a
+//!    chosen one fills (`fill.rs`), or, releasing a card or identity
+//!    secret, stops `confirm_needed` with its mapping;
 //! 10. in a step without a typed check, a second click or submit of the
 //!     same control (Enter in a field is its form's submit control, as a
 //!     click on that control is): `repeat` (whether the first did the step
@@ -44,6 +51,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::browser::model::{Decision, Offer, Pass, Pick};
 use crate::browser::plan::Step;
+use crate::browser::suggest;
 use crate::vault::sites;
 
 const STEP_ACTIONS: usize = 8;
@@ -96,6 +104,23 @@ struct Seen {
     /// Card and identity items that fit the page, by handle and title.
     items: Vec<(String, String, Vec<String>)>,
     form: Vec<Value>,
+    /// What a fill could use on the page (`fill::offered`).
+    fill: Value,
+    /// What the page asks for.
+    offers: Vec<String>,
+    /// latch's complete suggestions for the items the plan names.
+    bundles: Vec<Bundle>,
+}
+
+/// A fill the model may choose: one of latch's suggestions for an item the
+/// plan names, with its item, mapping and press button.
+struct Bundle {
+    offer: Offer,
+    /// The fill, as `fill.rs` takes it.
+    args: Value,
+    title: String,
+    /// It releases a card or identity secret: confirmed first.
+    confirm: bool,
 }
 
 impl Run<'_> {
@@ -256,6 +281,41 @@ impl Run<'_> {
                     format!("step {n} reached a CAPTCHA; hand off to the owner"),
                 );
                 failure.details = json!({"reason": "captcha"});
+                return Err(failure);
+            }
+            // 1. A code or passkey stage: the agent chooses between a fill
+            // of `otp` and a handoff. A passkey-first page goes on when a
+            // named item can take its password path.
+            let offers: Vec<&str> = seen.offers.iter().map(String::as_str).collect();
+            let password_path = seen.fill["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|item| {
+                    item["kind"] == "login"
+                        && context
+                            .items
+                            .iter()
+                            .any(|named| item["item"] == named.as_str())
+                        && item["fields"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|f| f["id"] == "password")
+                });
+            if suggest::code_stage(&offers) || (suggest::passkey_stage(&offers) && !password_path) {
+                let what = if suggest::code_stage(&offers) {
+                    "a one-time code"
+                } else {
+                    "a passkey"
+                };
+                let mut failure = stopped(
+                    "needs_fields",
+                    format!(
+                        "step {n} reached a page asking for {what}; nothing was sent. If it is the saved login's authenticator code, send `fill --item vN --field otp=eN --press eN`; otherwise hand off to the owner"
+                    ),
+                );
+                failure.details = fields_stop(&seen);
                 return Err(failure);
             }
 
@@ -478,29 +538,134 @@ impl Run<'_> {
                 return Err(failure);
             }
 
-            // 8. Signing in.
-            if op == "login" {
-                return Err(stopped(
-                    "needs_login",
-                    format!(
-                        "step {n} reached a sign-in form; the rest of the plan did not run: sign in with `login`, then go on"
-                    ),
-                ));
-            }
-
-            // 9. A vault fill: latch maps no fields itself.
+            // 8. and 9. A fill: one of latch's suggestions, or a stop.
             if op == "fill" {
-                let mut failure = stopped(
-                    "needs_fields",
-                    format!(
-                        "step {n} reached a form a saved item fits; latch does not map its fields itself: send a step `fill --item vN --field LABEL=eN… --press eN` with these refs"
-                    ),
-                );
-                failure.details = json!({
-                    "items": seen.items.iter().map(|(item, title, fields)| json!({"item": item, "title": title, "fields": fields})).collect::<Vec<_>>(),
-                    "candidates": seen.form,
-                });
-                return Err(failure);
+                // needs_login only when the plan names no fitting login; one
+                // it names with no complete suggestion is a needs_fields.
+                let sign_in = suggest::sign_in(&offers);
+                let named_login = seen.fill["items"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|item| {
+                        item["kind"] == "login"
+                            && context
+                                .items
+                                .iter()
+                                .any(|named| item["item"] == named.as_str())
+                    });
+                if sign_in && !named_login {
+                    let mut failure = stopped(
+                        "needs_login",
+                        format!(
+                            "step {n} reached a sign-in form; the rest of the plan did not run. Name the saved login in a new plan (`--item vN`), or send `fill --item vN --suggested S` or your own mapping"
+                        ),
+                    );
+                    failure.details = json!({
+                        "items": seen.fill["items"],
+                        "suggestions": seen.fill["suggestions"],
+                        "page_offers": seen.fill["page_offers"],
+                    });
+                    return Err(failure);
+                }
+                let chosen = decision
+                    .bundle
+                    .as_ref()
+                    .filter(|pick| pick.id != "none")
+                    .and_then(|pick| {
+                        seen.bundles
+                            .iter()
+                            .find(|b| b.offer.id == pick.id)
+                            .map(|b| (pick, b))
+                    });
+                let Some((pick, bundle)) = chosen else {
+                    let mut failure = stopped(
+                        "needs_fields",
+                        format!(
+                            "step {n} reached a form a saved item fits, with no suggestion of latch's to fill it; latch does not map its fields itself: send a step `fill --item vN --field FIELD=eN… --press eN` with these refs, or name the item in a new plan"
+                        ),
+                    );
+                    failure.details = fields_stop(&seen);
+                    return Err(failure);
+                };
+                if pick.p < TARGET_P {
+                    let mut failure = stopped(
+                        "ambiguous_target",
+                        format!(
+                            "step {n}: no one of latch's suggested fills stands out; send `fill --item vN --suggested S` for the one the step means"
+                        ),
+                    );
+                    failure.details = json!({"suggestions": seen.fill["suggestions"]});
+                    return Err(failure);
+                }
+                let key = format!("fill|{}", bundle.offer.id);
+                if !self.dispatched.insert((key, state.clone())) {
+                    let mut failure = stopped(
+                        "repeat",
+                        format!(
+                            "step {n} would fill from {:?} again on a page that has not changed; nothing was sent",
+                            bundle.title
+                        ),
+                    );
+                    failure.details = json!({"suggestion": bundle.offer.id});
+                    return Err(failure);
+                }
+                if self.entry.runtime.filling.load(Ordering::SeqCst)
+                    || self.entry.runtime.pauses.load(Ordering::SeqCst) != epoch
+                {
+                    continue;
+                }
+                let mut args = bundle.args.clone();
+                if let Some(object) = args.as_object_mut() {
+                    object.remove("kind");
+                }
+                if bundle.confirm {
+                    args["item_title"] = json!(bundle.title);
+                    let failure = confirm_fill(self.browsers, self.entry, &args, self.audit).await;
+                    let mut record = choice_record(&decision, Some(pick));
+                    record["step"] = json!(n);
+                    record["op"] = json!("fill");
+                    record["item"] = args["item"].clone();
+                    record["suggestion"] = json!(bundle.offer.id);
+                    record["confirmation"] = failure.details["confirmation"]["id"].clone();
+                    record["dispatch"] = json!("refused");
+                    self.records.push(record);
+                    return Err(failure);
+                }
+                self.choice = Some(choice_record(&decision, Some(pick)));
+                let sent = self.fill_now(n, args, None).await;
+                self.choice = None;
+                *acted += 1;
+                before = Some(state);
+                match sent {
+                    Ok(()) => lines.push(format!(
+                        "filled from {:?} and pressed its button",
+                        bundle.title
+                    )),
+                    Err(failure) if retried(&failure) => {
+                        lines.push(format!(
+                            "filled from {:?} (not sent: {})",
+                            bundle.title, failure.code
+                        ));
+                    }
+                    Err(failure) => return Err(failure),
+                }
+                if let Some(check) = typed
+                    && self
+                        .holds(
+                            check,
+                            &anchor,
+                            besides.clone(),
+                            AFTER_ACTION.min(self.left()),
+                        )
+                        .await?
+                {
+                    return Ok(Done {
+                        outcome: "checked",
+                        evidence: Some(json!({"check": check.kind, "value": check.value})),
+                    });
+                }
+                continue;
             }
 
             // The action, as a literal step on this view's snapshot.
@@ -838,6 +1003,11 @@ impl Run<'_> {
             })
             .collect();
         let form = form_of(&elements);
+        let inventory = json!({"snapshot": view["snapshot"], "top_origin": origin,
+                               "controls": view["controls"]});
+        let fill = super::super::fill::offered(self.browsers, &inventory);
+        let offers = strings(&fill["page_offers"]);
+        let bundles = bundles(self.browsers, &fill, &elements, &context.items);
         Ok(Seen {
             view,
             clicks,
@@ -847,6 +1017,9 @@ impl Run<'_> {
             urls,
             items,
             form,
+            fill,
+            offers,
+            bundles,
         })
     }
 
@@ -904,10 +1077,18 @@ impl Run<'_> {
         if waits < STEP_WAITS {
             operations.push("wait");
         }
-        if view["sign_in"] == true {
-            operations.push("login");
-        }
-        if !seen.items.is_empty() && !seen.form.is_empty() {
+        // A fill, where a fitting item could take the page's sign-in fields
+        // or its form; never on a passkey stage.
+        let offers: Vec<&str> = seen.offers.iter().map(String::as_str).collect();
+        let fitting_login = seen.fill["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|item| item["kind"] == "login");
+        if !suggest::passkey_stage(&offers)
+            && ((suggest::sign_in(&offers) && fitting_login)
+                || (!seen.items.is_empty() && !seen.form.is_empty()))
+        {
             operations.push("fill");
         }
         // With a typed check, latch decides when the step is done.
@@ -916,10 +1097,37 @@ impl Run<'_> {
         }
         operations.push("stuck");
         let mut notes = Vec::new();
-        for (_, title, _) in &seen.items {
+        let fill_offered = operations.contains(&"fill");
+        for item in seen.fill["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|_| fill_offered)
+        {
+            let fields: Vec<&str> = item["fields"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|f| f["id"].as_str())
+                .collect();
             notes.push(format!(
-                "a saved card or identity fits this page ({title:?}); choose fill to use it"
+                "a saved {} fits this page ({:?}, holding {}); choose fill to use it",
+                item["kind"].as_str().unwrap_or("item"),
+                item["title"].as_str().unwrap_or_default(),
+                fields.join(", ")
             ));
+        }
+        if !offers.is_empty() {
+            notes.push(format!("the page asks for: {}", offers.join(", ")));
+        }
+        // A passkey stage gets this far only for a named login with a
+        // password: latch has no passkey to give, the password path is the
+        // way in.
+        if suggest::passkey_stage(&offers) {
+            notes.push(
+                "the saved login signs in with its password, not a passkey: go to the page's password sign-in, where it can be filled"
+                    .into(),
+            );
         }
         if view["truncated"] == true {
             notes.push("the element list was cut short".into());
@@ -964,6 +1172,7 @@ impl Run<'_> {
             type_fields: seen.fields.iter().map(|t| t.offer.clone()).collect(),
             selects: seen.selects.iter().map(|t| t.offer.clone()).collect(),
             urls: seen.urls.iter().map(|t| t.offer.clone()).collect(),
+            bundles: seen.bundles.iter().map(|b| b.offer.clone()).collect(),
         }
     }
 
@@ -1152,6 +1361,92 @@ fn candidates(pick: &Pick, offered: &[Target]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// latch's suggestions for the items the plan names, as fills the model
+/// may choose: complete ones only (a press button, which every login and
+/// every secret needs), each read as the item, its mapping by the page's
+/// names, and its button.
+fn bundles(
+    browsers: &Browsers,
+    fill: &Value,
+    elements: &[&Value],
+    named: &[String],
+) -> Vec<Bundle> {
+    let name_of = |reference: &str| {
+        elements
+            .iter()
+            .find(|e| e["ref"] == reference)
+            .map(|e| describe(e))
+            .unwrap_or_else(|| reference.to_string())
+    };
+    let metas = browsers.vault.list_if_present();
+    let mut made = Vec::new();
+    for shown in fill["suggestions"].as_array().into_iter().flatten() {
+        let Some(meta) = metas
+            .iter()
+            .find(|m| shown["item"] == m.item.as_str() && named.contains(&m.item))
+        else {
+            continue;
+        };
+        let Some(press) = shown["press"].as_str() else {
+            continue;
+        };
+        let fields: Vec<(String, Vec<String>)> = shown["fields"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(label, refs)| (label.clone(), strings(refs)))
+            .collect();
+        let secret = fields
+            .iter()
+            .any(|(label, _)| suggest::secret_field(meta, label));
+        let mapped: Vec<String> = fields
+            .iter()
+            .map(|(label, refs)| {
+                let names: Vec<String> = refs.iter().map(|r| name_of(r)).collect();
+                format!("{label} → {}", names.join(" + "))
+            })
+            .collect();
+        let id = shown["id"].as_str().unwrap_or_default().to_string();
+        made.push(Bundle {
+            offer: Offer {
+                id: id.clone(),
+                text: format!(
+                    "{:?} ({}): {}; then press {}",
+                    meta.title,
+                    meta.kind,
+                    mapped.join(", "),
+                    name_of(press)
+                ),
+            },
+            args: json!({
+                "item": meta.item,
+                "kind": meta.kind,
+                "fields": fields.iter().map(|(l, r)| json!([l, r])).collect::<Vec<_>>(),
+                "press": press,
+                "snapshot": shown["snapshot"],
+                "suggestion": id,
+            }),
+            title: meta.title.clone(),
+            confirm: secret && meta.kind != "login",
+        });
+    }
+    made
+}
+
+/// What a `needs_fields` carries: the items that fit, with the fields each
+/// holds; the page's fields and buttons as refs; what the page asks for;
+/// its other buttons and links; latch's suggestions.
+fn fields_stop(seen: &Seen) -> Value {
+    let controls = super::super::fill::controls_of(&json!({"controls": seen.view["controls"]}));
+    json!({
+        "items": seen.fill["items"],
+        "candidates": suggest::candidates(&controls),
+        "page_offers": seen.fill["page_offers"],
+        "alternatives": seen.fill["alternatives"],
+        "suggestions": seen.fill["suggestions"],
+    })
 }
 
 /// The first text field on the page, for a `needs_text` with no better one.

@@ -304,7 +304,7 @@ Each pass observes the page and makes **one decision-model request**. In that re
   | `navigate` | only to the step's or plan's URLs |
   | `scroll`, `back` | always, where they apply |
   | `wait` | until the step has waited twice |
-  | `fill` | a vault item fits the page under its site rule, and the page shows sign-in or form fields (§7). A code or passkey stage never gets this far: it stops before the decision (§6.4 stop 1) |
+  | `fill` | a vault item fits the page under its site rule, and the page shows sign-in or form fields (§7). Never on a code or passkey stage: a code stage stops before the decision, and so does a passkey stage unless a named fitting item holds a password (§6.4 stop 1) |
   | `done` | only after the step's first action, and only in a step without a typed check (latch decides that step's completion) |
   | `stuck` | always |
 
@@ -344,7 +344,8 @@ Each pass observes the page and makes **one decision-model request**. In that re
 Each pass applies these stop conditions, in this order:
 1. Pages latch can't go past by itself, whatever operations are offered or chosen, and whether or not any vault item fits:
    - a CAPTCHA page: `needs_owner`;
-   - a **code stage** (a `one-time-code` field) or a **passkey stage** (a `webauthn` token, and neither a password field nor a `username` token: an identifier field marked `username webauthn` is an identifier stage, not a passkey stage): `needs_fields`, with the payload in 9 (the fitting items may be none). latch can't tell a texted code from an authenticator code, and holds no passkeys, so the agent chooses between a literal `fill` of `otp` and `handoff`.
+   - a **code stage** (a `one-time-code` field): `needs_fields`, with the payload in 9 (the fitting items may be none). latch can't tell a texted code from an authenticator code, so the agent chooses between a literal `fill` of `otp` and `handoff`;
+   - a **passkey stage** (a `webauthn` token, and neither a password field nor a `username` token: an identifier field marked `username webauthn` is an identifier stage, not a passkey stage): `needs_fields` as above, **unless an item the plan names fits the page and holds a password** (chef, 2026-10-20: passkey-first sites usually also take a password). Then the pass goes on: the stage offers no fill bundle, and jev may click the page's way to its password path ("Use your password instead"), whose page gets its own `fill`. latch holds no passkeys, so with no such item the agent hands off.
 
    A code field with no `one-time-code` token is not detected here; no step value fits it, so typing into it stops `needs_text` (7).
 2. Completion as in §6.3.
@@ -557,10 +558,11 @@ This holds for the standalone `fill`, a literal `fill` step and a chosen bundle 
   - A login bundle, or one without a secret field, runs this section's fill: gate, pause, checks, match, set, submit, cleanup, and a second stage. An identifier-first sign-in is one operation.
   - A bundle that releases a card or identity secret stops `confirm_needed`, as above; `--confirm C` accepts that mapping and the release together, once.
   - `none`, or no complete bundle, stops `needs_fields`; a fitting item the plan doesn't name stops `needs_login` on a sign-in page (§6.4).
-  - A code or passkey stage stops `needs_fields` before any decision, whether or not an item fits (§6.4 stop 1). For a TOTP stage the agent sends a literal `fill --item vN --field otp=eN --press eN`.
+  - A code stage stops `needs_fields` before any decision, whether or not an item fits (§6.4 stop 1). For a TOTP stage the agent sends a literal `fill --item vN --field otp=eN --press eN`.
+  - A passkey stage stops the same way, unless an item the plan names fits and holds a password: then jev may click through to the password path (§6.4 stop 1).
   - The trail records the item's title and the mapping, never a value. The result is `submitted`; whether the step's goal holds is decided by the step's own check.
 - **A literal `fill` step** (§6.1) runs this section's fill unchanged, with confirm-before-release. It is a literal step like any other under B9's step policy, and a confirmation never makes a forbidden literal fill allowed.
-- **The plan stops with `needs_owner`** on a CAPTCHA, and with `needs_fields` on a code or passkey stage (§6.4 stop 1). For a texted code or a passkey, the agent runs `handoff`, then sends a new plan.
+- **The plan stops with `needs_owner`** on a CAPTCHA, and with `needs_fields` on a code stage, or on a passkey stage when no named fitting item holds a password (§6.4 stop 1). For a texted code or a passkey, the agent runs `handoff`, then sends a new plan.
 - **No observation or screenshot is taken** from the start of a fill to confirmed cleanup. The trail records a suppressed-secret-phase marker instead.
 
 **`handoff`.**
@@ -696,7 +698,7 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
   - a discount box beside card fields, and an unhinted text card field;
   - card fields in a cross-site processor frame;
   - a second stage asking for a code, a method chooser, and passkey and SSO buttons;
-  - a passkey-only page (a `webauthn` field, no password or `username` field), and an identifier field marked `username webauthn`;
+  - a passkey-only page (a `webauthn` field, no password or `username` field); a passkey-first page with a link to its password path; and an identifier field marked `username webauthn`;
   - two legitimate forms with repeated tokens on one page;
   - a lone `email` newsletter box on a page a login item fits.
 - **Consumer-site matrix (the bake-off's core):** for each engine (CfT; Camoufox once B8 lands), each site: does the home page load, can the agent search/browse logged out, does the login page load, and is the agent challenged or blocked (and where). Starting list: DoorDash, Costco, Redfin, plus a dozen common consumer sites (shopping, food delivery, travel, real estate, banking login pages). Logged-out only, except sites where the chef has added his own login to the vault and asked for it. Result: a table of site × engine → works / challenged / blocked, with screenshots, repeated on at least two days. This measures blocking; it does not build evasion.
@@ -950,6 +952,7 @@ Done when: on the Mac a handoff pauses the agent, the dashboard shows it, `latch
     - a sign-in wall met in the middle of `proceed to checkout` is signed through when the plan names the item, and the plan continues to checkout; without the item named, it stops `needs_login` listing the fitting item;
     - a TOTP stage stops `needs_fields` naming the code field, and a following plan's literal `fill --item vN --field otp=eN --press eN` passes;
     - with no vault item fitting the site, a code stage and the passkey-only page each stop `needs_fields` before any decision, with an empty item list, `code` or `passkey` in the page's offers, and (for the passkey page) its button as an alternative; nothing is typed or clicked;
+    - on the passkey-first page, `sign in` with a named login that holds a password clicks through to the password path and signs in; with the item not named, or naming one without a password, it stops `needs_fields` before any decision;
     - a plan that names the card stops `confirm_needed` with jev's chosen mapping, and its confirmation fills, presses and cleans up; a plan that names no card stops `needs_fields`;
     - jev is offered each bundle with `none`, and a grep of the decision requests finds no value.
   - **Owner handoff:** a CAPTCHA stand-in stops `needs_owner`; `handoff` brings only that session's window forward; a new plan continues afterwards.

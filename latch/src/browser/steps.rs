@@ -575,7 +575,7 @@ pub async fn stop_fill(
         Ok(journal) => journal,
         Err(failure) => return failure,
     };
-    let mut failure = confirm_fill(entry, args, audit).await;
+    let mut failure = confirm_fill(browsers, entry, args, audit).await;
     let stop = json!({"step": 1, "code": failure.code});
     let journaled = journal
         .write(json!({"t": "step", "step": 1, "op": "fill", "outcome": "stopped", "code": failure.code}))
@@ -931,8 +931,28 @@ impl Run<'_> {
                 if let Some(events) = result.get("events") {
                     shown["events"] = events.clone();
                 }
+                Ok(popup_of(&result))
+            }
+            Err(failure) => Err(failure),
+        };
+        // A page the action opened from the session's tab is where the plan
+        // goes on: the session now acts in it, and nothing comes to the
+        // front.
+        let outcome = match outcome {
+            Ok(Some(tab)) => {
+                let switched = call(
+                    self.entry,
+                    json!({"op": "tab", "action": "switch", "tab": tab}),
+                    self.audit,
+                )
+                .await;
+                if switched.is_ok() {
+                    shown["followed"] = json!(tab);
+                    record["followed"] = json!(tab);
+                }
                 Ok(())
             }
+            Ok(None) => Ok(()),
             Err(failure) => Err(failure),
         };
         let result = match &outcome {
@@ -1002,10 +1022,10 @@ impl Run<'_> {
     /// A literal fill: one that releases a secret field stops for a
     /// confirmation first; any other fills now.
     async fn fill(&mut self, n: usize, literal: &Literal) -> Result<(), Failure> {
-        let mut args = fill_args(literal);
+        let mut args = super::fill::resolve(self.browsers, self.entry, &fill_args(literal)).await?;
         if let Some(title) = super::fill::releases_secret(self.browsers, &args)? {
             args["item_title"] = json!(title);
-            let failure = confirm_fill(self.entry, &args, self.audit).await;
+            let failure = confirm_fill(self.browsers, self.entry, &args, self.audit).await;
             self.records.push(json!({"step": n, "op": "fill", "item": args["item"],
                                      "confirmation": failure.details["confirmation"]["id"], "dispatch": "refused"}));
             return Err(failure);
@@ -1028,8 +1048,15 @@ impl Run<'_> {
             json!({"item": args["item"], "press": args["press"]}),
         )?;
         let mut fill_audit = Map::new();
-        let outcome =
-            super::fill::run(self.browsers, self.entry, "fill", &args, &mut fill_audit).await;
+        let mut outcome = super::fill::run(self.browsers, self.entry, &args, &mut fill_audit).await;
+        // A confirmed fill whose fields or their frames went from the page
+        // is no longer the fill that was confirmed.
+        if confirmation.is_some()
+            && let Err(failure) = &mut outcome
+            && matches!(failure.code.as_str(), "stale_snapshot" | "fill_refused")
+        {
+            failure.code = "context_changed".into();
+        }
         let result = match &outcome {
             Ok(_) => "dispatched",
             Err(failure) if refused(failure) => "refused",
@@ -1041,6 +1068,15 @@ impl Run<'_> {
         for (key, value) in fill_audit {
             record[key] = value;
         }
+        for (key, value) in self
+            .choice
+            .as_ref()
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            record[key] = value.clone();
+        }
         if let Some(id) = confirmation {
             record["confirmation"] = json!(id);
         }
@@ -1049,11 +1085,24 @@ impl Run<'_> {
         let mut shown = json!({"step": n, "action": action, "op": "fill", "item": args["item"],
                                "chosen": "ref", "result": result,
                                "screenshot": {"suppressed": true}});
+        for (key, value) in self
+            .choice
+            .as_ref()
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            shown[key] = value.clone();
+        }
+        if let Some(id) = args["suggestion"].as_str() {
+            shown["suggestion"] = json!(id);
+        }
         if let Some(id) = confirmation {
             shown["confirmation"] = json!(id);
         }
         if let Ok(filled) = &outcome {
-            shown["filled"] = filled["filled"].clone();
+            shown["fields"] = filled["fields"].clone();
+            shown["stages"] = filled["stages"].clone();
             shown["submitted"] = filled["submitted"].clone();
         }
         self.trail.push(shown);
@@ -1323,6 +1372,17 @@ fn reviewed_json(id: &str, reviewed: &Value) -> Value {
     shown
 }
 
+/// The tab an action's page opened, from its events: a new tab with an
+/// opener (the driver reports one only to the session whose tab opened it).
+fn popup_of(result: &Value) -> Option<String> {
+    result["events"]
+        .as_array()?
+        .iter()
+        .find(|event| event["event"] == "new_tab" && event["opener"].is_string())
+        .and_then(|event| event["tab"].as_str())
+        .map(str::to_string)
+}
+
 /// A literal fill as `fill.rs` takes its arguments.
 fn fill_args(literal: &Literal) -> Value {
     let fields: Vec<Value> = literal
@@ -1330,14 +1390,32 @@ fn fill_args(literal: &Literal) -> Value {
         .iter()
         .map(|(label, refs)| json!([label, refs]))
         .collect();
-    json!({"item": literal.item, "fields": fields, "press": literal.press, "snapshot": literal.snapshot})
+    json!({"item": literal.item, "fields": fields, "press": literal.press,
+           "snapshot": literal.snapshot, "suggested": literal.suggestion})
 }
 
 /// A fill that releases a secret field stops here, before any value is
 /// released, with a confirmation bound to its press button and the lines
-/// around it. Its confirmation fills, presses and cleans up as one step.
-pub async fn confirm_fill(entry: &Entry, args: &Value, audit: &mut Map<String, Value>) -> Failure {
+/// around it, its exact mapping, the site of each frame a value would go
+/// into, and the item's revision. Its confirmation fills, presses and
+/// cleans up as one step.
+pub async fn confirm_fill(
+    browsers: &Browsers,
+    entry: &Entry,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Failure {
     let press = args["press"].as_str().unwrap_or_default();
+    let (mapping, frames) = match super::fill::preview(browsers, entry, args).await {
+        Ok(previewed) => previewed,
+        Err(failure) => return failure,
+    };
+    let revision = browsers
+        .vault
+        .list_if_present()
+        .into_iter()
+        .find(|meta| args["item"] == meta.item.as_str())
+        .map(|meta| meta.revision);
     let reviewed = match call(
         entry,
         json!({"op": "review", "snapshot": args["snapshot"], "target": press}),
@@ -1353,6 +1431,8 @@ pub async fn confirm_fill(entry: &Entry, args: &Value, audit: &mut Map<String, V
     fill["snapshot"] = reviewed["snapshot"].clone();
     // Its press is made only while the page still shows what was confirmed.
     fill["guard"] = json!({"fingerprint": fingerprint(&reviewed)});
+    // Its values go only where they were confirmed to go.
+    fill["confirmed"] = json!({"frames": frames, "revision": revision});
     entry
         .confirmations
         .lock()
@@ -1380,11 +1460,17 @@ pub async fn confirm_fill(entry: &Entry, args: &Value, audit: &mut Map<String, V
     if let Some(title) = args["item_title"].as_str() {
         shown["item_title"] = json!(title);
     }
+    shown["mapping"] = json!(mapping);
+    shown["frames"] = json!(frames);
+    if let Some(id) = args["suggestion"].as_str() {
+        shown["suggestion"] = json!(id);
+    }
     let mut failure = Failure::new(
         Exit::Denied,
         "confirm_needed",
         format!(
-            "this fill releases a secret field and presses {:?}; nothing was released. If that is what the task needs, confirm it with `latch browser do --confirm {id}`",
+            "this fill releases a secret field into {}, and presses {:?}; nothing was released. If that mapping is what the task needs, confirm it with `latch browser do --confirm {id}`",
+            frames.join(", "),
             reviewed["element"]["name"].as_str().unwrap_or(press)
         ),
     );
