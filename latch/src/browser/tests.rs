@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
@@ -165,10 +165,64 @@ fn exec(state: &Path, area: &Path, script: &str) -> (bool, String) {
     (out.status.success(), text)
 }
 
+/// How many of these tests run a browser at once. Each is a whole Chrome,
+/// and on a loaded machine many at once make calls run out of time.
+const BROWSERS_AT_ONCE: usize = 4;
+
+/// The browsers running, out of `BROWSERS_AT_ONCE`.
+static RUNNING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// A test's share of `BROWSERS_AT_ONCE`, given back when it ends.
+struct Slots(usize);
+
+impl Slots {
+    /// Waits until `wanted` slots are free, and takes them.
+    fn take(wanted: usize) -> Slots {
+        let (running, freed) = &RUNNING;
+        let mut running = running.lock().unwrap_or_else(|e| e.into_inner());
+        while *running + wanted > BROWSERS_AT_ONCE {
+            running = freed.wait(running).unwrap_or_else(|e| e.into_inner());
+        }
+        *running += wanted;
+        Slots(wanted)
+    }
+}
+
+impl Drop for Slots {
+    fn drop(&mut self) {
+        let (running, freed) = &RUNNING;
+        *running.lock().unwrap_or_else(|e| e.into_inner()) -= self.0;
+        freed.notify_all();
+    }
+}
+
+/// A test's folder, and its slot for a browser: both last as long as it.
+struct TestDir {
+    dir: tempfile::TempDir,
+    _slots: Slots,
+}
+
+impl TestDir {
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
 /// A fresh state directory for one test, sharing only the installed
 /// plugins, and a folder to share with `exec`. The engine must be
-/// installed (see the top of this file).
-fn test_state() -> (tempfile::TempDir, PathBuf, PathBuf) {
+/// installed (see the top of this file). Waits for a slot to run a
+/// browser in (`BROWSERS_AT_ONCE`).
+fn test_state() -> (TestDir, PathBuf, PathBuf) {
+    test_state_with(Slots::take(1))
+}
+
+/// `test_state` for a test whose page keeps the browser busy (frames
+/// coming and going all the time): it runs with no other browser test.
+fn test_state_alone() -> (TestDir, PathBuf, PathBuf) {
+    test_state_with(Slots::take(BROWSERS_AT_ONCE))
+}
+
+fn test_state_with(slots: Slots) -> (TestDir, PathBuf, PathBuf) {
     let installed = std::env::var_os("LATCH_CFT_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
@@ -190,7 +244,7 @@ fn test_state() -> (tempfile::TempDir, PathBuf, PathBuf) {
     // This test's own state directory, sharing only the installed plugins.
     let plugins = installed.canonicalize().unwrap().join("plugins");
     std::os::unix::fs::symlink(&plugins, state.join("plugins")).unwrap();
-    (dir, state, area)
+    (TestDir { dir, _slots: slots }, state, area)
 }
 
 #[tokio::test]
@@ -694,7 +748,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
 
 #[tokio::test]
 async fn frames_that_come_and_go_while_a_page_loads_break_no_call() {
-    let (_dir, state, _area) = test_state();
+    let (_dir, state, _area) = test_state_alone();
     let mut session = Session::start_with(
         &latch(),
         &state,
@@ -705,12 +759,11 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call() {
     .await
     .unwrap();
     let url = test_site().replace("frames.html", "churn.html");
-    let mut failures = Vec::new();
     let mut slowest = Duration::ZERO;
     for round in 0..3 {
         // Each load, and each reading after it, while cross-site frames
-        // attach and go away underneath.
-        let mut calls = Vec::new();
+        // attach and go away underneath. The first call that fails ends
+        // the test: the ones after it would only wait out their time.
         for n in 0..17 {
             let call = match n {
                 0 => json!({"op": "open", "url": url}),
@@ -718,20 +771,20 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call() {
                 _ => json!({"op": "text"}),
             };
             let started = std::time::Instant::now();
-            calls.push(session.call(call).await);
+            let done = session.call(call.clone()).await;
             slowest = slowest.max(started.elapsed());
-        }
-        for call in calls {
-            if let Err(failure) = call {
-                failures.push(format!(
-                    "round {round}: {} {}",
-                    failure.code, failure.message
-                ));
+            if let Err(failure) = done {
+                panic!(
+                    "round {round}, call {n} ({}) after {:?}: {} {}",
+                    call["op"],
+                    started.elapsed(),
+                    failure.code,
+                    failure.message
+                );
             }
         }
     }
     println!("slowest call: {slowest:?}");
-    assert!(failures.is_empty(), "{failures:#?}");
     let text = session.call(json!({"op": "text"})).await.unwrap().result;
     println!("{}", text["text"].as_str().unwrap_or_default().trim());
     session.close().await.unwrap();
@@ -770,6 +823,63 @@ async fn a_call_longer_than_the_idle_timeout_does_not_end_its_session() {
         "{text}"
     );
     session.close().await.unwrap();
+}
+
+#[test]
+fn a_browser_that_leaves_calls_unanswered_is_closed() {
+    let (_dir, state, _area) = test_state();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut command = Command::new(latch());
+    command
+        .arg("--state-dir")
+        .arg(&state)
+        .args(["browser-worker", "--profile", "hang-stuck", "--scratch"])
+        .arg(scratch.path())
+        .args(["--call-limit", "2"]);
+    if HEADLESS {
+        command.arg("--headless");
+    }
+    let mut worker = command
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .current_dir(scratch.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = worker.stdin.take().unwrap();
+    let mut output = std::io::BufReader::new(worker.stdout.take().unwrap());
+    let mut answer = || {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut output, &mut line).unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap_or_default()
+    };
+    let browser = answer()["ok"]["pid"].as_i64().unwrap() as libc::pid_t;
+    let mut call = |line: serde_json::Value| {
+        writeln!(input, "{line}").unwrap();
+        input.flush().unwrap();
+    };
+    call(json!({"op": "begin", "session": "k1"}));
+    assert!(answer()["ok"].is_object());
+    call(json!({"op": "open", "session": "k1", "url": local_page()}));
+    assert!(answer()["ok"].is_object());
+
+    // The browser stops answering anything.
+    // SAFETY: kill sends a signal and touches no Rust memory.
+    unsafe { libc::kill(browser, libc::SIGSTOP) };
+    let mut codes = Vec::new();
+    for _ in 0..3 {
+        call(json!({"op": "observe", "session": "k1"}));
+        codes.push(answer()["error"]["code"].clone());
+    }
+    // SAFETY: as above.
+    unsafe { libc::kill(browser, libc::SIGCONT) };
+    // Two calls time out; the third finds the browser gone, and the worker
+    // closes it and ends.
+    assert_eq!(codes, ["timeout", "timeout", "browser_gone"]);
+    drop(input);
+    let ended = worker.wait().unwrap();
+    assert!(ended.success(), "{ended:?}");
 }
 
 #[tokio::test]

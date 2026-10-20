@@ -35,7 +35,8 @@
 //! `session_paused`. A session ends `--idle-timeout` seconds after its
 //! last call ended; the browser closes when the last one has, and at the
 //! end of stdin. Every call's waits for the browser end by its
-//! limit (`Call::limit`).
+//! limit (`Call::limit`, from `--call-limit`), and a browser that leaves
+//! several calls in a row unanswered is closed as gone.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -59,11 +60,17 @@ use super::engine::CFT;
 use crate::failure::Failure;
 use crate::wire::Response;
 
+/// Calls in a row that time out on a browser that did not answer before
+/// the worker counts it gone: it closes it and ends, and the next session
+/// starts a new one.
+const UNANSWERED_IN_A_ROW: usize = 3;
+
 pub fn run(
     state_dir: &Path,
     profile_name: &str,
     scratch: &Path,
     idle: Duration,
+    call_limit: Duration,
     headless: bool,
 ) -> ExitCode {
     let mut stdout = io::stdout().lock();
@@ -88,6 +95,7 @@ pub fn run(
     let browser = Rc::new(RefCell::new(browser));
     let mut sessions: HashMap<String, Live> = HashMap::new();
     let mut last_call = Instant::now();
+    let mut unanswered = 0;
 
     // Standard input unbuffered by std, so `buffer()` below is the only
     // buffer: a line already in it is not waited for again.
@@ -148,8 +156,9 @@ pub fn run(
         };
         let key = line["session"].as_str().unwrap_or_default().to_string();
         // Every wait for the engine in this call, together, ends by then.
-        let deadline = Instant::now() + call.limit();
+        let deadline = Instant::now() + call.limit(call_limit);
         browser.borrow_mut().limit(Some(deadline));
+        browser.borrow_mut().unanswered();
         let held = sessions
             .iter()
             .any(|(other, live)| *other != key && live.core.is_paused());
@@ -225,6 +234,22 @@ pub fn run(
         };
         browser.borrow_mut().limit(None);
         last_call = Instant::now();
+        let missed = browser.borrow_mut().unanswered();
+        let reply = match reply {
+            Err(failure) if failure.code == "timeout" && missed => {
+                unanswered += 1;
+                if unanswered >= UNANSWERED_IN_A_ROW {
+                    Err(stuck())
+                } else {
+                    Err(failure)
+                }
+            }
+            Ok(done) => {
+                unanswered = 0;
+                Ok(done)
+            }
+            other => other,
+        };
         match reply {
             Ok(done) => {
                 let mut reply = json!({"result": done.result, "audit": done.audit});
@@ -260,6 +285,15 @@ fn paused() -> Failure {
     );
     failure.details = json!({"audit": {}});
     failure
+}
+
+fn stuck() -> Failure {
+    Failure::failed(
+        "browser_gone",
+        format!(
+            "the browser left {UNANSWERED_IN_A_ROW} calls in a row unanswered; latch closed it, and the next session starts a new one"
+        ),
+    )
 }
 
 fn site_busy(site: &str) -> Failure {

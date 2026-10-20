@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::{CALLER, exec, latch, test_state};
+use super::{CALLER, exec, latch, test_state, test_state_alone};
 use crate::browser::host::{self, Browsers};
 use crate::vault::host::Vault;
 use crate::vault::item::{CARD, IDENTITY, Item, LOGIN, Raw};
@@ -1172,7 +1172,7 @@ async fn observe_lists_items_by_the_frames_that_hold_fields() {
 
 #[tokio::test]
 async fn an_identifier_first_login_fills_both_steps_in_one_pause() {
-    let (_dir, state, _area) = test_state();
+    let (_dir, state, _area) = test_state_alone();
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {

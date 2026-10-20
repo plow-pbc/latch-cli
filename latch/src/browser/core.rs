@@ -161,14 +161,15 @@ enum Acts<'a> {
 }
 
 impl Call {
-    /// How long this call may take, from its line to its answer.
-    pub fn limit(&self) -> Duration {
+    /// How long this call may take, from its line to its answer, when a
+    /// call with nothing to type or wait for has `base` (`CALL`).
+    pub fn limit(&self, base: Duration) -> Duration {
         match self {
             Call::Act {
                 text: Some(text), ..
-            } => CALL + PER_CHARACTER * text.chars().count() as u32,
-            Call::Wait { within_ms, .. } => CALL + Duration::from_millis(*within_ms),
-            _ => CALL,
+            } => base + PER_CHARACTER * text.chars().count() as u32,
+            Call::Wait { within_ms, .. } => base + Duration::from_millis(*within_ms),
+            _ => base,
         }
     }
 

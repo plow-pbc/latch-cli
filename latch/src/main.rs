@@ -74,6 +74,7 @@ fn main() -> ExitCode {
                     &args.profile,
                     &args.scratch,
                     Duration::from_secs(args.idle_timeout),
+                    Duration::from_secs(args.call_limit),
                     args.headless,
                 ),
                 Err(failure) => {

@@ -904,6 +904,14 @@ impl Cft {
     }
 }
 
+impl Cft {
+    /// Whether the browser left a command unanswered since this was last
+    /// asked.
+    pub fn unanswered(&mut self) -> bool {
+        self.cdp.take_unanswered()
+    }
+}
+
 impl Driver for Cft {
     fn limit(&mut self, deadline: Option<Instant>) {
         self.deadline = deadline;
