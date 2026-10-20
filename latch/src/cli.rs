@@ -248,48 +248,41 @@ pub enum BrowserCommand {
         #[command(subcommand)]
         command: DownloadCommand,
     },
-    /// Sign in with a vault login: latch picks the form's fields (or name them)
-    /// and fills them itself; the agent never sees a value
-    Login {
-        /// The snapshot the refs are from (default: the latest)
-        #[arg(long)]
-        snapshot: Option<String>,
-        /// The vault item (such as v3)
-        #[arg(long)]
-        item: String,
-        #[arg(long)]
-        username: Option<String>,
-        #[arg(long)]
-        password: Option<String>,
-        #[arg(long)]
-        submit: Option<String>,
-    },
-    /// Fill a card, identity or note's fields: --field number=e4 --field
-    /// expiry=e5 …; a secret field needs --press eN, the button that submits
-    /// it, and stops for a confirmation (`do --confirm C`) before any value
-    /// is released
+    /// Fill from a vault item, for every kind (a login, its authenticator
+    /// code as `otp`, a card, an identity, a note): `--field username=e4
+    /// --field password=e5 --press e6`, or `--suggested S`, a mapping
+    /// `observe` suggested. A secret needs --press eN, the button that
+    /// submits it; a card or identity secret stops for a confirmation (`do
+    /// --confirm C`) before any value is released
     Fill {
         #[arg(long)]
         snapshot: Option<String>,
         #[arg(long)]
         item: String,
-        /// LABEL=eN, or LABEL=eN,eN,… to split it across boxes
-        #[arg(long = "field", value_name = "LABEL=REFS")]
+        /// FIELD=eN, or FIELD=eN,eN,… to split it across boxes
+        #[arg(
+            long = "field",
+            value_name = "FIELD=REFS",
+            conflicts_with = "suggested"
+        )]
         fields: Vec<String>,
+        /// A suggestion's id, from observe
+        #[arg(long, value_name = "S")]
+        suggested: Option<String>,
         #[arg(long)]
         press: Option<String>,
     },
-    /// Fill the current authenticator code of a vault login, computed on the host
+    /// Removed: `fill` signs in now
+    #[command(hide = true)]
+    Login {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
+    },
+    /// Removed: `fill --field otp=eN` fills a code now
+    #[command(hide = true)]
     FillCode {
-        #[arg(long)]
-        snapshot: Option<String>,
-        #[arg(long)]
-        item: String,
-        /// The code field (default: the one latch finds)
-        #[arg(long)]
-        field: Option<String>,
-        #[arg(long)]
-        submit: Option<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
     },
     /// Your open sessions, without their ids
     Sessions,

@@ -11,8 +11,9 @@
 //! OpenRouter), or, only when a host is set up for development, [`Jev`]
 //! called directly with a key in a 0600 file. Nothing here bakes a key in. Every provider's answers pass the same checks before use
 //! ([`Model::ask`]): a choice must be an offered option, and probabilities
-//! must be finite, cover exactly the options, sum to 1 and peak at the
-//! choice.
+//! must be finite, cover exactly the options and sum to 1. A choice below
+//! its top probability gives way to the top option, and the audit keeps
+//! the option ids and probabilities of that answer.
 //!
 //! With no provider, or one that fails, whatever needs a new decision stops
 //! with `model_unavailable` before anything is sent: a sentence check, and
@@ -185,12 +186,16 @@ impl Model {
         if !provider.name().is_empty() {
             record["provider"] = json!(provider.name());
         }
-        let outcome = asked.and_then(|(answers, meta)| {
+        let outcome = asked.and_then(|(mut answers, meta)| {
             record["provider"] = json!(meta.provider);
             record["model"] = json!(meta.model);
             record["model_request"] = json!(meta.request_id);
             record["latency_ms"] = json!(meta.latency_ms);
-            check(&questions, &answers).map(|()| answers)
+            let corrected = check(&questions, &mut answers)?;
+            if !corrected.is_empty() {
+                record["corrected"] = json!(corrected);
+            }
+            Ok(answers)
         });
         if record.get("latency_ms").is_none() {
             record["latency_ms"] = json!(started.elapsed().as_millis() as u64);
@@ -338,7 +343,7 @@ impl Model {
 }
 
 /// What an instruction step's operations do, as the model reads them.
-const OPERATIONS: [(&str, &str); 14] = [
+const OPERATIONS: [(&str, &str); 12] = [
     (
         "click",
         "Click one element (a link, button, checkbox, tab, menu item or result).",
@@ -364,16 +369,8 @@ const OPERATIONS: [(&str, &str); 14] = [
     ("back", "Go back to the previous page."),
     ("wait", "Wait for the page to finish loading or updating."),
     (
-        "login",
-        "Sign in with the saved login for this site: latch fills the sign-in fields and submits them. Use it on any sign-in or password page.",
-    ),
-    (
-        "fill_code",
-        "Fill the one-time code field from the saved login's authenticator and submit it.",
-    ),
-    (
         "fill",
-        "Fill the form on the page from a saved card or identity.",
+        "Fill the sign-in fields or the form on this page from a saved vault item: latch fills them from the vault and presses the form's button. Use it on a sign-in or password page, or a form the step asks to fill.",
     ),
     (
         "done",
@@ -437,6 +434,10 @@ pub struct Pass {
     /// Dropdown × option pairs, the option already chosen among them.
     pub selects: Vec<Offer>,
     pub urls: Vec<Offer>,
+    /// Complete fills latch suggested for the vault items the plan names:
+    /// item, mapping and press button each; the question always adds
+    /// `none`.
+    pub bundles: Vec<Offer>,
 }
 
 /// Where an evidence line comes from. Only a state line (a field's
@@ -488,6 +489,8 @@ pub struct Decision {
     pub type_field: Option<Pick>,
     pub select: Option<Pick>,
     pub url: Option<Pick>,
+    /// `none`, or one of the fills latch suggested.
+    pub bundle: Option<Pick>,
     /// How many click targets and page lines were left out so the request
     /// fits `REQUEST_BUDGET`, if any were.
     pub trimmed: Option<(usize, usize)>,
@@ -693,6 +696,18 @@ fn asked(pass: &Pass) -> (Value, Vec<Question>, Vec<(String, String, Line)>) {
             kind: Kind::Choose(options(&pass.selects)),
         });
     }
+    if offered("fill") && !pass.bundles.is_empty() {
+        let mut bundles = options(&pass.bundles);
+        bundles.push((
+            "none".into(),
+            "None of these saved items and mappings is what the current step should fill.".into(),
+        ));
+        questions.push(Question {
+            id: "fill".into(),
+            instructions: with("Assume the next operation fills from the vault. Which saved item, filled into which fields, does the current step call for? Choose none if none of them fits the step."),
+            kind: Kind::Choose(bundles),
+        });
+    }
     if offered("navigate") && !pass.urls.is_empty() {
         questions.push(Question {
             id: "navigate".into(),
@@ -829,6 +844,7 @@ impl Model {
             type_field: pick("type_field"),
             select: pick("select"),
             url: pick("navigate"),
+            bundle: pick("fill"),
             trimmed,
         })
     }
@@ -876,12 +892,19 @@ pub fn round(p: f64) -> f64 {
     (p * 100.0).round() / 100.0
 }
 
-/// Every question has an answer of its kind, and every answer is sound.
-fn check(questions: &[Question], answers: &HashMap<String, Answer>) -> Result<(), String> {
+/// Every question has an answer of its kind, and every answer is sound. A
+/// choice below its top probability is replaced by the first offered option
+/// at the top; each replacement is returned for the audit, as option ids and
+/// probabilities only.
+fn check(
+    questions: &[Question],
+    answers: &mut HashMap<String, Answer>,
+) -> Result<Vec<Value>, String> {
+    let mut corrected = Vec::new();
     let sound = |p: f64| p.is_finite() && (0.0..=1.0).contains(&p);
     for question in questions {
         let id = &question.id;
-        match (&question.kind, answers.get(id)) {
+        match (&question.kind, answers.get_mut(id)) {
             (Kind::YesNo, Some(Answer::Yes(p))) => {
                 if !sound(*p) {
                     return Err(format!("{id}: the probability is not in [0, 1]"));
@@ -895,7 +918,7 @@ fn check(questions: &[Question], answers: &HashMap<String, Answer>) -> Result<()
                 }),
             ) => {
                 let offered = |o: &str| options.iter().any(|(option, _)| option == o);
-                if !offered(choice) {
+                if !offered(choice.as_str()) {
                     return Err(format!("{id}: the choice was not offered"));
                 }
                 if probabilities.len() != options.len()
@@ -919,13 +942,29 @@ fn check(questions: &[Question], answers: &HashMap<String, Answer>) -> Result<()
                     .find(|(o, _)| o == choice)
                     .map_or(0.0, |(_, p)| *p);
                 if chosen < top - 1e-9 {
-                    return Err(format!("{id}: the choice is not the most likely option"));
+                    let used = options
+                        .iter()
+                        .map(|(o, _)| o)
+                        .find(|o| {
+                            probabilities
+                                .iter()
+                                .any(|(p, v)| p == *o && *v >= top - 1e-9)
+                        })
+                        .expect("an option holds the top probability")
+                        .clone();
+                    let by_option: Map<String, Value> = probabilities
+                        .iter()
+                        .map(|(o, p)| (o.clone(), json!(p)))
+                        .collect();
+                    corrected.push(json!({"question": id, "choice": choice, "used": used,
+                                          "probabilities": by_option}));
+                    *choice = used;
                 }
             }
             _ => return Err(format!("{id}: no answer of the right kind")),
         }
     }
-    Ok(())
+    Ok(corrected)
 }
 
 /// Which decision model a host uses, in its state directory: Plow's route
@@ -1199,7 +1238,6 @@ pub mod tests {
             (chose("l3", &[("l0", 0.5), ("none", 0.5)]), "not offered"),
             (chose("l0", &[("l0", 0.9)]), "do not match"),
             (chose("l0", &[("l0", 0.9), ("none", 0.3)]), "sum to 1"),
-            (chose("l0", &[("l0", 0.2), ("none", 0.8)]), "most likely"),
             (chose("l0", &[("l0", f64::NAN), ("none", 0.5)]), "[0, 1]"),
         ] {
             let mut m = model(vec![vec![("met", Answer::Yes(0.9)), ("evidence", bad)]]);
@@ -1227,6 +1265,36 @@ pub mod tests {
         let mut m = Model::off("this host has no decision model");
         assert!(m.risky("t", "click", &[]).await.is_err());
         assert!(m.calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_choice_below_its_top_probability_gives_way_to_the_top_option() {
+        let lines = || vec!["Total $10.00".to_string()];
+        let mut m = model(vec![vec![
+            ("met", Answer::Yes(0.9)),
+            ("evidence", chose("l0", &[("l0", 0.2), ("none", 0.8)])),
+        ]]);
+        let verdict = m.judge(json!({}), "x", &lines()).await.unwrap();
+        assert!(m.is_on());
+        assert_eq!(verdict.evidence, None, "the top option, none, was used");
+        let call = &m.calls[0];
+        assert_eq!(call["outcome"], "ok");
+        // Option ids and probabilities only: what the options are is not kept.
+        assert_eq!(
+            call["corrected"],
+            json!([{"question": "evidence", "choice": "l0", "used": "none",
+                    "probabilities": {"l0": 0.2, "none": 0.8}}])
+        );
+        assert!(!call.to_string().contains("Total $10.00"));
+
+        // A choice tied with the top stands, and nothing is recorded.
+        let mut m = model(vec![vec![
+            ("met", Answer::Yes(0.9)),
+            ("evidence", chose("l0", &[("l0", 0.5), ("none", 0.5)])),
+        ]]);
+        let verdict = m.judge(json!({}), "x", &lines()).await.unwrap();
+        assert_eq!(verdict.evidence.unwrap(), "Total $10.00");
+        assert!(m.calls[0].get("corrected").is_none());
     }
 
     /// A provider that answers from a script and keeps the latest call's

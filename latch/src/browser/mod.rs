@@ -5,8 +5,10 @@
 //! - `profile.rs`: latch-owned browser profiles in the state directory.
 //! - `client.rs`: the agent's side; `latch browser …` commands.
 //! - `host.rs`: the host's `browser` operation; sessions and their owners.
-//! - `fill.rs`: the host's half of `login`, `fill` and `fill-code`.
+//! - `fill.rs`: the host's half of `fill`, for every vault kind.
 //! - `plan.rs`: the canonical plan, and the short form that compiles to it.
+//! - `suggest.rs`: what a fill may use on a page: offers, suggested
+//!   mappings, and the checks every mapping passes.
 //! - `steps.rs`: the host's step executor: `do`, `act`, confirmations,
 //!   `find` and `wait`.
 //! - `journal.rs`: each plan request's journal, for `do --history`.
@@ -40,6 +42,7 @@ pub mod profile;
 pub mod runtime;
 pub mod session;
 mod steps;
+pub mod suggest;
 pub mod tags;
 // Real engines: on macOS always, on Linux only where one is installed.
 #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]

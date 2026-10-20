@@ -335,6 +335,7 @@
     "setup": "reset.html?cart=greek:Regular",
     "start": "cart.html",
     "steps": ["proceed to checkout", "choose the \"7–8 pm\" delivery time"],
+    "vault": ["login"],
     "expected": {"status": "stopped", "code": "needs_login", "step": 1},
     "check": "page === 'login.html' && user === null && order === null",
     "probes": [
@@ -353,6 +354,147 @@
     "probes": [
       {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "payment.html", "holds": true},
       {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "payment.html", "script": "document.getElementById('cc-number').value = '4111111111111111'", "holds": false}
+    ]
+  },
+  {
+    "name": "sign-in-wall-named",
+    "setup": "reset.html?cart=greek:Regular",
+    "start": "cart.html",
+    "steps": ["proceed to checkout -> path: checkout.html"],
+    "vault": ["login"],
+    "items": ["login"],
+    "expected": {"status": "reached"},
+    "check": "page === 'checkout.html' && user !== null && user.email === 'testuser@example.com' && order === null",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "checkout.html", "holds": true},
+      {"setup": "reset.html?cart=greek:Regular", "at": "login.html?next=checkout.html", "holds": false}
+    ]
+  },
+  {
+    "name": "sign-in",
+    "setup": "reset.html",
+    "start": "login.html",
+    "steps": ["sign in -> path: account.html"],
+    "vault": ["login"],
+    "items": ["login"],
+    "expected": {"status": "reached", "max_actions": 1},
+    "check": "page === 'account.html' && user !== null && user.email === 'testuser@example.com'",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com", "at": "account.html", "holds": true},
+      {"setup": "reset.html", "at": "login.html", "holds": false}
+    ]
+  },
+  {
+    "name": "sign-in-one-page",
+    "setup": "reset.html",
+    "start": "login-one.html",
+    "steps": ["sign in -> path: account.html"],
+    "vault": ["login"],
+    "items": ["login"],
+    "expected": {"status": "reached", "max_actions": 1},
+    "check": "page === 'account.html' && user !== null && user.email === 'testuser@example.com'",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com", "at": "account.html", "holds": true},
+      {"setup": "reset.html", "at": "login-one.html", "holds": false}
+    ]
+  },
+  {
+    "name": "passkey-first",
+    "setup": "reset.html",
+    "start": "passkey.html?next=account.html",
+    "steps": ["sign in -> path: account.html"],
+    "vault": ["login"],
+    "items": ["login"],
+    "expected": {"status": "reached"},
+    "check": "page === 'account.html' && user !== null && user.email === 'testuser@example.com'",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com", "at": "account.html", "holds": true},
+      {"setup": "reset.html", "at": "passkey.html?next=account.html", "holds": false}
+    ]
+  },
+  {
+    "name": "passkey-unnamed",
+    "setup": "reset.html",
+    "start": "passkey.html?next=account.html",
+    "steps": ["sign in -> path: account.html"],
+    "vault": ["login"],
+    "expected": {"status": "stopped", "code": "needs_fields", "step": 1, "max_actions": 0},
+    "check": "page === 'passkey.html' && user === null",
+    "probes": [
+      {"setup": "reset.html", "at": "passkey.html?next=account.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com", "at": "passkey.html?next=account.html", "holds": false}
+    ]
+  },
+  {
+    "name": "passkey-no-password",
+    "setup": "reset.html",
+    "start": "passkey.html?next=account.html",
+    "steps": ["sign in -> path: account.html"],
+    "vault": ["login-no-password"],
+    "items": ["login-no-password"],
+    "expected": {"status": "stopped", "code": "needs_fields", "step": 1, "max_actions": 0},
+    "check": "page === 'passkey.html' && user === null",
+    "probes": [
+      {"setup": "reset.html", "at": "passkey.html?next=account.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com", "at": "passkey.html?next=account.html", "holds": false}
+    ]
+  },
+  {
+    "name": "passkey-no-item",
+    "setup": "reset.html",
+    "start": "passkey.html?next=account.html",
+    "steps": ["sign in -> path: account.html"],
+    "expected": {"status": "stopped", "code": "needs_fields", "step": 1, "max_actions": 0},
+    "check": "page === 'passkey.html' && user === null",
+    "probes": [
+      {"setup": "reset.html", "at": "passkey.html?next=account.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com", "at": "passkey.html?next=account.html", "holds": false}
+    ]
+  },
+  {
+    "name": "code-stage",
+    "setup": "reset.html?user=testuser@example.com",
+    "start": "verify.html?next=account.html",
+    "steps": ["enter the verification code -> path: account.html"],
+    "vault": ["login"],
+    "items": ["login"],
+    "expected": {"status": "stopped", "code": "needs_fields", "step": 1, "max_actions": 0},
+    "check": "page === 'verify.html' && localStorage.getItem('verified') === null",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com", "at": "verify.html?next=account.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com", "at": "verify.html?next=account.html", "script": "localStorage.setItem('verified', 'true')", "holds": false}
+    ]
+  },
+  {
+    "name": "code-no-item",
+    "setup": "reset.html?user=testuser@example.com",
+    "start": "verify.html?next=account.html",
+    "steps": ["enter the verification code -> path: account.html"],
+    "expected": {"status": "stopped", "code": "needs_fields", "step": 1, "max_actions": 0},
+    "check": "page === 'verify.html' && localStorage.getItem('verified') === null",
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com", "at": "verify.html?next=account.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com", "at": "verify.html?next=account.html", "script": "localStorage.setItem('verified', 'true')", "holds": false}
+    ]
+  },
+  {
+    "name": "card-named",
+    "setup": "reset.html?user=testuser@example.com&cart=greek:Regular",
+    "start": "payment.html",
+    "steps": ["pay for the order with my saved card"],
+    "vault": ["card"],
+    "items": ["card"],
+    "expected": {"status": "stopped", "code": "confirm_needed", "step": 1},
+    "check": "['cc-name', 'cc-number', 'cc-exp', 'cc-csc'].every((id) => value(id) === '') && order === null",
+    "then": {
+      "expected": {"status": "dispatched"},
+      "check": "page === 'confirmed.html' && order !== null && order.paid === true && order.items.length === 1 && order.items[0].id === 'greek'"
+    },
+    "probes": [
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "payment.html", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "payment.html", "script": "document.getElementById('cc-number').value = '4111111111111111'", "holds": false},
+      {"setup": "reset.html?user=testuser@example.com&cart=greek:Regular", "at": "payment.html", "script": "localStorage.setItem('order', JSON.stringify({items: [{id: 'greek', size: 'Regular', qty: 1}], paid: true})); location.href = 'confirmed.html'", "check": "page === 'confirmed.html' && order !== null && order.paid === true && order.items.length === 1 && order.items[0].id === 'greek'", "holds": true},
+      {"setup": "reset.html?user=testuser@example.com&order=greek", "at": "confirmed.html", "check": "page === 'confirmed.html' && order !== null && order.paid === true && order.items.length === 1 && order.items[0].id === 'greek'", "holds": false}
     ]
   }
 ]

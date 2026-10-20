@@ -143,6 +143,11 @@ pub enum Call {
     DownloadGet {
         download: String,
     },
+    /// Every element of a snapshot as a fill sees it; pauses nothing.
+    FillInventory {
+        #[serde(default)]
+        snapshot: Option<String>,
+    },
     /// The steps of a vault fill, which the host runs in order (`fill.rs`).
     PrepareFill(fill::Prepare),
     SetValue {
@@ -156,6 +161,8 @@ pub enum Call {
         #[serde(default)]
         guard: Option<Guard>,
     },
+    /// After a login's identifier stage: its next stage, read privately.
+    NextStage,
     FillCleanup,
     FillResume,
     /// Starts the call's session with a window of its own.
@@ -340,6 +347,7 @@ impl<D: Driver> Core<D> {
             Call::PrepareFill(_)
                 | Call::SetValue { .. }
                 | Call::FillSubmit { .. }
+                | Call::NextStage
                 | Call::FillCleanup
                 | Call::FillResume
                 | Call::Tabs
@@ -363,6 +371,7 @@ impl<D: Driver> Core<D> {
                 | Call::Wait { .. }
                 | Call::Pin { .. }
                 | Call::Review { .. }
+                | Call::FillInventory { .. }
         );
         let result = match call {
             Call::Resolve { role, name } => self.resolve(&role, &name, &mut audit),
@@ -379,7 +388,9 @@ impl<D: Driver> Core<D> {
                 condition,
                 within_ms,
             } => self.wait(condition, within_ms, &mut audit),
+            Call::FillInventory { snapshot } => self.fill_inventory(snapshot.as_deref()),
             Call::PrepareFill(prepare) => self.prepare_fill(prepare, &mut audit),
+            Call::NextStage => self.next_stage(),
             Call::SetValue { target, value } => self.set_value(&target, &value),
             Call::FillSubmit { target, guard } => self.fill_submit(&target, guard.as_ref()),
             Call::FillCleanup => self.fill_cleanup(),

@@ -1,8 +1,8 @@
 # The vault
 
 One vault per latch install, on the host, shared by every browser engine
-and profile. Agents never see a value: `latch browser login`, `fill` and
-`fill-code` put values into pages themselves, and no command returns one.
+and profile. Agents never see a value: `latch browser fill` puts values
+into pages itself, and no command returns one.
 
 ## Items
 
@@ -108,30 +108,66 @@ opaque (sandboxed) frames are refused (`origin_mismatch`).
 
 ## Filling
 
-`observe` lists the items whose site rule allows them on the page
-(titles and handles, never a value).
+One command fills every kind: `latch browser fill --item vN` with the
+agent's mapping, `--field FIELD=eN` for each item field (`username`,
+`password`, `otp` for a login's current authenticator code, computed on
+the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's
+fields), `--field number=e4,e5,e6,e7` for a value split across boxes; or
+`--suggested S`, a mapping latch suggested. Dates and expiries are
+reshaped to the field's own format. A mapping that includes a secret (a
+password, a code, a card or identity secret) needs `--press eN`, the button
+that submits it (given, or in the suggestion). latch never maps, picks an
+item or finds a button on its own.
 
-`login` and `fill-code` pick the form's fields themselves (or take
-`--username`, `--password`, `--field`, `--submit`); named fields still go
-out through their form's submit button, and with none latch can tell,
-nothing is released. latch picks the button only when exactly one fits: a
-button after the field, in its form (or on a page without one), whose name
-says only that the step ends (Continue, Next, Sign in, Log in, Continue to
-sign in), whatever its type; "Sign in via LinkedIn" or "Sign in · Yahoo"
-never counts. Otherwise it answers `ambiguous_target` with the candidates,
-and the agent names one with `--submit`. A login whose
-page asks for the username alone goes on within the same pause: latch
-presses its button, waits up to 15 s for the password field, and fills and
-submits there, checking that page's origins again. `fill` takes the
-agent's mapping, `--field LABEL=eN`, `--field number=e4,e5,e6,e7` for a
-value split across boxes; dates and expiries are reshaped to the field's
-own format. A fill that includes a secret field needs `--press eN`, the
-button that submits it, and stops with `confirm_needed` (exit 4) before any
-value is released: the confirmation names the item's title, the button and
-the lines around it, and `latch browser do --confirm C` then fills, presses
-and cleans up as one step ([BROWSER.md](BROWSER.md)), pressing only while
-the button and the lines around it are as confirmed; otherwise it clears
-the values and answers `confirm_stale`.
+`observe` shows what a fill could use, never a value: `fill.items`, the
+items whose site rule allows them on the page, each with the fields it
+holds (present, secret, derived) and no username; `fill.page_offers`, what
+the page asks for from its standard hints only (`password`,
+`username_only`, `code`, `passkey`, `card`, `address`);
+`fill.suggestions`, latch's mappings, each with an id, the map, the press
+button, the evidence for each element and each target frame's site; and
+`fill.alternatives`, the forms' other buttons and links, unclassified.
+Suggestions come only from `autocomplete` tokens, input types and forms:
+a login's password field and the single text or email field before it in
+its form, a lone field marked `username`, cards by their `cc-*` tokens,
+identities by theirs; the press button is the form's single submit button.
+None is made on a registration form (`new-password`, or two password
+fields), for a code field (`one-time-code` can't tell an authenticator
+code from a texted one), or where the map would be ambiguous. `--suggested
+S` is recomputed at fill time: a page or item that changed since is
+refused `stale_snapshot`, with the fresh suggestions.
+
+Before any value leaves the vault, each mapped element must take its
+field (`bad_target`, exit 4, naming the field and why, otherwise): a
+password only into a password field or one marked `current-password`,
+never `new-password` or a code field; a username never into a password or
+search field; a code never into the sign-in's password field; a card's
+number and code only into a text, tel or number input whose token, if any,
+is theirs; anything else unless the markup contradicts it. Hidden,
+`aria-hidden`, inert, disabled, read-only and covered elements are
+refused. A weak mismatch (an email into a box marked `tel-national`) fills,
+flagged `hint_mismatch` in the result and the audit. These checks reject
+what the page's markup contradicts; they can't prove what a page means,
+so the mapping supplies the purpose and the site rule bounds who gets the
+value.
+
+A login whose mapping is its username alone and a button (an identifier
+stage) goes on within the same pause: latch waits up to 15 s for the next
+stage, reads it itself, and fills the password there only when exactly
+one field takes it, on a form that is no registration, with that form's
+single submit button, and the origins pass again. Anything else (a code, a
+passkey, a method chooser, two submit buttons) ends the fill after cleanup
+with `needs_fields` and the new stage's page, fields and offers; a second
+stage on another site is refused `origin_mismatch`.
+
+A fill that releases a card or identity secret stops with
+`confirm_needed` (exit 4) before any value is released: the confirmation
+names the item, the exact mapping by the page's names, the site of each
+frame a value goes into and the press button, and `latch browser do
+--confirm C` then fills, presses and cleans up as one step
+([BROWSER.md](BROWSER.md)), once, and only while that mapping, those frames,
+the item and the reviewed lines are as confirmed; otherwise it clears the
+values and answers `confirm_stale`.
 
 While a fill runs, every session on its profile is paused: every other
 call answers `session_paused`. Each value is set in one step after the
@@ -145,9 +181,12 @@ session that filled is closed. No reading is taken while a fill holds the
 browser, and an element list marks a field holding a filled value as
 `filled`, never showing the value. While a filled value is on the page,
 `eval` is refused (`secret_on_page`). The result says
-`submitted`, not "logged in".
+`submitted`, not "logged in" or "paid", with each field's outcome and the
+number of stages.
 
-The audit records the item, kind, fields by label, both origins, whether
+The audit records the item, its revision, the mapping by ref, where it
+came from (a suggestion's id, or the agent), the stages, both origins, any
+`hint_mismatch`, whether
 agent code (`eval`) ever ran on those sites in the profile, in any session
 (`agent_code_before_fill`), and the outcome: never a value. An agent script
 that ran on the site before a fill could read the value it puts on the

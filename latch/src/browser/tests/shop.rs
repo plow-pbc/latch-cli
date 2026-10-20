@@ -9,8 +9,9 @@
 //! that stops for a confirmation may go on (`then`): something on the
 //! page changes (`before`, as the shop's server might), the agent
 //! confirms with `do --confirm C`, and that has its own outcome and
-//! checker. A sign-in wall
-//! stops `needs_login` until plans can sign in.
+//! checker. The vault holds the made-up items a case lists (`vault`), and
+//! its plan names those in `items`; the shop's origin is read as
+//! `https://shop.example`, the login's site.
 //!
 //! The checkers are tested here against states set up directly
 //! (`probes`): each holds on its right state and fails on the near misses
@@ -38,9 +39,13 @@ pub(super) struct Case {
     pub steps: Vec<String>,
     #[serde(default)]
     pub facts: BTreeMap<String, String>,
-    /// Made-up vault items the case needs, by kind: `card`.
+    /// Made-up vault items the case needs, by kind: `card`, `login` (with
+    /// an authenticator key), `login-no-password`.
     #[serde(default)]
     pub vault: Vec<String>,
+    /// The kinds of those its plan names, for it to fill from.
+    #[serde(default)]
+    pub items: Vec<String>,
     pub expected: Expected,
     pub check: String,
     #[serde(default)]
@@ -179,8 +184,11 @@ pub(super) fn serve_shop() -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+/// The made-up vault items a case may list.
+const VAULT_KINDS: [&str; 3] = ["card", "login", "login-no-password"];
+
 /// The stop codes a plan can end with (exit 1 and exit 4).
-const STOP_CODES: [&str; 30] = [
+const STOP_CODES: [&str; 31] = [
     "check_not_met",
     "unconfirmed",
     "already_true",
@@ -210,6 +218,7 @@ const STOP_CODES: [&str; 30] = [
     "step_not_allowed",
     "not_owner",
     "origin_mismatch",
+    "bad_target",
     "secret_on_page",
 ];
 
@@ -280,7 +289,16 @@ fn the_plan_suite_is_well_formed() {
             }
         }
         for kind in &case.vault {
-            assert_eq!(kind, "card", "{name}: no made-up vault item {kind}");
+            assert!(
+                VAULT_KINDS.contains(&kind.as_str()),
+                "{name}: no made-up vault item {kind}"
+            );
+        }
+        for kind in &case.items {
+            assert!(
+                case.vault.contains(kind),
+                "{name}: its plan names {kind}, which its vault lacks"
+            );
         }
         assert!(
             case.probes.iter().any(|p| p.check.is_none() && p.holds)
@@ -599,7 +617,7 @@ const SUITE_PER_MINUTE: usize = 30;
 async fn the_plan_suite_on_the_decision_model() {
     use super::steps::Harness;
     use crate::browser::model::Plow;
-    use crate::vault::item::{CARD, Item, Raw};
+    use crate::vault::item::{CARD, Item, LOGIN, Raw};
     use crate::vault::store::Backend;
 
     let host = std::env::var("LATCH_SUITE_HOST_STATE").expect("LATCH_SUITE_HOST_STATE");
@@ -614,32 +632,60 @@ async fn the_plan_suite_on_the_decision_model() {
     let engine = std::env::var("LATCH_SUITE_ENGINE").unwrap_or_else(|_| "cft".into());
     let (_dir, state, _area) = test_state(&engine, &["default"]);
     let site = serve_shop();
-    let mut h = Harness::start(&state, Some(std::sync::Arc::new(plow))).await;
-    let card = h
-        .browsers
-        .vault
-        .with(|s| {
-            s.add(Item {
-                id: String::new(),
-                revision: 0,
-                sites: Vec::new(),
-                other_top_sites: Vec::new(),
-                raw: Raw::from_labels(
+    let mut h = Harness::start_with(
+        &state,
+        Some(std::sync::Arc::new(plow)),
+        vec![(site.clone(), "https://shop.example".into())],
+    )
+    .await;
+    let made_up = |kind: &str| {
+        let (kind_code, title, sites, values): (u8, &str, Vec<String>, Vec<(&str, &str)>) =
+            match kind {
+                "card" => (
                     CARD,
                     "Test Visa",
-                    &[
-                        ("cardholder name".into(), "Ada Lovelace".into()),
-                        ("number".into(), "4111111111111111".into()),
-                        ("expiry month".into(), "4".into()),
-                        ("expiry year".into(), "2031".into()),
-                        ("code".into(), "123".into()),
+                    Vec::new(),
+                    vec![
+                        ("cardholder name", "Ada Lovelace"),
+                        ("number", "4111111111111111"),
+                        ("expiry month", "4"),
+                        ("expiry year", "2031"),
+                        ("code", "123"),
                     ],
-                )
-                .unwrap(),
-            })
-        })
-        .unwrap()
-        .item;
+                ),
+                "login" => (
+                    LOGIN,
+                    "Greenleaf",
+                    vec!["shop.example".into()],
+                    vec![
+                        ("username", "testuser@example.com"),
+                        ("password", "greenleaf-made-up-41"),
+                        ("totp", "JBSWY3DPEHPK3PXP"),
+                    ],
+                ),
+                _ => (
+                    LOGIN,
+                    "Greenleaf, no password",
+                    vec!["shop.example".into()],
+                    vec![("username", "other@example.com")],
+                ),
+            };
+        Item {
+            id: String::new(),
+            revision: 0,
+            sites,
+            other_top_sites: Vec::new(),
+            raw: Raw::from_labels(
+                kind_code,
+                title,
+                &values
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        }
+    };
     let mut results = Vec::new();
     let mut audit_lines = String::new();
     let mut failed = Vec::new();
@@ -677,9 +723,25 @@ async fn the_plan_suite_on_the_decision_model() {
         h.open(&format!("{site}/{}", case.setup)).await;
         h.open(&format!("{site}/{}", case.start)).await;
         let mut plan = plan_of(&case, &site).unwrap();
-        if case.vault.iter().any(|kind| kind == "card") {
-            plan.items = vec![card.clone()];
-        }
+        // The vault holds exactly the case's items.
+        let named = h
+            .browsers
+            .vault
+            .with(|s| {
+                for meta in s.list() {
+                    s.remove(&meta.item, meta.revision)?;
+                }
+                let mut named = Vec::new();
+                for kind in &case.vault {
+                    let added = s.add(made_up(kind))?;
+                    if case.items.contains(kind) {
+                        named.push(added.item);
+                    }
+                }
+                Ok(named)
+            })
+            .unwrap();
+        plan.items = named;
         let started = std::time::Instant::now();
         let (got, answer) = outcome_of(h.send(json!({"plan": plan})).await);
         let checked = holds(&h, &case.check).await;
