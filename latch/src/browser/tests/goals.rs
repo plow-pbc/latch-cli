@@ -18,6 +18,8 @@ use crate::failure::Failure;
 use crate::vault::item::{CARD, Item, Raw};
 use crate::vault::store::Backend;
 
+conformance!(with_no_model_an_instruction_step_sends_nothing);
+
 /// What the stand-in model answers on one pass: the step's status, the
 /// evidence line (an option whose text holds this), the operation, and
 /// the target (an option whose text holds this) at probability `p`.
@@ -876,9 +878,8 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     assert!(kept.starts_with(b"\x89PNG"));
 }
 
-#[tokio::test]
-async fn with_no_model_an_instruction_step_sends_nothing() {
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+async fn with_no_model_an_instruction_step_sends_nothing(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let site = serve_shop();
     let mut h = Harness::start(&state, None).await;
     h.open(&format!("{site}/index.html")).await;
