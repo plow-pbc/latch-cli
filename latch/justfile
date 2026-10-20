@@ -39,7 +39,7 @@ test-model key:
 # Plow stack the host in `host_state` is logged in to; each run, with its
 # metrics (scripts/plan-metrics.py), is kept under `out`.
 plan-suite host_state out:
-    status=0; LATCH_SUITE_HOST_STATE="{{host_state}}" LATCH_SUITE_OUT="{{out}}" cargo test --locked --bin latch the_plan_suite_on_the_decision_model -- --ignored --nocapture || status=$?; run="$(ls -d "{{out}}"/*/ | sort | tail -1)"; python3 scripts/plan-metrics.py "$run/audit.ndjson" > "$run/metrics.json"; exit $status
+    status=0; LATCH_SUITE_HOST_STATE="{{host_state}}" LATCH_SUITE_OUT="{{out}}" cargo test --locked --bin latch the_plan_suite_on_the_decision_model -- --ignored --nocapture || status=$?; run="$(ls -d "{{out}}"/2*/ | sort | tail -1)"; python3 scripts/plan-metrics.py "$run/audit.ndjson" > "$run/metrics.json"; exit $status
 
 # The phone page (phone/): iroh for the browser plus the shim, into phone/dist.
 phone:
