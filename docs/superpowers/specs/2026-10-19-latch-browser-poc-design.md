@@ -18,7 +18,7 @@ An agent drives a real browser on a latch host through `latch browser …`. Each
   - latch brings back where the plan got to: `reached`, or stopped at a step with a reason. Either way the answer carries the evidence for each step, the full trail (pages, actions, screenshots) and the current page.
   - Exact actions on refs stay available for confirmations and repairs.
 - **One vault per latch install, shared by every engine.**
-  - A saved login is filled only on its exact site, in one checked step, with the agent paused.
+  - A saved login is filled only on its own site or a subdomain of it (the same registrable domain, HTTPS; §7 step 4), in one checked step, with the agent paused.
   - No command returns a stored secret.
   - Authenticator codes are computed on the host.
   - Texted codes, CAPTCHAs and passkeys go to the owner through a handoff.
