@@ -55,8 +55,7 @@ pub struct Request {
 pub struct Field {
     label: String,
     secret: bool,
-    /// Must be typed before the item is saved: every secret, and a note's
-    /// text, which is all a note is.
+    /// Must be filled before the item is saved (see `required`).
     required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
@@ -130,7 +129,7 @@ fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure>
             Some(Field {
                 label: label.clone(),
                 secret: false,
-                required: false,
+                required: required(kind, label, false),
                 value: Some(value.as_str()?.to_string()),
             })
         })
@@ -159,11 +158,18 @@ fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure>
         fields.push(Field {
             label: label.to_string(),
             secret: *secret,
-            required: *secret || (kind == "note" && label == "notes"),
+            required: required(kind, label, *secret),
             value: None,
         });
     }
     Ok(fields)
+}
+
+/// Whether a field must be filled before the item is saved, whether the
+/// owner gave it or the phone types it: every secret, and a note's text,
+/// which is all a note is.
+fn required(kind: &str, label: &str, secret: bool) -> bool {
+    secret || (kind == "note" && label == "notes")
 }
 
 /// The relay as a browser must dial it. iroh names relays as fully
@@ -434,6 +440,21 @@ mod tests {
         let note = note["code"].as_str().unwrap();
         let refused = submitted(&vault, note, json!({"notes": ""})).unwrap_err();
         assert_eq!(refused.code, "missing_field");
+        // A note's text the owner gave empty is still required.
+        let given = open(
+            &vault,
+            &here(),
+            &json!({"kind": "note", "title": "Wifi", "values": {"notes": ""}}),
+            &mut Map::new(),
+        )
+        .unwrap();
+        let given = given["code"].as_str().unwrap();
+        let shown = page(&vault, &here(), &json!({"code": given}), &mut Map::new()).unwrap();
+        assert_eq!(shown["request"]["fields"][0]["required"], true);
+        for values in [json!({}), json!({"notes": ""})] {
+            let refused = submitted(&vault, given, values).unwrap_err();
+            assert_eq!(refused.code, "missing_field");
+        }
         assert!(vault.list_if_present().is_empty());
         // The links are still open for the filled-in forms.
         assert!(submitted(&vault, &code, json!({"password": "made-up"})).is_ok());
