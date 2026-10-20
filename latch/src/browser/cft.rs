@@ -1,12 +1,19 @@
 //! The Chrome for Testing driver: the driver contract (`driver.rs`) over
 //! CDP on the engine's private pipe.
 //!
+//! One browser serves every session on its profile. Each session's share
+//! is the windows it opened and every tab opened from them (a page target
+//! whose opener is no session's tab is never adopted), its dialogs, and its
+//! downloads, found from the frame that started them; the driver contract
+//! acts for one session at a time (`Seat`).
+//!
 //! Each tab is a page target with a flattened CDP session. Cross-site and
 //! sandboxed frames run in other processes, as targets of their own; they
 //! are attached automatically (`Target.setAutoAttach`) and their sessions
 //! kept by frame. latch's script runs in an isolated world it creates per
 //! frame document. `Runtime.enable` is never sent.
 
+use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
@@ -14,6 +21,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -47,6 +55,22 @@ struct TabState {
     opener: Option<String>,
 }
 
+/// One session's share of the browser: the windows it opened, every tab
+/// opened from them, and what happened in them since it last asked.
+struct Share {
+    tabs: Vec<TabState>,
+    active: String,
+    next_tab: u32,
+    /// The tab a dialog is blocking.
+    dialog: Option<String>,
+    pending: Vec<Event>,
+    mouse: (f64, f64),
+    /// Its downloads, each with the guid its file is staged under.
+    downloads: Vec<(String, Download)>,
+    /// Its own scratch folder, where its uploads are staged.
+    folder: PathBuf,
+}
+
 /// How a command to one session ended.
 enum Reply {
     Answer(Value),
@@ -72,25 +96,29 @@ struct Placement {
     document: String,
 }
 
+/// One profile's browser, shared by the sessions on it. The driver
+/// contract acts for one session at a time (`select`), on that session's
+/// own tabs, downloads and dialogs.
 pub struct Cft {
     child: Child,
     cdp: Cdp,
-    tabs: Vec<TabState>,
-    active: String,
-    next_tab: u32,
+    /// Each session's share, by the worker's key for the session.
+    shares: HashMap<String, Share>,
+    /// The session the driver contract's calls act for.
+    current: String,
     remotes: HashMap<String, Remote>,
     placements: HashMap<String, Placement>,
     /// Each session's root frame.
     roots: HashMap<String, String>,
     /// Isolated worlds by (frame, document).
     worlds: HashMap<(String, String), i64>,
-    /// The tab a dialog is blocking.
-    dialog: Option<String>,
-    pending: Vec<Event>,
-    mouse: (f64, f64),
-    /// The session's own folder; uploads are staged and downloads land in it.
+    /// Page targets whose opener is no session's tab, with that opener:
+    /// never adopted from whichever window is in use, only once their
+    /// opener turns out to be a session's.
+    unassigned: Vec<(String, Option<String>)>,
+    /// The runtime's folder: the engine's home, downloads staged under
+    /// their guid, and a folder per session.
     scratch: PathBuf,
-    downloads: Vec<(String, Download)>,
     _lock: profile::Lock,
 }
 
@@ -135,21 +163,17 @@ impl Cft {
         let mut browser = Cft {
             child,
             cdp,
-            tabs: Vec::new(),
-            active: String::new(),
-            next_tab: 0,
+            shares: HashMap::new(),
+            current: String::new(),
             remotes: HashMap::new(),
             placements: HashMap::new(),
             roots: HashMap::new(),
             worlds: HashMap::new(),
-            dialog: None,
-            pending: Vec::new(),
-            mouse: (0.0, 0.0),
+            unassigned: Vec::new(),
             scratch: scratch.to_path_buf(),
-            downloads: Vec::new(),
             _lock: lock,
         };
-        if let Err(failure) = browser.first_tab().and_then(|()| browser.catch_downloads()) {
+        if let Err(failure) = browser.listen() {
             browser.close();
             return Err(failure);
         }
@@ -160,25 +184,188 @@ impl Cft {
         self.child.id()
     }
 
-    /// Every download lands in the scratch folder under its own id, and is
-    /// reported as it starts and progresses, never opened.
-    fn catch_downloads(&mut self) -> Result<(), Failure> {
+    /// From now on hears about every new tab and every download. Chrome
+    /// starts with no window (`--no-startup-window`); each session opens
+    /// its own (`begin`), as the pinned focus says. Every download lands
+    /// in the staging folder under its own guid, never opened.
+    fn listen(&mut self) -> Result<(), Failure> {
+        let deadline = Instant::now() + STARTUP;
+        self.cdp.call(
+            "Target.setDiscoverTargets",
+            json!({"discover": true}),
+            None,
+            deadline,
+        )?;
         let folder = self.scratch.join("downloads");
         fs::create_dir_all(&folder).map_err(io_failure)?;
         self.cdp.call(
             "Browser.setDownloadBehavior",
             json!({"behavior": "allowAndName", "downloadPath": folder, "eventsEnabled": true}),
             None,
-            Instant::now() + COMMAND,
+            deadline,
         )?;
         Ok(())
     }
 
-    fn download_event(&mut self, method: &str, params: &Value) {
+    /// Starts session `key` with a window of its own, and makes it the one
+    /// the driver contract acts for.
+    pub fn begin(&mut self, key: &str) -> Result<(), Failure> {
+        let folder = self.scratch.join("sessions").join(key);
+        fs::create_dir_all(&folder).map_err(io_failure)?;
+        self.shares.insert(
+            key.to_string(),
+            Share {
+                tabs: Vec::new(),
+                active: String::new(),
+                next_tab: 0,
+                dialog: None,
+                pending: Vec::new(),
+                mouse: (0.0, 0.0),
+                downloads: Vec::new(),
+                folder,
+            },
+        );
+        self.select(key);
+        let opened = self
+            .new_window(Instant::now() + COMMAND)
+            .and_then(|target| self.adopt(key, &target, None));
+        match opened {
+            Ok(tab) => {
+                self.share_mut().active = tab;
+                Ok(())
+            }
+            Err(failure) => {
+                self.end(key);
+                Err(failure)
+            }
+        }
+    }
+
+    /// Ends session `key`: closes every tab it has, and forgets its
+    /// downloads (their files too) and its folder. The others go on.
+    pub fn end(&mut self, key: &str) {
+        let Some(share) = self.shares.remove(key) else {
+            return;
+        };
+        for tab in &share.tabs {
+            let _ = self.cdp.call(
+                "Target.closeTarget",
+                json!({"targetId": tab.target}),
+                None,
+                Instant::now() + COMMAND,
+            );
+        }
+        for (guid, _) in &share.downloads {
+            let _ = fs::remove_file(self.scratch.join("downloads").join(guid));
+        }
+        let _ = fs::remove_dir_all(&share.folder);
+    }
+
+    /// Makes session `key` the one the driver contract acts for.
+    pub fn select(&mut self, key: &str) {
+        self.current = key.to_string();
+    }
+
+    fn share(&self) -> &Share {
+        self.shares
+            .get(&self.current)
+            .expect("the selected session has a share")
+    }
+
+    fn share_mut(&mut self) -> &mut Share {
+        self.shares
+            .get_mut(&self.current)
+            .expect("the selected session has a share")
+    }
+
+    /// The session whose tab page target `target` is.
+    fn owner_of_target(&self, target: &str) -> Option<String> {
+        self.shares
+            .iter()
+            .find(|(_, share)| share.tabs.iter().any(|tab| tab.target == target))
+            .map(|(key, _)| key.clone())
+    }
+
+    /// The session whose tab's CDP session `session` is, or holds the frame
+    /// whose CDP session it is.
+    fn owner_of_session(&self, session: &str) -> Option<String> {
+        let mut at = Some(session.to_string());
+        while let Some(session) = at {
+            if let Some((key, _)) = self
+                .shares
+                .iter()
+                .find(|(_, share)| share.tabs.iter().any(|tab| tab.session == session))
+            {
+                return Some(key.clone());
+            }
+            at = self
+                .remotes
+                .get(&session)
+                .map(|remote| remote.parent.clone());
+        }
+        None
+    }
+
+    /// The session a frame's page belongs to: the tab it is, or the tab
+    /// that holds it, in the same process or another. None when no tab of
+    /// any session holds it.
+    fn owner_of_frame(&mut self, frame: &str) -> Result<Option<String>, Failure> {
+        if let Some(key) = self.owner_of_target(frame) {
+            return Ok(Some(key));
+        }
+        let session = self
+            .remotes
+            .iter()
+            .find(|(_, remote)| remote.frame == frame)
+            .map(|(session, _)| session.clone())
+            .or_else(|| self.placements.get(frame).map(|p| p.session.clone()));
+        if let Some(key) = session.and_then(|session| self.owner_of_session(&session)) {
+            return Ok(Some(key));
+        }
+        // A frame latch has not read yet: look for it in each tab's tree.
+        let tabs: Vec<(String, String)> = self
+            .shares
+            .iter()
+            .flat_map(|(key, share)| {
+                share
+                    .tabs
+                    .iter()
+                    .map(move |tab| (key.clone(), tab.session.clone()))
+            })
+            .collect();
+        for (key, session) in tabs {
+            let deadline = Instant::now() + COMMAND;
+            if let Ok(tree) = self.frame_command("Page.getFrameTree", json!({}), &session, deadline)
+                && holds_frame(&tree["frameTree"], frame)
+            {
+                return Ok(Some(key));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The CDP sessions of the selected session's tabs: where its dialogs
+    /// are reported.
+    fn tab_sessions(&self) -> Vec<String> {
+        self.share()
+            .tabs
+            .iter()
+            .map(|tab| tab.session.clone())
+            .collect()
+    }
+
+    /// A download starts or moves on. It belongs to the session whose page
+    /// started it; one that can't be traced to a session is never listed.
+    fn download_event(&mut self, method: &str, params: &Value) -> Result<(), Failure> {
         let guid = params["guid"].as_str().unwrap_or_default().to_string();
         if method == "Browser.downloadWillBegin" {
+            let frame = params["frameId"].as_str().unwrap_or_default();
+            let Some(key) = self.owner_of_frame(frame)? else {
+                return Ok(());
+            };
+            let share = self.shares.get_mut(&key).expect("the owner has a share");
             let download = Download {
-                download: format!("d{}", self.downloads.len() + 1),
+                download: format!("d{}", share.downloads.len() + 1),
                 name: params["suggestedFilename"]
                     .as_str()
                     .unwrap_or("download")
@@ -188,49 +375,34 @@ impl Cft {
                 bytes: 0,
                 total: None,
             };
-            self.pending.push(Event::Download {
+            share.pending.push(Event::Download {
                 download: download.download.clone(),
                 name: download.name.clone(),
                 state: download.state.clone(),
             });
-            self.downloads.push((guid, download));
-            return;
+            share.downloads.push((guid, download));
+            return Ok(());
         }
-        let Some((_, download)) = self.downloads.iter_mut().find(|(id, _)| *id == guid) else {
-            return;
-        };
-        download.bytes = params["receivedBytes"].as_u64().unwrap_or(download.bytes);
-        download.total = params["totalBytes"].as_u64().filter(|total| *total > 0);
-        let state = params["state"].as_str().unwrap_or("inProgress");
-        let state = match state {
-            "completed" => "completed",
-            "canceled" => "canceled",
-            _ => "in_progress",
-        };
-        if state != download.state {
-            download.state = state.into();
-            self.pending.push(Event::Download {
-                download: download.download.clone(),
-                name: download.name.clone(),
-                state: state.into(),
-            });
+        for share in self.shares.values_mut() {
+            let Some((_, download)) = share.downloads.iter_mut().find(|(id, _)| *id == guid) else {
+                continue;
+            };
+            download.bytes = params["receivedBytes"].as_u64().unwrap_or(download.bytes);
+            download.total = params["totalBytes"].as_u64().filter(|total| *total > 0);
+            let state = match params["state"].as_str().unwrap_or("inProgress") {
+                "completed" => "completed",
+                "canceled" => "canceled",
+                _ => "in_progress",
+            };
+            if state != download.state {
+                download.state = state.into();
+                share.pending.push(Event::Download {
+                    download: download.download.clone(),
+                    name: download.name.clone(),
+                    state: state.into(),
+                });
+            }
         }
-    }
-
-    /// Opens the session's first tab, and from then on hears about every
-    /// new one. Chrome starts with no window (`--no-startup-window`); latch
-    /// opens each one itself, as the pinned focus says.
-    fn first_tab(&mut self) -> Result<(), Failure> {
-        let deadline = Instant::now() + STARTUP;
-        let target = self.new_window(deadline)?;
-        let tab = self.adopt(&target, None)?;
-        self.active = tab;
-        self.cdp.call(
-            "Target.setDiscoverTargets",
-            json!({"discover": true}),
-            None,
-            deadline,
-        )?;
         Ok(())
     }
 
@@ -248,8 +420,13 @@ impl Cft {
         Ok(created["targetId"].as_str().unwrap_or_default().to_string())
     }
 
-    /// Attaches to page target `target` as a new tab.
-    fn adopt(&mut self, target: &str, opener: Option<String>) -> Result<String, Failure> {
+    /// Attaches to page target `target` as a new tab of session `key`.
+    fn adopt(
+        &mut self,
+        key: &str,
+        target: &str,
+        opener: Option<String>,
+    ) -> Result<String, Failure> {
         let deadline = Instant::now() + COMMAND;
         let attached = self.cdp.call(
             "Target.attachToTarget",
@@ -269,9 +446,10 @@ impl Cft {
                 "the tab closed as it opened".into(),
             ));
         }
-        self.next_tab += 1;
-        let id = format!("t{}", self.next_tab);
-        self.tabs.push(TabState {
+        let share = self.shares.get_mut(key).expect("the session has a share");
+        share.next_tab += 1;
+        let id = format!("t{}", share.next_tab);
+        share.tabs.push(TabState {
             id: id.clone(),
             target: target.to_string(),
             session,
@@ -341,33 +519,41 @@ impl Cft {
     }
 
     fn tab(&self, id: &str) -> Result<&TabState, Failure> {
-        self.tabs
+        self.share()
+            .tabs
             .iter()
             .find(|tab| tab.id == id)
             .ok_or_else(|| Failure::usage("no_such_tab", format!("no tab {id}")))
     }
 
     fn active_state(&self) -> &TabState {
-        self.tab(&self.active).expect("the active tab exists")
+        self.tab(&self.share().active)
+            .expect("the active tab exists")
     }
 
     /// Takes in the events read so far: frames attached in other
-    /// processes, tabs the page opened or closed, dialogs. Returns them.
+    /// processes, tabs pages opened or closed, dialogs and downloads, each
+    /// for the session whose page it is. Returns them.
     fn absorb(&mut self) -> Result<Vec<Value>, Failure> {
         let events = self.cdp.take_events();
         let mut attach = Vec::new();
-        let mut adopt = Vec::new();
         for event in &events {
             let params = &event["params"];
+            let session = event["sessionId"].as_str().unwrap_or_default();
             match event["method"].as_str().unwrap_or_default() {
                 "Target.attachedToTarget" if params["targetInfo"]["type"] == "iframe" => {
                     let child = params["sessionId"].as_str().unwrap_or_default().to_string();
-                    let parent = event["sessionId"].as_str().unwrap_or_default().to_string();
                     let frame = params["targetInfo"]["targetId"]
                         .as_str()
                         .unwrap_or_default()
                         .to_string();
-                    self.remotes.insert(child.clone(), Remote { parent, frame });
+                    self.remotes.insert(
+                        child.clone(),
+                        Remote {
+                            parent: session.to_string(),
+                            frame,
+                        },
+                    );
                     attach.push(child);
                 }
                 "Target.detachedFromTarget" => {
@@ -379,44 +565,62 @@ impl Cft {
                     let target = params["targetInfo"]["targetId"]
                         .as_str()
                         .unwrap_or_default();
-                    if !self.tabs.iter().any(|tab| tab.target == target) {
-                        let opener = params["targetInfo"]["openerId"].as_str().and_then(|id| {
-                            self.tabs
-                                .iter()
-                                .find(|tab| tab.target == id)
-                                .map(|tab| tab.id.clone())
-                        });
-                        adopt.push((target.to_string(), opener));
+                    if self.owner_of_target(target).is_none()
+                        && !self.unassigned.iter().any(|(t, _)| t == target)
+                    {
+                        let opener = params["targetInfo"]["openerId"]
+                            .as_str()
+                            .map(str::to_string);
+                        self.unassigned.push((target.to_string(), opener));
                     }
                 }
                 "Target.targetDestroyed" => {
                     let target = params["targetId"].as_str().unwrap_or_default();
-                    if let Some(at) = self.tabs.iter().position(|tab| tab.target == target) {
-                        let gone = self.tabs.remove(at);
-                        self.pending.push(Event::TabClosed {
+                    self.unassigned.retain(|(t, _)| t != target);
+                    for share in self.shares.values_mut() {
+                        let Some(at) = share.tabs.iter().position(|tab| tab.target == target)
+                        else {
+                            continue;
+                        };
+                        let gone = share.tabs.remove(at);
+                        share.pending.push(Event::TabClosed {
                             tab: gone.id.clone(),
                         });
-                        if self.active == gone.id
-                            && let Some(last) = self.tabs.last()
+                        if share.dialog.as_deref() == Some(gone.id.as_str()) {
+                            share.dialog = None;
+                        }
+                        if share.active == gone.id
+                            && let Some(last) = share.tabs.last()
                         {
-                            self.active = last.id.clone();
+                            share.active = last.id.clone();
                         }
                     }
                 }
                 "Page.javascriptDialogOpening" => {
-                    let session = event["sessionId"].as_str().unwrap_or_default();
-                    if let Some(tab) = self.tabs.iter().find(|tab| tab.session == session) {
-                        self.dialog = Some(tab.id.clone());
-                        self.pending.push(Event::Dialog {
-                            tab: tab.id.clone(),
-                            kind: params["type"].as_str().unwrap_or("alert").to_string(),
-                            message: clip(params["message"].as_str().unwrap_or_default(), 300),
-                        });
+                    for share in self.shares.values_mut() {
+                        if let Some(tab) = share.tabs.iter().find(|tab| tab.session == session) {
+                            share.dialog = Some(tab.id.clone());
+                            share.pending.push(Event::Dialog {
+                                tab: tab.id.clone(),
+                                kind: params["type"].as_str().unwrap_or("alert").to_string(),
+                                message: clip(params["message"].as_str().unwrap_or_default(), 300),
+                            });
+                        }
                     }
                 }
-                "Page.javascriptDialogClosed" => self.dialog = None,
+                "Page.javascriptDialogClosed" => {
+                    for share in self.shares.values_mut() {
+                        let blocked = share
+                            .dialog
+                            .as_ref()
+                            .and_then(|id| share.tabs.iter().find(|tab| &tab.id == id));
+                        if blocked.is_some_and(|tab| tab.session == session) {
+                            share.dialog = None;
+                        }
+                    }
+                }
                 method @ ("Browser.downloadWillBegin" | "Browser.downloadProgress") => {
-                    self.download_event(method, params);
+                    self.download_event(method, params)?;
                 }
                 _ => {}
             }
@@ -439,12 +643,22 @@ impl Cft {
                 Err(failure) => return Err(failure),
             }
         }
-        for (target, opener) in adopt {
-            if self.tabs.iter().any(|tab| tab.target == target) {
+        // A page a session's tab opened is that session's tab.
+        for (target, opener) in std::mem::take(&mut self.unassigned) {
+            let owner = opener
+                .as_deref()
+                .and_then(|opener| self.owner_of_target(opener));
+            let Some(key) = owner else {
+                self.unassigned.push((target, opener));
                 continue;
-            }
+            };
+            let opener_tab = self.shares[&key]
+                .tabs
+                .iter()
+                .find(|tab| Some(&tab.target) == opener.as_ref())
+                .map(|tab| tab.id.clone());
             // A tab that closed as fast as it opened is no tab.
-            let id = match self.adopt(&target, opener.clone()) {
+            let id = match self.adopt(&key, &target, opener_tab.clone()) {
                 Ok(id) => id,
                 Err(failure) if failure.code == "engine_error" => continue,
                 Err(failure) => return Err(failure),
@@ -454,11 +668,13 @@ impl Cft {
                 Err(failure) if failure.code == "engine_error" => String::new(),
                 Err(failure) => return Err(failure),
             };
-            self.pending.push(Event::NewTab {
-                tab: id,
-                url,
-                opener,
-            });
+            if let Some(share) = self.shares.get_mut(&key) {
+                share.pending.push(Event::NewTab {
+                    tab: id,
+                    url,
+                    opener: opener_tab,
+                });
+            }
         }
         Ok(events)
     }
@@ -482,7 +698,8 @@ impl Cft {
     fn input(&mut self, method: &str, params: Value) -> Result<(), Failure> {
         let session = self.active_state().session.clone();
         let id = self.cdp.send(method, params, Some(&session))?;
-        let opened = |event: &Value| event["method"] == "Page.javascriptDialogOpening";
+        let here = [session];
+        let opened = |event: &Value| dialog_in(event, &here);
         self.cdp
             .reply_or(id, method, Instant::now() + COMMAND, opened)?;
         Ok(())
@@ -586,7 +803,8 @@ impl Cft {
                     context
                 }
             };
-            let opened = |event: &Value| event["method"] == "Page.javascriptDialogOpening";
+            let here = self.tab_sessions();
+            let opened = |event: &Value| dialog_in(event, &here);
             match self.session_call(
                 "Runtime.evaluate",
                 json!({
@@ -669,6 +887,7 @@ impl Driver for Cft {
         self.cdp.pump(Duration::ZERO)?;
         self.absorb()?;
         let ids: Vec<(String, String, Option<String>)> = self
+            .share()
             .tabs
             .iter()
             .map(|tab| (tab.id.clone(), tab.target.clone(), tab.opener.clone()))
@@ -677,7 +896,7 @@ impl Driver for Cft {
         for (tab, target, opener) in ids {
             let (url, title) = self.target_info(&target)?;
             tabs.push(Tab {
-                active: tab == self.active,
+                active: tab == self.share().active,
                 tab,
                 url,
                 title,
@@ -689,8 +908,9 @@ impl Driver for Cft {
 
     fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure> {
         let target = self.new_window(Instant::now() + COMMAND)?;
-        let tab = self.adopt(&target, None)?;
-        self.active = tab.clone();
+        let key = self.current.clone();
+        let tab = self.adopt(&key, &target, None)?;
+        self.share_mut().active = tab.clone();
         if let Some(url) = url {
             self.load(url)?;
         }
@@ -711,13 +931,13 @@ impl Driver for Cft {
                 Instant::now() + COMMAND,
             )?;
         }
-        self.active = tab.to_string();
+        self.share_mut().active = tab.to_string();
         Ok(())
     }
 
     fn close_tab(&mut self, tab: &str) -> Result<(), Failure> {
         let target = self.tab(tab)?.target.clone();
-        if self.tabs.len() == 1 {
+        if self.share().tabs.len() == 1 {
             return Err(Failure::usage(
                 "last_tab",
                 "a session keeps at least one tab; close the session instead".into(),
@@ -729,19 +949,20 @@ impl Driver for Cft {
             None,
             Instant::now() + COMMAND,
         )?;
-        self.tabs.retain(|state| state.id != tab);
-        if self.dialog.as_deref() == Some(tab) {
-            self.dialog = None;
+        let share = self.share_mut();
+        share.tabs.retain(|state| state.id != tab);
+        if share.dialog.as_deref() == Some(tab) {
+            share.dialog = None;
         }
-        if self.active == tab {
-            let last = self.tabs.last().expect("one tab left").id.clone();
+        if share.active == tab {
+            let last = share.tabs.last().expect("one tab left").id.clone();
             self.switch_tab(&last)?;
         }
         Ok(())
     }
 
     fn active_tab(&self) -> String {
-        self.active.clone()
+        self.share().active.clone()
     }
 
     fn navigate(&mut self, url: &str) -> Result<(), Failure> {
@@ -769,6 +990,21 @@ impl Driver for Cft {
             deadline,
         )?;
         Ok(true)
+    }
+
+    fn back_url(&mut self) -> Result<Option<String>, Failure> {
+        let session = self.active_state().session.clone();
+        let history = self.cdp.call(
+            "Page.getNavigationHistory",
+            json!({}),
+            Some(&session),
+            Instant::now() + COMMAND,
+        )?;
+        let current = history["currentIndex"].as_u64().unwrap_or(0) as usize;
+        Ok(current
+            .checked_sub(1)
+            .and_then(|at| history["entries"][at]["url"].as_str())
+            .map(str::to_string))
     }
 
     fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
@@ -825,7 +1061,8 @@ impl Driver for Cft {
             .into_iter()
             .map(|value| json!({"value": value}))
             .collect();
-        let opened = |event: &Value| event["method"] == "Page.javascriptDialogOpening";
+        let here = self.tab_sessions();
+        let opened = |event: &Value| dialog_in(event, &here);
         match self.session_call(
             "Runtime.callFunctionOn",
             json!({
@@ -950,7 +1187,7 @@ impl Driver for Cft {
     }
 
     fn click(&mut self, x: f64, y: f64) -> Result<(), Failure> {
-        let (from_x, from_y) = self.mouse;
+        let (from_x, from_y) = self.share().mouse;
         for step in 1..=4 {
             let t = f64::from(step) / 4.0;
             self.input(
@@ -959,7 +1196,7 @@ impl Driver for Cft {
             )?;
             pause(8, 16);
         }
-        self.mouse = (x, y);
+        self.share_mut().mouse = (x, y);
         let press =
             |kind: &str| json!({"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1});
         self.input("Input.dispatchMouseEvent", press("mousePressed"))?;
@@ -969,7 +1206,7 @@ impl Driver for Cft {
 
     fn type_text(&mut self, text: &str) -> Result<(), Failure> {
         for ch in text.chars() {
-            if self.dialog.is_some() {
+            if self.share().dialog.is_some() {
                 break;
             }
             if ch == '\n' {
@@ -1040,7 +1277,7 @@ impl Driver for Cft {
         let loading = events.iter().any(started) && !events.iter().any(stopped);
         let deadline = Instant::now() + LOADING;
         if loading {
-            while self.dialog.is_none() && Instant::now() < deadline {
+            while self.share().dialog.is_none() && Instant::now() < deadline {
                 self.cdp.pump(Duration::from_millis(100))?;
                 events = self.absorb()?;
                 if events.iter().any(stopped) {
@@ -1050,17 +1287,17 @@ impl Driver for Cft {
         }
         self.cdp.pump(Duration::from_millis(150))?;
         self.absorb()?;
-        Ok(std::mem::take(&mut self.pending))
+        Ok(std::mem::take(&mut self.share_mut().pending))
     }
 
     fn dialog_open(&self) -> bool {
-        self.dialog.is_some()
+        self.share().dialog.is_some()
     }
 
     fn answer_dialog(&mut self, accept: bool, text: Option<&str>) -> Result<(), Failure> {
         self.cdp.pump(Duration::ZERO)?;
         self.absorb()?;
-        let Some(tab) = self.dialog.clone() else {
+        let Some(tab) = self.share().dialog.clone() else {
             return Err(Failure::failed("no_dialog", "no dialog is open".into()));
         };
         let session = self.tab(&tab)?.session.clone();
@@ -1074,7 +1311,7 @@ impl Driver for Cft {
             Some(&session),
             Instant::now() + COMMAND,
         )?;
-        self.dialog = None;
+        self.share_mut().dialog = None;
         Ok(())
     }
 
@@ -1085,7 +1322,8 @@ impl Driver for Cft {
             json!({"expression": script, "returnByValue": true, "awaitPromise": true}),
             Some(&session),
         )?;
-        let opened = |event: &Value| event["method"] == "Page.javascriptDialogOpening";
+        let here = [session];
+        let opened = |event: &Value| dialog_in(event, &here);
         let reply = self
             .cdp
             .reply_or(id, "Runtime.evaluate", Instant::now() + COMMAND, opened)?;
@@ -1131,13 +1369,18 @@ impl Driver for Cft {
     }
 
     fn upload_folder(&self) -> PathBuf {
-        self.scratch.join("uploads")
+        self.share().folder.join("uploads")
     }
 
     fn downloads(&mut self) -> Result<Vec<Download>, Failure> {
         self.cdp.pump(Duration::ZERO)?;
         self.absorb()?;
-        Ok(self.downloads.iter().map(|(_, d)| d.clone()).collect())
+        Ok(self
+            .share()
+            .downloads
+            .iter()
+            .map(|(_, d)| d.clone())
+            .collect())
     }
 
     fn download_file(&mut self, id: &str) -> Result<(Download, PathBuf), Failure> {
@@ -1145,7 +1388,11 @@ impl Driver for Cft {
         loop {
             self.cdp.pump(Duration::from_millis(100))?;
             self.absorb()?;
-            let Some((guid, download)) = self.downloads.iter().find(|(_, d)| d.download == id)
+            let Some((guid, download)) = self
+                .share()
+                .downloads
+                .iter()
+                .find(|(_, d)| d.download == id)
             else {
                 return Err(Failure::usage(
                     "no_such_download",
@@ -1248,6 +1495,129 @@ impl Driver for Cft {
     }
 }
 
+/// One session's view of a shared browser: the driver contract on that
+/// session's own tabs, downloads and dialogs. The worker keeps one per
+/// session, all on the one browser, and makes one call at a time.
+pub struct Seat {
+    browser: Rc<RefCell<Cft>>,
+    key: String,
+}
+
+impl Seat {
+    /// Starts session `key` in `browser`, with a window of its own.
+    pub fn begin(browser: &Rc<RefCell<Cft>>, key: &str) -> Result<Seat, Failure> {
+        browser.borrow_mut().begin(key)?;
+        Ok(Seat {
+            browser: browser.clone(),
+            key: key.to_string(),
+        })
+    }
+
+    fn cft(&self) -> RefMut<'_, Cft> {
+        let mut cft = self.browser.borrow_mut();
+        cft.select(&self.key);
+        cft
+    }
+}
+
+impl Driver for Seat {
+    fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
+        self.cft().tabs()
+    }
+    fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure> {
+        self.cft().new_tab(url)
+    }
+    fn switch_tab(&mut self, tab: &str) -> Result<(), Failure> {
+        self.cft().switch_tab(tab)
+    }
+    fn close_tab(&mut self, tab: &str) -> Result<(), Failure> {
+        self.cft().close_tab(tab)
+    }
+    fn active_tab(&self) -> String {
+        self.cft().active_tab()
+    }
+    fn navigate(&mut self, url: &str) -> Result<(), Failure> {
+        self.cft().navigate(url)
+    }
+    fn back(&mut self) -> Result<bool, Failure> {
+        self.cft().back()
+    }
+    fn back_url(&mut self) -> Result<Option<String>, Failure> {
+        self.cft().back_url()
+    }
+    fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
+        self.cft().frames()
+    }
+    fn run(&mut self, frame: &Frame, expression: &str) -> Result<Value, Failure> {
+        self.cft().run(frame, expression)
+    }
+    fn call(&mut self, frame: &Frame, function: &str, args: Vec<Value>) -> Result<Value, Failure> {
+        self.cft().call(frame, function, args)
+    }
+    fn reaches(&mut self, frame: &Frame, x: f64, y: f64) -> Result<bool, Failure> {
+        self.cft().reaches(frame, x, y)
+    }
+    fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure> {
+        self.cft().frame_offset(frame)
+    }
+    fn click(&mut self, x: f64, y: f64) -> Result<(), Failure> {
+        self.cft().click(x, y)
+    }
+    fn type_text(&mut self, text: &str) -> Result<(), Failure> {
+        self.cft().type_text(text)
+    }
+    fn select_all(&mut self) -> Result<(), Failure> {
+        self.cft().select_all()
+    }
+    fn press(&mut self, key: &str) -> Result<(), Failure> {
+        self.cft().press(key)
+    }
+    fn wheel(&mut self, x: f64, y: f64, delta_y: f64) -> Result<(), Failure> {
+        self.cft().wheel(x, y, delta_y)
+    }
+    fn settle(&mut self) -> Result<Vec<Event>, Failure> {
+        self.cft().settle()
+    }
+    fn dialog_open(&self) -> bool {
+        self.cft().dialog_open()
+    }
+    fn answer_dialog(&mut self, accept: bool, text: Option<&str>) -> Result<(), Failure> {
+        self.cft().answer_dialog(accept, text)
+    }
+    fn eval(&mut self, script: &str) -> Result<Value, Failure> {
+        self.cft().eval(script)
+    }
+    fn set_files(
+        &mut self,
+        frame: &Frame,
+        element: &str,
+        files: &[PathBuf],
+    ) -> Result<(), Failure> {
+        self.cft().set_files(frame, element, files)
+    }
+    fn upload_folder(&self) -> PathBuf {
+        self.cft().upload_folder()
+    }
+    fn downloads(&mut self) -> Result<Vec<Download>, Failure> {
+        self.cft().downloads()
+    }
+    fn download_file(&mut self, id: &str) -> Result<(Download, PathBuf), Failure> {
+        self.cft().download_file(id)
+    }
+    fn capabilities(&self) -> Vec<String> {
+        self.cft().capabilities()
+    }
+    fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
+        self.cft().screenshot()
+    }
+    /// Ends this session only: its tabs close, the browser and the other
+    /// sessions go on.
+    fn close(&mut self) -> Value {
+        self.browser.borrow_mut().end(&self.key);
+        json!({"closed": true})
+    }
+}
+
 /// Frames reordered so each comes right after its parent's earlier
 /// siblings' subtrees: the main frame first, then depth first.
 fn tree_order(frames: Vec<Frame>) -> Vec<Frame> {
@@ -1334,6 +1704,22 @@ fn clip(text: &str, max: usize) -> String {
         return text.to_string();
     }
     text.chars().take(max - 1).collect::<String>() + "…"
+}
+
+/// Whether `event` is a dialog opening in a page with one of `sessions`.
+fn dialog_in(event: &Value, sessions: &[String]) -> bool {
+    event["method"] == "Page.javascriptDialogOpening"
+        && sessions.iter().any(|s| event["sessionId"] == s.as_str())
+}
+
+/// Whether frame `id` is in a `Page.getFrameTree` tree.
+fn holds_frame(tree: &Value, id: &str) -> bool {
+    tree["frame"]["id"] == id
+        || tree["childFrames"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|child| holds_frame(child, id))
 }
 
 fn stale() -> Failure {

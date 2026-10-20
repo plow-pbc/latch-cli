@@ -6,10 +6,10 @@
 //! and origin, and the values of non-secret fields. Never cookies, vault
 //! values, seeds or screenshots.
 //!
-//! A [`Provider`] is one way of reaching a model: the dev-only [`Jev`],
-//! with its key in a 0600 file in the host's state directory, or (later)
-//! Plow's inference route on the host's own credential. Nothing here bakes
-//! a key in. Every provider's answers pass the same checks before use
+//! A [`Provider`] is one way of reaching a model: [`Plow`], the host's
+//! own Plow login asking Plow's decision route (which calls Jev on
+//! OpenRouter), or, only when a host is set up for development, [`Jev`]
+//! called directly with a key in a 0600 file. Nothing here bakes a key in. Every provider's answers pass the same checks before use
 //! ([`Model::ask`]): a choice must be an offered option, and probabilities
 //! must be finite, cover exactly the options, sum to 1 and peak at the
 //! choice.
@@ -83,12 +83,21 @@ pub trait Provider: Send + Sync {
     /// checked by [`Model::ask`], not here. An error's text must hold no
     /// key or credential.
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a>;
+
+    /// The provider's name for the audit, even of a call that failed.
+    fn name(&self) -> &'static str {
+        ""
+    }
 }
 
 /// A shared provider is a provider: one per host, one `Model` per request.
 impl<P: Provider + ?Sized> Provider for std::sync::Arc<P> {
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         (**self).ask(state, questions)
+    }
+
+    fn name(&self) -> &'static str {
+        (**self).name()
     }
 }
 
@@ -119,12 +128,32 @@ impl Model {
         }
     }
 
-    /// The host's model: jev, when its dev key is in the state directory.
+    /// The host's model: Plow's decision route on the host's own login;
+    /// jev with the dev key file only when `browser/model.json` says
+    /// `{"provider": "jev"}`.
     pub fn for_host(state_dir: &Path) -> Model {
-        match Jev::from_state(state_dir) {
-            Ok(Some(jev)) => Model::new(Box::new(jev)),
-            Ok(None) => Model::off("this host has no decision model"),
-            Err(why) => Model::off(&why),
+        let set = std::fs::read_to_string(state_dir.join(MODEL_FILE))
+            .ok()
+            .map(|text| serde_json::from_str::<Value>(&text));
+        match set {
+            None => match Plow::for_host(state_dir) {
+                Ok(plow) => Model::new(Box::new(plow)),
+                Err(why) => Model::off(&why),
+            },
+            Some(Ok(set)) if set["provider"] == "jev" => match Jev::from_state(state_dir) {
+                Ok(Some(jev)) => Model::new(Box::new(jev)),
+                Ok(None) => Model::off(&format!(
+                    "{MODEL_FILE} asks for jev, and there is no {JEV_KEY_FILE}"
+                )),
+                Err(why) => Model::off(&why),
+            },
+            Some(Ok(set)) if set["provider"] == "plow" => match Plow::for_host(state_dir) {
+                Ok(plow) => Model::new(Box::new(plow)),
+                Err(why) => Model::off(&why),
+            },
+            Some(_) => Model::off(&format!(
+                "{MODEL_FILE} must say {{\"provider\": \"plow\"}} or {{\"provider\": \"jev\"}}"
+            )),
         }
     }
 
@@ -153,6 +182,9 @@ impl Model {
         let started = Instant::now();
         let asked = provider.ask(&state, &questions).await;
         let mut record = json!({"purpose": purpose, "sent": sent});
+        if !provider.name().is_empty() {
+            record["provider"] = json!(provider.name());
+        }
         let outcome = asked.and_then(|(answers, meta)| {
             record["provider"] = json!(meta.provider);
             record["model"] = json!(meta.model);
@@ -399,6 +431,9 @@ fn check(questions: &[Question], answers: &HashMap<String, Answer>) -> Result<()
     Ok(())
 }
 
+/// Which decision model a host uses, in its state directory: Plow's route
+/// without one.
+pub const MODEL_FILE: &str = "browser/model.json";
 /// The dev-only key file for jev, in the host's state directory.
 pub const JEV_KEY_FILE: &str = "jev.key";
 const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
@@ -432,35 +467,74 @@ impl Jev {
         if key.is_empty() {
             return Ok(None);
         }
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("HTTP client settings are valid");
-        Ok(Some(Jev { http, key }))
+        Ok(Some(Jev { http: http(), key }))
     }
 }
 
+/// Questions as System One takes them: `noul` for yes/no, `choice` with
+/// its options as criteria.
+fn system_one(questions: &[Question]) -> Value {
+    let mut asked = Map::new();
+    for question in questions {
+        let mut q = json!({"instructions": question.instructions});
+        match &question.kind {
+            Kind::YesNo => q["type"] = json!("noul"),
+            Kind::Choose(options) => {
+                q["type"] = json!("choice");
+                let criteria: Map<String, Value> = options
+                    .iter()
+                    .map(|(option, what)| (option.clone(), json!(what)))
+                    .collect();
+                q["criteria"] = Value::Object(criteria);
+            }
+        }
+        asked.insert(question.id.clone(), q);
+    }
+    Value::Object(asked)
+}
+
+/// System One's answers, read for each question; checking them is
+/// [`Model::ask`]'s.
+fn system_one_answers(reply: &Value, questions: &[Question]) -> HashMap<String, Answer> {
+    let mut answers = HashMap::new();
+    for question in questions {
+        let answer = &reply["answers"][&question.id];
+        let parsed = match &question.kind {
+            Kind::YesNo => answer["noul"].as_f64().map(Answer::Yes),
+            Kind::Choose(_) => answer["choice"].as_str().map(|choice| Answer::Chose {
+                choice: choice.to_string(),
+                probabilities: answer["probabilities"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(o, p)| (o.clone(), p.as_f64().unwrap_or(f64::NAN)))
+                    .collect(),
+            }),
+        };
+        if let Some(parsed) = parsed {
+            answers.insert(question.id.clone(), parsed);
+        }
+    }
+    answers
+}
+
+fn http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("HTTP client settings are valid")
+}
+
 impl Provider for Jev {
+    fn name(&self) -> &'static str {
+        "typesafe"
+    }
+
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         Box::pin(async move {
-            let mut asked = Map::new();
-            for question in questions {
-                let mut q = json!({"instructions": question.instructions});
-                match &question.kind {
-                    Kind::YesNo => q["type"] = json!("noul"),
-                    Kind::Choose(options) => {
-                        q["type"] = json!("choice");
-                        let criteria: Map<String, Value> = options
-                            .iter()
-                            .map(|(option, what)| (option.clone(), json!(what)))
-                            .collect();
-                        q["criteria"] = Value::Object(criteria);
-                    }
-                }
-                asked.insert(question.id.clone(), q);
-            }
-            let body = json!({"state": state, "model": JEV_MODEL, "questions": asked});
+            let body =
+                json!({"state": state, "model": JEV_MODEL, "questions": system_one(questions)});
             let started = Instant::now();
             let response = self
                 .http
@@ -485,25 +559,7 @@ impl Provider for Jev {
                 .json()
                 .await
                 .map_err(|_| "jev's answer was not JSON".to_string())?;
-            let mut answers = HashMap::new();
-            for question in questions {
-                let answer = &reply["answers"][&question.id];
-                let parsed = match &question.kind {
-                    Kind::YesNo => answer["noul"].as_f64().map(Answer::Yes),
-                    Kind::Choose(_) => answer["choice"].as_str().map(|choice| Answer::Chose {
-                        choice: choice.to_string(),
-                        probabilities: answer["probabilities"]
-                            .as_object()
-                            .into_iter()
-                            .flatten()
-                            .map(|(o, p)| (o.clone(), p.as_f64().unwrap_or(f64::NAN)))
-                            .collect(),
-                    }),
-                };
-                if let Some(parsed) = parsed {
-                    answers.insert(question.id.clone(), parsed);
-                }
-            }
+            let answers = system_one_answers(&reply, questions);
             let meta = CallMeta {
                 provider: "typesafe",
                 model: reply["model"].as_str().unwrap_or(JEV_MODEL).to_string(),
@@ -511,6 +567,84 @@ impl Provider for Jev {
                 latency_ms,
             };
             Ok((answers, meta))
+        })
+    }
+}
+
+/// Jev as Plow's decision route asks it on OpenRouter.
+pub const PLOW_MODEL: &str = "typesafe/jev-1.13";
+const PLOW_ROUTE: &str = "/v1/latch/decide";
+
+/// Plow's decision route, on the host's own Plow login: the host holds no
+/// model key. Plow asks Jev and passes its answers back.
+// No `Debug`: it holds the login.
+pub struct Plow {
+    http: reqwest::Client,
+    url: String,
+    token: String,
+}
+
+impl Plow {
+    pub fn new(api_url: &str, token: String) -> Plow {
+        Plow {
+            http: http(),
+            url: format!("{}{PLOW_ROUTE}", api_url.trim_end_matches('/')),
+            token,
+        }
+    }
+
+    /// The route on the Plow this host is logged in to, with its login.
+    fn for_host(state_dir: &Path) -> Result<Plow, String> {
+        let state = crate::state::StateDir {
+            path: state_dir.to_path_buf(),
+        };
+        let not_in = || {
+            "this host is not logged in to Plow, which answers its decision-model questions"
+                .to_string()
+        };
+        let config = state.load_config().ok().flatten().ok_or_else(not_in)?;
+        let token = state.load_token().ok().flatten().ok_or_else(not_in)?;
+        Ok(Plow::new(&config.api_url, token))
+    }
+}
+
+impl Provider for Plow {
+    fn name(&self) -> &'static str {
+        "plow"
+    }
+
+    fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+        Box::pin(async move {
+            let body =
+                json!({"model": PLOW_MODEL, "state": state, "questions": system_one(questions)});
+            let started = Instant::now();
+            let response = self
+                .http
+                .post(&self.url)
+                .bearer_auth(&self.token)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|_| "Plow's decision route could not be reached".to_string())?;
+            let latency_ms = started.elapsed().as_millis() as u64;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(match status.as_u16() {
+                    429 => "Plow's decision route is rate limited for this host".to_string(),
+                    code => format!("Plow's decision route answered HTTP {code}"),
+                });
+            }
+            let reply: Value = response
+                .json()
+                .await
+                .map_err(|_| "Plow's decision route did not answer JSON".to_string())?;
+            let meta = CallMeta {
+                provider: "plow",
+                model: reply["model"].as_str().unwrap_or(PLOW_MODEL).to_string(),
+                request_id: reply["request_id"].as_str().map(str::to_string),
+                latency_ms,
+            };
+            Ok((system_one_answers(&reply, questions), meta))
         })
     }
 }
@@ -609,16 +743,127 @@ pub mod tests {
     }
 
     #[test]
-    fn no_key_file_means_no_model_and_a_readable_one_is_refused() {
+    fn the_jev_key_file_is_used_only_when_the_host_is_set_up_for_it() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!Model::for_host(dir.path()).is_on());
         let path = dir.path().join(JEV_KEY_FILE);
         std::fs::write(&path, "made-up-key").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // A key file alone changes nothing: the model is Plow's, on the
+        // host's login, and this host has none.
+        let m = Model::for_host(dir.path());
+        assert!(!m.is_on());
+        assert!(
+            m.why_off().contains("not logged in to Plow"),
+            "{}",
+            m.why_off()
+        );
+        std::fs::create_dir_all(dir.path().join("browser")).unwrap();
+        std::fs::write(dir.path().join(MODEL_FILE), r#"{"provider": "jev"}"#).unwrap();
+        assert!(Model::for_host(dir.path()).is_on());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let m = Model::for_host(dir.path());
         assert!(!m.is_on());
         assert!(m.why_off().contains("0600"));
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(Model::for_host(dir.path()).is_on());
+        std::fs::write(dir.path().join(MODEL_FILE), r#"{"provider": "gpt"}"#).unwrap();
+        assert!(!Model::for_host(dir.path()).is_on());
+    }
+
+    /// A stand-in for Plow's decision route: answers `reply` with `status`
+    /// to one request, and hands back what it was sent.
+    fn plow_route(status: u16, reply: Value) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (sent, seen) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut head = String::new();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = v.trim().parse().unwrap();
+                }
+                head.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            sent.send(head + &String::from_utf8(body).unwrap()).unwrap();
+            let body = reply.to_string();
+            let mut socket = socket;
+            write!(
+                socket,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        (url, seen)
+    }
+
+    #[tokio::test]
+    async fn plow_asks_jev_on_the_hosts_login_and_its_answers_are_checked_the_same() {
+        let reply = json!({"model": "typesafe/jev-1.13", "request_id": "dec_0a1b",
+                           "answers": {"risky": {"noul": 0.93}}});
+        let (url, seen) = plow_route(200, reply);
+        let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
+        let p = m
+            .risky(
+                "Checkout",
+                "click button \"Place order\"",
+                &["Total $10.00".into()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(p, 0.93);
+        let sent = seen.recv().unwrap();
+        assert!(sent.starts_with("POST /v1/latch/decide "), "{sent}");
+        assert!(
+            sent.contains("authorization: Bearer made-up-login")
+                || sent.contains("Authorization: Bearer made-up-login")
+        );
+        let body: Value =
+            serde_json::from_str(&sent[sent.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(body["model"], PLOW_MODEL);
+        assert_eq!(body["questions"]["risky"]["type"], "noul");
+        assert_eq!(body["state"]["lines_near"], json!(["Total $10.00"]));
+        let call = &m.calls[0];
+        assert_eq!(call["provider"], "plow");
+        assert_eq!(call["model"], "typesafe/jev-1.13");
+        assert_eq!(call["model_request"], "dec_0a1b");
+
+        // A bad answer through Plow is refused like any provider's.
+        let (url, _seen) = plow_route(200, json!({"answers": {"risky": {"noul": 1.5}}}));
+        let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
+        assert!(m.risky("t", "click", &[]).await.is_err());
+        assert!(!m.is_on());
+    }
+
+    #[tokio::test]
+    async fn a_plow_route_that_fails_or_cannot_be_reached_turns_the_model_off() {
+        let (url, _seen) = plow_route(503, json!({"detail": "unavailable"}));
+        let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
+        assert!(m.risky("t", "click", &[]).await.is_err());
+        assert!(m.why_off().contains("HTTP 503"), "{}", m.why_off());
+        assert_eq!(
+            m.calls[0]["provider"], "plow",
+            "a failed call still names its provider"
+        );
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
+        assert!(m.risky("t", "click", &[]).await.is_err());
+        assert!(
+            m.why_off().contains("could not be reached"),
+            "{}",
+            m.why_off()
+        );
+        assert!(!m.why_off().contains("made-up-login"));
     }
 }

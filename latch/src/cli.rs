@@ -60,7 +60,7 @@ pub enum Command {
     Exec(ExecArgs),
     /// Drive a real browser on a host: open, observe, act by ref
     Browser(BrowserArgs),
-    /// The host's vault: add, list, remove and import items (owner devices only)
+    /// The host's vault: add, list, edit, remove and import items (owner devices only)
     Vault(VaultArgs),
     /// Run this machine as a host, in the foreground, until stopped
     Serve(ServeArgs),
@@ -77,8 +77,8 @@ pub struct BrowserArgs {
     /// Name of the host to use
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
-    /// The session to use, named for its profile (default: default)
-    #[arg(long, global = true)]
+    /// The session to use: the id `open` answered
+    #[arg(long, env = "LATCH_BROWSER_SESSION", global = true)]
     pub session: Option<String>,
     /// The agent turn this call belongs to, for the host's metrics
     #[arg(long, env = "LATCH_TURN", global = true)]
@@ -89,11 +89,19 @@ pub struct BrowserArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum BrowserCommand {
-    /// Start or reuse a profile's session, load URL, and list the page's elements
+    /// Start a new session on a profile, load URL, and list the page's elements;
+    /// answers the session's id, which every later command needs
     Open {
-        /// The profile, and so the session (default: default)
+        /// The profile, whose logins the session shares (default: default)
         #[arg(long)]
         profile: Option<String>,
+        /// A label for the session, shown in listings and the audit
+        #[arg(long)]
+        task: Option<String>,
+        /// Hold URL's site until the session closes: another session's action
+        /// there gets site_busy
+        #[arg(long)]
+        reserve_site: bool,
         url: Option<String>,
     },
     /// A fresh element list (snapshot), the page's first text, and the tabs
@@ -277,9 +285,10 @@ pub enum BrowserCommand {
         #[arg(long)]
         submit: Option<String>,
     },
-    /// The host's open sessions
+    /// Your open sessions, without their ids
     Sessions,
-    /// End the session (its profile stays)
+    /// End the session (its profile, and other sessions on it, stay); an
+    /// owner device may name any session by the hash the host's dashboard shows
     Close,
 }
 
@@ -356,6 +365,64 @@ pub enum VaultCommand {
         /// Also ask for a login's authenticator key
         #[arg(long)]
         totp: bool,
+    },
+    /// Change an item at its current revision: its title, sites and fields.
+    /// Its secrets are asked for at a prompt, never taken from the command
+    /// line or the environment; its kind never changes
+    Edit {
+        item: String,
+        /// The revision `vault list` shows; an older one is refused
+        #[arg(long)]
+        revision: u64,
+        #[arg(long)]
+        title: Option<String>,
+        /// Replaces the item's sites (repeatable)
+        #[arg(long)]
+        site: Vec<String>,
+        /// Clears the item's sites: a card or identity then fills on any
+        /// site (a login keeps at least one)
+        #[arg(long, conflicts_with = "site")]
+        no_sites: bool,
+        /// Replaces a login's other top-level sites (repeatable)
+        #[arg(long)]
+        other_top_site: Vec<String>,
+        /// Clears a login's other top-level sites
+        #[arg(long, conflicts_with = "other_top_site")]
+        no_other_top_sites: bool,
+        /// A non-secret field: LABEL=VALUE; an empty VALUE clears it
+        #[arg(long)]
+        field: Vec<String>,
+        /// Ask for this field at a prompt: password, totp (a login's
+        /// authenticator key), a card's number or code, …
+        #[arg(long)]
+        ask: Vec<String>,
+    },
+    /// A one-time link that adds an item from your phone: the phone page
+    /// connects to the host itself, and the value goes straight there.
+    /// Prints the link, and a QR code on a terminal; it works once, for 15
+    /// minutes
+    Link {
+        /// login, card, identity or note
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        title: String,
+        /// A login's site (required, repeatable); for a card or identity, the
+        /// only sites it fills on
+        #[arg(long)]
+        site: Vec<String>,
+        /// A non-secret field, filled in on the phone: LABEL=VALUE
+        #[arg(long)]
+        field: Vec<String>,
+        /// Also ask the phone for this field (an identity's ssn, say); a
+        /// login's username and password, a card's number and code and a
+        /// note's text are always asked for
+        #[arg(long)]
+        ask: Vec<String>,
+        /// The phone page's address (see `phone/`); the link adds the rest
+        /// after `#`
+        #[arg(long, env = "LATCH_PHONE_PAGE")]
+        page: String,
     },
     /// Remove an item at its current revision
     Remove {
@@ -610,5 +677,30 @@ mod tests {
             args.gog_args,
             ["gmail", "labels", "list", "--account", "two@example.com"]
         );
+    }
+
+    #[test]
+    fn an_edit_either_replaces_or_clears_a_site_list() {
+        let edit = |extra: &[&str]| {
+            let mut argv = vec!["latch", "vault", "edit", "v1", "--revision", "2"];
+            argv.extend(extra);
+            Cli::try_parse_from(argv)
+        };
+        let parsed = edit(&["--no-sites", "--no-other-top-sites"]).unwrap();
+        let Command::Vault(VaultArgs {
+            command:
+                VaultCommand::Edit {
+                    no_sites,
+                    no_other_top_sites,
+                    ..
+                },
+            ..
+        }) = parsed.command
+        else {
+            panic!("vault edit");
+        };
+        assert!(no_sites && no_other_top_sites);
+        assert!(edit(&["--no-sites", "--site", "shop.example"]).is_err());
+        assert!(edit(&["--no-other-top-sites", "--other-top-site", "pay.example"]).is_err());
     }
 }

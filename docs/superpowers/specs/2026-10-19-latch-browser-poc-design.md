@@ -556,7 +556,7 @@ This holds for the standalone `fill` command and for a literal `fill` step in a 
   - `remove`;
   - `import` (1Password 1PUX/CSV, Apple Passwords CSV, Bitwarden JSON/CSV, Chrome CSV; a picker, nothing selected by default; logins first, other kinds where the export carries them), porting the Latch app's import rules and tests.
 
-  Secrets are prompted without echo, never taken from argv or the environment. An edit or removal against an older revision is refused (`stale_revision`). They go through `latch serve` over latch's own connection as an authenticated owner device, on the same machine too: no direct file edits. The secure link is out of v0; the design keeps it possible.
+  Secrets are prompted without echo, never taken from argv or the environment. An edit or removal against an older revision is refused (`stale_revision`). They go through `latch serve` over latch's own connection as an authenticated owner device, on the same machine too: no direct file edits. The secure link is a prototype beside v0 (§16).
 - **Reuse rule:** the Latch app's rules, formats and tests are ported to Rust; no Latch code is imported and no sidecar is added. Libraries: `url`, `psl`, `aes-gcm`, `totp-rs`, `csv`, `zip`.
 - **The agent never sees a value.** No command returns a stored secret.
 - **No browser password stores or autofill.** The agent never uses them. Signing in by hand through a handoff, or an already logged-in profile, is fine.
@@ -678,6 +678,17 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
   - they obey the step policy.
 - **Runner-issued task identity.** A task identity the agent runner issues and the gate verifies, so ownership no longer rests on one client key plus a session id held by convention.
 - **Cross-host site reservations.** An owner-wide reservation record through a Plow API route, so tasks on two serving hosts can't both take the same site. Until then, `--reserve-site` is host-local.
+
+## 16. Phone link (prototype, chef 2026-10-19)
+
+A prototype beside v0, not part of the chunks: the owner enters a secret on their phone and the agent never sees it.
+
+- `latch vault link --kind K --title T --site S [--field L=V…] [--ask L…] --page URL` is owner-device only. It prints a one-time link and a QR code. Secrets on the command line are refused.
+- The link opens a small static page (the shim). The shim runs iroh in the browser and dials the host through the relay; everything that matters sits after the `#`, which the shim's server never sees. latch serves the form itself over that connection on a separate phone protocol that can only fetch its link's form and save its link's item.
+- A link is 128 bits, kept on the host only as a hash, in memory, used once, expires in 15 minutes, and only adds a new item. Every secret and a note's text are required; an empty save is refused and the link stays open.
+- The save goes through the same path as `vault add` and is audited as `vault_link` without values. The agent sees only the new item's handle, as for any vault item.
+- Trust that remains: whoever serves the shim. The prototype serves it locally; a public HTTPS home for away-from-home use is the chef's call.
+- Evidence: `just phone-e2e HOST` (emulated iPhone, login, identity and note saves, reuse refused, agent sign-in, leak search) and a real Mobile Safari run in the iOS Simulator.
 
 ## Chunks
 

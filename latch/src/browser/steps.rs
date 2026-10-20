@@ -45,6 +45,8 @@ use crate::state::to_hex;
 const CHECK_WITHIN: Duration = Duration::from_secs(10);
 /// How often a sentence is judged again while its check waits.
 const JUDGE_EVERY: Duration = Duration::from_millis(1000);
+/// How often a typed condition is checked while it waits.
+const WAIT_POLL: Duration = Duration::from_millis(250);
 /// `wait`'s default and largest deadline, in seconds.
 const WAIT_WITHIN: f64 = 10.0;
 const MAX_WAIT: f64 = 120.0;
@@ -112,6 +114,29 @@ fn policy(state_dir: &Path) -> Result<Policy, Failure> {
         Some(other) => Err(bad(format!(
             "literal_steps is any, stop or none, not {other:?}"
         ))),
+    }
+}
+
+/// Waits until `deadline` for `condition`, checking it a few times a
+/// second: between checks the browser is free for other sessions' calls.
+/// A check can also end the wait early: the condition's element is from a
+/// page that is gone, or a dialog blocks the page.
+async fn poll(
+    entry: &Entry,
+    condition: &Value,
+    deadline: Instant,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    loop {
+        let check = json!({"op": "wait", "condition": condition, "within_ms": 0});
+        let (waited, _) = call(entry, check, audit).await?;
+        let ended =
+            waited["met"] == true || waited["stale"] == true || waited["blocked_by_dialog"] == true;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if ended || left.is_zero() {
+            return Ok(waited);
+        }
+        tokio::time::sleep(left.min(WAIT_POLL)).await;
     }
 }
 
@@ -262,7 +287,7 @@ pub async fn run(
     let checked = check_sentences(&sentences, &mut model).await;
     record_model(&model, audit);
     checked?;
-    if entry.filling.load(Ordering::SeqCst) {
+    if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
     let _serial = entry.serial.lock().await;
@@ -1085,13 +1110,7 @@ impl Run<'_> {
         within: Duration,
     ) -> Result<Value, Failure> {
         let condition = condition(check, literal.snapshot.as_deref(), besides);
-        let (waited, _) = call(
-            self.entry,
-            json!({"op": "wait", "condition": condition, "within_ms": within.as_millis() as u64}),
-            self.audit,
-        )
-        .await?;
-        Ok(waited)
+        poll(self.entry, &condition, Instant::now() + within, self.audit).await
     }
 
     /// The step's check, within 10 s of its action.
@@ -1423,7 +1442,7 @@ pub async fn find(
     let (Some(role), Some(name)) = (args["role"].as_str(), args["name"].as_str()) else {
         return Err(usage("find takes --role R --name N".into()));
     };
-    if entry.filling.load(Ordering::SeqCst) {
+    if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
     audit.insert("role".into(), json!(role));
@@ -1462,16 +1481,11 @@ pub async fn wait(
         ));
     };
     audit.insert("kind".into(), condition["kind"].clone());
-    if entry.filling.load(Ordering::SeqCst) {
+    if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
-    let ms = (within * 1000.0) as u64;
-    let (mut waited, _) = call(
-        entry,
-        json!({"op": "wait", "condition": condition, "within_ms": ms}),
-        audit,
-    )
-    .await?;
+    let deadline = Instant::now() + Duration::from_secs_f64(within);
+    let mut waited = poll(entry, &condition, deadline, audit).await?;
     let met = waited["met"] == true;
     audit.insert("verdict".into(), json!(if met { "met" } else { "not_met" }));
     if let Ok((glance, _)) = call(entry, json!({"op": "glance"}), audit).await {

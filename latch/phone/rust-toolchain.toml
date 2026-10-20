@@ -1,0 +1,6 @@
+# latch's Rust, plus what the browser build needs: the wasm target, and
+# llvm-ar (Apple's `ar` writes archives the wasm linker cannot read).
+[toolchain]
+channel = "1.99.0"
+components = ["llvm-tools"]
+targets = ["wasm32-unknown-unknown"]
