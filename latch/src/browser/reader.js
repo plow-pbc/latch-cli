@@ -332,7 +332,37 @@
       return `${item.role} "${item.name}": ${state}`;
     });
 
-  // What a list must stop at: a sign-in form, or a CAPTCHA's frame.
+  // What a consequential action acts on, as a confirmation is bound to it:
+  // the element (for Enter, its form's submit control, else the form), an
+  // identity that tells it from every other element in this document, and
+  // the lines of the form or section around it.
+  const uids = new WeakMap();
+  let nextUid = 0;
+  const uid = (el) => {
+    if (!uids.has(el)) uids.set(el, ++nextUid);
+    return uids.get(el);
+  };
+  const SUBMITS = 'button:not([type]), button[type=submit], input[type=submit], input[type=image]';
+  const review = (snap, index, enter) => {
+    const el = element(snap, index);
+    if (!el) return null;
+    const { role: r, name: n, row } = describe(el);
+    let actsOn = null;
+    let around = el;
+    if (enter) {
+      const form = el.form || el.closest('form');
+      const submit = form && [...form.querySelectorAll(SUBMITS)].find(rendered);
+      actsOn = submit ? { role: role(submit), name: name(submit) }
+        : form ? { role: 'form', name: clean(form.getAttribute('aria-label') || form.getAttribute('name') || '') }
+          : null;
+      around = submit || form || el;
+    }
+    const region = around.closest('form, dialog, [role=dialog], section, article, main') || document.body;
+    const lines = (region ? region.innerText : '').split('\n').map((line) => clean(line, 160)).filter(Boolean).slice(0, 20);
+    return { uid: uid(el), element: { role: r, name: n, row }, acts_on: actsOn, lines };
+  };
+
+  // What a plan must stop at: a sign-in form, or a CAPTCHA's frame.
   const CAPTCHA = /\/recaptcha\/|hcaptcha\.com|challenges\.cloudflare\.com/;
   const wall = () => ({
     password: [...document.querySelectorAll('input[type=password]')].some(rendered),
@@ -341,6 +371,7 @@
 
   globalThis.__latch = {
     fields,
+    review,
     wall,
     read,
     locate,

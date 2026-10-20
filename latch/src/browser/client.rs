@@ -10,11 +10,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::fs::File;
 
-use clap::Parser;
-
+use super::plan::{self, Check, Literal, Op, Plan, Step};
 use crate::cli::{
-    ActAction, BrowserArgs, BrowserCommand, DialogAction, DownloadCommand, StepArgs, StepLine,
-    TabCommand,
+    ActAction, BrowserArgs, BrowserCommand, DialogAction, DownloadCommand, TabCommand,
 };
 use crate::dial::{self, ANSWER_MARGIN, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
@@ -41,38 +39,97 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     if let BrowserCommand::Eval { script_file } = &args.command {
         request["script"] = json!(read_script(script_file)?);
     }
-    // How long the host may take: an act's expectations and a wait each
-    // have their own deadline.
+    // How long the host may take: a plan and a wait each have their own
+    // deadline.
     let mut answer_within = ANSWER_WITHIN;
-    match &args.command {
+    let plan = match &args.command {
+        BrowserCommand::Do {
+            steps,
+            plan_file,
+            confirm,
+            history: None,
+            within,
+        } => Some(do_plan(
+            steps,
+            plan_file.as_deref(),
+            confirm.is_some(),
+            *within,
+        )?),
         BrowserCommand::Act {
-            step,
+            snapshot,
+            action,
+            target,
+            text,
+            check,
+            at,
+            expect,
             steps,
             history,
         } => {
-            if let Some(id) = history {
-                request["command"] = json!("act_history");
-                request["request"] = json!(id);
-            } else {
-                let (list, parsed) = match steps {
-                    Some(file) => (true, read_steps(&read_script(file)?)?),
-                    None => (false, vec![step_json(step.clone())?]),
-                };
-                let waits: f64 = parsed
-                    .iter()
-                    .map(|s| s["expect"]["within"].as_f64().unwrap_or(10.0) + 15.0)
-                    .sum();
-                answer_within += Duration::from_secs_f64(waits);
-                request["command"] = json!("act");
-                request["list"] = json!(list);
-                request["steps"] = json!(parsed);
-                request["request"] = json!(new_request_id());
+            if at.is_some() {
+                return Err(removed(
+                    "`act click --at X,Y` is removed: act on a ref, or name the element in a plan step",
+                ));
             }
+            if expect.is_some() {
+                return Err(removed(
+                    "`act --expect` is removed: give a check with --check",
+                ));
+            }
+            if steps.is_some() {
+                return Err(removed(
+                    "`act --steps` is removed: send several steps with the plan command",
+                ));
+            }
+            if let Some(id) = history {
+                return Err(removed(&format!(
+                    "`act --history` is removed: read it with `latch browser do --history {id}`"
+                )));
+            }
+            let literal = act_literal(*action, snapshot.clone(), target.clone(), text.clone())?;
+            let check = check
+                .as_deref()
+                .map(Check::parse)
+                .transpose()
+                .map_err(|why| Failure::usage("bad_arguments", why))?;
+            let plan = Plan {
+                steps: vec![Step {
+                    literal: Some(literal),
+                    check,
+                    ..Step::default()
+                }],
+                ..Plan::default()
+            };
+            plan.validate()
+                .map_err(|why| Failure::usage("bad_arguments", why))?;
+            request["via"] = json!("act");
+            Some(plan)
+        }
+        BrowserCommand::Find {
+            description: Some(_),
+            ..
+        } => {
+            return Err(removed(
+                "`find \"<description>\"` is removed: use `find --role R --name N`, or name the element in a plan step",
+            ));
+        }
+        BrowserCommand::Wait {
+            sentence: Some(_), ..
+        } => {
+            return Err(removed(
+                "`wait --for \"<sentence>\"` is removed: wait for --text, --url-path or --ref, or give a plan step a sentence check",
+            ));
         }
         BrowserCommand::Wait { within, .. } => {
             answer_within += Duration::from_secs_f64(within.unwrap_or(10.0)) + ANSWER_MARGIN;
+            None
         }
-        _ => {}
+        _ => None,
+    };
+    if let Some(plan) = plan {
+        answer_within = Duration::from_secs_f64(plan.within()) + ANSWER_MARGIN;
+        request["plan"] = json!(plan);
+        request["request"] = json!(new_request_id());
     }
     fill(&mut request, args.command)?;
     let host = hosts::resolve(state, args.host).await?;
@@ -193,24 +250,27 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
         }
         BrowserCommand::Text => "text",
         BrowserCommand::Screenshot { .. } => "screenshot",
-        // Its steps are in the request already.
-        BrowserCommand::Act { history, .. } => {
-            if history.is_some() {
-                "act_history"
-            } else {
-                "act"
-            }
-        }
-        BrowserCommand::Find {
-            description,
-            role,
-            name,
-            action,
+        // Its plan is in the request already.
+        BrowserCommand::Act { .. } => "do",
+        BrowserCommand::Do {
+            history: Some(id), ..
         } => {
-            set(request, "description", json!(description));
+            set(request, "request", json!(id));
+            "do_history"
+        }
+        BrowserCommand::Do { confirm, .. } => {
+            set(request, "confirm", json!(confirm));
+            "do"
+        }
+        BrowserCommand::Find { role, name, .. } => {
+            if role.is_none() || name.is_none() {
+                return Err(Failure::usage(
+                    "bad_arguments",
+                    "find takes --role R --name N".into(),
+                ));
+            }
             set(request, "role", json!(role));
             set(request, "name", json!(name));
-            set(request, "action", json!(action.map(ActAction::name)));
             "find"
         }
         BrowserCommand::Wait {
@@ -218,16 +278,15 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             snapshot,
             state,
             text,
-            url,
-            sentence,
+            url_path,
             within,
+            ..
         } => {
             set(request, "ref", json!(target));
             set(request, "snapshot", json!(snapshot));
             set(request, "state", json!(state));
             set(request, "text", json!(text));
-            set(request, "url", json!(url));
-            set(request, "for", json!(sentence));
+            set(request, "url_path", json!(url_path));
             set(request, "within", json!(within));
             "wait"
         }
@@ -323,13 +382,13 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
 }
 
 /// A request id, made here so the client knows it even if the answer is
-/// lost: `act --history` reads that request's steps.
+/// lost: `do --history` reads that request's steps.
 fn new_request_id() -> String {
     format!("r{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff)
 }
 
-/// A failed `act` names its request, so its history can be read; above
-/// all when the outcome is unknown (exit 5).
+/// A failed plan names its request, so its history can be read; above all
+/// when the outcome is unknown (exit 5).
 fn with_request(mut failure: Failure, id: &Value) -> Failure {
     if id.is_null() {
         return failure;
@@ -338,7 +397,7 @@ fn with_request(mut failure: Failure, id: &Value) -> Failure {
     details.entry("request").or_insert_with(|| id.clone());
     if failure.exit == Exit::Unknown {
         failure.message = format!(
-            "{}: read `latch browser act --history {}` first",
+            "{}: read `latch browser do --history {}` first, and never resend the request",
             failure.message,
             id.as_str().unwrap_or_default()
         );
@@ -347,161 +406,86 @@ fn with_request(mut failure: Failure, id: &Value) -> Failure {
     failure
 }
 
-/// One step as the host takes it.
-fn step_json(step: StepArgs) -> Result<Value, Failure> {
-    let action = step.action.ok_or_else(|| {
-        Failure::usage(
-            "bad_arguments",
-            "act needs an action (click, type, select, press, scroll, back), --steps or --history"
-                .into(),
-        )
-    })?;
-    let (target, text) = act_words(action, step.target, step.text, step.at.is_some())?;
-    let mut expect = serde_json::Map::new();
-    let mut put = |key: &str, value: Value| {
-        if !value.is_null() {
-            expect.insert(key.into(), value);
-        }
-    };
-    put("sentence", json!(step.expect));
-    put("url", json!(step.expect_url));
-    put("text", json!(step.expect_text));
-    put("field", json!(step.expect_field));
-    put("within", json!(step.within));
-    if step.expect_download.is_some() {
-        put("download", json!(true));
-    }
-    Ok(json!({
-        "snapshot": step.snapshot,
-        "action": action.name(),
-        "target": target,
-        "text": text,
-        "at": step.at.map(|(x, y)| [x, y]),
-        "expect": expect,
-    }))
+fn removed(message: &str) -> Failure {
+    Failure::usage(
+        "removed_form",
+        format!("{message}; see `latch browser do --help`"),
+    )
 }
 
-/// A step list: one step per line in `act`'s own form, quoted as a shell
-/// would; blank lines and `#` comments are skipped. Every line is checked
-/// before anything is sent.
-pub(super) fn read_steps(text: &str) -> Result<Vec<Value>, Failure> {
-    let mut steps = Vec::new();
-    for (n, line) in text.lines().enumerate() {
-        let at =
-            |message: String| Failure::usage("bad_arguments", format!("line {}: {message}", n + 1));
-        let words = split_words(line).map_err(at)?;
-        if words.is_empty() {
-            continue;
-        }
-        let parsed = StepLine::try_parse_from(&words).map_err(|err| {
-            at(err
-                .to_string()
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .trim_start_matches("error: ")
-                .to_string())
-        })?;
-        steps.push(step_json(parsed.step).map_err(|failure| at(failure.message))?);
+/// The plan command's plan: from `--plan-file`, or one short-form step per
+/// argument, checked whole before it is sent.
+pub(super) fn do_plan(
+    steps: &[String],
+    plan_file: Option<&Path>,
+    confirm: bool,
+    within: Option<f64>,
+) -> Result<Plan, Failure> {
+    let bad = |why: String| Failure::usage("bad_arguments", why);
+    let mut plan = match plan_file {
+        Some(file) => serde_json::from_str::<Plan>(&read_script(file)?)
+            .map_err(|err| bad(format!("the plan file is malformed: {err}")))?,
+        None => Plan {
+            steps: steps
+                .iter()
+                .enumerate()
+                .map(|(n, step)| {
+                    plan::short_step(step).map_err(|why| bad(format!("step {}: {why}", n + 1)))
+                })
+                .collect::<Result<_, _>>()?,
+            ..Plan::default()
+        },
+    };
+    if within.is_some() {
+        plan.within = within;
     }
-    if steps.is_empty() {
-        return Err(Failure::usage(
-            "bad_arguments",
-            "the step list is empty".into(),
+    if plan.steps.is_empty() && !confirm {
+        return Err(bad(
+            "do takes steps, --plan-file, --confirm C or --history R".into(),
         ));
     }
-    Ok(steps)
+    plan.validate().map_err(bad)?;
+    Ok(plan)
 }
 
-/// A line's words, as a POSIX shell splits them: 'single' and "double"
-/// quotes, backslash escapes, and a `#` word starting a comment.
-fn split_words(line: &str) -> Result<Vec<String>, String> {
-    let mut words = Vec::new();
-    let mut word: Option<String> = None;
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            c if c.is_whitespace() => {
-                words.extend(word.take());
-            }
-            '#' if word.is_none() => break,
-            '\\' => {
-                let next = chars.next().ok_or("the line ends with a backslash")?;
-                word.get_or_insert_default().push(next);
-            }
-            '\'' => {
-                let current = word.get_or_insert_default();
-                loop {
-                    match chars.next() {
-                        Some('\'') => break,
-                        Some(c) => current.push(c),
-                        None => return Err("a ' quote is not closed".into()),
-                    }
-                }
-            }
-            '"' => {
-                let current = word.get_or_insert_default();
-                loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') => match chars.next() {
-                            Some(c @ ('"' | '\\' | '$' | '`')) => current.push(c),
-                            Some(c) => {
-                                current.push('\\');
-                                current.push(c);
-                            }
-                            None => return Err("a \" quote is not closed".into()),
-                        },
-                        Some(c) => current.push(c),
-                        None => return Err("a \" quote is not closed".into()),
-                    }
-                }
-            }
-            c => word.get_or_insert_default().push(c),
-        }
-    }
-    words.extend(word);
-    Ok(words)
-}
-
-/// `act`'s words as target and text. A key to press, or a direction to
-/// scroll, may come without a target: `act press Enter`, `act scroll down`.
-fn act_words(
-    action: ActAction,
+/// `act`'s words as one literal step. A direction to scroll may come
+/// without a ref: `act scroll down`.
+pub(super) fn act_literal(
+    action: Option<ActAction>,
+    snapshot: Option<String>,
     target: Option<String>,
     text: Option<String>,
-    at: bool,
-) -> Result<(Option<String>, Option<String>), Failure> {
-    let is_ref = |word: &str| word.starts_with('e') && word[1..].parse::<u32>().is_ok();
-    let words = match (action, target, text) {
-        (ActAction::Press | ActAction::Scroll, Some(word), None)
-            if !is_ref(&word) && word != "page" =>
-        {
-            (None, Some(word))
-        }
-        (ActAction::Back, None, None) => (None, None),
-        (ActAction::Back, ..) => {
-            return Err(Failure::usage(
-                "bad_arguments",
-                "back takes no target".into(),
-            ));
-        }
-        (ActAction::Click, None, None) if at => (None, None),
-        (_, None, _) if !matches!(action, ActAction::Scroll) => {
-            return Err(Failure::usage(
-                "bad_arguments",
-                "name the target: a ref such as e7, its exact name, or a description".into(),
-            ));
-        }
-        (_, target, text) => (target, text),
-    };
-    if at && (action != ActAction::Click || words.0.is_some()) {
-        return Err(Failure::usage(
+) -> Result<Literal, Failure> {
+    let action = action.ok_or_else(|| {
+        Failure::usage(
             "bad_arguments",
-            "--at is for `act click --at X,Y`, without a ref".into(),
-        ));
-    }
-    Ok(words)
+            "act needs an action: click, type, select, press, scroll or back".into(),
+        )
+    })?;
+    let (target, text) = match (action, target, text) {
+        (ActAction::Scroll, Some(word), None) if !plan::is_ref(&word) => (None, Some(word)),
+        (_, Some(word), _) if !plan::is_ref(&word) => {
+            return Err(removed(&format!(
+                "act takes a ref (eN), not {word:?}: to name an element by its name or in words, write it as a plan step"
+            )));
+        }
+        words => (words.1, words.2),
+    };
+    let op = match action {
+        ActAction::Click => Op::Click,
+        ActAction::Type => Op::Type,
+        ActAction::Select => Op::Select,
+        ActAction::Press => Op::Press,
+        ActAction::Scroll => Op::Scroll,
+        ActAction::Back => Op::Back,
+    };
+    Ok(Literal {
+        op,
+        target,
+        snapshot,
+        text,
+        ..Literal::click("e1")
+    })
 }
 
 /// A screenshot or download: its details, then exactly that many bytes
@@ -549,84 +533,87 @@ async fn receive(
 mod tests {
     use super::*;
 
-    fn words(
-        action: ActAction,
-        target: Option<&str>,
-        text: Option<&str>,
-    ) -> Result<(Option<String>, Option<String>), Failure> {
-        act_words(action, target.map(Into::into), text.map(Into::into), false)
-    }
-
     #[test]
-    fn step_lines_split_as_a_shell_would() {
-        assert_eq!(
-            split_words(r#"type "amount" '$388.50' --expect "it's \"done\"" # note"#).unwrap(),
-            ["type", "amount", "$388.50", "--expect", r#"it's "done""#]
-        );
-        assert_eq!(
-            split_words("  # only a comment").unwrap(),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            split_words(r"click New\ expense").unwrap(),
-            ["click", "New expense"]
-        );
-        assert!(split_words("click \"open").is_err());
-    }
-
-    #[test]
-    fn a_step_list_is_checked_line_by_line_before_it_is_sent() {
-        let steps = read_steps(
-            "--snapshot o1 click e7 --expect-download complete\n\n\
-             click \"New expense\" --expect \"a form for a new expense is shown\"\n\
-             type amount 388.50 --expect-field e4=388.50 --within 5\n",
-        )
-        .unwrap();
-        assert_eq!(steps.len(), 3);
-        assert_eq!(steps[0]["snapshot"], "o1");
-        assert_eq!(steps[0]["expect"], json!({"download": true}));
-        assert_eq!(steps[1]["target"], "New expense");
-        assert_eq!(
-            steps[1]["expect"]["sentence"],
-            "a form for a new expense is shown"
-        );
-        assert_eq!(steps[2]["text"], "388.50");
-        assert_eq!(steps[2]["expect"]["within"], 5.0);
-        let bad = read_steps("click e1\nhover e2\n").unwrap_err();
-        assert!(bad.message.starts_with("line 2:"), "{}", bad.message);
-        assert!(read_steps("\n# nothing\n").is_err());
-        assert!(read_steps("click e1 --expect-download started").is_err());
-    }
-
-    #[test]
-    fn a_lost_act_names_its_request_for_its_history() {
+    fn a_lost_plan_names_its_request_for_its_history() {
         let lost = Failure::new(Exit::Unknown, "outcome_unknown", "dropped".into());
         let named = with_request(lost, &json!("r00aa"));
         assert_eq!(named.details["request"], "r00aa");
-        assert!(named.message.contains("act --history r00aa"));
+        assert!(named.message.contains("do --history r00aa"));
         assert!(new_request_id().starts_with('r'));
         assert_ne!(new_request_id(), new_request_id());
     }
 
     #[test]
-    fn act_reads_a_key_or_direction_without_a_target() {
+    fn act_is_one_literal_step_on_a_ref() {
+        let literal = |a, t: Option<&str>, x: Option<&str>| {
+            act_literal(Some(a), None, t.map(Into::into), x.map(Into::into))
+        };
+        let press = literal(ActAction::Press, Some("e4"), Some("Enter")).unwrap();
         assert_eq!(
-            words(ActAction::Press, Some("Enter"), None).unwrap(),
-            (None, Some("Enter".into()))
+            (press.op, press.text.as_deref()),
+            (Op::Press, Some("Enter"))
         );
+        let scroll = literal(ActAction::Scroll, Some("down"), None).unwrap();
         assert_eq!(
-            words(ActAction::Press, Some("e4"), Some("Enter")).unwrap(),
-            (Some("e4".into()), Some("Enter".into()))
+            (scroll.target, scroll.text.as_deref()),
+            (None, Some("down"))
         );
+        let named = literal(ActAction::Click, Some("Place order"), None).unwrap_err();
         assert_eq!(
-            words(ActAction::Scroll, Some("down"), None).unwrap(),
-            (None, Some("down".into()))
+            (named.exit, named.code.as_str()),
+            (Exit::Usage, "removed_form")
         );
-        assert_eq!(words(ActAction::Scroll, None, None).unwrap(), (None, None));
-        assert_eq!(words(ActAction::Back, None, None).unwrap(), (None, None));
-        assert!(words(ActAction::Click, None, None).is_err());
-        assert!(words(ActAction::Back, Some("e1"), None).is_err());
-        assert!(act_words(ActAction::Click, None, None, true).is_ok());
-        assert!(act_words(ActAction::Type, Some("e1".into()), None, true).is_err());
+        assert!(named.message.contains("plan step"));
+        assert!(act_literal(None, None, None, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn removed_forms_are_usage_errors_that_point_to_the_plan_command() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        for argv in [
+            &["act", "click", "--at", "10,20"][..],
+            &["act", "click", "e1", "--expect", "the order is placed"],
+            &["act", "--steps", "steps.txt"],
+            &["act", "--history", "r1"],
+            &["act", "click", "Place order"],
+            &["act", "type", "the amount field", "12.50"],
+            &["find", "the unpaid invoice"],
+            &["wait", "--for", "the invoices are listed"],
+        ] {
+            let cli = Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).unwrap();
+            let Command::Browser(args) = cli.command else {
+                panic!("browser");
+            };
+            // Refused here, before any host is looked up.
+            let failure = run(&state, args).await.unwrap_err();
+            assert_eq!(
+                (failure.exit, failure.code.as_str()),
+                (Exit::Usage, "removed_form"),
+                "{argv:?}"
+            );
+            assert!(
+                failure.message.contains("latch browser do"),
+                "{}",
+                failure.message
+            );
+        }
+    }
+
+    #[test]
+    fn the_short_form_is_checked_whole_before_it_is_sent() {
+        let steps = [
+            "click e7 -> path: /checkout".to_string(),
+            "type e3".to_string(),
+        ];
+        let bad = do_plan(&steps, None, false, None).unwrap_err();
+        assert!(bad.message.starts_with("step 2:"), "{}", bad.message);
+        assert!(do_plan(&[], None, false, None).is_err());
+        assert!(do_plan(&[], None, true, None).is_ok());
+        let plan = do_plan(&steps[..1], None, false, Some(30.0)).unwrap();
+        assert_eq!(plan.within(), 30.0);
+        assert!(do_plan(&steps[..1], None, false, Some(301.0)).is_err());
     }
 }

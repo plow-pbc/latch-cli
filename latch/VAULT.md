@@ -79,7 +79,10 @@ submits there, checking that page's origins again. `fill` takes the
 agent's mapping, `--field LABEL=eN`, `--field number=e4,e5,e6,e7` for a
 value split across boxes; dates and expiries are reshaped to the field's
 own format. A fill that includes a secret field needs `--press eN`, the
-button that submits it.
+button that submits it, and stops with `confirm_needed` (exit 4) before any
+value is released: the confirmation names the item's title, the button and
+the lines around it, and `latch browser do --confirm C` then fills, presses
+and cleans up as one step ([BROWSER.md](BROWSER.md)).
 
 While a fill runs, the session is paused: every other call answers
 `session_paused`. Each value is set in one step after the field's element,

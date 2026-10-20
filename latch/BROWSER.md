@@ -33,19 +33,18 @@ whole state directory, profiles included.
 ```sh
 latch browser --host my-mac open http://example.com/   # starts the default profile's session
 latch browser --host my-mac observe                    # snapshot o2: refs e1, e2, …
-latch browser --host my-mac act click e7
+latch browser --host my-mac do 'type e3 "Acme" -> field: e3=Acme' 'click e7 -> path: /cart'
+latch browser --host my-mac do --plan-file plan.json    # the canonical plan (- for stdin)
+latch browser --host my-mac do --confirm c4f1a09b2e3d7  # carry out a confirmation, then any steps
+latch browser --host my-mac do --history r3f09a1c2b7e4  # what a request did, step by step
+latch browser --host my-mac act click e7 --check "text: Added to cart"
 latch browser --host my-mac act type e3 "Ada Lovelace"
 latch browser --host my-mac act select e5 Blue
-latch browser --host my-mac act press Enter            # or: act press e3 Enter
+latch browser --host my-mac act press e3 Enter
 latch browser --host my-mac act scroll down            # or: act scroll e9 up
 latch browser --host my-mac act back
-latch browser --host my-mac act click --at 120,340     # CSS pixels in the page
-latch browser --host my-mac act click "New expense" --expect-text "New expense"
-latch browser --host my-mac act --steps steps.txt       # several steps, one per line (- for stdin)
-latch browser --host my-mac act --history r3f09a1c2b7e4 # what a request did, step by step
-latch browser --host my-mac find "the unpaid invoice's download"   # candidate refs, with p
 latch browser --host my-mac find --role button --name Download
-latch browser --host my-mac wait --text "Saved" | --ref e4 --state hidden | --for "the report is ready"
+latch browser --host my-mac wait --text "Saved" | --ref e4 --state hidden | --url-path /done
 latch browser --host my-mac screenshot --output page.png
 latch browser --host my-mac text | tab new URL | tab switch t2 | tab close
 latch browser --host my-mac dialog accept | dismiss
@@ -54,7 +53,7 @@ latch browser --host my-mac upload e4 ./invoice.pdf
 latch browser --host my-mac downloads                    # d1, d2, …
 latch browser --host my-mac download get d1 --output report.csv
 latch browser --host my-mac login --item v1                # a vault login; latch finds the form
-latch browser --host my-mac fill --item v2 --field number=e4 --field expiry=e5 --field cvv=e6 --press e7
+latch browser --host my-mac fill --item v2 --field number=e4 --field expiry=e5 --field cvv=e6 --press e7   # stops for a confirmation
 latch browser --host my-mac fill-code --item v1            # the current authenticator code
 latch browser --host my-mac sessions | close
 ```
@@ -85,10 +84,8 @@ refused with `covered_target`. Input is the engine's own mouse and keys at a
 person's pace (`isTrusted` is true); `select` focuses the list and types
 the option's label, as a person picks one without opening it. `type`
 never types into a password or secret field (`secret_field`, exit 4).
-Each action answers `dispatched`, the target and how it was resolved,
-what changed (tab, URL, title), the page's first lines, events (dialogs,
-new tabs) and a fresh element list. While a dialog is open, every call
-but `dialog` is refused with `dialog_open`.
+While a dialog is open, every call but `dialog` is refused with
+`dialog_open`.
 
 `eval` runs the script's expression in the page's main frame, in the
 page's own world (a promise is awaited), and answers its JSON value (at
@@ -100,14 +97,16 @@ An engine without a command's optional feature (`eval`, `upload`,
 before anything is dispatched.
 
 The host audits each call: command, session, profile, engine, tab, origin
-and path (never the query), snapshot, target ref and role, how it was
-resolved (and `p`), the outcome, and the client's parent process id (or
-`--turn`, `LATCH_TURN`). An `act` records its request id, step count,
-actions dispatched, and per step the action, ref, role, how and `p`,
-`dispatch`, expectation kinds and verdicts (never the expected text) and a
-description's length (never its words); each decision-model call records
-its purpose, provider, model, the provider's request id, latency and the
-kinds of data sent, never content.
+and path (never the query), snapshot, target ref and role, the outcome,
+and the client's parent process id (or `--turn`, `LATCH_TURN`). A plan
+(`do`, or `act`) records its request id, whether it came by `act`, its
+step count, the step policy, its status and stop (step and code), and per
+action the step and action number, operation, ref and role, how it was
+chosen (`ref`), the risk `p`, the confirmation id when one was used, the
+origin and path, and the dispatch (`sent`, `refused`, `unknown`); a
+`step_not_allowed` refusal records the step and policy. Each
+decision-model call records its purpose, provider, model, the provider's
+request id, latency and the kinds of data sent, never content.
 Never page text, field values or typed text: `type` records the text's
 length and sha256. `eval` records its script verbatim up to 4 KiB, its
 size and sha256, and workaround tags (other frames, shadow roots,
@@ -116,55 +115,106 @@ storage, polling); files record name, size and sha256; an
 `unsupported_capability` refusal records the capability, engine, origin
 and command.
 
-## Several steps per turn
+## Plans, literal steps and confirmations
 
-The agent writes every step and every piece of text, and says what each
-step should lead to; latch's decision model only chooses and checks.
+The agent writes every step and every piece of text; latch's decision
+model only chooses: whether a click or Enter can't be undone, and whether a
+sentence check holds.
 
-**Targets** resolve in order: a ref (bound to its snapshot); exactly one
-element, among those that fit the action, whose accessible name is the
-target (case and spacing aside, never "contains"); else one model choice
-among them, each with its row text, plus "none", accepted at p ≥ 0.8.
-Otherwise the step stops with `no_such_target` or `ambiguous_target` and up
-to three candidates. Password and secret fields are never targets. The
-result says `resolved_by`: `ref`, `name` or `model` (with `p`).
+**The plan command** (`do`) runs up to 10 steps in order, within
+`--within S` (default 120, at most 300). In the short form each argument is
+one step: `click|type|select|press eN ["text"]`, or
+`fill --item vN --field F=eN… [--press eN]`; text to type goes in double
+quotes (straight or curly). A step's check follows its last ` -> ` outside
+quotes, so `type e3 "A -> B"` has none. `--plan-file` takes the canonical
+plan object, which every short form compiles to:
 
-**Expectations**, on any step, wait up to `--within S` (default 10):
-typed checks first, decided by latch (`--expect-url` prefix,
-`--expect-text`, `--expect-field eN=<value|checked|unchecked>`,
-`--expect-download complete`, which counts only a finished download), then
-`--expect "<sentence>"`, met only at yes ≥ 0.9 with one quoted page line
-as evidence (`met`, `not_met` or `unsure`, with `p`). A sentence that names
-a task rather than something a page shows is refused before anything runs
-(`vague_condition`, exit 2).
+```json
+{"steps": [{"literal": {"op": "type", "ref": "e3", "text": "Acme"},
+            "check": {"kind": "field", "value": "e3=Acme"}},
+           {"literal": {"op": "click", "ref": "e7"},
+            "check": {"kind": "text", "value": "Saved", "require_change": true}}],
+ "within": 60}
+```
 
-**Step lists** (`act --steps`) take one step per line in `act`'s own form,
-quoted as a shell would; `#` starts a comment. The whole list, every
-step's operands included, is checked before its first step (at most 10
-steps). It stops at the first
-unresolved target, refusal, unmet or unsure expectation, a step that led to
-a sign-in form (`needs_login`) or a CAPTCHA (`needs_owner`), or a timeout;
-later steps don't run, and nothing is replayed or retried. The answer has
-`status`, `executed` and a `trace` (per step: target, how, `dispatch`
-`dispatched`/`not_sent`/`unknown`, expectation verdicts, events), and ends
-with the page's first lines and an element list, as every stop does. A
-single `act` is a list of one, answered flat.
+`act` is a plan of one literal step (`click`, `type`, `select`, `press`,
+`scroll`, `back`) with an optional `--check`, and the same answer. Steps
+written as a goal in words (instruction steps) are refused for now with
+`step_not_allowed`. Refs are from any page latch returned to the session
+(`--snapshot`, else the latest); each is pinned to its snapshot before
+anything runs.
 
-**Request ids.** The client makes one per `act` and sends it, so it knows
-it even if the answer is lost: an exit 5 names it. The host keeps every
-request's trace for the session's lifetime, updated as each step ends;
-`act --history R` reads it, even while the list still runs: a step reads
-`dispatched` as soon as its action is out, before its expectations are
-waited for. An id is never run twice (`duplicate_request`).
+**Checks**, decided by latch's code and waited for up to 10 s after the
+step's action: `origin: https://shop.example` (the origin, whole),
+`path: /checkout` (part of the path; never the host or query),
+`query: q=salad`, `text: Saved` (the page text holds it),
+`field: eN=<value|checked|unchecked>`, `download: complete` (a download
+this step started), and `new text: …` (or `"require_change": true`: it must
+not hold before the step, and must after). Anything else is a sentence the
+decision model judges: met at yes ≥ 0.7 with an evidence line chosen while
+"none" stays below 0.3. A sentence that names a task rather than a page
+fact is refused before anything runs (`vague_condition`, exit 2).
 
-**Risky clicks need a ref.** A click on a page whose element list has never
-reached the agent (internal readings don't count) is reviewed first: if it
-would pay, order, send, delete, create credentials or otherwise can't be
-undone, the step stops with `confirm_target` (exit 4) and the target's ref
-and snapshot, however it was named. The stop shows the page, so repeating
-the click by ref goes through. The model judges this; without one, a fixed
-word list over the name and row text does. `click --at` names no element
-to review, so on a page the agent hasn't seen it is refused outright.
+**The answer** has `status` (`reached`: every step `checked` or
+`model_assessed`; `dispatched`: every step ran but one had no check;
+`stopped`, with `stop: {step, code, message, …}`), `review: true` when the
+last step rests on the model alone, `steps` (per step: `outcome`, its
+evidence, its action count), `trail` (per action: page URL and title,
+operation, target with role, name and row text, `chosen: ref`, the risk `p`,
+the confirmation used, `result` `dispatched`/`refused`/`unknown`, what
+changed) and `page` (snapshot, URL, title, up to 40 lines, the element
+list). A plan stops at the first step that does not pass, at a sign-in form
+(`needs_login`) or a CAPTCHA (`needs_owner`) a step led to, or at its
+deadline; nothing is replayed or retried. Exit 0 is `reached` or
+`dispatched`; a stop exits 1, or 4 for `confirm_needed`, `confirm_stale` and
+`step_not_allowed`.
+
+**Confirmations.** Before a click, latch asks the decision model whether it
+would pay, place an order, send, publish, delete or close something, sign
+out, create credentials or otherwise can't be undone, judged on the exact
+element, its row text, the page title and the lines of the form or section
+around it; an Enter in a field is judged as its form's submit (the form's
+submit control, else the form). At p ≥ 0.5 the step stops with
+`confirm_needed` (exit 4) before anything is sent, with a confirmation: its
+id, the target's ref and snapshot, and the reviewed context. A `fill` that
+releases a secret field (card number, CVV, identity numbers) always stops
+so, before any value is released, with the item's title and the `--press`
+button, whether it came standalone or as a plan step. The agent confirms
+with `do --confirm C [STEP…]`, or `act click eN` on that same ref (not for
+fills). A confirmation is used once, in the same session and document, and
+only while the element and the reviewed lines are unchanged; otherwise
+`confirm_stale` with a fresh page (a total that changes from $10.00 to
+$100.00 is refused, even with the same ref, URL and button name). It needs
+no new risk decision, so it still works while the model is down.
+
+**No model, no pass.** With no model reachable, a click or Enter that needs
+a risk decision, and a sentence check, stop with `model_unavailable` and
+nothing sent. Literal `type`, `select`, `scroll` and `back`, typed checks
+and confirmations already issued still work.
+
+**The step policy** (a host setting, `browser/policy.json` in the state
+directory: `{"literal_steps": "any" | "stop" | "none"}`, `any` without one)
+decides which literal steps a session may run: refs from any page latch
+returned, only refs from the page the session's latest stop returned, or
+none. A forbidden step is refused with `step_not_allowed` (exit 4) before
+anything is sent, whether it came by `act`, the short form or a plan file.
+Confirmations are never forbidden.
+
+**Request ids and the journal.** The client makes an id per request, so it
+knows it even if the answer is lost: an exit 5 names it. The host journals
+each request in its state directory (`browser/journal/<session hash>/`,
+0600): its steps, each action before it is sent and once its result is
+known, each step's outcome and the end, each synced to disk. `do --history R`
+reads it while the plan runs, after its answer was lost, and after the host
+restarted: an action whose result was never recorded reads `unknown`, never
+`not_sent`, and a request that never ended reads `interrupted`. An id is
+never run twice (`duplicate_request`). Only the caller that sent a request
+can read it.
+
+**Removed forms.** `act` on a name or description, `act --expect`,
+`act --steps`, `act click --at X,Y`, `find "<description>"` and
+`wait --for "<sentence>"` are usage errors (`removed_form`) that point to
+the plan command.
 
 **The decision model** runs in the host, never the worker, behind one
 interface (`model.rs`): choose one option, or yes/no with a probability.
@@ -174,9 +224,8 @@ element names, row text, page lines, the title and non-secret field
 values; never cookies, vault values, seeds or screenshots. For development
 it is TypeSafe jev (`jev-1.13.0`), with its key in `jev.key` (0600) in the
 host's state directory; no key is ever part of latch, and the product path
-goes through Plow. With no key, or the model failing, descriptions resolve
-by exact name only, sentences answer `assist_off`, and everything else
-works.
+goes through Plow. With no key, or the model failing, what needs a
+decision stops with `model_unavailable`; there is no keyword stand-in.
 
 ## The engine is not inside latch's Seatbelt
 
@@ -213,7 +262,8 @@ A separate macOS user for engines is the later hardening.
 pinned CfT in `.dev/cft-state`, which `just cft` installs and `just test`
 runs first; CI does the same on its Macs. `LATCH_CFT_STATE` points the test
 at another state directory. Without an installed engine the test fails,
-naming what to run. `src/browser/tests/steps.rs` covers step lists with
-no model and with a fake provider that answers from fixed facts about the
-test site; the same task on jev itself is built only with
-`--features live-model`, which `just test-model KEYFILE` runs.
+naming what to run. `src/browser/tests/steps.rs` covers literal steps,
+checks, confirmations, the step policy and the journal, with a fake
+provider that answers from fixed facts about the test site and can be made
+unreachable; the risk decision and a sentence check on jev itself are built
+only with `--features live-model`, which `just test-model KEYFILE` runs.

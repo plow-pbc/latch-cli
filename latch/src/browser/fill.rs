@@ -4,7 +4,9 @@
 //! 1. **Gate.** Any session may use any item; where it may go is the
 //!    site rule's question (step 3). A `fill` that includes a secret field
 //!    (card number, CVV, …, as the classifier says) needs `--press`: a
-//!    secret leaves the page before the agent is back.
+//!    secret leaves the page before the agent is back. It is also
+//!    confirmed by the agent before any value is released (`steps.rs`,
+//!    [`releases_secret`]); this runs once it is.
 //! 2. **Pause and prepare.** The session is held: every other call gets
 //!    `session_paused`. The worker reports where each value would go.
 //! 3. **Match.** Each field frame's origin and the top-level origin must
@@ -34,6 +36,26 @@ use crate::failure::{Exit, Failure};
 use crate::vault::item::Item;
 use crate::vault::store::Backend;
 use crate::vault::{classify, dates, sites, totp};
+
+/// Whether a `fill` releases a secret field, and so needs the agent's
+/// confirmation first: the item's title if it does. A malformed fill is
+/// refused here, as `run` would refuse it.
+pub fn releases_secret(browsers: &Browsers, args: &Value) -> Result<Option<String>, Failure> {
+    let id = args["item"]
+        .as_str()
+        .ok_or_else(|| Failure::usage("bad_arguments", "name the vault item with --item".into()))?;
+    let item = browsers.vault.with(|store| {
+        store
+            .item(id)
+            .ok_or_else(|| Failure::usage("no_such_item", format!("there is no vault item {id}")))
+    })?;
+    let plan = Plan::of("fill", &item, args)?;
+    let secret = plan
+        .fields
+        .iter()
+        .any(|(label, _)| classify::is_secret(&item.raw, label));
+    Ok(secret.then(|| item.meta().title))
+}
 
 pub async fn run(
     browsers: &Browsers,

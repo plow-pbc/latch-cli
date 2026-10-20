@@ -1,6 +1,5 @@
 //! The decision model: a model that only chooses. It picks one option from
-//! a list, or answers yes or no with a probability; it never writes text
-//! and never picks the next action.
+//! a list, or answers yes or no with a probability; it never writes text.
 //!
 //! Calls run here, in the host, never in a browser worker. What a call may
 //! send: element names with their row text, page lines, the page's title
@@ -15,8 +14,9 @@
 //! must be finite, cover exactly the options, sum to 1 and peak at the
 //! choice.
 //!
-//! With no provider, or one that fails, the caller works without it:
-//! descriptions resolve by exact name only, and sentences get `assist_off`.
+//! With no provider, or one that fails, whatever needs a new decision stops
+//! with `model_unavailable` before anything is sent: a sentence check, and
+//! a click or Enter's risk decision. There is no keyword stand-in.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -27,14 +27,14 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
-/// A choice is accepted at this probability or above.
-pub const CHOOSE_P: f64 = 0.8;
-/// A sentence counts as met at this yes or above, with a quoted line.
-pub const MET_P: f64 = 0.9;
+/// A sentence counts as met at this yes or above, with an evidence line
+/// chosen while "none" stays below `NONE_P`.
+pub const MET_P: f64 = 0.7;
+pub const NONE_P: f64 = 0.3;
 /// A sentence with less than this chance of being a checkable page fact is
 /// refused as vague.
 pub const CHECKABLE_P: f64 = 0.2;
-/// A click is treated as one that can't be undone at this yes or above.
+/// A click or Enter needs the agent's confirmation at this yes or above.
 pub const RISKY_P: f64 = 0.5;
 
 const RULES: [&str; 2] = [
@@ -97,7 +97,7 @@ impl<P: Provider + ?Sized> Provider for std::sync::Arc<P> {
 /// of data sent.
 pub struct Model {
     provider: Option<Box<dyn Provider>>,
-    /// Why there is no provider, for `assist_off`'s message.
+    /// Why there is no provider, for `model_unavailable`'s message.
     off: String,
     pub calls: Vec<Value>,
 }
@@ -172,47 +172,6 @@ impl Model {
         outcome
     }
 
-    /// Which option `description` means, among `options` (option, what it
-    /// is), with "none" offered too. Returns the options by probability,
-    /// highest first, "none" included.
-    pub async fn choose_target(
-        &mut self,
-        page: Value,
-        action: &str,
-        description: &str,
-        options: Vec<(String, String)>,
-    ) -> Result<Vec<(String, f64)>, String> {
-        let mut options = options;
-        options.push((
-            "none".into(),
-            "None of these elements is the one described.".into(),
-        ));
-        let question = Question {
-            id: "target".into(),
-            instructions: json!({
-                "goal": format!("Find the element an agent means by {description:?}; it will {action} it."),
-                "question": format!("Which element is {description:?}? Choose none if no element fits."),
-                "rules": [RULES[0], "Choose none only if no element fits the description."],
-            }),
-            kind: Kind::Choose(options),
-        };
-        let state = json!({"page": page, "agent_description": description, "operation": action});
-        let answers = self
-            .ask(
-                "resolve",
-                &["element_names", "row_text", "description"],
-                state,
-                vec![question],
-            )
-            .await?;
-        let Some(Answer::Chose { probabilities, .. }) = answers.get("target") else {
-            return Err("no choice came back".into());
-        };
-        let mut ranked = probabilities.clone();
-        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-        Ok(ranked)
-    }
-
     /// For each sentence, the chance it is a checkable fact about a page
     /// rather than a task, in one call.
     pub async fn checkable(&mut self, sentences: &[String]) -> Result<Vec<f64>, String> {
@@ -242,8 +201,8 @@ impl Model {
     }
 
     /// Whether `sentence` holds on the page, judged from its `lines` (page
-    /// lines, then field values): met only at yes ≥ 0.9 with one line
-    /// quoted as evidence.
+    /// lines, then field values): met only at yes ≥ 0.7 with one line
+    /// chosen as evidence, "none" below 0.3.
     pub async fn judge(
         &mut self,
         page: Value,
@@ -304,29 +263,37 @@ impl Model {
             .iter()
             .find(|(option, _)| option == choice && option != "none")
             .map(|(_, line)| line.clone());
-        let pe = probabilities
+        let none = probabilities
             .iter()
-            .find(|(option, _)| option == choice)
-            .map_or(0.0, |(_, p)| *p);
-        Ok(Verdict::of(*p, quoted, pe))
+            .find(|(option, _)| option == "none")
+            .map_or(1.0, |(_, p)| *p);
+        Ok(Verdict::of(*p, quoted, none))
     }
 
-    /// The chance that clicking `element` can't be undone: paying, sending,
-    /// deleting, ordering, creating credentials and the like.
-    pub async fn risky(&mut self, title: &str, element: &str) -> Result<f64, String> {
+    /// The chance that `action` (a click on an element, or Enter in a
+    /// field, which submits its form) can't be undone: paying, ordering,
+    /// sending, publishing, deleting or closing something, signing out,
+    /// creating credentials and the like. `lines` are the lines around the
+    /// element on the page.
+    pub async fn risky(
+        &mut self,
+        title: &str,
+        action: &str,
+        lines: &[String],
+    ) -> Result<f64, String> {
         let question = Question {
             id: "risky".into(),
             instructions: json!({
                 "rules": [RULES[0]],
-                "question": "Would clicking this element spend money, place an order, delete or close something, send a message, publish, create credentials or keys (such as an API key, token or password), or otherwise submit something that cannot be undone?",
+                "question": format!("Would this action spend money or pay, place an order, send a message, publish, delete or close something, sign out of an account, create credentials or keys (such as an API key, token or password), or otherwise do something that cannot be undone? The action: {action}"),
             }),
             kind: Kind::YesNo,
         };
-        let state = json!({"page": {"title": title}, "element": element});
+        let state = json!({"page": {"title": title}, "action": action, "lines_near": lines});
         let answers = self
             .ask(
-                "risky",
-                &["element_names", "row_text"],
+                "risk",
+                &["element_names", "row_text", "page_lines"],
                 state,
                 vec![question],
             )
@@ -348,11 +315,11 @@ pub struct Verdict {
 }
 
 impl Verdict {
-    /// Met needs yes ≥ 0.9 and a quoted line the model stands behind;
-    /// not met needs yes < 0.5 and no line it stands behind; anything else
-    /// is unsure.
-    fn of(p: f64, quoted: Option<String>, evidence_p: f64) -> Verdict {
-        let backed = quoted.is_some() && evidence_p >= 0.5;
+    /// Met needs yes ≥ 0.7 and a chosen evidence line, with "none" below
+    /// 0.3; not met needs yes < 0.5 and no line it stands behind; anything
+    /// else is unsure.
+    fn of(p: f64, quoted: Option<String>, none_p: f64) -> Verdict {
+        let backed = quoted.is_some() && none_p < NONE_P;
         let result = if p >= MET_P && backed {
             "met"
         } else if p < 0.5 && !backed {
@@ -548,40 +515,6 @@ impl Provider for Jev {
     }
 }
 
-/// Without a model, a click counts as one that can't be undone when its
-/// name or row text holds one of these words.
-const RISKY_WORDS: &[&str] = &[
-    "pay",
-    "purchase",
-    "buy",
-    "order",
-    "checkout",
-    "send",
-    "submit",
-    "confirm",
-    "delete",
-    "remove",
-    "close",
-    "transfer",
-    "publish",
-    "post",
-    "subscribe",
-    "donate",
-    "create",
-    "generate",
-    "approve",
-    "authorize",
-];
-
-/// The fixed word list's verdict on `text` (an element's name and row).
-pub fn risky_by_words(text: &str) -> bool {
-    text.split(|c: char| !c.is_alphanumeric()).any(|word| {
-        RISKY_WORDS
-            .iter()
-            .any(|risky| word.eq_ignore_ascii_case(risky))
-    })
-}
-
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -627,75 +560,52 @@ pub mod tests {
 
     #[tokio::test]
     async fn answers_are_checked_before_use_and_a_bad_one_turns_the_model_off() {
-        let options = || {
-            vec![
-                ("e1".to_string(), "a".to_string()),
-                ("e2".into(), "b".into()),
-            ]
-        };
+        let lines = || vec!["Total $10.00".to_string()];
+        // The evidence question offers l0 and "none".
         for (bad, why) in [
-            (chose("e3", &[("e1", 0.5), ("e2", 0.5)]), "not offered"),
-            (chose("e1", &[("e1", 0.9)]), "do not match"),
-            (chose("e1", &[("e1", 0.9), ("e2", 0.3)]), "sum to 1"),
-            (chose("e1", &[("e1", 0.2), ("e2", 0.8)]), "most likely"),
-            (chose("e1", &[("e1", f64::NAN), ("e2", 0.5)]), "[0, 1]"),
+            (chose("l3", &[("l0", 0.5), ("none", 0.5)]), "not offered"),
+            (chose("l0", &[("l0", 0.9)]), "do not match"),
+            (chose("l0", &[("l0", 0.9), ("none", 0.3)]), "sum to 1"),
+            (chose("l0", &[("l0", 0.2), ("none", 0.8)]), "most likely"),
+            (chose("l0", &[("l0", f64::NAN), ("none", 0.5)]), "[0, 1]"),
         ] {
-            let mut m = model(vec![vec![("target", bad)]]);
-            let err = m
-                .choose_target(json!({}), "click", "x", options())
-                .await
-                .unwrap_err();
-            // "none" is offered too, so a pair alone never matches the options.
-            assert!(err.contains(why) || err.contains("do not match"), "{err}");
+            let mut m = model(vec![vec![("met", Answer::Yes(0.9)), ("evidence", bad)]]);
+            let err = m.judge(json!({}), "x", &lines()).await.unwrap_err();
+            assert!(err.contains(why), "{err}");
             assert!(!m.is_on());
             assert_eq!(m.calls[0]["outcome"], "failed");
         }
-        let mut m = model(vec![vec![(
-            "target",
-            chose("e2", &[("e1", 0.05), ("e2", 0.9), ("none", 0.05)]),
-        )]]);
-        let ranked = m
-            .choose_target(json!({}), "click", "x", options())
-            .await
-            .unwrap();
-        assert_eq!(ranked[0], ("e2".to_string(), 0.9));
+        let mut m = model(vec![vec![
+            ("met", Answer::Yes(0.9)),
+            ("evidence", chose("l0", &[("l0", 0.95), ("none", 0.05)])),
+        ]]);
+        let verdict = m.judge(json!({}), "x", &lines()).await.unwrap();
+        assert_eq!(verdict.result, "met");
+        assert_eq!(verdict.evidence.unwrap(), "Total $10.00");
         let call = &m.calls[0];
         assert_eq!(call["provider"], "scripted");
         assert_eq!(call["model_request"], "req_1");
         assert_eq!(
             call["sent"],
-            json!(["element_names", "row_text", "description"])
+            json!(["page_lines", "field_values", "expectation"])
         );
         let mut m = model(vec![vec![("risky", Answer::Yes(1.5))]]);
-        assert!(m.risky("t", "button").await.is_err());
+        assert!(m.risky("t", "click button \"Pay\"", &[]).await.is_err());
+        let mut m = Model::off("this host has no decision model");
+        assert!(m.risky("t", "click", &[]).await.is_err());
+        assert!(m.calls.is_empty());
     }
 
     #[test]
-    fn a_sentence_is_met_only_with_a_high_yes_and_a_quoted_line() {
+    fn a_sentence_is_met_only_with_a_high_yes_and_an_evidence_line() {
         let line = || Some("Expense submitted".to_string());
-        assert_eq!(Verdict::of(0.95, line(), 0.9).result, "met");
-        assert_eq!(Verdict::of(0.95, None, 0.9).result, "unsure");
+        assert_eq!(Verdict::of(0.75, line(), 0.1).result, "met");
+        assert_eq!(Verdict::of(0.95, None, 0.1).result, "unsure");
         assert_eq!(Verdict::of(0.95, line(), 0.3).result, "unsure");
-        assert_eq!(Verdict::of(0.7, line(), 0.9).result, "unsure");
+        assert_eq!(Verdict::of(0.65, line(), 0.1).result, "unsure");
         assert_eq!(Verdict::of(0.1, None, 0.9).result, "not_met");
-        assert_eq!(Verdict::of(0.1, line(), 0.9).result, "unsure");
-        assert_eq!(Verdict::of(0.1, line(), 0.2).evidence, None);
-    }
-
-    #[test]
-    fn without_a_model_risky_clicks_are_named_by_a_fixed_word_list() {
-        for risky in [
-            "Place order",
-            "Pay now",
-            "Create API key",
-            "Submit for approval",
-            "Delete",
-        ] {
-            assert!(risky_by_words(risky), "{risky}");
-        }
-        for fine in ["Download", "Next →", "Save draft", "New expense", "Orders"] {
-            assert!(!risky_by_words(fine), "{fine}");
-        }
+        assert_eq!(Verdict::of(0.1, line(), 0.1).result, "unsure");
+        assert_eq!(Verdict::of(0.1, line(), 0.8).evidence, None);
     }
 
     #[test]

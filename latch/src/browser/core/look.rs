@@ -1,19 +1,21 @@
-//! The worker's half of descriptions, expectations and step lists: the
-//! readings the host needs to resolve a target or judge a sentence, the
-//! waits for typed conditions, and the review of a click on a page the
-//! agent hasn't seen. The decision model itself runs in the host.
+//! The worker's half of plans and checks: `find`'s candidates, the
+//! readings the host needs to judge a sentence or a consequential action,
+//! the waits for typed conditions, and the pinning of a plan's refs. The
+//! decision model itself runs in the host.
 
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{Action, Core, TEXT_CHARS, document_key};
+use super::{Core, TEXT_CHARS, document_key};
 use crate::browser::driver::Driver;
 use crate::failure::{Exit, Failure};
 
 /// The most page lines a judgement gets.
 const MAX_LINES: usize = 120;
+/// The most page lines a plan's answer shows.
+const PAGE_LINES: usize = 40;
 /// How often a wait looks again.
 const POLL: Duration = Duration::from_millis(250);
 
@@ -21,8 +23,12 @@ const POLL: Duration = Duration::from_millis(250);
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Condition {
-    /// The page's URL starts with `url`.
-    Url { url: String },
+    /// The page's origin is `origin`.
+    Origin { origin: String },
+    /// `path` is part of the page's path (never its host or query).
+    Path { path: String },
+    /// The page's query has parameter `name` with `value`.
+    Query { name: String, value: String },
     /// The page's text holds `text`.
     Text { text: String },
     /// A field holds `value`, or is `checked` / `unchecked`.
@@ -64,57 +70,100 @@ fn same_name(a: &str, b: &str) -> bool {
 }
 
 impl<D: Driver> Core<D> {
+    /// The elements with `role` whose name is exactly `name`, in a
+    /// snapshot the agent may act on.
     pub(super) fn resolve(
         &mut self,
-        action: Option<Action>,
-        role: Option<&str>,
-        name: Option<&str>,
+        role: &str,
+        name: &str,
         audit: &mut Map<String, Value>,
     ) -> Result<Value, Failure> {
         self.no_dialog()?;
         let mut result = self.page(audit)?;
         let reading = self.read(None)?;
-        let fits = |element: &Value| {
+        let mut candidates = Vec::new();
+        for element in &reading.elements {
             // latch never targets a password or secret field.
-            if ["secret", "filled", "disabled", "hidden"]
-                .iter()
-                .any(|flag| element[*flag] == true)
+            if element["secret"] == true || element["filled"] == true {
+                continue;
+            }
+            if element["role"] != role
+                || !same_name(element["name"].as_str().unwrap_or_default(), name)
             {
-                return false;
+                continue;
             }
-            let has = element["role"].as_str().unwrap_or_default();
-            if let Some(role) = role {
-                return has == role;
-            }
-            match action {
-                Some(Action::Type) => matches!(has, "textbox" | "searchbox" | "spinbutton"),
-                Some(Action::Select) => matches!(has, "combobox" | "listbox"),
-                _ => true,
-            }
-        };
-        let mut options = Vec::new();
-        let mut exact = Vec::new();
-        for element in reading.elements.iter().filter(|e| fits(e)) {
-            let mut option = Map::new();
-            for key in ["ref", "role", "name", "row", "value", "checked", "frame"] {
+            let mut candidate = Map::new();
+            for key in [
+                "ref", "role", "name", "row", "value", "checked", "disabled", "frame",
+            ] {
                 if !element[key].is_null() {
-                    option.insert(key.into(), element[key].clone());
+                    candidate.insert(key.into(), element[key].clone());
                 }
             }
-            if let Some(name) = name
-                && same_name(element["name"].as_str().unwrap_or_default(), name)
-            {
-                exact.push(element["ref"].clone());
-            }
-            options.push(Value::Object(option));
+            candidates.push(Value::Object(candidate));
         }
         result.insert("snapshot".into(), json!(reading.snapshot));
-        result.insert("options".into(), json!(options));
-        result.insert("exact".into(), json!(exact));
+        result.insert("candidates".into(), json!(candidates));
         if reading.truncated {
             result.insert("truncated".into(), json!(true));
         }
         Ok(Value::Object(result))
+    }
+
+    /// The snapshot `target` is read in, if it holds that ref. The page
+    /// may have moved on since; that is checked when the step runs.
+    pub(super) fn pin(&mut self, snapshot: Option<&str>, target: &str) -> Result<Value, Failure> {
+        let position = target
+            .strip_prefix('e')
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .ok_or_else(|| Failure::usage("bad_target", format!("{target:?} is not a ref")))?;
+        let latest = self.last_shown.clone();
+        let id = snapshot.or(latest.as_deref()).ok_or_else(super::stale)?;
+        let found = self.snapshot(id)?;
+        if found.refs.len() < position {
+            return Err(Failure::failed(
+                "no_such_target",
+                format!("snapshot {id} has no {target}"),
+            ));
+        }
+        Ok(json!({"snapshot": id}))
+    }
+
+    /// What acting on `target` would act on: the element, or for Enter its
+    /// form's submit control (else the form); the lines of the form or
+    /// section around it, which name the item, amount or recipient; the
+    /// page's title; and the document and element identity a confirmation
+    /// is bound to.
+    pub(super) fn review(
+        &mut self,
+        snapshot: Option<&str>,
+        target: &str,
+        enter: bool,
+        audit: &mut Map<String, Value>,
+    ) -> Result<Value, Failure> {
+        self.no_dialog()?;
+        let page = self.page(audit)?;
+        let (snapshot, position) = self.bound(snapshot, target)?;
+        let (frame, index) = self.reference(&snapshot, position)?;
+        let read = self.driver.run(
+            &frame,
+            &format!("__latch.review({snapshot:?}, {index}, {enter})"),
+        )?;
+        if read.is_null() {
+            return Err(super::stale());
+        }
+        Ok(json!({
+            "snapshot": snapshot,
+            "ref": target,
+            "document": document_key(&frame),
+            "uid": read["uid"],
+            "element": read["element"],
+            "acts_on": read["acts_on"],
+            "lines": read["lines"],
+            "title": page["title"],
+            "url": page["url"],
+        }))
     }
 
     /// Where the page is, its first lines and an element list the agent
@@ -125,22 +174,24 @@ impl<D: Driver> Core<D> {
             result.insert("blocked_by_dialog".into(), json!(true));
             return Ok(Value::Object(result));
         }
-        result.insert("lines".into(), json!(self.first_lines()?));
+        result.insert("lines".into(), json!(self.first_lines(PAGE_LINES)?));
         self.read(None)?.into_json(&mut result);
         Ok(Value::Object(result))
     }
 
-    /// The page's first five lines.
-    pub(super) fn first_lines(&mut self) -> Result<Vec<String>, Failure> {
+    /// The page's first `count` lines.
+    pub(super) fn first_lines(&mut self, count: usize) -> Result<Vec<String>, Failure> {
         let main = self.main_frame()?;
-        let text = self.driver.run(&main, "__latch.text(600)")?;
+        let text = self
+            .driver
+            .run(&main, &format!("__latch.text({TEXT_CHARS})"))?;
         Ok(text["text"]
             .as_str()
             .unwrap_or_default()
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
-            .take(5)
+            .take(count)
             .map(str::to_string)
             .collect())
     }
@@ -220,17 +271,11 @@ impl<D: Driver> Core<D> {
     /// (its element is from a page that is gone); and what to report.
     fn holds(&mut self, condition: &Condition) -> Result<(bool, bool, Option<Value>), Failure> {
         match condition {
-            Condition::Url { url } => {
+            Condition::Origin { .. } | Condition::Path { .. } | Condition::Query { .. } => {
                 let mut ignored = Map::new();
                 let page = self.page(&mut ignored)?;
-                Ok((
-                    page["url"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .starts_with(url.as_str()),
-                    false,
-                    None,
-                ))
+                let url = url::Url::parse(page["url"].as_str().unwrap_or_default()).ok();
+                Ok((url.is_some_and(|url| at(&url, condition)), false, None))
             }
             Condition::Text { text } => {
                 let main = self.main_frame()?;
@@ -334,36 +379,21 @@ impl<D: Driver> Core<D> {
         }
         Ok(login.then_some("login"))
     }
+}
 
-    /// A click's target on a page whose element list has never reached the
-    /// agent goes back to the host, which judges whether the click can be
-    /// undone before it is made.
-    pub(super) fn seen_or_review(
-        &mut self,
-        snapshot: &str,
-        position: usize,
-        target: &str,
-        element: &Value,
-    ) -> Result<(), Failure> {
-        let (frame, _) = self.reference(snapshot, position)?;
-        if self.shown.contains(&document_key(&frame)) {
-            return Ok(());
+/// Whether the page at `url` meets a URL condition, by component: the
+/// origin whole, the path alone (never the host or query), one query
+/// parameter.
+fn at(url: &url::Url, condition: &Condition) -> bool {
+    match condition {
+        Condition::Origin { origin } => {
+            url::Url::parse(origin).is_ok_and(|want| want.origin() == url.origin())
         }
-        let main = self.main_frame()?;
-        let title = self.driver.run(&main, "__latch.title()")?;
-        let mut failure = Failure::new(
-            Exit::Denied,
-            "review_target",
-            "the agent has not seen this page".into(),
-        );
-        failure.details = json!({
-            "target": {
-                "ref": target, "snapshot": snapshot, "role": element["role"],
-                "name": element["name"], "row": element["row"],
-            },
-            "title": title,
-        });
-        Err(failure)
+        Condition::Path { path } => url.path().contains(path.as_str()),
+        Condition::Query { name, value } => url
+            .query_pairs()
+            .any(|(n, v)| n == name.as_str() && v == value.as_str()),
+        _ => false,
     }
 }
 
@@ -376,6 +406,35 @@ mod tests {
         assert!(same_name("New  expense", "new expense"));
         assert!(!same_name("New expense report", "New expense"));
         assert!(!same_name("Amount (USD)", "amount"));
+    }
+
+    #[test]
+    fn url_checks_match_by_component() {
+        let path = Condition::Path {
+            path: "checkout".into(),
+        };
+        let url = |u: &str| url::Url::parse(u).unwrap();
+        assert!(at(&url("https://shop.example/checkout?x=1"), &path));
+        assert!(!at(&url("https://checkout.invalid/login"), &path));
+        assert!(!at(
+            &url("https://shop.example/login?next=checkout.html"),
+            &path
+        ));
+        let origin = Condition::Origin {
+            origin: "https://www.doordash.com".into(),
+        };
+        assert!(at(&url("https://www.doordash.com:443/store/1"), &origin));
+        assert!(!at(&url("https://doordash.com/"), &origin));
+        assert!(!at(&url("http://www.doordash.com/"), &origin));
+        let query = Condition::Query {
+            name: "q".into(),
+            value: "salad bowl".into(),
+        };
+        assert!(at(
+            &url("https://shop.example/s?page=2&q=salad+bowl"),
+            &query
+        ));
+        assert!(!at(&url("https://shop.example/s?q=salad"), &query));
     }
 
     #[test]
