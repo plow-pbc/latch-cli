@@ -83,6 +83,10 @@ pub struct BrowserArgs {
     /// The agent turn this call belongs to, for the host's metrics
     #[arg(long, env = "LATCH_TURN", global = true)]
     pub turn: Option<String>,
+    /// The owner's Plow chat this agent acts for, when its line has more
+    /// than one: the host's gatekeeper reads what the owner asked there
+    #[arg(long, env = "LATCH_CHAT", global = true)]
+    pub chat: Option<String>,
     #[command(subcommand)]
     pub command: BrowserCommand,
 }

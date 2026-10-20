@@ -426,17 +426,25 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                         )
                         .await
                     }
-                    "browser" => {
-                        crate::browser::host::run(
-                            &host.browsers,
-                            caller,
-                            &identity.kind,
-                            request.args,
-                            &mut send,
-                            &mut recv,
-                        )
-                        .await
-                    }
+                    "browser" => match &gate {
+                        Ok(gate) => {
+                            crate::browser::host::run(
+                                &host.browsers,
+                                caller,
+                                &identity.kind,
+                                *gate,
+                                request.args,
+                                &mut send,
+                                &mut recv,
+                            )
+                            .await
+                        }
+                        Err(failure) => Done {
+                            response: Response::error(failure),
+                            audit_args: Value::Null,
+                            outcome: failure.code.clone(),
+                        },
+                    },
                     "google" => {
                         crate::google::host::run(
                             &host.workers,
@@ -617,6 +625,9 @@ impl Host {
         }
     }
 
+    /// Asks Plow who `caller` is. Returns the caller's identity if it may
+    /// call, or why not. Nothing is cached: every check asks Plow again, so
+    /// a revoked key stops working at once.
     /// The gate an agent's operations pass, in the chat it named; none for
     /// the owner's own devices, which are never judged. An agent Plow
     /// gives no uid can't be judged, so nothing of it runs.
@@ -642,9 +653,6 @@ impl Host {
         }
     }
 
-    /// Asks Plow who `caller` is. Returns the caller's identity if it may
-    /// call, or why not. Nothing is cached: every check asks Plow again, so
-    /// a revoked key stops working at once.
     async fn check(&self, caller: &str) -> Result<Identity, Denial> {
         match self.plow.lookup(caller).await {
             Ok(identity) if identity.permissions.call => Ok(identity),
