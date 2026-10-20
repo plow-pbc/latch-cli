@@ -26,6 +26,8 @@ use crate::dashboard::{self, Dashboard, Row};
 use crate::exec;
 use crate::failure::Failure;
 use crate::files;
+use crate::gate::Gatekeeper;
+use crate::gate::rules::RuleFiles;
 use crate::heartbeat;
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
@@ -50,6 +52,9 @@ struct Host {
     endpoint: Endpoint,
     name: String,
     deny_exec: DenyExec,
+    /// Judges agents' operations against the owner's chat and rules.
+    #[allow(dead_code)] // no operation is gated yet
+    gatekeeper: Gatekeeper,
 }
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
@@ -128,17 +133,6 @@ pub async fn run(
     headless_browsers: bool,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
-    // Tests run a relay of their own, so they need no internet.
-    let relay_mode = match std::env::var("LATCH_TEST_RELAY_URL") {
-        Err(_) => RelayMode::Default,
-        Ok(url) => {
-            let url = url.parse().map_err(|_| {
-                let message = format!("LATCH_TEST_RELAY_URL {url:?} is not a relay URL");
-                Failure::usage("bad_relay", message)
-            })?;
-            RelayMode::custom([url])
-        }
-    };
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
     // missing kernel feature; the probe worker then installs the sandbox
@@ -158,6 +152,7 @@ pub async fn run(
         areas: shared_folders(folders)?,
         state_dir,
     };
+    let rules = RuleFiles::new(&state.path, &workers.areas)?;
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
         Failure::failed("sandbox_unavailable", message)
@@ -178,8 +173,8 @@ pub async fn run(
         workers,
         dashboard.clone(),
         headless_browsers,
+        rules,
         deny_exec,
-        relay_mode,
     )
     .await;
     if let Some(dashboard) = &dashboard {
@@ -194,10 +189,16 @@ async fn run_host(
     workers: WorkerSetup,
     dashboard: Option<Dashboard>,
     headless_browsers: bool,
+    rules: RuleFiles,
     deny_exec: DenyExec,
-    relay_mode: RelayMode,
 ) -> Result<(), Failure> {
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
+    let gatekeeper = Gatekeeper::new(
+        plow.clone(),
+        Gatekeeper::provider_for_host(&state.path)
+            .map_err(|why| Failure::failed("not_logged_in", why))?,
+        Box::new(rules),
+    );
     let audit = AuditLog::open(state.path.join("audit.ndjson"))?;
     log(&format!("audit log verified: {} records", audit.len()));
     let names: Vec<String> = workers
@@ -210,6 +211,17 @@ async fn run_host(
         log(&refused);
     }
 
+    // Tests run a relay of their own, so they need no internet.
+    let relay_mode = match std::env::var("LATCH_TEST_RELAY_URL") {
+        Err(_) => RelayMode::Default,
+        Ok(url) => {
+            let url = url.parse().map_err(|_| {
+                let message = format!("LATCH_TEST_RELAY_URL {url:?} is not a relay URL");
+                Failure::usage("bad_relay", message)
+            })?;
+            RelayMode::custom([url])
+        }
+    };
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(state.load_key()?)
         .relay_mode(relay_mode)
@@ -268,6 +280,7 @@ async fn run_host(
         endpoint: endpoint.clone(),
         name,
         deny_exec,
+        gatekeeper,
     });
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.

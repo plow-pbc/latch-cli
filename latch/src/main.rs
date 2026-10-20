@@ -16,6 +16,7 @@ mod dial;
 mod exec;
 mod failure;
 mod files;
+mod gate;
 mod google;
 mod heartbeat;
 mod hosts;
@@ -201,6 +202,7 @@ async fn call_host(
     let request = Request {
         op: op.to_string(),
         args,
+        chat: None,
     };
     dial::call(state, &host, &request, answer_within).await
 }

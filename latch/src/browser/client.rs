@@ -163,6 +163,7 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     let request = Request {
         op: "browser".to_string(),
         args: request,
+        chat: None,
     };
     let id = request.args["request"].clone();
     match transfer {
@@ -520,6 +521,7 @@ async fn fetch_final(
     let fetch = Request {
         op: "browser".to_string(),
         args,
+        chat: None,
     };
     let link = dial::connect(state, host).await?;
     let got = receive(&link.connection, &fetch, path).await;

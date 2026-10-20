@@ -26,6 +26,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
+use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 
 /// A sentence counts as met at this yes or above, with an evidence line
@@ -73,6 +74,8 @@ pub struct CallMeta {
     pub model: String,
     pub request_id: Option<String>,
     pub latency_ms: u64,
+    /// What the call cost in US dollars, when the provider says.
+    pub cost: Option<f64>,
 }
 
 pub type Asked<'a> =
@@ -85,6 +88,16 @@ pub trait Provider: Send + Sync {
     /// key or credential.
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a>;
 
+    /// Like [`Provider::ask`], with the state sent exactly as this JSON
+    /// text: the model reads a state differently when its keys come in
+    /// another order, and a `Value` sorts them.
+    fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
+        Box::pin(async move {
+            let state: Value = serde_json::from_str(state.get()).map_err(|e| e.to_string())?;
+            self.ask(&state, questions).await
+        })
+    }
+
     /// The provider's name for the audit, even of a call that failed.
     fn name(&self) -> &'static str {
         ""
@@ -95,6 +108,10 @@ pub trait Provider: Send + Sync {
 impl<P: Provider + ?Sized> Provider for std::sync::Arc<P> {
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         (**self).ask(state, questions)
+    }
+
+    fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
+        (**self).ask_as_written(state, questions)
     }
 
     fn name(&self) -> &'static str {
@@ -129,32 +146,11 @@ impl Model {
         }
     }
 
-    /// The host's model: Plow's decision route on the host's own login;
-    /// jev with the dev key file only when `browser/model.json` says
-    /// `{"provider": "jev"}`.
+    /// The host's model: see [`host_provider`].
     pub fn for_host(state_dir: &Path) -> Model {
-        let set = std::fs::read_to_string(state_dir.join(MODEL_FILE))
-            .ok()
-            .map(|text| serde_json::from_str::<Value>(&text));
-        match set {
-            None => match Plow::for_host(state_dir) {
-                Ok(plow) => Model::new(Box::new(plow)),
-                Err(why) => Model::off(&why),
-            },
-            Some(Ok(set)) if set["provider"] == "jev" => match Jev::from_state(state_dir) {
-                Ok(Some(jev)) => Model::new(Box::new(jev)),
-                Ok(None) => Model::off(&format!(
-                    "{MODEL_FILE} asks for jev, and there is no {JEV_KEY_FILE}"
-                )),
-                Err(why) => Model::off(&why),
-            },
-            Some(Ok(set)) if set["provider"] == "plow" => match Plow::for_host(state_dir) {
-                Ok(plow) => Model::new(Box::new(plow)),
-                Err(why) => Model::off(&why),
-            },
-            Some(_) => Model::off(&format!(
-                "{MODEL_FILE} must say {{\"provider\": \"plow\"}} or {{\"provider\": \"jev\"}}"
-            )),
+        match host_provider(state_dir, PLOW_MODEL, JEV_MODEL) {
+            Ok(provider) => Model::new(provider),
+            Err(why) => Model::off(&why),
         }
     }
 
@@ -177,11 +173,23 @@ impl Model {
         state: Value,
         questions: Vec<Question>,
     ) -> Result<HashMap<String, Answer>, String> {
+        let state = serde_json::value::to_raw_value(&state).expect("a JSON value serializes");
+        self.ask_as_written(purpose, sent, state, questions).await
+    }
+
+    /// [`Model::ask`], with the state sent exactly as this JSON text.
+    pub async fn ask_as_written(
+        &mut self,
+        purpose: &str,
+        sent: &[&str],
+        state: Box<RawValue>,
+        questions: Vec<Question>,
+    ) -> Result<HashMap<String, Answer>, String> {
         let Some(provider) = &self.provider else {
             return Err(self.off.clone());
         };
         let started = Instant::now();
-        let asked = provider.ask(&state, &questions).await;
+        let asked = provider.ask_as_written(&state, &questions).await;
         let mut record = json!({"purpose": purpose, "sent": sent});
         if !provider.name().is_empty() {
             record["provider"] = json!(provider.name());
@@ -191,6 +199,9 @@ impl Model {
             record["model"] = json!(meta.model);
             record["model_request"] = json!(meta.request_id);
             record["latency_ms"] = json!(meta.latency_ms);
+            if let Some(cost) = meta.cost {
+                record["cost"] = json!(cost);
+            }
             let corrected = check(&questions, &mut answers)?;
             if !corrected.is_empty() {
                 record["corrected"] = json!(corrected);
@@ -967,6 +978,34 @@ fn check(
     Ok(corrected)
 }
 
+/// A host's provider: Plow's decision route on the host's own login,
+/// asking `plow_model`; jev with the dev key file, asking `jev_model`, only
+/// when `browser/model.json` says `{"provider": "jev"}`.
+pub fn host_provider(
+    state_dir: &Path,
+    plow_model: &str,
+    jev_model: &str,
+) -> Result<Box<dyn Provider>, String> {
+    let set = std::fs::read_to_string(state_dir.join(MODEL_FILE))
+        .ok()
+        .map(|text| serde_json::from_str::<Value>(&text));
+    match set {
+        None => Ok(Box::new(Plow::for_host(state_dir)?.with_model(plow_model))),
+        Some(Ok(set)) if set["provider"] == "jev" => match Jev::from_state(state_dir)? {
+            Some(jev) => Ok(Box::new(jev.with_model(jev_model))),
+            None => Err(format!(
+                "{MODEL_FILE} asks for jev, and there is no {JEV_KEY_FILE}"
+            )),
+        },
+        Some(Ok(set)) if set["provider"] == "plow" => {
+            Ok(Box::new(Plow::for_host(state_dir)?.with_model(plow_model)))
+        }
+        Some(_) => Err(format!(
+            "{MODEL_FILE} must say {{\"provider\": \"plow\"}} or {{\"provider\": \"jev\"}}"
+        )),
+    }
+}
+
 /// Which decision model a host uses, in its state directory: Plow's route
 /// without one.
 pub const MODEL_FILE: &str = "browser/model.json";
@@ -981,6 +1020,7 @@ const JEV_MODEL: &str = "jev-1.13.0";
 pub struct Jev {
     http: reqwest::Client,
     key: String,
+    model: String,
 }
 
 impl Jev {
@@ -1003,13 +1043,43 @@ impl Jev {
         if key.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Jev { http: http(), key }))
+        Ok(Some(Jev {
+            http: http(),
+            key,
+            model: JEV_MODEL.to_string(),
+        }))
+    }
+
+    /// The same key, asking another jev version.
+    pub fn with_model(self, model: &str) -> Jev {
+        Jev {
+            model: model.to_string(),
+            ..self
+        }
+    }
+}
+
+/// A request body: the model, the state as written, and the questions.
+#[derive(serde::Serialize)]
+struct Body<'a> {
+    model: &'a str,
+    state: &'a RawValue,
+    questions: Value,
+}
+
+impl<'a> Body<'a> {
+    fn new(model: &'a str, state: &'a RawValue, questions: &[Question]) -> Body<'a> {
+        Body {
+            model,
+            state,
+            questions: system_one(questions),
+        }
     }
 }
 
 /// Questions as System One takes them: `noul` for yes/no, `choice` with
 /// its options as criteria.
-fn system_one(questions: &[Question]) -> Value {
+pub fn system_one(questions: &[Question]) -> Value {
     let mut asked = Map::new();
     for question in questions {
         let mut q = json!({"instructions": question.instructions});
@@ -1069,8 +1139,14 @@ impl Provider for Jev {
 
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         Box::pin(async move {
-            let body =
-                json!({"state": state, "model": JEV_MODEL, "questions": system_one(questions)});
+            let state = serde_json::value::to_raw_value(state).map_err(|e| e.to_string())?;
+            self.ask_as_written(&state, questions).await
+        })
+    }
+
+    fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
+        Box::pin(async move {
+            let body = Body::new(&self.model, state, questions);
             let started = Instant::now();
             let response = self
                 .http
@@ -1098,9 +1174,10 @@ impl Provider for Jev {
             let answers = system_one_answers(&reply, questions);
             let meta = CallMeta {
                 provider: "typesafe",
-                model: reply["model"].as_str().unwrap_or(JEV_MODEL).to_string(),
+                model: reply["model"].as_str().unwrap_or(&self.model).to_string(),
                 request_id,
                 latency_ms,
+                cost: reply["usage"]["cost"].as_f64(),
             };
             Ok((answers, meta))
         })
@@ -1118,6 +1195,7 @@ pub struct Plow {
     http: reqwest::Client,
     url: String,
     token: String,
+    model: String,
 }
 
 impl Plow {
@@ -1126,6 +1204,15 @@ impl Plow {
             http: http(),
             url: format!("{}{PLOW_ROUTE}", api_url.trim_end_matches('/')),
             token,
+            model: PLOW_MODEL.to_string(),
+        }
+    }
+
+    /// The same route and login, asking another jev version.
+    pub fn with_model(self, model: &str) -> Plow {
+        Plow {
+            model: model.to_string(),
+            ..self
         }
     }
 
@@ -1151,8 +1238,14 @@ impl Provider for Plow {
 
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         Box::pin(async move {
-            let body =
-                json!({"model": PLOW_MODEL, "state": state, "questions": system_one(questions)});
+            let state = serde_json::value::to_raw_value(state).map_err(|e| e.to_string())?;
+            self.ask_as_written(&state, questions).await
+        })
+    }
+
+    fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
+        Box::pin(async move {
+            let body = Body::new(&self.model, state, questions);
             let started = Instant::now();
             let response = self
                 .http
@@ -1178,9 +1271,10 @@ impl Provider for Plow {
                 .map_err(|_| "Plow's decision route did not answer JSON".to_string())?;
             let meta = CallMeta {
                 provider: "plow",
-                model: reply["model"].as_str().unwrap_or(PLOW_MODEL).to_string(),
+                model: reply["model"].as_str().unwrap_or(&self.model).to_string(),
                 request_id: reply["id"].as_str().map(str::to_string),
                 latency_ms,
+                cost: reply["usage"]["cost"].as_f64(),
             };
             Ok((system_one_answers(&reply, questions), meta))
         })
@@ -1206,6 +1300,7 @@ pub mod tests {
                         model: "test".into(),
                         request_id: Some("req_1".into()),
                         latency_ms: 3,
+                        cost: None,
                     },
                 ))
             })
@@ -1328,6 +1423,7 @@ pub mod tests {
                         model: "test".into(),
                         request_id: None,
                         latency_ms: 1,
+                        cost: None,
                     },
                 ))
             })
@@ -1662,7 +1758,8 @@ pub mod tests {
     #[tokio::test]
     async fn plow_asks_jev_on_the_hosts_login_and_its_answers_are_checked_the_same() {
         let reply = json!({"model": "typesafe/jev-1.13", "id": "req_made_up",
-                           "answers": {"risky": {"type": "noul", "noul": 0.93}}});
+                           "answers": {"risky": {"type": "noul", "noul": 0.93}},
+                           "usage": {"input_tokens": 900, "output_tokens": 0, "cost": 0.00042}});
         let (url, seen) = plow_route(200, reply);
         let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
         let p = m
@@ -1689,6 +1786,7 @@ pub mod tests {
         assert_eq!(call["provider"], "plow");
         assert_eq!(call["model"], "typesafe/jev-1.13");
         assert_eq!(call["model_request"], "req_made_up");
+        assert_eq!(call["cost"], 0.00042);
 
         // A bad answer through Plow is refused like any provider's.
         let (url, _seen) = plow_route(200, json!({"answers": {"risky": {"noul": 1.5}}}));
