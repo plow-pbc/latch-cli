@@ -16,12 +16,48 @@ or helper is caught, not only a changed main binary. To pin a new release,
 run `python3 scripts/cft-pin.py VERSION` on a Mac and put its output in
 `builds`.
 
+## Camoufox, the second engine
+
+`install.sh --with-camoufox` (macOS) also installs Camoufox, pinned in
+`src/browser/camoufox.json` with the runtime latch drives it through, into
+`<state-dir>/plugins/camoufox/<version>/`, about 1 GB:
+
+- `camoufox/`: the Camoufox build (zip sha256-checked, unpacked with
+  `ditto`) and the `version.json` camoufox-js reads;
+- `node/`: the pinned Node (tarball sha256-checked);
+- `runtime/`: the helper's package from `camoufox/` (Playwright below 1.63
+  and camoufox-js, exactly as `package-lock.json` pins them), installed
+  with `npm ci --ignore-scripts`. camoufox-js's native SQLite addon is
+  replaced by a few lines over Node's own (`camoufox/sqlite/`), so no
+  package downloads anything unchecked.
+
+Before every launch latch checks each part's tree hash against the pin.
+`python3 scripts/camoufox-pin.py` prints them for every pinned Mac build.
+
+The driver (`src/browser/camoufox.rs`) runs latch's helper,
+`camoufox/helper.mjs` (built into latch, written into the session's
+scratch folder), on that Node. The helper speaks the driver operations as
+JSON lines over its stdio and drives Camoufox through Playwright, which
+reaches it over its own pipe (`-juggler-pipe`), never a port. latch's page
+reader runs in Camoufox's isolated world; the agent's `eval` in the page's
+own world (Camoufox's `mw:`). Each profile gets one fingerprint, made on its
+first launch with the host's OS and kept in the profile (`camoufox.json`,
+0600), so a site sees the same device every time. Camoufox ships with
+password saving and form autofill off; its uBlock add-on is left out.
+
+A profile is bound to its engine when it is made. `open` makes a missing
+profile for CfT; for Camoufox, make it first, on the host:
+
+    latch browser profile create shop --engine camoufox
+    latch browser open --profile shop https://example.com   # from a client
+
 ## Sessions and profiles
 
 Each profile in use has one running browser, its **runtime**, driven by
 one long-lived browser worker (`latch browser-worker`, hidden), which the
 host talks to over stdio. The worker drives CfT over
-`--remote-debugging-pipe` only: CDP on Chrome's fds 3 and 4, never a port.
+`--remote-debugging-pipe` only: CDP on Chrome's fds 3 and 4, never a port;
+Camoufox through its helper (above).
 
 Each `open` makes a new **session** in its profile's runtime, starting the
 runtime if none is running: a window of its own, and every tab or popup
@@ -42,9 +78,9 @@ gets `timeout`, never a call that hangs. A worker that has not answered
 
 Profiles live in `<state-dir>/browser/profiles/<name>/`: `profile.json`
 binds the profile to its engine for life, `lock` is held by its runtime,
-and `data/` is Chrome's user data folder, created with password saving and
-autofill off. A session closes after 30 minutes without a call (counted
-from the end of its last one), and
+and `data/` is the engine's data folder (Chrome's, created with password
+saving and autofill off, or Firefox's). A session closes after 30 minutes
+without a call (counted from the end of its last one), and
 closing one never touches the others; the runtime closes with its last
 session, and the profile stays. `exec` and file workers are denied the
 whole state directory, profiles included.
@@ -351,6 +387,12 @@ JavaScript dialog still raises its window, and so can a tab the page opens
 (`target=_blank`, `window.open`); `handoff` will bring it forward on
 purpose. This is the pin's one `focus` switch (`background`; `front` brings
 windows and tab switches forward instead).
+Camoufox runs the same way: outside latch's Seatbelt, with Firefox's own
+sandbox on for every web content process; the helper and the browser each
+in a process group of their own, both killed and waited for on close; an
+environment of `PATH`, `HOME` and `TMPDIR` (the scratch folder), plus the
+profile's fingerprint and `MOZ_CRASHREPORTER_DISABLE` for the browser and
+the plugin's location for the helper.
 A separate macOS user for engines is the later hardening.
 
 ## On Linux the engine runs inside bubblewrap
@@ -378,7 +420,8 @@ engine's the four variables above (and `DISPLAY`).
 ## Tests
 
 `src/browser/tests.rs` (macOS) runs real sessions against the pinned CfT
-in `.dev/cft-state`, which `just cft` installs and `just test` runs first;
+and Camoufox in `.dev/cft-state`, which `just cft` installs and `just test`
+runs first;
 CI does the same on its Macs. They run headless, so a test run never puts
 a window on the screen. `just test-headed` (the `headed-tests` feature)
 runs the same tests headed, where the checks that the engine never becomes
@@ -389,3 +432,9 @@ checks, confirmations and the journal, with a fake
 provider that answers from fixed facts about the test site and can be made
 unreachable; the risk decision and a sentence check on jev itself are built
 only with `--features live-model`, which `just test-model KEYFILE` runs.
+
+These real-engine tests are also the driver conformance runner: each runs
+once per engine, as `browser::tests::cft::NAME` and
+`browser::tests::camoufox::NAME` (and the same under `fills` and `steps`).
+`just conformance camoufox` runs one engine's checks; a new engine joins by
+one line in the `conformance!` macro.

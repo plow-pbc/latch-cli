@@ -304,6 +304,28 @@ pub enum BrowserCommand {
     /// End the session (its profile, and other sessions on it, stay); an
     /// owner device may name any session by the hash the host's dashboard shows
     Close,
+    /// Owner only, on the host itself: the host's browser profiles
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProfileCommand {
+    /// Make profile NAME, bound to ENGINE for life, in this machine's state
+    /// directory (the host's, when run as the host)
+    Create {
+        name: String,
+        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
+        engine: EngineArg,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum EngineArg {
+    Cft,
+    Camoufox,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]

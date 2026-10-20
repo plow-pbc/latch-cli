@@ -445,7 +445,9 @@ impl<D: Driver> Core<D> {
     /// it would load, wherever that is known before it is sent (a URL to
     /// open, Back's entry, a link's address, the address a form sends to).
     /// Script on a page can still take it anywhere.
-    pub fn sites_of(&mut self, call: &Call) -> Vec<String> {
+    /// None when the call's destination can't be known before it is sent:
+    /// Back, on an engine that can't name its entry.
+    pub fn sites_of(&mut self, call: &Call) -> Option<Vec<String>> {
         let mut urls = Vec::new();
         match call.acts() {
             Acts::No => {}
@@ -461,6 +463,9 @@ impl<D: Driver> Core<D> {
                     ..
                 } = call
                 {
+                    if *action == Action::Back {
+                        urls.extend(self.driver.back_url().ok()?);
+                    }
                     urls.extend(self.leads_to(
                         snapshot.as_deref(),
                         *action,
@@ -470,13 +475,15 @@ impl<D: Driver> Core<D> {
                 }
             }
         }
-        urls.iter()
-            .filter_map(|url| crate::vault::sites::site_of(url))
-            .collect()
+        Some(
+            urls.iter()
+                .filter_map(|url| crate::vault::sites::site_of(url))
+                .collect(),
+        )
     }
 
-    /// The page an action would load, when that is known before it is
-    /// sent: Back's entry; a link's address, or the address its form sends
+    /// The page an action on an element would load, when that is known
+    /// before it is sent: a link's address, or the address its form sends
     /// to, for a click, Enter or Space on it (or typed text ending a line).
     fn leads_to(
         &mut self,
@@ -489,8 +496,7 @@ impl<D: Driver> Core<D> {
             Action::Click => None,
             Action::Press => text,
             Action::Type if text.is_some_and(|text| text.contains('\n')) => Some("Enter"),
-            Action::Back => return self.driver.back_url().ok().flatten(),
-            Action::Type | Action::Select | Action::Scroll => return None,
+            Action::Type | Action::Select | Action::Scroll | Action::Back => return None,
         };
         let key = json!(key);
         let found = match target {

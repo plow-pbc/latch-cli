@@ -11,12 +11,20 @@ test: cft
 test-headed: cft
     cargo test --locked --features headed-tests browser::tests
 
-# The pinned Chrome for Testing, where the browser test looks for it. HOME
-# keeps install.sh's copy of latch out of the real ~/.local/bin.
+# The driver conformance checks on one engine (cft or camoufox), each a
+# test that passes or fails by name: the real-engine browser tests, run
+# against that engine's driver.
+[macos]
+conformance engine: cft
+    cargo test --locked -- --test-threads=1 "::{{engine}}::"
+
+# The pinned engines, Chrome for Testing and Camoufox, where the browser
+# tests look for them. HOME keeps install.sh's copy of latch out of the real
+# ~/.local/bin.
 [macos]
 cft:
     cargo build --locked
-    HOME="$PWD/../.dev/cft-home" sh install.sh --state-dir ../.dev/cft-state "${CARGO_TARGET_DIR:-target}/debug/latch"
+    HOME="$PWD/../.dev/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
 
 # The real-engine browser tests run on macOS only; install.sh puts a Linux
 # host's engine in place.

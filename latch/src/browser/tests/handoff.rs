@@ -16,6 +16,13 @@ use crate::browser::host::Browsers;
 
 const OWNER_AGENT: &str = "handoff-caller";
 
+conformance!(
+    a_handoff_pauses_the_session_until_the_owner_hands_it_back,
+    a_host_with_no_screen_answers_needs_owner_at_once,
+    a_plan_running_when_the_handoff_starts_sends_nothing_more,
+    refs_are_forgotten_even_while_another_session_holds_the_browser,
+);
+
 /// The host's browsers, with its screen check forced to `screen`.
 fn browsers(state: &std::path::Path, screen: bool) -> Arc<Browsers> {
     let mut browsers = Browsers::new(
@@ -29,9 +36,8 @@ fn browsers(state: &std::path::Path, screen: bool) -> Arc<Browsers> {
     Arc::new(browsers)
 }
 
-#[tokio::test]
-async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back() {
-    let (_dir, state, _area) = test_state();
+async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let page = local_page();
     let browsers = browsers(&state, true);
     let open = || async {
@@ -131,9 +137,8 @@ async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back() {
     assert!(after.is_ok());
 }
 
-#[tokio::test]
-async fn a_host_with_no_screen_answers_needs_owner_at_once() {
-    let (_dir, state, _area) = test_state();
+async fn a_host_with_no_screen_answers_needs_owner_at_once(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let mut host = Host::new(&state);
     host.browsers.screen = Some(false);
     let (id, _) = host
@@ -178,9 +183,8 @@ fn slow_page() -> String {
     )
 }
 
-#[tokio::test]
-async fn a_plan_running_when_the_handoff_starts_sends_nothing_more() {
-    let (_dir, state, _area) = test_state();
+async fn a_plan_running_when_the_handoff_starts_sends_nothing_more(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let browsers = browsers(&state, true);
     let (opened, _) = super::run_as(
         &browsers,
@@ -244,9 +248,8 @@ async fn a_plan_running_when_the_handoff_starts_sends_nothing_more() {
     );
 }
 
-#[tokio::test]
-async fn refs_are_forgotten_even_while_another_session_holds_the_browser() {
-    let (_dir, state, _area) = test_state();
+async fn refs_are_forgotten_even_while_another_session_holds_the_browser(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let browsers = browsers(&state, true);
     let page = slow_page();
     let open = || async {
