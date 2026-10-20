@@ -157,15 +157,15 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
 async fn by_text(state: &StateDir, api_url: &str, name: &str) -> Result<String, Failure> {
     let plow = Plow::anonymous(api_url);
     let activation = plow.activate(name).await?;
-    let text = format!("Plow Activate: {}", activation.display_code);
-    let link = sms_link(&activation.send_to, &text);
-    eprintln!("{}", term::qr(&link));
+    // No colon in the text: some Android scanners cut an SMSTO body at one.
+    let text = format!("Plow Activate {}", activation.display_code);
+    eprintln!("{}", term::qr(&smsto(&activation.send_to, &text)));
     eprintln!(
         "Scan this with your phone's camera, or text {text} to {} from the number your Plow account uses.",
         activation.send_to
     );
     eprintln!("Whoever texts this code first gets the login. Waiting for your text...");
-    open_messages(&link);
+    open_messages(&sms_link(&activation.send_to, &text));
 
     let mut failures = 0;
     loop {
@@ -203,8 +203,14 @@ async fn by_text(state: &StateDir, api_url: &str, name: &str) -> Result<String, 
     }
 }
 
-/// A link that opens the phone's messaging app with `text` ready to send
-/// to `send_to`.
+/// What the QR code holds: a phone's camera opens its messaging app with
+/// `text` ready to send to `send_to`. SMSTO takes the text as it is,
+/// unencoded.
+fn smsto(send_to: &str, text: &str) -> String {
+    format!("SMSTO:{send_to}:{text}")
+}
+
+/// The same as a link, for Messages on a Mac, which reads `sms:` links.
 fn sms_link(send_to: &str, text: &str) -> String {
     format!("sms:{send_to}?&body={}", escape(text))
 }
@@ -280,10 +286,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_sms_link_carries_the_number_and_the_text() {
+    fn the_qr_code_and_the_link_carry_the_number_and_the_text() {
         assert_eq!(
-            sms_link("+14155550100", "Plow Activate: AB12C"),
-            "sms:+14155550100?&body=Plow%20Activate%3A%20AB12C"
+            smsto("+14155550100", "Plow Activate AB12C"),
+            "SMSTO:+14155550100:Plow Activate AB12C"
+        );
+        assert_eq!(
+            sms_link("+14155550100", "Plow Activate AB12C"),
+            "sms:+14155550100?&body=Plow%20Activate%20AB12C"
         );
     }
 
