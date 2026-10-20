@@ -34,10 +34,13 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
+use super::judged;
+use super::plan::Op;
 use super::runtime::{IDLE, Runtime};
 use super::session::Session;
 use super::tags;
 use crate::failure::{Exit, Failure};
+use crate::gate::Gate;
 use crate::serve::Done;
 use crate::state::to_hex;
 use crate::vault::host::Vault;
@@ -79,18 +82,25 @@ pub struct Browsers {
     pub(super) provider: Option<Arc<dyn super::model::Provider>>,
 }
 
-/// Who a command comes from: the client key the gate verified, and whether
-/// Plow knows it as one of the owner's devices.
+/// Who a command comes from: the client key the gate verified, whether
+/// Plow knows it as one of the owner's devices, and, for an agent, the
+/// gatekeeper's gate its judged commands pass.
 #[derive(Clone, Copy)]
 pub(super) struct Caller<'a> {
     pub(super) key: &'a str,
     pub(super) device: bool,
+    pub(super) gate: Option<Gate<'a>>,
 }
 
-/// A caller that is not one of the owner's devices: an agent.
+/// A caller that is not one of the owner's devices, and is not judged: an
+/// agent in tests of the browser itself.
 impl<'a> From<&'a str> for Caller<'a> {
     fn from(key: &'a str) -> Self {
-        Caller { key, device: false }
+        Caller {
+            key,
+            device: false,
+            gate: None,
+        }
     }
 }
 
@@ -116,6 +126,8 @@ pub(super) struct Entry {
     pub(super) confirmations: std::sync::Mutex<Vec<super::steps::Confirmation>>,
     /// The owner has the session (`handoff`): its other calls wait outside.
     handing: std::sync::atomic::AtomicBool,
+    /// The sites the gatekeeper let this session go to.
+    judged_sites: std::sync::Mutex<HashSet<String>>,
 }
 
 impl Entry {
@@ -329,6 +341,7 @@ impl Browsers {
             serial: Mutex::new(()),
             confirmations: Default::default(),
             handing: Default::default(),
+            judged_sites: Default::default(),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
@@ -456,6 +469,7 @@ pub async fn run(
     browsers: &Browsers,
     caller: &str,
     kind: &str,
+    gate: Option<Gate<'_>>,
     args: Value,
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -494,6 +508,7 @@ pub async fn run(
     let caller = Caller {
         key: caller,
         device: kind == "device",
+        gate,
     };
     let result = call(
         browsers,
@@ -553,13 +568,40 @@ pub(super) async fn fill(
     browsers: &Browsers,
     entry: &Entry,
     session: &str,
-    caller: &str,
+    caller: Caller<'_>,
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     audit.insert("item".into(), args["item"].clone());
     let args = super::fill::resolve(browsers, entry, args).await?;
-    if let Some(title) = super::fill::releases_secret(browsers, &args)? {
+    let judged = match caller.gate {
+        Some(_) => {
+            let site = judged::site(browsers, entry).await?;
+            judged::judge(
+                caller.gate,
+                judged::fill(browsers, &args, site, false),
+                audit,
+            )
+            .await?
+        }
+        None => None,
+    };
+    let filled = fill_resolved(browsers, entry, session, caller.key, &args, audit).await;
+    if let Some(judged) = judged {
+        judged.ended(&filled);
+    }
+    filled
+}
+
+async fn fill_resolved(
+    browsers: &Browsers,
+    entry: &Entry,
+    session: &str,
+    caller: &str,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    if let Some(title) = super::fill::releases_secret(browsers, args)? {
         if entry.runtime.filling.load(Ordering::SeqCst) {
             return Err(paused());
         }
@@ -567,7 +609,7 @@ pub(super) async fn fill(
         args["item_title"] = json!(title);
         return Err(super::steps::stop_fill(browsers, entry, session, caller, &args, audit).await);
     }
-    super::fill::run(browsers, entry, &args, audit).await
+    super::fill::run(browsers, entry, args, audit).await
 }
 
 /// One command for `caller`: `open` on profile `name`, `sessions`, or a
@@ -585,7 +627,7 @@ pub(super) async fn call(
     let key = caller.key;
     match command {
         "sessions" => return Ok((browsers.list(key).await, None)),
-        "open" => return open(browsers, key, name, args, audit).await,
+        "open" => return open(browsers, caller, name, args, audit).await,
         "close" if caller.device => {
             if let Some(closed) = browsers.close_by_hash(name, audit).await {
                 return closed.map(|closed| (closed, None));
@@ -619,9 +661,16 @@ pub(super) async fn call(
     if entry.handing.load(Ordering::SeqCst) && command != "close" {
         return Err(super::handoff::handed_off());
     }
+    let judged = match caller.gate {
+        Some(_) => match judged_action(browsers, &entry, command, args).await? {
+            Some(action) => judged::judge(caller.gate, action, audit).await?,
+            None => None,
+        },
+        None => None,
+    };
     let result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
-        "fill" => fill(browsers, &entry, name, key, args, audit)
+        "fill" => fill(browsers, &entry, name, caller, args, audit)
             .await
             .map(|result| (result, None)),
         "do" => super::steps::run(browsers, &entry, name, key, args, audit)
@@ -638,6 +687,19 @@ pub(super) async fn call(
             .map(|result| (result, None)),
         _ => worker(browsers, &entry, command, args, input, audit).await,
     };
+    if let Some(judged) = judged {
+        judged.ended(&result);
+    }
+    if command == "tab"
+        && result.is_ok()
+        && let Some(site) = args["url"].as_str().and_then(sites::site_of)
+    {
+        entry
+            .judged_sites
+            .lock()
+            .expect("judged sites lock")
+            .insert(site);
+    }
     match result {
         Ok((mut result, bytes)) => {
             shared_site(&entry, &mut result, audit);
@@ -652,9 +714,112 @@ pub(super) async fn call(
     }
 }
 
+/// What the gatekeeper judges of a session command before it runs, if
+/// anything: a tab opened on a site the session has not been judged for,
+/// a plan (with a card or identity fill it confirms first), a confirmed
+/// fill alone, and every `eval`, upload and download. A `fill` is judged
+/// once its suggestion is resolved (`fill`).
+async fn judged_action(
+    browsers: &Browsers,
+    entry: &Entry,
+    command: &str,
+    args: &Value,
+) -> Result<Option<judged::Action>, Failure> {
+    Ok(Some(match command {
+        "tab" => {
+            let Some(url) = args["url"].as_str() else {
+                return Ok(None);
+            };
+            let known = sites::site_of(url).is_some_and(|site| {
+                entry
+                    .judged_sites
+                    .lock()
+                    .expect("judged sites lock")
+                    .contains(&site)
+            });
+            if known {
+                return Ok(None);
+            }
+            judged::open_site(browsers, url)
+        }
+        "do" => {
+            let confirmed = match args["confirm"].as_str() {
+                Some(id) => match super::steps::fill_to_confirm(entry, id) {
+                    Some(fill) => {
+                        let site = judged::site(browsers, entry).await?;
+                        Some(judged::fill(browsers, &fill, site, true))
+                    }
+                    None => None,
+                },
+                None => None,
+            };
+            // A malformed plan is refused before anything runs: there is
+            // nothing to judge.
+            let plan = serde_json::from_value::<super::plan::Plan>(args["plan"].clone())
+                .ok()
+                .filter(|plan| plan.validate().is_ok());
+            // One literal step that is no fill is what `act` sends: a single
+            // click, keypress or scroll, which the risk decision judges,
+            // not the gatekeeper.
+            let one_action = |plan: &super::plan::Plan| match plan.steps.as_slice() {
+                [step] => step.literal.as_ref().is_some_and(|l| l.op != Op::Fill),
+                _ => false,
+            };
+            match plan {
+                Some(mut plan) if !plan.steps.is_empty() && !one_action(&plan) => {
+                    plan.resolve_facts();
+                    let page = judged::page(browsers, entry).await?;
+                    judged::plan(browsers, &plan, page, confirmed)
+                }
+                _ => match confirmed {
+                    Some(fill) => fill,
+                    None => return Ok(None),
+                },
+            }
+        }
+        "eval" => judged::Action::RunScript {
+            site: judged::site(browsers, entry).await?,
+            script: args["script"].as_str().unwrap_or_default().into(),
+        },
+        "upload" => judged::upload(args, judged::site(browsers, entry).await?),
+        "download_get" => {
+            judged::download(
+                browsers,
+                entry,
+                args["download"].as_str().unwrap_or_default(),
+            )
+            .await?
+        }
+        _ => return Ok(None),
+    }))
+}
+
 /// `open`: a new session on `profile`, its page loaded. The answer carries
-/// the session's id; a session that could not load its page is ended.
+/// the session's id; a session that could not load its page is ended. An
+/// agent's site is judged before any session starts.
 async fn open(
+    browsers: &Browsers,
+    caller: Caller<'_>,
+    profile: &str,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Result<(Value, Option<Vec<u8>>), Failure> {
+    let url = args["url"].as_str();
+    let judged = match url {
+        Some(url) => {
+            let action = judged::open_site(browsers, url);
+            judged::judge(caller.gate, action, audit).await?
+        }
+        None => None,
+    };
+    let opened = open_judged(browsers, caller.key, profile, args, audit).await;
+    if let Some(judged) = judged {
+        judged.ended(&opened);
+    }
+    opened
+}
+
+async fn open_judged(
     browsers: &Browsers,
     caller: &str,
     profile: &str,
@@ -691,6 +856,13 @@ async fn open(
     match loaded {
         Ok((mut result, bytes)) => {
             shared_site(&entry, &mut result, audit);
+            if let Some(site) = args["url"].as_str().and_then(sites::site_of) {
+                entry
+                    .judged_sites
+                    .lock()
+                    .expect("judged sites lock")
+                    .insert(site);
+            }
             if let Some(object) = result.as_object_mut() {
                 object.insert("session".into(), json!(id));
             }

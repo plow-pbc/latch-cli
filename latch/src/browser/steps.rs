@@ -80,6 +80,18 @@ enum Confirms {
     Fill(Value),
 }
 
+/// The fill a confirmation in this session would release, while it is
+/// still unused: what the gatekeeper judges before it is carried out.
+pub(super) fn fill_to_confirm(entry: &Entry, id: &str) -> Option<Value> {
+    let all = entry.confirmations.lock().expect("confirmations lock");
+    all.iter()
+        .find(|c| c.id == id && !c.used)
+        .and_then(|c| match &c.kind {
+            Confirms::Fill(args) => Some(args.clone()),
+            _ => None,
+        })
+}
+
 /// Waits until `deadline` for `condition`, checking it a few times a
 /// second: between checks the browser is free for other sessions' calls.
 /// A check can also end the wait early: the condition's element is from a

@@ -350,7 +350,7 @@ impl Harness {
             &self.browsers,
             &self.entry,
             &self.id,
-            CALLER,
+            CALLER.into(),
             &args,
             &mut audit,
         )

@@ -98,6 +98,8 @@ pub enum Call {
     },
     /// The page now: where it is, its first lines and an element list.
     Glance,
+    /// Where the active tab is: its URL and title, nothing read from it.
+    Page,
     /// The page's lines and its non-secret field values, for a judgement.
     Lines,
     /// The page as one pass of an instruction step sees it; with `step`,
@@ -382,6 +384,7 @@ impl<D: Driver> Core<D> {
                 enter,
             } => self.review(snapshot.as_deref(), &target, enter, &mut audit),
             Call::Glance => self.glance(&mut audit),
+            Call::Page => self.page(&mut audit).map(Value::Object),
             Call::Lines => self.lines(&mut audit),
             Call::View { step, begin } => self.view(step.as_deref(), begin, &mut audit),
             Call::Wait {
