@@ -76,12 +76,13 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     let owner = !matches!(source, Source::Agent(_));
     let save_token = matches!(source, Source::Given(_));
 
+    let named = args.name.is_some();
     let mut name = args
         .name
         .or(saved.as_ref().map(|config| config.peer.name.clone()));
-    // A machine needs a name; an agent's defaults to its own.
-    if owner && name.is_none() && term::interactive() {
-        name = Some(term::ask("Name for this machine: ")).filter(|name| !name.is_empty());
+    // A machine is named after its hostname, without asking.
+    if owner && name.is_none() {
+        name = hostname();
     }
 
     let token = match source {
@@ -111,7 +112,32 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         take_over: false,
     };
     let plow = Plow::new(&api_url, &token);
+    // An agent is named after itself in Plow. Plow names one that is not
+    // an agent's credential, as it always has.
+    let me = if owner {
+        None
+    } else {
+        plow.agent_me().await.ok()
+    };
+    let registration = Registration {
+        name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
+        ..registration
+    };
     let (peer, replaced) = match plow.register(&registration).await {
+        // Two agents may share a name: unless one was asked for, try once
+        // more as the name plus the start of this agent's uid.
+        Err(failure) if failure.code == "conflict" && !owner && !named => {
+            let me = match me {
+                Some(me) => me,
+                None => plow.agent_me().await.map_err(|_| failure)?,
+            };
+            let name = registration.name.as_deref().unwrap_or(&me.name);
+            let suffixed = Registration {
+                name: Some(format!("{name}-{}", &me.uid[..6.min(me.uid.len())])),
+                ..registration.clone()
+            };
+            (plow.register(&suffixed).await?, None)
+        }
         // Another of the owner's machines may hold the name.
         Err(failure) if failure.code == "conflict" && owner => {
             let Some(name) = &registration.name else {
@@ -283,6 +309,24 @@ fn escape(text: &str) -> String {
             _ => format!("%{byte:02X}"),
         })
         .collect()
+}
+
+/// This machine's hostname, up to its first dot (`mac-studio`, not
+/// `mac-studio.local`), if it has one.
+fn hostname() -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: gethostname writes at most `buffer.len()` bytes into it.
+    let status = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+    if status != 0 {
+        return None;
+    }
+    let end = buffer
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(buffer.len());
+    let full = String::from_utf8_lossy(&buffer[..end]);
+    let short = full.split('.').next().unwrap_or_default().trim();
+    Some(short.to_string()).filter(|name| !name.is_empty())
 }
 
 fn missing(what: &str) -> Failure {

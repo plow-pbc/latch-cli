@@ -66,6 +66,13 @@ pub struct Redeemed {
     pub token: Option<String>,
 }
 
+/// A Plow agent as `GET /v1/agents/me` and `GET /v1/agents/{uid}` name it.
+#[derive(Deserialize, Clone, Debug)]
+pub struct Agent {
+    pub uid: String,
+    pub name: String,
+}
+
 #[derive(Deserialize)]
 struct PeerList {
     data: Vec<Peer>,
@@ -142,6 +149,26 @@ impl Plow {
         let response = self.send(request).await?;
         let list: PeerList = response.json().await.map_err(|_| bad_answer())?;
         Ok(list.data)
+    }
+
+    /// The agent this credential belongs to. 404 (`not_found`) for a
+    /// credential that is not an agent's.
+    pub async fn agent_me(&self) -> Result<Agent, Failure> {
+        #[derive(Deserialize)]
+        struct Me {
+            agent: Agent,
+        }
+        let url = format!("{}/v1/agents/me", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let me: Me = response.json().await.map_err(|_| bad_answer())?;
+        Ok(me.agent)
+    }
+
+    /// One of the account's agents as Plow names it now. Owner logins only.
+    pub async fn agent(&self, uid: &str) -> Result<Agent, Failure> {
+        let url = format!("{}/v1/agents/{uid}", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        response.json().await.map_err(|_| bad_answer())
     }
 
     /// Starts a login by text for a machine called `name`.
