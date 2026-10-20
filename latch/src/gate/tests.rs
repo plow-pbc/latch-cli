@@ -102,23 +102,39 @@ impl World {
 
 /// A local Plow serving `world`, and the requests it saw.
 fn plow(world: World) -> (crate::plow::Plow, Arc<Mutex<Vec<String>>>) {
+    let (plow, seen, _) = plow_with_headers(world);
+    (plow, seen)
+}
+
+/// The same, and each request's `Authorization` headers, in order.
+type Headers = Arc<Mutex<Vec<Vec<String>>>>;
+fn plow_with_headers(world: World) -> (crate::plow::Plow, Arc<Mutex<Vec<String>>>, Headers) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
+    let authorizations: Headers = Arc::new(Mutex::new(Vec::new()));
+    let auth_log = authorizations.clone();
     std::thread::spawn(move || {
         for socket in listener.incoming() {
             let mut socket = socket.unwrap();
             let mut reader = BufReader::new(socket.try_clone().unwrap());
             let mut first = String::new();
             reader.read_line(&mut first).unwrap();
+            let mut authorization = Vec::new();
             loop {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
                 if line == "\r\n" || line.is_empty() {
                     break;
                 }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("authorization")
+                {
+                    authorization.push(value.trim().to_string());
+                }
             }
+            auth_log.lock().unwrap().push(authorization);
             let target = first.split(' ').nth(1).unwrap().to_string();
             log.lock().unwrap().push(target.clone());
             let (status, body) = world.answer(&target);
@@ -130,7 +146,11 @@ fn plow(world: World) -> (crate::plow::Plow, Arc<Mutex<Vec<String>>>) {
             );
         }
     });
-    (crate::plow::Plow::new(&url, "made-up-login"), seen)
+    (
+        crate::plow::Plow::new(&url, "made-up-login"),
+        seen,
+        authorizations,
+    )
 }
 
 /// The decision model, recording what it was asked and answering with
@@ -320,6 +340,33 @@ async fn only_the_member_plow_calls_the_owner_counts_as_the_owner() {
         ]
     );
     assert_eq!(judgment.gate["owner_messages"], json!(["m1"]));
+}
+
+#[tokio::test]
+async fn every_plow_call_sends_the_credential_once() {
+    let messages = (0..150)
+        .map(|n| message(&format!("m{n:03}"), owner(), "hello", 150 - n))
+        .collect();
+    let (plow, seen, authorizations) = plow_with_headers(World::with_chat("chat_a", messages));
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let judgment = Gatekeeper::new(plow, model, Box::new(Rules::default()))
+        .judge(AGENT, None, &order())
+        .await;
+    assert!(judgment.verdict.is_ok());
+
+    // The agent, its chats and two pages of messages, each with one bearer.
+    let seen = seen.lock().unwrap().clone();
+    assert!(
+        seen[0].starts_with(&format!("/v1/agents/{AGENT}")),
+        "{seen:?}"
+    );
+    assert!(seen.iter().any(|t| t == "/v1/chats"), "{seen:?}");
+    assert_eq!(seen.iter().filter(|t| t.contains("/messages")).count(), 2);
+    let authorizations = authorizations.lock().unwrap().clone();
+    assert_eq!(authorizations.len(), seen.len());
+    for (target, sent) in seen.iter().zip(authorizations) {
+        assert_eq!(sent, ["Bearer made-up-login"], "{target}");
+    }
 }
 
 #[tokio::test]
