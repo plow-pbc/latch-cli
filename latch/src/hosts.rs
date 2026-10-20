@@ -7,13 +7,19 @@
 //! host is actually up is learned by dialing it, not from its `online` flag.
 
 use crate::failure::Failure;
+use crate::login;
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
 
-/// Looks up the account's hosts in Plow and picks one.
+/// Looks up the account's hosts in Plow and picks one. If Plow no longer
+/// lists this machine (an agent whose credential was rotated, say), it
+/// registers again first: a host refuses a caller Plow does not know.
 pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Failure> {
     let peers = Plow::from_state(state)?.list_peers().await?;
     let own_key = state.load_key()?.public().to_string();
+    if !peers.iter().any(|peer| peer.key == own_key) {
+        login::register_again(state).await?;
+    }
     pick(asked.as_deref(), &only_hosts(peers, &own_key))
 }
 

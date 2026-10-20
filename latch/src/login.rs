@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::cli::LoginArgs;
+use crate::cli::{BUILD_API_URL, LoginArgs};
 use crate::credential;
 use crate::devices;
 use crate::failure::Failure;
@@ -46,11 +46,17 @@ enum Source {
 
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
     // Flags win; on a repeat login, fall back to what the first one saved.
+    // A cloud agent's `$PLOW_API_BASE` comes before `$PLOW_API_URL`: on
+    // exe.dev it is the proxy that adds the agent's credential.
     let saved = state.load_config()?;
-    let api_url = match (args.api_url, &saved) {
-        (Some(url), _) => url,
-        (None, Some(config)) => config.api_url.clone(),
-        (None, None) => return Err(missing("--api-url or $PLOW_API_URL")),
+    let api_url = args
+        .api_url
+        .or_else(|| credential::env("PLOW_API_BASE"))
+        .or_else(|| credential::env("PLOW_API_URL"))
+        .or(BUILD_API_URL.map(String::from))
+        .or(saved.as_ref().map(|config| config.api_url.clone()));
+    let Some(api_url) = api_url else {
+        return Err(missing("--api-url, $PLOW_API_BASE or $PLOW_API_URL"));
     };
     let source = if let Some(path) = &args.token_file {
         Source::Given(credential::read(path)?)
@@ -146,6 +152,24 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         peer,
         key_created,
         replaced,
+    })
+}
+
+/// Registers this peer again as it last was, when Plow no longer lists it:
+/// an agent whose credential was rotated, say, which Plow forgets until it
+/// registers with the new one. Never takes a name over.
+pub async fn register_again(state: &StateDir) -> Result<(), Failure> {
+    let config = state.require_login()?;
+    let registration = Registration {
+        key: state.load_key()?.public().to_string(),
+        name: Some(config.peer.name.clone()),
+        relay_url: config.peer.relay_url.clone(),
+        take_over: false,
+    };
+    let peer = Plow::from_state(state)?.register(&registration).await?;
+    state.save_config(&Config {
+        api_url: config.api_url,
+        peer,
     })
 }
 
