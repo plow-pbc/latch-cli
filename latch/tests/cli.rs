@@ -4,7 +4,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::thread;
 
@@ -13,12 +13,14 @@ use serde_json::{Value, json};
 /// A fake Plow that answers one HTTP request per entry in `answers`, in
 /// order, and hands back the raw requests it received. Like Plow, it answers
 /// a registration with the key it was sent: a `null` key in an answer is
-/// filled in from the request body.
+/// filled in from the request body, and a key of `REGISTERED` in a later
+/// answer becomes the key last registered.
 fn fake_plow(answers: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
         let mut requests = Vec::new();
+        let mut registered = Value::Null;
         for (status, mut body) in answers {
             let (mut socket, _) = listener.accept().unwrap();
             let mut reader = BufReader::new(socket.try_clone().unwrap());
@@ -39,8 +41,16 @@ fn fake_plow(answers: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<Stri
             let mut bytes = vec![0; length];
             reader.read_exact(&mut bytes).unwrap();
             let sent: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            if !sent["key"].is_null() {
+                registered = sent["key"].clone();
+            }
             if body["key"].is_null() && !sent["key"].is_null() {
                 body["key"] = sent["key"].clone();
+            }
+            if let Some(peers) = body["data"].as_array_mut() {
+                for peer in peers.iter_mut().filter(|peer| peer["key"] == "REGISTERED") {
+                    peer["key"] = registered.clone();
+                }
             }
             request.push_str(&String::from_utf8(bytes).unwrap());
             requests.push(request);
@@ -72,6 +82,8 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
     command
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
+        .env_remove("PLOW_API_BASE")
+        .env_remove("PLOW_AGENT_TOKEN")
         .env_remove("LATCH_HOST")
         .arg("--state-dir")
         .arg(state)
@@ -139,6 +151,7 @@ fn agent_uses_its_own_credential_and_must_name_one_of_several_hosts() {
         (
             200,
             json!({"data": [
+                peer(json!("REGISTERED"), "research-agent", "agent", Value::Null),
                 peer(json!("a".repeat(64)), "lab-a", "device", relay.clone()),
                 peer(json!("b".repeat(64)), "lab-b", "device", relay),
             ]}),
@@ -169,9 +182,154 @@ fn agent_uses_its_own_credential_and_must_name_one_of_several_hosts() {
             .ends_with("lab-a, lab-b")
     );
 
+    // Plow lists the agent, so it does not register again.
     let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
     assert!(requests[1].starts_with("GET /v1/latch/peers "));
     assert!(requests[1].contains("authorization: Bearer agent-credential\r\n"));
+}
+
+/// An agent logged in with its own credential, against a fake Plow that
+/// answers the login and then `answers`. Returns the test folder (state in
+/// `state`) and the agent's environment.
+fn logged_in_agent(
+    answers: Vec<(u16, Value)>,
+) -> (tempfile::TempDir, PathBuf, thread::JoinHandle<Vec<String>>) {
+    let login = (
+        200,
+        peer(Value::Null, "research-agent", "agent", Value::Null),
+    );
+    let (api_url, server) = fake_plow([vec![login], answers].concat());
+    let dir = test_dir();
+    let token_file = dir.path().join("agent.token");
+    fs::write(&token_file, "agent-credential\n").unwrap();
+    let state = dir.path().join("state");
+    let env = [("PLOW_TOKEN_FILE", token_file.as_path())];
+    let login = latch(&state, &["login", "--api-url", &api_url], &env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    (dir, token_file, server)
+}
+
+#[test]
+fn an_agent_plow_no_longer_lists_registers_again_before_calling() {
+    // After a rotation Plow forgets the agent's key until it registers again.
+    let (dir, token_file, server) = logged_in_agent(vec![
+        (200, json!({"data": []})),
+        (
+            200,
+            peer(Value::Null, "registered-again", "agent", Value::Null),
+        ),
+    ]);
+    let env = [("PLOW_TOKEN_FILE", token_file.as_path())];
+    let state = dir.path().join("state");
+    let exec = latch(&state, &["exec", "--", "true"], &env);
+    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "no_host", "{error}");
+    // The new registration is saved, as a login's would be.
+    let config: Value =
+        serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["peer"]["name"], "registered-again");
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    let body = |request: &str| -> Value {
+        serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+    };
+    assert!(
+        requests[2].starts_with("POST /v1/latch/peers "),
+        "{}",
+        requests[2]
+    );
+    let again = body(&requests[2]);
+    assert_eq!(again["key"], body(&requests[0])["key"]);
+    assert_eq!(again["name"], "research-agent");
+    assert!(again.get("take_over").is_none());
+}
+
+#[test]
+fn a_failed_registration_again_says_why() {
+    let (dir, token_file, server) = logged_in_agent(vec![
+        (200, json!({"data": []})),
+        (409, json!({"detail": "taken"})),
+    ]);
+    let env = [("PLOW_TOKEN_FILE", token_file.as_path())];
+    let exec = latch(&dir.path().join("state"), &["exec", "--", "true"], &env);
+    assert_eq!(exec.status.code(), Some(2), "{exec:?}");
+    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "conflict", "{error}");
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+#[test]
+fn a_cloud_agent_behind_plows_proxy_sends_no_credential() {
+    // On exe.dev the agent's token never reaches the VM: `$PLOW_API_BASE`
+    // is a proxy that adds it. It wins over `$PLOW_API_URL`.
+    let (proxy, server) = fake_plow(vec![
+        (200, peer(Value::Null, "agent", "agent", Value::Null)),
+        (
+            200,
+            json!({"data": [peer(json!("REGISTERED"), "agent", "agent", Value::Null)]}),
+        ),
+    ]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let env = [
+        ("PLOW_API_BASE", Path::new(&proxy)),
+        ("PLOW_API_URL", Path::new("http://127.0.0.1:9")),
+        ("PLOW_TOKEN_FILE", &dir.path().join("none")),
+    ];
+
+    let login = latch(&state, &["login"], &env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let output: Value = serde_json::from_slice(&login.stdout).unwrap();
+    assert_eq!(output["peer"]["kind"], "agent");
+    assert!(!state.join("plow-token").exists());
+    let config: Value =
+        serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["api_url"], proxy.as_str());
+
+    // Later calls go to the proxy the same way.
+    let exec = latch(&state, &["exec", "--", "true"], &env);
+    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "no_host");
+
+    let requests = server.join().unwrap();
+    assert!(requests[0].starts_with("POST /v1/latch/peers "));
+    assert!(requests[1].starts_with("GET /v1/latch/peers "));
+    for request in requests {
+        assert!(
+            !request.to_ascii_lowercase().contains("authorization"),
+            "{request}"
+        );
+    }
+}
+
+#[test]
+fn a_cloud_agent_given_its_token_sends_it() {
+    let (base, server) = fake_plow(vec![(
+        200,
+        peer(Value::Null, "agent", "agent", Value::Null),
+    )]);
+    let dir = test_dir();
+    let token_file = dir.path().join("agent.token");
+    fs::write(&token_file, "file-credential\n").unwrap();
+    let state = dir.path().join("state");
+    // `$PLOW_AGENT_TOKEN` comes before the token file.
+    let env = [
+        ("PLOW_API_BASE", Path::new(&base)),
+        ("PLOW_AGENT_TOKEN", Path::new("env-credential")),
+        ("PLOW_TOKEN_FILE", token_file.as_path()),
+    ];
+
+    let login = latch(&state, &["login"], &env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    assert!(!state.join("plow-token").exists());
+
+    let request = &server.join().unwrap()[0];
+    assert!(
+        request.contains("authorization: Bearer env-credential\r\n"),
+        "{request}"
+    );
 }
 
 #[test]

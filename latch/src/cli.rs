@@ -594,12 +594,12 @@ pub struct ServeArgs {
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
-    /// File holding the owner's Plow login token, saved for this machine [without it: the token saved here, else an agent's own credential ($PLOW_TOKEN_FILE, else /config/secrets/plow-api-token), else at a terminal a login by text]
+    /// File holding the owner's Plow login token, saved for this machine [without it: the token saved here, else an agent's own credential ($PLOW_AGENT_TOKEN, else the file $PLOW_TOKEN_FILE or /config/secrets/plow-api-token, else none with $PLOW_API_BASE, whose proxy adds it), else at a terminal a login by text]
     #[arg(long, value_name = "FILE")]
     pub token_file: Option<PathBuf>,
 
-    /// Plow API base URL, e.g. https://api.plow.co
-    #[arg(long, env = "PLOW_API_URL", value_name = "URL", default_value = BUILD_API_URL)]
+    /// Plow API base URL, e.g. https://api.plow.co [else $PLOW_API_BASE, a cloud agent's; else $PLOW_API_URL]
+    #[arg(long, value_name = "URL")]
     pub api_url: Option<String>,
 
     /// Name of this peer, unique in the account (a machine's is asked for at a terminal; an agent defaults to its own name)

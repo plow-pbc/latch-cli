@@ -130,11 +130,7 @@ impl Plow {
     /// Registers this peer, or refreshes it if it already is (§5.1).
     pub async fn register(&self, registration: &Registration) -> Result<Peer, Failure> {
         let url = format!("{}/v1/latch/peers", self.api_url);
-        let request = self
-            .http
-            .post(url)
-            .bearer_auth(&self.token)
-            .json(registration);
+        let request = self.http.post(url).json(registration);
         let response = self.send(request).await?;
         response.json().await.map_err(|_| bad_answer())
     }
@@ -142,7 +138,7 @@ impl Plow {
     /// Every live peer in the account, machines and agents, online or not.
     pub async fn list_peers(&self) -> Result<Vec<Peer>, Failure> {
         let url = format!("{}/v1/latch/peers", self.api_url);
-        let request = self.http.get(url).bearer_auth(&self.token);
+        let request = self.http.get(url);
         let response = self.send(request).await?;
         let list: PeerList = response.json().await.map_err(|_| bad_answer())?;
         Ok(list.data)
@@ -172,7 +168,7 @@ impl Plow {
     /// registered it. Returns the removed peer. Owner logins only.
     pub async fn remove_peer(&self, key: &str) -> Result<Peer, Failure> {
         let url = format!("{}/v1/latch/peers/{key}", self.api_url);
-        let request = self.http.delete(url).bearer_auth(&self.token);
+        let request = self.http.delete(url);
         let response = self.send(request).await?;
         response.json().await.map_err(|_| bad_answer())
     }
@@ -182,7 +178,7 @@ impl Plow {
     /// registered the peer may say so.
     pub async fn go_offline(&self, key: &str) -> Result<Peer, Failure> {
         let url = format!("{}/v1/latch/peers/{key}/offline", self.api_url);
-        let request = self.http.post(url).bearer_auth(&self.token);
+        let request = self.http.post(url);
         let response = self.send(request).await?;
         response.json().await.map_err(|_| bad_answer())
     }
@@ -191,7 +187,7 @@ impl Plow {
     /// unknown key, another account's key, or a revoked one).
     pub async fn lookup(&self, key: &str) -> Result<Identity, Failure> {
         let url = format!("{}/v1/latch/peers/{key}", self.api_url);
-        let request = self.http.get(url).bearer_auth(&self.token);
+        let request = self.http.get(url);
         let response = self.send(request).await?;
         let identity: Identity = response.json().await.map_err(|_| bad_answer())?;
         // Trust the answer only if it is about the key we asked about.
@@ -211,7 +207,6 @@ impl Plow {
         let request = self
             .http
             .post(format!("{}/v1/connectors/gmail/access-token", self.api_url))
-            .bearer_auth(&self.token)
             .json(&serde_json::json!({"all":true}));
         let response = self.send(request).await?;
         response
@@ -221,10 +216,17 @@ impl Plow {
             .map_err(|_| bad_answer())
     }
 
-    /// Sends a request and turns "could not connect" and non-2xx answers
-    /// into failures. Plow's own error text is never shown: a server body
-    /// could echo a credential or someone's data. The status says enough.
+    /// Sends a request with this client's credential, and turns "could not
+    /// connect" and non-2xx answers into failures. Plow's own error text is
+    /// never shown: a server body could echo a credential or someone's data.
+    /// The status says enough. With no credential (a login by text, or a
+    /// cloud agent whose proxy adds its own) no `Authorization` is sent.
     async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response, Failure> {
+        let request = if self.token.is_empty() {
+            request
+        } else {
+            request.bearer_auth(&self.token)
+        };
         let response = match request.send().await {
             Ok(response) => response,
             Err(err) => {
