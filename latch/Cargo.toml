@@ -60,5 +60,10 @@ live-model = []
 # test-headed` runs them. Never part of the gate.
 headed-tests = []
 
+# A Camoufox handoff brings its app forward through AppKit
+# (`NSRunningApplication`); already in the tree through iroh.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "=0.5.0"
