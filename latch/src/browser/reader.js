@@ -405,7 +405,6 @@
       const body = document.body ? document.body.innerText : '';
       return { text: body.length > max ? body.slice(0, max) : body, truncated: body.length > max };
     },
-    title: () => document.title,
     loginFields,
     codeFields,
     submitFor,
@@ -413,6 +412,5 @@
     fill,
     holding,
     clearFilled,
-    token: () => token,
   };
 })();

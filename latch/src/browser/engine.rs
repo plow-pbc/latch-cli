@@ -35,8 +35,6 @@ pub struct Pin {
     pub recipe: Vec<String>,
     /// Optional driver features this engine has.
     pub capabilities: Vec<String>,
-    #[allow(dead_code)]
-    pub licence: String,
 }
 
 #[derive(Deserialize)]
