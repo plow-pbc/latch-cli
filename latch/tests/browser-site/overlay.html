@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- A parent-page layer over two frames: a click on a frame's button would
+     land on the layer. Open overlay.html?cross=PORT, as frames.html. -->
+<title>latch overlay test</title>
+<p id="out">layer clicks: 0</p>
+<iframe id="same" src="same.html" width="300" height="80"></iframe>
+<iframe id="cross" width="300" height="80"></iframe>
+<div id="layer" style="position:fixed;inset:0;background:rgba(0,0,0,0.2)"></div>
+<script>
+  let clicks = 0;
+  document.getElementById('layer').addEventListener('click', () => {
+    clicks++;
+    document.getElementById('out').textContent = 'layer clicks: ' + clicks;
+  });
+  const cross = new URLSearchParams(location.search).get('cross');
+  if (cross) document.getElementById('cross').src = 'http://localhost:' + cross + '/cross.html';
+</script>

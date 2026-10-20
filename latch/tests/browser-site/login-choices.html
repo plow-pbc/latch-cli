@@ -1,0 +1,36 @@
+<!doctype html><title>latch login button choice test</title>
+<!-- Another way in, named like a step's end ("Sign in via LinkedIn"),
+     before the real "Continue"; the password comes after it, in the same
+     document. With ?two=1 a second plain button ("Next") shows too, and
+     latch cannot tell which one ends the step. -->
+<h1>Sign in</h1>
+<p><label>Email <input type="email" id="email"></label></p>
+<p><button type="button" id="linkedin">Sign in via LinkedIn</button></p>
+<p><button type="button" id="continue">Continue</button> <button type="button" id="next" hidden>Next</button></p>
+<div id="step2" hidden>
+  <p><label>Password <input type="password" id="password"></label></p>
+  <p><button type="button" id="signin">Sign in</button></p>
+</div>
+<p id="out">no other way in taken</p>
+<script>
+  const byId = (id) => document.getElementById(id);
+  if (new URLSearchParams(location.search).get('two')) byId('next').hidden = false;
+  byId('linkedin').addEventListener('click', () => { byId('out').textContent = 'went to LinkedIn'; });
+  byId('continue').addEventListener('click', () => {
+    if (byId('email').value) setTimeout(() => { byId('step2').hidden = false; }, 300);
+  });
+  byId('signin').addEventListener('click', () => {
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = 'welcome';
+    for (const name of ['email', 'password']) {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = byId(name).value;
+      form.append(input);
+    }
+    document.body.append(form);
+    form.submit();
+  });
+</script>

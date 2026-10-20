@@ -1,0 +1,17 @@
+# Dev and test state (--state-dir), the pinned Chrome for Testing, test folders
+/.dev/
+
+# Cargo build output
+target/
+
+# Local agent tooling
+.claude/
+.kitchen/
+.superpowers/
+
+# Byte-compiled Python (latch/scripts)
+__pycache__/
+*.py[codz]
+
+# macOS
+.DS_Store

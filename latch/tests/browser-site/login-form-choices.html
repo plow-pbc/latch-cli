@@ -1,0 +1,38 @@
+<!doctype html><title>latch login form button test</title>
+<!-- A form whose own submit button is another way in ("Sign in · Yahoo"),
+     and whose step really ends with a plain button ("Continue") that shows
+     the password and its "Sign in", which posts to /welcome. -->
+<h1>Sign in</h1>
+<form id="form">
+  <p><label>Email <input type="email" id="email"></label></p>
+  <p><button type="submit">Sign in · Yahoo</button> <button type="button" id="continue">Continue</button></p>
+  <div id="step2" hidden>
+    <p><label>Password <input type="password" id="password"></label></p>
+    <p><button type="button" id="signin">Sign in</button></p>
+  </div>
+</form>
+<p id="out">no other way in taken</p>
+<script>
+  const byId = (id) => document.getElementById(id);
+  byId('form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    byId('out').textContent = 'went to Yahoo';
+  });
+  byId('continue').addEventListener('click', () => {
+    if (byId('email').value) setTimeout(() => { byId('step2').hidden = false; }, 300);
+  });
+  byId('signin').addEventListener('click', () => {
+    const post = document.createElement('form');
+    post.method = 'post';
+    post.action = 'welcome';
+    for (const name of ['email', 'password']) {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = byId(name).value;
+      post.append(input);
+    }
+    document.body.append(post);
+    post.submit();
+  });
+</script>

@@ -1,0 +1,62 @@
+name: latch
+
+# Only runs when the Rust workspace (or this file) changes.
+on:
+  push:
+    branches: [main]
+    paths: ["latch/**", ".github/workflows/latch.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["latch/**", ".github/workflows/latch.yml"]
+
+jobs:
+  # Format, lint and test on Linux and on both kinds of Mac (Apple silicon, Intel).
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: latch
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the toolchain pinned in latch/rust-toolchain.toml.
+      - run: rustup toolchain install
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      # The browser test drives the pinned Chrome for Testing, headed, from
+      # where `just cft` installs it; the cache keeps the 200 MB download
+      # to once per pin and architecture.
+      - if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/cft
+          key: cft-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - if: runner.os == 'macOS'
+        run: cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install.sh --state-dir ../.dev/cft-state target/debug/latch
+      - run: cargo test --locked
+
+  # Static Linux client binaries, built natively on each architecture.
+  linux-static:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: latch
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build-musl.sh ${{ matrix.arch }}
+      - run: file target/musl-${{ matrix.arch }}/release/latch | tee /dev/stderr | grep -Eq "statically linked|static-pie linked"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: latch-linux-${{ matrix.arch }}
+          path: latch/target/musl-${{ matrix.arch }}/release/latch

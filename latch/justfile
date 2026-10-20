@@ -1,0 +1,21 @@
+# The Rust CLI's checks; live Google evidence uses the documented test identities.
+test: cft
+    cargo fmt --check
+    cargo clippy --locked --all-targets -- -D warnings
+    cargo test --locked
+
+# The pinned Chrome for Testing, where the browser test looks for it. HOME
+# keeps install.sh's copy of latch out of the real ~/.local/bin.
+[macos]
+cft:
+    cargo build --locked
+    HOME="$PWD/../.dev/cft-home" sh install.sh --state-dir ../.dev/cft-state "${CARGO_TARGET_DIR:-target}/debug/latch"
+
+# No browser engine on Linux hosts yet.
+[linux]
+cft:
+
+# The browser tests that call the decision model (jev) for real; the key
+# file is copied into each test's own state directory, never printed.
+test-model key:
+    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model browser::tests::steps::live

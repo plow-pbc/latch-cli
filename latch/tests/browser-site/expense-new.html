@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>New expense · Expenses</title>
+<!-- Posts to /expense-save, which the test server answers: a plain amount
+     is saved as a draft or submitted; anything else is refused. -->
+<h1>New expense</h1>
+<form method="post" action="expense-save">
+  <p><label for="merchant">Merchant</label> <input id="merchant" name="merchant"></p>
+  <p><label for="amount">Amount (USD)</label> <input id="amount" name="amount"></p>
+  <p><label for="date">Date</label> <input id="date" name="date" placeholder="YYYY-MM-DD"></p>
+  <p><label for="category">Category</label> <select id="category" name="category">
+    <option>Travel</option><option>Office supplies</option><option>Meals</option>
+  </select></p>
+  <p><button name="go" value="draft">Save draft</button>
+     <button name="go" value="submit">Submit for approval</button></p>
+</form>

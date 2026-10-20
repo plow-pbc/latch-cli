@@ -1,0 +1,369 @@
+//! Runs the real `latch` binary against a tiny fake Plow, to check what an
+//! agent actually sees: stdout, stderr, exit codes and the saved state.
+
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::path::Path;
+use std::process::{Command, Output};
+use std::thread;
+
+use serde_json::{Value, json};
+
+/// A fake Plow that answers one HTTP request per entry in `answers`, in
+/// order, and hands back the raw requests it received. Like Plow, it answers
+/// a registration with the key it was sent: a `null` key in an answer is
+/// filled in from the request body.
+fn fake_plow(answers: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let mut requests = Vec::new();
+        for (status, mut body) in answers {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            // Headers end at an empty line; the body length is in Content-Length.
+            let mut request = String::new();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                request.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            let sent: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            if body["key"].is_null() && !sent["key"].is_null() {
+                body["key"] = sent["key"].clone();
+            }
+            request.push_str(&String::from_utf8(bytes).unwrap());
+            requests.push(request);
+
+            let body = body.to_string();
+            let head = format!(
+                "HTTP/1.1 {status} Fake\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(head.as_bytes()).unwrap();
+            socket.write_all(body.as_bytes()).unwrap();
+        }
+        requests
+    });
+    (url, server)
+}
+
+/// Test state lives under the repo's gitignored `.dev/`, like every dev run.
+fn test_dir() -> tempfile::TempDir {
+    let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+    fs::create_dir_all(&parent).unwrap();
+    tempfile::tempdir_in(parent).unwrap()
+}
+
+/// `latch --state-dir STATE ARGS...`, with none of the caller's latch or
+/// Plow environment leaking in.
+fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    command
+        .env_remove("PLOW_API_URL")
+        .env_remove("PLOW_TOKEN_FILE")
+        .env_remove("LATCH_HOST")
+        .arg("--state-dir")
+        .arg(state)
+        .args(args);
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    command.output().unwrap()
+}
+
+fn peer(key: Value, name: &str, kind: &str, relay_url: Value) -> Value {
+    json!({"key": key, "kind": kind, "name": name, "relay_url": relay_url,
+           "last_seen_at": "2026-10-15T01:30:12Z", "online": true})
+}
+
+#[test]
+fn failed_login_never_echoes_plow_and_saves_no_credential() {
+    // Plow's error text is never shown, even when it contains a secret.
+    let (api_url, server) = fake_plow(vec![(403, json!({"detail": "secret-token"}))]);
+    let dir = test_dir();
+    let token_file = dir.path().join("owner.token");
+    fs::write(&token_file, "secret-token\n").unwrap();
+    let state = dir.path().join("state");
+    let token_arg = token_file.to_str().unwrap();
+
+    let args = [
+        "login",
+        "--name",
+        "lab-a",
+        "--api-url",
+        &api_url,
+        "--token-file",
+        token_arg,
+    ];
+    let output = latch(&state, &args, &[]);
+
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let error: Value = serde_json::from_str(&stderr).unwrap();
+    assert_eq!(error["error"]["code"], "plow_denied");
+    assert!(!stderr.contains("secret-token"));
+    // The key is kept for the next try; nothing else is saved.
+    assert!(state.join("key").exists());
+    assert!(!state.join("plow-token").exists());
+    assert!(!state.join("config.json").exists());
+
+    let request = &server.join().unwrap()[0];
+    assert!(request.starts_with("POST /v1/latch/peers "));
+    assert!(request.contains("authorization: Bearer secret-token\r\n"));
+    let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body["key"].as_str().unwrap().len(), 64);
+    assert_eq!(body["name"], "lab-a");
+    assert!(body.get("relay_url").is_none());
+}
+
+#[test]
+fn agent_uses_its_own_credential_and_must_name_one_of_several_hosts() {
+    let relay = json!("https://relay.example/");
+    let (api_url, server) = fake_plow(vec![
+        (
+            200,
+            peer(Value::Null, "research-agent", "agent", Value::Null),
+        ),
+        (
+            200,
+            json!({"data": [
+                peer(json!("a".repeat(64)), "lab-a", "device", relay.clone()),
+                peer(json!("b".repeat(64)), "lab-b", "device", relay),
+            ]}),
+        ),
+    ]);
+    let dir = test_dir();
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let state = dir.path().join("state");
+    let env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+
+    let login = latch(&state, &["login", "--api-url", &api_url], &env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let output: Value = serde_json::from_slice(&login.stdout).unwrap();
+    assert_eq!(output["peer"]["kind"], "agent");
+    assert_eq!(output["key_created"], true);
+    // The agent's credential stays where it lives; latch does not copy it.
+    assert!(!state.join("plow-token").exists());
+
+    let exec = latch(&state, &["exec", "--", "true"], &env);
+    assert_eq!(exec.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "host_required");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("lab-a, lab-b")
+    );
+
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("GET /v1/latch/peers "));
+    assert!(requests[1].contains("authorization: Bearer agent-credential\r\n"));
+}
+
+#[test]
+fn serving_before_any_login_says_to_log_in() {
+    let dir = test_dir();
+    let area = dir.path().join("shared");
+    fs::create_dir(&area).unwrap();
+    let state = dir.path().join("never-logged-in");
+
+    let output = latch(
+        &state,
+        &["serve", "--no-dashboard", area.to_str().unwrap()],
+        &[],
+    );
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "not_logged_in", "{error}");
+    assert!(!state.exists(), "serve created the state directory");
+}
+
+#[test]
+fn calling_the_host_this_state_dir_serves_names_the_fix() {
+    let relay = json!("https://relay.example/");
+    let (login_url, login_server) = fake_plow(vec![(
+        200,
+        peer(Value::Null, "mac", "device", relay.clone()),
+    )]);
+    let dir = test_dir();
+    let owner_token = dir.path().join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let state = dir.path().join("state");
+    let args = [
+        "login",
+        "--api-url",
+        &login_url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+        "--name",
+        "mac",
+    ];
+    let login = latch(&state, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let own_key = serde_json::from_slice::<Value>(&login.stdout).unwrap()["peer"]["key"].clone();
+    login_server.join().unwrap();
+
+    // The directory lists this machine as the host, under its own key.
+    let (api_url, server) = fake_plow(vec![(
+        200,
+        json!({"data": [peer(own_key, "mac", "device", relay)]}),
+    )]);
+    let config_path = state.join("config.json");
+    let mut config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["api_url"] = json!(api_url);
+    fs::write(&config_path, config.to_string()).unwrap();
+
+    let exec = latch(&state, &["exec", "--host", "mac", "--", "true"], &[]);
+    assert_eq!(exec.status.code(), Some(2), "{exec:?}");
+    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "own_host", "{error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("--state-dir"), "{message}");
+    server.join().unwrap();
+}
+
+#[test]
+fn help_says_what_is_allowed_and_how_to_pass_a_command() {
+    let dir = test_dir();
+    let state = dir.path().join("none");
+    // No login and no host needed: the list is in latch itself.
+    let help = latch(&state, &["google", "--", "help"], &[]);
+    assert_eq!(help.status.code(), Some(0), "{help:?}");
+    let allowed: Value = serde_json::from_slice(&help.stdout).unwrap();
+    assert!(
+        allowed["allowed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "gmail search")
+    );
+
+    let missing = latch(&state, &["exec", "--host", "pi", "ls", "-la"], &[]);
+    assert_eq!(missing.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&missing.stderr).unwrap();
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("latch exec --host H -- <cmd> <args>"),
+        "{message}"
+    );
+
+    let exec_help = latch(&state, &["exec", "--help"], &[]);
+    let text = String::from_utf8_lossy(&exec_help.stdout);
+    assert!(
+        text.contains("256 KiB") && text.contains("stdin is empty") && text.contains("exit_code"),
+        "{text}"
+    );
+}
+
+#[test]
+fn status_shows_this_machine_once_as_plow_lists_it() {
+    let relay = json!("https://relay.example/");
+    let (url, server) = fake_plow(vec![(
+        200,
+        peer(Value::Null, "mac", "device", relay.clone()),
+    )]);
+    let dir = test_dir();
+    let owner_token = dir.path().join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let state = dir.path().join("state");
+    let args = [
+        "login",
+        "--api-url",
+        &url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+        "--name",
+        "mac",
+    ];
+    let login = latch(&state, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let own_key = serde_json::from_slice::<Value>(&login.stdout).unwrap()["peer"]["key"].clone();
+    server.join().unwrap();
+
+    // Login saved this machine as online; Plow now lists it offline.
+    let mut listed = peer(own_key.clone(), "mac", "device", relay.clone());
+    listed["online"] = json!(false);
+    let pi = peer(json!("c".repeat(64)), "pi", "device", relay);
+    let (url, server) = fake_plow(vec![(200, json!({"data": [listed, pi]}))]);
+    let config_path = state.join("config.json");
+    let mut config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["api_url"] = json!(url);
+    fs::write(&config_path, config.to_string()).unwrap();
+
+    let status = latch(&state, &["status"], &[]);
+    assert_eq!(status.status.code(), Some(0), "{status:?}");
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["peer"]["online"], false, "{status}");
+    let hosts = status["hosts"].as_array().unwrap();
+    assert_eq!(hosts[0]["key"], own_key);
+    assert_eq!(hosts[0]["online"], false);
+    assert_eq!(hosts[0]["self"], true);
+    assert!(hosts[1].get("self").is_none(), "{status}");
+    server.join().unwrap();
+}
+
+#[test]
+fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
+    use std::process::Stdio;
+    let dir = test_dir();
+    let state = dir.path().join("none");
+    let run = |timeout: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+        command
+            .env_remove("PLOW_TOKEN_FILE")
+            .arg("--state-dir")
+            .arg(&state)
+            .args([
+                "exec",
+                "--host",
+                "pi",
+                "--timeout",
+                timeout,
+                "-i",
+                "--",
+                "cat",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command.spawn().unwrap()
+    };
+    // More than 256 KiB: refused as soon as the 256 KiB + 1st byte arrives.
+    let mut big = run("60");
+    let mut pipe = big.stdin.take().unwrap();
+    let _ = pipe.write_all(&vec![b'x'; 300 * 1024]);
+    let output = big.wait_with_output().unwrap();
+    drop(pipe);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "stdin_too_big");
+
+    // A pipe left open: refused once --timeout passes, not run on what came.
+    let started = std::time::Instant::now();
+    let mut open = run("1");
+    let mut pipe = open.stdin.take().unwrap();
+    pipe.write_all(b"echo partial").unwrap();
+    let output = open.wait_with_output().unwrap();
+    drop(pipe);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "stdin_timeout");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}

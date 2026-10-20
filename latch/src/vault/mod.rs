@@ -1,0 +1,23 @@
+//! The vault: one per latch install, on the host, shared by every engine
+//! and profile.
+//!
+//! - `item.rs`: items, in Bitwarden's shape, with latch's sites and
+//!   revisions.
+//! - `classify.rs`: which fields are secret (the Latch app's classifier).
+//! - `sites.rs`: where each kind may fill.
+//! - `dates.rs`: reshaping dates and expiries to a field's format.
+//! - `totp.rs`: authenticator codes from a login's key.
+//! - `store.rs`: the backend interface, and latch's own sealed store.
+//! - `import.rs`: other password managers' exports, read into items.
+//! - `host.rs`: the host's `vault` operation, for owner devices.
+//! - `client.rs`: `latch vault …`, the owner's commands.
+
+pub mod classify;
+pub mod client;
+pub mod dates;
+pub mod host;
+pub mod import;
+pub mod item;
+pub mod sites;
+pub mod store;
+pub mod totp;

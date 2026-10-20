@@ -1,0 +1,48 @@
+<!doctype html><title>latch identifier-first login test</title>
+<!-- A sign-in as many big sites make it: no form element, no type=submit
+     button, other ways in offered first, and the password asked for only
+     after the email ("Continue"), in the same document. "Sign in" posts to
+     /welcome. With ?cross=PORT, cross-site frames from
+     http://localhost:PORT come and go meanwhile, as trackers' do. -->
+<h1>Sign in</h1>
+<div>
+  <button>Continue with Google</button>
+  <p><label>Email <input type="email" id="email"></label></p>
+  <button type="button" id="continue">Continue</button>
+</div>
+<div id="step2" hidden>
+  <p><label>Password <input type="password" id="password"></label> <button type="button">Show</button></p>
+  <p><button type="button" id="signin">Sign in</button> <button type="button">Reset password</button></p>
+</div>
+<script>
+  const value = (id) => document.getElementById(id).value;
+  document.getElementById('continue').addEventListener('click', () => {
+    if (value('email')) setTimeout(() => { document.getElementById('step2').hidden = false; }, 400);
+  });
+  document.getElementById('signin').addEventListener('click', () => {
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = 'welcome';
+    for (const name of ['email', 'password']) {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value(name);
+      form.append(input);
+    }
+    document.body.append(form);
+    form.submit();
+  });
+  const cross = new URLSearchParams(location.search).get('cross');
+  if (cross) {
+    let added = 0;
+    setInterval(() => {
+      const frame = document.createElement('iframe');
+      frame.width = 10;
+      frame.height = 10;
+      frame.onload = () => setTimeout(() => frame.remove(), Math.random() * 30);
+      frame.src = 'http://localhost:' + cross + '/cross.html?' + added++;
+      document.body.appendChild(frame);
+    }, 15);
+  }
+</script>
