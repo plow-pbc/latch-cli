@@ -321,6 +321,9 @@ conformance!(
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
     a_browser_that_leaves_calls_unanswered_is_closed,
+    a_dialog_that_opens_between_calls_is_refused_at_once,
+    a_dialog_in_one_session_does_not_hold_another_sessions_download,
+    a_download_heard_before_another_sessions_dialog_does_not_wait_on_it,
     back_into_a_reserved_site_is_refused_after_a_return_visit,
 );
 
@@ -1200,6 +1203,106 @@ async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
     assert!(missed);
 }
 
+/// A dialog the page opens on its own, between two calls, holds the page
+/// until it is answered: every call before then is refused with
+/// dialog_open at once, never left waiting on the blocked page.
+async fn a_dialog_that_opens_between_calls_is_refused_at_once(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["dialog-idle"]);
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "dialog-idle",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
+    session
+        .call(json!({"op": "open", "url": local_page()}))
+        .await
+        .unwrap();
+    session
+        .call(json!({"op": "eval", "script": "setTimeout(() => alert('later'), 2500); 1"}))
+        .await
+        .unwrap();
+    // Long enough for the eval's own call to have ended first.
+    tokio::time::sleep(Duration::from_millis(4500)).await;
+    for op in ["observe", "observe", "observe", "text"] {
+        let started = std::time::Instant::now();
+        let refused = session.call(json!({"op": op})).await.err().expect(op);
+        let took = started.elapsed();
+        println!("{op}: {} after {took:?}", refused.code);
+        assert_eq!(refused.code, "dialog_open", "{op}: {}", refused.message);
+        assert!(took < Duration::from_secs(5), "{op} took {took:?}");
+    }
+    session
+        .call(json!({"op": "dialog", "accept": true}))
+        .await
+        .unwrap();
+    session.call(json!({"op": "observe"})).await.unwrap();
+    session.close().await.unwrap();
+}
+
+/// A download from a frame latch has not read is traced to its session
+/// through each tab's frames; a tab a dialog holds answers for none of
+/// them, and another session's call does not wait on it.
+async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine: &str) {
+    dialog_and_download(engine, 1000).await;
+}
+
+/// The same, with the download heard first and the dialog after it, both
+/// taken in together by the next call.
+async fn a_download_heard_before_another_sessions_dialog_does_not_wait_on_it(engine: &str) {
+    dialog_and_download(engine, 2500).await;
+}
+
+/// Session a's page opens a dialog `alert_after` ms after its eval; session
+/// b's page downloads from a frame 1.5 s after its own.
+async fn dialog_and_download(engine: &str, alert_after: u64) {
+    let (_dir, state, _area) = test_state(engine, &["dialog-download"]);
+    let mut h = Host::new(&state);
+    let (a, _) = h
+        .open(CALLER, "dialog-download", json!({"url": local_page()}))
+        .await;
+    let (b, _) = h
+        .open(CALLER, "dialog-download", json!({"url": local_page()}))
+        .await;
+    h.call(
+        CALLER,
+        "eval",
+        &a,
+        json!({"script": format!("setTimeout(() => alert('later'), {alert_after}); 1")}),
+    )
+    .await
+    .unwrap();
+    // A frame that downloads a file and is gone again before latch hears
+    // of the download: no tab holds it, so every tab is asked.
+    let script = "setTimeout(() => {\n\
+        const frame = document.createElement('iframe');\n\
+        frame.srcdoc = `<script>const a = document.createElement('a');\n\
+          a.href = URL.createObjectURL(new Blob(['x'])); a.download = 'x.txt'; a.click();\n\
+        <\\/script>`;\n\
+        document.body.append(frame);\n\
+        setTimeout(() => frame.remove(), 800);\n\
+      }, 1500); 1";
+    h.call(CALLER, "eval", &b, json!({"script": script}))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(4500)).await;
+    let started = std::time::Instant::now();
+    let listed = h.call(CALLER, "downloads", &b, json!({})).await;
+    let took = started.elapsed();
+    println!("b's downloads after {took:?}: {listed:?}");
+    listed.unwrap();
+    assert!(took < Duration::from_secs(5), "b's downloads took {took:?}");
+    h.call(CALLER, "dialog", &a, json!({"accept": true}))
+        .await
+        .unwrap();
+    for id in [&a, &b] {
+        h.call(CALLER, "close", id, json!({})).await.unwrap();
+    }
+}
+
 async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {
     let (_dir, state, _area) = test_state(engine, &["b2-layer"]);
     let mut session = Session::start_with(
@@ -2029,6 +2132,34 @@ async fn back_into_a_reserved_site_is_refused_after_a_return_visit(engine: &str)
     println!("back within A's site: {back}; now on {}", now["url"]);
     assert_eq!((back.as_str(), &now["url"]), ("sent", &json!(a)));
     session.close().await.unwrap();
+}
+
+/// Camoufox runs with the prefs that open every window a page opens
+/// (`window.open`, with features or without, or a `target=_blank` link) as a
+/// tab that loads in the background; Firefox keeps the ones that differ from
+/// its defaults in the profile's `prefs.js` as it quits. Whether a window
+/// then stays behind the owner's needs a screen to tell: Playwright keeps
+/// every page active, and Camoufox reports a made-up screen.
+#[tokio::test]
+async fn camoufox_runs_with_page_windows_as_background_tabs() {
+    let (_dir, state, _area) = test_state("camoufox", &["fox-tabs"]);
+    let session = Session::start_with(
+        &latch(),
+        &state,
+        "fox-tabs",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
+    session.close().await.unwrap();
+    let prefs = fs::read_to_string(profile::root(&state).join("fox-tabs/data/prefs.js")).unwrap();
+    for pref in [
+        r#"user_pref("browser.link.open_newwindow.restriction", 0);"#,
+        r#"user_pref("browser.tabs.loadDivertedInBackground", true);"#,
+    ] {
+        assert!(prefs.contains(pref), "{pref} is not in force");
+    }
 }
 
 async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {

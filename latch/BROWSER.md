@@ -437,8 +437,9 @@ They stay out of the owner's way: Chrome starts with no window, every tab
 latch opens is a new window behind all others (its page still visible and
 unthrottled), and switching tabs brings nothing to the front. A page's own
 JavaScript dialog still raises its window, and so can a tab the page opens
-(`target=_blank`, `window.open`); `handoff` will bring it forward on
-purpose.
+(`target=_blank`, `window.open`); in Camoufox every window a page opens is
+a tab that loads in the background. `handoff` brings the window forward on
+purpose (Camoufox's app by its pid).
 Camoufox runs the same way: outside latch's Seatbelt, with Firefox's own
 sandbox on for every web content process; the helper and the browser each
 in a process group of their own, both killed and waited for on close; an
