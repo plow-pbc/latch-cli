@@ -1037,6 +1037,37 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
     assert!(ended.success(), "{ended:?}");
 }
 
+/// The Camoufox helper gives up on a page's title after a wait of its own
+/// and answers its operation without it; the title the browser never sent
+/// is still a command left unanswered.
+#[tokio::test]
+async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
+    use super::camoufox::Camoufox;
+    use super::driver::{Driver, Runtime};
+    let (_dir, state, _area) = test_state("camoufox", &["helper-late"]);
+    let scratch = tempfile::tempdir().unwrap();
+    // The engine gets absolute paths, as the worker gives it.
+    let state = state.canonicalize().unwrap();
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    let mut browser =
+        Camoufox::launch(&state, "helper-late", &scratch_path, HEADLESS, None).unwrap();
+    browser.begin("k1").unwrap();
+    browser.navigate(&local_page()).unwrap();
+    let pid = browser.pid() as libc::pid_t;
+    // SAFETY: kill sends a signal and touches no Rust memory.
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    // Longer than the helper waits for a title.
+    browser.limit(Some(std::time::Instant::now() + Duration::from_secs(10)));
+    let tabs = browser.tabs();
+    let missed = browser.unanswered();
+    // SAFETY: as above.
+    unsafe { libc::kill(pid, libc::SIGCONT) };
+    browser.limit(None);
+    browser.close();
+    assert_eq!(tabs.unwrap()[0].title, "");
+    assert!(missed);
+}
+
 async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {
     let (_dir, state, _area) = test_state(engine, &["b2-layer"]);
     let mut session = Session::start_with(

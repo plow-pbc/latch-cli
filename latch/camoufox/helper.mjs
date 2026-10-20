@@ -8,7 +8,9 @@
 // helper's standard streams: `{"id": N, "session": K, "op": "frames", ...}`
 // in, and `{"id": N, "ok": VALUE}` or `{"id": N, "error": {"code",
 // "message"}}` out, each answer also carrying whether a dialog blocks that
-// session (`dialog`) and its active tab (`active`). The first operation is
+// session (`dialog`) and its active tab (`active`), and `late` if a wait for
+// the browser ran out, even one the operation went on without (a page's
+// title, a frame's document). The first operation is
 // `launch`; `close` closes the browser and ends the helper, as does the
 // end of stdin.
 //
@@ -67,6 +69,8 @@ const shares = new Map();
 let current = null;
 /// When the current operation must have answered (`within_ms`).
 let due = Infinity;
+/// A wait for the browser in the current operation ran out.
+let ranOut = false;
 /// The page the browser started with, until a session takes it.
 let spare = null;
 /// Pages latch itself is opening: they are not the page's new tabs.
@@ -99,7 +103,10 @@ async function guarded(work, { ms = COMMAND, onDialog = "fail" } = {}) {
   });
   try {
     const first = await Promise.race([work.then((value) => ({ value })), opened, late]);
-    if (first === "late") throw new Failure("timeout", "the browser did not answer in time");
+    if (first === "late") {
+      ranOut = true;
+      throw new Failure("timeout", "the browser did not answer in time");
+    }
     if (first === "dialog") {
       if (onDialog === "fail") throw dialogOpen();
       return undefined;
@@ -629,6 +636,7 @@ async function answer({ id, op, session, within_ms, ...params }) {
   const reply = { id };
   current = session ?? null;
   due = within_ms === undefined ? Infinity : Date.now() + within_ms;
+  ranOut = false;
   try {
     const run = ops[op];
     if (!run) throw new Failure("bad_request", `no operation ${op}`);
@@ -643,6 +651,7 @@ async function answer({ id, op, session, within_ms, ...params }) {
   const mine = shares.get(current);
   reply.dialog = Boolean(mine?.dialog);
   reply.active = mine?.active ?? null;
+  if (ranOut) reply.late = true;
   send(reply);
   return op === "close";
 }

@@ -205,6 +205,8 @@ impl Camoufox {
             if answer["id"] != id {
                 continue;
             }
+            // A wait the helper gave up on, though it answered all the same.
+            self.unanswered |= answer["late"] == true;
             let active = answer["active"].as_str().unwrap_or_default();
             self.seen.insert(
                 self.current.clone(),
