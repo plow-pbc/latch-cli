@@ -39,7 +39,7 @@ const ANSWER_GRACE: Duration = Duration::from_secs(30);
 
 /// How long the whole of `call` may take: its limit, and the grace.
 fn within(call: &Value) -> Duration {
-    Call::deserialize(call).map_or(core::CALL, |call| call.limit()) + ANSWER_GRACE
+    Call::deserialize(call).map_or(core::CALL, |call| call.limit(core::CALL)) + ANSWER_GRACE
 }
 
 /// How long a session's activity on a site counts for `shared_site`.

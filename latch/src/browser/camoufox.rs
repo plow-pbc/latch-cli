@@ -54,6 +54,8 @@ pub struct Camoufox {
     current: String,
     /// When the call under way must end (`Driver::limit`).
     deadline: Option<Instant>,
+    /// An answer did not come in time since this was last asked.
+    unanswered: bool,
     /// What the helper said about each session with its latest answer:
     /// whether a dialog blocks it, and its active tab.
     seen: HashMap<String, (bool, String)>,
@@ -122,6 +124,7 @@ impl Camoufox {
             browser: 0,
             current: String::new(),
             deadline: None,
+            unanswered: false,
             seen: HashMap::new(),
             scratch: scratch.to_path_buf(),
             _lock: lock,
@@ -210,6 +213,8 @@ impl Camoufox {
             if let Some(error) = answer.get("error") {
                 let code = error["code"].as_str().unwrap_or("engine_error");
                 let message = error["message"].as_str().unwrap_or_default().to_string();
+                // The helper's own wait for the browser ran out.
+                self.unanswered |= code == "timeout";
                 let exit = match code {
                     "no_such_tab" | "last_tab" | "no_such_download" | "bad_request" => Exit::Usage,
                     _ => Exit::Failed,
@@ -235,6 +240,7 @@ impl Camoufox {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                self.unanswered = true;
                 return Err(Failure::failed(
                     "timeout",
                     format!("the browser did not answer {op} in time"),
@@ -508,6 +514,10 @@ impl Runtime for Camoufox {
     fn select(&mut self, key: &str) {
         self.current = key.to_string();
     }
+
+    fn unanswered(&mut self) -> bool {
+        std::mem::take(&mut self.unanswered)
+    }
 }
 
 /// The running child of `parent` that runs `executable`.
@@ -534,4 +544,51 @@ fn gone() -> Failure {
 
 fn io_failure(err: std::io::Error) -> Failure {
     Failure::failed("engine_failed", err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Camoufox whose helper is `script`, run by `sh`.
+    fn with_helper(state: &Path, script: &str) -> Camoufox {
+        let lock = profile::lock(&profile::open(state, "p", "camoufox").unwrap()).unwrap();
+        let mut helper = Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        Camoufox {
+            to_helper: helper.stdin.take().unwrap(),
+            from_helper: helper.stdout.take().unwrap(),
+            helper,
+            buffer: Vec::new(),
+            next_id: 0,
+            browser: 0,
+            current: "k1".into(),
+            deadline: None,
+            unanswered: false,
+            seen: HashMap::new(),
+            scratch: state.to_path_buf(),
+            _lock: lock,
+        }
+    }
+
+    #[test]
+    fn a_timeout_the_helper_reports_is_a_command_left_unanswered() {
+        let state = tempfile::tempdir().unwrap();
+        let mut browser = with_helper(
+            state.path(),
+            r#"read line; echo '{"id": 1, "error": {"code": "timeout", "message": "the browser did not answer in time"}}'; read line; echo '{"id": 2, "error": {"code": "stale_snapshot", "message": "gone"}}'"#,
+        );
+        let failure = browser.ask::<Value>("tabs", json!({})).err().unwrap();
+        assert_eq!(failure.code, "timeout");
+        assert!(browser.unanswered());
+        // Asked once; and an answered error is no unanswered command.
+        assert!(!browser.unanswered());
+        browser.ask::<Value>("tabs", json!({})).err().unwrap();
+        assert!(!browser.unanswered());
+        let _ = browser.helper.kill();
+    }
 }
