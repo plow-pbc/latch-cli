@@ -3,7 +3,7 @@
 //! each message JSON ending in a NUL byte. The pipes are private to the
 //! worker and Chrome; nothing listens on a port.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -18,8 +18,13 @@ pub struct Cdp {
     from_chrome: File,
     buffer: Vec<u8>,
     next_id: u64,
-    /// Events read while waiting for a reply, oldest first.
+    /// Events read while waiting for a reply, oldest first: those latch
+    /// acts on (`queue`).
     events: VecDeque<Value>,
+    /// Page targets, whose main frame's loading is kept.
+    pages: HashSet<String>,
+    /// Frames removed from their page since the events were last taken.
+    removed: HashSet<String>,
 }
 
 /// The two pipes for one Chrome: the ends Chrome gets (to become its fd 3
@@ -43,6 +48,8 @@ pub fn pipes() -> io::Result<Pipes> {
             buffer: Vec::new(),
             next_id: 0,
             events: VecDeque::new(),
+            pages: HashSet::new(),
+            removed: HashSet::new(),
         },
     })
 }
@@ -129,7 +136,7 @@ impl Cdp {
             }
             if message.get("method").is_some() {
                 let stopped = stop(&message);
-                self.events.push_back(message);
+                self.queue(message);
                 if stopped {
                     return Ok(None);
                 }
@@ -144,7 +151,7 @@ impl Cdp {
             match self.read(deadline, "events") {
                 Ok(message) => {
                     if message.get("method").is_some() {
-                        self.events.push_back(message);
+                        self.queue(message);
                     }
                 }
                 Err(failure) if failure.code == "timeout" => return Ok(()),
@@ -155,7 +162,71 @@ impl Cdp {
 
     /// The events read so far, oldest first, leaving none queued.
     pub fn take_events(&mut self) -> Vec<Value> {
+        self.removed.clear();
         self.events.drain(..).collect()
+    }
+
+    /// Whether `frame` was removed from its page since the events were
+    /// last taken: nothing sent to it would be answered.
+    pub fn removed(&self, frame: &str) -> bool {
+        self.removed.contains(frame)
+    }
+
+    /// Queues `event` if latch acts on it: what opens and closes tabs,
+    /// frames in other processes, dialogs, downloads, and a tab's own
+    /// loading. A page whose frames come and go sends thousands of other
+    /// events a minute, which are dropped; a frame that attached and
+    /// detached again before anyone looked is dropped too.
+    fn queue(&mut self, event: Value) {
+        let params = &event["params"];
+        let text = |key: &str| params[key].as_str().unwrap_or_default().to_string();
+        let keep = match event["method"].as_str().unwrap_or_default() {
+            "Target.targetCreated" => {
+                let page = params["targetInfo"]["type"] == "page";
+                if page {
+                    let target = params["targetInfo"]["targetId"]
+                        .as_str()
+                        .unwrap_or_default();
+                    self.pages.insert(target.to_string());
+                }
+                page
+            }
+            "Target.targetDestroyed" => self.pages.remove(&text("targetId")),
+            "Target.attachedToTarget" => params["targetInfo"]["type"] == "iframe",
+            "Target.detachedFromTarget" => {
+                let session = text("sessionId");
+                let attached = self.events.iter().position(|queued| {
+                    queued["method"] == "Target.attachedToTarget"
+                        && queued["params"]["sessionId"] == session.as_str()
+                });
+                match attached {
+                    Some(at) => {
+                        self.events.remove(at);
+                        false
+                    }
+                    None => true,
+                }
+            }
+            "Page.frameDetached" => {
+                // A frame moving to another process is not removed.
+                if params["reason"] != "swap" {
+                    self.removed.insert(text("frameId"));
+                }
+                false
+            }
+            "Page.frameStartedLoading"
+            | "Page.frameRequestedNavigation"
+            | "Page.frameStoppedLoading" => self.pages.contains(&text("frameId")),
+            "Page.loadEventFired"
+            | "Page.javascriptDialogOpening"
+            | "Page.javascriptDialogClosed"
+            | "Browser.downloadWillBegin"
+            | "Browser.downloadProgress" => true,
+            _ => false,
+        };
+        if keep {
+            self.events.push_back(event);
+        }
     }
 
     /// The next whole message, waiting no later than `deadline`.
@@ -290,5 +361,67 @@ mod tests {
         let stopped = cdp.reply_or(id, "Page.reload", deadline, dialog).unwrap();
         assert!(stopped.is_none());
         assert_eq!(cdp.take_events().len(), 1);
+    }
+
+    #[test]
+    fn a_page_churning_frames_queues_only_what_latch_acts_on() {
+        let Pipes { mut cdp, .. } = pipes().unwrap();
+        let event = |method: &str, params: Value| json!({"method": method, "params": params});
+        cdp.queue(event(
+            "Target.targetCreated",
+            json!({"targetInfo": {"type": "page", "targetId": "TAB"}}),
+        ));
+        // Ten thousand frames, each loading, attached in another process
+        // and gone again before latch looked.
+        for n in 0..10_000 {
+            let frame = format!("F{n}");
+            let session = format!("S{n}");
+            for method in [
+                "Page.frameAttached",
+                "Page.frameStartedLoading",
+                "Page.frameNavigated",
+                "Page.frameStoppedLoading",
+            ] {
+                cdp.queue(event(method, json!({"frameId": frame})));
+            }
+            cdp.queue(event(
+                "Target.attachedToTarget",
+                json!({"sessionId": session, "targetInfo": {"type": "iframe", "targetId": frame}}),
+            ));
+            cdp.queue(event(
+                "Target.detachedFromTarget",
+                json!({"sessionId": session}),
+            ));
+            cdp.queue(event(
+                "Page.frameDetached",
+                json!({"frameId": frame, "reason": "remove"}),
+            ));
+        }
+        // One frame still there, and the tab's own load.
+        cdp.queue(event(
+            "Target.attachedToTarget",
+            json!({"sessionId": "S", "targetInfo": {"type": "iframe", "targetId": "F"}}),
+        ));
+        cdp.queue(event("Page.frameStoppedLoading", json!({"frameId": "TAB"})));
+        cdp.queue(event(
+            "Page.frameDetached",
+            json!({"frameId": "MOVED", "reason": "swap"}),
+        ));
+        assert!(cdp.removed("F9999"));
+        assert!(!cdp.removed("MOVED"));
+        let methods: Vec<Value> = cdp
+            .take_events()
+            .iter()
+            .map(|e| e["method"].clone())
+            .collect();
+        assert_eq!(
+            methods,
+            [
+                "Target.targetCreated",
+                "Target.attachedToTarget",
+                "Page.frameStoppedLoading"
+            ]
+        );
+        assert!(!cdp.removed("F9999"));
     }
 }

@@ -16,12 +16,14 @@ use std::sync::Mutex as Shared;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
+use super::core::{self, Call};
 use crate::failure::{Exit, Failure};
 use crate::wire::Response;
 
@@ -30,6 +32,10 @@ const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// A session closes after this long without a call; its profile stays.
 pub const IDLE: Duration = Duration::from_secs(30 * 60);
+
+/// How long past its own limit (`Call::limit`) a call's answer may take:
+/// the worker ends its waits by the limit, and answers soon after.
+const ANSWER_GRACE: Duration = Duration::from_secs(30);
 
 /// How long a session's activity on a site counts for `shared_site`.
 const SHARED_SITE: Duration = Duration::from_secs(15 * 60);
@@ -167,13 +173,29 @@ impl Runtime {
     /// One call (a `core::Call` as JSON, naming its session), with an
     /// upload's bytes after it. Bytes the worker sends back (a screenshot,
     /// a download) come back as `bytes`.
+    /// A worker that has not answered well past the call's limit is stuck,
+    /// and is stopped.
     pub async fn call(&self, call: Value, input: Option<&[u8]>) -> Result<Reply, Failure> {
+        let limit = Call::deserialize(&call).map_or(core::CALL, |call| call.limit());
         let mut worker = self.worker.lock().await;
         worker.send(call).await?;
         if let Some(input) = input {
             worker.stdin.write_all(input).await.map_err(|_| lost())?;
         }
-        let answer = worker.answer().await?;
+        let answer = match tokio::time::timeout(limit + ANSWER_GRACE, worker.answer()).await {
+            Ok(answer) => answer?,
+            Err(_) => {
+                worker.stop();
+                return Err(Failure::new(
+                    Exit::Failed,
+                    "browser_gone",
+                    format!(
+                        "the browser did not answer within {} s, and was stopped",
+                        (limit + ANSWER_GRACE).as_secs()
+                    ),
+                ));
+            }
+        };
         let mut reply = Reply {
             result: answer["result"].clone(),
             audit: answer["audit"].clone(),
@@ -270,6 +292,15 @@ impl Runtime {
 }
 
 impl Worker {
+    fn stop(&mut self) {
+        if let Some(pid) = self.child.id() {
+            // The worker leads its own group; the browser, in a group of its
+            // own, exits when the worker's end of its pipe closes.
+            // SAFETY: killpg sends a signal and touches no Rust memory.
+            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+
     async fn send(&mut self, call: Value) -> Result<(), Failure> {
         let mut line = serde_json::to_vec(&call).expect("JSON");
         line.push(b'\n');
@@ -300,12 +331,7 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        if let Some(pid) = self.child.id() {
-            // The worker leads its own group; the browser, in a group of its
-            // own, exits when the worker's end of its pipe closes.
-            // SAFETY: killpg sends a signal and touches no Rust memory.
-            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
-        }
+        self.stop();
     }
 }
 

@@ -119,6 +119,8 @@ pub struct Cft {
     /// The runtime's folder: the engine's home, downloads staged under
     /// their guid, and a folder per session.
     scratch: PathBuf,
+    /// When the call under way must have its answer (`Driver::limit`).
+    deadline: Option<Instant>,
     _lock: profile::Lock,
 }
 
@@ -171,6 +173,7 @@ impl Cft {
             worlds: HashMap::new(),
             unassigned: Vec::new(),
             scratch: scratch.to_path_buf(),
+            deadline: None,
             _lock: lock,
         };
         if let Err(failure) = browser.listen() {
@@ -227,7 +230,7 @@ impl Cft {
         );
         self.select(key);
         let opened = self
-            .new_window(Instant::now() + COMMAND)
+            .new_window(self.by(COMMAND))
             .and_then(|target| self.adopt(key, &target, None));
         match opened {
             Ok(tab) => {
@@ -252,7 +255,7 @@ impl Cft {
                 "Target.closeTarget",
                 json!({"targetId": tab.target}),
                 None,
-                Instant::now() + COMMAND,
+                self.by(COMMAND),
             );
         }
         for (guid, _) in &share.downloads {
@@ -334,7 +337,7 @@ impl Cft {
             })
             .collect();
         for (key, session) in tabs {
-            let deadline = Instant::now() + COMMAND;
+            let deadline = self.by(COMMAND);
             if let Ok(tree) = self.frame_command("Page.getFrameTree", json!({}), &session, deadline)
                 && holds_frame(&tree["frameTree"], frame)
             {
@@ -427,7 +430,7 @@ impl Cft {
         target: &str,
         opener: Option<String>,
     ) -> Result<String, Failure> {
-        let deadline = Instant::now() + COMMAND;
+        let deadline = self.by(COMMAND);
         let attached = self.cdp.call(
             "Target.attachToTarget",
             json!({"targetId": target, "flatten": true}),
@@ -465,7 +468,7 @@ impl Cft {
             "Target.setAutoAttach",
             json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
             session,
-            Instant::now() + COMMAND,
+            self.by(COMMAND),
             |_| false,
         )?;
         Ok(matches!(reply, Reply::Answer(_)))
@@ -516,6 +519,13 @@ impl Cft {
             Err(failure) if failure.code == "engine_error" => Err(stale()),
             Err(failure) => Err(failure),
         }
+    }
+
+    /// When a wait of `budget` from now must end: sooner, if the call
+    /// under way has less time left.
+    fn by(&self, budget: Duration) -> Instant {
+        let own = Instant::now() + budget;
+        self.deadline.map_or(own, |deadline| deadline.min(own))
     }
 
     fn tab(&self, id: &str) -> Result<&TabState, Failure> {
@@ -640,6 +650,9 @@ impl Cft {
                 Err(failure) if failure.code == "engine_error" => {
                     self.remotes.remove(&session);
                 }
+                // Out of the call's time: the frame stays, read as it is,
+                // without the frames in its own process attached.
+                Err(failure) if failure.code == "timeout" => {}
                 Err(failure) => return Err(failure),
             }
         }
@@ -684,7 +697,7 @@ impl Cft {
             "Target.getTargetInfo",
             json!({"targetId": target}),
             None,
-            Instant::now() + COMMAND,
+            self.by(COMMAND),
         )?;
         let info = &info["targetInfo"];
         Ok((
@@ -700,8 +713,7 @@ impl Cft {
         let id = self.cdp.send(method, params, Some(&session))?;
         let here = [session];
         let opened = |event: &Value| dialog_in(event, &here);
-        self.cdp
-            .reply_or(id, method, Instant::now() + COMMAND, opened)?;
+        self.cdp.reply_or(id, method, self.by(COMMAND), opened)?;
         Ok(())
     }
 
@@ -736,12 +748,7 @@ impl Cft {
         owner_session: Option<&str>,
         frames: &mut Vec<Frame>,
     ) -> Result<(), Failure> {
-        let tree = self.frame_command(
-            "Page.getFrameTree",
-            json!({}),
-            session,
-            Instant::now() + COMMAND,
-        )?;
+        let tree = self.frame_command("Page.getFrameTree", json!({}), session, self.by(COMMAND))?;
         let mut stack = vec![(tree["frameTree"].clone(), true)];
         while let Some((node, root)) = stack.pop() {
             let frame = &node["frame"];
@@ -786,25 +793,39 @@ impl Cft {
         let Some(placement) = self.placements.get(&frame.id).cloned() else {
             return Err(stale());
         };
+        // A frame its page removed answers nothing: don't wait for it.
+        let removed = |event: &Value| {
+            event["method"] == "Page.frameDetached"
+                && event["params"]["frameId"] == frame.id.as_str()
+                && event["params"]["reason"] != "swap"
+        };
         let key = (frame.id.clone(), frame.document.clone());
-        let deadline = Instant::now() + COMMAND;
+        let deadline = self.by(COMMAND);
         for attempt in 0..2 {
+            if self.cdp.removed(&frame.id) {
+                return Err(stale());
+            }
             let context = match self.worlds.get(&key) {
                 Some(context) => *context,
                 None => {
-                    let world = self.frame_command(
+                    let world = match self.session_call(
                         "Page.createIsolatedWorld",
                         json!({"frameId": frame.id, "worldName": "latch", "grantUniveralAccess": false}),
                         &placement.session,
                         deadline,
-                    ).map_err(|_| stale())?;
+                        removed,
+                    ) {
+                        Ok(Reply::Answer(world)) => world,
+                        Err(failure) if failure.code == "timeout" => return Err(failure),
+                        _ => return Err(stale()),
+                    };
                     let context = world["executionContextId"].as_i64().ok_or_else(stale)?;
                     self.worlds.insert(key.clone(), context);
                     context
                 }
             };
             let here = self.tab_sessions();
-            let opened = |event: &Value| dialog_in(event, &here);
+            let opened = |event: &Value| dialog_in(event, &here) || removed(event);
             match self.session_call(
                 "Runtime.evaluate",
                 json!({
@@ -829,6 +850,7 @@ impl Cft {
                     }
                     return Ok(reply["result"].clone());
                 }
+                Ok(Reply::Stopped) if self.cdp.removed(&frame.id) => return Err(stale()),
                 Ok(Reply::Stopped) => {
                     return Err(Failure::failed(
                         "dialog_open",
@@ -848,7 +870,7 @@ impl Cft {
 
     /// Loads `url` in the active tab and waits for its load event.
     fn load(&mut self, url: &str) -> Result<(), Failure> {
-        let deadline = Instant::now() + COMMAND;
+        let deadline = self.by(COMMAND);
         let session = self.active_state().session.clone();
         self.absorb()?;
         let navigated = self.cdp.call(
@@ -883,6 +905,10 @@ impl Cft {
 }
 
 impl Driver for Cft {
+    fn limit(&mut self, deadline: Option<Instant>) {
+        self.deadline = deadline;
+    }
+
     fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
         self.cdp.pump(Duration::ZERO)?;
         self.absorb()?;
@@ -907,7 +933,7 @@ impl Driver for Cft {
     }
 
     fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure> {
-        let target = self.new_window(Instant::now() + COMMAND)?;
+        let target = self.new_window(self.by(COMMAND))?;
         let key = self.current.clone();
         let tab = self.adopt(&key, &target, None)?;
         self.share_mut().active = tab.clone();
@@ -928,7 +954,7 @@ impl Driver for Cft {
                 "Target.activateTarget",
                 json!({"targetId": target}),
                 None,
-                Instant::now() + COMMAND,
+                self.by(COMMAND),
             )?;
         }
         self.share_mut().active = tab.to_string();
@@ -947,7 +973,7 @@ impl Driver for Cft {
             "Target.closeTarget",
             json!({"targetId": target}),
             None,
-            Instant::now() + COMMAND,
+            self.by(COMMAND),
         )?;
         let share = self.share_mut();
         share.tabs.retain(|state| state.id != tab);
@@ -971,7 +997,7 @@ impl Driver for Cft {
 
     fn back(&mut self) -> Result<bool, Failure> {
         let session = self.active_state().session.clone();
-        let deadline = Instant::now() + COMMAND;
+        let deadline = self.by(COMMAND);
         let history = self.cdp.call(
             "Page.getNavigationHistory",
             json!({}),
@@ -998,7 +1024,7 @@ impl Driver for Cft {
             "Page.getNavigationHistory",
             json!({}),
             Some(&session),
-            Instant::now() + COMMAND,
+            self.by(COMMAND),
         )?;
         let current = history["currentIndex"].as_u64().unwrap_or(0) as usize;
         Ok(current
@@ -1072,7 +1098,7 @@ impl Driver for Cft {
                 "returnByValue": true,
             }),
             &placement.session,
-            Instant::now() + COMMAND,
+            self.by(COMMAND),
             opened,
         ) {
             Ok(Reply::Answer(reply)) if reply.get("exceptionDetails").is_some() => Err(
@@ -1088,7 +1114,7 @@ impl Driver for Cft {
     }
 
     fn reaches(&mut self, frame: &Frame, x: f64, y: f64) -> Result<bool, Failure> {
-        let deadline = Instant::now() + COMMAND;
+        let deadline = self.by(COMMAND);
         let mut current = frame.clone();
         while let Some(parent_id) = current.parent.clone() {
             let (Some(place), Some(parent)) = (
@@ -1146,7 +1172,7 @@ impl Driver for Cft {
     fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure> {
         let mut offset = (0.0, 0.0);
         let mut current = frame.clone();
-        let deadline = Instant::now() + COMMAND;
+        let deadline = self.by(COMMAND);
         loop {
             let Some(placement) = self.placements.get(&current.id).cloned() else {
                 return Err(stale());
@@ -1275,7 +1301,7 @@ impl Driver for Cft {
         self.cdp.pump(NAVIGATION_STARTS)?;
         let mut events = self.absorb()?;
         let loading = events.iter().any(started) && !events.iter().any(stopped);
-        let deadline = Instant::now() + LOADING;
+        let deadline = self.by(LOADING);
         if loading {
             while self.share().dialog.is_none() && Instant::now() < deadline {
                 self.cdp.pump(Duration::from_millis(100))?;
@@ -1309,7 +1335,7 @@ impl Driver for Cft {
             "Page.handleJavaScriptDialog",
             params,
             Some(&session),
-            Instant::now() + COMMAND,
+            self.by(COMMAND),
         )?;
         self.share_mut().dialog = None;
         Ok(())
@@ -1326,7 +1352,7 @@ impl Driver for Cft {
         let opened = |event: &Value| dialog_in(event, &here);
         let reply = self
             .cdp
-            .reply_or(id, "Runtime.evaluate", Instant::now() + COMMAND, opened)?;
+            .reply_or(id, "Runtime.evaluate", self.by(COMMAND), opened)?;
         let Some(reply) = reply else {
             return Err(Failure::failed(
                 "dialog_open",
@@ -1363,7 +1389,7 @@ impl Driver for Cft {
             "DOM.setFileInputFiles",
             json!({"files": files, "objectId": object}),
             Some(&session),
-            Instant::now() + COMMAND,
+            self.by(COMMAND),
         )?;
         Ok(())
     }
@@ -1384,7 +1410,7 @@ impl Driver for Cft {
     }
 
     fn download_file(&mut self, id: &str) -> Result<(Download, PathBuf), Failure> {
-        let deadline = Instant::now() + LOADING;
+        let deadline = self.by(LOADING);
         loop {
             self.cdp.pump(Duration::from_millis(100))?;
             self.absorb()?;
@@ -1427,7 +1453,7 @@ impl Driver for Cft {
     /// The page as the engine draws it, and how its pixels map to the
     /// page's CSS coordinates: pixel = (css - scroll) * device_pixel_ratio.
     fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
-        let deadline = Instant::now() + COMMAND;
+        let deadline = self.by(COMMAND);
         let session = self.active_state().session.clone();
         let session = Some(session.as_str());
         let metrics = self
@@ -1521,6 +1547,9 @@ impl Seat {
 }
 
 impl Driver for Seat {
+    fn limit(&mut self, deadline: Option<Instant>) {
+        self.browser.borrow_mut().limit(deadline);
+    }
     fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
         self.cft().tabs()
     }
