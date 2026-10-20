@@ -92,10 +92,11 @@ fn without_incidentals(value: &mut Value, ids: &[String]) {
     }
 }
 
-/// `text` with the port after the test site's host, and the processor's
-/// port in the payment page's address (`?frame=PORT`), left out.
+/// `text` with the port after the test site's host left out, and a test
+/// site's own port where the payment page's address names it
+/// (`?frame=PORT`); any other `?frame=` value stays.
 fn without_port(text: &str) -> String {
-    ["127.0.0.1:", "localhost:", "?frame="]
+    let text = ["127.0.0.1:", "localhost:"]
         .iter()
         .fold(text.to_string(), |text, host| {
             let mut parts = text.split(host);
@@ -105,8 +106,26 @@ fn without_port(text: &str) -> String {
                 out.push_str(part.trim_start_matches(|ch: char| ch.is_ascii_digit()));
             }
             out
-        })
+        });
+    let ports = SITE_PORTS.lock().unwrap();
+    let mut parts = text.split("?frame=");
+    let mut out = parts.next().unwrap_or_default().to_string();
+    for part in parts {
+        out.push_str("?frame=");
+        let digits = part.len()
+            - part
+                .trim_start_matches(|ch: char| ch.is_ascii_digit())
+                .len();
+        let ours = part[..digits]
+            .parse()
+            .is_ok_and(|port: u16| ports.contains(&port));
+        out.push_str(if ours { &part[digits..] } else { part });
+    }
+    out
 }
+
+/// The ports of the test sites [`site`] started.
+static SITE_PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
 
 /// A failure as shown, for the leak checks (`seen`): its message is left
 /// without the ids of the confirmations its details carry.
@@ -131,15 +150,17 @@ fn the_leak_check_leaves_out_incidental_digits_and_nothing_else() {
     // in the page's text and its query are still there.
     assert_eq!(shown.matches(CVV).count(), 2, "{shown}");
 
-    // An issued confirmation's id is left out wherever it is quoted, and
-    // the processor's port wherever the page's address names it; a value,
-    // and an id-like string no confirmation carries, are still there.
+    // An issued confirmation's id is left out wherever it is quoted, and a
+    // test site's port (here 50319) wherever the page's address names it; a
+    // value, and an id-like string no confirmation carries, are still there.
+    SITE_PORTS.lock().unwrap().push(50319);
     let stale = crate::failure::Failure {
         details: json!({
             "steps": [{"code": "confirm_stale", "confirm": "c3190a1b2c3d4"}],
             "stop": {"message": "confirmation c3190a1b2c3d4 was already used"},
             "page": {"url": "http://127.0.0.1:50000/processor.html?frame=50319",
-                     "lines": ["c3190ffffffff", "frame=319"]},
+                     "lines": ["c3190ffffffff", "frame=319"],
+                     "links": ["http://127.0.0.1:50000/processor.html?frame=319"]},
         }),
         ..crate::failure::Failure::usage(
             "confirm_stale",
@@ -147,11 +168,13 @@ fn the_leak_check_leaves_out_incidental_digits_and_nothing_else() {
         )
     };
     let shown = seen_failure(&stale);
-    assert_eq!(shown.matches(CVV).count(), 2, "{shown}");
+    assert_eq!(shown.matches(CVV).count(), 3, "{shown}");
     assert!(
         shown.contains("c3190ffffffff") && shown.contains("\"frame=319\""),
         "{shown}"
     );
+    // A secret where the processor's port goes is no port of a test site.
+    assert!(shown.contains("processor.html?frame=319\""), "{shown}");
     let needed = crate::failure::Failure {
         details: json!({"confirmation": {"id": "c3190a1b2c3d4", "lines": ["cvv 319"]}}),
         ..crate::failure::Failure::usage(
@@ -194,6 +217,7 @@ fn site() -> u16 {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-site");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
+    SITE_PORTS.lock().unwrap().push(port);
     std::thread::spawn(move || {
         for socket in listener.incoming() {
             let Ok(socket) = socket else { continue };
