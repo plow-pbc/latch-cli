@@ -73,11 +73,12 @@ pub struct Reply {
 }
 
 impl Runtime {
-    /// Starts the runtime on `profile` and waits until its browser is up.
-    pub async fn start(state_dir: &Path, profile: &str) -> Result<Self, Failure> {
+    /// Starts the runtime on `profile` and waits until its browser is up;
+    /// with `headless`, its engine has no window.
+    pub async fn start(state_dir: &Path, profile: &str, headless: bool) -> Result<Self, Failure> {
         let latch = std::env::current_exe()
             .map_err(|err| Failure::failed("engine_failed", err.to_string()))?;
-        Self::start_with(&latch, state_dir, profile, IDLE).await
+        Self::start_with(&latch, state_dir, profile, IDLE, headless).await
     }
 
     /// `start`, with `latch` as the latch binary to run the worker.
@@ -86,12 +87,14 @@ impl Runtime {
         state_dir: &Path,
         profile: &str,
         idle: Duration,
+        headless: bool,
     ) -> Result<Self, Failure> {
         let scratch = tempfile::Builder::new()
             .prefix("latch-browser-")
             .tempdir()
             .map_err(|err| Failure::failed("engine_failed", err.to_string()))?;
-        let mut child = Command::new(latch)
+        let mut command = Command::new(latch);
+        command
             .arg("--state-dir")
             .arg(state_dir)
             .arg("browser-worker")
@@ -100,7 +103,11 @@ impl Runtime {
             .arg("--scratch")
             .arg(scratch.path())
             .arg("--idle-timeout")
-            .arg(idle.as_secs().to_string())
+            .arg(idle.as_secs().to_string());
+        if headless {
+            command.arg("--headless");
+        }
+        let mut child = command
             .env_clear()
             .env("PATH", PATH)
             .current_dir(scratch.path())

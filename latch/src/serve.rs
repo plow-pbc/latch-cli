@@ -71,10 +71,12 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Runs the host until it is asked to stop. With `show_dashboard`, a live
 /// view takes the terminal and the log goes to `serve.log` in the state
 /// directory; the terminal is given back however the host stops.
+/// With `headless_browsers`, every browser session runs with no window.
 pub async fn run(
     state: &StateDir,
     folders: &[PathBuf],
     show_dashboard: bool,
+    headless_browsers: bool,
 ) -> Result<(), Failure> {
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
@@ -109,7 +111,7 @@ pub async fn run(
     } else {
         None
     };
-    let result = run_host(state, config, workers, dashboard.clone()).await;
+    let result = run_host(state, config, workers, dashboard.clone(), headless_browsers).await;
     if let Some(dashboard) = &dashboard {
         dashboard.stop();
     }
@@ -121,6 +123,7 @@ async fn run_host(
     config: Config,
     workers: WorkerSetup,
     dashboard: Option<Dashboard>,
+    headless_browsers: bool,
 ) -> Result<(), Failure> {
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
     let audit = AuditLog::open(state.path.join("audit.ndjson"))?;
@@ -168,7 +171,14 @@ async fn run_host(
     ));
 
     let vault = crate::vault::host::Vault::new(workers.state_dir.clone());
-    let browsers = crate::browser::host::Browsers::new(workers.state_dir.clone(), vault.clone());
+    if headless_browsers {
+        log("browsers: headless, with no window");
+    }
+    let browsers = crate::browser::host::Browsers::new(
+        workers.state_dir.clone(),
+        vault.clone(),
+        headless_browsers,
+    );
     let host = Arc::new(Host {
         plow,
         audit: Mutex::new(audit),

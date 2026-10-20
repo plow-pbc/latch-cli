@@ -123,7 +123,14 @@ pub struct Cft {
 }
 
 impl Cft {
-    pub fn launch(state_dir: &Path, profile_name: &str, scratch: &Path) -> Result<Self, Failure> {
+    /// Starts the engine on its profile; with `headless`, in Chrome's
+    /// headless mode, with no window.
+    pub fn launch(
+        state_dir: &Path,
+        profile_name: &str,
+        scratch: &Path,
+        headless: bool,
+    ) -> Result<Self, Failure> {
         if CFT.driver_contract != driver::CONTRACT {
             return Err(Failure::failed(
                 "engine_unverified",
@@ -147,6 +154,7 @@ impl Cft {
             &engine,
             &profile.data(),
             scratch,
+            headless,
             &chrome_reads,
             &chrome_writes,
         )?;
@@ -1722,12 +1730,14 @@ fn stale() -> Failure {
     )
 }
 
-/// Starts the engine headed, on its profile, with the CDP pipe as its fd 3
-/// (commands in) and fd 4 (replies out), in a process group of its own.
+/// Starts the engine on its profile, headed unless `headless`, with the CDP
+/// pipe as its fd 3 (commands in) and fd 4 (replies out), in a process
+/// group of its own.
 fn start(
     engine: &Engine,
     data: &Path,
     scratch: &Path,
+    headless: bool,
     reads: &impl AsRawFd,
     writes: &impl AsRawFd,
 ) -> Result<Child, Failure> {
@@ -1737,8 +1747,13 @@ fn start(
     let log = File::create(scratch.join("engine.log")).map_err(io_failure)?;
     let (reads, writes) = (reads.as_raw_fd(), writes.as_raw_fd());
     let mut command = Command::new(&engine.executable);
+    command.args(&engine.recipe);
+    // Chrome's headless mode (the full browser, with no window). The pin's
+    // recipe may never carry it; only the host's setting adds it here.
+    if headless {
+        command.arg("--headless");
+    }
     command
-        .args(&engine.recipe)
         .arg(format!("--user-data-dir={}", data.display()))
         .env_clear()
         .env("PATH", PATH)

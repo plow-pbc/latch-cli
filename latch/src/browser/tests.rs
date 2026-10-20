@@ -1,5 +1,6 @@
-//! A real session on the host: the pinned Chrome for Testing, headed, from
-//! the host's browser worker, run from a logged-in desktop session. It
+//! A real session on the host: the pinned Chrome for Testing, from the
+//! host's browser worker, run from a logged-in desktop session; headless
+//! unless built with `headed-tests` (see `HEADLESS`). It
 //! needs the engine installed where `just cft` (part of `just test`, and a
 //! step in CI) puts it, `.dev/cft-state`, or in the state directory
 //! `LATCH_CFT_STATE` names; without it the test fails, saying so.
@@ -27,6 +28,11 @@ use super::session::Session;
 
 /// The caller every host-level test calls as.
 const CALLER: &str = "test-caller";
+
+/// The engine runs with no window, so a test run never puts a browser over
+/// the owner's screen. `just test-headed` (the `headed-tests` feature) runs
+/// the same tests headed, with a real window behind the owner's.
+const HEADLESS: bool = !cfg!(feature = "headed-tests");
 
 unsafe extern "C" {
     /// macOS: 1 if the process is inside a Seatbelt sandbox (with no
@@ -188,12 +194,13 @@ fn test_state() -> (tempfile::TempDir, PathBuf, PathBuf) {
 }
 
 #[tokio::test]
-async fn cft_runs_headed_from_the_host_with_its_own_sandbox_and_leaves_nothing() {
+async fn cft_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing() {
     let (dir, state, area) = test_state();
 
-    let mut session = Session::start_with(&latch(), &state, "b1", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session =
+        Session::start_with(&latch(), &state, "b1", Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     println!("ready: {}", session.ready);
     let browser = session.ready["pid"].as_u64().unwrap() as u32;
     let data = profile::root(&state)
@@ -277,12 +284,13 @@ async fn cft_runs_headed_from_the_host_with_its_own_sandbox_and_leaves_nothing()
         for off in [
             "--no-sandbox",
             "--remote-debugging-port",
-            "--headless",
             "--single-process",
         ] {
             assert!(!p.args.contains(off), "{} has {off}", p.pid);
         }
     }
+    // Headless only when the host asks for it.
+    assert_eq!(main.args.contains("--headless"), HEADLESS, "{}", main.args);
 
     // No engine process listens on TCP, seen from inside exec, and exec
     // can read neither the profile nor anything else of the state folder.
@@ -440,9 +448,10 @@ fn out_line(result: &serde_json::Value) -> String {
 #[tokio::test]
 async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     let (_dir, state, _area) = test_state();
-    let mut session = Session::start_with(&latch(), &state, "b2", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session =
+        Session::start_with(&latch(), &state, "b2", Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     // Every front app seen while the test runs: the engine must never be one.
     let engine = session.ready["pid"].as_u64().unwrap() as u32;
     let fronted = front_apps();
@@ -481,7 +490,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
             .starts_with('f')
     );
 
-    let clicked = call(json!({"op": "do", "action": "click", "target": edit}))
+    let clicked = call(json!({"op": "act", "action": "click", "target": edit}))
         .await
         .unwrap();
     println!("click {edit}: {}", clicked["lines"]);
@@ -493,9 +502,10 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     );
 
     let name = find(&clicked, "textbox", "Name");
-    let typed = call(json!({"op": "do", "action": "type", "target": name, "text": "Ada Lovelace"}))
-        .await
-        .unwrap();
+    let typed =
+        call(json!({"op": "act", "action": "type", "target": name, "text": "Ada Lovelace"}))
+            .await
+            .unwrap();
     println!(
         "type {name}: {}",
         out_line(&call(json!({"op": "text"})).await.unwrap())
@@ -510,7 +520,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     );
 
     let password = find(&typed, "textbox", "Password");
-    let refused = call(json!({"op": "do", "action": "type", "target": password, "text": "x"}))
+    let refused = call(json!({"op": "act", "action": "type", "target": password, "text": "x"}))
         .await
         .unwrap_err();
     assert_eq!(
@@ -519,7 +529,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     );
 
     let colour = find(&typed, "combobox", "Colour");
-    let selected = call(json!({"op": "do", "action": "select", "target": colour, "text": "Blue"}))
+    let selected = call(json!({"op": "act", "action": "select", "target": colour, "text": "Blue"}))
         .await
         .unwrap();
     println!(
@@ -530,14 +540,14 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
         out_line(&call(json!({"op": "text"})).await.unwrap()),
         "colour Blue, trusted true"
     );
-    let missing = call(json!({"op": "do", "action": "select", "target": find(&selected, "combobox", "Colour"), "text": "Purple"}))
+    let missing = call(json!({"op": "act", "action": "select", "target": find(&selected, "combobox", "Colour"), "text": "Purple"}))
         .await
         .unwrap_err();
     assert_eq!(missing.code, "no_such_target");
     assert_eq!(missing.details["options"], json!(["Red", "Green", "Blue"]));
 
     let agree = find(&selected, "checkbox", "I agree");
-    let checked = call(json!({"op": "do", "action": "click", "target": agree}))
+    let checked = call(json!({"op": "act", "action": "click", "target": agree}))
         .await
         .unwrap();
     assert_eq!(
@@ -556,7 +566,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
         ("Same-origin button", "same pressed true"),
     ] {
         let target = find(&checked, "button", button);
-        let after = call(json!({"op": "do", "action": "click", "target": target}))
+        let after = call(json!({"op": "act", "action": "click", "target": target}))
             .await
             .unwrap();
         println!(
@@ -575,11 +585,11 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
     let observed = call(json!({"op": "observe"})).await.unwrap();
     let old_edit = find(&observed, "button", "Edit");
     let next = find(&observed, "link", "Next page");
-    let moved = call(json!({"op": "do", "action": "click", "target": next}))
+    let moved = call(json!({"op": "act", "action": "click", "target": next}))
         .await
         .unwrap();
     assert_eq!(moved["changed"]["title"], "latch next page");
-    let stale = call(json!({"op": "do", "action": "click", "target": old_edit, "snapshot": observed["snapshot"]}))
+    let stale = call(json!({"op": "act", "action": "click", "target": old_edit, "snapshot": observed["snapshot"]}))
         .await
         .unwrap_err();
     println!("stale: {} {}", stale.code, stale.message);
@@ -589,7 +599,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
         "a fresh list comes with the refusal"
     );
 
-    let back = call(json!({"op": "do", "action": "back"})).await.unwrap();
+    let back = call(json!({"op": "act", "action": "back"})).await.unwrap();
     assert_eq!(back["changed"]["title"], "latch frames test");
 
     // A tab latch opens is a window of its own, in the background: both
@@ -632,12 +642,12 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
 
     // A dialog blocks the page until it is answered; a link opens a tab.
     let dialogs = call(
-        json!({"op": "do", "action": "click", "target": find(&back, "link", "Dialogs and tabs")}),
+        json!({"op": "act", "action": "click", "target": find(&back, "link", "Dialogs and tabs")}),
     )
     .await
     .unwrap();
     let alerted = call(
-        json!({"op": "do", "action": "click", "target": find(&dialogs, "button", "Show alert")}),
+        json!({"op": "act", "action": "click", "target": find(&dialogs, "button", "Show alert")}),
     )
     .await
     .unwrap();
@@ -655,7 +665,7 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
         "alert closed"
     );
 
-    let opened = call(json!({"op": "do", "action": "click", "target": find(&answered, "link", "Open next in a new tab")}))
+    let opened = call(json!({"op": "act", "action": "click", "target": find(&answered, "link", "Open next in a new tab")}))
         .await
         .unwrap();
     println!("new tab: {}", opened["events"]);
@@ -685,9 +695,15 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input() {
 #[tokio::test]
 async fn frames_that_come_and_go_while_a_page_loads_break_no_call() {
     let (_dir, state, _area) = test_state();
-    let mut session = Session::start_with(&latch(), &state, "b2-churn", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "b2-churn",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
     let url = test_site().replace("frames.html", "churn.html");
     let mut failures = Vec::new();
     for round in 0..3 {
@@ -717,9 +733,15 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call() {
 #[tokio::test]
 async fn a_frames_target_under_a_parent_page_layer_is_refused() {
     let (_dir, state, _area) = test_state();
-    let mut session = Session::start_with(&latch(), &state, "b2-layer", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "b2-layer",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
     let url = test_site().replace("frames.html", "overlay.html");
     let page = session
         .call(json!({"op": "open", "url": url}))
@@ -729,7 +751,7 @@ async fn a_frames_target_under_a_parent_page_layer_is_refused() {
     for button in ["Same-origin button", "Cross-site button"] {
         let target = find(&page, "button", button);
         let refused = session
-            .call(json!({"op": "do", "action": "click", "target": target, "snapshot": page["snapshot"]}))
+            .call(json!({"op": "act", "action": "click", "target": target, "snapshot": page["snapshot"]}))
             .await
             .err()
             .expect("the click is refused");
@@ -751,9 +773,10 @@ async fn a_frames_target_under_a_parent_page_layer_is_refused() {
 #[tokio::test]
 async fn eval_upload_and_download_move_values_and_files() {
     let (_dir, state, _area) = test_state();
-    let mut session = Session::start_with(&latch(), &state, "b3", Duration::from_secs(120))
-        .await
-        .unwrap();
+    let mut session =
+        Session::start_with(&latch(), &state, "b3", Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     let url = test_site().replace("frames.html", "files.html");
     let page = session
         .call(json!({"op": "open", "url": url}))
@@ -817,14 +840,14 @@ async fn eval_upload_and_download_move_values_and_files() {
     let link = find(&uploaded, "link", "Download the report");
     let started = std::time::Instant::now();
     let clicked = session
-        .call(json!({"op": "do", "action": "click", "target": link}))
+        .call(json!({"op": "act", "action": "click", "target": link}))
         .await
         .unwrap()
         .result;
     println!(
         "click events after {:?}: {}",
         started.elapsed(),
-        clicked["trail"][0]["events"]
+        clicked["events"]
     );
     // A download is no page load to wait out.
     assert!(
@@ -832,7 +855,7 @@ async fn eval_upload_and_download_move_values_and_files() {
         "{:?}",
         started.elapsed()
     );
-    assert_eq!(clicked["trail"][0]["events"][0]["event"], "download");
+    assert_eq!(clicked["events"][0]["event"], "download");
     let got = session
         .call(json!({"op": "download_get", "download": "d1"}))
         .await
@@ -869,6 +892,7 @@ impl Host {
         let mut browsers = Browsers::new(
             state.to_path_buf(),
             crate::vault::host::Vault::new(state.to_path_buf()),
+            HEADLESS,
         );
         browsers.test = Some((latch(), Vec::new()));
         browsers.provider = Some(Arc::new(Calm));

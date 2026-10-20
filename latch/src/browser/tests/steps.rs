@@ -194,7 +194,7 @@ struct Harness {
 impl Harness {
     async fn start(state: &std::path::Path, provider: Option<Arc<dyn Provider>>) -> Harness {
         let vault = Vault::new(state.to_path_buf());
-        let mut browsers = Browsers::new(state.to_path_buf(), vault);
+        let mut browsers = Browsers::new(state.to_path_buf(), vault, super::HEADLESS);
         browsers.test = Some((latch(), Vec::new()));
         browsers.provider = provider;
         let browsers = Arc::new(browsers);

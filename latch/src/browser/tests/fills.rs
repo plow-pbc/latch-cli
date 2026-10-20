@@ -362,7 +362,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
     let lookalike = site();
     let local = format!("http://127.0.0.1:{pages}");
     let evil = format!("http://localhost:{lookalike}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
         latch(),
         vec![
@@ -772,7 +772,7 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out() {
         .unwrap();
     let pages = site();
     let local = format!("http://127.0.0.1:{pages}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
@@ -926,7 +926,7 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser() {
         .unwrap();
     let pages = site();
     let local = format!("http://127.0.0.1:{pages}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
@@ -1062,7 +1062,7 @@ async fn agent_code_is_noted_per_site_and_kept_with_the_profile() {
     let pages = site();
     let local = format!("http://127.0.0.1:{pages}");
     let elsewhere = format!("http://localhost:{pages}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
@@ -1137,7 +1137,7 @@ async fn observe_lists_items_by_the_frames_that_hold_fields() {
     let (portal, login) = (site(), site());
     let top = format!("http://127.0.0.1:{portal}");
     let frame = format!("http://localhost:{login}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
         latch(),
         vec![
@@ -1187,7 +1187,7 @@ async fn an_identifier_first_login_fills_both_steps_in_one_pause() {
     let (pages, provider, lookalike) = (site(), site(), site());
     let local = format!("http://127.0.0.1:{pages}");
     let provider_origin = format!("http://localhost:{provider}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
         latch(),
         vec![
@@ -1313,7 +1313,7 @@ async fn the_button_that_ends_a_step_is_picked_only_when_one_fits() {
         .unwrap();
     let pages = site();
     let local = format!("http://127.0.0.1:{pages}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],

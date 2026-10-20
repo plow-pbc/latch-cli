@@ -55,6 +55,8 @@ const CLOSING: Duration = Duration::from_secs(15);
 
 pub struct Browsers {
     state_dir: PathBuf,
+    /// Every session's engine runs with no window (`serve --headless-browsers`).
+    headless: bool,
     /// Each profile's running runtime.
     runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
     /// Open sessions, by id.
@@ -129,9 +131,10 @@ impl Entry {
 }
 
 impl Browsers {
-    pub fn new(state_dir: PathBuf, vault: Arc<Vault>) -> Self {
+    pub fn new(state_dir: PathBuf, vault: Arc<Vault>, headless: bool) -> Self {
         Browsers {
             state_dir,
+            headless,
             runtimes: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             vault,
@@ -261,9 +264,9 @@ impl Browsers {
     async fn start(&self, profile: &str) -> Result<Runtime, Failure> {
         #[cfg(test)]
         if let Some((latch, _)) = &self.test {
-            return Runtime::start_with(latch, &self.state_dir, profile, IDLE).await;
+            return Runtime::start_with(latch, &self.state_dir, profile, IDLE, self.headless).await;
         }
-        Runtime::start(&self.state_dir, profile).await
+        Runtime::start(&self.state_dir, profile, self.headless).await
     }
 
     /// Closes every runtime, for a host that is stopping.

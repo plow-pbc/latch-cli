@@ -72,8 +72,10 @@ impl Session {
         state_dir: &std::path::Path,
         profile: &str,
         idle: std::time::Duration,
+        headless: bool,
     ) -> Result<Self, Failure> {
-        let runtime = Arc::new(Runtime::start_with(latch, state_dir, profile, idle).await?);
+        let runtime =
+            Arc::new(Runtime::start_with(latch, state_dir, profile, idle, headless).await?);
         Session::begin(&runtime).await
     }
 
