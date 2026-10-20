@@ -229,8 +229,9 @@ matching sha256. A `fill` that
 releases a secret field (card number, CVV, identity numbers) always stops
 so, before any value is released, with the item's title and the `--press`
 button, whether it came standalone or as a plan step. The agent confirms
-with `do --confirm C [STEP…]`, or `act click eN` on that same ref (not for
-fills). A confirmation is used once, in the same session and document, and
+with `do --confirm C [STEP…]`, and only so: a click sent any other way,
+`act click` on the same ref included, is judged again and stops with a new
+confirmation if it still looks consequential. A confirmation is used once, in the same session and document, and
 only while the element and the reviewed lines are unchanged; otherwise
 `confirm_stale` with a fresh page (a total that changes from $10.00 to
 $100.00 is refused, even with the same ref, URL and button name). It needs

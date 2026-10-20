@@ -20,8 +20,8 @@
 //! **A confirmation** is used once, in the session and document it was
 //! issued in, and only while its element and the lines around it are
 //! unchanged: otherwise `confirm_stale`. It is carried out by
-//! `do --confirm C`, or by `act click` on its own ref, and never needs a new
-//! risk decision.
+//! `do --confirm C` only, and never needs a new risk decision; a click sent
+//! any other way, on the same ref too, is judged again.
 //!
 //! The decision model (`model.rs`) runs here, never in the worker, and the
 //! worker is not held while it answers.
@@ -231,9 +231,7 @@ fn record_model(model: &Model, audit: &mut Map<String, Value>) {
 
 /// One step of a run: a confirmation to carry out, or a literal action.
 enum Work {
-    /// Confirmation C, on the ref `act` named (with the act's check), or
-    /// its own.
-    Confirm(String, Option<(String, String)>, Option<Check>),
+    Confirm(String),
     Literal(Literal, Option<Check>),
 }
 
@@ -249,8 +247,6 @@ pub async fn run(
 ) -> Result<Value, Failure> {
     let request = request_id(args)?;
     audit.insert("request".into(), json!(request));
-    let via_act = args["via"] == "act";
-    audit.insert("via".into(), json!(if via_act { "act" } else { "do" }));
     let plan: Plan = serde_json::from_value(args["plan"].clone())
         .map_err(|err| usage(format!("the plan is malformed: {err}")))?;
     plan.validate().map_err(usage)?;
@@ -299,7 +295,7 @@ pub async fn run(
     // Every ref pinned to the snapshot it is read in, before anything runs.
     let mut work = Vec::new();
     if let Some(id) = &confirm {
-        work.push(Work::Confirm(id.clone(), None, None));
+        work.push(Work::Confirm(id.clone()));
     }
     for (n, step) in plan.steps.iter().enumerate() {
         let mut literal = step.literal.clone().expect("goals were refused");
@@ -321,43 +317,6 @@ pub async fn run(
             literal.snapshot = pinned["snapshot"].as_str().map(str::to_string);
         }
         work.push(Work::Literal(literal, step.check.clone()));
-    }
-
-    // `act click` on a confirmation's own ref carries it out.
-    let issued = !entry
-        .confirmations
-        .lock()
-        .expect("confirmations lock")
-        .is_empty();
-    if via_act
-        && issued
-        && let [Work::Literal(literal, check)] = work.as_slice()
-        && literal.op == Op::Click
-    {
-        let check = check.clone();
-        let target = literal.target.clone().unwrap_or_default();
-        let snapshot = literal.snapshot.clone().unwrap_or_default();
-        let (reviewed, _) = call(
-            entry,
-            json!({"op": "review", "snapshot": snapshot, "target": target}),
-            audit,
-        )
-        .await?;
-        let found = entry
-            .confirmations
-            .lock()
-            .expect("confirmations lock")
-            .iter()
-            .rev()
-            .find(|c| {
-                matches!(c.kind, Confirms::Click)
-                    && c.document == reviewed["document"]
-                    && c.uid == reviewed["uid"]
-            })
-            .map(|c| c.id.clone());
-        if let Some(id) = found {
-            work = vec![Work::Confirm(id, Some((snapshot, target)), check)];
-        }
     }
 
     // The step policy, before anything is sent. Confirmations always pass.
@@ -399,7 +358,7 @@ pub async fn run(
         .iter()
         .enumerate()
         .map(|(n, step)| match step {
-            Work::Confirm(id, ..) => json!({"step": n + 1, "confirm": id}),
+            Work::Confirm(id) => json!({"step": n + 1, "confirm": id}),
             Work::Literal(literal, check) => {
                 let mut summary = json!({"step": n + 1, "op": literal.op, "ref": literal.target});
                 if let Some(check) = check {
@@ -436,9 +395,9 @@ pub async fn run(
         let mut shown = json!({"step": step_no, "actions": 0});
         let before = run.actions;
         let outcome = match step {
-            Work::Confirm(id, act, check) => {
+            Work::Confirm(id) => {
                 shown["confirm"] = json!(id);
-                run.confirmed(step_no, &id, act, check.as_ref()).await
+                run.confirmed(step_no, &id).await
             }
             Work::Literal(literal, check) => {
                 shown["op"] = json!(literal.op);
@@ -725,7 +684,6 @@ impl Run<'_> {
                 acted => acted,
             };
         }
-        let is_click = !enter;
         let kind = match enter {
             true => Confirms::Keys(literal.op, literal.text.clone().unwrap_or_default()),
             false => Confirms::Click,
@@ -737,15 +695,7 @@ impl Run<'_> {
             Exit::Denied,
             "confirm_needed",
             format!(
-                "{what} looks like it can't be undone; nothing was sent. If it is what the task needs, confirm it with `latch browser do --confirm {id}`{}",
-                if is_click {
-                    format!(
-                        " or `latch browser act click {}`",
-                        literal.target.as_deref().unwrap_or_default()
-                    )
-                } else {
-                    String::new()
-                }
+                "{what} looks like it can't be undone; nothing was sent. If it is what the task needs, confirm it with `latch browser do --confirm {id}`"
             ),
         );
         let mut shown = reviewed_json(&id, &reviewed);
@@ -793,35 +743,8 @@ impl Run<'_> {
     }
 
     /// Carries out confirmation `id`: once, on the element and context it
-    /// was issued for, with no new risk decision; then `check`, if any.
-    async fn confirmed(
-        &mut self,
-        n: usize,
-        id: &str,
-        act: Option<(String, String)>,
-        check: Option<&Check>,
-    ) -> Result<Done, Failure> {
-        // A check that must change is checked before the confirmation is
-        // spent, as for any step.
-        if let Some(check) = check
-            && check.require_change
-        {
-            let before = Literal {
-                snapshot: act.as_ref().map(|(snapshot, _)| snapshot.clone()),
-                ..Literal::click("e1")
-            };
-            if self
-                .holds(check, &before, Vec::new(), Duration::ZERO)
-                .await?
-            {
-                return Err(stopped(
-                    "check_not_met",
-                    format!(
-                        "step {n}'s check already holds before the step, and it must change; nothing was sent, and confirmation {id} is still unused"
-                    ),
-                ));
-            }
-        }
+    /// was issued for, with no new risk decision.
+    async fn confirmed(&mut self, n: usize, id: &str) -> Result<Done, Failure> {
         let taken = {
             let mut all = self.entry.confirmations.lock().expect("confirmations lock");
             all.iter_mut().find(|c| c.id == id).map(|c| {
@@ -859,7 +782,6 @@ impl Run<'_> {
         if used {
             return Err(stale("was already used"));
         }
-        let (snapshot, target) = act.unwrap_or((snapshot, target));
         let enter = matches!(kind, Confirms::Keys(..));
         let press = match &kind {
             Confirms::Fill(args) => args["press"].as_str().unwrap_or_default().to_string(),
@@ -890,10 +812,6 @@ impl Run<'_> {
             snapshot: Some(snapshot),
             ..Literal::click(&target)
         };
-        let besides = match check {
-            Some(c) if c.kind == CheckKind::Download => self.downloads().await?,
-            _ => Vec::new(),
-        };
         let guard = Some((print.as_str(), enter));
         let sent = match kind {
             Confirms::Click => self
@@ -920,7 +838,7 @@ impl Run<'_> {
             }
             sent => sent?,
         }
-        self.check(n, &literal, check, besides).await
+        self.check(n, &literal, None, Vec::new()).await
     }
 
     /// One action, journaled before it is sent and once its result is known.

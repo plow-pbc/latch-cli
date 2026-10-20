@@ -279,7 +279,7 @@ Checks wait up to 10 s after a step's last action.
 
 - A separate switch turns instruction steps off, for B9's refs-only arm.
 - Any forbidden step is refused with `step_not_allowed` (exit 4) before anything is sent.
-- **Confirmations are never forbidden:** `--confirm C`, or `act click eN` on a confirmation's own ref.
+- **Confirmations are never forbidden:** `--confirm C`.
 - B9 decides the shipped policy.
 
 ### 6.2 One pass of an instruction step
@@ -400,7 +400,7 @@ The stop returns **a confirmation**:
 - the reviewed context: the target's name and row or card text, the page title, and the lines naming the item, amount or recipient. For a fill, also the item's title and the `--press` button;
 - a screenshot.
 
-The agent confirms with the plan command's `--confirm C [STEP…]`, or with `act click eN` on that same ref (not for fills).
+The agent confirms with the plan command's `--confirm C [STEP…]`, for clicks, Enters and fills alike; there is no other route. A click or Enter sent any other way, `act click` on the confirmation's own ref included, gets a new risk decision: if it still looks like it can't be undone, it stops again with a new confirmation, and the stop's message names `do --confirm`.
 
 A confirmation:
 - **is used once;**
@@ -772,7 +772,7 @@ Done when: the bundled `latch` is signed and notarized; the custody key is split
     - `path: checkout` doesn't match `https://checkout.invalid/login` or `/login?next=checkout.html`.
   - **Confirmation is enforced:**
     - a literal click on "Place order" stops `confirm_needed` with the reviewed context;
-    - `act click eN` on the returned ref confirms it once, and a second use is refused;
+    - `do --confirm C` with the returned confirmation carries it out once, and a second use is refused;
     - after the fixture's total changes from $10 to $100 (same ref, URL and button name), the confirmation is refused `confirm_stale`;
     - Enter in the checkout form's field stops `confirm_needed`;
     - a standalone `fill … --press` of a card stops `confirm_needed` before any value is released, and its confirmation fills, presses and cleans up.

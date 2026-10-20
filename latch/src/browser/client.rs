@@ -107,7 +107,6 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
             };
             plan.validate()
                 .map_err(|why| Failure::usage("bad_arguments", why))?;
-            request["via"] = json!("act");
             Some(plan)
         }
         BrowserCommand::Find {

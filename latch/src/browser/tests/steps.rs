@@ -291,7 +291,7 @@ impl Harness {
             }],
             ..Plan::default()
         };
-        self.send(json!({"via": "act", "plan": plan})).await
+        self.send(json!({"plan": plan})).await
     }
 
     /// The plan command's short form, as the client compiles it.
@@ -563,23 +563,19 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
         "no_such_request"
     );
 
-    // A check that must change and already holds stops before the
-    // confirmation is spent.
-    let failure = h
-        .act(ActAction::Click, &[&place], Some("new text: Total"))
-        .await
-        .unwrap_err();
-    assert_eq!(refused(&failure), (Exit::Failed, "check_not_met"));
-    assert!(failure.details["trail"].as_array().unwrap().is_empty());
+    // A plain click on the same ref is judged again: it stops with a new
+    // confirmation, and names the one command that carries it out.
+    let again = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
+    assert_eq!(refused(&again), (Exit::Denied, "confirm_needed"));
+    assert_ne!(confirmation(&again)["id"], issued["id"]);
+    assert!(again.message.contains("`latch browser do --confirm c"));
+    assert!(!again.message.contains("act click"));
+    assert!(!h.text().await.contains("Order placed"));
 
-    // `act click` on that ref confirms it, once.
-    let placed = h
-        .act(ActAction::Click, &[&place], Some("text: Order placed"))
-        .await
-        .unwrap();
+    // `do --confirm C` carries it out, once.
+    let placed = h.confirm(issued["id"].as_str().unwrap()).await.unwrap();
     evidence("b5-confirmed.json", &placed);
-    assert_eq!(placed["status"], "reached", "the act's own check ran");
-    assert_eq!(placed["steps"][0]["outcome"], "checked");
+    assert_eq!(placed["steps"][0]["outcome"], "dispatched");
     assert_eq!(placed["steps"][0]["confirm"], issued["id"]);
     assert_eq!(placed["trail"][0]["confirmation"], issued["id"]);
     assert_eq!(placed["page"]["title"], "Order · Shop");
@@ -594,7 +590,10 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
     let failure = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
     assert_eq!(failure.code, "confirm_needed");
     h.act(ActAction::Click, &[&upgrade], None).await.unwrap();
-    let stale = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
+    let stale = h
+        .confirm(confirmation(&failure)["id"].as_str().unwrap())
+        .await
+        .unwrap_err();
     stopped("b5-confirm-stale.json", &stale);
     assert_eq!(refused(&stale), (Exit::Denied, "confirm_stale"));
     assert!(
@@ -760,8 +759,8 @@ async fn the_step_policy_holds_on_every_route_and_confirmations_still_pass() {
             && !shown["elements"].to_string().contains("\"value\":\"x\""),
         "nothing was typed"
     );
-    // A confirmation still works, by its own ref.
-    let placed = h.act(ActAction::Click, &[&place], None).await.unwrap();
+    // A confirmation still works.
+    let placed = h.confirm(first["id"].as_str().unwrap()).await.unwrap();
     assert_eq!(placed["steps"][0]["confirm"], first["id"]);
 
     // `stop`: only refs from the page the latest stop returned.
