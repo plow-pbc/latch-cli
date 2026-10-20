@@ -357,7 +357,9 @@ target that is not a ref, which points to the plan command.
 **The decision model** runs in the host, never the worker, behind one
 interface (`model.rs`): choose one option, or yes/no with a probability.
 Answers are checked before use (an offered option; finite probabilities
-covering the options, summing to 1, peaking at the choice). Calls send
+covering the options and summing to 1). A choice below its top
+probability gives way to the top option, and the call's audit record
+keeps that answer's option ids and probabilities (`corrected`). Calls send
 element names, row text, page lines, the title and non-secret field
 values; never cookies, vault values, seeds or screenshots. The host holds
 no model key: it asks Plow's decision route (`POST /v1/decisions`) with
