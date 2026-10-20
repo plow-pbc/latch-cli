@@ -16,22 +16,36 @@ run `python3 scripts/cft-pin.py VERSION` on a Mac and put its output in
 
 ## Sessions and profiles
 
-Each session is one browser on one profile, driven by its own long-lived
-browser worker (`latch browser-worker`, hidden), which the host talks to
-over stdio. The worker drives CfT over `--remote-debugging-pipe` only: CDP
-on Chrome's fds 3 and 4, never a port.
+Each profile in use has one running browser, its **runtime**, driven by
+one long-lived browser worker (`latch browser-worker`, hidden), which the
+host talks to over stdio. The worker drives CfT over
+`--remote-debugging-pipe` only: CDP on Chrome's fds 3 and 4, never a port.
+
+Each `open` makes a new **session** in its profile's runtime, starting the
+runtime if none is running: a window of its own, and every tab or popup
+opened from it, with its own snapshots, downloads and dialogs. Sessions on
+one profile share its logins (cookies and site storage), never each
+other's tabs. The worker makes one call at a time; sessions take turns call
+by call, so one session's step list or wait never holds the browser for
+the others (a wait checks its condition a few times a second, with the
+browser free in between). A download belongs to the session whose page
+started it, found from its frame; its file is staged under the download's
+guid, so two sessions can download the same file name at once. One that no
+session's page started is never listed.
 
 Profiles live in `<state-dir>/browser/profiles/<name>/`: `profile.json`
-binds the profile to its engine for life, `lock` is held by the one
-session using it, and `data/` is Chrome's user data folder, created with
-password saving and autofill off. A session closes after 30 minutes
-without a call; the profile stays. `exec` and file workers are denied the
+binds the profile to its engine for life, `lock` is held by its runtime,
+and `data/` is Chrome's user data folder, created with password saving and
+autofill off. A session closes after 30 minutes without a call, and
+closing one never touches the others; the runtime closes with its last
+session, and the profile stays. `exec` and file workers are denied the
 whole state directory, profiles included.
 
 ## Commands
 
 ```sh
-latch browser --host my-mac open http://example.com/   # starts the default profile's session
+latch browser --host my-mac open http://example.com/   # a new session: its id is in the answer
+export LATCH_BROWSER_SESSION=sbkpanajj…                # or --session S on each command
 latch browser --host my-mac observe                    # snapshot o2: refs e1, e2, …
 latch browser --host my-mac act click e7
 latch browser --host my-mac act type e3 "Ada Lovelace"
@@ -57,18 +71,39 @@ latch browser --host my-mac login --item v1                # a vault login; latc
 latch browser --host my-mac fill --item v2 --field number=e4 --field expiry=e5 --field cvv=e6 --press e7
 latch browser --host my-mac fill-code --item v1            # the current authenticator code
 latch browser --host my-mac sessions | close
+latch browser --host my-mac open --profile shop --task basket --reserve-site https://shop.example/
 ```
 
 `login`, `fill` and `fill-code` take values from the host's vault without
 the agent ever seeing one; [VAULT.md](VAULT.md) has the rules.
 
-A session is named for its profile (`open --profile P`, then `--session P`;
-both default to `default`). A session belongs to the caller (client key)
-that opened it, until it closes: that caller's `open` on the profile
-reuses it. Anyone else's `open` is refused with `profile_busy` (exit 1,
-naming the profile), and any other command on the session, `close`
-included, with `not_owner` (exit 4); nothing of theirs reaches it.
-`sessions` lists only the caller's own sessions.
+`open` answers the new session's id, once: 128 random bits, never derived
+from the profile (`--profile` defaults to `default`). Every other session
+command needs it, as `--session S` or `LATCH_BROWSER_SESSION`; there is no
+default session. The id is a capability, and a session is reachable only
+with it and only by the caller (client key) that opened it: an id the
+caller has no session for gets `no_such_session` (exit 1), another
+caller's session `not_owner` (exit 4), and nothing reaches the session
+either way. So two tasks under one client key each `open` their own
+session, and neither can reach the other's without its id. `sessions` lists
+the caller's sessions without their ids: task label (`open --task`),
+profile, the site it was last on, its state and how long since its last
+call. The audit records a short hash of an id, never the id, with the
+task label.
+
+Sessions on one profile share each site's account state (one cart, one
+login). While another session on the profile acted on the same site
+(registrable domain) in the last 15 minutes, an answer on that site
+carries `shared_site`: that session's id hash and how many seconds ago.
+`open --reserve-site URL` holds URL's site for the session until it
+closes: another session's action there (a click, typing, `eval`, a fill,
+a dialog, or loading a page of the site) gets `site_busy` (exit 1) before
+anything is sent; reading its page goes on. The reservation is this
+host's only.
+
+A vault fill holds the whole runtime: every session on the profile gets
+`session_paused` until the fill's cleanup is confirmed, and while a value
+a fill could not clear may be on a page, until that session is closed.
 
 Each element in a snapshot has its ref, role and accessible name, its
 value (never for a password or secret-looking field, which is marked

@@ -175,14 +175,19 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
         }
     };
     let name = match command {
-        BrowserCommand::Open { profile, url } => {
-            if profile.is_some() && !request["session"].is_null() {
-                return Err(Failure::usage(
-                    "bad_arguments",
-                    "open names its session by --profile; leave out --session".into(),
-                ));
+        BrowserCommand::Open {
+            profile,
+            task,
+            reserve_site,
+            url,
+        } => {
+            // A new session: it has no id yet.
+            if let Some(request) = request.as_object_mut() {
+                request.remove("session");
             }
-            set(request, "session", json!(profile));
+            set(request, "profile", json!(profile));
+            set(request, "task", json!(task));
+            set(request, "reserve_site", json!(reserve_site.then_some(true)));
             set(request, "url", json!(url));
             "open"
         }
@@ -318,6 +323,13 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
         BrowserCommand::Sessions => "sessions",
         BrowserCommand::Close => "close",
     };
+    if !matches!(name, "open" | "sessions") && request["session"].is_null() {
+        return Err(Failure::usage(
+            "no_session",
+            "name the session with --session S (the id `open` answered) or LATCH_BROWSER_SESSION"
+                .into(),
+        ));
+    }
     request["command"] = json!(name);
     Ok(())
 }

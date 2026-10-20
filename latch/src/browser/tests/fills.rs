@@ -182,25 +182,53 @@ fn item(kind: u8, title: &str, sites: &[&str], values: &[(&str, &str)]) -> Item 
 
 struct Harness {
     browsers: Arc<Browsers>,
+    /// The session the harness calls in, and its id.
     entry: Arc<host::Entry>,
+    id: String,
     /// Everything an agent or the audit was shown, for the final grep.
     shown: Vec<String>,
 }
 
 impl Harness {
-    /// A call as the host makes it for an agent (pause and eval flags included).
+    async fn start(browsers: Browsers) -> Harness {
+        let browsers = Arc::new(browsers);
+        let (id, entry) = browsers.open("default", CALLER, None).await.unwrap();
+        Harness {
+            browsers,
+            entry,
+            id,
+            shown: Vec::new(),
+        }
+    }
+
+    /// A call as the host makes it for an agent (pause and eval flags
+    /// included). An `open` starts a new session, which takes the place of
+    /// the one before.
     async fn call(&mut self, command: &str, args: Value) -> Result<Value, crate::failure::Failure> {
         let mut audit = Map::new();
+        let name = if command == "open" {
+            "default"
+        } else {
+            &self.id
+        };
         let result = host::call(
             &self.browsers,
             CALLER,
             command,
-            "default",
+            name,
             &args,
             None,
             &mut audit,
         )
         .await;
+        if command == "open"
+            && let Ok((opened, _)) = &result
+        {
+            let id = opened["session"].as_str().unwrap().to_string();
+            self.entry = self.browsers.session(&id, CALLER).await.unwrap();
+            let before = std::mem::replace(&mut self.id, id);
+            self.browsers.close(&before, CALLER).await.unwrap();
+        }
         self.shown.push(Value::Object(audit).to_string());
         match result {
             Ok((value, _)) => {
@@ -313,13 +341,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value() {
             (evil.clone(), "https://shop.example.evil.example".into()),
         ],
     ));
-    let browsers = Arc::new(browsers);
-    let entry = browsers.open("default", CALLER).await.unwrap();
-    let mut h = Harness {
-        browsers,
-        entry,
-        shown: Vec::new(),
-    };
+    let mut h = Harness::start(browsers).await;
 
     // A login on a subdomain of its site: latch picks the fields itself.
     h.call("open", json!({"url": format!("{local}/login.html")}))
@@ -616,13 +638,7 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out() {
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
-    let browsers = Arc::new(browsers);
-    let entry = browsers.open("default", CALLER).await.unwrap();
-    let mut h = Harness {
-        browsers,
-        entry,
-        shown: Vec::new(),
-    };
+    let mut h = Harness::start(browsers).await;
 
     // Named fields without --submit: latch finds the form's own submit.
     let page = h
@@ -737,6 +753,148 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out() {
     h.call("close", json!({})).await.ok();
 }
 
+/// A fill in one session holds the whole browser: every other session on
+/// the profile gets session_paused until the fill's cleanup is confirmed,
+/// and stays out while a value a fill could not clear may be on a page.
+#[tokio::test]
+async fn a_fill_in_one_session_pauses_every_session_on_its_browser() {
+    let (_dir, state, _area) = test_state();
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let card = vault
+        .with(|s| {
+            s.add(item(
+                CARD,
+                "Test Visa",
+                &[],
+                &[
+                    ("number", NUMBER),
+                    ("expiry month", "4"),
+                    ("expiry year", "2031"),
+                    ("code", CVV),
+                ],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone());
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers).await;
+    // Another caller's session on the same profile.
+    let other = "another-caller";
+    let browsers = h.browsers.clone();
+    let mut shown_b = Vec::new();
+    let mut call_b = async |command: &str, name: &str, args: Value| {
+        let mut audit = Map::new();
+        let result = host::call(&browsers, other, command, name, &args, None, &mut audit)
+            .await
+            .map(|(result, _)| result);
+        shown_b.push(format!("{} {result:?}", Value::Object(audit)));
+        result
+    };
+    let b = call_b(
+        "open",
+        "default",
+        json!({"url": format!("{local}/next.html")}),
+    )
+    .await
+    .unwrap()["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // While a login fills in this session, the other gets nothing.
+    h.call("open", json!({"url": format!("{local}/slow-login.html")}))
+        .await
+        .unwrap();
+    let (browsers, entry, id) = (h.browsers.clone(), h.entry.clone(), login.item.clone());
+    let filling = tokio::spawn(async move {
+        let mut audit = Map::new();
+        let result =
+            crate::browser::fill::run(&browsers, &entry, "login", &json!({"item": id}), &mut audit)
+                .await;
+        (result, audit)
+    });
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    for command in ["observe", "screenshot", "eval"] {
+        let paused = call_b(command, &b, json!({"script": "1"}))
+            .await
+            .unwrap_err();
+        println!(
+            "{command} in the other session during the fill: {}",
+            paused.code
+        );
+        assert_eq!(paused.code, "session_paused");
+    }
+    let opened = call_b(
+        "open",
+        "default",
+        json!({"url": format!("{local}/next.html")}),
+    )
+    .await
+    .unwrap_err();
+    println!("a new session during the fill: {}", opened.code);
+    assert_eq!(opened.code, "session_paused");
+    let (slow, audit) = filling.await.unwrap();
+    h.shown.push(Value::Object(audit).to_string());
+    assert_eq!(slow.unwrap()["submitted"], true);
+    let seen = call_b("observe", &b, json!({})).await.unwrap();
+    println!("the other session after cleanup: {}", seen["title"]);
+    assert_eq!(seen["title"], "latch next page");
+
+    // A fill whose cleanup can't be confirmed keeps every session out,
+    // until the session it filled in is closed.
+    let page = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/trap-checkout.html")}),
+        )
+        .await
+        .unwrap();
+    let fields = json!([
+        ["number", [find(&page, "textbox", "Card number")]],
+        ["expiry", [find(&page, "textbox", "Expiry")]],
+        ["cvv", [find(&page, "textbox", "CVV")]],
+    ]);
+    let (trapped, _) = h
+        .fill(
+            "fill",
+            json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}),
+        )
+        .await;
+    assert_eq!(trapped.unwrap_err().code, "session_paused");
+    let held = call_b("observe", &b, json!({})).await.unwrap_err();
+    println!("the other session while the trap holds: {}", held.code);
+    assert_eq!(held.code, "session_paused");
+    h.call("close", json!({})).await.unwrap();
+    let seen = call_b("observe", &b, json!({})).await.unwrap();
+    println!("the other session once it is closed: {}", seen["title"]);
+    assert_eq!(seen["title"], "latch next page");
+
+    call_b("close", &b, json!({})).await.unwrap();
+
+    let everything = format!("{}\n{}", h.shown.join("\n"), shown_b.join("\n"));
+    for value in [PASSWORD, NUMBER, CVV] {
+        assert!(
+            !everything.contains(value),
+            "a value reached a result, an error or the audit"
+        );
+    }
+}
+
 /// Observe lists a login whose form sits in a frame on its own site, under
 /// a page it allows as another top-level site: the rule is applied to the
 /// origins of the frames that hold fields, not to the page alone.
@@ -778,13 +936,7 @@ async fn observe_lists_items_by_the_frames_that_hold_fields() {
             (frame.clone(), "https://login.shop.example".into()),
         ],
     ));
-    let browsers = Arc::new(browsers);
-    let entry = browsers.open("default", CALLER).await.unwrap();
-    let mut h = Harness {
-        browsers,
-        entry,
-        shown: Vec::new(),
-    };
+    let mut h = Harness::start(browsers).await;
 
     h.call(
         "open",
@@ -838,13 +990,7 @@ async fn an_identifier_first_login_fills_both_steps_in_one_pause() {
             ),
         ],
     ));
-    let browsers = Arc::new(browsers);
-    let entry = browsers.open("default", CALLER).await.unwrap();
-    let mut h = Harness {
-        browsers,
-        entry,
-        shown: Vec::new(),
-    };
+    let mut h = Harness::start(browsers).await;
 
     // One document, no form, no submit button, "Continue with Google"
     // first, the password shown only after Continue, and cross-site frames
@@ -963,13 +1109,7 @@ async fn the_button_that_ends_a_step_is_picked_only_when_one_fits() {
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
-    let browsers = Arc::new(browsers);
-    let entry = browsers.open("default", CALLER).await.unwrap();
-    let mut h = Harness {
-        browsers,
-        entry,
-        shown: Vec::new(),
-    };
+    let mut h = Harness::start(browsers).await;
 
     // "Sign in via LinkedIn" comes first, but only "Continue" is named
     // plainly for the step's end.

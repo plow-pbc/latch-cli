@@ -45,6 +45,8 @@ pub const WITHIN: f64 = 10.0;
 const MAX_WITHIN: f64 = 120.0;
 /// How often a sentence is judged again while it waits.
 const JUDGE_EVERY: Duration = Duration::from_millis(1000);
+/// How often a typed condition is checked while it waits.
+const WAIT_POLL: Duration = Duration::from_millis(250);
 
 /// One step, as the client sends it.
 #[derive(Deserialize, Debug, Clone)]
@@ -137,6 +139,29 @@ pub fn history(entry: &Entry, request: &str) -> Result<Value, Failure> {
                 format!("this session has no request {request}"),
             )
         })
+}
+
+/// Waits until `deadline` for `condition`, checking it a few times a
+/// second: between checks the browser is free for other sessions' calls.
+/// A check can also end the wait early: the condition's element is from a
+/// page that is gone, or a dialog blocks the page.
+async fn wait_for(
+    session: &mut Session,
+    condition: &Value,
+    deadline: Instant,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    loop {
+        let check = json!({"op": "wait", "condition": condition, "within_ms": 0});
+        let (waited, _) = call(session, check, audit).await?;
+        let ended =
+            waited["met"] == true || waited["stale"] == true || waited["blocked_by_dialog"] == true;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if ended || left.is_zero() {
+            return Ok(waited);
+        }
+        tokio::time::sleep(left.min(WAIT_POLL)).await;
+    }
 }
 
 /// One call to the worker; its audit fills in what the request's audit
@@ -332,7 +357,7 @@ pub async fn act(
     let checked = check_sentences(&steps, &mut model).await;
     record_model(&model, audit);
     checked?;
-    if entry.filling.load(Ordering::SeqCst) {
+    if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
     entry
@@ -767,15 +792,7 @@ impl Runner<'_> {
         let mut verdicts = Vec::new();
         let mut events = Vec::new();
         for (kind, condition) in typed {
-            let left = deadline
-                .saturating_duration_since(Instant::now())
-                .as_millis() as u64;
-            let (waited, _) = call(
-                self.session,
-                json!({"op": "wait", "condition": condition, "within_ms": left}),
-                self.audit,
-            )
-            .await?;
+            let waited = wait_for(self.session, &condition, deadline, self.audit).await?;
             events.extend(waited["events"].as_array().cloned().unwrap_or_default());
             let met = waited["met"] == true;
             let mut verdict = json!({"kind": kind, "result": if met { "met" } else { "not_met" }});
@@ -923,7 +940,7 @@ pub async fn find(
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
-    if entry.filling.load(Ordering::SeqCst) {
+    if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
     let role = args["role"].as_str();
@@ -1073,7 +1090,7 @@ pub async fn wait(
     } else {
         audit.insert("kind".into(), condition["kind"].clone());
     }
-    if entry.filling.load(Ordering::SeqCst) {
+    if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
     let mut session = entry.session.lock().await;
@@ -1100,13 +1117,7 @@ pub async fn wait(
         audit.insert("verdict".into(), json!(verdict.result));
         json!({"met": verdict.result == "met", "verdict": verdict.to_json()})
     } else {
-        let ms = (within * 1000.0) as u64;
-        let (waited, _) = call(
-            &mut session,
-            json!({"op": "wait", "condition": condition, "within_ms": ms}),
-            audit,
-        )
-        .await?;
+        let waited = wait_for(&mut session, &condition, deadline, audit).await?;
         audit.insert(
             "verdict".into(),
             json!(if waited["met"] == true {

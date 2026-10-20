@@ -117,7 +117,41 @@ pub enum Call {
     },
     FillCleanup,
     FillResume,
+    /// Starts the call's session with a window of its own.
+    Begin,
+    /// Ends the call's session: its tabs close, the others go on.
+    End,
+    /// Closes the browser, ending every session.
     Close,
+}
+
+/// Where a call acts, for a site another session reserved: reading a page
+/// is not acting on it.
+pub enum Acts<'a> {
+    No,
+    /// On the page in front of the session.
+    Page,
+    /// On the page it loads.
+    Url(&'a str),
+}
+
+impl Call {
+    pub fn acts(&self) -> Acts<'_> {
+        match self {
+            Call::Open { url: Some(url) }
+            | Call::Tab {
+                action: TabAction::New,
+                url: Some(url),
+                ..
+            } => Acts::Url(url),
+            Call::Act { .. }
+            | Call::Dialog { .. }
+            | Call::Eval { .. }
+            | Call::Upload { .. }
+            | Call::PrepareFill(_) => Acts::Page,
+            _ => Acts::No,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
@@ -312,7 +346,9 @@ impl<D: Driver> Core<D> {
             ),
             Call::Downloads => self.downloads(&mut audit),
             Call::DownloadGet { download } => self.download_get(&download, &mut audit),
-            Call::Close => unreachable!("the worker closes the session"),
+            Call::Begin | Call::End | Call::Close => {
+                unreachable!("the worker starts, ends and closes sessions")
+            }
         };
         match result {
             Ok(result) => Ok(Answer {
@@ -327,6 +363,19 @@ impl<D: Driver> Core<D> {
                 Err(failure)
             }
         }
+    }
+
+    /// Whether a fill holds this session: while it does, no other session
+    /// on the browser may read or act either.
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// The site of the page in front of the session.
+    pub fn site(&mut self) -> Option<String> {
+        let tabs = self.driver.tabs().ok()?;
+        let active = tabs.into_iter().find(|tab| tab.active)?;
+        crate::vault::sites::site_of(&active.url)
     }
 
     /// A fresh reading for an error's details, when the page can be read.

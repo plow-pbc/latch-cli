@@ -81,15 +81,16 @@ value split across boxes; dates and expiries are reshaped to the field's
 own format. A fill that includes a secret field needs `--press eN`, the
 button that submits it.
 
-While a fill runs, the session is paused: every other call answers
-`session_paused`. Each value is set in one step after the field's element,
-document and origin are checked again; latch then presses submit and waits
-until the values have left the page (clearing them itself if the page keeps
-them). A fill that stops part-way (a covered button, a refused field) is
-cleaned up the same way. If latch cannot confirm the values left the page,
-the session stays paused, through any later fill too, until a cleanup
-confirms the page holds none. No reading is taken while a fill holds the
-session, and an element list marks a field holding a filled value as
+While a fill runs, every session on its profile is paused: every other
+call answers `session_paused`. Each value is set in one step after the
+field's element, document and origin are checked again; latch then presses
+submit and waits until the values have left the page (clearing them itself
+if the page keeps them). A fill that stops part-way (a covered button, a
+refused field) is cleaned up the same way. If latch cannot confirm the
+values left the page, every session on the profile stays paused, through
+any later fill too, until a cleanup confirms the page holds none or the
+session that filled is closed. No reading is taken while a fill holds the
+browser, and an element list marks a field holding a filled value as
 `filled`, never showing the value. While a filled value is on the page,
 `eval` is refused (`secret_on_page`). The result says
 `submitted`, not "logged in".

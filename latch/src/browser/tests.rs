@@ -12,12 +12,14 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
 
 use super::host::{self, Browsers};
 use super::profile;
+use crate::failure::Failure;
 
 mod fills;
 mod steps;
@@ -852,104 +854,512 @@ async fn eval_upload_and_download_move_values_and_files() {
     session.close().await.unwrap();
 }
 
+/// Commands through the host's own path, each audit record kept.
+struct Host {
+    browsers: Browsers,
+    audits: Vec<serde_json::Value>,
+}
+
+impl Host {
+    fn new(state: &Path) -> Host {
+        let mut browsers = Browsers::new(
+            state.to_path_buf(),
+            crate::vault::host::Vault::new(state.to_path_buf()),
+        );
+        browsers.test = Some((latch(), Vec::new()));
+        Host {
+            browsers,
+            audits: Vec::new(),
+        }
+    }
+
+    /// `command` as `caller`, on session `name` (for `open`, its profile).
+    async fn call(
+        &mut self,
+        caller: &str,
+        command: &str,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, Failure> {
+        let (result, audit) = run_as(&self.browsers, caller, command, name, args).await;
+        self.audits.push(audit);
+        result
+    }
+
+    /// `open` as `caller` on `profile`: the new session's id, and the page.
+    async fn open(
+        &mut self,
+        caller: &str,
+        profile: &str,
+        args: serde_json::Value,
+    ) -> (String, serde_json::Value) {
+        let page = self.call(caller, "open", profile, args).await.unwrap();
+        (page["session"].as_str().unwrap().to_string(), page)
+    }
+}
+
+/// One command as the host runs it, and its audit record.
+async fn run_as(
+    browsers: &Browsers,
+    caller: &str,
+    command: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> (Result<serde_json::Value, Failure>, serde_json::Value) {
+    let mut audit = serde_json::Map::new();
+    let result = host::call(browsers, caller, command, name, &args, None, &mut audit)
+        .await
+        .map(|(result, _)| result);
+    (result, serde_json::Value::Object(audit))
+}
+
+/// `act` with one step written as the client writes it.
+fn act(line: &str) -> serde_json::Value {
+    json!({
+        "request": format!("r{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff),
+        "list": false,
+        "steps": super::client::read_steps(line).unwrap(),
+    })
+}
+
 #[tokio::test]
-async fn another_caller_can_neither_open_nor_use_a_running_session() {
+async fn sessions_on_one_profile_share_logins_and_nothing_else() {
     let (_dir, state, _area) = test_state();
-    let page =
-        |words: &str| format!("<!doctype html><title>{words}</title><p>{words}</p>").into_bytes();
-    let port = serve(vec![
-        ("/mine".into(), page("the owner's page")),
-        ("/theirs".into(), page("another caller's page")),
-    ]);
-    let mut browsers = Browsers::new(state.clone(), crate::vault::host::Vault::new(state.clone()));
-    browsers.test = Some((latch(), Vec::new()));
-    let call = async |caller: &str, command: &str, args: serde_json::Value| {
-        let mut audit = serde_json::Map::new();
-        host::call(
-            &browsers, caller, command, "default", &args, None, &mut audit,
+    let base = test_site()
+        .split("/frames.html")
+        .next()
+        .unwrap()
+        .to_string();
+    let mut h = Host::new(&state);
+    let other = "another-caller";
+    let fronted = front_apps();
+
+    // Two callers open the same profile: two sessions, one browser.
+    let (a, page_a) = h
+        .open(
+            CALLER,
+            "b2b",
+            json!({"url": format!("{base}/alert.html"), "task": "task-a"}),
+        )
+        .await;
+    let (b, _) = h
+        .open(other, "b2b", json!({"url": format!("{base}/files.html")}))
+        .await;
+    println!(
+        "ids: {} chars and {} chars, distinct: {}",
+        a.len(),
+        b.len(),
+        a != b
+    );
+    assert_ne!(a, b);
+    for id in [&a, &b] {
+        assert_eq!(id.len(), 33, "s and 128 bits in hex");
+    }
+    let entry_a = h.browsers.session(&a, CALLER).await.unwrap();
+    let entry_b = h.browsers.session(&b, other).await.unwrap();
+    let engine = entry_a.runtime.ready["pid"].as_u64().unwrap() as u32;
+    println!(
+        "one runtime: {}, browser pid {} and {}",
+        Arc::ptr_eq(&entry_a.runtime, &entry_b.runtime),
+        engine,
+        entry_b.runtime.ready["pid"]
+    );
+    assert!(Arc::ptr_eq(&entry_a.runtime, &entry_b.runtime));
+
+    // A cookie one sets, the other reads: the profile's logins are shared.
+    h.call(
+        CALLER,
+        "eval",
+        &a,
+        json!({"script": "document.cookie = 'signed_in=yes; path=/'; document.cookie"}),
+    )
+    .await
+    .unwrap();
+    let cookie = h
+        .call(other, "eval", &b, json!({"script": "document.cookie"}))
+        .await
+        .unwrap();
+    println!("cookie seen in the other session: {cookie}");
+    assert!(cookie["value"].as_str().unwrap().contains("signed_in=yes"));
+
+    // A dialog is its own session's: the other reads on and has none.
+    let shown = find(&page_a, "button", "Show alert");
+    let clicked = h
+        .call(CALLER, "act", &a, act(&format!("click {shown}")))
+        .await
+        .unwrap();
+    println!("dialog in a: {}", clicked["events"]);
+    assert_eq!(clicked["events"][0]["event"], "dialog");
+    let seen = h.call(other, "observe", &b, json!({})).await.unwrap();
+    assert_eq!(seen["title"], "latch files test");
+    let none = h
+        .call(other, "dialog", &b, json!({"accept": true}))
+        .await
+        .unwrap_err();
+    println!("dialog accept in b: {}", none.code);
+    assert_eq!(none.code, "no_dialog");
+    h.call(CALLER, "dialog", &a, json!({"accept": true}))
+        .await
+        .unwrap();
+
+    // A popup belongs to the session whose page opened it.
+    let page_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();
+    let link = find(&page_a, "link", "Open next in a new tab");
+    let clicked = h
+        .call(CALLER, "act", &a, act(&format!("click {link}")))
+        .await
+        .unwrap();
+    println!("popup in a: {}", clicked["events"]);
+    let tabs = |seen: &serde_json::Value| {
+        seen["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tab| {
+                tab["url"]
+                    .as_str()
+                    .unwrap()
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    };
+    let seen_a = h.call(CALLER, "observe", &a, json!({})).await.unwrap();
+    let seen_b = h.call(other, "observe", &b, json!({})).await.unwrap();
+    println!("tabs: a {:?}, b {:?}", tabs(&seen_a), tabs(&seen_b));
+    assert_eq!(tabs(&seen_a), ["alert.html", "next.html"]);
+    assert_eq!(seen_a["tabs"][1]["opener"], "t1");
+    assert_eq!(tabs(&seen_b), ["files.html"]);
+
+    // Two downloads at once with the same file name, each its own session's.
+    let twin = |file: &str| format!("{base}/twin-download.html?file={file}");
+    let mut links = Vec::new();
+    for (caller, id, file) in [
+        (CALLER, &a, "report.csv"),
+        (other, &b, "invoice-2026-09.csv"),
+    ] {
+        h.call(
+            caller,
+            "tab",
+            id,
+            json!({"action": "new", "url": twin(file)}),
         )
         .await
-        .map(|(result, _)| result)
-    };
-    let other = "another-caller";
-    let mine = format!("http://127.0.0.1:{port}/mine");
-    let theirs = format!("http://127.0.0.1:{port}/theirs");
-    call(CALLER, "open", json!({"url": mine})).await.unwrap();
-
-    let busy = call(other, "open", json!({"url": theirs}))
+        .unwrap();
+        let page = h.call(caller, "observe", id, json!({})).await.unwrap();
+        links.push(find(&page, "link", "Download the statement"));
+    }
+    let (got_a, got_b) = tokio::join!(
+        run_as(
+            &h.browsers,
+            CALLER,
+            "act",
+            &a,
+            act(&format!("click {}", links[0]))
+        ),
+        run_as(
+            &h.browsers,
+            other,
+            "act",
+            &b,
+            act(&format!("click {}", links[1]))
+        ),
+    );
+    got_a.0.unwrap();
+    got_b.0.unwrap();
+    let site = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-site");
+    for (caller, id, file) in [
+        (CALLER, &a, "report.csv"),
+        (other, &b, "invoice-2026-09.csv"),
+    ] {
+        let mut audit = serde_json::Map::new();
+        let (got, bytes) = host::call(
+            &h.browsers,
+            caller,
+            "download_get",
+            id,
+            &json!({"download": "d1"}),
+            None,
+            &mut audit,
+        )
         .await
-        .expect_err("another caller's open is refused");
-    println!("{}: {}", busy.code, busy.message);
-    assert_eq!(busy.code, "profile_busy");
-    assert_eq!(busy.details, json!({"profile": "default"}));
-    assert!(busy.message.contains("profile default"), "{}", busy.message);
+        .unwrap();
+        let listed = h.call(caller, "downloads", id, json!({})).await.unwrap();
+        println!(
+            "{caller}: {} download(s), d1 {} = {file}'s bytes: {}",
+            listed["downloads"].as_array().unwrap().len(),
+            got["name"],
+            bytes.as_deref() == Some(&fs::read(site.join(file)).unwrap()[..])
+        );
+        assert_eq!(listed["downloads"].as_array().unwrap().len(), 1);
+        assert_eq!(got["name"], "statement.csv");
+        assert_eq!(bytes.unwrap(), fs::read(site.join(file)).unwrap());
+    }
 
-    // Every other command on the session is refused before it reaches the
-    // worker. `login`, `fill`, `fill-code`, `act`, `find` and `wait` take
-    // the session through `Browsers::session`.
+    // The id is the capability: another caller with the right id gets
+    // not_owner for every command, and nothing reaches the session.
     let mut refused = Vec::new();
+    for command in [
+        "observe",
+        "text",
+        "screenshot",
+        "tab",
+        "dialog",
+        "eval",
+        "downloads",
+        "download_get",
+        "act",
+        "find",
+        "wait",
+        "login",
+        "close",
+    ] {
+        let failure = h.call(other, command, &a, json!({})).await.unwrap_err();
+        refused.push((command, failure.exit, failure.code));
+    }
+    println!("b on a's id: {refused:?}");
+    assert!(
+        refused
+            .iter()
+            .all(|(_, exit, code)| *exit == crate::failure::Exit::Denied && code == "not_owner")
+    );
+
+    // Two tasks under one client key: each open is a session of its own,
+    // and without a session's id, the other can't reach it.
+    let (c, _) = h
+        .open(
+            CALLER,
+            "b2b",
+            json!({"url": format!("{base}/next.html"), "task": "task-c"}),
+        )
+        .await;
+    assert_ne!(a, c);
+    let guessed = format!("s{}", "0".repeat(32));
+    let hash_a = h.audits[0]["session"].as_str().unwrap().to_string();
     for (command, args) in [
         ("observe", json!({})),
-        ("text", json!({})),
-        ("screenshot", json!({})),
-        ("tab", json!({"action": "new", "url": theirs})),
-        ("dialog", json!({"accept": true})),
-        ("eval", json!({"script": "document.title = 'taken'"})),
-        (
-            "upload",
-            json!({"target": "e1", "name": "a.txt", "size": 0}),
-        ),
-        ("downloads", json!({})),
-        ("download_get", json!({"download": "d1"})),
+        ("act", act("scroll down")),
+        ("close", json!({})),
     ] {
-        let failure = call(other, command, args).await.err();
-        refused.push((command, failure.map(|f| (f.exit, f.code, f.details))));
+        for id in [&guessed, &hash_a] {
+            let failure = h.call(CALLER, command, id, args.clone()).await.unwrap_err();
+            assert_eq!(failure.code, "no_such_session", "{command}");
+        }
     }
-    let failure = browsers.session("default", other).await.err();
-    refused.push(("session", failure.map(|f| (f.exit, f.code, f.details))));
-    let failure = browsers.close("default", other).await.err();
-    refused.push(("close", failure.map(|f| (f.exit, f.code, f.details))));
-    for (command, failure) in &refused {
-        println!("{command}: {failure:?}");
-    }
-    let not_owner = Some((
-        crate::failure::Exit::Denied,
-        "not_owner".to_string(),
-        json!({"session": "default"}),
-    ));
-    assert!(
-        refused.iter().all(|(_, failure)| *failure == not_owner),
-        "{refused:#?}"
-    );
+    let listed = h.call(CALLER, "sessions", "", json!({})).await.unwrap();
+    println!("sessions: {listed}");
+    assert_eq!(listed["sessions"].as_array().unwrap().len(), 2);
+    let text = listed.to_string();
+    assert!(!text.contains(&a) && !text.contains(&c) && !text.contains(&b));
+    let theirs = h.call(other, "sessions", "", json!({})).await.unwrap();
+    assert_eq!(theirs["sessions"].as_array().unwrap().len(), 1);
 
-    // `sessions` lists only the caller's own.
-    let listed = browsers.list(other).await.unwrap();
-    assert_eq!(listed, json!({"sessions": []}));
-    let listed = browsers.list(CALLER).await.unwrap();
-    assert_eq!(listed["sessions"][0]["session"], "default");
-    assert_eq!(listed["sessions"][0]["tabs"][0]["url"], json!(mine));
-
-    // The owner's session goes on where it was: same page, one tab.
-    let seen = call(CALLER, "observe", json!({})).await.unwrap();
-    assert_eq!(seen["url"], json!(mine));
-    assert_eq!(seen["title"], "the owner's page");
-    assert!(seen["text"].as_str().unwrap().contains("the owner's page"));
+    // Closing one session leaves the others' windows working.
+    h.call(CALLER, "close", &a, json!({})).await.unwrap();
+    let seen = h.call(other, "observe", &b, json!({})).await.unwrap();
+    assert_eq!(seen["title"], "latch twin downloads");
+    let seen = h.call(CALLER, "observe", &c, json!({})).await.unwrap();
+    assert_eq!(seen["title"], "latch next page");
+    assert!(entry_b.runtime.alive());
     assert_eq!(
-        seen["tabs"].as_array().unwrap().len(),
-        1,
-        "{}",
-        seen["tabs"]
+        h.call(CALLER, "observe", &a, json!({}))
+            .await
+            .unwrap_err()
+            .code,
+        "no_such_session"
     );
-    let again = call(CALLER, "open", json!({})).await.unwrap();
-    assert_eq!(again["url"], json!(mine));
 
-    // Closed by its owner, the profile is free for the other caller.
-    browsers.close("default", CALLER).await.unwrap();
-    let opened = call(other, "open", json!({"url": theirs})).await.unwrap();
-    assert_eq!(opened["url"], json!(theirs));
-    let listed = browsers.list(CALLER).await.unwrap();
-    assert_eq!(listed, json!({"sessions": []}));
-    let listed = browsers.list(other).await.unwrap();
-    assert_eq!(listed["sessions"][0]["tabs"][0]["url"], json!(theirs));
-    browsers.close("default", other).await.unwrap();
+    // The audit: a short hash of each id, never an id; the task label.
+    let records = serde_json::Value::Array(h.audits.clone()).to_string();
+    for id in [&a, &b, &c] {
+        assert!(!records.contains(id.as_str()));
+    }
+    assert!(
+        h.audits
+            .iter()
+            .filter_map(|r| r["session"].as_str())
+            .all(|hash| hash.len() == 12)
+    );
+    assert_eq!(h.audits[0]["task"], "task-a");
+    println!(
+        "audit: {} records, ids never; first {}",
+        h.audits.len(),
+        h.audits[0]
+    );
+
+    // Nothing above brought the browser to the front.
+    let fronted = fronted.lock().unwrap().clone();
+    println!("front apps seen: {fronted:?}; engine {engine}");
+    assert!(!fronted.contains(&engine));
+
+    h.call(CALLER, "close", &c, json!({})).await.unwrap();
+    h.call(other, "close", &b, json!({})).await.unwrap();
+    println!(
+        "runtime after the last close: alive {}",
+        entry_b.runtime.alive()
+    );
+    assert!(!entry_b.runtime.alive());
+}
+
+#[tokio::test]
+async fn sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused() {
+    let (_dir, state, _area) = test_state();
+    let frames = test_site();
+    let base = frames.split("/frames.html").next().unwrap().to_string();
+    let cross = frames.split("cross=").nth(1).unwrap();
+    let elsewhere = format!("http://localhost:{cross}");
+    let mut h = Host::new(&state);
+    let other = "another-caller";
+
+    // Both on 127.0.0.1: the second answer there names the first session.
+    let (a, _) = h
+        .open(
+            CALLER,
+            "b2b-site",
+            json!({"url": format!("{base}/next.html")}),
+        )
+        .await;
+    let hash_a = h.audits[0]["session"].clone();
+    let (b, page_b) = h
+        .open(
+            other,
+            "b2b-site",
+            json!({"url": format!("{base}/alert.html")}),
+        )
+        .await;
+    println!("b's open: shared_site {}", page_b["shared_site"]);
+    assert_eq!(page_b["shared_site"][0]["session"], hash_a);
+    assert_eq!(h.audits[1]["shared_site"], json!([hash_a]));
+    h.call(CALLER, "close", &a, json!({})).await.unwrap();
+
+    // A reservation: another session's action on the site is refused
+    // before anything is sent; reading goes on; elsewhere goes on.
+    let (r, _) = h
+        .open(
+            CALLER,
+            "b2b-site",
+            json!({"url": format!("{base}/next.html"), "reserve_site": true}),
+        )
+        .await;
+    let page = h.call(other, "observe", &b, json!({})).await.unwrap();
+    let shown = find(&page, "button", "Show alert");
+    let busy = h
+        .call(other, "act", &b, act(&format!("click {shown}")))
+        .await
+        .unwrap_err();
+    println!(
+        "b clicks on the reserved site: {} ({})",
+        busy.code, busy.message
+    );
+    assert_eq!(
+        (busy.exit, busy.code.as_str()),
+        (crate::failure::Exit::Failed, "site_busy")
+    );
+    let text = h.call(other, "text", &b, json!({})).await.unwrap();
+    assert!(
+        text["text"].as_str().unwrap().contains("waiting"),
+        "nothing was clicked"
+    );
+    for (command, args) in [
+        (
+            "tab",
+            json!({"action": "new", "url": format!("{base}/next.html")}),
+        ),
+        ("eval", json!({"script": "1"})),
+    ] {
+        let failure = h.call(other, command, &b, args).await.unwrap_err();
+        assert_eq!(failure.code, "site_busy", "{command}");
+    }
+    let opened = h
+        .call(
+            other,
+            "open",
+            "b2b-site",
+            json!({"url": format!("{base}/files.html")}),
+        )
+        .await
+        .unwrap_err();
+    println!("a new session's open on it: {}", opened.code);
+    assert_eq!(opened.code, "site_busy");
+    let away = h
+        .call(
+            other,
+            "tab",
+            &b,
+            json!({"action": "new", "url": format!("{elsewhere}/next.html")}),
+        )
+        .await
+        .unwrap();
+    println!("b elsewhere: {}", away["tab"]);
+    // The reservation ends with its session.
+    h.call(CALLER, "close", &r, json!({})).await.unwrap();
+    h.call(other, "tab", &b, json!({"action": "switch", "tab": "t1"}))
+        .await
+        .unwrap();
+    let clicked = h
+        .call(other, "act", &b, act(&format!("click {shown}")))
+        .await
+        .unwrap();
+    println!("after close: {}", clicked["events"]);
+    h.call(other, "dialog", &b, json!({"accept": true}))
+        .await
+        .unwrap();
+    h.call(other, "close", &b, json!({})).await.unwrap();
+}
+
+#[tokio::test]
+async fn one_sessions_wait_does_not_hold_the_browser_for_another() {
+    let (_dir, state, _area) = test_state();
+    let frames = test_site();
+    let base = frames.split("/frames.html").next().unwrap().to_string();
+    let cross = frames.split("cross=").nth(1).unwrap();
+    let mut h = Host::new(&state);
+    let (a, _) = h
+        .open(
+            CALLER,
+            "b2b-turns",
+            json!({"url": format!("{base}/next.html")}),
+        )
+        .await;
+    let (b, _) = h
+        .open(
+            CALLER,
+            "b2b-turns",
+            json!({"url": format!("http://localhost:{cross}/files.html")}),
+        )
+        .await;
+    let started = std::time::Instant::now();
+    let slow = async {
+        let (result, _) = run_as(
+            &h.browsers,
+            CALLER,
+            "act",
+            &a,
+            act("scroll down --expect-text \"never on this page\" --within 4"),
+        )
+        .await;
+        (result, started.elapsed())
+    };
+    let quick = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut done = Vec::new();
+        for line in ["scroll down", "scroll up", "scroll down"] {
+            let (result, _) = run_as(&h.browsers, CALLER, "act", &b, act(line)).await;
+            result.unwrap();
+            done.push(started.elapsed());
+        }
+        done
+    };
+    let ((slow, slow_took), quick) = tokio::join!(slow, quick);
+    println!(
+        "a's step stopped {} after {slow_took:?}; b's three steps done at {quick:?}",
+        slow.unwrap_err().code
+    );
+    assert!(quick.last().unwrap() < &Duration::from_secs(3));
+    assert!(slow_took >= Duration::from_secs(4));
+    for id in [&a, &b] {
+        h.call(CALLER, "close", id, json!({})).await.unwrap();
+    }
 }

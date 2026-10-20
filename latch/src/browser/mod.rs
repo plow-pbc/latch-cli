@@ -3,10 +3,11 @@
 //! - `engine.rs`: the pinned engine plugin (Chrome for Testing) and its check.
 //! - `profile.rs`: latch-owned browser profiles in the state directory.
 //! - `client.rs`: the agent's side; `latch browser …` commands.
-//! - `host.rs`: the host's `browser` operation; one session per profile.
+//! - `host.rs`: the host's `browser` operation; sessions and their owners.
 //! - `fill.rs`: the host's half of `login`, `fill` and `fill-code`.
-//! - `session.rs`: a session's worker, as the host starts and calls it.
-//! - `worker.rs`: the long-lived browser worker; runs the core on its engine.
+//! - `runtime.rs`: a profile's browser worker, as the host starts and calls it.
+//! - `session.rs`: one session's handle on its profile's worker.
+//! - `worker.rs`: the long-lived browser worker; runs each session's core.
 //! - `core.rs`: the shared core: snapshots, refs, actions and results.
 //! - `reader.js`: the page reader the core runs in every frame.
 //! - `driver.rs`: the driver contract every engine implements.
@@ -24,6 +25,7 @@ mod fill;
 pub mod host;
 pub mod model;
 pub mod profile;
+pub mod runtime;
 pub mod session;
 mod steps;
 pub mod tags;

@@ -5,8 +5,9 @@
 //!    site rule's question (step 3). A `fill` that includes a secret field
 //!    (card number, CVV, …, as the classifier says) needs `--press`: a
 //!    secret leaves the page before the agent is back.
-//! 2. **Pause and prepare.** The session is held: every other call gets
-//!    `session_paused`. The worker reports where each value would go.
+//! 2. **Pause and prepare.** The browser is held: every other call, in
+//!    any session on the profile, gets `session_paused`. The worker
+//!    reports where each value would go.
 //! 3. **Match.** Each field frame's origin and the top-level origin must
 //!    pass the item kind's site rule (`vault::sites`). Only then is a value
 //!    released, one at a time, into the worker's private pipe.
@@ -55,16 +56,16 @@ pub async fn run(
     audit.insert("kind".into(), json!(meta.kind));
     let plan = Plan::of(command, &item, args)?;
     audit.insert("fields".into(), json!(plan.labels()));
-    if entry.filling.swap(true, Ordering::SeqCst) {
+    if entry.runtime.filling.swap(true, Ordering::SeqCst) {
         return Err(paused());
     }
     audit.insert(
         "agent_code_before_fill".into(),
-        json!(entry.agent_code.load(Ordering::SeqCst)),
+        json!(entry.runtime.agent_code.load(Ordering::SeqCst)),
     );
     let mut session = entry.session.lock().await;
     let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
-    entry.filling.store(false, Ordering::SeqCst);
+    entry.runtime.filling.store(false, Ordering::SeqCst);
     result
 }
 

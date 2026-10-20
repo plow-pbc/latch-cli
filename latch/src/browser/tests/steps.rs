@@ -110,7 +110,9 @@ fn site() -> String {
 
 struct Harness {
     browsers: Arc<Browsers>,
+    /// The session the harness acts in, and its id.
     entry: Arc<host::Entry>,
+    id: String,
     requests: u32,
     /// Every audit record, for the checks on what it holds.
     audits: Vec<Map<String, Value>>,
@@ -123,15 +125,17 @@ impl Harness {
         browsers.test = Some((latch(), Vec::new()));
         browsers.provider = provider;
         let browsers = Arc::new(browsers);
-        let entry = browsers.open("default", CALLER).await.unwrap();
+        let (id, entry) = browsers.open("default", CALLER, None).await.unwrap();
         Harness {
             browsers,
             entry,
+            id,
             requests: 0,
             audits: Vec::new(),
         }
     }
 
+    /// A new session on `url`, which takes the place of the one before.
     async fn open(&mut self, url: &str) -> Value {
         let mut audit = Map::new();
         let (opened, _) = host::call(
@@ -145,6 +149,10 @@ impl Harness {
         )
         .await
         .unwrap();
+        let id = opened["session"].as_str().unwrap().to_string();
+        self.entry = self.browsers.session(&id, CALLER).await.unwrap();
+        let before = std::mem::replace(&mut self.id, id);
+        self.browsers.close(&before, CALLER).await.unwrap();
         opened
     }
 
@@ -236,7 +244,7 @@ async fn without_a_model_names_resolve_exactly_and_risky_clicks_need_a_ref() {
     let (_dir, state, _area) = test_state();
     let site = site();
     let mut h = Harness::start(&state, None).await;
-    let first = h.open(&format!("{site}/invoices.html")).await;
+    h.open(&format!("{site}/invoices.html")).await;
 
     // An exact name, no model call.
     let done = h.act_one(r#"click "New expense""#).await.unwrap();
@@ -337,7 +345,7 @@ async fn without_a_model_names_resolve_exactly_and_risky_clicks_need_a_ref() {
     );
 
     // find by role and exact name; wait for typed conditions.
-    h.open(&format!("{site}/invoices.html")).await;
+    let invoices = h.open(&format!("{site}/invoices.html")).await;
     let found = h
         .find(json!({"role": "link", "name": "Download"}))
         .await
@@ -365,16 +373,20 @@ async fn without_a_model_names_resolve_exactly_and_risky_clicks_need_a_ref() {
     assert_eq!(failure.code, "assist_off");
 
     // A field ref from a page that has gone is stale, not "not met".
+    let ran = h.request();
+    let steps = read_steps(r#"click "New expense""#).unwrap();
+    h.act(json!({"request": ran, "list": false, "steps": steps}))
+        .await
+        .unwrap();
     let line = format!(
         "--snapshot {} scroll down --expect-field e1=x",
-        first["snapshot"].as_str().unwrap()
+        invoices["snapshot"].as_str().unwrap()
     );
     let failure = h.act_one(&line).await.unwrap_err();
     assert_eq!(failure.code, "stale_snapshot");
 
     // A request id is never run twice.
-    let again =
-        json!({"request": "r1", "list": false, "steps": read_steps("scroll down").unwrap()});
+    let again = json!({"request": ran, "list": false, "steps": read_steps("scroll down").unwrap()});
     assert_eq!(h.act(again).await.unwrap_err().code, "duplicate_request");
 
     // The audit: per-step records, never typed text or what was expected.

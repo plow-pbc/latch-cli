@@ -77,8 +77,8 @@ pub struct BrowserArgs {
     /// Name of the host to use
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
-    /// The session to use, named for its profile (default: default)
-    #[arg(long, global = true)]
+    /// The session to use: the id `open` answered
+    #[arg(long, env = "LATCH_BROWSER_SESSION", global = true)]
     pub session: Option<String>,
     /// The agent turn this call belongs to, for the host's metrics
     #[arg(long, env = "LATCH_TURN", global = true)]
@@ -89,11 +89,19 @@ pub struct BrowserArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum BrowserCommand {
-    /// Start or reuse a profile's session, load URL, and list the page's elements
+    /// Start a new session on a profile, load URL, and list the page's elements;
+    /// answers the session's id, which every later command needs
     Open {
-        /// The profile, and so the session (default: default)
+        /// The profile, whose logins the session shares (default: default)
         #[arg(long)]
         profile: Option<String>,
+        /// A label for the session, shown in listings and the audit
+        #[arg(long)]
+        task: Option<String>,
+        /// Hold URL's site until the session closes: another session's action
+        /// there gets site_busy
+        #[arg(long)]
+        reserve_site: bool,
         url: Option<String>,
     },
     /// A fresh element list (snapshot), the page's first text, and the tabs
@@ -236,9 +244,9 @@ pub enum BrowserCommand {
         #[arg(long)]
         submit: Option<String>,
     },
-    /// The host's open sessions
+    /// Your open sessions, without their ids
     Sessions,
-    /// End the session (its profile stays)
+    /// End the session (its profile, and other sessions on it, stay)
     Close,
 }
 

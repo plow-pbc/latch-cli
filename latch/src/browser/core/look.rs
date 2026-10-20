@@ -276,7 +276,7 @@ impl<D: Driver> Core<D> {
                 let element = self.element_now(snapshot.as_deref(), target)?;
                 let Some(element) = element else {
                     let gone = state == "gone" || state == "hidden";
-                    return Ok((gone, true, None));
+                    return Ok((gone, true, (!gone).then(|| json!({"stale": true}))));
                 };
                 let met = match state.as_str() {
                     "visible" => element["hidden"] != true,

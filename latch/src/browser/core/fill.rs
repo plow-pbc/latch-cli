@@ -2,7 +2,8 @@
 //! host runs the steps in order, holding the session the whole time:
 //!
 //! 1. `PrepareFill` pauses the session (every agent call now gets
-//!    `session_paused`), picks the fields from the snapshot unless the
+//!    `session_paused`, and the worker answers every other session on the
+//!    browser the same), picks the fields from the snapshot unless the
 //!    agent named them, and reports for each where a value would go: the
 //!    field frame's effective origin (`self.origin` in latch's isolated
 //!    world), the top-level origin, and the document's token;
