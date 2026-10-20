@@ -452,6 +452,19 @@ pub async fn run(
         .unwrap_or(Value::Null);
     let mut out =
         json!({"request": request, "status": status, "steps": steps, "trail": trail, "page": page});
+    // `--output F`: the page as the plan ended, kept as its `final` shot (a
+    // stop for a confirmation keeps its own, below).
+    let confirming = stop
+        .as_ref()
+        .is_some_and(|(_, f)| f.code == "confirm_needed");
+    if args["output"] == true
+        && !confirming
+        && let Some((handle, meta)) =
+            keep_shot(browsers, entry, session, &request, "final", "shot").await
+    {
+        audit.insert("screenshot".into(), meta);
+        out["screenshot"] = handle;
+    }
     // A final step only the model judged is for the agent to review.
     if steps.last().is_some_and(|s| {
         s["outcome"] == "model_assessed"

@@ -44,6 +44,18 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     {
         return super::handoff::done(&state.path, hash.as_deref());
     }
+    if let BrowserCommand::Do {
+        history: Some(_),
+        shot: None,
+        output: Some(_),
+        ..
+    } = &args.command
+    {
+        return Err(Failure::usage(
+            "bad_arguments",
+            "with --history, --output takes one of R's screenshots: add --shot N".into(),
+        ));
+    }
     let mut request = json!({
         "session": args.session,
         "ppid": std::os::unix::process::parent_id(),
@@ -76,13 +88,21 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
             confirm,
             history: None,
             within,
+            fact,
+            item,
+            dry_run,
             ..
-        } => Some(do_plan(
-            steps,
-            plan_file.as_deref(),
-            confirm.is_some(),
-            *within,
-        )?),
+        } => {
+            let plan = with_facts(
+                do_plan(steps, plan_file.as_deref(), confirm.is_some(), *within)?,
+                fact,
+                item,
+            )?;
+            if *dry_run {
+                return Ok(json!({"plan": plan}));
+            }
+            Some(plan)
+        }
         BrowserCommand::Act {
             snapshot,
             action,
@@ -181,7 +201,17 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
         Some(transfer) => {
             let link = dial::connect(state, &host).await?;
             let result = match transfer {
-                Transfer::Into(path) => receive(&link.connection, &request, &path).await,
+                Transfer::Into(path) => {
+                    let received = receive(&link.connection, &request, &path, answer_within).await;
+                    match received {
+                        // A plan that stopped still leaves its last page in F.
+                        Err(failure) if request.args["command"] == "do" => Err(with_request(
+                            final_shot(&link.connection, &request, failure, &path).await,
+                            &id,
+                        )),
+                        received => received,
+                    }
+                }
                 Transfer::From(mut upload) => send(&link.connection, &request, &mut upload).await,
             };
             link.close().await;
@@ -298,8 +328,11 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "shot", json!(shot));
             "do_history"
         }
-        BrowserCommand::Do { confirm, .. } => {
+        BrowserCommand::Do {
+            confirm, output, ..
+        } => {
             set(request, "confirm", json!(confirm));
+            set(request, "output", json!(output.is_some().then_some(true)));
             "do"
         }
         BrowserCommand::Find { role, name, .. } => {
@@ -467,6 +500,58 @@ fn with_request(mut failure: Failure, id: &Value) -> Failure {
     failure
 }
 
+/// The plan with `--fact NAME=TEXT` and `--item vN` added, checked again.
+fn with_facts(mut plan: Plan, facts: &[String], items: &[String]) -> Result<Plan, Failure> {
+    let bad = |why: String| Failure::usage("bad_arguments", why);
+    for fact in facts {
+        match fact.split_once('=') {
+            Some((name, text)) if !name.trim().is_empty() => {
+                plan.facts.insert(name.trim().to_string(), text.to_string());
+            }
+            _ => return Err(bad(format!("--fact takes NAME=TEXT, not {fact:?}"))),
+        }
+    }
+    for item in items {
+        if !plan.items.contains(item) {
+            plan.items.push(item.clone());
+        }
+    }
+    plan.validate().map_err(bad)?;
+    Ok(plan)
+}
+
+/// A stopped plan's last page, kept on the host as its `final` shot, into
+/// `path`: the stop comes back with where it went, or as it was if the
+/// page was not kept.
+async fn final_shot(
+    connection: &iroh::endpoint::Connection,
+    request: &Request,
+    mut failure: Failure,
+    path: &Path,
+) -> Failure {
+    let Some(id) = failure.details["screenshot"]["request"].as_str() else {
+        return failure;
+    };
+    let mut args = request.args.clone();
+    for key in ["plan", "confirm", "output"] {
+        if let Some(args) = args.as_object_mut() {
+            args.remove(key);
+        }
+    }
+    args["command"] = json!("do_history");
+    args["request"] = json!(id);
+    args["shot"] = json!("final");
+    let fetch = Request {
+        op: "browser".to_string(),
+        args,
+    };
+    if let Ok(got) = receive(connection, &fetch, path, ANSWER_WITHIN).await {
+        failure.details["screenshot"]["path"] = got["path"].clone();
+        failure.details["screenshot"]["sha256"] = got["sha256"].clone();
+    }
+    failure
+}
+
 fn removed(message: &str) -> Failure {
     Failure::usage(
         "removed_form",
@@ -555,10 +640,15 @@ async fn receive(
     connection: &iroh::endpoint::Connection,
     request: &Request,
     path: &Path,
+    within: Duration,
 ) -> Result<Value, Failure> {
     let (mut send, mut recv) = dial::start(connection, request).await?;
     send.finish().map_err(|_| dial::lost(connection, true))?;
-    let mut meta = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
+    let mut meta = dial::answer(connection, &mut recv, within).await?;
+    // A plan whose last page could not be shot answers with no bytes.
+    if request.args["command"] == "do" && meta["size"].is_null() {
+        return Ok(meta);
+    }
     let size = meta["size"].as_u64().ok_or_else(|| {
         Failure::new(
             Exit::Unknown,
@@ -661,6 +751,51 @@ mod tests {
                 failure.message
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_shows_the_plan_with_its_facts_and_items_and_sends_nothing() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        let parse = |argv: &[&str]| {
+            let cli = Cli::try_parse_from(["latch", "browser", "do"].iter().chain(argv)).unwrap();
+            let Command::Browser(args) = cli.command else {
+                panic!("browser");
+            };
+            args
+        };
+        // No host is known here: a dry run never looks one up.
+        let shown = run(
+            &state,
+            parse(&[
+                "add the note \"A -> B\" for the driver",
+                "--fact",
+                "street=12 Elm Road",
+                "--item",
+                "v2",
+                "--dry-run",
+            ]),
+        )
+        .await
+        .unwrap();
+        let plan = &shown["plan"];
+        assert_eq!(plan["steps"][0]["values"]["v1"], "A -> B");
+        assert!(plan["steps"][0]["check"].is_null());
+        assert_eq!(plan["facts"]["street"], "12 Elm Road");
+        assert_eq!(plan["items"], json!(["v2"]));
+        let bad = run(
+            &state,
+            parse(&["open the cart", "--fact", "12 Elm Road", "--dry-run"]),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(bad.exit, Exit::Usage);
+        let bad = run(&state, parse(&["--history", "r1", "--output", "x.png"]))
+            .await
+            .unwrap_err();
+        assert!(bad.message.contains("--shot"), "{}", bad.message);
     }
 
     #[tokio::test]

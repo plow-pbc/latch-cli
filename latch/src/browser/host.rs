@@ -629,7 +629,19 @@ pub(super) async fn call(
             .map(|result| (result, None)),
         "do" => super::steps::run(browsers, &entry, name, key, args, audit)
             .await
-            .map(|result| (result, None)),
+            .map(|mut result| {
+                // `do --output F`: the page as the plan ended, after the answer.
+                let png = result["screenshot"]["request"]
+                    .as_str()
+                    .filter(|_| args["output"] == true)
+                    .and_then(|request| {
+                        super::steps::shot(browsers, name, key, request, "final").ok()
+                    });
+                if let Some(png) = &png {
+                    result["size"] = json!(png.len());
+                }
+                (result, png)
+            }),
         "handoff" => super::handoff::run(browsers, &entry, args, audit)
             .await
             .map(|result| (result, None)),

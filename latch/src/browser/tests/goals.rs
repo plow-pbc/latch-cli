@@ -562,6 +562,60 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
             .unwrap()
             .starts_with("Order placed")
     );
+
+    // `--output F`: the host sends the page as the plan ended after its
+    // answer; a stop keeps it as the request's `final` shot.
+    told.tell(|s| {
+        if title(s).starts_with("Drinks") {
+            complete("[title] Drinks", "done")
+        } else {
+            choose("click", Some("link \"Drinks\""))
+        }
+    });
+    let mut args = plan(&["open the Drinks category"], &site, &[], &[]);
+    args["request"] = json!("r-output-1");
+    args["output"] = json!(true);
+    let mut audit = serde_json::Map::new();
+    let (result, png) = crate::browser::host::call(
+        &h.browsers,
+        super::CALLER.into(),
+        "do",
+        &h.id,
+        &args,
+        None,
+        &mut audit,
+    )
+    .await
+    .unwrap();
+    let png = png.expect("the final page follows the answer");
+    assert!(png.starts_with(b"\x89PNG"));
+    assert_eq!(result["size"], png.len());
+    assert_eq!(
+        result["screenshot"],
+        json!({"request": "r-output-1", "shot": "final"})
+    );
+    told.tell(|_| choose("stuck", None));
+    args["request"] = json!("r-output-2");
+    let failure = crate::browser::host::call(
+        &h.browsers,
+        super::CALLER.into(),
+        "do",
+        &h.id,
+        &args,
+        None,
+        &mut audit,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(failure.code, "stuck");
+    assert_eq!(
+        failure.details["screenshot"],
+        json!({"request": "r-output-2", "shot": "final"})
+    );
+    let kept =
+        crate::browser::steps::shot(&h.browsers, &h.id, super::CALLER, "r-output-2", "final")
+            .unwrap();
+    assert!(kept.starts_with(b"\x89PNG"));
 }
 
 #[tokio::test]

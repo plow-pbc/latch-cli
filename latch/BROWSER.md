@@ -232,8 +232,11 @@ latest); each is pinned to its snapshot before anything runs.
 
 **Instruction steps.** Any other step is a goal in words, such as
 `add the Greek Salad to the cart -> text: Added`; its quoted texts are the
-only ones it may type (with the plan's `facts`), and a quoted URL is the
-only place it may `navigate` to. Each pass reads the page and asks the
+only ones it may type (with the plan's `facts`, `--fact NAME=TEXT`), and a
+quoted URL is the only place it may `navigate` to. `--item vN` names a
+vault item the plan may fill from. `--dry-run` prints the canonical plan
+and sends nothing; `--output F` writes the page as the plan ended (or
+stopped) to F on this machine. Each pass reads the page and asks the
 decision model once for the step's status, the line that best shows it is
 complete, the next operation and its target, offering only what the page
 allows: elements not disabled or covered (a cookie modal hides what is
