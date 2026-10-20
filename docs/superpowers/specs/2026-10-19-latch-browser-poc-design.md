@@ -5,21 +5,26 @@ Date: 2026-10-19 · Owner: head chef · Stage: **proof of concept on real hosts,
 - It is not throwaway: the code must be clean enough for later work to build on directly.
 - Reviewers don't demand the hardening that §2 defers.
 
-Source of truth: `browser-api-proposal.html` (kitchen notes) and the chef's browser and vault rulings of 2026-10-19.
+Source of truth: `browser-api-proposal.html` (kitchen notes) and the chef's browser and vault rulings of 2026-10-19. Plans, task sessions and vault edit: `plan-merged-rec.md` (chef-approved 2026-10-19), from `design-plan-{jplan,bapix}.md` and their critiques.
 
 ## 1. Goal
 
-An agent drives a real browser on a latch host through `latch browser …`. Each call is one step, or one checked list of steps. The browser stays open on the host between calls. The POC shows, end to end:
+An agent drives a real browser on a latch host through `latch browser …`. Each call is one exact action, or one plan of steps. The browser stays open on the host between calls. The POC shows, end to end:
 
 - **The same agent commands on two engines,** Chrome for Testing (CfT) and Camoufox. Each plugs in as a driver behind one shared core; the plugin model is also the bake-off.
 - **A numbered element list the agent acts on by ref**, plus page text and screenshots, on every host, a screenless Pi included.
-- **Several steps per turn without a goal command.** A swappable decision model (jev in the POC) turns a description into an element, and judges a stated expectation by quoting the page line that proves it.
+- **Plans.** The agent writes a short plan: steps, the text they may type, and what each step should lead to.
+  - A swappable decision model (jev in the POC) carries out each step on the live page. It chooses operations and targets; it never writes text.
+  - latch brings back where the plan got to: `reached`, or stopped at a step with a reason. Either way the answer carries the evidence for each step, the full trail (pages, actions, screenshots) and the current page.
+  - Exact actions on refs stay available for confirmations and repairs.
 - **One vault per latch install, shared by every engine.**
   - A saved login is filled only on its exact site, in one checked step, with the agent paused.
   - No command returns a stored secret.
   - Authenticator codes are computed on the host.
   - Texted codes, CAPTCHAs and passkeys go to the owner through a handoff.
 - **Everything goes through the host's gate and audit,** with no secret in any log, result or error.
+  - Each `open` makes a new **session**, reachable only by its caller and only with its unguessable id.
+  - Sessions share a profile's logins, never each other's tabs, downloads or trails.
 
 ## 2. Scope and non-goals
 
@@ -30,16 +35,40 @@ In scope: §1, on macOS hosts first and Linux hosts (the Pi) second. Not in the 
 - **The owner's own Chrome or Safari** as a lane. It is a nice-to-have, a later bake-off lane.
 - **Per-site consent or other privacy machinery** for the decision model. The model and its terms are picked later.
 - **The gatekeeper** (script review, per-use approval of fills), **and Windows hosts.**
-- **Also not:** CloakBrowser; network interception, extensions and closed shadow DOM; passkeys beyond handoff; a goal runner or `--until` repeats; other vault backends and secure-link UX; signed agent identity; stealth work beyond the pinned launch recipe.
+- **Also not:**
+  - CloakBrowser;
+  - network interception, extensions and closed shadow DOM;
+  - passkeys beyond handoff;
+  - **a free-goal runner** (latch never invents steps; the agent writes them);
+  - a generative text model;
+  - loops or branches inside plans;
+  - coordinate clicks;
+  - cross-host site reservations;
+  - runner-issued task identity (all four come later; §15);
+  - other vault backends and secure-link UX;
+  - signed agent identity;
+  - stealth work beyond the pinned launch recipe.
 
 ## 3. Vocabulary
 
 - **Engine / driver:** the browser program, and the code controlling one family of engines.
-- **Profile:** a latch-owned browser data folder, bound to one engine for life.
-- **Session:** one open browser on one profile. There is **one kind of session**: element actions, agent scripts (`eval`) and vault fills mix freely.
-- **Snapshot / ref:** one reading of the page (`o3`) and an element in it (`e7`), valid only in that document.
-- **Item:** a saved login in the vault.
-- **Decision model:** a model that only chooses (one option, or yes/no with a probability), never writing text.
+- **Profile:** a latch-owned browser data folder, bound to one engine for life. It holds logins, cookies and site storage.
+- **Profile runtime:** the one running browser on a profile, with its worker and, on a screenless host, its display. It is started by the first session that needs it, and it ends when the profile's last session closes.
+- **Session:** one task's share of a profile runtime.
+  - Its own background window, the tabs its actions open, its snapshots, downloads, plans and trail.
+  - Reachable only by the caller that opened it, and only with its id (§5.1).
+  - There is **one kind of session**: element actions, plans, agent scripts (`eval`) and vault fills mix freely.
+- **Snapshot / ref:** one reading of the page (`o3`) and an element in it (`e7`). Valid only in that document of that session.
+- **Plan / step:**
+  - A plan is a request to the plan command to run up to 10 steps in order.
+  - A step is either an **instruction** (a goal in words, carried out by the decision model) or a **literal step** (one exact action on refs).
+- **The plan command:** `latch browser do`. Its name is pending the chef, who asked "why not `steps`?". Only this entry and the §5 command table spell the name; all other text says *the plan command*, so a rename is two edits.
+- **Check:** what a step must lead to.
+  - A typed check is decided by latch's code.
+  - A sentence check is judged by the decision model, with a quoted line of the page as evidence.
+- **Confirmation:** the agent's explicit go-ahead for one consequential action. It is bound to the exact element and to what the page showed about it.
+- **Item:** a saved login, card, identity or note in the vault.
+- **Decision model:** a model that only chooses, picking one option from a list or answering yes/no with a probability. It never writes text.
 
 ## 4. Architecture
 
@@ -49,16 +78,28 @@ agent machine                         latch host
 │ agent ─shell─▶ latch      │◀═ iroh ═▶│ latch serve: verify caller ▸ gate ▸ audit         │
 │  browser … (client)       │          │   ├─ vault (one per install, backend interface)   │
 └──────────────────────────┘          │   ├─ decision model client (key on host)          │
-                                      │   └─▶ browser worker (sandboxed, one per session)  │
+                                      │   └─▶ browser worker (sandboxed, one per runtime)  │
                                       │        shared core ─▶ engine driver ═pipe═▶ engine │
                                       └──────────────────────────────────────────────────┘
 ```
 
 - **Client and transport are unchanged.** `latch browser` subcommands are ordinary client commands: `--host`, `--state-dir`, iroh, one stream per operation, the same exit codes. Screenshots and downloads stream to the client as files; uploads stream from it.
-- **The host** gates every call, and holds the vault, the decision-model key and the audit log. It starts one **browser worker** per session and talks to it over the worker's stdio, one call at a time per session.
-- **The browser worker** is long-lived for its session, unlike file and exec workers.
+- **The host:**
+  - gates every call;
+  - holds the vault, the decision-model credential, the audit log and each session's trail;
+  - **runs plans**: the decision loop is host-side, and calls the worker one browser operation at a time;
+  - starts one **browser worker per profile runtime** and talks to it over the worker's stdio.
+
+  Within a session, requests are serialised. Sessions on one runtime interleave their browser operations, so one session's plan or wait never holds the browser for the others. Waits poll from the host. The host never holds the worker while it waits for the decision model.
+- **The browser worker** is long-lived for its profile runtime, unlike file and exec workers. It keeps each session's windows, tabs, snapshots, downloads and dialogs apart.
   - **macOS (chef, 2026-10-19):** macOS can't nest a different Seatbelt profile inside another, and every Chrome/Firefox helper applies its own (verified in B1's probe). So the host starts the engine **outside latch's Seatbelt**, with the engine's own sandbox on for every web-content process. What still holds: private pipe only, no port; profile in the state directory, hidden from exec and file workers; pinned binary checked by sha256; a minimal environment with no host secrets. What's lost: latch's confinement of the engine's main process. A separate macOS user for engines is the later hardening.
-  - **Linux:** bubblewrap is applied before the engine starts, if the engine's sandbox nests inside it (B7 proves it). It sees its own profile folder (read-write), its engine's plugin folder (read-only), a per-session scratch folder and outbound network; nothing else of the state directory, and no areas.
+  - **Linux:** bubblewrap is applied before the engine starts, if the engine's sandbox nests inside it (B7 proves it). The runtime sees:
+    - its own profile folder (read-write);
+    - its engine's plugin folder (read-only);
+    - one scratch folder per runtime, with a subfolder per session;
+    - outbound network.
+
+    It sees nothing else of the state directory, and no areas.
   - File and exec workers never see profiles.
 - **The shared core** runs in the worker and is engine-neutral. It owns tabs, the page reader (an isolated-world script that builds the element list), snapshots and refs, actions, waits, the login step and the pause. Secret filtering is written once, here.
 - **Drivers** speak each engine's own channel over **private pipes only**, so no other latch worker can connect to a browser.
@@ -66,9 +107,9 @@ agent machine                         latch host
   - **Camoufox:** a small Node helper running Camoufox's pinned Playwright runtime, which speaks the driver operations as JSON lines over stdio.
 - **Plugins.** Each engine installs to its own versioned plugin folder under the state directory, beside older versions, like gog. It holds the build and a manifest: engine, version, driver-contract version, binary and sha256 per OS and architecture, launch recipe, optional capabilities and licence notes. Pins are compiled into latch; the sha256 is checked before every launch.
 - **Profiles** live in the state directory.
-  - Only one session uses a profile at a time; `open` on a busy profile reuses its session.
+  - Each `open` creates a new session: a new background window in the profile's runtime, starting the runtime if needed. It never reuses another session.
   - Profiles are created with password saving and autofill off, and no extensions.
-  - Sessions close after 30 minutes idle; the profile stays.
+  - A session closes after 30 minutes idle. Closing a session never touches the others. The runtime, its worker and its display exit when the last session has closed; the profile stays.
 
 ## 5. Agent commands
 
@@ -76,91 +117,360 @@ Every command below is `latch browser <cmd> --host H`; session commands also tak
 
 | Command | Does |
 |---|---|
-| `open [--profile P] [URL]` | Starts or reuses P's session (no `--profile`: profile `default`, CfT, created on first use). Returns session, engine, URL, title and a compact element list. |
+| `open [--profile P] [--task LABEL] [--reserve-site] [URL]` | Creates a new session in P's runtime (no `--profile`: profile `default`, CfT, created on first use). Returns the **session id** (unguessable; §5.1), engine, URL, title and a compact element list. `--task` is a label for listings and audit, never authority. `--reserve-site` is described in §5.3. |
 | `observe [--tab T] [--scope eN]` | A snapshot of the element list, short page text, and the vault items that fit this page (titles and handles, never values). |
 | `text` · `screenshot --output F` | Page text, or an image file on the client. |
-| `act [--snapshot O] click\|type\|select\|press\|scroll\|back <target> [text]` | One action. The target is a ref, an exact name or a description (§6). `type` takes ordinary text, never a secret. `click --at X,Y` clicks a screen position. Moved or covered targets are refused. |
-| `act --steps FILE\|-` | Several actions, one per line, in the same form (§6). |
-| `find --role R --name N` · `find "<description>"` | Candidate refs (with p for descriptions). Never acts. |
-| `wait --ref eN --state S` · `--text T` · `--for "<sentence>"` | Waits for a named condition, with a deadline. |
+| `do STEP… [--fact NAME=TEXT]… [--item I]… [--within S] [--reserve-site] [--output F]` · `do --plan-file FILE\|-` · `do --dry-run …` | **The plan command** (§6). `--plan-file` takes the canonical plan object. `--dry-run` prints the canonical plan and runs nothing. `--output F` writes the final page's screenshot to F on the client, as `screenshot --output` does. |
+| `do --confirm C [STEP…]` | Carries out confirmation C from a `confirm_needed` stop, then any further steps (§6.5). |
+| `do --history R` · `do --history R --shot N --output F` | A past request's steps, actions, outcomes and page lines; or one of its screenshots (action N, or `final`), streamed into F on the client the way `screenshot --output` and `download get` stream (§6.7). This is how exit 5 is resolved. |
+| `act click\|type\|select\|press\|scroll\|back eN [text] [--check CHECK]` | One literal step on a ref from the last page latch returned to this session. It runs through the plan executor as a plan of one step, with the same checks, confirmations, trail and answer. |
+| `find --role R --name N` | Candidate refs by role and exact name. No model, never acts. |
+| `wait --ref eN --state S` · `--text T` · `--url-path P` | Waits for a typed condition, with a deadline. |
 | `login --snapshot O --item I [--username eN] [--password eN] [--submit eN]` · `fill --snapshot O --item I --field F=eN… [--press eN]` · `fill-code --snapshot O --item I [--field eN] [--submit eN]` | Login, card/identity/note and TOTP steps (§7). |
 | `handoff --reason captcha\|2fa\|passkey\|signin` | Pauses the agent until the owner says done (§7). |
 | `upload eN FILE` · `downloads` · `download get D --output F` | Files move as files. |
 | `dialog accept\|dismiss` · `tab new\|switch\|close` | Dialogs and tabs. |
 | `eval --script-file F` | Agent JavaScript in the page, in any session. Refused while a filled secret is on the page. |
-| `sessions` · `close` | List sessions, or end one (the profile stays). |
+| `sessions` · `close` | The caller's sessions, without their ids (§5.1); or end the session named by `--session`. Closing ends the session's windows and releases its site reservation. The profile, the runtime's other sessions and its display stay. |
 
-**Owner-device commands.** `latch vault add|list|remove|import` (§9) are client commands run from an **owner device**: a latch client state (its own `--state-dir`, logged in with `latch login` as kind `device`) distinct from the serving host's state. On the host's own machine the owner uses that separate client state, never the host's (the client already refuses to dial its own serving identity). The host accepts them only from a `device`-kind peer on its account; agent peers get exit 4.
+These forms are removed:
+- `act` with an exact name or a description as target;
+- `act --expect "<sentence>"`;
+- `act --steps`;
+- `act click --at X,Y`, until it gets the binding listed in §15;
+- `find "<description>"`;
+- `wait --for "<sentence>"`.
+
+Using any of them is a usage error. The message points to the plan command.
+
+**Owner-device commands.** `latch vault add|edit|list|remove|import` (§9) are client commands run from an **owner device**: a latch client state (its own `--state-dir`, logged in with `latch login` as kind `device`) distinct from the serving host's state. On the host's own machine the owner uses that separate client state, never the host's (the client already refuses to dial its own serving identity). The host accepts them only from a `device`-kind peer on its account; agent peers get exit 4.
 
 **Owner-only, host-local commands.** These need the host's terminal and state directory, so `exec` can never reach them:
 - `latch browser profile create|list|remove`;
 - `latch browser handoff done`.
 
-**Element list.** Each element carries its ref, role and accessible name; the value of ordinary fields (never password or secret-marked ones); checked, expanded, disabled and off-screen state; and **its row or card text**, which descriptions need. Off-screen elements are kept. The list is capped at 200 elements, with `truncated` set; `--scope` reads a subtree. Cross-site frames are included with their effective origin. A stale ref is refused, never re-guessed.
+**Element list.** Each element carries its ref, role and accessible name; the value of ordinary fields (never password or secret-marked ones); checked, expanded, disabled and off-screen state; and **its row or card text**, which the decision model needs. Off-screen elements are kept. The list is capped at 200 elements, with `truncated` set; `--scope` reads a subtree. Cross-site frames are included with their effective origin. A stale ref is refused, never re-guessed.
 
-**Results.** An action reports `dispatched` (never "done"), the target and how it was resolved (`ref`, `name` or `model`, with p), what changed (URL, title, first lines on screen), any expectation verdict, and events (downloads, dialogs, new tabs). Every stop returns a compact element list, so the agent can steer without another `observe`.
+**Results.** Every answer from the plan command and from `act` is one JSON object.
+- **`status`:**
+  - `reached`: every step ended `checked`, `model_assessed` or `already_held`;
+  - `dispatched`: every step ran, but a literal step without a check was only sent;
+  - `stopped`: with `stop: {step, code, message, …}`.
+- **`review: true`** when the last step rests only on a model assessment.
+- **`steps`:** per step, `outcome` (`checked`, `model_assessed`, `already_held`, `dispatched`, `stopped`, `not_run`), its evidence (the check that held, or the model's p and quoted line), and its action count.
+- **`trail`:** per action:
+  - page URL and title;
+  - operation;
+  - target (ref, role, name, row text);
+  - how it was chosen (`ref` or `model`, with the p of each head);
+  - the risk p, for clicks and Enter;
+  - the result (`dispatched`, `refused`, `unknown`);
+  - whether the page changed;
+  - a screenshot handle (`{"request": R, "shot": N}`).
+- **`page`:** the page now: snapshot id, URL, title, up to 40 main on-screen lines, the compact element list.
+- **`screenshot`:** the final page's handle (`"shot": "final"`). With `--output F`, the client path F it was written to.
 
-| Exit | Meaning | Error codes |
+**A result never contains a path on the host.**
+- Every screenshot is a handle, which the client fetches with the plan command's `--history R --shot N --output F` (§6.7).
+- The only paths are ones the client itself wrote.
+- This works the same from the host's own machine and from another one.
+
+latch never reports "done" for the user's task. `reached` means every step's own check passed, with the evidence shown.
+
+| Exit | Meaning | Codes |
 |---|---|---|
-| 0 | ok | — |
-| 1 | failed | `stale_snapshot`, `covered_target`, `no_such_target`, `ambiguous_target`, `expect_not_met`, `expect_unsure`, `needs_login`, `needs_owner`, `session_paused`, `assist_off`, `unsupported_capability`, `timeout` |
-| 2 | usage | bad arguments, `vague_condition`, unknown host |
+| 0 | `reached` or `dispatched` | — |
+| 1 | stopped | `check_not_met`, `unconfirmed`, `already_true`, `needs_text`, `needs_fields`, `needs_login`, `needs_owner`, `blocked`, `stuck`, `repeat`, `no_progress`, `ambiguous_target`, `step_budget`, `plan_budget`, `deadline`, `stale_snapshot`, `covered_target`, `session_paused`, `site_busy`, `model_unavailable`, `no_such_session`, `unsupported_capability`, `timeout` |
+| 2 | usage | bad arguments, a malformed plan, `vague_condition`, a removed form, unknown host |
 | 3 | host unreachable; nothing sent | — |
-| 4 | refused | `origin_mismatch`, `secret_on_page`, `confirm_target` |
-| 5 | outcome unknown | read the request's history (`act --history R`) before retrying |
+| 4 | refused | `confirm_needed`, `confirm_stale`, `step_not_allowed`, `not_owner`, `origin_mismatch`, `secret_on_page` |
+| 5 | outcome unknown | read the plan command's `--history R` before anything else |
 
-## 6. Several steps per turn, and the decision model
+`model_unavailable` replaces B5's `assist_off`.
 
-**No goal command.** The agent writes the steps and all text, and states what each step should lead to. The decision model only chooses and checks. It never picks the next action and never writes text.
+### 5.1 Ownership
 
-**Targets** resolve in this order:
-1. a ref (bound to its snapshot);
-2. exactly one element with that accessible name (no model call);
-3. one model choice among the elements that fit the action, with their row text, plus "none".
+**Every session call needs both:**
+- the client key the gate has verified, matching the key that opened the session; and
+- the session's id.
 
-The model's choice is accepted only at p ≥ 0.8 (a starting value). Otherwise the step stops with `ambiguous_target` or `no_such_target` and up to three candidate refs with p. latch never uses "label contains" matching and never targets a password field.
+**The id is a capability.**
+- `open` returns it once. It is at least 128 bits of randomness, and never derived from the profile name.
+- Session commands take it as `--session S`, or `LATCH_BROWSER_SESSION`. There is no implicit `default` session.
+- `sessions` lists the caller's sessions **without their ids** (task label, profile, current site, state, last activity). So another task under the same client key can't reach a session whose id it was not given.
+- The audit and dashboard show a short hash of the id, never the id.
 
-**Expectations**, on any action:
-- **Typed checks come first,** decided by latch's code: `--expect-url`, `--expect-text`, `--expect-field eN=<value|checked>`, `--expect-download complete`.
-- **A sentence**, `--expect "…"`, counts as met only at yes ≥ 0.9 **and** with one quoted line of the page as evidence. It is reported as an assessment, with p and the line.
-- A sentence naming a task rather than a page fact is refused before anything runs (`vague_condition`).
-- Expectations wait up to `--within S` (default 10 s).
-- A download counts only when complete.
+**How a call is refused:**
+- A call with an id unknown under the caller's key is refused with `no_such_session`.
+- A call with a valid id from another client key is refused with `not_owner` (exit 4). Nothing reaches the session either way.
+- An owner device may close any session from the dashboard or by its hash.
+- A task that loses its id loses the session, which idles out.
 
-**Step lists:**
-- The whole list is checked before the first step runs.
-- Each target is resolved on the page as it is at its step.
-- One request id, generated by the client and sent with the request, so the client knows it even when the reply is lost. The host keeps each request's per-step outcomes (not sent, dispatched, expectation verdict) for the session's lifetime. `act --history R` returns that trace; it is how an exit 5 is resolved. Single `act` calls get the same.
-- Trial cap: 10 steps.
-- The list stops at the first unresolved target, unmet or unsure expectation, refusal, login wall or CAPTCHA (`needs_login`, `needs_owner`), or timeout. Later steps don't run.
-- latch never replays an uncertain action and never retries a click by itself.
+**Limits:**
+- **Task identity proper, issued by the agent runner, is a later upgrade** (§15). Until then, one client key plus the session id is the ownership rule.
+- The interim `profile_busy` guard retires with B2b: another caller's `open` now gets a session of its own.
 
-**Risky clicks need a ref.** A click that would pay, send, delete, place an order, create credentials or otherwise can't be undone, on a page the agent hasn't seen (no snapshot of that document has reached it), stops with `confirm_target` and the ref, however the target was named. The agent repeats the click by ref.
-- The model's yes/no flags these clicks. Without a model, a fixed word list over the name and row text does.
-- This is a target review, not an approval system.
+### 5.2 What a session owns
 
-**The decision model is swappable.**
-- One host-side interface: choose one option from a list, or answer yes/no with a probability.
-- Answers are validated before use: the choice must be an offered option; probabilities must be finite, sum to 1, and peak at the choice.
-- POC implementation: TypeSafe jev, pinned to `jev-1.13.0`, with its key in a 0600 file in the host's state directory. **Dev-only:** no decision-model key is ever baked into latch or shipped to hosts (chef, 2026-10-19). The product path routes decision-model calls through Plow inference, authenticated by the host's Plow credential; the provider interface must make that a drop-in (chunk B5b).
-- Calls run in the host process, never in the worker. They send element names, row text, page lines and non-secret field values. They never send cookies, vault values, seeds or screenshots.
-- With no key, or the model down:
-  - descriptions resolve by exact name only;
-  - sentence expectations return `assist_off`;
-  - everything else works.
+Its own windows, plus every tab or popup opened from them (assigned by opener). A target whose opener is unknown stays unassigned until it is resolved; it is never adopted from whichever window is active.
 
-**Metrics (the 1:13 lesson).**
-- **Actions per request:** actions dispatched ÷ `latch browser` requests. latch measures this by itself.
-- **Actions per agent turn:** actions dispatched ÷ agent turns. A turn can issue several commands, so this needs a turn id: the caller passes `--turn T` (or `LATCH_TURN`), and the audit also records the client's parent process id as a fallback grouping.
-- **Target:** on the same tasks, at least 30% fewer agent turns than a refs-only baseline, with success no lower, and a median of 2.5 or more actions per turn on multi-page tasks.
-- **Alarm:** a median below 1.5 means agents are bypassing it.
-- **Also tracked:** escapes to `eval` or to one action per call; at least 99% precision on executed model choices; no observed false completions.
+It also owns:
+- **its snapshots and refs;**
+- **its downloads:** files are named by download guid in the runtime's staging folder, and assigned to a session through the initiating frame → target → session. A download that can't be assigned is quarantined, never shown to anyone;
+- **its dialogs,** handled only through their own target;
+- **its plan requests and trail.**
+
+### 5.3 The same site in two sessions
+
+Two sessions on one profile share the site's account state: one cart, one login, one set of settings. latch can't separate that.
+
+**By default it warns:**
+- While another live session of the same profile has acted on the same registrable domain in the last 15 minutes, every answer on that site carries `shared_site` (the other session's id hash and how long ago it acted, never its pages).
+- A `confirm_needed` stop repeats the warning.
+- Signing out is a consequential click (§6.5).
+
+**Opt-in lock (`--reserve-site` on `open`, or on the plan command):** the session reserves (profile, registrable domain) on this host, for tasks that change an account (a cart, an order, settings).
+- The reservation holds across stops and confirmations, until the session closes (`close`, or the idle timeout).
+- Another session's action on that site, navigation included, gets `site_busy` (exit 1) before anything is sent.
+- **Limit:** the lock is host-local. It doesn't cover another host, or another profile signed in to the same account. Cross-host reservations need a Plow API (§15).
+
+## 6. Plans and the decision model
+
+### 6.1 The plan
+
+**The canonical plan object** is what `--plan-file` takes, and what every short form compiles to:
+- `steps`: up to 10. Each step has one of:
+  - a `goal` in words, with optional `values` (named literal texts), `urls` (named absolute URLs) and a `check`;
+  - a `literal` action on refs: `click`, `type`, `select` or `press` (`op`, `ref`, `snapshot`, optional `text`), with an optional `check`;
+  - a `literal` **`fill`**: `item`, `fields` (item field → ref, a list of refs for split boxes) and `press` (the button), with an optional `check`. This is §7's explicit mapping, carried inside a plan.
+- `facts`: named texts every step may type.
+- `items`: vault item handles the plan may use.
+- `within`: seconds, default 120, at most 300.
+
+The whole plan is validated before anything runs (shape, step count, refs, URLs, fill mappings, check syntax). A malformed later step never lets earlier steps run.
+
+**The short form** is the plan command with one argument per step:
+- **Values.** Text in double quotes (straight or curly) is a value of that step. Nothing else is ever typed.
+- **URLs.** A quoted absolute URL is also offered to `navigate`.
+- **Checks.** A step's check follows its **last** ` -> ` outside quotes. So `add the note "A -> B"` has the value `A -> B` and no check.
+- **Literal steps.** A step that matches either of these is a literal step:
+  - `click|type|select|press eN ["text"]`;
+  - `fill --item vN --field F=eN… [--press eN]`.
+
+**Checks:**
+- `origin: https://www.doordash.com`: the page's origin equals it.
+- `path: /checkout`: the value is part of the page's path. Never the host, never the query.
+- `query: q=salad`: the query has that parameter with that value.
+- `text: Added to cart`: the page text contains it.
+- `field: eN=<value|checked|unchecked>`: that field's state, by a ref from a page latch returned.
+- `download: complete`: a download started by this step has completed.
+- `new text: …` (or `"require_change": true` on any check): it must not hold when the step starts, and must hold after.
+- `<sentence>`: judged by the decision model (§6.3). A sentence that names a task rather than a page fact is refused before anything runs (`vague_condition`).
+
+Checks wait up to 10 s after a step's last action.
+
+**Step policy (a host setting, for B9's evaluation; default `any`).** It decides which literal steps a session may run. It is enforced **in the shared step dispatcher**, whether the step came from `act`, from the plan command's short form or from `--plan-file`.
+
+| Policy | Literal steps allowed |
+|---|---|
+| `any` | refs from any page latch returned to the session |
+| `stop` | only refs returned in that session's latest stop |
+| `none` | no literal steps |
+
+- A separate switch turns instruction steps off, for B9's refs-only arm.
+- Any forbidden step is refused with `step_not_allowed` (exit 4) before anything is sent.
+- **Confirmations are never forbidden:** `--confirm C`, or `act click eN` on a confirmation's own ref.
+- B9 decides the shipped policy.
+
+### 6.2 One pass of an instruction step
+
+Each pass observes the page and makes **one decision-model request**. In that request:
+- every question restates its own operation, because questions are answered independently;
+- only operations and targets that are possible now are offered.
+
+**The state sent:**
+- the plan, with each step marked done, current or later;
+- the current step and its values;
+- the page's URL and title;
+- up to 40 on-screen lines;
+- **field states as lines** (`combobox "Size": "Large"`, `checkbox "Gift": not checked`);
+- the scroll position;
+- the actions already taken in this step;
+- a note when a saved login or card fits the page.
+
+**The questions:**
+- **status:** `complete` (the page or the actions taken show the step's result), `not_yet`, or `cannot` (an error, an unavailable item, or missing information).
+- **evidence:** the one line that best shows the step is complete, or `none`. The options are the page's title and address, its on-screen and other lines (up to 100), its field-state lines, and this step's action lines.
+- **operation:** among only those possible now:
+
+  | Operation | Offered when |
+  |---|---|
+  | `click`, `type`, `select` | there is a target for them |
+  | `press_enter` | after typing |
+  | `navigate` | only to the step's or plan's URLs |
+  | `scroll`, `back`, `wait` | always, where they apply |
+  | `login` | the page shows sign-in fields and exactly one vault item fits the page's origin under its site rule, or the plan's `items` / `--item` name one (§7) |
+  | `fill_code` | the page shows a code field and that fitting login item has an authenticator key (§7) |
+  | `fill` | a card or identity item fits the page under its site rule (or the plan names one), and the page shows a form |
+  | `done` | only after the step's first action |
+  | `stuck` | always |
+
+  Choosing `fill` never maps fields: it stops with `needs_fields` (below).
+- **targets:**
+  - click targets: elements an action can reach now, not disabled and **not covered**. Each with its row or card text, off-screen ones included, at most 250, with truncation shown.
+  - field × value pairs, **always with `none`**, even when there is only one pair.
+  - dropdown × option pairs, **including the option already chosen**, marked as such.
+  - supplied-URL ids.
+
+  A target choice is dropped only where the host has already established the single eligible target by itself. So `login` and `fill_code` take no target head. Every model-chosen field × value pair keeps its `none`.
+
+### 6.3 When a step is complete
+
+| How | Rule |
+|---|---|
+| **Typed check** | It decides. The step is `checked` when it holds after the step's action. |
+| **Sentence check, or no check** | The step is `model_assessed` when status is `complete` at p ≥ 0.7, **and** an evidence line is chosen with p(`none`) < 0.3. It is reported with p and the line. |
+| **Already held** | Before its first action, a step whose state check already holds ends `already_held`, with no action. Without a typed check, the model's `complete` counts here only when its evidence line is a **state line**: a field's value, the page's address or its title. Page text alone, such as a flash message left by an earlier step, is never enough. A step with `require_change` can't be already held. |
+| **`unconfirmed`** | The step has acted, the model chooses `done`, and the rule above isn't met. It comes with the top evidence lines. |
+| **`already_true`** | The model chooses `stuck` before acting, while the step's result shows only in page text. |
+| **`blocked`** | Status `cannot`, with the evidence line. |
+| **`check_not_met`** | A typed check that didn't hold. |
+
+**Thresholds, wording and budgets are starting values, frozen per evaluation.**
+- **Two kinds of cases:**
+  - *development* cases: B5c's plan suite, and anything used to choose or change a value;
+  - *held-out* cases: B9's evaluation set, disjoint in tasks, page layouts and sites.
+- **Held-out cases become development data once they inform a change.** If B9's results lead to changing wording, a threshold or a budget, B9's cases count as development data from then on. Claiming an evaluation of the revised design needs a fresh, disjoint held-out set.
+- B9 reports false accepts and false stops separately.
+
+### 6.4 Stops and limits
+
+Each pass applies these stop conditions, in this order:
+1. A CAPTCHA, texted-code or passkey page: `needs_owner`.
+2. Completion as in §6.3.
+3. `cannot` stops the plan with `blocked`.
+4. `done` stops the plan with `unconfirmed`; `stuck` stops it with `stuck` (or `already_true`).
+5. Budgets:
+   - 10 steps;
+   - 8 actions per step;
+   - 30 actions per plan;
+   - `within`;
+   - at most 2 waits per step;
+   - exhausted budgets stop with `step_budget`, `plan_budget` or `deadline`.
+6. A chosen target below p 0.5: `ambiguous_target`, with up to 3 candidate refs. There is no floor on the operation head.
+7. Typing whose field × value choice is `none`, or where no value fits: `needs_text`, naming the field. A supplied value meant for another purpose is never typed just because it is the only one.
+8. `login` with no single fitting item: `needs_login`.
+9. `fill` chosen: `needs_fields`, with:
+   - the fitting item handles;
+   - the form's candidate refs (its fields and buttons);
+   - the item fields each one could take.
+
+   The agent sends a literal `fill` step with the mapping, in a new plan.
+10. **Repeat guard:**
+    - an action identical to one already dispatched in this plan, on the same page state (same document, field values, on-screen lines and scroll), is refused with `repeat`;
+    - two actions in a row that leave the page state unchanged stop with `no_progress`.
+
+    The same control on a changed page is real progress, as in a same-URL wizard, and is allowed.
+11. A consequential action: `confirm_needed` (§6.5).
+
+Then:
+- **Before dispatch,** latch re-checks:
+  - the target's identity and nearby context in its document;
+  - the session's ownership;
+  - the profile's pause epoch: a decision made before a pause is thrown away, and the page is observed again;
+  - the site reservation;
+  - the step policy.
+- **Dispatch** uses trusted input. It is journaled before it is sent and after it returns. A click is never sent twice by latch, and an uncertain action is never replayed.
+
+### 6.5 Confirmations
+
+These stop with `confirm_needed` (exit 4) before anything is sent:
+- **a click** that would pay, place an order, send, publish, delete or close something, sign out of an account, create credentials, or otherwise can't be undone;
+- **an Enter** in a field whose form submits such an action;
+- **a fill that releases a card or identity secret field**, through the plan command or the standalone `fill` command (§7).
+
+This applies whether the model chose the target or the agent named it in a literal step, and whether or not the agent has seen the page.
+- **The decision.** It is a decision-model yes/no on the exact element (or, for Enter, the form's submit control), at p ≥ 0.5. Enter in a form with no submit control latch can identify is judged as a submit of that form.
+- **There is no keyword fallback.** If no decision model is reachable when a risk decision is needed, the step stops with `model_unavailable` and nothing is sent. It never passes silently.
+- **An issued, still-valid confirmation dispatches normally,** with no new decision (all hosts reach a model through Plow inference, B5b).
+
+The stop returns **a confirmation**:
+- its id;
+- the target's ref and snapshot;
+- the reviewed context: the target's name and row or card text, the page title, and the lines naming the item, amount or recipient. For a fill, also the item's title and the `--press` button;
+- a screenshot.
+
+The agent confirms with the plan command's `--confirm C [STEP…]`, or with `act click eN` on that same ref (not for fills).
+
+A confirmation:
+- **is used once;**
+- **is valid only in the same session and document,** and only while the target and reviewed context are unchanged at dispatch;
+- **otherwise is refused with `confirm_stale`** and a fresh page. A total that changes from $10 to $100 is refused, even with the same ref, URL and button name.
+
+A literal step written into a plan before latch found the consequence is never a confirmation.
+
+### 6.6 Text, the model and its absence
+
+- **Every typed string** comes from the step's values, the plan's facts, or the vault through §7. There is no generative text model.
+- **The decision model is swappable:**
+  - one host-side interface: choose one option from a list, or answer yes/no with a probability;
+  - answers are validated before use: offered options only; finite probabilities that sum to 1 and peak at the choice;
+  - **POC:** TypeSafe jev, pinned to `jev-1.13.0`, dev key in a 0600 file. **Product:** Plow inference on the host's credential, with no decision-model key on hosts (B5b).
+  - calls run in the host, never in the worker. They send element names, row text, page lines and non-secret field values, and never cookies, vault values, seeds or screenshots.
+- **When no model is reachable:**
+  - these stop with `model_unavailable`, nothing sent: instruction steps, sentence checks, and any click, Enter or secret fill that needs a new risk decision;
+  - these still work: literal `type`, `select`, `scroll` and `back`; typed checks; and confirmations already issued.
+
+### 6.7 History and the trail
+
+Every request has a client-made id, so the client knows it even when the reply is lost.
+
+The host journals each request's steps and actions to the state directory **before and after each dispatch**. The journal survives a host restart:
+- an action whose result was not recorded is reported `unknown`, never `not_sent`;
+- a missing record never counts as "safe to retry".
+
+**The trail bundle** belongs to the session's owner and is kept in the state directory apart from the value-free audit (§11). It holds:
+- page lines and titles;
+- a screenshot after each action;
+- markers for suppressed secret phases.
+
+It is kept 7 days (a trial value). A screenshot is fetched by request and action through the plan command's `--history R --shot N --output F`. The request's journal and page lines come back as JSON from `--history R`.
+
+**How a client fetches a screenshot.** It is the same path `screenshot --output` and `download get` use today:
+- one `browser` request over latch's connection;
+- the bytes stream after its first answer into the client's file;
+- both sides compare sha256.
+
+Access needs the caller's client key and the session's id. The id stays valid for its trail for the trail's 7 days, even after the session closes.
+
+Two alternatives were considered and rejected:
+- **`latch file get`:** file workers can't, and mustn't, read the state directory where trails live (§4, §9). Putting trails in a shared folder would show them to exec workers and other callers.
+- **Streaming every screenshot with each answer:** that would need a multi-file transfer latch doesn't have, and would send images the agent never looks at.
+
+### 6.8 Metrics
+
+Measured from the audit, grouped by the caller's turn id (`--turn` / `LATCH_TURN`, with parent-pid fallback):
+- **Plan share:** actions from instruction steps ÷ all actions.
+- Confirmations, and how they were answered.
+- **Continuations:** what follows a stop: a new plan, or literal repairs.
+- **Escapes** to `eval`.
+- Agent turns and actions per turn.
+- Stops by code, including `unconfirmed`.
+- Wrong targets, from trail review.
+- Model calls and latency, per plan and per action.
+
+B9 sets the targets.
 
 ## 7. Login, codes and handoff
 
 **`login --snapshot O --item I`:**
-1. **Gate.** No per-profile binding (chef, 2026-10-19): any session may use any vault item, subject to its site rule; who may use what is the later gatekeeper's job. The host notes whether agent code ran in this session before the fill.
-2. **Pause.** The whole browser is frozen for the agent: every tab, page text and screenshots. Calls return `session_paused`.
+1. **Gate.**
+   - No per-profile binding (chef, 2026-10-19): any session may use any vault item, subject to its site rule; who may use what is the later gatekeeper's job.
+   - The host notes whether agent code (`eval`) has run **on this site in any session of this profile**. It keeps that with the profile, because service workers and site storage outlive sessions.
+2. **Pause.** The whole browser is frozen for agents while a latch-filled secret may be on a page. That means **every session on the profile runtime**: page text, screenshots, observations and actions.
+   - Calls return `session_paused`.
+   - Plans in other sessions wait at their next action boundary, then observe again.
+   - The pause ends only after cleanup is confirmed (step 6). If cleanup can't be confirmed, the whole runtime stays paused.
 3. **Prepare.** latch picks the fields from snapshot O, unless the agent named them with `--username`, `--password` and `--submit`:
    - the one password field in a form; the text or email field before it in the same form; that form's submit button;
    - an identifier-first login (a page with only the username field): latch fills it, presses its continue button, waits up to 15 s for the password step (same or another site), re-reads that page itself, re-runs the origin match on it, then fills and submits — all inside the one paused `login` (chef, 2026-10-19, from the DoorDash test). A second step that asks for something other than a password (code, passkey) ends in `timeout` after cleanup;
@@ -173,25 +483,53 @@ The model's choice is accepted only at p ≥ 0.8 (a starting value). Otherwise t
    - the document id.
 4. **Match (chef, 2026-10-19: subdomains match, for parity with the Latch app).** Both the field frame's and the top-level origin must be HTTPS and share the item's **registrable domain** (public-suffix list via `psl`, private suffixes included), unless the item allows other top-level sites. Plain `http`, an IP or local host, a missing page address, and opaque or uncertain origins are refused (`origin_mismatch`) — closing the old app's gaps. Only then does the vault release a value.
 5. **Set.** One value at a time crosses the worker's private pipe. The driver re-checks element, document and origin and sets the value in one synchronous step, with no typing. A site that rejects it gets `needs_owner`, never a typing fallback.
-6. **Submit and clean up.** latch clicks the item's submit element. It waits until the secret-bearing document is replaced, or the values are verified cleared (a URL change isn't enough). On failure it clears the fields. If cleanup can't be confirmed, the session stays paused.
+6. **Submit and clean up.** latch clicks the item's submit element. It waits until the secret-bearing document is replaced, or the values are verified cleared (a URL change isn't enough). On failure it clears the fields. If cleanup can't be confirmed, the whole runtime stays paused (step 2).
 7. **Resume.** The result is `submitted`, not "logged in". `eval` is refused while a filled secret is still on the page.
 
-**`fill --snapshot O --item I --field <item-field>=eN … [--press eN]`** fills cards, identities and notes, as the Latch app did: the agent names which element gets which item field (`number`, `expiry`, `cvv`, `name`, address and identity fields). latch reshapes dates and expiries to the field's format and splits values across split boxes. The same pause and one-step set as `login` apply, with the per-kind origin rule from §9 ("Where each kind may fill"); no automatic field detection in the POC. Secret fields (card number, CVV, identity numbers, per the ported classifier) must leave the page before the agent resumes, so a fill that includes one **requires `--press eN`**: latch presses that button (a ref from a snapshot the agent has seen — the risky-click rule) and cleans up as in step 6 before resuming. Non-secret fields (name, address) may fill without `--press`. Site lists and auditing are in §9.
+**`fill --snapshot O --item I --field <item-field>=eN … [--press eN]`** fills cards, identities and notes, as the Latch app did: the agent names which element gets which item field (`number`, `expiry`, `cvv`, `name`, address and identity fields). latch reshapes dates and expiries to the field's format and splits values across split boxes. The same pause and one-step set as `login` apply, with the per-kind origin rule from §9 ("Where each kind may fill"); no automatic field detection in the POC.
+
+**Releasing a secret field needs a confirmation.** Secret fields (card number, CVV, identity numbers, per the ported classifier) must leave the page before the agent resumes. So a fill that includes one **requires `--press eN`**, and it is **confirmed before any value is released** (§6.5):
+- the fill first stops with `confirm_needed`, carrying the item's title, the press button and the reviewed amount;
+- the confirmation lets latch fill, press and clean up as in step 6, as one step.
+
+This holds for the standalone `fill` command and for a literal `fill` step in a plan alike. Non-secret fields (name, address) may fill without `--press` and without confirmation. Site lists and auditing are in §9.
 
 **`fill-code --snapshot O --item I`.** The TOTP seed stays in the vault. The host computes the code. The field and submit button are picked like `login`'s (one code field and its form's submit button, or `--field` / `--submit`). The same steps then run: pause, origin match, one-step write, submit, cleanup until the code's document is replaced or the field is verified cleared, resume with `submitted`.
 
+**Inside plans.**
+
+- **`login`** (operation contract in §6.2) runs this section's `login` unchanged: pause, origin match, one-step set, submit, cleanup. An identifier-first sign-in is one operation.
+  - The trail records the item's title and what was filled, never a value.
+  - Its result is `submitted`. Whether the step's goal holds is decided by the step's own check.
+- **`fill_code`** (operation contract in §6.2) runs this section's `fill-code` unchanged.
+- **Card and identity fills keep this section's explicit mapping.**
+  - A plan carries them only as a literal `fill` step (§6.1).
+  - An instruction step that reaches a fillable form stops with `needs_fields` and the candidate refs (§6.4). latch never maps fields by itself.
+  - Secret releases are confirmed first (above).
+- **The plan stops with `needs_owner`** on a CAPTCHA, a texted code or a passkey. The agent runs `handoff`, then sends a new plan.
+- **No observation or screenshot is taken** from the start of a fill to confirmed cleanup. The trail records a suppressed-secret-phase marker instead.
+
 **`handoff`.**
-- The agent is paused, and the owner acts in the real browser window on the host.
-- The host's dashboard shows the pending handoff, and the owner ends it with `latch browser handoff done`. Default timeout: 600 s.
-- Refs from before the handoff are invalid afterwards.
-- **On a host with no screen,** `handoff` returns `needs_owner` with `"reason":"no_screen"` at once. So do login walls that need a person. The agent tells its user that the site needs a host with a screen, such as the Mac. Sign-in without hands still works wherever a saved login (plus a TOTP code) is enough.
+- `handoff` belongs to one session. That session is paused, and its window alone comes to the front, so the owner can act in the real browser window.
+- Other sessions keep working in the background once no latch-filled secret is on any page (the pause rule above).
+- The host's dashboard shows the pending handoff with its session hash and caller. The owner ends it with `latch browser handoff done`. Default timeout: 600 s.
+- That session's refs from before the handoff are invalid afterwards.
+- **On a host with no screen,** `handoff` returns `needs_owner` with `"reason":"no_screen"` at once, and so do login walls that need a person.
 
 ## 8. Screenshots and displays
 
 - Screenshots to the agent are required on every host. They come from the engine, with the screen-to-page coordinate mapping, and are refused while a session is paused.
 - **Engines always run headed, never in headless mode:** headless got blocked on far more sites in the browser-poc site check (9/26 against 24/26 headed).
-- On macOS the browser is a real window in the owner's session. It is visible but **never steals focus** (chef, 2026-10-19): no startup window, every window and tab opened in the background, no tab activation; only `handoff` brings it to the front. Anti-throttling switches keep background windows rendering normally.
-- On a screenless Linux host, each session's worker starts a private Xvfb display. A Pi with a monitor uses its desktop.
+- On macOS the browser is a real window in the owner's session. It is visible but **never steals focus** (chef, 2026-10-19).
+  - No startup window; every window and tab opens in the background; no tab activation.
+  - **Only `handoff` brings a window to the front.** A plan stop, a dialog, a download or a popup never does.
+  - Anti-throttling switches keep background windows rendering normally.
+  - This is a conformance test on each headed host (§10).
+- **On a screenless Linux host,** each profile runtime's worker starts **one private Xvfb display**.
+  - The runtime's sessions are windows on it.
+  - The display lives as long as the runtime: closing one session never tears it down while another session still uses the runtime.
+  - Each profile runtime has its own display.
+  - A Pi with a monitor uses its desktop.
 
 ## 9. The vault
 
@@ -211,7 +549,14 @@ The model's choice is accepted only at p ≥ 0.8 (a starting value). Otherwise t
   - **note:** any top-level site, filled only into non-secret-marked fields named by the agent.
   - Every card and identity fill's top-level and field-frame sites are audited.
 - **Item kinds, for parity with the Latch app:** login (username, password, optional TOTP seed — marked, since it holds both factors), card, identity, secure note. Field names follow rbw's Bitwarden-style model. Every item has a title, its site (required for logins; an optional site list for cards and identities) and a **revision** (an edit against an old revision is refused). Which fields are secret follows the Latch app's classifier, ported with its truth table as tests. TOTP via `totp-rs`, checked against the RFC 6238 vectors.
-- **Commands** (owner-only): `latch vault add --kind login|card|identity|note …` (secrets prompted without echo, never from argv or the environment), `list` (metadata only), `remove`, and `import` (1Password 1PUX/CSV, Apple Passwords CSV, Bitwarden JSON/CSV, Chrome CSV; a picker, nothing selected by default; logins first, other kinds where the export carries them), porting the Latch app's import rules and tests. They go through `latch serve` over latch's own connection as an authenticated owner device, on the same machine too — no direct file edits. The secure link is out of v0; the design keeps it possible.
+- **Commands** (owner-only):
+  - `latch vault add --kind login|card|identity|note …`;
+  - **`edit ITEM --revision N`**: change the title, sites, non-secret fields, or (prompted) secret fields of an existing item;
+  - `list` (metadata only);
+  - `remove`;
+  - `import` (1Password 1PUX/CSV, Apple Passwords CSV, Bitwarden JSON/CSV, Chrome CSV; a picker, nothing selected by default; logins first, other kinds where the export carries them), porting the Latch app's import rules and tests.
+
+  Secrets are prompted without echo, never taken from argv or the environment. An edit or removal against an older revision is refused (`stale_revision`). They go through `latch serve` over latch's own connection as an authenticated owner device, on the same machine too: no direct file edits. The secure link is out of v0; the design keeps it possible.
 - **Reuse rule:** the Latch app's rules, formats and tests are ported to Rust; no Latch code is imported and no sidecar is added. Libraries: `url`, `psl`, `aes-gcm`, `totp-rs`, `csv`, `zip`.
 - **The agent never sees a value.** No command returns a stored secret.
 - **No browser password stores or autofill.** The agent never uses them. Signing in by hand through a handoff, or an already logged-in profile, is fine.
@@ -222,36 +567,43 @@ The model's choice is accepted only at p ≥ 0.8 (a starting value). Otherwise t
 | Operation | The driver must |
 |---|---|
 | launch · close | Start the pinned build with its launch recipe over a private pipe, on its profile, with no listening port. Lock the profile. Reap every child. |
-| tabs and events | Report tabs, openers, navigations, replaced documents, downloads and dialogs. |
+| tabs and events | Report targets with their window and opener, navigations, replaced documents, downloads (initiating frame and guid) and dialogs (with their target), so the core can assign each to its session |
 | frames | Report every frame, cross-site included, with a document id and its effective origin, or "opaque". |
 | run latch's script | Run the shared page reader in an isolated world; run agent `eval` in the main world when latch passes it on. |
 | resolve | Turn a ref into a live element in its own document. Report visible, enabled and not covered. Map coordinates through frames. |
 | input | Browser-generated ("trusted"), human-paced mouse, keys and text. Never `element.click()` from script. |
 | wait · screenshot | Named conditions with deadlines; pixels plus the coordinate mapping. |
-| files · downloads · dialogs | Set upload files, report downloads as handles, answer dialogs. |
+| files · downloads · dialogs | Set upload files; stage downloads under their guid and report them as handles; answer a dialog only through its own target |
 | prepare fill · checked fill | Report where a fill would go; re-check element, document and origin and write in one step, or refuse. Never retry. |
-| pause · resume | Freeze all agent access to the browser. |
+| pause · resume | Freeze all agent access to every session of the runtime, and report a pause epoch |
+| focus | Open windows, tabs and popups in the background; never activate the app except for `handoff` |
 | capabilities | Report optional features. Anything missing returns `unsupported_capability` before dispatch, never a substitute. |
 
 **Engines:**
 - **CfT first:** Rust CDP driver; pinned CfT per OS and architecture; no `Runtime.enable`; `--disable-blink-features=AutomationControlled` in the recipe.
 - **Camoufox second:** the Node helper, with pinned Node, Playwright (below 1.63) and Camoufox, `os` pinned to the host OS. An opt-in install (about 2.5 GB). The bar for dropping it is very high.
 
-**Conformance suite.** latch accepts a driver only after it passes local test pages for: frames of every kind with the right origins; isolated globals with DOM changes visible; trusted input; checked fill refusing a wrong site, an opaque frame and a replaced document; the pause holding (screenshots included); dialogs, pop-ups and files; and, from inside `exec`, no reachable port and an unreadable vault key. An engine that fails only the fill tests is accepted without `login`, `fill` and `fill-code`.
+**Conformance suite.** latch accepts a driver only after it passes local test pages for: frames of every kind with the right origins; isolated globals with DOM changes visible; trusted input; checked fill refusing a wrong site, an opaque frame and a replaced document; the pause holding (screenshots included); dialogs, pop-ups and files; and, from inside `exec`, no reachable port and an unreadable vault key. An engine that fails only the fill tests is accepted without `login`, `fill` and `fill-code`. Also required:
+
+- two sessions on one runtime keep their tabs, downloads (same file name at once) and dialogs apart, while sharing cookies;
+- a pause holds across both sessions;
+- closing one session leaves the other's browser (and, on a screenless host, its display) working;
+- **headed focus:** with another app frontmost, nothing activates the browser: launch, a new session window, a new tab, a popup, a download, a dialog. Only `handoff` does.
 
 ## 11. Audit
 
-The host's hash-chained NDJSON audit gets one record per browser operation:
-- caller and agent;
-- session, profile and engine;
-- operation;
-- target, how it was resolved, and p;
+The host's hash-chained NDJSON audit gets one record per browser request and one per dispatched action:
+- caller (client key), session (id hash), task label, profile and engine;
+- operation, plan request id, step and action number;
+- target, how it was chosen (`ref` or `model`), and each head's p;
+- risk p, and the confirmation id when one was used;
 - origin and path (no query);
-- expectation kind and verdict;
-- outcome;
-- request id, step, and the parent process id or turn id.
+- check kind and the step's outcome (`checked`, `model_assessed`, `already_held`, `dispatched`, stop code);
+- dispatch state (`sent`, `refused`, `unknown`);
+- `shared_site`, reservation and `step_not_allowed` events;
+- the turn id or parent process id.
 
-**Never written:** page text, field values, typed text (`type` records length and sha256), screenshots, vault values, codes or seeds.
+**Never written:** page text, field values, typed text (`type` records length and sha256), screenshots, vault values, codes, seeds, or session ids (only their hash). Page lines and screenshots live only in the session's trail bundle (§6.7).
 
 Additions:
 - **Fills:** item, both origins, outcome, and `agent_code_before_fill`.
@@ -268,7 +620,10 @@ Additions:
   - Camoufox and its Node runtime only with `--with-camoufox`.
 - The Pi uses CfT's `linux-arm64` build (per the platform metadata checked on 2026-10-19).
 - The Rust driver and core live in the latch workspace on the existing CI. The Camoufox helper is a small Node package beside it, with a lockfile.
-- A `latch browser` agent guide ships in the repo, and `latch browser --help` points to it. Its examples lead with step lists and expectations.
+- A `latch browser` agent guide ships in the repo, and `latch browser --help` points to it.
+  - Its examples lead with the plan command and typed checks.
+  - It explains each stop code and the move that follows it.
+  - It keeps `act` for confirmations and repairs.
 
 ## 13. Testing (chef, 2026-10-19)
 
@@ -279,6 +634,24 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
 - **Security, where simple:** local pages adapted from WASP/AgentDojo (an injected post trying to leak a made-up canary to another local origin), SCAM (a lookalike login: no vault release, nothing reaches the "attacker" origin) and ST-WebAgentBench ("draft, don't send": zero sends).
 - **latch's own promises:** a vault login with a handoff; the pause holding through a fill and its cleanup.
 - **Consumer-site matrix (the bake-off's core):** for each engine (CfT; Camoufox once B8 lands), each site: does the home page load, can the agent search/browse logged out, does the login page load, and is the agent challenged or blocked (and where). Starting list: DoorDash, Costco, Redfin, plus a dozen common consumer sites (shopping, food delivery, travel, real estate, banking login pages). Logged-out only, except sites where the chef has added his own login to the vault and asked for it. Result: a table of site × engine → works / challenged / blocked, with screenshots, repeated on at least two days. This measures blocking; it does not build evasion.
+- **Plan suite (local fixtures; development data, §6.3).** A fictional shop and forms, scored by independent, identity-sensitive checkers (the right item, the right story, not just the right page type). It covers:
+  - navigation and search;
+  - a relational target ("the cheapest");
+  - a dropdown already on the right option;
+  - a cookie modal;
+  - a same-URL multi-stage wizard;
+  - an out-of-stock item;
+  - a misleading success banner with the wrong item;
+  - needed text that wasn't supplied;
+  - **one note field with one unrelated supplied value**, such as a street address given as a fact;
+  - a value containing ` -> `;
+  - a sign-in wall in the middle of a step (identifier-first);
+  - a card form, reached without a mapping and then filled with one;
+  - checkout with "Place order" (confirmed, and repriced before confirmation);
+  - Enter in a form that submits an order;
+  - a delete-account button;
+  - a CAPTCHA stand-in.
+- **Agent adoption test:** B9, on held-out cases.
 
 ## 14. Open questions
 
@@ -287,9 +660,24 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
 3. **CfT on the Pi.** If pinned `linux-arm64` CfT fails there, the fallback is Debian Chromium on the same driver, as a separate engine package.
 4. **Approvals.** Answered for now: none; a generic approval flow comes later (not Plow's payment-approval flow), and confirmations go back to the agent.
 5. **Which decision model, and its privacy terms,** before real accounts. **And how hosts reach it without a key: via Plow inference (chef's lean, 2026-10-19), which needs a Plow API route — B5b.**
-6. **Calibration.** The thresholds (0.8, 0.9), the 10-step cap and the idle timeout get calibrated during the POC.
+6. **Calibration.**
+   - The starting values: status ≥ 0.7 with an evidence line, target ≥ 0.5, risk ≥ 0.5; 8 actions per step, 30 per plan, 120 s; the 7-day trail.
+   - They are frozen for each evaluation.
+   - A change informed by evaluation results turns those cases into development data, and the next evaluation needs a fresh, disjoint held-out set (§6.3).
 7. **Block rates.** The headed engines' block rates come from one IP in one run. Re-measure with complete drivers.
 8. **What the logs show.** Do the `eval` workaround tags and `unsupported_capability` hits justify raw commands, or new ordinary commands?
+9. **The plan command's name.** Pending the chef, who asked "why not `steps`?". A rename touches only its §3 entry and the §5 table.
+10. **The trail's retention and size.** 7 days and per-action screenshots are trial values.
+
+## 15. Later
+
+- **Coordinate clicks (`act click --at X,Y`).** They come back only with a binding equal to a ref's:
+  - at decision time, latch hit-tests the point and records the element there, its document and its reviewed context;
+  - it re-checks that the same element is still under the point at dispatch, and refuses with `stale_snapshot` if not;
+  - the risk decision and confirmation work as for that element (§6.5);
+  - they obey the step policy.
+- **Runner-issued task identity.** A task identity the agent runner issues and the gate verifies, so ownership no longer rests on one client key plus a session id held by convention.
+- **Cross-host site reservations.** An owner-wide reservation record through a Plow API route, so tasks on two serving hosts can't both take the same site. Until then, `--reserve-site` is host-local.
 
 ## Chunks
 
@@ -304,6 +692,13 @@ latch is primarily a consumer agent's browser, so testing answers two questions:
 - **Global installs** are avoided; any unavoidable one is appended as a new row to `/Users/plucas/.claude-kitchen/plow-latch-cli/notes/global-installs.md`.
 - **NEVER git push or open a PR.** Commit locally on `latch-cli`, one or more commits per chunk.
 - **Stop and report** (`NEEDS_CONTEXT`) rather than weaken a rule above to make a chunk pass. §14 open question 1 is the known one: on macOS it is settled (engines run outside latch's Seatbelt, §4); on Linux, if an engine's own sandbox can't run inside bubblewrap, stop for the chef. Never disable an engine's own sandbox.
+- **Tests never use the chef's serving host `mac`, or its profiles.** Cooks use their own dev host (`mac-kitchen`), test profiles and test sessions.
+- **Development and held-out cases are kept apart** (§6.3).
+  - A chunk may set starting values on development cases.
+  - Nothing is tuned against held-out cases.
+  - Cases that informed a change are development data from then on.
+- **No generative text model, and no keyword stand-in for the risk decision, in any chunk.** Every typed string comes from a plan's values or facts, or from the vault.
+- **Nothing activates a browser window except `handoff`.**
 
 ### Chunk B1: CfT launches from the macOS host with its own sandbox on
 Implements: §4 (browser worker, plugins, profiles), §8, §10 launch · close and screenshot, §12 (CfT pin and install) — macOS only; answers §14 question 1 for macOS.
@@ -330,32 +725,227 @@ Implements: §9's macOS Keychain half of the custody key and import from the Lat
 Interfaces: consumes B4 · produces a signed, notarized `latch` in a minimal app bundle.
 Done when: the bundled `latch` is signed and notarized; the custody key is split between the state directory and a data-protection Keychain item ("this device only"); a copy of the state directory on another account can't open the vault; a sandboxed `exec` worker can't obtain the Keychain half (including by running the signed `latch`); `latch vault import --from-latch-app` imports a throwaway Latch-app vault through the picker without writing to the app's files.
 
-### Chunk B5: several steps per turn and the decision model
-Implements: §6 (targets, expectations, step lists, risky clicks, swappable model interface with jev, no-key behaviour, metric fields).
-Interfaces: consumes B2 (B4 for the login-wall stop) · produces descriptions, expectations, `act --steps`, `find "<description>"`, `wait --for`, and the decision-model interface.
-Done when: client-generated request ids and `act --history R` return the per-step trace after a reply is dropped mid-list (forced in a test); on a local multi-page test site, one `act --steps` request completes a ≥ 6-action task with descriptions and typed + sentence expectations; a staged surprise stops the list with a compact element list and a trace; a vague expectation is refused; a "Place order" click by description on an unseen page stops with `confirm_target`; with no key, descriptions resolve by exact name only and sentences return `assist_off`; the audit carries the turn/parent-pid fields and model-call metadata without content.
+### Chunk B4c: vault edit
+- **Implements:** §9's `latch vault edit`.
+- **Interfaces:**
+  - consumes B4's store (`update` at a revision), owner-device gate, prompts and classifier;
+  - produces `edit` for owner devices.
+- **Done when:**
+  - **What can change:**
+    - an owner device changes an item's title, sites and non-secret fields;
+    - it replaces a login's password and authenticator key through no-echo prompts;
+    - a secret can't be given on the command line or in the environment;
+    - an edit against an older revision returns `stale_revision`, and the item's kind can't change;
+  - **The new value is used:** a `login` after the edit fills the new value on the practice site;
+  - **Agents can't edit:** an agent peer gets exit 4;
+  - **The audit** records the item, the names of the changed fields and the new revision, and no value appears in any result, audit record or log.
+
+### Chunk B5: the shared step contract (reworks the step-list B5 at `7eae741ff`)
+- **Implements:**
+  - §5's narrowed `act`, the removed forms, and the results and exit table;
+  - §6.1 literal steps (including `fill`), checks and the step policy;
+  - §6.5 confirmations (clicks, Enter, secret fills; `model_unavailable`);
+  - §6.6 model interface;
+  - §6.7 history and journal;
+  - §7's confirm-before-release for the standalone `fill`;
+  - §11's new records.
+- **Interfaces:**
+  - consumes B2 and B4, and B5's existing provider interface, answer validation, risk question, request ids, typed checks and dispatch at `7eae741ff`;
+  - produces the literal-step executor path, typed checks, confirmations, the step policy, the durable journal and the result shape that B5c, B5d and B2b build on.
+- **Done when:**
+  - **Literal steps take effect:**
+    - single `act` steps click, type and select with a real effect (`select` changes the option, shown by the field state);
+    - each runs its check: a failing check returns `check_not_met`; no check returns `dispatched`, not `reached`.
+  - **Typed checks match by component:**
+    - `origin`, `path`, `query`, `text`, `field`, `download` and `new text` behave as §6.1 says;
+    - `path: checkout` doesn't match `https://checkout.invalid/login` or `/login?next=checkout.html`.
+  - **Confirmation is enforced:**
+    - a literal click on "Place order" stops `confirm_needed` with the reviewed context;
+    - `act click eN` on the returned ref confirms it once, and a second use is refused;
+    - after the fixture's total changes from $10 to $100 (same ref, URL and button name), the confirmation is refused `confirm_stale`;
+    - Enter in the checkout form's field stops `confirm_needed`;
+    - a standalone `fill … --press` of a card stops `confirm_needed` before any value is released, and its confirmation fills, presses and cleans up.
+  - **No model, no pass:**
+    - with the decision model unreachable, a literal click and an Enter stop `model_unavailable` with nothing sent;
+    - a confirmation issued before the outage still dispatches;
+    - literal `type` and `select` still work.
+  - **The step policy is enforced in the dispatcher:**
+    - under `none` and under `stop`, a forbidden literal step is refused `step_not_allowed` through each route: `act`, the short form and `--plan-file`;
+    - a confirmation still works under both.
+  - **The journal survives a crash:**
+    - a host killed mid-plan and restarted reports the in-flight action as `unknown` in the plan command's `--history R`;
+    - a dropped reply is resolved by request id with no second dispatch.
+  - **The removed forms are usage errors,** `act click --at` included.
+  - **The audit** carries the new fields, and no page text or session id.
 
 ### Chunk B5b: decision model through Plow inference
 Implements: §6 product path — the host calls the decision model through a Plow inference route with its own Plow credential; no model key on hosts. Blocked on a Plow API route (to add to the pending Plow API PR alongside the offline and take-over routes).
 Interfaces: consumes B5's provider interface · produces a `plow` provider and removes the need for a host key file.
-Done when: with no key file on the host, B5's Done-when tasks pass using the `plow` provider against a dev Plow stack; the host's audit records provider `plow` and the model; the key file path is only used when explicitly configured for development.
+Done when:
+- with no key file on the host, B5's and B5c's Done-when tasks pass using the `plow` provider against a dev Plow stack;
+- with the Plow route made unreachable, a click stops `model_unavailable` with nothing sent;
+- the host's audit records provider `plow` and the model;
+- the key file path is used only when explicitly configured for development.
+
+### Chunk B5c: plans and the decision loop
+- **Implements:**
+  - the plan command with the short form, `--plan-file`, `--dry-run`, `--output` and `--history R [--shot N --output F]`;
+  - §6.1–§6.4 (operation contract with `fill` → `needs_fields`), and the trail bundle in §6.7;
+  - §6.8 metric fields;
+  - the §13 plan suite.
+- **Interfaces:**
+  - consumes B5 and the page reader;
+  - produces instruction steps, the per-pass decision request, completion and stop rules, and per-action screenshot handles that clients on any machine can fetch.
+- **Done when:** with the frozen starting values, on the Mac dev host, against the §13 plan suite (development cases), in two runs with jev:
+  - every plan ends with its listed outcome;
+  - every `reached` passes its identity-sensitive checker, with **zero false `reached`**;
+  - the wrong-item banner never reaches;
+  - **The reader shows what the model needs:**
+    - with a cookie modal open, covered elements are not offered and the plan goes through;
+    - a dropdown already on the requested option ends `already_held` with no action;
+    - a flash message from an earlier step never makes a later step `already_held`;
+  - **Repeats and limits behave:**
+    - the same-URL wizard completes through repeated "Next";
+    - a no-op click is refused with `repeat`;
+    - the out-of-stock step stops `blocked`, and the missing note stops `needs_text`;
+  - **Text and fields are never guessed:**
+    - with one note field and one unrelated supplied value (a street address fact), a step asking for a note that wasn't supplied stops `needs_text` and types nothing;
+    - an instruction step reaching the card form stops `needs_fields` with the form's candidate refs;
+  - **Values and URLs are literal:**
+    - `add the note "A -> B"` types `A -> B`, shown in `--dry-run` and by the field;
+    - `navigate` reaches only a quoted URL;
+  - **Results are labelled honestly:**
+    - a final step judged only by the model returns `review: true`;
+    - **from another machine:** from a client on a different machine than the host (the Pi client against `mac-kitchen`, or the reverse):
+      - a plan runs;
+      - the plan command's `--output F` writes the final screenshot;
+      - `--history R --shot N --output F` fetches an action's screenshot;
+      - both arrive with sha256 matching the host's copy;
+      - a grep of the plan's JSON result finds no host path (the host's state directory never appears);
+    - with no model, instruction steps return `model_unavailable`;
+  - **Measurement:** the report lists, per plan, actions, model calls, the model's total time and the cost, and keeps every run.
 
 ### Chunk B6: handoff and screenless hosts
-Implements: §7 handoff (Mac window, dashboard notice, `handoff done`, refs invalidated, `no_screen` fast fail), §8 Xvfb displays.
+Implements: §7 handoff (one session's window to the front, dashboard notice, `handoff done`, that session's refs invalidated, `no_screen` fast fail), and §8's per-runtime Xvfb display.
 Interfaces: consumes B2, B4 · produces the owner handoff flow.
 Done when: on the Mac a handoff pauses the agent, the dashboard shows it, `latch browser handoff done` resumes it and old refs are refused; with the display check forced to "no screen" in a host test, the call returns `needs_owner` with `no_screen` at once (the real screenless check is B7's).
 
+### Chunk B5d: sign-in, fills and handoff inside plans
+- **Implements:**
+  - §7 inside plans: the `login` and `fill_code` operations, literal `fill` steps with confirm-before-release, suppressed secret phases, and `needs_owner` → `handoff` → new plan;
+  - the browser-wide pause across sessions;
+  - popups that a step's click opens.
+- **Interfaces:**
+  - consumes B4's `login`/`fill`/`fill-code`, B6's handoff, B5 and B5c;
+  - produces sign-in and card fills inside plans.
+- **Done when:**
+  - **Sign-in inside plans:**
+    - a plan step `sign in` passes on the identifier-first local login as one `login` operation, and on a one-page practice login;
+    - a sign-in wall met in the middle of `proceed to checkout` is signed through, and the plan continues to checkout;
+    - a TOTP fixture fills through `fill_code`;
+  - **Card fills:**
+    - a plan whose instruction step reaches the card form stops `needs_fields`;
+    - a following plan with the literal `fill --item vN --field … --press eN` stops `confirm_needed` before any value is released, and the confirmation fills, presses and cleans up as one step;
+  - **Owner handoff:** a CAPTCHA stand-in stops `needs_owner`, `handoff` brings only that session's window forward, and a new plan continues afterwards;
+  - **No secret reaches the agent:**
+    - no observation or screenshot is taken during a fill;
+    - the trail shows the suppressed-phase marker;
+    - a grep of results, trail, audit and logs finds no value;
+  - **Popups:** a popup opened by a step's click is followed, belongs to the session, and opens in the background.
+
+### Chunk B2b: task sessions on a shared profile
+- **Implements:**
+  - §3's runtime and sessions, and §4's per-profile worker (Linux scratch included);
+  - §5.1–§5.3;
+  - §7's browser-wide pause and per-session handoff;
+  - §8's focus rule and the per-runtime display;
+  - §10's ownership, focus and conformance rows;
+  - the session fields in §11.
+- **Interfaces:**
+  - consumes B2, B4, B6 and the landed session guard (`f092f67aa`..`a9714d692`);
+  - produces profile runtimes, capability session ids, download and dialog attribution, `shared_site` and `--reserve-site`.
+- **Done when:**
+  - **Sessions are separate:**
+    - two clients with different keys each `open` the same profile and get distinct sessions and windows in one runtime;
+    - `profile_busy` no longer occurs;
+    - a cookie set in one is seen in the other;
+    - each sees only its own tabs, popups, downloads (two at once with the same file name, assigned by frame and guid) and dialogs;
+    - closing one session leaves the other working;
+  - **The id is the capability:**
+    - every command on another key's session, even with the right id, returns `not_owner`;
+    - **two tasks under the same client key** each `open` a session;
+    - task B, without A's id, can't act on, observe or close A's session (`no_such_session`);
+    - `sessions` shows neither id;
+    - the audit holds only id hashes;
+  - **Plans don't block each other:** two plans run at the same time on different sites without waiting on each other;
+  - **The pause:**
+    - a fill in one session returns `session_paused` to every session until cleanup is confirmed;
+    - a plan elsewhere waits, then observes again;
+    - a handoff fronts only its own window, and the others go on after cleanup;
+  - **The same site:**
+    - `shared_site` appears when both sessions act on the same site;
+    - with `--reserve-site`, the other session's action there gets `site_busy` before anything is sent, through a stop and a confirmation, until `close`;
+  - **Headed focus:** with another app frontmost, nothing but `handoff` activates the browser;
+  - **The audit** carries caller, session hash and task label.
+
 ### Chunk B7: Linux and the Pi
-Implements: §8 Xvfb per session, §12 Linux install (CfT linux-arm64, Xvfb), the bubblewrap browser worker; answers §14 questions 1 and 3 for Linux.
-Interfaces: consumes B1–B6 · produces a working Linux/Pi browser host.
-Done when: on the Pi dev host (`~/latch-dev/`), CfT runs headed on a private Xvfb display inside bubblewrap with Chrome's sandbox on; a client on the Mac opens a public site, observes, acts, and receives a screenshot from the Pi; a vault login works there with the 0600 key; `handoff` returns `needs_owner` with `no_screen` at once; the exec-side port and key checks pass. If CfT linux-arm64 fails, stop and report before switching to Debian Chromium.
+Implements: §8's one Xvfb display per profile runtime; §12 Linux install (CfT linux-arm64, Xvfb); the bubblewrap browser worker per profile runtime. Answers §14 questions 1 and 3 for Linux.
+Interfaces: consumes B1–B6 and B2b · produces a working Linux/Pi browser host.
+Done when: on the Pi dev host (`~/latch-dev/`), CfT runs headed on a private Xvfb display inside bubblewrap with Chrome's sandbox on; a client on the Mac opens a public site, observes, acts, and receives a screenshot from the Pi; a vault login works there with the 0600 key; `handoff` returns `needs_owner` with `no_screen` at once; the exec-side port and key checks pass. On the Pi, two sessions on one profile share one runtime and one display; closing one leaves the other's browser and display working; a session on a second profile gets its own runtime and display. If CfT linux-arm64 fails, stop and report before switching to Debian Chromium.
 
 ### Chunk B8: Camoufox as the second engine
 Implements: §10 Camoufox engine (Node helper, pinned runtime, JSON-lines driver ops), `install.sh --with-camoufox`; the conformance suite as a reusable runner for any driver.
-Interfaces: consumes the driver contract from B1–B6 · produces the second engine and the conformance runner the bake-off uses.
-Done when: the conformance runner passes every test for CfT, and every non-fill test for Camoufox on macOS (if Camoufox fails only fill tests, `login`/`fill`/`fill-code` are disabled for it and the failures are listed; any other failure means not done); the B2 and B5 Done-when tasks pass unchanged with `--profile` bound to a Camoufox profile.
+Interfaces: consumes the driver contract from B1–B6, B2b and B5c · produces the second engine and the conformance runner the bake-off uses.
+Done when: the conformance runner passes every test for CfT, and every non-fill test for Camoufox on macOS (if Camoufox fails only fill tests, `login`/`fill`/`fill-code` are disabled for it and the failures are listed; any other failure means not done); the B2, B5 and B5c Done-when tasks pass unchanged with `--profile` bound to a Camoufox profile, the headed focus test included.
 
-### Chunk B9: agent guide and an end-to-end run
-Implements: §12 agent guide and `latch browser --help`; §6 metric reporting.
-Interfaces: consumes B1–B8 · produces the guide agents read and the first actions-per-turn numbers.
-Done when: (a) a fresh Claude Code agent, given only the guide, does three tasks on public/test sites through a Mac host (one needing a vault login, one multi-page with a download) twice: once with the full commands and once restricted to refs-only (no descriptions, sentences or step lists); a small report from the audit gives, per task and arm, success, actions per request, actions per agent turn (by `--turn`), and any `eval`/`unsupported_capability` escapes. (b) The §13 test set runs from one command against a host and engine, writes a report (task → pass/fail with evidence; security cases → outcome), and the consumer-site matrix is filled for CfT and Camoufox on the Mac (two runs, different days), with screenshots.
+### Chunk B9: agent guide, agent adoption test, and the §13 set
+- **Implements:**
+  - §12's agent guide and `latch browser --help`;
+  - §6.8 metric reporting;
+  - §13;
+  - the step-policy decision (§6.1).
+- **Interfaces:**
+  - consumes B1–B8, B5c, B5d and B2b;
+  - produces the guide, and the shipped step policy.
+- **Done when (a), the agent adoption test:**
+  - **Held-out suite:** 16 fixed tasks, disjoint from B5c's plan suite in tasks, page layouts and sites:
+    - 12 on new local fixtures, at least 3 of them prelabelled as needing a repair, plus traps (wrong item, repriced confirmation);
+    - 4 read-only public tasks;
+    - each scored by an independent, identity-sensitive checker.
+  - **Arms,** set by the host's step policy (§6.1) and enforced in the dispatcher for every route:
+    - **A:** instruction steps off; literal steps on refs from any page; `eval` (the baseline);
+    - **B:** plans and confirmations; literal steps `none`;
+    - **C:** plans and confirmations; literal steps `stop`;
+    - **D:** plans and confirmations; literal steps `any`.
+
+    `eval` is available in every arm.
+  - **Runs:**
+    - two caller integrations (Claude Code and Codex), each a fresh agent given only the guide;
+    - two runs per task, arm and caller;
+    - turns grouped by turn id.
+  - **The report** keeps every attempt, and gives per task and arm:
+    - success;
+    - caller invocations and turns;
+    - plan share;
+    - confirmations and how they were answered;
+    - repairs, and `step_not_allowed` refusals;
+    - `eval` escapes;
+    - stops by code;
+    - wrong targets;
+    - model time and cost.
+  - **Common gates, for B, C and D:**
+    - **success:** no more than 5 points below A;
+    - **zero:** false `reached`, confirmation violations, and actions repeated after an `unknown`;
+    - **at least 85%** of ordinary actions inside plans;
+    - **at most 10%** `eval` escapes;
+    - **at least 30%** fewer caller invocations than A on multi-action tasks.
+  - **Repair gate, for C and D only:** at least 80% of the prelabelled repair cases solved through literal repair steps.
+  - **Decision:**
+    - **Plan-only.** If B passes the common gates, and neither C nor D solves more of the prelabelled repair cases than B, ship policy `none`: literal repair is dropped, confirmations stay.
+    - **Repair.** If C or D passes both the common gates and the repair gate, and solves more repair cases than B, ship the narrower passing policy: `stop` before `any`.
+    - **Bypass.** An arm that falls below the plan-share gate (agents collapsing into literal steps) is not shipped.
+    - **No arm.** If no arm passes the common gates, jev is no longer the primary executor.
+  - **A result that changes wording, thresholds or budgets** makes this suite development data. A later evaluation claim needs a fresh held-out suite (§6.3).
+- **Done when (b), the §13 set:**
+  - it runs from one command against a host and engine, and writes a report (task → pass/fail with evidence; security cases → outcome);
+  - the consumer-site matrix is filled for CfT and Camoufox on the Mac (two runs, on different days), with screenshots, plus, for each site, a logged-out plan (a search through the plan command) with its outcome.
