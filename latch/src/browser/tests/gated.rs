@@ -34,6 +34,7 @@ conformance!(
     clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing,
     an_owner_stop_refuses_the_next_plan,
     a_fill_inside_a_plan_is_judged_as_a_fill,
+    only_plans_and_fills_are_already_done,
 );
 
 /// The owner's chat, oldest message first; a test may add to it between
@@ -661,6 +662,69 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         "{values}"
     );
     host.browsers.close_all().await;
+}
+
+/// What the judge is shown as already done in its latest state.
+fn already_done(judge: &Judge) -> Value {
+    judge.shown.lock().unwrap().last().unwrap()["already_done_by_agent"].clone()
+}
+
+async fn only_plans_and_fills_are_already_done(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (site, _hits) = serve_site();
+    let chat = vec![message(
+        "m1",
+        true,
+        "download the report as often as you like",
+        5,
+    )];
+    let judge = Judge::new(|_| COVERED);
+    let host = Host::start(&state, &site, &judge, chat);
+    let files = format!("{site}/files.html");
+    let nothing = json!("(nothing since this host started)");
+
+    let (page, _) = host
+        .agent("open", "default", json!({"url": files}), None)
+        .await;
+    let page = page.unwrap();
+    let id = page["session"].as_str().unwrap().to_string();
+    let link = find(&page, "link", "Download the report");
+    host.look("do", &id, act(&format!("click {link}"))).await;
+    let mut listed = Value::Null;
+    for _ in 0..40 {
+        listed = host.look("downloads", &id, json!({})).await;
+        if listed["downloads"][0]["state"] == "completed" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let download = json!({"download": listed["downloads"][0]["download"]});
+
+    // The open, and a download, are not listed when the download repeats.
+    for _ in 0..2 {
+        let (got, _) = host
+            .agent("download_get", &id, download.clone(), None)
+            .await;
+        got.unwrap();
+        assert_eq!(judge.last_action()["kind"], "download_file");
+        assert_eq!(already_done(&judge), nothing);
+    }
+
+    // A plan is: the next judgment sees it.
+    let (planned, _) = host.agent("do", &id, two_clicks(&link), None).await;
+    planned.unwrap();
+    assert_eq!(already_done(&judge), nothing);
+    let (got, _) = host.agent("download_get", &id, download, None).await;
+    got.unwrap();
+    let done = already_done(&judge)["since this host started"].clone();
+    let kinds: Vec<&Value> = done
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| &d["what"]["kind"])
+        .collect();
+    assert_eq!(kinds, [&json!("browser_plan")], "{done}");
+    host.look("close", &id, json!({})).await;
 }
 
 async fn clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing(engine: &str) {
