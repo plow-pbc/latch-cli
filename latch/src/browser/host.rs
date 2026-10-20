@@ -673,7 +673,7 @@ pub(super) async fn call(
         "fill" => fill(browsers, &entry, name, caller, args, audit)
             .await
             .map(|result| (result, None)),
-        "do" => super::steps::run(browsers, &entry, name, key, args, audit)
+        "do" => super::steps::run(browsers, &entry, name, key, caller.gate, args, audit)
             .await
             .map(|result| (result, None)),
         "handoff" => super::handoff::run(browsers, &entry, args, audit)

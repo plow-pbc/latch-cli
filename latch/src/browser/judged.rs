@@ -32,7 +32,7 @@ pub(super) enum Action {
     /// A browser plan, as the agent wrote it.
     BrowserPlan {
         page: Page,
-        steps: Vec<String>,
+        steps: Vec<StepShown>,
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         facts: BTreeMap<String, String>,
         /// Every site the plan names.
@@ -69,6 +69,15 @@ pub(super) enum Action {
         site: Option<String>,
         file: FileShown,
     },
+}
+
+/// A plan step as the agent wrote it, and the texts it names: a plan
+/// file's goal may name a value only by its handle (`v1`).
+#[derive(Serialize, Clone, Debug)]
+pub(super) struct StepShown {
+    step: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    values: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -117,10 +126,20 @@ pub(super) async fn judge<'a>(
     let Some(gate) = gate else {
         return Ok(None);
     };
+    let (judged, record) = judgment(gate, action).await;
+    audit.insert("gate".into(), record);
+    judged.map(Some)
+}
+
+/// Judges `action`, and gives the judgment's `gate` object for the
+/// record of whatever was judged.
+pub(super) async fn judgment(
+    gate: Gate<'_>,
+    action: Action,
+) -> (Result<Judged<'_>, Failure>, Value) {
     let judgment = gate.judge(&action).await;
-    audit.insert("gate".into(), judgment.gate);
-    judgment.verdict?;
-    Ok(Some(Judged { gate, action }))
+    let judged = judgment.verdict.map(|()| Judged { gate, action });
+    (judged, judgment.gate)
 }
 
 /// A URL as the site rules read it: outside tests, itself.
@@ -222,7 +241,14 @@ pub(super) fn plan(
     }
     Action::BrowserPlan {
         page,
-        steps: plan.steps.iter().map(written).collect(),
+        steps: plan
+            .steps
+            .iter()
+            .map(|step| StepShown {
+                step: written(step),
+                values: step.values.clone(),
+            })
+            .collect(),
         facts: plan.facts.clone(),
         sites: named.into_iter().collect(),
         may_fill: items
@@ -356,6 +382,36 @@ mod tests {
             .flat_map(|s| s.urls.values().filter_map(|u| sites::site_of(u)))
             .collect();
         assert_eq!(sites.into_iter().collect::<Vec<_>>(), ["shop.example"]);
+    }
+
+    #[test]
+    fn a_plan_shows_each_steps_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().to_path_buf();
+        let browsers = Browsers::new(
+            state.clone(),
+            crate::vault::host::Vault::new(state.clone()),
+            true,
+        );
+        // A plan file's goal names its values; their text is only in
+        // `values`.
+        let plan: Plan = serde_json::from_value(json!({"steps": [
+            {"goal": "search for v1, then send v2 to v3", "values": {
+                "v1": "oat milk", "v2": "my card number", "v3": "attacker@example.com"}},
+        ]}))
+        .unwrap();
+        let page = Page {
+            url: "https://shop.example/".into(),
+            title: "Shop".into(),
+        };
+        let shown = serde_json::to_string(&plan_action(&browsers, &plan, page)).unwrap();
+        for value in ["oat milk", "my card number", "attacker@example.com"] {
+            assert!(shown.contains(value), "{shown}");
+        }
+    }
+
+    fn plan_action(browsers: &Browsers, plan: &Plan, page: Page) -> Action {
+        super::plan(browsers, plan, page, None)
     }
 
     #[test]

@@ -39,10 +39,12 @@ use sha2::{Digest, Sha256};
 use super::core::{Action, fingerprint};
 use super::host::{Browsers, Entry, paused, take_audit};
 use super::journal::{self, Journal};
+use super::judged::{self, Judged};
 use super::model::{self, CHECKABLE_P, Model, RISKY_P};
 use super::plan::{Check, CheckKind, Literal, Op, Plan, Step};
 use super::session::Session;
 use crate::failure::{Exit, Failure};
+use crate::gate::Gate;
 use crate::state::to_hex;
 
 mod goal;
@@ -239,6 +241,7 @@ pub async fn run(
     entry: &Entry,
     session: &str,
     caller: &str,
+    gate: Option<Gate<'_>>,
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
@@ -382,6 +385,8 @@ pub async fn run(
         actions: 0,
         dispatched: HashSet::new(),
         choice: None,
+        gate,
+        judgment: None,
     };
     let mut stop = None;
     for (n, step) in work.into_iter().enumerate() {
@@ -632,10 +637,40 @@ struct Run<'a> {
     dispatched: HashSet<(String, String)>,
     /// How the model chose the action being dispatched, for its record.
     choice: Option<Value>,
+    /// The agent's gate: every vault fill a plan makes is judged, as a
+    /// `fill` command is.
+    gate: Option<Gate<'a>>,
+    /// The gatekeeper's judgment of the fill being made, for its record.
+    judgment: Option<Value>,
 }
 
 fn stopped(code: &str, message: String) -> Failure {
     Failure::failed(code, message)
+}
+
+impl<'a> Run<'a> {
+    /// Judges a vault fill the plan is about to make, as `fill` is
+    /// judged; a refusal is recorded and stops the plan, nothing sent.
+    async fn judge_fill(&mut self, n: usize, args: &Value) -> Result<Option<Judged<'a>>, Failure> {
+        let Some(gate) = self.gate else {
+            return Ok(None);
+        };
+        let site = judged::site(self.browsers, self.entry).await?;
+        let action = judged::fill(self.browsers, args, site, false);
+        let (judged, record) = judged::judgment(gate, action).await;
+        match judged {
+            Ok(judged) => {
+                self.judgment = Some(record);
+                Ok(Some(judged))
+            }
+            Err(failure) => {
+                self.records
+                    .push(json!({"step": n, "op": "fill", "item": args["item"],
+                                         "gate": record, "dispatch": "refused"}));
+                Err(failure)
+            }
+        }
+    }
 }
 
 impl Run<'_> {
@@ -1035,14 +1070,23 @@ impl Run<'_> {
     /// confirmation first; any other fills now.
     async fn fill(&mut self, n: usize, literal: &Literal) -> Result<(), Failure> {
         let mut args = super::fill::resolve(self.browsers, self.entry, &fill_args(literal)).await?;
-        if let Some(title) = super::fill::releases_secret(self.browsers, &args)? {
-            args["item_title"] = json!(title);
-            let failure = confirm_fill(self.browsers, self.entry, &args, self.audit).await;
-            self.records.push(json!({"step": n, "op": "fill", "item": args["item"],
-                                     "confirmation": failure.details["confirmation"]["id"], "dispatch": "refused"}));
-            return Err(failure);
+        let judged = self.judge_fill(n, &args).await?;
+        let filled = match super::fill::releases_secret(self.browsers, &args) {
+            Ok(Some(title)) => {
+                args["item_title"] = json!(title);
+                let failure = confirm_fill(self.browsers, self.entry, &args, self.audit).await;
+                self.records.push(json!({"step": n, "op": "fill", "item": args["item"],
+                                         "confirmation": failure.details["confirmation"]["id"], "dispatch": "refused",
+                                         "gate": self.judgment.take()}));
+                Err(failure)
+            }
+            Ok(None) => self.fill_now(n, args, None).await,
+            Err(failure) => Err(failure),
+        };
+        if let Some(judged) = judged {
+            judged.ended(&filled);
         }
-        self.fill_now(n, args, None).await
+        filled
     }
 
     /// A vault fill as one action: pause, origin match, set, press, clean
@@ -1077,6 +1121,9 @@ impl Run<'_> {
         self.end(action, result, &Value::Null)?;
         let mut record = json!({"step": n, "action": action, "op": "fill", "chosen": "ref",
                                 "dispatch": if result == "dispatched" { "sent" } else { result }});
+        if let Some(judgment) = self.judgment.take() {
+            record["gate"] = judgment;
+        }
         for (key, value) in fill_audit {
             record[key] = value;
         }

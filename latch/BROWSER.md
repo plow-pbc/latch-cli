@@ -231,13 +231,15 @@ never judged. Judged, each before anything of it reaches the page:
 
 - opening a site this session has not been judged for: `open URL`, or
   `tab new URL` on another site;
-- each plan (`do`): its steps as written, the page it starts on (URL and
-  title), the sites it names and the vault items it may fill (kind and
-  title). A plan of one click, keypress or scroll, as `act` sends, is not
-  a plan;
-- every `fill`, and every `do --confirm` that releases a card or
+- each plan (`do`): its steps as written with each step's values, the
+  page it starts on (URL and title), the sites it names and the vault
+  items it may fill (kind and title). A plan of one click, keypress or
+  scroll, as `act` sends, is not a plan;
+- every vault fill: a `fill`, each fill a plan makes (a literal fill step
+  or one a goal chose), and every `do --confirm` that releases a card or
   identity: the item's kind and title, the fields and the site, never a
-  value;
+  value. A refused fill in a plan stops the plan at that step, the reason
+  in its `stop`;
 - every `eval` (its script), upload and download (the file's name and
   size).
 

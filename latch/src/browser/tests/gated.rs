@@ -33,6 +33,7 @@ conformance!(
     a_refused_command_sends_nothing_to_the_page,
     clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing,
     an_owner_stop_refuses_the_next_plan,
+    a_fill_inside_a_plan_is_judged_as_a_fill,
 );
 
 /// The owner's chat, oldest message first; a test may add to it between
@@ -430,7 +431,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     assert_eq!(shown["kind"], "browser_plan");
     assert_eq!(
         shown["steps"],
-        json!([format!("click {link}"), format!("click {link}")])
+        json!([{"step": format!("click {link}")}, {"step": format!("click {link}")}])
     );
     assert_eq!(shown["page"]["title"], "latch files test");
 
@@ -770,6 +771,97 @@ async fn an_owner_stop_refuses_the_next_plan(engine: &str) {
     host.browsers.close_all().await;
 }
 
+async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (site, hits) = serve_site();
+    let chat = vec![message("m1", true, "sign in to my test site", 10)];
+    // Plans and sites are covered; a vault fill is not.
+    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
+        Some("vault_fill") => NOT_COVERED,
+        _ => COVERED,
+    });
+    let host = Host::start(&state, &site, &judge, chat.clone());
+    let (page, _) = host
+        .agent(
+            "open",
+            "default",
+            json!({"url": format!("{site}/login.html")}),
+            None,
+        )
+        .await;
+    let page = page.unwrap();
+    let id = page["session"].as_str().unwrap().to_string();
+    let login = host
+        .browsers
+        .vault
+        .with(|store| {
+            store.add(Item {
+                id: String::new(),
+                revision: 0,
+                sites: vec!["shop.example".into()],
+                other_top_sites: vec![],
+                raw: Raw::from_labels(
+                    LOGIN,
+                    "Test site",
+                    &[
+                        ("username".into(), "morgan@example.com".into()),
+                        ("password".into(), PASSWORD.into()),
+                    ],
+                )
+                .unwrap(),
+            })
+        })
+        .unwrap();
+    let step = crate::browser::plan::short_step(&format!(
+        "fill --item {} --field username={} --field password={} --press {}",
+        login.item,
+        find(&page, "textbox", "Email"),
+        find(&page, "textbox", "Password"),
+        find(&page, "button", "Sign in"),
+    ))
+    .unwrap();
+    let plan = json!({
+        "request": "r-plan-fill",
+        "plan": crate::browser::plan::Plan { steps: vec![step], items: vec![login.item.clone()], ..Default::default() },
+    });
+    let (result, audit) = host.agent("do", &id, plan, None).await;
+    // The plan was judged and let through; its fill was judged and refused,
+    // which stops the plan at that step, the reason in its stop.
+    assert_eq!(audit["gate"]["verdict"], "allow");
+    let failure = result.unwrap_err();
+    assert_eq!(
+        (
+            failure.exit,
+            failure.code.as_str(),
+            &failure.details["stop"]["reason"]
+        ),
+        (Exit::Denied, "gatekeeper_denied", &json!("not_covered")),
+        "{failure:?}"
+    );
+    assert_eq!(judge.last_action()["kind"], "vault_fill");
+    let fill = audit["step_records"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|record| record["op"] == "fill")
+        .unwrap_or_else(|| panic!("no fill record in {audit:?}"));
+    assert_eq!(fill["gate"]["verdict"], "not_covered");
+    assert_eq!(fill["dispatch"], "refused");
+    let values = host
+        .look(
+            "eval",
+            &id,
+            json!({"script": "[...document.querySelectorAll('input')].map(i => i.value)"}),
+        )
+        .await;
+    assert_eq!(values["value"], json!(["", ""]));
+    assert!(
+        !fetched(&hits).contains(&"/welcome".to_string()),
+        "the form was sent"
+    );
+    host.browsers.close_all().await;
+}
+
 /// A shopping task as an agent would run it, every command through the
 /// gate: the judge is jev on Plow's decision route (the host state in
 /// `LATCH_GATE_HOST_STATE`, logged in to a dev Plow), the chat is
@@ -873,6 +965,14 @@ async fn a_gated_shopping_task_on_the_decision_model() {
             "ms": started.elapsed().as_millis() as u64,
             "outcome": match &result { Ok(_) => "ok".to_string(), Err(f) => f.code.clone() },
             "gate": audit.get("gate"),
+            // The judgments of fills a plan made, from its step records.
+            "fill_gates": audit
+                .get("step_records")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r.get("gate"))
+                .collect::<Vec<_>>(),
             "model_calls": audit.get("model_calls").and_then(Value::as_array).map(Vec::len),
         });
         println!("{line}");
@@ -991,18 +1091,19 @@ async fn a_gated_shopping_task_on_the_decision_model() {
         let _ = agent(command, id, args).await;
     }
     let payment = agent("observe", id, json!({})).await.unwrap();
-    let suggestion = payment["fill"]["suggestions"][0]["id"].clone();
+    println!("payment page offers: {}", payment["fill"]["page_offers"]);
+    // The card goes in through a plan: its fill is judged inside the plan.
     let paying = agent(
-        "fill",
+        "do",
         id,
-        json!({"request": request(), "item": card, "snapshot": payment["snapshot"], "suggested": suggestion}),
+        plan(&["pay for the order with my saved card"], vec![card]),
     )
     .await;
     println!("card: {paying:?}");
     if let Err(stop) = &paying
         && stop.code == "confirm_needed"
     {
-        let confirm = stop.details["confirmation"]["id"].clone();
+        let confirm = stop.details["stop"]["confirmation"]["id"].clone();
         let paid = agent(
             "do",
             id,
@@ -1047,10 +1148,24 @@ async fn a_gated_shopping_task_on_the_decision_model() {
     drop(agent);
     std::fs::write(out.join("calls.ndjson"), &lines).unwrap();
 
+    // Every judgment: a command's own, then those of the fills its plan
+    // made.
     let judged: Vec<Value> = lines
         .lines()
         .map(|l| serde_json::from_str::<Value>(l).unwrap())
-        .filter(|l| !l["gate"].is_null())
+        .flat_map(|l| {
+            let own = (!l["gate"].is_null())
+                .then(|| (l["n"].clone(), l["command"].clone(), l["gate"].clone()));
+            let fills = l["fill_gates"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|g| (l["n"].clone(), json!("fill in plan"), g))
+                .collect::<Vec<_>>();
+            own.into_iter().chain(fills)
+        })
+        .map(|(n, command, gate)| json!({"n": n, "command": command, "gate": gate}))
         .collect();
     let latencies: Vec<u64> = judged
         .iter()
