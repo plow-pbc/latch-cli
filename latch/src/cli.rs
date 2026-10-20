@@ -64,7 +64,7 @@ pub enum Command {
     Vault(VaultArgs),
     /// Run this machine as a host, in the foreground, until stopped
     Serve(ServeArgs),
-    /// Internal: the sandboxed process a host starts for each file read or write
+    /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),
     /// Internal: the process a host starts for each browser session

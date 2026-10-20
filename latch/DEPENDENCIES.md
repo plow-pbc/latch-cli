@@ -16,12 +16,12 @@ crate to `Cargo.toml`.
 | `jiff` | Time stamps in the audit log and the host's log | 226M / 84M | 3.0k | BurntSushi | 0.2.38 (2026-10-06) | Unlicense/MIT |
 | `libc` | `killpg` for `exec` timeouts; signal numbers and names | 1,779M / 410M | 2.6k | rust-lang org | 0.2.190 (2026-10-02) | MIT/Apache-2.0 |
 | `seccompiler` (Linux only) | Worker seccomp filters after bubblewrap; pinned | 24.3M / 8.1M | 131 (rust-vmm monorepo) | rust-vmm org | 0.5.0 (2025-03-07) | Apache-2.0/BSD-3 |
-| `rand` | Jitter for the heartbeat and its backoff | 1,909M / 512M | 2.1k | rust-random org | 0.10.3 (2026-09-20) | MIT/Apache-2.0 |
+| `rand` | Heartbeat jitter and backoff; random ids, keys and nonces | 1,909M / 512M | 2.1k | rust-random org | 0.10.3 (2026-09-20) | MIT/Apache-2.0 |
 | `reqwest` (json, rustls) | HTTPS client for the Plow directory | 801M / 215M | 11.9k | seanmonstar | 0.13.5 (2026-09-08) | MIT/Apache-2.0 |
 | `serde` | Plain structs to and from JSON | 1,531M | 10.9k | serde-rs org | 1.0.229 (2026-07-18) | MIT/Apache-2.0 |
 | `serde_json` | The JSON format for serde | 1,434M | 5.7k | serde-rs org | 1.0.154 (2026-10-11) | MIT/Apache-2.0 |
 | `sha2` | sha256 for the audit log's hash chain | 1,062M / 302M | 2.3k | RustCrypto org | 0.11.1 (2026-10-12) | MIT/Apache-2.0 |
-| `tempfile` | Per-call Google folders and throwaway test state | 890M / 208M | 1.5k | Stebalien | 3.27.0 (2026-03-11) | MIT/Apache-2.0 |
+| `tempfile` | Per-call Google folders, each browser session's scratch folder, and throwaway test state | 890M / 208M | 1.5k | Stebalien | 3.27.0 (2026-03-11) | MIT/Apache-2.0 |
 | `aes-gcm` | The vault: items and its data key sealed with AES-256-GCM | 182M / 57M | 968 (AEADs monorepo) | RustCrypto org | 0.11.1 (2026-08-21) | Apache-2.0/MIT |
 | `csv` | The vault: reading password managers' CSV exports | 269M / 57M | 2.0k | BurntSushi | 1.4.0 (2025-10-17) | Unlicense/MIT |
 | `psl` | The vault: registrable domains (the public-suffix list, private suffixes included) | 36M / 7.9M | 38 | addr-rs org | 2.1.239 (2026-10-03); pinned in Cargo.lock, since each release is a new list | MIT/Apache-2.0 |
