@@ -399,6 +399,44 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_clears_a_site_list_where_the_kind_allows() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().to_path_buf());
+        add(
+            &vault,
+            &json!({"kind": "card", "title": "Visa", "sites": ["shop.example"],
+                    "values": {"number": "4242424242424242"}}),
+            &mut Map::new(),
+        )
+        .unwrap();
+        add(
+            &vault,
+            &json!({"kind": "login", "title": "Shop", "sites": ["shop.example"],
+                    "other_top_sites": ["pay.example"], "values": {"password": "made-up-6t1v"}}),
+            &mut Map::new(),
+        )
+        .unwrap();
+        let mut audit = Map::new();
+        let card = edit(
+            &vault,
+            &json!({"item": "v1", "revision": 1, "sites": []}),
+            &mut audit,
+        )
+        .unwrap();
+        assert_eq!(card["item"]["sites"], json!([]));
+        assert_eq!(audit["changed"], json!(["sites"]));
+        let login = edit(
+            &vault,
+            &json!({"item": "v2", "revision": 1, "other_top_sites": []}),
+            &mut Map::new(),
+        )
+        .unwrap();
+        assert_eq!(login["changed"], json!(["other_top_sites"]));
+        assert!(login["item"].get("other_top_sites").is_none());
+        assert_eq!(login["item"]["sites"], json!(["shop.example"]));
+    }
+
+    #[test]
     fn only_owner_devices_reach_the_vault() {
         assert!(owner_only("device").is_ok());
         for kind in ["agent", "", "Device"] {

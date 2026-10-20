@@ -66,19 +66,24 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             revision,
             title,
             site,
+            no_sites,
             other_top_site,
+            no_other_top_sites,
             field,
             ask,
         } => {
+            let sites = replaced(site, no_sites);
+            let other_top_sites = replaced(other_top_site, no_other_top_sites);
             if title.is_none()
-                && site.is_empty()
-                && other_top_site.is_empty()
+                && sites.is_none()
+                && other_top_sites.is_none()
                 && field.is_empty()
                 && ask.is_empty()
             {
                 return Err(Failure::usage(
                     "bad_arguments",
-                    "say what to change: --title, --site, --other-top-site, --field or --ask"
+                    "say what to change: --title, --site, --no-sites, --other-top-site, \
+                     --no-other-top-sites, --field or --ask"
                         .into(),
                 ));
             }
@@ -108,11 +113,11 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             if let Some(title) = title {
                 request["title"] = json!(title);
             }
-            if !site.is_empty() {
-                request["sites"] = json!(site);
+            if let Some(sites) = sites {
+                request["sites"] = json!(sites);
             }
-            if !other_top_site.is_empty() {
-                request["other_top_sites"] = json!(other_top_site);
+            if let Some(tops) = other_top_sites {
+                request["other_top_sites"] = json!(tops);
             }
             dial::call(state, &host, &call(request), ANSWER_WITHIN).await
         }
@@ -123,6 +128,12 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             result
         }
     }
+}
+
+/// An edit's new site list: the sites given, or none when cleared; `None`
+/// leaves the item's list as it is.
+fn replaced(given: Vec<String>, clear: bool) -> Option<Vec<String>> {
+    (clear || !given.is_empty()).then_some(given)
 }
 
 /// A new item's values: ordinary ones from `--field`, secret ones typed at
@@ -401,6 +412,16 @@ mod tests {
                 .code,
             "bad_item"
         );
+    }
+
+    #[test]
+    fn a_site_list_is_kept_replaced_or_cleared() {
+        assert_eq!(replaced(vec![], false), None);
+        assert_eq!(
+            replaced(vec!["shop.example".into()], false),
+            Some(vec!["shop.example".to_string()])
+        );
+        assert_eq!(replaced(vec![], true), Some(vec![]));
     }
 
     #[test]

@@ -43,7 +43,8 @@ line or the environment. `--ask LABEL` asks for another field the same way;
 `--totp` asks for a login's authenticator key.
 
 `edit` changes an item at the revision `list` shows: `--title`, `--site`
-and `--other-top-site` (each list given replaces the old one), `--field
+and `--other-top-site` (each list given replaces the old one; `--no-sites` and
+`--no-other-top-sites` clear them, though a login keeps a site), `--field
 LABEL=VALUE` for a non-secret field (an empty value clears it), and `--ask
 LABEL` to type a new secret (`--ask totp` for the authenticator key). The
 kind never changes. The answer and the audit name the fields that changed

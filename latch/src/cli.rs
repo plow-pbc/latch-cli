@@ -370,9 +370,16 @@ pub enum VaultCommand {
         /// Replaces the item's sites (repeatable)
         #[arg(long)]
         site: Vec<String>,
+        /// Clears the item's sites: a card or identity then fills on any
+        /// site (a login keeps at least one)
+        #[arg(long, conflicts_with = "site")]
+        no_sites: bool,
         /// Replaces a login's other top-level sites (repeatable)
         #[arg(long)]
         other_top_site: Vec<String>,
+        /// Clears a login's other top-level sites
+        #[arg(long, conflicts_with = "other_top_site")]
+        no_other_top_sites: bool,
         /// A non-secret field: LABEL=VALUE; an empty VALUE clears it
         #[arg(long)]
         field: Vec<String>,
@@ -625,5 +632,30 @@ mod tests {
             args.gog_args,
             ["gmail", "labels", "list", "--account", "two@example.com"]
         );
+    }
+
+    #[test]
+    fn an_edit_either_replaces_or_clears_a_site_list() {
+        let edit = |extra: &[&str]| {
+            let mut argv = vec!["latch", "vault", "edit", "v1", "--revision", "2"];
+            argv.extend(extra);
+            Cli::try_parse_from(argv)
+        };
+        let parsed = edit(&["--no-sites", "--no-other-top-sites"]).unwrap();
+        let Command::Vault(VaultArgs {
+            command:
+                VaultCommand::Edit {
+                    no_sites,
+                    no_other_top_sites,
+                    ..
+                },
+            ..
+        }) = parsed.command
+        else {
+            panic!("vault edit");
+        };
+        assert!(no_sites && no_other_top_sites);
+        assert!(edit(&["--no-sites", "--site", "shop.example"]).is_err());
+        assert!(edit(&["--no-other-top-sites", "--other-top-site", "pay.example"]).is_err());
     }
 }
