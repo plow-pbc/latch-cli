@@ -691,7 +691,7 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
     let placed = h.confirm(issued["id"].as_str().unwrap()).await.unwrap();
     assert_eq!(placed["page"]["title"], "Order · Shop");
 
-    // With no model at all (no key in the state directory), the same.
+    // With no model at all (a host not logged in to Plow), the same.
     drop(h);
     let mut bare = Harness::start(&state, None).await;
     let page = bare.open(&format!("{site}/order.html")).await;
@@ -702,7 +702,7 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         .unwrap_err();
     assert_eq!(failure.code, "model_unavailable");
     assert!(
-        failure.message.contains("no decision model"),
+        failure.message.contains("not logged in to Plow"),
         "{}",
         failure.message
     );
@@ -861,6 +861,13 @@ async fn live_jev_asks_for_a_confirmation_only_where_one_is_needed() {
     let path = state.join(crate::browser::model::JEV_KEY_FILE);
     std::fs::copy(key, &path).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // A key file is used only on a host set up for it.
+    std::fs::create_dir_all(state.join("browser")).unwrap();
+    std::fs::write(
+        state.join(crate::browser::model::MODEL_FILE),
+        r#"{"provider": "jev"}"#,
+    )
+    .unwrap();
     let site = site();
     let mut h = Harness::start(&state, None).await;
     let page = h.open(&format!("{site}/order.html")).await;
