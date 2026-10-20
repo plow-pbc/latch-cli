@@ -252,7 +252,7 @@ async fn collected(capture: Capture, grace: Duration) -> (Vec<u8>, bool) {
 
 /// argv as run, but at most 4 KiB of it: whole arguments while they fit,
 /// then the start of the one that does not, marked as cut.
-fn capped_argv(argv: &[String]) -> Value {
+pub fn capped_argv(argv: &[String]) -> Value {
     let mut kept = Vec::new();
     let mut room = ARGV_AUDIT_CAP;
     for arg in argv {

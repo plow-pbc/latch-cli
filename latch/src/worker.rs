@@ -43,6 +43,8 @@ use crate::sandbox::{self, Policy};
 pub struct WorkerSetup {
     pub areas: Vec<PathBuf>,
     pub state_dir: PathBuf,
+    /// The latch binary each worker runs: the host's own.
+    pub program: PathBuf,
 }
 
 /// A failure the worker reported on stderr.
@@ -135,6 +137,7 @@ impl WorkerSetup {
         let restricted = WorkerSetup {
             areas: vec![folder.to_path_buf()],
             state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
         };
         let mut command = restricted.command(folder)?;
         command
@@ -234,9 +237,7 @@ impl WorkerSetup {
     /// `latch worker --area … --denied …`, run from the first area with an
     /// empty environment apart from `PATH` and `HOME`.
     fn command(&self, first_area: &Path) -> Result<Command, WorkerError> {
-        let program =
-            std::env::current_exe().map_err(|err| error("worker_failed", &err.to_string()))?;
-        let mut command = Command::new(program);
+        let mut command = Command::new(&self.program);
         command.arg("worker");
         for area in &self.areas {
             command.arg("--area").arg(area);

@@ -26,8 +26,8 @@ use crate::dashboard::{self, Dashboard, Row};
 use crate::exec;
 use crate::failure::Failure;
 use crate::files;
-use crate::gate::Gatekeeper;
 use crate::gate::rules::RuleFiles;
+use crate::gate::{self, Gate, Gatekeeper};
 use crate::heartbeat;
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
@@ -52,7 +52,6 @@ struct Host {
     endpoint: Endpoint,
     name: String,
     /// Judges agents' operations against the owner's chat and rules.
-    #[allow(dead_code)] // no operation is gated yet
     gatekeeper: Gatekeeper,
 }
 
@@ -102,9 +101,12 @@ pub async fn run(
             state.path.clone()
         }
     };
+    let program = std::env::current_exe()
+        .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
     let workers = WorkerSetup {
         areas: shared_folders(folders)?,
         state_dir,
+        program,
     };
     let rules = RuleFiles::new(&state.path, &workers.areas)?;
     workers.probe().await.map_err(|err| {
@@ -386,48 +388,77 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             }
         }
         Ok(identity) => {
-            let done = match op {
-                "file_get" => files::get(&host.workers, &request.args, &mut send).await,
-                "file_put" => files::put(&host.workers, &request.args, &mut send, &mut recv).await,
-                "exec" => exec::run(&host.workers, &request.args).await,
-                "vault" => {
-                    crate::vault::host::run(
-                        &host.vault,
-                        &host.here(),
-                        &identity.kind,
-                        request.args,
-                        &mut send,
-                        &mut recv,
-                    )
-                    .await
-                }
-                "browser" => {
-                    crate::browser::host::run(
-                        &host.browsers,
-                        caller,
-                        &identity.kind,
-                        request.args,
-                        &mut send,
-                        &mut recv,
-                    )
-                    .await
-                }
-                "google" => {
-                    crate::google::host::run(
-                        &host.workers,
-                        &host.plow,
-                        request.args,
-                        &mut send,
-                        &mut recv,
-                    )
-                    .await
-                }
-                _ => Done::failed(
-                    "not_built_yet",
-                    format!("this host does not run `{op}` yet"),
-                    Value::Null,
-                ),
+            // An agent's exec, file or Google operation runs only if the
+            // gatekeeper allows it.
+            let gate = host.gate(&identity, request.chat.as_deref());
+            let gated = gate::gated(op, &request.args, &host.workers.areas[0]);
+            let judgment = match (&gate, &gated) {
+                (Ok(Some(gate)), Some(gated)) => Some(gate.judge(&gated.action).await),
+                _ => None,
             };
+            let refusal = match (&gate, &judgment) {
+                (Err(failure), _) => Some(failure),
+                (_, Some(judgment)) => judgment.verdict.as_ref().err(),
+                _ => None,
+            };
+            let refused = gated.as_ref().zip(refusal).map(|(gated, failure)| Done {
+                response: Response::error(failure),
+                audit_args: gated.audit.clone(),
+                outcome: failure.code.clone(),
+            });
+            let done = if let Some(refused) = refused {
+                refused
+            } else {
+                match op {
+                    "file_get" => files::get(&host.workers, &request.args, &mut send).await,
+                    "file_put" => {
+                        files::put(&host.workers, &request.args, &mut send, &mut recv).await
+                    }
+                    "exec" => exec::run(&host.workers, &request.args).await,
+                    "vault" => {
+                        crate::vault::host::run(
+                            &host.vault,
+                            &host.here(),
+                            &identity.kind,
+                            request.args,
+                            &mut send,
+                            &mut recv,
+                        )
+                        .await
+                    }
+                    "browser" => {
+                        crate::browser::host::run(
+                            &host.browsers,
+                            caller,
+                            &identity.kind,
+                            request.args,
+                            &mut send,
+                            &mut recv,
+                        )
+                        .await
+                    }
+                    "google" => {
+                        crate::google::host::run(
+                            &host.workers,
+                            &host.plow,
+                            request.args,
+                            &mut send,
+                            &mut recv,
+                        )
+                        .await
+                    }
+                    _ => Done::failed(
+                        "not_built_yet",
+                        format!("this host does not run `{op}` yet"),
+                        Value::Null,
+                    ),
+                }
+            };
+            if let (Ok(Some(gate)), Some(gated), Some(judgment)) = (&gate, &gated, &judgment)
+                && judgment.verdict.is_ok()
+            {
+                gate.did(&gated.action, &done.outcome);
+            }
             let decision = decision(&done.response);
             log(&format!(
                 "{op}: {caller}: {decision}: {} {}",
@@ -447,6 +478,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             }
             let mut record = audit::record(caller, identity.agent_uid, op, decision, &done.outcome);
             record.args = done.audit_args;
+            record.gate = judgment.map(|judgment| judgment.gate);
             match host.append(record) {
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed("audit_failed", message),
@@ -522,14 +554,19 @@ async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
 /// refusal (such as the sandbox's) is a "deny", anything else an "allow" —
 /// a failure that is not a refusal (a missing file) was allowed to run.
 /// A worker that could not apply its sandbox is a "deny" too: the host
-/// refused to run the operation unconfined, so it never ran.
+/// refused to run the operation unconfined, so it never ran. So is an
+/// operation the gatekeeper could not judge.
 fn decision(response: &Response) -> &'static str {
     match response {
         Response::Error {
             exit: crate::failure::Exit::Denied | crate::failure::Exit::Usage,
             ..
         } => "deny",
-        Response::Error { code, .. } if code == "sandbox_failed" => "deny",
+        Response::Error { code, .. }
+            if code == "sandbox_failed" || code == "gatekeeper_unavailable" =>
+        {
+            "deny"
+        }
         _ => "allow",
     }
 }
@@ -577,6 +614,31 @@ impl Host {
             key: self.endpoint.id().to_string(),
             name: self.name.clone(),
             relay: self.endpoint.addr().relay_urls().next().cloned(),
+        }
+    }
+
+    /// The gate an agent's operations pass, in the chat it named; none for
+    /// the owner's own devices, which are never judged. An agent Plow
+    /// gives no uid can't be judged, so nothing of it runs.
+    fn gate<'a>(
+        &'a self,
+        identity: &'a Identity,
+        chat: Option<&'a str>,
+    ) -> Result<Option<Gate<'a>>, Failure> {
+        if identity.kind == "device" {
+            return Ok(None);
+        }
+        match identity.agent_uid.as_deref() {
+            Some(agent) => Ok(Some(Gate {
+                keeper: &self.gatekeeper,
+                agent,
+                chat,
+            })),
+            None => Err(Failure::new(
+                crate::failure::Exit::Unreachable,
+                "gatekeeper_unavailable",
+                "The gatekeeper could not judge this, so it did not run: Plow names no agent for this caller".to_string(),
+            )),
         }
     }
 
@@ -647,6 +709,9 @@ fn describe_paths(connection: &Connection) -> String {
         .collect();
     paths.join(", ")
 }
+
+#[cfg(test)]
+mod gated_tests;
 
 #[cfg(test)]
 mod tests {
