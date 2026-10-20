@@ -308,8 +308,7 @@ latch opens is a new window behind all others (its page still visible and
 unthrottled), and switching tabs brings nothing to the front. A page's own
 JavaScript dialog still raises its window, and so can a tab the page opens
 (`target=_blank`, `window.open`); `handoff` will bring it forward on
-purpose. This is the pin's one `focus` switch (`background`; `front` brings
-windows and tab switches forward instead).
+purpose.
 A separate macOS user for engines is the later hardening.
 
 ## Tests

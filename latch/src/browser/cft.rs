@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 
 use super::cdp::{self, Cdp, Pipes};
 use super::driver::{self, Download, Driver, Event, Frame, Tab};
-use super::engine::{CFT, Engine, Focus};
+use super::engine::{CFT, Engine};
 use super::profile;
 use crate::failure::{Exit, Failure};
 
@@ -186,7 +186,7 @@ impl Cft {
 
     /// From now on hears about every new tab and every download. Chrome
     /// starts with no window (`--no-startup-window`); each session opens
-    /// its own (`begin`), as the pinned focus says. Every download lands
+    /// its own (`begin`), behind every other window. Every download lands
     /// in the staging folder under its own guid, never opened.
     fn listen(&mut self) -> Result<(), Failure> {
         let deadline = Instant::now() + STARTUP;
@@ -406,14 +406,13 @@ impl Cft {
         Ok(())
     }
 
-    /// A new window, a tab of its own. With the pinned focus `background`
-    /// it opens behind every other window, its page still visible, so the
-    /// owner's front app and desktop stay as they are.
+    /// A new window, a tab of its own. It opens behind every other window,
+    /// its page still visible, so the owner's front app and desktop stay as
+    /// they are.
     fn new_window(&mut self, deadline: Instant) -> Result<String, Failure> {
-        let background = CFT.focus == Focus::Background;
         let created = self.cdp.call(
             "Target.createTarget",
-            json!({"url": "about:blank", "newWindow": true, "background": background}),
+            json!({"url": "about:blank", "newWindow": true, "background": true}),
             None,
             deadline,
         )?;
@@ -917,20 +916,12 @@ impl Driver for Cft {
         Ok(tab)
     }
 
-    /// Makes `tab` the one the agent acts on. With the pinned focus
-    /// `background` nothing comes to the front (`Target.activateTarget`
-    /// would take the owner's focus): a tab latch opened is its own window,
-    /// and a tab a page opened is the visible one in its opener's window.
+    /// Makes `tab` the one the agent acts on. Nothing comes to the front
+    /// (`Target.activateTarget` would take the owner's focus): a tab latch
+    /// opened is its own window, and a tab a page opened is the visible one
+    /// in its opener's window.
     fn switch_tab(&mut self, tab: &str) -> Result<(), Failure> {
-        let target = self.tab(tab)?.target.clone();
-        if CFT.focus == Focus::Front {
-            self.cdp.call(
-                "Target.activateTarget",
-                json!({"targetId": target}),
-                None,
-                Instant::now() + COMMAND,
-            )?;
-        }
+        self.tab(tab)?;
         self.share_mut().active = tab.to_string();
         Ok(())
     }
