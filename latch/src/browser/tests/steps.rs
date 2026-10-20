@@ -27,6 +27,13 @@ use crate::cli::ActAction;
 use crate::failure::{Exit, Failure};
 use crate::vault::host::Vault;
 
+conformance!(
+    literal_steps_take_effect_and_their_checks_decide_the_outcome,
+    consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewed,
+    with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_dispatch,
+    the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent,
+);
+
 /// The test site, plus the answers to its expense and order forms.
 fn site() -> String {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-site");
@@ -344,9 +351,8 @@ fn confirmation(failure: &Failure) -> Value {
     failure.details["stop"]["confirmation"].clone()
 }
 
-#[tokio::test]
-async fn literal_steps_take_effect_and_their_checks_decide_the_outcome() {
-    let (_dir, state, _area) = test_state();
+async fn literal_steps_take_effect_and_their_checks_decide_the_outcome(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let site = site();
     let fake: Arc<dyn Provider> = Arc::new(Fake::default());
     let mut h = Harness::start(&state, Some(fake)).await;
@@ -512,9 +518,8 @@ async fn literal_steps_take_effect_and_their_checks_decide_the_outcome() {
     assert!(audits.contains("text_sha256"));
 }
 
-#[tokio::test]
-async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewed() {
-    let (_dir, state, _area) = test_state();
+async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewed(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let site = site();
     let slow = Arc::new(Fake::default());
     let fake: Arc<dyn Provider> = slow.clone();
@@ -667,9 +672,8 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
     assert!(!audits.contains("$10.00") && !audits.contains("Sharp Objects"));
 }
 
-#[tokio::test]
-async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_dispatch() {
-    let (_dir, state, _area) = test_state();
+async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_dispatch(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let site = site();
     let fake = Arc::new(Fake::default());
     let provider: Arc<dyn Provider> = fake.clone();
@@ -731,9 +735,8 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
     );
 }
 
-#[tokio::test]
-async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent() {
-    let (_dir, state, _area) = test_state();
+async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
     let site = site();
     let fake: Arc<dyn Provider> = Arc::new(Fake::default());
     let mut h = Harness::start(&state, Some(fake.clone())).await;
@@ -803,7 +806,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent() 
 #[tokio::test]
 async fn live_jev_asks_for_a_confirmation_only_where_one_is_needed() {
     use std::os::unix::fs::PermissionsExt;
-    let (_dir, state, _area) = test_state();
+    let (_dir, state, _area) = test_state("cft", &["default"]);
     let key = std::env::var_os("LATCH_TEST_JEV_KEY")
         .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
     let path = state.join(crate::browser::model::JEV_KEY_FILE);

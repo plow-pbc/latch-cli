@@ -284,7 +284,7 @@ fn the_plan_suite_is_well_formed() {
 
 #[tokio::test]
 async fn each_checker_tells_its_right_state_from_the_near_misses() {
-    let (_dir, state, _area) = test_state();
+    let (_dir, state, _area) = test_state("cft", &["b5c-shop"]);
     let site = serve_shop();
     let mut session = Session::start_with(
         &latch(),
@@ -350,7 +350,7 @@ async fn each_checker_tells_its_right_state_from_the_near_misses() {
 
 #[tokio::test]
 async fn the_view_shows_what_a_decision_needs() {
-    let (_dir, state, _area) = test_state();
+    let (_dir, state, _area) = test_state("cft", &["b5c-view"]);
     let site = serve_shop();
     let mut session = Session::start_with(
         &latch(),

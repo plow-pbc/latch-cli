@@ -1,18 +1,20 @@
 //! The browser worker: one long-lived process per profile runtime, run as
 //! `latch browser-worker --profile P --scratch DIR [--headless]` (hidden
-//! from `--help`). It launches the engine on its profile and drives it over
-//! the CDP pipe, for every session on the profile: each has its own
-//! windows, tabs, snapshots, downloads and dialogs, and the browser's
-//! logins are shared.
+//! from `--help`). It launches the engine its profile is bound to (a
+//! profile not made yet is made for CfT) and drives it, CfT over the CDP
+//! pipe and Camoufox through its helper, for every session on the profile:
+//! each has its own windows, tabs, snapshots, downloads and dialogs, and
+//! the browser's logins are shared.
 //!
 //! On macOS it is not inside latch's Seatbelt: a Seatbelt-confined process
-//! can only re-apply its own profile, and every Chrome helper applies its
-//! own, so a confined Chrome could only run with its sandbox off. Chrome's
-//! sandbox stays on for every web-content process instead. What latch still
-//! controls: the pinned build, checked before launch; a recipe that never
-//! opens a debug port or turns the sandbox off; the profile locked to this
-//! runtime; and an environment of nothing but `PATH`, a home, a temp folder
-//! and a crash-dump folder, all in the runtime's scratch folder.
+//! can only re-apply its own profile, and every Chrome or Firefox helper
+//! applies its own, so a confined engine could only run with its sandbox
+//! off. The engine's sandbox stays on for every web-content process
+//! instead. What latch still controls: the pinned build, checked before
+//! launch; a recipe that never opens a debug port or turns the sandbox off;
+//! the profile locked to this runtime; and a minimal environment (`PATH`, a
+//! home, a temp folder and the engine's own settings), all in the runtime's
+//! scratch folder.
 //!
 //! It talks to the host over its standard streams, one JSON line each way
 //! per call, every answer a `wire::Response`:
@@ -51,11 +53,13 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::camoufox::Camoufox;
 use super::cdp;
-use super::cft::{self, Cft, Seat};
+use super::cft::{self, Cft};
 use super::core::{Answer, Call, Core};
-use super::driver::Driver;
-use super::engine::CFT;
+use super::driver::{Runtime, Seat};
+use super::engine::{CAMOUFOX, CFT};
+use super::profile;
 use crate::failure::Failure;
 use crate::wire::Response;
 
@@ -65,28 +69,66 @@ pub fn run(
     scratch: &Path,
     idle: Duration,
     headless: bool,
+    display: Option<&str>,
 ) -> ExitCode {
-    let mut stdout = io::stdout().lock();
+    // A screenless Linux host's runtime gets an Xvfb display of its own,
+    // up for as long as this worker.
+    let private = match display {
+        Some(super::display::PRIVATE) => match super::display::Display::start() {
+            Ok(private) => Some(private),
+            Err(failure) => {
+                answer(&mut io::stdout().lock(), Response::error(&failure), None);
+                return ExitCode::FAILURE;
+            }
+        },
+        _ => None,
+    };
+    let display = private.as_ref().map(|d| d.name.as_str()).or(display);
     // The engine runs from its scratch folder, so every path it gets is absolute.
     let absolute = |path: &Path| path.canonicalize().map_err(cft::io_failure);
-    let launched = absolute(state_dir)
-        .and_then(|state_dir| Cft::launch(&state_dir, profile_name, &absolute(scratch)?, headless));
-    let browser = match launched {
-        Ok(browser) => browser,
-        Err(failure) => {
-            answer(&mut stdout, Response::error(&failure), None);
-            return ExitCode::FAILURE;
-        }
-    };
-    let ready = json!({
-        "engine": CFT.engine,
-        "version": CFT.version,
-        "driver_contract": CFT.driver_contract,
-        "pid": browser.pid(),
+    let launched = absolute(state_dir).and_then(|state_dir| {
+        let scratch = absolute(scratch)?;
+        Ok(
+            match profile::engine_of(&state_dir, profile_name)?.as_deref() {
+                Some("camoufox") => {
+                    let browser =
+                        Camoufox::launch(&state_dir, profile_name, &scratch, headless, display)?;
+                    let ready = json!({
+                        "engine": CAMOUFOX.engine,
+                        "version": CAMOUFOX.version,
+                        "driver_contract": CAMOUFOX.driver_contract,
+                        "pid": browser.pid(),
+                    });
+                    serve(ready, browser, idle)
+                }
+                _ => {
+                    let browser =
+                        Cft::launch(&state_dir, profile_name, &scratch, headless, display)?;
+                    let ready = json!({
+                        "engine": CFT.engine,
+                        "version": CFT.version,
+                        "driver_contract": CFT.driver_contract,
+                        "pid": browser.pid(),
+                    });
+                    serve(ready, browser, idle)
+                }
+            },
+        )
     });
+    launched.unwrap_or_else(|failure| {
+        answer(&mut io::stdout().lock(), Response::error(&failure), None);
+        ExitCode::FAILURE
+    })
+}
+
+/// Says the browser is up, then answers each session's calls until the host
+/// closes the browser, stops writing, or every session has gone quiet for
+/// `idle`.
+fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration) -> ExitCode {
+    let mut stdout = io::stdout().lock();
     answer(&mut stdout, Response::Ok(ready), None);
     let browser = Rc::new(RefCell::new(browser));
-    let mut sessions: HashMap<String, Live> = HashMap::new();
+    let mut sessions: HashMap<String, Live<B>> = HashMap::new();
     let mut last_call = Instant::now();
 
     // Standard input unbuffered by std, so `buffer()` below is the only
@@ -189,8 +231,10 @@ pub fn run(
                     "no_such_session",
                     "that session has ended".into(),
                 )),
-                // Listing a session's tabs is the one call a pause lets by.
-                Some(_) if held && !matches!(call, Call::Tabs) => Err(paused()),
+                // Listing a session's tabs, and retiring its refs after a
+                // handoff, are the calls a pause lets by: neither reads or
+                // touches a page.
+                Some(_) if held && !matches!(call, Call::Tabs | Call::Forget) => Err(paused()),
                 Some(live) => {
                     live.core.limit(deadline);
                     let reserved: Vec<&str> = line["reserved"]
@@ -202,13 +246,17 @@ pub fn run(
                     let busy = if reserved.is_empty() {
                         None
                     } else {
-                        let sites = live.core.sites_of(&call);
-                        sites
-                            .into_iter()
-                            .find(|site| reserved.contains(&site.as_str()))
+                        match live.core.sites_of(&call) {
+                            Some(sites) => sites
+                                .into_iter()
+                                .find(|site| reserved.contains(&site.as_str()))
+                                .map(Some),
+                            // Where it leads is not known: it might be there.
+                            None => Some(None),
+                        }
                     };
                     let reply = match busy {
-                        Some(site) => Err(site_busy(&site)),
+                        Some(site) => Err(site_busy(site.as_deref())),
                         None => live.core.call(call, input).map_err(|mut failure| {
                             if failure.code != "browser_gone" {
                                 live.core.reading_for(&mut failure);
@@ -246,8 +294,8 @@ pub fn run(
 }
 
 /// One session on the browser, and when it was last called.
-struct Live {
-    core: Core<Seat>,
+struct Live<B: Runtime> {
+    core: Core<Seat<B>>,
     last: Instant,
 }
 
@@ -262,11 +310,16 @@ fn paused() -> Failure {
     failure
 }
 
-fn site_busy(site: &str) -> Failure {
-    let mut failure = Failure::failed(
-        "site_busy",
-        format!("another session on this profile has reserved {site}; nothing was sent"),
-    );
+/// Refused before it is sent: the call would act on `site`, which another
+/// session reserved, or (None) on a page that is not known.
+fn site_busy(site: Option<&str>) -> Failure {
+    let message = match site {
+        Some(site) => {
+            format!("another session on this profile has reserved {site}; nothing was sent")
+        }
+        None => "another session on this profile has reserved a site, and the page Back leads to is not known; nothing was sent".to_string(),
+    };
+    let mut failure = Failure::failed("site_busy", message);
     failure.details = json!({"site": site, "audit": {"site_busy": site}});
     failure
 }
