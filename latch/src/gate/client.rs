@@ -83,6 +83,8 @@ impl Target<'_> {
         }
         let config = self.state.require_login()?;
         let plow = Plow::from_state(self.state)?;
+        // A log that can't be written to stops the command before it changes anything.
+        let mut log = AuditLog::open(self.state.path.join("audit.ndjson"))?;
         let done = owner::run(
             &self.state.path,
             &plow,
@@ -94,7 +96,7 @@ impl Target<'_> {
         let decision = crate::serve::decision(&done.response);
         let mut record = audit::record(&config.peer.key, None, "rules", decision, &done.outcome);
         record.args = done.audit_args;
-        let audit_id = AuditLog::open(self.state.path.join("audit.ndjson"))?.append(record)?;
+        let audit_id = log.append(record)?;
         match crate::serve::with_audit_id(done.response, audit_id) {
             Response::Ok(value) => Ok(value),
             Response::Error {

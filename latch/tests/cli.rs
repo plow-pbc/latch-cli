@@ -702,3 +702,14 @@ fn an_agent_gets_owner_only_for_rules_on_its_own_state() {
     }
     assert!(!state.join("rules").exists());
 }
+
+#[test]
+fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
+    let (_dir, state, _key) = owner_host();
+    fs::write(state.join("audit.ndjson"), "not a record\n").unwrap();
+    let output = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "audit_broken");
+    assert!(!state.join("rules/host.txt").exists());
+}

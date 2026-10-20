@@ -51,10 +51,18 @@ pub struct AuditLog {
 
 impl AuditLog {
     /// Opens (or starts) the log and checks the whole chain first. A broken
-    /// chain is an error: the host refuses to run on a tampered log.
+    /// chain is an error: the host refuses to run on a tampered log. The
+    /// log is read under its lock, shared, so a record another process is
+    /// appending is read whole or not at all.
     pub fn open(path: PathBuf) -> Result<AuditLog, Failure> {
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+        let text = match File::open(&path) {
+            Ok(mut file) => {
+                let mut text = String::new();
+                file.lock_shared()
+                    .and_then(|()| file.read_to_string(&mut text))
+                    .map_err(|err| io_failure(&path, err))?;
+                text
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(err) => return Err(io_failure(&path, err)),
         };
@@ -245,6 +253,30 @@ mod tests {
             .unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(verify(&text), Ok((6, last_line_hash(&text))));
+    }
+
+    #[test]
+    fn opening_during_an_append_waits_for_the_whole_record() {
+        let (_dir, path) = log_with_three_records();
+        let mut appended = record("def", None, "rules", "allow", "ok");
+        appended.prev = last_line_hash(&fs::read_to_string(&path).unwrap());
+        appended.hash = hash_of(&appended);
+        let line = format!("{}\n", serde_json::to_string(&appended).unwrap());
+        let (first, rest) = line.split_at(line.len() / 2);
+
+        // Another writer holds the lock, halfway through its line.
+        let mut writer = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writer.lock().unwrap();
+        writer.write_all(first.as_bytes()).unwrap();
+        let opening = std::thread::spawn({
+            let path = path.clone();
+            move || AuditLog::open(path).map(|log| log.len())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!opening.is_finished(), "open waits for the lock");
+        writer.write_all(rest.as_bytes()).unwrap();
+        writer.unlock().unwrap();
+        assert_eq!(opening.join().unwrap().unwrap(), 4);
     }
 
     fn last_line_hash(text: &str) -> String {
