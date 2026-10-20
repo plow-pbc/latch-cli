@@ -268,7 +268,7 @@ The whole plan is validated before anything runs (shape, step count, refs, URLs,
 - `new text: …` (or `"require_change": true` on any check): it must not hold when the step starts, and must hold after.
 - `<sentence>`: judged by the decision model (§6.3). A sentence that names a task rather than a page fact is refused before anything runs (`vague_condition`).
 
-Checks wait up to 10 s after a step's last action.
+Checks wait up to 10 s after a step's last action. In an instruction step, a typed check is also polled for up to 2 s after each action, before the next decision (most of a step's actions are on the way, so the full 10 s is kept for when the step stops after acting).
 
 **Step policy: none until B9.** Every literal step on a ref latch returned to the session runs. B9's agent adoption test adds a host step policy for its arms (`any`, `stop`, `none`), and decides whether one ships.
 

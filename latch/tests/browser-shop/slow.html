@@ -3,10 +3,11 @@
 header(); cookieBanner();
 const main = document.querySelector('main');
 
-// "Show more deals" works, slowly: what it shows arrives two seconds later.
+// "Show more deals" works, slowly: what it shows arrives two seconds later
+// (or `?delay=` milliseconds later).
 main.innerHTML = `<h1>More deals</h1><ul class="products" id="list">${["oat3"].map((id) => productRow(byId(id))).join("")}</ul>
 <p><button type="button" id="more">Show more deals</button></p>`;
 document.getElementById("more").onclick = () => {
-  setTimeout(() => { document.getElementById("list").insertAdjacentHTML("beforeend", productRow(byId("oats"))); }, 2000);
+  setTimeout(() => { document.getElementById("list").insertAdjacentHTML("beforeend", productRow(byId("oats"))); }, Number(qs("delay") || 2000));
 };
 </script></body></html>

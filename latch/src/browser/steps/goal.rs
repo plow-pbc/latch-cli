@@ -55,6 +55,11 @@ const WAIT: Duration = Duration::from_millis(1500);
 const TARGET_P: f64 = 0.5;
 /// The most options one target question offers.
 const MAX_OFFERS: usize = 250;
+/// How long a typed check is polled after each action before the next
+/// decision. Not the full 10 s a check gets at the step's end: a step may
+/// take up to 8 actions, and most are steps on the way (typing before
+/// Enter, opening a menu), whose check is not meant to hold yet.
+const AFTER_ACTION: Duration = Duration::from_secs(2);
 /// The most lines a pass marks as new since its step began.
 const NEW_LINES: usize = 20;
 
@@ -198,7 +203,7 @@ impl Run<'_> {
         let mut before: Option<String> = None;
         let mut unchanged = 0;
         // The field typed into last, for Enter.
-        let mut typed_into: Option<(String, String, String)> = None;
+        let mut typed_into: Option<Typed> = None;
         // The page's lines when the step began, and the mark the worker
         // counts what is written since by.
         let mut began: Option<HashSet<String>> = None;
@@ -536,7 +541,13 @@ impl Run<'_> {
                     )
                 }
                 ("press_enter", _) => {
-                    let Some((field_snapshot, field, label)) = typed_into.clone() else {
+                    let Some(Typed {
+                        snapshot: field_snapshot,
+                        field,
+                        label,
+                        form,
+                    }) = typed_into.clone()
+                    else {
                         return Err(stopped(
                             "stuck",
                             format!("step {n}: there is no field to press Enter in"),
@@ -544,7 +555,7 @@ impl Run<'_> {
                     };
                     // Enter is the control it submits: the same key as a
                     // click on it.
-                    let control = self.submits(view, &field_snapshot, &field).await;
+                    let control = self.submits(view, &field_snapshot, &field, &form).await;
                     (
                         Literal {
                             op: Op::Press,
@@ -651,6 +662,7 @@ impl Run<'_> {
             self.choice = None;
             *acted += 1;
             before = Some(state);
+            let done = sent.is_ok();
             match sent {
                 Ok(()) => {
                     lines.push(line);
@@ -664,7 +676,30 @@ impl Run<'_> {
             if op == "type"
                 && let Some(t) = chosen
             {
-                typed_into = Some((snapshot.unwrap_or_default(), t.at.clone(), t.label.clone()));
+                typed_into = Some(Typed {
+                    snapshot: snapshot.unwrap_or_default(),
+                    field: t.at.clone(),
+                    label: t.label.clone(),
+                    form: form_key(view, &t.at),
+                });
+            }
+            // A typed check is polled after each action, before the page is
+            // read again for the next decision.
+            if let Some(check) = typed
+                && done
+                && self
+                    .holds(
+                        check,
+                        &anchor,
+                        besides.clone(),
+                        AFTER_ACTION.min(self.left()),
+                    )
+                    .await?
+            {
+                return Ok(Done {
+                    outcome: "checked",
+                    evidence: Some(json!({"check": check.kind, "value": check.value})),
+                });
             }
         }
     }
@@ -829,7 +864,7 @@ impl Run<'_> {
         seen: &Seen,
         lines: &[String],
         acted: usize,
-        typed_into: &Option<(String, String, String)>,
+        typed_into: &Option<Typed>,
         context: &Context,
     ) -> Pass {
         let view = &seen.view;
@@ -935,7 +970,7 @@ impl Run<'_> {
     /// What Enter in `field` submits, keyed as the control a click would
     /// act on: its form's submit control as the page lists it, else its
     /// form, by the field.
-    async fn submits(&mut self, view: &Value, snapshot: &str, field: &str) -> String {
+    async fn submits(&mut self, view: &Value, snapshot: &str, field: &str, form: &str) -> String {
         let reviewed = call(
             self.entry,
             json!({"op": "review", "snapshot": snapshot, "target": field, "enter": true}),
@@ -946,21 +981,19 @@ impl Run<'_> {
         .unwrap_or_default();
         let acts = &reviewed["acts_on"];
         if acts["role"] != "form" && acts["name"].as_str().is_some_and(|n| !n.is_empty()) {
-            let listed = view["elements"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|e| e["role"] == acts["role"] && e["name"] == acts["name"]);
+            // The submit control of the field's own form, of those with its
+            // role and name.
+            let listed = view["elements"].as_array().into_iter().flatten().find(|e| {
+                e["role"] == acts["role"]
+                    && e["name"] == acts["name"]
+                    && form_key(view, e["ref"].as_str().unwrap_or_default()) == form
+            });
             return match listed {
                 Some(e) => identity(view, e["ref"].as_str().unwrap_or_default()),
-                None => format!("{}|{}|null", acts["role"], acts["name"]),
+                None => format!("{}|{}|{form}", acts["role"], acts["name"]),
             };
         }
-        let element = &reviewed["element"];
-        format!(
-            "form of {}|{}|{}",
-            element["role"], element["name"], element["row"]
-        )
+        format!("form|{form}")
     }
 
     /// Goes to one of the step's URLs, journaled as an action.
@@ -1064,16 +1097,44 @@ fn describe(e: &Value) -> String {
 }
 
 /// What makes an action on `target` the same action on another reading
-/// of the page: the element's role, name and row, not its ref or value.
+/// of the page: the element's role, name, row and form, not its ref or
+/// value.
 fn identity(view: &Value, target: &str) -> String {
-    let e = view["elements"]
+    let e = element(view, target);
+    format!(
+        "{}|{}|{}|{}",
+        e["role"],
+        e["name"],
+        e["row"],
+        form_key(view, target)
+    )
+}
+
+/// The form `target` is in, by frame and the form's place in its
+/// document; `null|null` outside any form.
+fn form_key(view: &Value, target: &str) -> String {
+    let e = element(view, target);
+    format!("{}|{}", e["frame"], e["form"])
+}
+
+fn element(view: &Value, target: &str) -> Value {
+    view["elements"]
         .as_array()
         .into_iter()
         .flatten()
         .find(|e| e["ref"] == target)
         .cloned()
-        .unwrap_or_default();
-    format!("{}|{}|{}", e["role"], e["name"], e["row"])
+        .unwrap_or_default()
+}
+
+/// The field typed into last, for Enter: its ref in the snapshot it was
+/// typed in, how an action line names it, and its form.
+#[derive(Clone)]
+struct Typed {
+    snapshot: String,
+    field: String,
+    label: String,
+    form: String,
 }
 
 /// A target question's likeliest options, as refs the agent can name.

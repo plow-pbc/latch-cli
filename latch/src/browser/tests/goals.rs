@@ -506,6 +506,49 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     );
     assert_eq!(code, "check_not_met", "{details:#}");
 
+    // A typed check is polled after each action, before the next decision:
+    // a result that arrives a second after the click ends the step there,
+    // with no second decision and no second click.
+    h.open(&at("reset.html")).await;
+    h.open(&at("slow.html?delay=1000")).await;
+    told.tell(|_| choose("click", Some("Show more deals")));
+    let polled = h
+        .send(plan(
+            &["show more deals -> text: Rolled Oats 1kg"],
+            &site,
+            &[],
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(polled["steps"][0]["outcome"], "checked", "{polled:#}");
+    assert_eq!(sent(&polled), 1);
+    assert_eq!(told.passes(), 1, "one decision");
+
+    // Two forms with a "Send" button each: Enter in the second form's
+    // field submits the second form, not the first, so it is not a
+    // second try of the first's button.
+    h.open(&at("two-forms.html")).await;
+    told.tell(
+        |s| match s["actions_in_this_step"].as_array().unwrap().len() {
+            0 => choose("click", Some("button \"Send\"")),
+            1 => choose("type", Some("Email for offers")),
+            2 => choose("press_enter", None),
+            _ => choose("stuck", None),
+        },
+    );
+    let (code, details) = stop(
+        h.send(plan(
+            &["send \"ada@example.com\" for offers"],
+            &site,
+            &[],
+            &[],
+        ))
+        .await,
+    );
+    assert_eq!(code, "stuck", "{details:#}");
+    assert_eq!(sent(&details), 3, "Enter in the second form was sent");
+
     // A control is one control whether it is clicked or submitted with
     // Enter: after "Send message", Enter in its form is a second try.
     h.open(&at("contact.html")).await;
