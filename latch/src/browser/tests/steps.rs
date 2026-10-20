@@ -190,7 +190,7 @@ impl Provider for Fake {
 pub(super) struct Harness {
     pub(super) browsers: Arc<Browsers>,
     /// The session the harness acts in, and its id.
-    entry: Arc<host::Entry>,
+    pub(super) entry: Arc<host::Entry>,
     pub(super) id: String,
     state: std::path::PathBuf,
     requests: u32,

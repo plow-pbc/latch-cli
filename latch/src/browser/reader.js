@@ -157,19 +157,30 @@
     };
   };
 
-  // Brings element `index` of `snap` into view and reports where its
-  // centre is, in this frame's viewport, and whether a click there would
-  // reach it.
+  // Brings element `index` of `snap` into view and reports where to click
+  // it, in this frame's viewport, and whether a click there would reach it:
+  // its centre, or for a link that wraps onto several lines (whose box's
+  // centre may fall between them) the middle of the first line that does.
   const locate = (snap, index) => {
     const el = (snaps.get(snap) || [])[index];
     if (!el || !el.isConnected) return { gone: true };
     if (!rendered(el)) return { hidden: true };
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const rect = el.getBoundingClientRect();
-    const x = rect.left + rect.width / 2;
-    const y = rect.top + rect.height / 2;
-    const hit = document.elementFromPoint(x, y);
-    const reaches = !!hit && (hit === el || el.contains(hit) || (el.labels && [...el.labels].some((l) => l.contains(hit))));
+    const reachesAt = (px, py) => {
+      const hit = document.elementFromPoint(px, py);
+      return !!hit && (hit === el || el.contains(hit) || (el.labels && [...el.labels].some((l) => l.contains(hit))));
+    };
+    let x = rect.left + rect.width / 2;
+    let y = rect.top + rect.height / 2;
+    let reaches = reachesAt(x, y);
+    for (const line of reaches ? [] : el.getClientRects()) {
+      const [lx, ly] = [line.left + line.width / 2, line.top + line.height / 2];
+      if (line.width > 0 && line.height > 0 && reachesAt(lx, ly)) {
+        [x, y, reaches] = [lx, ly, true];
+        break;
+      }
+    }
     return {
       x, y, width: rect.width, height: rect.height,
       covered: !reaches,
@@ -416,7 +427,9 @@
   // dropdown's options, its form (an index into the document's forms) and
   // whether something else, such as a modal or a banner, covers it so a
   // click could not reach it now. Off-screen elements are never covered:
-  // a click scrolls them into view first.
+  // a click scrolls them into view first. A link that wraps onto several
+  // lines is tried at the middle of each line, not of the box around them,
+  // which may fall between its lines.
   const viewOf = (snap) => (snaps.get(snap) || []).map((el) => {
     if (!el.isConnected) return { gone: true };
     const item = {
@@ -425,14 +438,16 @@
     if (el.localName === 'select') item.options = [...el.options].slice(0, 50).map((o) => clean(o.label, 80));
     const form = el.form || el.closest('form');
     if (form) item.form = [...document.forms].indexOf(form);
-    const rect = el.getBoundingClientRect();
-    if (rendered(el) && !offscreen(rect)) {
-      const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
-      const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
-      const hit = document.elementFromPoint(x, y);
-      const reaches = !hit || hit === el || el.contains(hit) || hit.contains(el)
-        || (el.labels && [...el.labels].some((l) => l.contains(hit)));
-      if (!reaches) item.covered = true;
+    if (rendered(el) && !offscreen(el.getBoundingClientRect())) {
+      const reachesAt = (rect) => {
+        const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
+        const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
+        const hit = document.elementFromPoint(x, y);
+        return !hit || hit === el || el.contains(hit) || hit.contains(el)
+          || (el.labels && [...el.labels].some((l) => l.contains(hit)));
+      };
+      const lines = [...el.getClientRects()].filter((r) => r.width > 0 && r.height > 0 && !offscreen(r));
+      if (!(lines.length ? lines : [el.getBoundingClientRect()]).some(reachesAt)) item.covered = true;
     }
     return item;
   });

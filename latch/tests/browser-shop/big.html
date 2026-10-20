@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Everything we sell — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+// A page too big for one decision request: 300 long rows, each with a link
+// and a button, and their text.
+const rows = [];
+for (let n = 1; n <= 300; n++) {
+  rows.push(`<li class="product"><a href="product.html?id=greek">Greenleaf pantry item number ${n}, a seasonal box of heirloom vegetables, grains, herbs and preserves from small farms nearby</a>
+    <span>Hand-packed in small batches from farms within a day's drive, with a recipe card and a note about where it was grown, item ${n}.</span>
+    <button type="button">Save pantry item number ${n} to your list of things to buy later this month, with a reminder before it sells out</button></li>`);
+}
+main.innerHTML = `<h1>Everything we sell</h1><ul class="products">${rows.join("")}</ul>`;
+</script></body></html>

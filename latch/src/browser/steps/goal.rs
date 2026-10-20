@@ -808,6 +808,9 @@ impl Run<'_> {
 /// How the model chose an action, for its audit record and trail entry.
 fn choice_record(decision: &Decision, pick: Option<&Pick>) -> Value {
     let mut choice = json!({"chosen": "model", "operation_p": model::round(decision.operation.p)});
+    if let Some((elements, lines)) = decision.trimmed {
+        choice["left_out"] = json!({"elements": elements, "lines": lines});
+    }
     if let Some(pick) = pick {
         choice["target_p"] = json!(model::round(pick.p));
     }

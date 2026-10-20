@@ -61,12 +61,15 @@ type Questions = Vec<(String, Vec<(String, String)>)>;
 struct Told {
     mind: Mutex<Option<Mind>>,
     asked: Mutex<Vec<Questions>>,
+    /// Each pass's request size.
+    sizes: Mutex<Vec<usize>>,
 }
 
 impl Told {
     fn tell(&self, mind: impl Fn(&Value) -> Choice + Send + Sync + 'static) {
         *self.mind.lock().unwrap() = Some(Box::new(mind));
         self.asked.lock().unwrap().clear();
+        self.sizes.lock().unwrap().clear();
     }
 
     /// The options of question `id` on pass `n`.
@@ -102,6 +105,10 @@ impl Provider for Told {
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         let mut answers = HashMap::new();
         if questions.iter().any(|q| q.id == "operation") {
+            self.sizes
+                .lock()
+                .unwrap()
+                .push(crate::browser::model::request_size(state, questions));
             self.asked.lock().unwrap().push(
                 questions
                     .iter()
@@ -307,6 +314,29 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
         audit["step_records"][1]["screenshot"]["sha256"],
         crate::state::to_hex(&sha2::Sha256::digest(&png))
     );
+
+    // A page too big for one request is cut to fit Plow's decision route,
+    // and the action says what was left out.
+    h.open(&at("big.html")).await;
+    told.tell(|s| {
+        if title(s).starts_with("Greek Salad") {
+            complete("[title] Greek Salad", "done")
+        } else {
+            choose("click", Some("link \"Greenleaf pantry item number 1, "))
+        }
+    });
+    let big = h
+        .send(plan(&["open the first pantry item"], &site, &[], &[]))
+        .await
+        .unwrap();
+    assert_eq!(big["status"], "reached", "{big:#}");
+    let first = told.sizes.lock().unwrap()[0];
+    assert!(first <= crate::browser::model::REQUEST_BUDGET, "{first}");
+    assert!(
+        big["trail"][0]["left_out"]["elements"].as_u64().unwrap() > 0,
+        "{big:#}"
+    );
+    assert!(told.offered(0, "click").len() < 200);
 
     // A dropdown already on the option asked for: held, with no action;
     // the option already chosen is offered, and marked.

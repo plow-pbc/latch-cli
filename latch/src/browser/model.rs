@@ -478,6 +478,211 @@ pub struct Decision {
     pub typed: Option<Pick>,
     pub select: Option<Pick>,
     pub url: Option<Pick>,
+    /// How many click targets and page lines were left out so the request
+    /// fits `REQUEST_BUDGET`, if any were.
+    pub trimmed: Option<(usize, usize)>,
+}
+
+/// The most bytes one decision request may take: Plow's decision route
+/// takes request bodies up to 64 KiB, and this leaves room to spare.
+pub const REQUEST_BUDGET: usize = 60 * 1024;
+
+/// A request's size as a provider sends it: its state and questions.
+pub fn request_size(state: &Value, questions: &[Question]) -> usize {
+    let body = json!({"model": PLOW_MODEL, "state": state, "questions": system_one(questions)});
+    serde_json::to_vec(&body).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// `pass` cut to fit `budget`: the page's other lines go first, then click
+/// targets from the end of the page, then field and dropdown pairs, then
+/// on-screen lines, a quarter at a time; a note tells the model what was
+/// left out. Also how many click targets and page lines were left out.
+fn fit(pass: &Pass, budget: usize) -> (Pass, Option<(usize, usize)>) {
+    fn shrink<T>(list: &mut Vec<T>, floor: usize) -> bool {
+        if list.len() <= floor {
+            return false;
+        }
+        list.truncate((list.len() * 3 / 4).max(floor));
+        true
+    }
+    let mut cut = pass.clone();
+    loop {
+        let (state, questions, _) = asked(&cut);
+        if request_size(&state, &questions) <= budget {
+            break;
+        }
+        let shrunk = shrink(&mut cut.lines, 0)
+            || shrink(&mut cut.clicks, 20)
+            || shrink(&mut cut.types, 10)
+            || shrink(&mut cut.selects, 10)
+            || shrink(&mut cut.on_screen, 10)
+            || shrink(&mut cut.clicks, 0)
+            || shrink(&mut cut.on_screen, 0);
+        if !shrunk {
+            break;
+        }
+    }
+    let left_out = (
+        pass.clicks.len() - cut.clicks.len(),
+        pass.lines.len() + pass.on_screen.len() - cut.lines.len() - cut.on_screen.len(),
+    );
+    if left_out == (0, 0)
+        && cut.types.len() == pass.types.len()
+        && cut.selects.len() == pass.selects.len()
+    {
+        return (cut, None);
+    }
+    cut.notes.push(format!(
+        "to fit, {} elements and {} page lines were left out; scroll to bring others into view",
+        left_out.0, left_out.1
+    ));
+    (cut, Some(left_out))
+}
+
+/// One pass's request: its state, its questions, and its evidence lines
+/// by option, with where each comes from.
+#[allow(clippy::type_complexity)]
+fn asked(pass: &Pass) -> (Value, Vec<Question>, Vec<(String, String, Line)>) {
+    let base = json!({"current_step": pass.step, "rules": STEP_RULES});
+    let with = |question: &str| {
+        let mut instructions = base.clone();
+        instructions["question"] = json!(question);
+        instructions
+    };
+    let address = pass.url.split('#').next().unwrap_or_default();
+    let mut evidence: Vec<(String, String, Line)> = vec![
+        ("t0".into(), format!("[title] {}", pass.title), Line::Title),
+        ("a1".into(), format!("[address] {address}"), Line::Address),
+    ];
+    for (tag, kind, group) in [
+        ("screen", Line::Screen, &pass.on_screen),
+        ("page", Line::Page, &pass.lines),
+        ("field", Line::Field, &pass.fields),
+        ("action", Line::Action, &pass.actions),
+    ] {
+        for line in group {
+            let id = format!("{}{}", &tag[..1], evidence.len());
+            evidence.push((id, format!("[{tag}] {line}"), kind));
+        }
+    }
+    let mut evidence_options: Vec<(String, String)> = evidence
+        .iter()
+        .map(|(id, line, _)| (id.clone(), line.clone()))
+        .collect();
+    evidence_options.push((
+        "none".into(),
+        "Nothing on the page or in the actions shows the step is complete.".into(),
+    ));
+    let (what, complete) = match &pass.check {
+        Some(check) => (
+            format!("{check} is true"),
+            format!("The page shows that {check}."),
+        ),
+        None => (
+            "the current step is complete".to_string(),
+            "The page or the actions taken show the step's result.".to_string(),
+        ),
+    };
+    let offered = |op: &str| pass.operations.contains(&op);
+    let mut questions = vec![
+        Question {
+            id: "status".into(),
+            instructions: with("What is the status of the current step?"),
+            kind: Kind::Choose(vec![
+                ("complete".into(), complete),
+                (
+                    "not_yet".into(),
+                    "Something still has to be done for this step.".into(),
+                ),
+                (
+                    "cannot".into(),
+                    "The step cannot be done here (an error, an unavailable item, or missing information).".into(),
+                ),
+            ]),
+        },
+        Question {
+            id: "evidence".into(),
+            instructions: with(&format!(
+                "Which single line best shows that {what}? Choose none if nothing shows it."
+            )),
+            kind: Kind::Choose(evidence_options),
+        },
+        Question {
+            id: "operation".into(),
+            instructions: with("Which single operation should come next for the current step?"),
+            kind: Kind::Choose(
+                OPERATIONS
+                    .iter()
+                    .filter(|(op, _)| offered(op))
+                    .map(|(op, what)| (op.to_string(), what.to_string()))
+                    .collect(),
+            ),
+        },
+    ];
+    let options = |offers: &[Offer]| -> Vec<(String, String)> {
+        offers
+            .iter()
+            .map(|o| (o.id.clone(), o.text.clone()))
+            .collect()
+    };
+    if offered("click") && !pass.clicks.is_empty() {
+        questions.push(Question {
+            id: "click".into(),
+            instructions: with("Assume the next operation is a click. Which element should be clicked to make progress on the current step?"),
+            kind: Kind::Choose(options(&pass.clicks)),
+        });
+    }
+    if offered("type") && !pass.types.is_empty() {
+        let mut pairs = options(&pass.types);
+        pairs.push((
+            "none".into(),
+            "None of the supplied texts belongs in any field for this step.".into(),
+        ));
+        questions.push(Question {
+            id: "type".into(),
+            instructions: with("Assume the next operation types text. Which supplied text goes into which field? Only the supplied texts can be typed; choose none if the step needs text that was not supplied."),
+            kind: Kind::Choose(pairs),
+        });
+    }
+    if offered("select") && !pass.selects.is_empty() {
+        questions.push(Question {
+            id: "select".into(),
+            instructions: with(
+                "Assume the next operation chooses a dropdown option. Which option in which dropdown?",
+            ),
+            kind: Kind::Choose(options(&pass.selects)),
+        });
+    }
+    if offered("navigate") && !pass.urls.is_empty() {
+        questions.push(Question {
+            id: "navigate".into(),
+            instructions: with(
+                "Assume the next operation goes to an address. Which of the supplied addresses?",
+            ),
+            kind: Kind::Choose(options(&pass.urls)),
+        });
+    }
+    let mut page = json!({
+        "url": pass.url, "title": pass.title, "on_screen": pass.on_screen,
+        "fields": pass.fields, "scroll": pass.scroll,
+    });
+    if pass.on_screen.is_empty() && pass.lines.is_empty() {
+        page["note"] = json!("the page shows no text");
+    }
+    let mut state = json!({
+        "plan": pass.plan.iter().map(|(step, status)| json!({"step": step, "status": status})).collect::<Vec<_>>(),
+        "current_step": pass.step,
+        "supplied_texts": pass.values.iter().map(|(name, text)| json!({"name": name, "text": text})).collect::<Vec<_>>(),
+        "page": page,
+        "actions_in_this_step": pass.actions,
+    });
+    if let Some(check) = &pass.check {
+        state["expected_outcome"] = json!(check);
+    }
+    if !pass.notes.is_empty() {
+        state["notes"] = json!(pass.notes);
+    }
+    (state, questions, evidence)
 }
 
 impl Decision {
@@ -497,143 +702,10 @@ impl Model {
     /// and a target for each kind of operation offered. Each question is
     /// answered on its own, so each states the operation it assumes.
     pub async fn decide(&mut self, pass: &Pass) -> Result<Decision, String> {
-        let base = json!({"current_step": pass.step, "rules": STEP_RULES});
-        let with = |question: &str| {
-            let mut instructions = base.clone();
-            instructions["question"] = json!(question);
-            instructions
-        };
-        let address = pass.url.split('#').next().unwrap_or_default();
-        let mut evidence: Vec<(String, String, Line)> = vec![
-            ("t0".into(), format!("[title] {}", pass.title), Line::Title),
-            ("a1".into(), format!("[address] {address}"), Line::Address),
-        ];
-        for (tag, kind, group) in [
-            ("screen", Line::Screen, &pass.on_screen),
-            ("page", Line::Page, &pass.lines),
-            ("field", Line::Field, &pass.fields),
-            ("action", Line::Action, &pass.actions),
-        ] {
-            for line in group {
-                let id = format!("{}{}", &tag[..1], evidence.len());
-                evidence.push((id, format!("[{tag}] {line}"), kind));
-            }
-        }
-        let mut evidence_options: Vec<(String, String)> = evidence
-            .iter()
-            .map(|(id, line, _)| (id.clone(), line.clone()))
-            .collect();
-        evidence_options.push((
-            "none".into(),
-            "Nothing on the page or in the actions shows the step is complete.".into(),
-        ));
-        let (what, complete) = match &pass.check {
-            Some(check) => (
-                format!("{check} is true"),
-                format!("The page shows that {check}."),
-            ),
-            None => (
-                "the current step is complete".to_string(),
-                "The page or the actions taken show the step's result.".to_string(),
-            ),
-        };
+        let (pass, trimmed) = fit(pass, REQUEST_BUDGET);
+        let pass = &pass;
         let offered = |op: &str| pass.operations.contains(&op);
-        let mut questions = vec![
-            Question {
-                id: "status".into(),
-                instructions: with("What is the status of the current step?"),
-                kind: Kind::Choose(vec![
-                    ("complete".into(), complete),
-                    (
-                        "not_yet".into(),
-                        "Something still has to be done for this step.".into(),
-                    ),
-                    (
-                        "cannot".into(),
-                        "The step cannot be done here (an error, an unavailable item, or missing information).".into(),
-                    ),
-                ]),
-            },
-            Question {
-                id: "evidence".into(),
-                instructions: with(&format!(
-                    "Which single line best shows that {what}? Choose none if nothing shows it."
-                )),
-                kind: Kind::Choose(evidence_options),
-            },
-            Question {
-                id: "operation".into(),
-                instructions: with("Which single operation should come next for the current step?"),
-                kind: Kind::Choose(
-                    OPERATIONS
-                        .iter()
-                        .filter(|(op, _)| offered(op))
-                        .map(|(op, what)| (op.to_string(), what.to_string()))
-                        .collect(),
-                ),
-            },
-        ];
-        let options = |offers: &[Offer]| -> Vec<(String, String)> {
-            offers
-                .iter()
-                .map(|o| (o.id.clone(), o.text.clone()))
-                .collect()
-        };
-        if offered("click") && !pass.clicks.is_empty() {
-            questions.push(Question {
-                id: "click".into(),
-                instructions: with("Assume the next operation is a click. Which element should be clicked to make progress on the current step?"),
-                kind: Kind::Choose(options(&pass.clicks)),
-            });
-        }
-        if offered("type") && !pass.types.is_empty() {
-            let mut pairs = options(&pass.types);
-            pairs.push((
-                "none".into(),
-                "None of the supplied texts belongs in any field for this step.".into(),
-            ));
-            questions.push(Question {
-                id: "type".into(),
-                instructions: with("Assume the next operation types text. Which supplied text goes into which field? Only the supplied texts can be typed; choose none if the step needs text that was not supplied."),
-                kind: Kind::Choose(pairs),
-            });
-        }
-        if offered("select") && !pass.selects.is_empty() {
-            questions.push(Question {
-                id: "select".into(),
-                instructions: with(
-                    "Assume the next operation chooses a dropdown option. Which option in which dropdown?",
-                ),
-                kind: Kind::Choose(options(&pass.selects)),
-            });
-        }
-        if offered("navigate") && !pass.urls.is_empty() {
-            questions.push(Question {
-                id: "navigate".into(),
-                instructions: with("Assume the next operation goes to an address. Which of the supplied addresses?"),
-                kind: Kind::Choose(options(&pass.urls)),
-            });
-        }
-        let mut page = json!({
-            "url": pass.url, "title": pass.title, "on_screen": pass.on_screen,
-            "fields": pass.fields, "scroll": pass.scroll,
-        });
-        if pass.on_screen.is_empty() && pass.lines.is_empty() {
-            page["note"] = json!("the page shows no text");
-        }
-        let mut state = json!({
-            "plan": pass.plan.iter().map(|(step, status)| json!({"step": step, "status": status})).collect::<Vec<_>>(),
-            "current_step": pass.step,
-            "supplied_texts": pass.values.iter().map(|(name, text)| json!({"name": name, "text": text})).collect::<Vec<_>>(),
-            "page": page,
-            "actions_in_this_step": pass.actions,
-        });
-        if let Some(check) = &pass.check {
-            state["expected_outcome"] = json!(check);
-        }
-        if !pass.notes.is_empty() {
-            state["notes"] = json!(pass.notes);
-        }
+        let (state, questions, evidence) = asked(pass);
         let answers = self
             .ask(
                 "decide",
@@ -709,6 +781,7 @@ impl Model {
             typed,
             select: pick("select"),
             url: pick("navigate"),
+            trimmed,
         })
     }
 }
@@ -1111,10 +1184,13 @@ pub mod tests {
     struct Recorded {
         answers: Mutex<Vec<HashMap<String, Answer>>>,
         asked: Mutex<Vec<(String, Vec<String>)>>,
+        /// The latest request's size and state.
+        sent: Mutex<(usize, Value)>,
     }
 
     impl Provider for Recorded {
-        fn ask<'a>(&'a self, _: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+        fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+            *self.sent.lock().unwrap() = (request_size(state, questions), state.clone());
             *self.asked.lock().unwrap() = questions
                 .iter()
                 .map(|q| {
@@ -1215,6 +1291,7 @@ pub mod tests {
                     .collect(),
             ]),
             asked: Mutex::new(Vec::new()),
+            sent: Mutex::new((0, Value::Null)),
         });
         let mut m = Model::new(Box::new(provider.clone()));
         let decision = m.decide(&pass()).await.unwrap();
@@ -1277,6 +1354,7 @@ pub mod tests {
                     .collect(),
             ]),
             asked: Mutex::new(Vec::new()),
+            sent: Mutex::new((0, Value::Null)),
         });
         let mut m = Model::new(Box::new(provider.clone()));
         let empty = Pass {
@@ -1291,6 +1369,77 @@ pub mod tests {
         assert_eq!(decision.typed.as_ref().unwrap().id, "none");
         assert_eq!(decision.evidence, None);
         assert!(!decision.complete());
+    }
+
+    #[tokio::test]
+    async fn an_oversized_page_is_cut_to_fit_the_route_and_says_so() {
+        let row = "x".repeat(400);
+        let big = Pass {
+            operations: vec!["click", "scroll_down", "stuck"],
+            clicks: (1..=250)
+                .map(|n| Offer {
+                    id: format!("e{n}"),
+                    text: format!("link \"Item {n}\" — in: {row}"),
+                })
+                .collect(),
+            on_screen: (0..40)
+                .map(|n| format!("on screen {n} {}", &row[..140]))
+                .collect(),
+            lines: (0..60)
+                .map(|n| format!("further down {n} {}", &row[..140]))
+                .collect(),
+            ..pass()
+        };
+        let (state, questions, _) = asked(&big);
+        assert!(request_size(&state, &questions) > 64 * 1024);
+        let answers = vec![
+            (
+                "status",
+                chose(
+                    "not_yet",
+                    &[("complete", 0.0), ("not_yet", 1.0), ("cannot", 0.0)],
+                ),
+            ),
+            ("evidence", chose("none", &[("none", 1.0)])),
+            ("operation", chose("click", &[("click", 1.0)])),
+            ("click", chose("e1", &[("e1", 1.0)])),
+        ];
+        // The stand-in answers whatever is asked: only the request matters.
+        let provider = std::sync::Arc::new(Recorded {
+            answers: Mutex::new(vec![
+                answers
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            ]),
+            asked: Mutex::new(Vec::new()),
+            sent: Mutex::new((0, Value::Null)),
+        });
+        let mut m = Model::new(Box::new(provider.clone()));
+        let _ = m.decide(&big).await;
+        let (size, state) = provider.sent.lock().unwrap().clone();
+        assert!(size <= REQUEST_BUDGET, "{size}");
+        let clicks = provider
+            .asked
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(id, _)| id == "click")
+            .unwrap()
+            .1
+            .len();
+        assert!((20..250).contains(&clicks), "{clicks}");
+        assert!(
+            state["notes"].to_string().contains("were left out"),
+            "{state}"
+        );
+        // A page that fits is sent whole, with no note.
+        let (cut, trimmed) = fit(&pass(), REQUEST_BUDGET);
+        assert_eq!((cut.clicks.len(), trimmed), (pass().clicks.len(), None));
+        let (_, trimmed) = fit(&big, REQUEST_BUDGET);
+        let (elements, lines) = trimmed.unwrap();
+        assert_eq!(elements, 250 - clicks);
+        assert!(lines >= 60, "the page's other lines go first: {lines}");
     }
 
     #[test]
