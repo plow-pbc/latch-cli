@@ -62,6 +62,9 @@ pub(super) struct Expected {
     /// The most actions the plan may have sent.
     #[serde(default)]
     pub max_actions: Option<usize>,
+    /// Another outcome that is also the listed one.
+    #[serde(default)]
+    pub or: Option<Box<Expected>>,
     /// Exactly the steps that end `already_held`.
     #[serde(default)]
     pub held: Vec<usize>,
@@ -235,6 +238,10 @@ fn expected_is_sound(name: &str, expected: &Expected, steps: usize) {
     }
     for n in expected.step.iter().chain(&expected.held) {
         assert!((1..=steps).contains(n), "{name}: there is no step {n}");
+    }
+    if let Some(or) = &expected.or {
+        assert!(or.or.is_none(), "{name}: one other outcome at most");
+        expected_is_sound(name, or, steps);
     }
 }
 
@@ -515,8 +522,17 @@ async fn holds(h: &super::steps::Harness, check: &str) -> bool {
     value["value"] == true
 }
 
-/// Where `got` differs from `expected`.
+/// Where `got` differs from `expected`: nothing if it matches its other
+/// outcome instead.
 fn differences(expected: &Expected, got: &serde_json::Value) -> Vec<String> {
+    let wrong = differences_from(expected, got);
+    match &expected.or {
+        Some(or) if differences_from(or, got).is_empty() => Vec::new(),
+        _ => wrong,
+    }
+}
+
+fn differences_from(expected: &Expected, got: &serde_json::Value) -> Vec<String> {
     let mut wrong = Vec::new();
     if got["status"] != expected.status.as_str() {
         wrong.push(format!(
