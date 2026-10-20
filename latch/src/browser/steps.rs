@@ -321,8 +321,7 @@ pub async fn run(
             }
             Work::Literal(literal, check) => {
                 shown["op"] = json!(literal.op);
-                run.literal(step_no, &literal, check.as_ref(), n + 1 == summaries.len())
-                    .await
+                run.literal(step_no, &literal, check.as_ref()).await
             }
         };
         shown["actions"] = json!(run.actions - before);
@@ -526,7 +525,6 @@ impl Run<'_> {
         n: usize,
         literal: &Literal,
         check: Option<&Check>,
-        last: bool,
     ) -> Result<Done, Failure> {
         if self.left().is_zero() {
             return Err(stopped(
@@ -551,26 +549,21 @@ impl Run<'_> {
             Some(c) if c.kind == CheckKind::Download => self.downloads().await?,
             _ => Vec::new(),
         };
-        let acted = match literal.op {
-            Op::Fill => {
-                self.fill(n, literal).await?;
-                Value::Null
-            }
+        match literal.op {
+            Op::Fill => self.fill(n, literal).await?,
             Op::Click => self.risky(n, literal, false).await?,
             _ if presses_enter(literal) => self.risky(n, literal, true).await?,
-            _ => self.dispatch(n, literal, None, None, None).await?,
-        };
-        let done = self.check(n, literal, check, besides).await?;
-        if !last {
-            wall(&acted)?;
+            _ => {
+                self.dispatch(n, literal, None, None, None).await?;
+            }
         }
-        Ok(done)
+        self.check(n, literal, check, besides).await
     }
 
     /// A click or Enter: the model's risk decision on what it would act on,
     /// then the action, made only if that is still what the page shows, or a
     /// confirmation in its place.
-    async fn risky(&mut self, n: usize, literal: &Literal, enter: bool) -> Result<Value, Failure> {
+    async fn risky(&mut self, n: usize, literal: &Literal, enter: bool) -> Result<(), Failure> {
         let reviewed = self.review(literal, enter).await?;
         if !self.model.is_on() {
             return Err(model_unavailable(&self.model, "a click or Enter"));
@@ -732,19 +725,14 @@ impl Run<'_> {
         };
         let guard = Some((print.as_str(), enter));
         let sent = match kind {
-            Confirms::Click => self
-                .dispatch(n, &literal, None, Some(id), guard)
-                .await
-                .map(|_| ()),
+            Confirms::Click => self.dispatch(n, &literal, None, Some(id), guard).await,
             Confirms::Keys(op, text) => {
                 let literal = Literal {
                     op,
                     text: Some(text),
                     ..literal.clone()
                 };
-                self.dispatch(n, &literal, None, Some(id), guard)
-                    .await
-                    .map(|_| ())
+                self.dispatch(n, &literal, None, Some(id), guard).await
             }
             Confirms::Fill(args) => self.fill_now(n, args, Some(id)).await,
         };
@@ -770,7 +758,7 @@ impl Run<'_> {
         risk_p: Option<f64>,
         confirmation: Option<&str>,
         guard: Option<(&str, bool)>,
-    ) -> Result<Value, Failure> {
+    ) -> Result<(), Failure> {
         let action = self.begin(n, literal.op, json!({"ref": literal.target}))?;
         let mut act = json!({
             "op": "act", "action": action_of(literal.op), "quiet": true,
@@ -819,7 +807,7 @@ impl Run<'_> {
                 if let Some(events) = result.get("events") {
                     shown["events"] = events.clone();
                 }
-                Ok(result)
+                Ok(())
             }
             Err(failure) => Err(failure),
         };
@@ -1027,25 +1015,6 @@ impl Run<'_> {
             outcome: "model_assessed",
             evidence: Some(evidence),
         })
-    }
-}
-
-/// A step that led to a sign-in form or a CAPTCHA stops the plan there.
-fn wall(acted: &Value) -> Result<(), Failure> {
-    match acted["wall"].as_str() {
-        Some("login") => Err(stopped(
-            "needs_login",
-            "this step led to a sign-in form; the rest of the plan did not run: sign in with `login`, then go on".into(),
-        )),
-        Some("captcha") => {
-            let mut failure = stopped(
-                "needs_owner",
-                "this step led to a CAPTCHA; the rest of the plan did not run: hand off to the owner".into(),
-            );
-            failure.details = json!({"reason": "captcha"});
-            Err(failure)
-        }
-        _ => Ok(()),
     }
 }
 

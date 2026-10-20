@@ -204,8 +204,7 @@ evidence, its action count), `trail` (per action: page URL and title,
 operation, target with role, name and row text, `chosen: ref`, the risk `p`,
 the confirmation used, `result` `dispatched`/`refused`/`unknown`, what
 changed) and `page` (snapshot, URL, title, up to 40 lines, the element
-list). A plan stops at the first step that does not pass, at a sign-in form
-(`needs_login`) or a CAPTCHA (`needs_owner`) a step led to, or at its
+list). A plan stops at the first step that does not pass, or at its
 deadline; nothing is replayed or retried. Exit 0 is `reached` or
 `dispatched`; a stop exits 1, or 4 for `confirm_needed`, `confirm_stale` and
 `step_not_allowed`.

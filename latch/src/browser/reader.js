@@ -362,12 +362,8 @@
     return { uid: uid(el), element: { role: r, name: n, row }, acts_on: actsOn, lines };
   };
 
-  // What a plan must stop at: a sign-in form, or a CAPTCHA's frame.
-  const CAPTCHA = /\/recaptcha\/|hcaptcha\.com|challenges\.cloudflare\.com/;
-  const wall = () => ({
-    password: [...document.querySelectorAll('input[type=password]')].some(rendered),
-    captcha: CAPTCHA.test(location.href),
-  });
+  // Whether this frame shows a password field: a two-page login's second page.
+  const passwordShown = () => [...document.querySelectorAll('input[type=password]')].some(rendered);
 
   // The page a click on `el`, or the key `key` in it, would load, when that
   // is known before it happens: a link's address, or the address its form
@@ -395,7 +391,7 @@
   globalThis.__latch = {
     fields,
     review,
-    wall,
+    passwordShown,
     read,
     locate,
     elementAt: (snap, index) => element(snap, index),
