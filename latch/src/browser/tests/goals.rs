@@ -310,6 +310,12 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     let png = crate::browser::steps::shot(&h.browsers, &h.id, super::CALLER, request, "2").unwrap();
     assert!(png.starts_with(b"\x89PNG"));
     let audit = h.audits.last().unwrap();
+    assert_eq!(audit["goals"], 1);
+    assert_eq!(
+        audit["step_outcomes"],
+        json!([{"step": 1, "kind": "goal", "outcome": "model_assessed", "actions": 2}])
+    );
+    assert_eq!(audit["model_calls"][0]["purpose"], "decide");
     assert_eq!(
         audit["step_records"][1]["screenshot"]["sha256"],
         crate::state::to_hex(&sha2::Sha256::digest(&png))

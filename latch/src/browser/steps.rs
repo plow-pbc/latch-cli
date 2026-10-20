@@ -240,6 +240,10 @@ pub async fn run(
         return Err(usage("a plan needs a step".into()));
     }
     audit.insert("steps".into(), json!(plan.steps.len()));
+    audit.insert(
+        "goals".into(),
+        json!(plan.steps.iter().filter(|s| s.goal.is_some()).count()),
+    );
     let first = usize::from(confirm.is_some()) + 1;
     let mut model = browsers.model();
     if let Some(n) = plan.steps.iter().position(|s| s.goal.is_some())
@@ -445,6 +449,26 @@ pub async fn run(
     record_model(&model, audit);
     audit.insert("status".into(), json!(status));
     audit.insert("step_records".into(), json!(records));
+    // Each step's kind and outcome, for the metrics: never its words.
+    let outcomes: Vec<Value> = steps
+        .iter()
+        .map(|s| {
+            let kind = if s.get("goal").is_some() {
+                "goal"
+            } else if s.get("confirm").is_some() {
+                "confirm"
+            } else {
+                "literal"
+            };
+            let mut outcome = json!({"step": s["step"], "kind": kind, "outcome": s["outcome"],
+                                     "actions": s["actions"]});
+            if let Some(code) = s.get("code") {
+                outcome["code"] = code.clone();
+            }
+            outcome
+        })
+        .collect();
+    audit.insert("step_outcomes".into(), json!(outcomes));
     // Every answer ends with the page as it is now.
     let page = call(entry, json!({"op": "glance"}), audit)
         .await
