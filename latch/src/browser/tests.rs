@@ -210,6 +210,7 @@ conformance!(
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
     a_browser_that_leaves_calls_unanswered_is_closed,
     a_dialog_that_opens_between_calls_is_refused_at_once,
+    a_dialog_in_one_session_does_not_hold_another_sessions_download,
     back_into_a_reserved_site_is_refused_after_a_return_visit,
 );
 
@@ -1107,6 +1108,54 @@ async fn a_dialog_that_opens_between_calls_is_refused_at_once(engine: &str) {
         .unwrap();
     session.call(json!({"op": "observe"})).await.unwrap();
     session.close().await.unwrap();
+}
+
+/// A download from a frame latch has not read is traced to its session
+/// through each tab's frames; a tab a dialog holds answers for none of
+/// them, and another session's call does not wait on it.
+async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["dialog-download"]);
+    let mut h = Host::new(&state);
+    let (a, _) = h
+        .open(CALLER, "dialog-download", json!({"url": local_page()}))
+        .await;
+    let (b, _) = h
+        .open(CALLER, "dialog-download", json!({"url": local_page()}))
+        .await;
+    h.call(
+        CALLER,
+        "eval",
+        &a,
+        json!({"script": "setTimeout(() => alert('later'), 1000); 1"}),
+    )
+    .await
+    .unwrap();
+    // A frame that downloads a file and is gone again before latch hears
+    // of the download: no tab holds it, so every tab is asked.
+    let script = "setTimeout(() => {\n\
+        const frame = document.createElement('iframe');\n\
+        frame.srcdoc = `<script>const a = document.createElement('a');\n\
+          a.href = URL.createObjectURL(new Blob(['x'])); a.download = 'x.txt'; a.click();\n\
+        <\\/script>`;\n\
+        document.body.append(frame);\n\
+        setTimeout(() => frame.remove(), 800);\n\
+      }, 1500); 1";
+    h.call(CALLER, "eval", &b, json!({"script": script}))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(4500)).await;
+    let started = std::time::Instant::now();
+    let listed = h.call(CALLER, "downloads", &b, json!({})).await;
+    let took = started.elapsed();
+    println!("b's downloads after {took:?}: {listed:?}");
+    listed.unwrap();
+    assert!(took < Duration::from_secs(5), "b's downloads took {took:?}");
+    h.call(CALLER, "dialog", &a, json!({"accept": true}))
+        .await
+        .unwrap();
+    for id in [&a, &b] {
+        h.call(CALLER, "close", id, json!({})).await.unwrap();
+    }
 }
 
 async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {

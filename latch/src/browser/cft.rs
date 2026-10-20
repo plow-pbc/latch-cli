@@ -278,14 +278,37 @@ impl Cft {
             })
             .collect();
         for (key, session) in tabs {
-            let deadline = self.by(COMMAND);
-            if let Ok(tree) = self.frame_command("Page.getFrameTree", json!({}), &session, deadline)
-                && holds_frame(&tree["frameTree"], frame)
+            // A tab a dialog holds answers for none of its frames until the
+            // dialog is answered; it is left out, not waited on.
+            if self.held_by_dialog(&session) {
+                continue;
+            }
+            let here = [session.clone()];
+            let opened = |event: &Value| dialog_in(event, &here);
+            if let Ok(Reply::Answer(tree)) = self.session_call(
+                "Page.getFrameTree",
+                json!({}),
+                &session,
+                self.by(COMMAND),
+                opened,
+            ) && holds_frame(&tree["frameTree"], frame)
             {
                 return Ok(Some(key));
             }
         }
         Ok(None)
+    }
+
+    /// Whether a dialog holds the tab whose CDP session `session` is.
+    fn held_by_dialog(&self, session: &str) -> bool {
+        self.shares.values().any(|share| {
+            share.dialog.as_ref().is_some_and(|tab| {
+                share
+                    .tabs
+                    .iter()
+                    .any(|t| &t.id == tab && t.session == session)
+            })
+        })
     }
 
     /// The CDP sessions of the selected session's tabs: where its dialogs
@@ -696,15 +719,7 @@ impl Cft {
                 "a dialog is open; answer it with `dialog accept|dismiss`".into(),
             )
         };
-        let held = self.shares.values().any(|share| {
-            share.dialog.as_ref().is_some_and(|tab| {
-                share
-                    .tabs
-                    .iter()
-                    .any(|t| &t.id == tab && t.session == session)
-            })
-        });
-        if held {
+        if self.held_by_dialog(session) {
             return Err(blocked());
         }
         let here = [session.to_string()];
