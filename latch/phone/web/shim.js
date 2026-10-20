@@ -4,6 +4,10 @@
 // talks to the host only through this file.
 import init, { connect } from "./latch_phone.js";
 
+// Opening another link in the same tab changes only what follows `#`,
+// which does not reload the page: start over for the new link.
+window.addEventListener("hashchange", () => location.reload());
+
 const status = document.getElementById("status");
 const frame = document.getElementById("page");
 const link = new URLSearchParams(location.hash.slice(1));

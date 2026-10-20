@@ -3,7 +3,9 @@
 #
 # 1. For a login, an identity with secrets typed on the phone and a note,
 #    open a link with the owner's latch and save made-up values from WebKit
-#    as an iPhone (phone.mjs); each link must refuse a second use.
+#    as an iPhone (phone.mjs); the form must not send with a required field
+#    (a secret, a note's text) empty, each link must refuse a second use,
+#    and a link opened in a tab that shows another must load.
 # 2. The host lists the items without a value.
 # 3. A browser session on the host signs in to a practice site with the
 #    saved login (`latch browser login`, as an agent calls it), and the
@@ -54,22 +56,24 @@ client() { # NAME ARGS…
     "$latch" "$@" > "$out/$name.json" 2> "$out/$name.stderr"
 }
 
-check() { # KIND VALUES.json LINK-ARGS…
-    kind=$1 values=$2
-    shift 2
+check() { # KIND VALUES.json PREVIOUS-KIND LINK-ARGS…
+    kind=$1 values=$2 previous=$3
+    shift 3
     client "$kind-link" vault link --host "$host" --kind "$kind" --title "$title" \
         --page "http://localhost:$port/" "$@"
-    node phone.mjs "$out/$kind-link.json" "$values" "$out/$kind" > "$out/$kind.txt"
+    node phone.mjs "$out/$kind-link.json" "$values" "$out/$kind" \
+        ${previous:+"$out/$previous-link.json"} > "$out/$kind.txt"
     cat "$out/$kind.txt"
 }
 
 # 1. The phone saves each item once.
 printf '{"password": "%s"}' "$password" > "$out/login-values.json"
-check login "$out/login-values.json" --site toscrape.com --field username=phone-e2e
+check login "$out/login-values.json" "" --site toscrape.com --field username=phone-e2e
 printf '{"ssn": "%s", "passport number": "%s"}' "$ssn" "$passport" > "$out/identity-values.json"
-check identity "$out/identity-values.json" --field "first name=Ada" --ask ssn --ask "passport number"
+# The identity's link opens in the tab that shows the login's used one.
+check identity "$out/identity-values.json" login --field "first name=Ada" --ask ssn --ask "passport number"
 printf '{"notes": "%s"}' "$note" > "$out/note-values.json"
-check note "$out/note-values.json"
+check note "$out/note-values.json" ""
 rm "$out"/*-values.json
 
 # 2. The host lists them, without values.

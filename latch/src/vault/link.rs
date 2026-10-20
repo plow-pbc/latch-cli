@@ -55,6 +55,9 @@ pub struct Request {
 pub struct Field {
     label: String,
     secret: bool,
+    /// Must be typed before the item is saved: every secret, and a note's
+    /// text, which is all a note is.
+    required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
 }
@@ -127,6 +130,7 @@ fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure>
             Some(Field {
                 label: label.clone(),
                 secret: false,
+                required: false,
                 value: Some(value.as_str()?.to_string()),
             })
         })
@@ -155,6 +159,7 @@ fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure>
         fields.push(Field {
             label: label.to_string(),
             secret: *secret,
+            required: *secret || (kind == "note" && label == "notes"),
             value: None,
         });
     }
@@ -224,8 +229,9 @@ pub fn page(
     }))
 }
 
-/// `submit`: saves the item once. The link stays locked while it saves,
-/// so two taps cannot save twice; a save that fails leaves it open.
+/// `submit`: saves the item once, with every required field (secrets, a
+/// note's text) filled in. The link stays locked while it saves, so two taps cannot
+/// save twice; a save that fails leaves it open.
 pub fn submit(
     vault: &Vault,
     args: &Value,
@@ -249,6 +255,16 @@ pub fn submit(
             ));
         }
         values.insert(label.clone(), value.clone());
+    }
+    let empty = |field: &&Field| {
+        let value = values.get(&field.label).and_then(Value::as_str);
+        value.unwrap_or_default().is_empty()
+    };
+    if let Some(field) = request.fields.iter().filter(|f| f.required).find(empty) {
+        return Err(Failure::usage(
+            "missing_field",
+            format!("fill in the {}", field.label),
+        ));
     }
     let item = json!({
         "kind": request.kind,
@@ -310,7 +326,10 @@ mod tests {
         let shown = page(&vault, &here(), &json!({"code": code}), &mut Map::new()).unwrap();
         let fields = &shown["request"]["fields"];
         assert_eq!(fields[0]["value"], "ada@shop.example");
-        assert_eq!(fields[1], json!({"label": "password", "secret": true}));
+        assert_eq!(
+            fields[1],
+            json!({"label": "password", "secret": true, "required": true})
+        );
         assert!(!shown.to_string().contains(&code));
 
         let saved = submitted(&vault, &code, json!({"password": "made-up-1"})).unwrap();
@@ -359,9 +378,9 @@ mod tests {
         assert_eq!(
             shown["request"]["fields"],
             json!([
-                {"label": "first name", "secret": false, "value": "Ada"},
-                {"label": "ssn", "secret": true},
-                {"label": "passport number", "secret": true},
+                {"label": "first name", "secret": false, "required": false, "value": "Ada"},
+                {"label": "ssn", "secret": true, "required": true},
+                {"label": "passport number", "secret": true, "required": true},
             ])
         );
         let values = json!({"ssn": "078-05-1120", "passport number": "X1234567"});
@@ -391,6 +410,34 @@ mod tests {
         let refused = open(&vault, &here(), &args, &mut Map::new()).unwrap_err();
         assert_eq!(refused.code, "bad_item");
         assert!(vault.links.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_link_saves_nothing_until_its_secrets_or_a_notes_text_are_filled() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        let code = opened(&vault);
+        for values in [json!({}), json!({"password": ""})] {
+            let refused = submitted(&vault, &code, values).unwrap_err();
+            assert_eq!(
+                (refused.exit, refused.code.as_str()),
+                (Exit::Usage, "missing_field")
+            );
+        }
+        let note = open(
+            &vault,
+            &here(),
+            &json!({"kind": "note", "title": "Wifi"}),
+            &mut Map::new(),
+        )
+        .unwrap();
+        let note = note["code"].as_str().unwrap();
+        let refused = submitted(&vault, note, json!({"notes": ""})).unwrap_err();
+        assert_eq!(refused.code, "missing_field");
+        assert!(vault.list_if_present().is_empty());
+        // The links are still open for the filled-in forms.
+        assert!(submitted(&vault, &code, json!({"password": "made-up"})).is_ok());
+        assert!(submitted(&vault, note, json!({"notes": "made-up text"})).is_ok());
     }
 
     #[test]

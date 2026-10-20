@@ -75,6 +75,8 @@
       if (field.label === "username") input.autocomplete = "username";
       if (field.label === "password") input.autocomplete = "current-password";
       if (field.value) input.value = field.value;
+      // The host refuses a save without these; say so before sending.
+      input.required = field.required;
       label.append(input);
       form.append(label);
     }
