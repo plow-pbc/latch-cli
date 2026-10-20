@@ -39,6 +39,11 @@ pub struct Record {
     /// `"allow"` or `"deny"`.
     pub decision: String,
     pub outcome: String,
+    /// The gatekeeper's judgment of an agent's operation, when it judged
+    /// one: verdict, probabilities, model, the chat window's ids, rules
+    /// revisions. Never chat or rules text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<Value>,
     pub prev: String,
     /// This record's own sha256; also its `audit_id` in the host's answer.
     pub hash: String,
@@ -149,6 +154,7 @@ pub fn record(
         args: Value::Null,
         decision: decision.to_string(),
         outcome: outcome.to_string(),
+        gate: None,
         prev: String::new(),
         hash: String::new(),
     }

@@ -874,6 +874,33 @@ impl LivePlow {
                 }
             }
             ("POST", path) if path.ends_with("/offline") => (200, json!({})),
+            // What the host's gatekeeper reads, on the owner's login: the
+            // agent's one chat, where the owner asked for it, and a judge
+            // that agrees.
+            ("GET", path) if kind == "device" && path == format!("/v1/agents/{AGENT_UID}") => (
+                200,
+                json!({"uid": AGENT_UID, "name": "Research bot", "line": {"uid": "line_agent"}}),
+            ),
+            ("GET", "/v1/chats") if kind == "device" => (
+                200,
+                json!({"data": [{"uid": "chat_a", "participants": [
+                    {"type": "agent", "relationship": "self", "line": {"uid": "line_agent"}}]}],
+                       "has_more": false}),
+            ),
+            ("GET", path) if kind == "device" && path.starts_with("/v1/chats/chat_a/messages") => (
+                200,
+                json!({"data": [{"uid": "m1", "body": "echo whatever you like on the host",
+                                 "created_at": "2026-10-20T12:00:00Z",
+                                 "sender": {"type": "member", "display_name": "Owner", "role": "owner"}}],
+                       "has_more": false}),
+            ),
+            ("POST", "/v1/decisions") if kind == "device" => (
+                200,
+                json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
+                    "type": "choice", "choice": "COVERED",
+                    "probabilities": {"COVERED": 0.9, "NOT_COVERED": 0.08, "FORBIDDEN": 0.02}}},
+                    "usage": {"input_tokens": 1, "output_tokens": 0}}),
+            ),
             _ => (404, json!({})),
         }
     }
