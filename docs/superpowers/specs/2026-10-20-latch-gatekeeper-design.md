@@ -172,6 +172,7 @@ If exec cost hurts, the levers are `--deny-exec` now, or a coarser exec descript
 - **"Already done" covers this `serve` run only.**
 - **A device login placed where an agent runs bypasses the gate.** Agents must use their own credential; the docs say so.
 - **Rules are judged, not enforced.** A freeform "never" is as reliable as the judge, about the same as a "never" in chat. Only `--deny-exec` is a guarantee.
+- **The host's state folder is protected only from latch's sandboxed workers.** Its rules and vault files can be written by root, and by any process running as the host's OS user outside latch, such as an unsandboxed agent on the same machine. On a shared machine, run `latch serve` as a separate OS user.
 
 ## 11. Out of scope
 
