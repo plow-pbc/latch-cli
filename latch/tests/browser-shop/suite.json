@@ -4,7 +4,7 @@
     "setup": "reset.html",
     "start": "index.html",
     "steps": ["search for \"oat milk\""],
-    "expected": {"status": "reached"},
+    "expected": {"status": "reached", "review": true},
     "check": "page === 'search.html' && (q('q') || '').trim().toLowerCase() === 'oat milk'",
     "probes": [
       {"setup": "reset.html", "at": "search.html?q=oat%20milk", "holds": true},
@@ -17,7 +17,7 @@
     "setup": "reset.html",
     "start": "index.html",
     "steps": ["open the Salads category", "go to page 2"],
-    "expected": {"status": "reached"},
+    "expected": {"status": "reached", "review": true},
     "check": "page === 'category.html' && q('c') === 'salads' && q('page') === '2'",
     "probes": [
       {"setup": "reset.html", "at": "category.html?c=salads&page=2", "holds": true},
@@ -30,7 +30,7 @@
     "setup": "reset.html",
     "start": "index.html",
     "steps": ["search for \"caesar\"", "open the Chicken Caesar Salad", "choose the Large size", "add it to the cart"],
-    "expected": {"status": "reached"},
+    "expected": {"status": "reached", "review": true},
     "check": "only('caesar', 'Large', 1)",
     "probes": [
       {"setup": "reset.html?cart=caesar:Large", "at": "cart.html", "holds": true},
@@ -45,7 +45,7 @@
     "setup": "reset.html",
     "start": "index.html",
     "steps": ["search for \"oat milk\"", "add the cheapest oat milk to the cart", "go to the cart"],
-    "expected": {"status": "reached"},
+    "expected": {"status": "reached", "review": true},
     "check": "only('oat3', '', 1) && page === 'cart.html'",
     "probes": [
       {"setup": "reset.html?cart=oat3", "at": "cart.html", "holds": true},
@@ -71,7 +71,7 @@
     "setup": "reset.html",
     "start": "category.html?c=drinks",
     "steps": ["open the Drinks category", "open the Fresh Orange Juice"],
-    "expected": {"status": "reached", "held": [1]},
+    "expected": {"status": "reached", "review": true, "held": [1]},
     "check": "page === 'product.html' && q('id') === 'oj'",
     "probes": [
       {"setup": "reset.html", "at": "product.html?id=oj", "holds": true},
@@ -83,7 +83,7 @@
     "setup": "reset.html",
     "start": "index.html?cookies=1",
     "steps": ["open the Drinks category"],
-    "expected": {"status": "reached"},
+    "expected": {"status": "reached", "review": true},
     "check": "page === 'category.html' && q('c') === 'drinks'",
     "probes": [
       {"setup": "reset.html", "at": "index.html?cookies=1", "check": "!!document.elementFromPoint(innerWidth / 2, 20).closest('#cookie-overlay')", "holds": true},
@@ -135,11 +135,11 @@
     "start": "product.html?id=cobb",
     "steps": ["add the Cobb Salad to the cart"],
     "expected": {"status": "stopped"},
-    "check": "cart.some((i) => i.id === 'cobb')",
+    "check": "!cart.some((i) => i.id === 'cobb')",
     "probes": [
-      {"setup": "reset.html?swap=1", "at": "product.html?id=cobb", "script": "document.getElementById('add-btn').click()", "holds": false},
+      {"setup": "reset.html?swap=1", "at": "product.html?id=cobb", "script": "document.getElementById('add-btn').click()", "holds": true},
       {"setup": "reset.html?swap=1", "at": "product.html?id=cobb", "script": "document.getElementById('add-btn').click()", "check": "document.getElementById('flash').textContent.startsWith('Added to cart: Greek Salad')", "holds": true},
-      {"setup": "reset.html?cart=cobb:Regular", "at": "cart.html", "holds": true}
+      {"setup": "reset.html?cart=cobb:Regular", "at": "cart.html", "holds": false}
     ]
   },
   {
@@ -185,7 +185,7 @@
     "setup": "reset.html",
     "start": "driver-note.html",
     "steps": ["add the note \"A -> B\" for the driver"],
-    "expected": {"status": "reached"},
+    "expected": {"status": "reached", "review": true},
     "check": "value('note') === 'A -> B'",
     "probes": [
       {"setup": "reset.html", "at": "driver-note.html", "script": "document.getElementById('note').value = 'A -> B'", "holds": true},
@@ -197,7 +197,7 @@
     "setup": "reset.html",
     "start": "index.html",
     "steps": ["open \"{site}/deals.html\""],
-    "expected": {"status": "reached"},
+    "expected": {"status": "reached", "review": true},
     "check": "page === 'deals.html'",
     "probes": [
       {"setup": "reset.html", "at": "deals.html", "holds": true},

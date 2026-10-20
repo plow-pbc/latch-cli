@@ -458,3 +458,240 @@ async fn the_view_shows_what_a_decision_needs() {
     drop(call);
     session.close().await.unwrap();
 }
+
+/// What one case came to: its outcome as the plan answered, and whether
+/// its checker held on the page then.
+fn outcome_of(
+    result: Result<serde_json::Value, crate::failure::Failure>,
+) -> (serde_json::Value, serde_json::Value) {
+    let (answer, code) = match result {
+        Ok(answer) => (answer, None),
+        Err(failure) => (failure.details.clone(), Some(failure.code)),
+    };
+    let held: Vec<u64> = answer["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["outcome"] == "already_held")
+        .filter_map(|s| s["step"].as_u64())
+        .collect();
+    let got = json!({
+        "status": answer["status"],
+        "code": code,
+        "step": answer["stop"]["step"],
+        "held": held,
+        "review": answer["review"] == true,
+    });
+    (got, answer)
+}
+
+/// Whether `check` holds on the session's page now.
+async fn holds(h: &super::steps::Harness, check: &str) -> bool {
+    let (value, _) = crate::browser::steps::call(
+        &h.entry,
+        json!({"op": "eval", "script": checker(check)}),
+        &mut serde_json::Map::new(),
+    )
+    .await
+    .unwrap();
+    value["value"] == true
+}
+
+/// Where `got` differs from `expected`.
+fn differences(expected: &Expected, got: &serde_json::Value) -> Vec<String> {
+    let mut wrong = Vec::new();
+    if got["status"] != expected.status.as_str() {
+        wrong.push(format!(
+            "status {} (expected {})",
+            got["status"], expected.status
+        ));
+    }
+    if let Some(code) = &expected.code
+        && got["code"] != code.as_str()
+    {
+        wrong.push(format!("code {} (expected {code})", got["code"]));
+    }
+    if let Some(step) = expected.step
+        && got["step"] != step
+    {
+        wrong.push(format!("stopped at step {} (expected {step})", got["step"]));
+    }
+    if got["held"] != json!(expected.held) {
+        wrong.push(format!(
+            "held {} (expected {:?})",
+            got["held"], expected.held
+        ));
+    }
+    if expected.status == "reached" && got["review"] != expected.review {
+        wrong.push(format!(
+            "review {} (expected {})",
+            got["review"], expected.review
+        ));
+    }
+    wrong
+}
+
+/// The most decision-model calls the suite makes in a minute.
+const SUITE_PER_MINUTE: usize = 30;
+
+/// The plan suite on the real decision model: each case's plan through the
+/// host's own `do`, with the model reached through Plow's decision route
+/// on the login of the host in `LATCH_SUITE_HOST_STATE` (a dev Plow stack's:
+/// prod Plow has no such route). Each run's cases, audit records and
+/// metrics go to a new folder under `LATCH_SUITE_OUT`.
+#[tokio::test]
+#[ignore = "calls the decision model through a dev Plow stack: `just plan-suite`"]
+async fn the_plan_suite_on_the_decision_model() {
+    use super::steps::Harness;
+    use crate::browser::model::Plow;
+    use crate::vault::item::{CARD, Item, Raw};
+    use crate::vault::store::Backend;
+
+    let host = std::env::var("LATCH_SUITE_HOST_STATE").expect("LATCH_SUITE_HOST_STATE");
+    let out = PathBuf::from(std::env::var("LATCH_SUITE_OUT").expect("LATCH_SUITE_OUT"));
+    let plow = Plow::for_host(Path::new(&host)).unwrap();
+    let run = out.join(
+        jiff::Timestamp::now()
+            .strftime("%Y%m%dT%H%M%SZ")
+            .to_string(),
+    );
+    std::fs::create_dir_all(&run).unwrap();
+    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let site = serve_shop();
+    let mut h = Harness::start(&state, Some(std::sync::Arc::new(plow))).await;
+    let card = h
+        .browsers
+        .vault
+        .with(|s| {
+            s.add(Item {
+                id: String::new(),
+                revision: 0,
+                sites: Vec::new(),
+                other_top_sites: Vec::new(),
+                raw: Raw::from_labels(
+                    CARD,
+                    "Test Visa",
+                    &[
+                        ("cardholder name".into(), "Ada Lovelace".into()),
+                        ("number".into(), "4111111111111111".into()),
+                        ("expiry month".into(), "4".into()),
+                        ("expiry year".into(), "2031".into()),
+                        ("code".into(), "123".into()),
+                    ],
+                )
+                .unwrap(),
+            })
+        })
+        .unwrap()
+        .item;
+    let mut results = Vec::new();
+    let mut audit_lines = String::new();
+    let mut failed = Vec::new();
+    // Plow's route takes 60 calls a minute from one login: the suite keeps
+    // under it, so no case meets its limit. How long to wait, once `made`
+    // more calls are counted.
+    let mut calls: Vec<std::time::Instant> = Vec::new();
+    let pace = |calls: &mut Vec<std::time::Instant>, made: usize| {
+        let now = std::time::Instant::now();
+        calls.extend(std::iter::repeat_n(now, made));
+        calls.retain(|at| now.duration_since(*at) < Duration::from_secs(60));
+        match calls.len().checked_sub(SUITE_PER_MINUTE) {
+            Some(over) => Duration::from_secs(60) - now.duration_since(calls[over]),
+            None => Duration::ZERO,
+        }
+    };
+    let made = |h: &Harness| {
+        h.audits
+            .last()
+            .and_then(|a| a["model_calls"].as_array().map(Vec::len))
+            .unwrap_or(0)
+    };
+    for case in suite() {
+        h.open(&format!("{site}/{}", case.setup)).await;
+        h.open(&format!("{site}/{}", case.start)).await;
+        let mut plan = plan_of(&case, &site).unwrap();
+        if case.vault.iter().any(|kind| kind == "card") {
+            plan.items = vec![card.clone()];
+        }
+        let started = std::time::Instant::now();
+        let (got, answer) = outcome_of(h.send(json!({"plan": plan})).await);
+        let checked = holds(&h, &case.check).await;
+        let mut wrong = differences(&case.expected, &got);
+        if !checked {
+            wrong.push("its checker does not hold".into());
+        }
+        let mut record = json!({"name": case.name, "expected": {
+            "status": case.expected.status, "code": case.expected.code, "step": case.expected.step,
+            "held": case.expected.held, "review": case.expected.review},
+            "got": got, "checker": checked, "seconds": started.elapsed().as_secs_f64(),
+            "answer": answer});
+        let mut audits = vec![h.audits.last().cloned().unwrap_or_default()];
+        tokio::time::sleep(pace(&mut calls, made(&h))).await;
+        if let Some(then) = &case.then
+            && got["code"] == "confirm_needed"
+        {
+            if let Some(before) = &then.before {
+                crate::browser::steps::call(
+                    &h.entry,
+                    json!({"op": "eval", "script": format!("(async () => {{ {before}; }})()")}),
+                    &mut serde_json::Map::new(),
+                )
+                .await
+                .unwrap();
+                tokio::time::sleep(Duration::from_millis(600)).await;
+            }
+            let id = answer["stop"]["confirmation"]["id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let (then_got, then_answer) = outcome_of(h.confirm(&id).await);
+            let then_checked = holds(&h, &then.check).await;
+            let then_wrong = differences(&then.expected, &then_got);
+            for difference in then_wrong {
+                wrong.push(format!("after confirming: {difference}"));
+            }
+            if !then_checked {
+                wrong.push("after confirming: its checker does not hold".into());
+            }
+            record["then"] =
+                json!({"got": then_got, "checker": then_checked, "answer": then_answer});
+            audits.push(h.audits.last().cloned().unwrap_or_default());
+            tokio::time::sleep(pace(&mut calls, made(&h))).await;
+        }
+        for mut audit in audits {
+            audit.insert("command".into(), json!("do"));
+            audit.insert("session".into(), json!(case.name));
+            audit.insert("turn".into(), json!(case.name));
+            let line = json!({"time": jiff::Timestamp::now().to_string(), "caller": "suite",
+                              "agent": null, "op": "browser", "args": audit, "decision": "allow",
+                              "outcome": "ok", "prev": "", "hash": ""});
+            audit_lines.push_str(&format!("{line}\n"));
+        }
+        record["ok"] = json!(wrong.is_empty());
+        record["wrong"] = json!(wrong);
+        println!(
+            "{}: {}",
+            case.name,
+            if wrong.is_empty() {
+                "ok".to_string()
+            } else {
+                wrong.join("; ")
+            }
+        );
+        if !wrong.is_empty() {
+            failed.push(case.name.clone());
+        }
+        results.push(record);
+    }
+    std::fs::write(
+        run.join("cases.json"),
+        serde_json::to_string_pretty(&results).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(run.join("audit.ndjson"), audit_lines).unwrap();
+    println!("run kept in {}", run.display());
+    assert!(
+        failed.is_empty(),
+        "cases that did not end as listed: {failed:?}"
+    );
+}

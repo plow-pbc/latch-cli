@@ -181,6 +181,7 @@ impl Run<'_> {
             }
 
             let pass = self.pass(
+                typed,
                 at,
                 &goal,
                 &sentence,
@@ -674,6 +675,7 @@ impl Run<'_> {
     #[allow(clippy::too_many_arguments)]
     fn pass(
         &self,
+        typed: Option<&Check>,
         at: usize,
         goal: &str,
         sentence: &Option<String>,
@@ -759,6 +761,7 @@ impl Run<'_> {
                 .collect(),
             step: goal.to_string(),
             check: sentence.clone(),
+            outcome: typed.map(described),
             values: values.to_vec(),
             url: view["url"].as_str().unwrap_or_default().to_string(),
             title: view["title"].as_str().unwrap_or_default().to_string(),
@@ -802,6 +805,25 @@ impl Run<'_> {
         self.records.push(record);
         self.trail.push(shown);
         reply.map(|_| ())
+    }
+}
+
+/// A typed check in words, as the model reads what the page will show.
+fn described(check: &Check) -> String {
+    let value = &check.value;
+    let shown = match check.kind {
+        CheckKind::Origin => format!("the page is on {value}"),
+        CheckKind::Path => format!("the page's address path contains {value:?}"),
+        CheckKind::Query => format!("the page's address has the query {value:?}"),
+        CheckKind::Text => format!("the page shows the text {value:?}"),
+        CheckKind::Field => format!("a field holds {value:?}"),
+        CheckKind::Download => "a download has completed".to_string(),
+        CheckKind::Sentence => value.clone(),
+    };
+    if check.require_change {
+        format!("{shown}, which it did not before the step")
+    } else {
+        shown
     }
 }
 

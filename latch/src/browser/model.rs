@@ -407,6 +407,9 @@ pub struct Pass {
     pub step: String,
     /// The step's sentence check: what its completion is judged on.
     pub check: Option<String>,
+    /// The step's typed check, in words: latch decides it, and the model
+    /// sees it only as what the page will show once the step is done.
+    pub outcome: Option<String>,
     /// What the step may type, by name: its values, then the plan's facts.
     pub values: Vec<(String, String)>,
     pub url: String,
@@ -676,7 +679,7 @@ fn asked(pass: &Pass) -> (Value, Vec<Question>, Vec<(String, String, Line)>) {
         "page": page,
         "actions_in_this_step": pass.actions,
     });
-    if let Some(check) = &pass.check {
+    if let Some(check) = pass.check.as_ref().or(pass.outcome.as_ref()) {
         state["expected_outcome"] = json!(check);
     }
     if !pass.notes.is_empty() {
@@ -1043,7 +1046,7 @@ impl Plow {
     }
 
     /// The route on the Plow this host is logged in to, with its login.
-    fn for_host(state_dir: &Path) -> Result<Plow, String> {
+    pub fn for_host(state_dir: &Path) -> Result<Plow, String> {
         let state = crate::state::StateDir {
             path: state_dir.to_path_buf(),
         };
