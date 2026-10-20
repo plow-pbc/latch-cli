@@ -297,14 +297,15 @@ async fn import(connection: &iroh::endpoint::Connection, path: &Path) -> Result<
     let size = file.metadata().await.map_err(local)?.len();
     let request = Request {
         op: "vault".to_string(),
-        args: json!({"command": "import_preview", "size": size}),
+        args: json!({"command": "import", "size": size}),
     };
+    // One stream: the go-ahead, the bytes, the preview, the picks, the
+    // outcome. The host drops the export if the stream ends before picks.
     let (mut send, mut recv) = dial::start(connection, &request).await?;
     dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     wire::copy(&mut file, &mut send, size)
         .await
         .map_err(|_| dial::lost(connection, true))?;
-    send.finish().map_err(|_| dial::lost(connection, true))?;
     let previewed = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     let preview = &previewed["preview"];
     show(preview);
@@ -319,11 +320,10 @@ async fn import(connection: &iroh::endpoint::Connection, path: &Path) -> Result<
             rows,
         )?
     };
-    let request = Request {
-        op: "vault".to_string(),
-        args: json!({"command": "import_commit", "import": previewed["import"], "picks": picks}),
-    };
-    let (mut send, mut recv) = dial::start(connection, &request).await?;
+    let picked = serde_json::to_vec(&json!({"picks": picks})).expect("serializes");
+    wire::write_frame(&mut send, &picked)
+        .await
+        .map_err(|_| dial::lost(connection, true))?;
     send.finish().map_err(|_| dial::lost(connection, true))?;
     let mut outcome = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     outcome["source"] = preview["source"].clone();

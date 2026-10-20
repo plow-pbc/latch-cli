@@ -64,7 +64,7 @@ pub enum Command {
     Vault(VaultArgs),
     /// Run this machine as a host, in the foreground, until stopped
     Serve(ServeArgs),
-    /// Internal: the sandboxed process a host starts for each file read or write
+    /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),
     /// Internal: the process a host starts for each browser session
@@ -162,18 +162,6 @@ pub enum BrowserCommand {
         /// `field: e3=Large`, `download: complete`, … or a sentence
         #[arg(long, value_name = "CHECK")]
         check: Option<String>,
-        /// Removed: coordinate clicks
-        #[arg(long, hide = true)]
-        at: Option<String>,
-        /// Removed: use --check, or the plan command
-        #[arg(long, hide = true)]
-        expect: Option<String>,
-        /// Removed: use the plan command
-        #[arg(long, hide = true)]
-        steps: Option<String>,
-        /// Removed: use `do --history R`
-        #[arg(long, hide = true)]
-        history: Option<String>,
     },
     /// Hand this session to the owner, who acts in its window (a CAPTCHA, a
     /// texted code, a passkey, a sign-in): waits until they hand it back.
@@ -195,9 +183,6 @@ pub enum BrowserCommand {
         role: Option<String>,
         #[arg(long)]
         name: Option<String>,
-        /// Removed: a description in words
-        #[arg(hide = true)]
-        description: Option<String>,
     },
     /// Wait for an element's state, text or a path, with a deadline
     Wait {
@@ -216,9 +201,6 @@ pub enum BrowserCommand {
         /// Text that is part of the page's path
         #[arg(long, value_name = "P")]
         url_path: Option<String>,
-        /// Removed: a sentence
-        #[arg(long = "for", hide = true)]
-        sentence: Option<String>,
         /// Seconds to wait (default 10)
         #[arg(long, value_name = "S")]
         within: Option<f64>,

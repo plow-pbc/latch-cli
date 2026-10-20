@@ -9,12 +9,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iroh::endpoint::{RecvStream, SendStream};
 use serde_json::{Map, Value, json};
 
-use super::import::{self, Parsed};
+use super::import;
 use super::item::{Item, Raw, kind_code};
 use super::link::{self, Here};
 use super::store::{Backend, OwnStore};
@@ -22,16 +22,14 @@ use crate::failure::{Exit, Failure};
 use crate::serve::Done;
 use crate::wire::{self, Response};
 
-/// How long a previewed import waits for the owner's pick.
+/// How long a previewed import waits for the owner's pick; past it, or
+/// when the owner's connection drops, the export is dropped unsaved.
 const PICK_WITHIN: Duration = Duration::from_secs(15 * 60);
 
 /// The host's one vault, opened on first use.
 pub struct Vault {
     dir: PathBuf,
     store: Mutex<Option<OwnStore>>,
-    /// Previewed imports awaiting a pick, by id, with who previewed them.
-    imports: Mutex<HashMap<String, (String, Instant, Parsed)>>,
-    next_import: Mutex<u64>,
     /// Open phone links, by the sha256 of their code (see `link.rs`).
     pub(super) links: Mutex<HashMap<String, super::link::Request>>,
 }
@@ -41,8 +39,6 @@ impl Vault {
         Arc::new(Vault {
             dir,
             store: Mutex::new(None),
-            imports: Mutex::new(HashMap::new()),
-            next_import: Mutex::new(0),
             links: Mutex::new(HashMap::new()),
         })
     }
@@ -74,7 +70,6 @@ impl Vault {
 pub async fn run(
     vault: &Vault,
     here: &Here,
-    caller: &str,
     kind: &str,
     args: Value,
     send: &mut SendStream,
@@ -92,8 +87,7 @@ pub async fn run(
         "edit" => edit(vault, &args, &mut audit),
         "link" => link::open(vault, here, &args, &mut audit),
         "remove" => remove(vault, &args, &mut audit),
-        "import_preview" => preview(vault, caller, &args, send, recv, &mut audit).await,
-        "import_commit" => commit(vault, caller, &args, &mut audit),
+        "import" => import(vault, &args, send, recv, &mut audit).await,
         _ => Err(Failure::usage(
             "bad_command",
             format!("unknown vault command {command:?}"),
@@ -255,11 +249,11 @@ fn remove(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result
     Ok(json!({"removed": item}))
 }
 
-/// Reads an export the client sends after the host's go-ahead, marks it
-/// against the vault, and keeps it for the owner's pick.
-async fn preview(
+/// One import on one stream: the host's go-ahead, the export's bytes,
+/// the preview, the owner's picks, then the outcome. The export lives only
+/// while this runs.
+async fn import(
     vault: &Vault,
-    caller: &str,
     args: &Value,
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -274,15 +268,17 @@ async fn preview(
             "that export is too large".into(),
         ));
     }
-    let go = serde_json::to_vec(&Response::Ok(json!({}))).expect("serializes");
     let lost = || {
         Failure::new(
             Exit::Unknown,
             "connection_lost",
-            "the export broke off".into(),
+            "the import broke off; nothing was saved".into(),
         )
     };
-    wire::write_frame(send, &go).await.map_err(|_| lost())?;
+    let frame = |value: Value| serde_json::to_vec(&Response::Ok(value)).expect("serializes");
+    wire::write_frame(send, &frame(json!({})))
+        .await
+        .map_err(|_| lost())?;
     let mut bytes = Vec::with_capacity(size as usize);
     wire::copy(recv, &mut bytes, size)
         .await
@@ -290,47 +286,28 @@ async fn preview(
     let mut parsed = import::parse(&bytes)?;
     drop(bytes);
     vault.with(|store| import::mark_against(store, &mut parsed))?;
-    let shown = import::preview(&parsed);
     audit.insert("source".into(), json!(parsed.source));
     audit.insert("rows".into(), json!(parsed.items.len()));
-    let id = {
-        let mut next = vault.next_import.lock().expect("lock");
-        *next += 1;
-        format!("i{next}")
+    wire::write_frame(send, &frame(json!({"preview": import::preview(&parsed)})))
+        .await
+        .map_err(|_| lost())?;
+    let picked = match tokio::time::timeout(PICK_WITHIN, wire::read_frame(recv)).await {
+        Ok(Ok(json)) => serde_json::from_slice::<Value>(&json).map_err(|_| lost())?,
+        Ok(Err(_)) => return Err(lost()),
+        Err(_) => {
+            return Err(Failure::usage(
+                "import_expired",
+                "no pick came in time; nothing was saved; run `latch vault import` again".into(),
+            ));
+        }
     };
-    let mut imports = vault.imports.lock().expect("lock");
-    imports.retain(|_, (_, at, _)| at.elapsed() < PICK_WITHIN);
-    imports.insert(id.clone(), (caller.to_string(), Instant::now(), parsed));
-    Ok(json!({"import": id, "preview": shown}))
-}
-
-fn commit(
-    vault: &Vault,
-    caller: &str,
-    args: &Value,
-    audit: &mut Map<String, Value>,
-) -> Result<Value, Failure> {
-    let id = args["import"].as_str().unwrap_or_default();
-    let picks: Vec<usize> = args["picks"]
+    let picks: Vec<usize> = picked["picks"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|p| p.as_u64().map(|p| p as usize))
         .collect();
-    let parsed = {
-        let mut imports = vault.imports.lock().expect("lock");
-        match imports.remove(id) {
-            Some((who, at, parsed)) if who == caller && at.elapsed() < PICK_WITHIN => parsed,
-            _ => {
-                return Err(Failure::usage(
-                    "no_such_import",
-                    "that import is gone; run `latch vault import` again".into(),
-                ));
-            }
-        }
-    };
     let outcome = vault.with(|store| Ok(import::commit(store, &parsed, &picks)))?;
-    audit.insert("source".into(), json!(parsed.source));
     audit.insert("picked".into(), json!(picks.len()));
     audit.insert(
         "result".into(),
@@ -462,5 +439,98 @@ mod tests {
                 (Exit::Denied, "owner_only")
             );
         }
+    }
+
+    /// One import over a real stream, from the client's side: the go-ahead,
+    /// the bytes, the preview, then `picks`, or a dropped connection.
+    async fn import_over_a_stream(vault: &Vault, picks: Option<Value>) -> Result<Value, Failure> {
+        use iroh::endpoint::presets;
+        use iroh::{Endpoint, RelayMode};
+        let bind = |alpns: Vec<Vec<u8>>| {
+            Endpoint::builder(presets::Minimal)
+                .relay_mode(RelayMode::Disabled)
+                .alpns(alpns)
+                .bind()
+        };
+        let host = bind(vec![wire::ALPN.to_vec()]).await.unwrap();
+        let client = bind(vec![]).await.unwrap();
+        let accepting = host.accept();
+        let (accepted, connection) =
+            tokio::join!(async { accepting.await.unwrap().await.unwrap() }, async {
+                client.connect(host.addr(), wire::ALPN).await.unwrap()
+            });
+        let export = fs_export();
+        let serving = async {
+            let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
+            let request: Value =
+                serde_json::from_slice(&wire::read_frame(&mut recv).await.unwrap()).unwrap();
+            let args = request["args"].clone();
+            let result = import(vault, &args, &mut send, &mut recv, &mut Map::new()).await;
+            if let Ok(outcome) = &result {
+                let answer = serde_json::to_vec(&Response::Ok(outcome.clone())).unwrap();
+                wire::write_frame(&mut send, &answer).await.unwrap();
+                send.finish().unwrap();
+                let _ = send.stopped().await;
+            }
+            result
+        };
+        let owner = async {
+            let (mut send, mut recv) = connection.open_bi().await.unwrap();
+            let next = |json: Vec<u8>| serde_json::from_slice::<Value>(&json).unwrap();
+            let request =
+                json!({"op": "vault", "args": {"command": "import", "size": export.len()}});
+            wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                next(wire::read_frame(&mut recv).await.unwrap()),
+                json!({"ok": {}})
+            );
+            wire::copy(&mut &export[..], &mut send, export.len() as u64)
+                .await
+                .unwrap();
+            let preview = next(wire::read_frame(&mut recv).await.unwrap());
+            assert_eq!(
+                preview["ok"]["preview"]["items"].as_array().unwrap().len(),
+                2
+            );
+            match &picks {
+                Some(picks) => {
+                    let picked = serde_json::to_vec(&json!({"picks": picks})).unwrap();
+                    wire::write_frame(&mut send, &picked).await.unwrap();
+                    send.finish().unwrap();
+                    let _ = wire::read_frame(&mut recv).await.unwrap();
+                }
+                None => connection.close(0u32.into(), b"gone"),
+            }
+        };
+        let (result, ()) = tokio::join!(serving, owner);
+        client.close().await;
+        host.close().await;
+        result
+    }
+
+    fn fs_export() -> Vec<u8> {
+        std::fs::read(format!(
+            "{}/tests/fixtures/import/chrome.csv",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_import_is_one_stream_and_a_dropped_owner_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().to_path_buf());
+
+        let dropped = import_over_a_stream(&vault, None).await.unwrap_err();
+        assert_eq!(dropped.code, "connection_lost");
+        assert!(vault.list_if_present().is_empty());
+
+        let outcome = import_over_a_stream(&vault, Some(json!([1, 2])))
+            .await
+            .unwrap();
+        assert_eq!(outcome["saved"], 2);
+        assert_eq!(vault.list_if_present().len(), 2);
     }
 }

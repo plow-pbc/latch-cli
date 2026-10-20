@@ -1,5 +1,5 @@
 //! The state directory of one latch instance (`--state-dir`, default
-//! `~/.latch`). It holds up to four files, all readable by this user only:
+//! `~/.latch`). Everything in it is readable by this user only:
 //!
 //! - `key`: this peer's ed25519 secret key, as hex. It never leaves the machine.
 //! - `plow-token`: the Plow credential `login --token-file` was given (a
@@ -7,6 +7,15 @@
 //!   `credential.rs`.
 //! - `config.json`: the Plow API URL and this peer's record as Plow returned it.
 //! - `audit.ndjson`, on a host: its audit log (see `audit.rs`).
+//! - `serve.log`, on a host: what `latch serve` logs while its dashboard
+//!   has the terminal.
+//! - `vault.json` and `vault.key`, on a host: the vault and its custody key
+//!   (see `vault/store.rs`).
+//! - `jev.key`, on a dev host only: the key for the jev model provider
+//!   (see `browser/model.rs`).
+//! - `browser/`, on a host: profiles, the model's settings and each
+//!   session's journal.
+//! - `plugins/`, on a host: the pinned engines and the Google CLI.
 //!
 //! A host has no config file: what it shares is named on `latch serve`'s
 //! command line.

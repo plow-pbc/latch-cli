@@ -111,6 +111,17 @@ fn open(key: &[u8; 32], sealed: &Sealed, aad: &[u8]) -> Result<Vec<u8>, Failure>
         .map_err(|_| failed("the vault could not be opened with its custody key".into()))
 }
 
+/// Reads the custody key from `path`. It is read on each use, not kept.
+fn custody(path: &Path) -> Result<[u8; 32], Failure> {
+    from_hex(
+        fs::read_to_string(path)
+            .map_err(|err| failed(format!("{}: {err}", path.display())))?
+            .trim(),
+    )?
+    .try_into()
+    .map_err(|_| failed("the custody key is damaged".into()))
+}
+
 /// Writes `bytes` to `path` owner-only and atomically.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Failure> {
     let temp = path.with_extension("tmp");
@@ -146,13 +157,7 @@ impl OwnStore {
             store.save()?;
             return Ok(store);
         }
-        let custody: [u8; 32] = from_hex(
-            fs::read_to_string(&key_path)
-                .map_err(|err| failed(format!("{}: {err}", key_path.display())))?
-                .trim(),
-        )?
-        .try_into()
-        .map_err(|_| failed("the custody key is damaged".into()))?;
+        let custody = custody(&key_path)?;
         let file: File = serde_json::from_slice(
             &fs::read(&path).map_err(|err| failed(format!("{}: {err}", path.display())))?,
         )
@@ -177,14 +182,7 @@ impl OwnStore {
     }
 
     fn save(&mut self) -> Result<(), Failure> {
-        let key_path = self.dir.join(KEY_FILE);
-        let custody: [u8; 32] = from_hex(
-            fs::read_to_string(&key_path)
-                .map_err(|err| failed(format!("{}: {err}", key_path.display())))?
-                .trim(),
-        )?
-        .try_into()
-        .map_err(|_| failed("the custody key is damaged".into()))?;
+        let custody = custody(&self.dir.join(KEY_FILE))?;
         let items = serde_json::to_vec(&self.items).expect("items serialize");
         let file = File {
             version: 1,

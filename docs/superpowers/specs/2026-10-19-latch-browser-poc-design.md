@@ -141,7 +141,7 @@ These forms are removed:
 - `find "<description>"`;
 - `wait --for "<sentence>"`.
 
-Using any of them is a usage error. The message points to the plan command.
+Using any of them is a usage error: an unknown argument, or (for a target that is not a ref) a message pointing to the plan command.
 
 **Owner-device commands.** `latch vault add|edit|list|remove|import` (§9) are client commands run from an **owner device**: a latch client state (its own `--state-dir`, logged in with `latch login` as kind `device`) distinct from the serving host's state. On the host's own machine the owner uses that separate client state, never the host's (the client already refuses to dial its own serving identity). The host accepts them only from a `device`-kind peer on its account; agent peers get exit 4.
 

@@ -61,7 +61,6 @@ const clip = (text, max) => (text.length <= max ? text : `${text.slice(0, max - 
 
 let context;
 let reader;
-let focus;
 /// Each session's share, by the worker's key for the session.
 const shares = new Map();
 /// The session the current operation acts for.
@@ -270,7 +269,6 @@ async function offset(frame) {
 
 async function launch(params) {
   reader = params.reader;
-  focus = params.focus;
   // One fingerprint per profile, made on its first launch: a site sees the
   // same device every time, as it would a person's.
   const stored = path.join(params.profile, "camoufox.json");
@@ -391,7 +389,6 @@ const ops = {
 
   async switch_tab({ tab: id }) {
     const t = tab(id);
-    if (focus === "front") await t.page.bringToFront();
     share().active = id;
     return {};
   },

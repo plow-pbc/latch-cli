@@ -1,8 +1,8 @@
 //! Vault items. The values are kept in Bitwarden's item shape (`Raw`), the
 //! shape rbw and Bitwarden's own JSON export use, so field names, custom
 //! fields and the classifier's rules carry over unchanged. Around it, what
-//! only latch knows: the item's id and revision, the sites it may fill on,
-//! and the browser profiles it is bound to.
+//! only latch knows: the item's id and revision, and the sites it may fill
+//! on.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

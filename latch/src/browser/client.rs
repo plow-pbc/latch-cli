@@ -19,7 +19,8 @@ use crate::dial::{self, ANSWER_MARGIN, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
 use crate::hosts;
 use crate::state::StateDir;
-use crate::wire::{self, Request};
+use crate::transfer;
+use crate::wire::Request;
 
 pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> {
     // Profiles are made on the host itself, in its own state directory:
@@ -89,31 +90,7 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
             target,
             text,
             check,
-            at,
-            expect,
-            steps,
-            history,
         } => {
-            if at.is_some() {
-                return Err(removed(
-                    "`act click --at X,Y` is removed: act on a ref, or name the element in a plan step",
-                ));
-            }
-            if expect.is_some() {
-                return Err(removed(
-                    "`act --expect` is removed: give a check with --check",
-                ));
-            }
-            if steps.is_some() {
-                return Err(removed(
-                    "`act --steps` is removed: send several steps with the plan command",
-                ));
-            }
-            if let Some(id) = history {
-                return Err(removed(&format!(
-                    "`act --history` is removed: read it with `latch browser do --history {id}`"
-                )));
-            }
             let literal = act_literal(*action, snapshot.clone(), target.clone(), text.clone())?;
             let check = check
                 .as_deref()
@@ -131,21 +108,6 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
             plan.validate()
                 .map_err(|why| Failure::usage("bad_arguments", why))?;
             Some(plan)
-        }
-        BrowserCommand::Find {
-            description: Some(_),
-            ..
-        } => {
-            return Err(removed(
-                "`find \"<description>\"` is removed: use `find --role R --name N`, or name the element in a plan step",
-            ));
-        }
-        BrowserCommand::Wait {
-            sentence: Some(_), ..
-        } => {
-            return Err(removed(
-                "`wait --for \"<sentence>\"` is removed: wait for --text, --url-path or --ref, or give a plan step a sentence check",
-            ));
         }
         BrowserCommand::Wait { within, .. } => {
             answer_within += Duration::from_secs_f64(within.unwrap_or(10.0)) + ANSWER_MARGIN;
@@ -238,20 +200,14 @@ fn read_script(path: &Path) -> Result<String, Failure> {
         .map_err(|_| Failure::usage("local_file", "the script is not UTF-8 text".into()))
 }
 
-/// An upload: wait for the host's go-ahead, send the bytes, and check the
-/// host saw the same sha256.
+/// An upload: the bytes, then the host's answer, given this side's sha256.
 async fn send(
     connection: &iroh::endpoint::Connection,
     request: &Request,
     upload: &mut Upload,
 ) -> Result<Value, Failure> {
-    let (mut send, mut recv) = dial::start(connection, request).await?;
-    dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    let sha256 = wire::copy(&mut upload.file, &mut send, upload.size)
-        .await
-        .map_err(|_| dial::lost(connection, true))?;
-    send.finish().map_err(|_| dial::lost(connection, true))?;
-    let mut result = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
+    let (mut result, sha256) =
+        transfer::upload(connection, request, &mut upload.file, upload.size).await?;
     result["file"]["sha256"] = json!(sha256);
     Ok(result)
 }
@@ -302,7 +258,7 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "confirm", json!(confirm));
             "do"
         }
-        BrowserCommand::Find { role, name, .. } => {
+        BrowserCommand::Find { role, name } => {
             if role.is_none() || name.is_none() {
                 return Err(Failure::usage(
                     "bad_arguments",
@@ -467,13 +423,6 @@ fn with_request(mut failure: Failure, id: &Value) -> Failure {
     failure
 }
 
-fn removed(message: &str) -> Failure {
-    Failure::usage(
-        "removed_form",
-        format!("{message}; see `latch browser do --help`"),
-    )
-}
-
 /// The plan command's plan: from `--plan-file`, or one short-form step per
 /// argument, checked whole before it is sent.
 pub(super) fn do_plan(
@@ -526,9 +475,12 @@ pub(super) fn act_literal(
     let (target, text) = match (action, target, text) {
         (ActAction::Scroll, Some(word), None) if !plan::is_ref(&word) => (None, Some(word)),
         (_, Some(word), _) if !plan::is_ref(&word) => {
-            return Err(removed(&format!(
-                "act takes a ref (eN), not {word:?}: to name an element by its name or in words, write it as a plan step"
-            )));
+            return Err(Failure::usage(
+                "bad_arguments",
+                format!(
+                    "act takes a ref (eN), not {word:?}: to name an element by its name or in words, write it as a plan step; see `latch browser do --help`"
+                ),
+            ));
         }
         words => (words.1, words.2),
     };
@@ -556,34 +508,7 @@ async fn receive(
     request: &Request,
     path: &Path,
 ) -> Result<Value, Failure> {
-    let (mut send, mut recv) = dial::start(connection, request).await?;
-    send.finish().map_err(|_| dial::lost(connection, true))?;
-    let mut meta = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    let size = meta["size"].as_u64().ok_or_else(|| {
-        Failure::new(
-            Exit::Unknown,
-            "bad_response",
-            "the host sent no size".into(),
-        )
-    })?;
-    let mut file = File::create(path)
-        .await
-        .map_err(|err| Failure::usage("local_file", format!("{}: {err}", path.display())))?;
-    let Ok(sha256) = wire::copy(&mut recv, &mut file, size).await else {
-        let _ = tokio::fs::remove_file(path).await;
-        return Err(dial::lost(connection, true));
-    };
-    let done = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    if done["sha256"] != sha256.as_str() {
-        let _ = tokio::fs::remove_file(path).await;
-        return Err(Failure::failed(
-            "checksum_mismatch",
-            format!(
-                "the host sent sha256 {}, this side got {sha256}",
-                done["sha256"]
-            ),
-        ));
-    }
+    let (mut meta, done, sha256) = transfer::download(connection, request, path).await?;
     meta["path"] = json!(path);
     meta["sha256"] = json!(sha256);
     meta["audit_id"] = done["audit_id"].clone();
@@ -622,39 +547,43 @@ mod tests {
         let named = literal(ActAction::Click, Some("Place order"), None).unwrap_err();
         assert_eq!(
             (named.exit, named.code.as_str()),
-            (Exit::Usage, "removed_form")
+            (Exit::Usage, "bad_arguments")
         );
         assert!(named.message.contains("plan step"));
         assert!(act_literal(None, None, None, None).is_err());
     }
 
     #[tokio::test]
-    async fn removed_forms_are_usage_errors_that_point_to_the_plan_command() {
+    async fn removed_forms_are_usage_errors() {
         use crate::cli::{Cli, Command};
         use clap::Parser;
-        let dir = tempfile::tempdir().unwrap();
-        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
         for argv in [
             &["act", "click", "--at", "10,20"][..],
             &["act", "click", "e1", "--expect", "the order is placed"],
             &["act", "--steps", "steps.txt"],
             &["act", "--history", "r1"],
-            &["act", "click", "Place order"],
-            &["act", "type", "the amount field", "12.50"],
             &["find", "the unpaid invoice"],
             &["wait", "--for", "the invoices are listed"],
+        ] {
+            assert!(
+                Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).is_err(),
+                "{argv:?}"
+            );
+        }
+        // A name or description where a ref goes: refused before any host is
+        // looked up, pointing to the plan command.
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        for argv in [
+            &["act", "click", "Place order"][..],
+            &["act", "type", "the amount field", "12.50"],
         ] {
             let cli = Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).unwrap();
             let Command::Browser(args) = cli.command else {
                 panic!("browser");
             };
-            // Refused here, before any host is looked up.
             let failure = run(&state, args).await.unwrap_err();
-            assert_eq!(
-                (failure.exit, failure.code.as_str()),
-                (Exit::Usage, "removed_form"),
-                "{argv:?}"
-            );
+            assert_eq!(failure.exit, Exit::Usage, "{argv:?}");
             assert!(
                 failure.message.contains("latch browser do"),
                 "{}",
