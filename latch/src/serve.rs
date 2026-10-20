@@ -26,8 +26,8 @@ use crate::dashboard::{self, Dashboard, Row};
 use crate::exec;
 use crate::failure::Failure;
 use crate::files;
-use crate::gate::Gatekeeper;
 use crate::gate::rules::RuleFiles;
+use crate::gate::{Gate, Gatekeeper};
 use crate::heartbeat;
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
@@ -51,9 +51,53 @@ struct Host {
     /// Our own endpoint and name, which a phone link points at.
     endpoint: Endpoint,
     name: String,
+    deny_exec: DenyExec,
     /// Judges agents' operations against the owner's chat and rules.
-    #[allow(dead_code)] // no operation is gated yet
     gatekeeper: Gatekeeper,
+}
+
+/// `--deny-exec`: which agents may not run `exec` here, by verified agent
+/// uid, never by name. It only ever refuses; devices are never refused.
+#[derive(Default, Debug)]
+pub struct DenyExec {
+    every_agent: bool,
+    agents: Vec<String>,
+}
+
+impl DenyExec {
+    pub fn from_flags(values: &[String]) -> DenyExec {
+        DenyExec {
+            every_agent: values.iter().any(|value| value == crate::cli::EVERY_AGENT),
+            agents: values
+                .iter()
+                .filter(|value| *value != crate::cli::EVERY_AGENT)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn refuses(&self, identity: &Identity) -> bool {
+        identity.kind == "agent"
+            && (self.every_agent
+                || identity
+                    .agent_uid
+                    .as_ref()
+                    .is_some_and(|uid| self.agents.contains(uid)))
+    }
+
+    /// For the log at startup, if anything is refused.
+    fn describe(&self) -> Option<String> {
+        if self.every_agent {
+            Some("exec: refused to every agent".to_string())
+        } else if !self.agents.is_empty() {
+            Some(format!(
+                "exec: refused to agents {}",
+                self.agents.join(", ")
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 /// How an allowed operation ended: the final answer for the client, and
@@ -86,6 +130,7 @@ pub async fn run(
     folders: &[PathBuf],
     show_dashboard: bool,
     headless_browsers: bool,
+    deny_exec: DenyExec,
 ) -> Result<(), Failure> {
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
@@ -128,6 +173,7 @@ pub async fn run(
         dashboard.clone(),
         headless_browsers,
         rules,
+        deny_exec,
     )
     .await;
     if let Some(dashboard) = &dashboard {
@@ -143,6 +189,7 @@ async fn run_host(
     dashboard: Option<Dashboard>,
     headless_browsers: bool,
     rules: RuleFiles,
+    deny_exec: DenyExec,
 ) -> Result<(), Failure> {
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
     let gatekeeper = Gatekeeper::new(
@@ -159,10 +206,24 @@ async fn run_host(
         .map(|area| area.display().to_string())
         .collect();
     log(&format!("sharing: {}", names.join(", ")));
+    if let Some(refused) = deny_exec.describe() {
+        log(&refused);
+    }
 
+    // Tests run a relay of their own, so they need no internet.
+    let relay_mode = match std::env::var("LATCH_TEST_RELAY_URL") {
+        Err(_) => RelayMode::Default,
+        Ok(url) => {
+            let url = url.parse().map_err(|_| {
+                let message = format!("LATCH_TEST_RELAY_URL {url:?} is not a relay URL");
+                Failure::usage("bad_relay", message)
+            })?;
+            RelayMode::custom([url])
+        }
+    };
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(state.load_key()?)
-        .relay_mode(RelayMode::Default)
+        .relay_mode(relay_mode)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
         .bind()
         .await
@@ -217,6 +278,7 @@ async fn run_host(
         vault,
         endpoint: endpoint.clone(),
         name,
+        deny_exec,
         gatekeeper,
     });
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
@@ -389,6 +451,18 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             let done = match op {
                 "file_get" => files::get(&host.workers, &request.args, &mut send).await,
                 "file_put" => files::put(&host.workers, &request.args, &mut send, &mut recv).await,
+                "exec" if host.deny_exec.refuses(&identity) => Done {
+                    response: Response::Error {
+                        exit: crate::failure::Exit::Denied,
+                        details: Value::Null,
+                        code: "exec_denied".to_string(),
+                        message: "this host's owner does not let this agent run exec here \
+                                  (latch serve --deny-exec); asking again will not help"
+                            .to_string(),
+                    },
+                    audit_args: request.args.clone(),
+                    outcome: "exec_denied".to_string(),
+                },
                 "exec" => exec::run(&host.workers, &request.args).await,
                 "vault" => {
                     crate::vault::host::run(
@@ -401,17 +475,25 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                     )
                     .await
                 }
-                "browser" => {
-                    crate::browser::host::run(
-                        &host.browsers,
-                        caller,
-                        &identity.kind,
-                        request.args,
-                        &mut send,
-                        &mut recv,
-                    )
-                    .await
-                }
+                "browser" => match host.gate(&identity, request.chat.as_deref()) {
+                    Ok(gate) => {
+                        crate::browser::host::run(
+                            &host.browsers,
+                            caller,
+                            &identity.kind,
+                            gate,
+                            request.args,
+                            &mut send,
+                            &mut recv,
+                        )
+                        .await
+                    }
+                    Err(failure) => Done {
+                        response: Response::error(&failure),
+                        audit_args: Value::Null,
+                        outcome: failure.code,
+                    },
+                },
                 "google" => {
                     crate::google::host::run(
                         &host.workers,
@@ -438,7 +520,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                     dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed());
                 dashboard.call(Row {
                     at: jiff::Timestamp::now(),
-                    caller: identity.name.clone(),
+                    caller: host.shown_name(&identity).await,
                     op: op.to_string(),
                     target,
                     result,
@@ -583,6 +665,31 @@ impl Host {
     /// Asks Plow who `caller` is. Returns the caller's identity if it may
     /// call, or why not. Nothing is cached: every check asks Plow again, so
     /// a revoked key stops working at once.
+    /// The gate an agent's operations pass, in the chat it named; none for
+    /// the owner's own devices, which are never judged. An agent Plow
+    /// gives no uid can't be judged, so nothing of it runs.
+    fn gate<'a>(
+        &'a self,
+        identity: &'a Identity,
+        chat: Option<&'a str>,
+    ) -> Result<Option<Gate<'a>>, Failure> {
+        if identity.kind == "device" {
+            return Ok(None);
+        }
+        match identity.agent_uid.as_deref() {
+            Some(agent) => Ok(Some(Gate {
+                keeper: &self.gatekeeper,
+                agent,
+                chat,
+            })),
+            None => Err(Failure::new(
+                crate::failure::Exit::Unreachable,
+                "gatekeeper_unavailable",
+                "The gatekeeper could not judge this, so it did not run: Plow names no agent for this caller".to_string(),
+            )),
+        }
+    }
+
     async fn check(&self, caller: &str) -> Result<Identity, Denial> {
         match self.plow.lookup(caller).await {
             Ok(identity) if identity.permissions.call => Ok(identity),
@@ -595,6 +702,18 @@ impl Host {
                 code: failure.code,
             }),
         }
+    }
+
+    /// The caller's name for people to read: an agent's current name in
+    /// Plow, which follows a rename, else its peer name, which keeps the
+    /// name it registered with.
+    async fn shown_name(&self, identity: &Identity) -> String {
+        if let Some(uid) = &identity.agent_uid
+            && let Ok(agent) = self.plow.agent(uid).await
+        {
+            return agent.name;
+        }
+        identity.name.clone()
     }
 
     /// A refused caller as a plain dashboard row, if there is a dashboard.
@@ -651,6 +770,33 @@ fn describe_paths(connection: &Connection) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn caller(kind: &str, name: &str, uid: Option<&str>) -> Identity {
+        serde_json::from_value(serde_json::json!({
+            "key": "k", "kind": kind, "name": name, "agent_uid": uid,
+            "permissions": {"call": true},
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn deny_exec_follows_the_agent_uid_and_leaves_devices_alone() {
+        let device = caller("device", "mac", None);
+        let bot = caller("agent", "bot", Some("ab12"));
+        let renamed = caller("agent", "Research bot", Some("ab12"));
+        let other = caller("agent", "bot", Some("cd34"));
+
+        let everyone = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);
+        assert!(everyone.refuses(&bot) && everyone.refuses(&renamed) && everyone.refuses(&other));
+        assert!(!everyone.refuses(&device));
+
+        // Another agent taking the name "bot" is not refused; the renamed one is.
+        let one = DenyExec::from_flags(&["ab12".to_string()]);
+        assert!(one.refuses(&bot) && one.refuses(&renamed));
+        assert!(!one.refuses(&other) && !one.refuses(&device));
+
+        assert!(!DenyExec::default().refuses(&bot));
+    }
 
     #[test]
     fn a_refusal_is_audited_as_deny() {

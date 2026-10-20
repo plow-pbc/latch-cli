@@ -423,7 +423,7 @@ impl Harness {
             &self.browsers,
             &self.entry,
             &self.id,
-            CALLER,
+            CALLER.into(),
             &args,
             &mut audit,
         )
@@ -696,6 +696,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
         &h.entry,
         &h.id,
         CALLER,
+        None,
         &json!({"request": "r-card", "plan": {"steps": []}, "confirm": issued["id"]}),
         &mut audit,
     )
@@ -753,6 +754,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
         &h.entry,
         &h.id,
         CALLER,
+        None,
         &json!({"request": "r-reprice", "plan": {"steps": []},
                 "confirm": stop.details["confirmation"]["id"]}),
         &mut audit,
@@ -1979,6 +1981,7 @@ async fn a_card_confirmation_binds_its_mapping_and_frames(engine: &str) {
             &h.entry,
             &h.id,
             CALLER,
+            None,
             &json!({"request": request, "plan": {"steps": []}, "confirm": id}),
             &mut audit,
         )

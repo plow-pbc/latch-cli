@@ -38,11 +38,6 @@ pub struct Registration {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay_url: Option<String>,
-    /// Asks Plow to move this login's own machine name to this key. Only
-    /// `latch login` sets it; a heartbeat never does, so a host whose name
-    /// moved away cannot take it back.
-    #[serde(skip_serializing_if = "is_false")]
-    pub take_over: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -66,6 +61,13 @@ pub struct Redeemed {
     pub token: Option<String>,
 }
 
+/// The agent a credential belongs to, from `GET /v1/agents/me`.
+#[derive(Deserialize, Clone, Debug)]
+pub struct AgentIdentity {
+    pub uid: String,
+    pub name: String,
+}
+
 #[derive(Deserialize)]
 struct PeerList {
     data: Vec<Peer>,
@@ -87,9 +89,11 @@ pub struct Permissions {
     pub call: bool,
 }
 
-/// An agent, from `GET /v1/agents/{uid}`: the line it serves.
+/// An agent, from `GET /v1/agents/{uid}`: its current name and the line
+/// it serves.
 #[derive(Deserialize, Debug)]
 pub struct Agent {
+    pub name: String,
     pub line: Line,
 }
 
@@ -215,6 +219,19 @@ impl Plow {
         Ok(list.data)
     }
 
+    /// The agent this credential belongs to. 404 (`not_found`) for a
+    /// credential that is not an agent's.
+    pub async fn agent_me(&self) -> Result<AgentIdentity, Failure> {
+        #[derive(Deserialize)]
+        struct Me {
+            agent: AgentIdentity,
+        }
+        let url = format!("{}/v1/agents/me", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let me: Me = response.json().await.map_err(|_| bad_answer())?;
+        Ok(me.agent)
+    }
+
     /// Starts a login by text for a machine called `name`.
     pub async fn activate(&self, name: &str) -> Result<Activation, Failure> {
         let url = format!("{}/v1/auth/activate", self.api_url);
@@ -272,18 +289,14 @@ impl Plow {
     /// One of the account's agents, with the line it serves.
     pub async fn agent(&self, agent_uid: &str) -> Result<Agent, Failure> {
         let url = format!("{}/v1/agents/{agent_uid}", self.api_url);
-        let response = self
-            .send(self.http.get(url).bearer_auth(&self.token))
-            .await?;
+        let response = self.send(self.http.get(url)).await?;
         response.json().await.map_err(|_| bad_answer())
     }
 
     /// Every chat this login may see, oldest first.
     pub async fn chats(&self) -> Result<Vec<Chat>, Failure> {
         let url = format!("{}/v1/chats", self.api_url);
-        let response = self
-            .send(self.http.get(url).bearer_auth(&self.token))
-            .await?;
+        let response = self.send(self.http.get(url)).await?;
         let list: List<Chat> = response.json().await.map_err(|_| bad_answer())?;
         Ok(list.data)
     }
@@ -301,7 +314,7 @@ impl Plow {
             query.push(("starting_after", uid));
         }
         let url = url::Url::parse_with_params(&url, &query).map_err(|_| bad_answer())?;
-        let request = self.http.get(url).bearer_auth(&self.token);
+        let request = self.http.get(url);
         let response = self.send(request).await?;
         let page: List<Message> = response.json().await.map_err(|_| bad_answer())?;
         Ok(MessagePage {

@@ -41,7 +41,6 @@ pub async fn run(
             key: endpoint.id().to_string(),
             name: Some(config.peer.name.clone()),
             relay_url: relay_url.clone(),
-            take_over: false,
         };
         let (registered, wait) = match plow.register(&registration).await {
             Ok(peer) => {

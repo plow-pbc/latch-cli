@@ -294,6 +294,7 @@ impl Harness {
             &self.entry,
             &self.id,
             CALLER,
+            None,
             &args,
             &mut audit,
         )
@@ -770,7 +771,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
     let session = crashed.clone();
     let running = tokio::spawn(async move {
         let mut audit = Map::new();
-        steps::run(&browsers, &entry, &session, CALLER, &args, &mut audit).await
+        steps::run(&browsers, &entry, &session, CALLER, None, &args, &mut audit).await
     });
     let mut in_flight = Value::Null;
     for _ in 0..100 {
