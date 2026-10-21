@@ -1,0 +1,28 @@
+The Linux sandbox launch structure and AF_VSOCK seccomp rule in
+src/sandbox/linux.rs are adapted from OpenAI Codex, commit
+97ebf2d94d62e2ff2045f3ea17b6e11eae9a21fb:
+codex-rs/linux-sandbox/src/{bwrap,seccomp}.rs.
+Copyright 2025 OpenAI. Licensed under Apache-2.0 (LICENSE-Codex).
+Modified for latch's explicit mounts, private state and offline file workers.
+
+The macOS exec sandbox rules in src/sandbox/codex/ are copied unchanged
+from OpenAI Codex, commit 221e4e7c05386d06aa7b91da2a9b04f7f2bd921f:
+codex-rs/sandboxing/src/seatbelt_{base,network,preferences}_policy.sbpl.
+src/sandbox.rs combines them with latch's own rules (areas, the per-call
+temp folder, outbound-only network, and the state, latch and ancestor
+protections), following codex-rs/sandboxing/src/seatbelt.rs at that commit.
+Copyright 2025 OpenAI. Licensed under Apache-2.0 (LICENSE-Codex).
+
+Upstream NOTICE:
+OpenAI Codex
+Copyright 2025 OpenAI
+
+This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+Copyright (c) 2016-2022 Florian Dehau
+Copyright (c) 2023-2025 The Ratatui Developers
+
+Docker profiles are derived from moby/profiles commit
+4b8214fc4971e06172938a1f1554ccff6647ee80 (Apache-2.0).
+Copyright 2013-2018 Docker, Inc. All rights reserved.
+The seccomp default has four additional bubblewrap setup rule groups.
+The AppArmor template is adapted into an untested latch-bwrap candidate.

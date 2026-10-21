@@ -1,0 +1,71 @@
+# The latch workspace. Today it holds one crate (this one); the `[workspace]`
+# table makes this directory the workspace root so later crates can join it.
+# DEPENDENCIES.md has each crate's usage numbers from the library audit.
+[workspace]
+
+[package]
+name = "latch"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# Command-line parsing: each command is a plain struct (src/cli.rs). `env`
+# lets `--host` fall back to `$LATCH_HOST`.
+clap = { version = "4.6.7", features = ["derive", "env"] }
+# Peer-to-peer QUIC; a peer's identity is its iroh key. Not the default
+# features: those pull in `ring`, a second crypto library next to reqwest's
+# aws-lc-rs, and metrics we don't use.
+iroh = { version = "1.3.0", default-features = false, features = ["tls-aws-lc-rs", "portmapper", "fast-apple-datapath"] }
+# Time stamps (RFC 3339, UTC) in the audit log and the host's log.
+jiff = "0.2.38"
+# The C library: `killpg` to stop a timed-out program with everything it
+# started, and signal numbers to name how a program ended.
+libc = "0.2.190"
+# Random jitter for the heartbeat and its backoff, so hosts never synchronise.
+rand = "0.10.3"
+# HTTP client for Plow's directory, over rustls (no OpenSSL) so Linux builds stay static.
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+# Turns our plain structs into JSON and back (Plow's API, our output, config.json).
+serde = { version = "1.0.229", features = ["derive"] }
+# `raw_value`: a decision request's state is sent as written, its keys in
+# their own order (a `Value` sorts them).
+serde_json = { version = "1.0.154", features = ["raw_value"] }
+# sha256 for the audit log's hash chain.
+sha2 = "0.11.1"
+# iroh and reqwest are async, so latch runs on tokio. `io-util` reads and
+# writes the wire frames; `signal` lets `serve` stop cleanly on SIGINT/SIGTERM;
+# `process` runs the sandboxed file workers; `fs` writes the client's files.
+tokio = { version = "1.53.3", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
+
+# Per-call folders for Google and throwaway test state.
+tempfile = "3.27.0"
+
+# The vault (src/vault): items sealed with AES-256-GCM; URLs read and
+# matched by registrable domain (the public-suffix list, private suffixes
+# included); TOTP codes; password-manager exports (CSV, and 1PUX zips).
+aes-gcm = "0.11.1"
+csv = "1.4.0"
+psl = "2.1.239"
+totp-rs = { version = "6.0.0", default-features = false, features = ["std"] }
+url = "2.5.8"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+# `latch vault link`'s QR code, drawn in the terminal (no image backends).
+qrcode = { version = "0.14.1", default-features = false }
+
+[dev-dependencies]
+# A local iroh relay (plain HTTP), so the test that runs a real host and
+# client needs no internet. Tests only; never in a latch build.
+iroh-relay = { version = "1.3.0", default-features = false, features = ["server"] }
+
+# The build date `latch --version` prints (build.rs).
+[build-dependencies]
+jiff = "0.2.38"
+
+[features]
+# Builds the gatekeeper tests that call the decision model (jev) for real;
+# `just gatekeeper-live KEYFILE` runs one. Never part of the gate.
+live-model = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+seccompiler = "=0.5.0"

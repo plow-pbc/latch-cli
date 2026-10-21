@@ -1,0 +1,4 @@
+# The same Rust everywhere: on laptops, in CI, and in the rust:alpine image.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
