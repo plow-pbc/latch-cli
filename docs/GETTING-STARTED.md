@@ -203,42 +203,57 @@ against your rules on that host.
 > own machines, and the gatekeeper never checks the call against anything you
 > asked. A copied laptop state runs `exec` on your host unjudged.
 
-**1. Get the agent a credential.** A Plow agent already running on Plow has
-its credential where `latch login` finds it (`$PLOW_AGENT_TOKEN`, the file
-`$PLOW_TOKEN_FILE` or `/config/secrets/plow-api-token`, or `$PLOW_API_BASE`'s
-proxy); skip to 2. For an agent you run yourself, create a *self-hosted*
-agent on one of your free lines. The token is shown once; this writes it to a
-0600 file and prints only the agent's uid and name:
+**An agent already running on Plow** has its credential and Plow's address
+in its environment (`$PLOW_AGENT_TOKEN`, the file `$PLOW_TOKEN_FILE` or
+`/config/secrets/plow-api-token`, and `$PLOW_API_BASE`, the proxy that adds the
+credential). Run, in that environment as it is:
 
 ```sh
-T=$(cat ~/.latch/plow-token)    # your own login, from step 2
-curl -s https://api.plow.co/v1/lines -H "Authorization: Bearer $T" | jq -c '.data[] | {uid, available}'
-umask 077
-curl -s -X POST https://api.plow.co/v1/agents -H "Authorization: Bearer $T" \
-  -H 'content-type: application/json' \
-  -d '{"line_uid":"LINE_UID","provider":"self_hosted","name":"my-agent"}' \
-  | tee >(jq -r .token > ~/my-agent.token) | jq -c '.agent | {uid, name}'
-unset T
-```
-
-Treat `~/my-agent.token` like a password: it carries the agent's full Plow
-scopes. To revoke it: `curl -X DELETE https://api.plow.co/v1/agents/AGENT_UID
--H "Authorization: Bearer $(cat ~/.latch/plow-token)"`.
-
-**2. Log the agent in, in its own state folder:**
-
-```sh
-export PLOW_TOKEN_FILE=~/my-agent.token
-latch --state-dir ~/latch-agent login --api-url https://api.plow.co
+latch --state-dir ~/latch-agent login
 # {"peer":{"kind":"agent","name":"my-agent",…},"key_created":true}
 latch --state-dir ~/latch-agent status    # "kind":"agent", and your hosts
 ```
 
-The agent registers under its Plow name. latch does not copy the credential
-into the state folder: keep `PLOW_TOKEN_FILE` set for every command the
-agent runs.
+Don't add `--api-url` or a token file: the agent's own environment already
+says where Plow is and who it is. Keep that environment for every command the
+agent runs; latch does not copy the credential into the state folder.
 
-**3. What the agent gets.** With no chat and no rules, every call is refused:
+**A new agent you run yourself** needs a *self-hosted* agent credential
+first, made on one of your free lines.
+
+1. Create it. The token is shown once; this writes it to a 0600 file and
+   prints only the agent's uid and name:
+
+   ```sh
+   T=$(cat ~/.latch/plow-token)    # your own login, from step 2
+   curl -s https://api.plow.co/v1/lines -H "Authorization: Bearer $T" | jq -c '.data[] | {uid, available}'
+   umask 077
+   curl -s -X POST https://api.plow.co/v1/agents -H "Authorization: Bearer $T" \
+     -H 'content-type: application/json' \
+     -d '{"line_uid":"LINE_UID","provider":"self_hosted","name":"my-agent"}' \
+     | tee >(jq -r .token > ~/my-agent.token) | jq -c '.agent | {uid, name}'
+   unset T
+   ```
+
+   Treat `~/my-agent.token` like a password: it carries the agent's full Plow
+   scopes. To revoke it: `curl -X DELETE https://api.plow.co/v1/agents/AGENT_UID
+   -H "Authorization: Bearer $(cat ~/.latch/plow-token)"`.
+
+2. Log it in, in its own state folder, with the token file and Plow's public
+   address:
+
+   ```sh
+   export PLOW_TOKEN_FILE=~/my-agent.token
+   latch --state-dir ~/latch-agent login --api-url https://api.plow.co
+   # {"peer":{"kind":"agent","name":"my-agent",…},"key_created":true}
+   latch --state-dir ~/latch-agent status    # "kind":"agent", and your hosts
+   ```
+
+   The agent registers under its Plow name. Keep `PLOW_TOKEN_FILE` set for
+   every command the agent runs; latch does not copy the credential into the
+   state folder.
+
+**What the agent gets.** With no chat and no rules, every call is refused:
 
 ```sh
 latch --state-dir ~/latch-agent exec --host my-mac -- uname -a
@@ -277,9 +292,19 @@ sent".**
 - `outcome_unknown` (exit 5) is different: the connection dropped *after* the
   request was sent. Check whether it happened before you resend.
 
-**`model_unavailable` (exit 1, browser) / `gatekeeper_unavailable` (exit 3,
-an agent's call).** The host's decision model couldn't answer, so nothing was
-sent or run. The message says why:
+**`gatekeeper_unavailable` (exit 3, an agent's call).** The host's
+gatekeeper couldn't reach its decision model, so the call was not run.
+Retrying runs it from the start.
+
+**`model_unavailable` (exit 1, browser).** A browser step needed the decision
+model (a click's risk, a goal in words, a sentence check) and couldn't get it.
+Nothing was sent *for that step*, but a plan stops at its first failed step
+and never undoes or replays what came before: earlier steps in the same `do`
+may already have clicked, typed or submitted. Before retrying, read `steps`
+(each step's `outcome`) and `trail` (each action sent, with its `result`) in
+the answer, and retry only what didn't happen.
+
+For either one, the message says why the model couldn't answer:
 - "out of credits for the decision model": the **host's** Plow account is out
   of credits. Every retry fails the same way until the host's owner adds
   credits.
