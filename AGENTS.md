@@ -16,7 +16,6 @@ The goal is strong engineering judgment with low ceremony.
 - `latch/` is the latch CLI, one Rust crate (and the root of its Cargo workspace): a peer that lets an agent reach the files, programs, Google accounts and browser on a machine its owner trusts, over Plow's directory.
 - `latch/tests/` holds the integration tests, their fixtures, and `browser-site/`, the local site the browser tests drive.
 - `latch/*.md` documents each area: `BROWSER.md`, `VAULT.md`, `GOOGLE.md`, `GOOGLE-AGENT-GUIDE.md`, `DOCKER.md`, `DEPENDENCIES.md`.
-- `docs/superpowers/specs/` holds the design specs.
 - Plow's side of latch (the peer directory API in `api/plow/latch.py`, its model and migration) lives in [`plow-pbc/plow`](https://github.com/plow-pbc/plow), not here. latch reaches it over HTTP.
 
 ## Read First
@@ -24,7 +23,7 @@ The goal is strong engineering judgment with low ceremony.
 Before making meaningful changes, read:
 
 1. `README.md`
-2. The `latch/*.md` doc for the area you are changing, and its spec in `docs/superpowers/specs/`
+2. The `latch/*.md` doc for the area you are changing
 
 ## Dev State
 
@@ -74,7 +73,6 @@ Important:
 - Search before building. Reuse or extend existing code when it is already close to the needed behavior.
 - Match the grain of the codebase. Prefer local consistency over introducing a new pattern you happen to like better.
 - Touch the smallest surface area that solves the problem.
-- Keep plans lightweight. If a larger change needs written planning, prefer a short spec in `docs/superpowers/specs/` over inventing a heavy workflow.
 
 ## Keep It Simple
 
