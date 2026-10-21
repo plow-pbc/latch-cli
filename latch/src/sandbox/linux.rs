@@ -79,7 +79,8 @@ fn launch(policy: &Policy) -> Result<(), Error> {
             .ok_or("exec worker needs a temp folder")?;
         let file = tempfile::NamedTempFile::new_in(folder)?;
         // The program's TMPDIR is a private /tmp; the host's folder is not
-        // in its view. A private /run holds the status file.
+        // in its view. The status file sits at the top of the sandbox's
+        // own `/`, where no opt-in or area can cover it.
         command.args(["--setenv", "TMPDIR", "/tmp"]);
         command.args(["--perms", "1777", "--tmpfs", "/tmp", "--tmpfs", "/run"]);
         command.arg("--bind").arg(file.path()).arg(STATUS);
@@ -340,7 +341,7 @@ fn launch_exec(command: &mut Command, mut file: tempfile::NamedTempFile) -> Resu
     std::process::exit(exit.code().unwrap_or(125));
 }
 
-const STATUS: &str = "/run/latch-exit-status";
+const STATUS: &str = "/.latch-exit-status";
 
 fn supervise_exec() -> Result<(), Error> {
     // SAFETY: the inner worker is still single-threaded. Only the child

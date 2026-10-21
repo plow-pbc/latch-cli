@@ -848,3 +848,17 @@ fn exec_cannot_read_preferences_through_the_preferences_daemon() {
     assert!(!inside.status.success(), "{inside:?}");
     assert!(inside.stdout.is_empty(), "{inside:?}");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_opt_in_of_run_or_tmp_still_reports_the_programs_exit() {
+    let dir = setup();
+    for opt_in in ["/run", "/tmp"] {
+        if !Path::new(opt_in).is_dir() {
+            continue;
+        }
+        let output = exec_script(dir.path(), &["--read", opt_in], "echo ran; exit 3");
+        assert_eq!(output.status.code(), Some(3), "{opt_in}: {output:?}");
+        assert_eq!(output.stdout, b"ran\n", "{opt_in}: {output:?}");
+    }
+}
