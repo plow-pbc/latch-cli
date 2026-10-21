@@ -125,3 +125,18 @@ private func emit(_ state: String, _ args: String...) throws {
         Issue.record("\(error)")
     }
 }
+
+@Test func liveClientLogsInAndSavesShares() async throws {
+    let state = try stubState()
+    try emit(state, "logout")
+    let client = LiveLatchClient(executable: stub, stateDir: state)
+    #expect(try await client.localStatus().peer == nil)
+    setenv("STUB_LOGIN_SECONDS", "0", 1)
+    var seen: [LoginEvent] = []
+    for try await event in client.login() { seen.append(event) }
+    #expect(seen.count == 3 && seen[1] == .waiting)
+    guard case .verified = seen.last else { Issue.record("not verified"); return }
+    #expect(try await client.setShares(["/tmp/a b", "/tmp/c"]).shares == ["/tmp/a b", "/tmp/c"])
+    let status = try await client.localStatus()
+    #expect(status.peer?.name == "stub-host" && status.shares == ["/tmp/a b", "/tmp/c"])
+}

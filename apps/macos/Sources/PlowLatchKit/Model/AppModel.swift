@@ -29,11 +29,13 @@ public final class AppModel {
     public private(set) var activityError: LatchError?
     public private(set) var rules: Loadable<RulesShow> = .loading
 
-    private let client: any LatchClient
+    let client: any LatchClient
+    let sharing: any SharingService
     private static let log = Logger(subsystem: "co.plow.latch", category: "host")
 
-    public init(client: any LatchClient) {
+    public init(client: any LatchClient, sharing: any SharingService = UnavailableSharing()) {
         self.client = client
+        self.sharing = sharing
     }
 
     /// What the menu bar icon and status line show.

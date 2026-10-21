@@ -83,3 +83,49 @@ struct MenuIconSample: View {
         .padding(10)
     }
 }
+
+// Onboarding, drawn by ImageRenderer (it is all SwiftUI, so blur and glow
+// render as on screen).
+@MainActor
+func renderOnboarding(_ name: String, step: Onboarding.Step = .welcome, signIn: Onboarding.SignIn = .starting,
+                      folders: [URL] = [], sharing: Bool = false, error: String? = nil,
+                      time: Double? = nil, reduceMotion: Bool = false, into dir: URL = output) async throws {
+    let fake = FakeLatchClient(.loggedOut)
+    let app = AppModel(client: fake, sharing: fake)
+    let flow = Onboarding(app: app) { _ in }
+    flow.stage(step, signIn: signIn, folders: folders, sharing: sharing, error: error)
+    let view = OnboardingView(still: flow, entranceTime: time)
+        .environment(app)
+        .environment(\.reduceMotionOverride, reduceMotion)
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 2
+    try await Task.sleep(for: .milliseconds(50))
+    guard let image = renderer.cgImage else { throw CocoaError(.fileWriteUnknown) }
+    let file = dir.appending(path: "\(name).png")
+    try NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!.write(to: file)
+    print(file.path)
+}
+
+let entrance = output.appending(path: "welcome-entrance")
+try FileManager.default.createDirectory(at: entrance, withIntermediateDirectories: true)
+// The same moments the old app's frames were taken at.
+for ms in [0, 100, 250, 400, 550, 700, 850, 1000, 1150, 1300, 1450, 1600, 1800, 2100, 2600] {
+    try await renderOnboarding(String(format: "t%04d", ms), time: Double(ms) / 1000, into: entrance)
+}
+try await renderOnboarding("onboarding-welcome-reduce-motion", reduceMotion: true)
+let code = Fixtures.loginCode
+let peer = LocalStatus.Peer(name: "mac-host", key: "k7f3a9c2e1d04b58a6f2c9e3d1b7a4f0", kind: "device")
+try await renderOnboarding("onboarding-signin-starting", step: .signIn)
+try await renderOnboarding("onboarding-signin-waiting", step: .signIn, signIn: .waiting(code))
+try await renderOnboarding("onboarding-signin-expired", step: .signIn, signIn: .expired(code))
+try await renderOnboarding("onboarding-signin-error", step: .signIn,
+                           signIn: .failed("this sign-in code is no longer valid: get a new one"))
+try await renderOnboarding("onboarding-signin-verified", step: .signIn, signIn: .verified(peer))
+try await renderOnboarding("onboarding-linked", step: .linked, signIn: .verified(peer))
+try await renderOnboarding("onboarding-keep-running-empty", step: .keepRunning, signIn: .verified(peer))
+let picked = [URL(filePath: "/Users/owner/work"), URL(filePath: "/Users/owner/Documents/shared")]
+try await renderOnboarding("onboarding-keep-running-folders", step: .keepRunning, signIn: .verified(peer), folders: picked)
+try await renderOnboarding("onboarding-keep-running-error", step: .keepRunning, signIn: .verified(peer), folders: picked,
+                           error: "Background sharing isn't in this build yet.")
+try await renderOnboarding("onboarding-done-sharing", step: .done, signIn: .verified(peer), folders: picked, sharing: true)
+try await renderOnboarding("onboarding-done-not-now", step: .done, signIn: .verified(peer), folders: picked)

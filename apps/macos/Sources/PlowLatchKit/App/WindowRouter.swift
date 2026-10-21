@@ -9,7 +9,11 @@ import SwiftUI
 public final class WindowRouter {
     public static let shared = WindowRouter()
     public static let mainWindowID = "main"
+    public static let onboardingWindowID = "onboarding"
     public static let keepInMenuBarKey = "KeepInMenuBar"
+    /// Whether this Mac finished onboarding when the app last knew: decides
+    /// which window opens at launch, before latch has answered.
+    public static let onboardedKey = "Onboarded"
 
     private var openWindow: OpenWindowAction?
     private var openSettings: OpenSettingsAction?
@@ -27,6 +31,36 @@ public final class WindowRouter {
             window.makeKeyAndOrderFront(nil)
         } else {
             openWindow?(id: Self.mainWindowID)
+        }
+    }
+
+    /// Opens onboarding in place of the main window.
+    public func showOnboarding() {
+        UserDefaults.standard.set(false, forKey: Self.onboardedKey)
+        activate()
+        window(Self.mainWindowID)?.close()
+        if let window = window(Self.onboardingWindowID) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow?(id: Self.onboardingWindowID)
+        }
+    }
+
+    /// Onboarding is done: the main window takes its place.
+    public func finishOnboarding() {
+        UserDefaults.standard.set(true, forKey: Self.onboardedKey)
+        window(Self.onboardingWindowID)?.close()
+        showMain()
+    }
+
+    /// Once latch has said whether this Mac is logged in, makes sure the
+    /// window that opened at launch is the right one.
+    public func launched(loggedIn: Bool) {
+        let onboarding = window(Self.onboardingWindowID) != nil
+        if !loggedIn, !onboarding {
+            showOnboarding()
+        } else if loggedIn, onboarding {
+            finishOnboarding()
         }
     }
 

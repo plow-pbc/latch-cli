@@ -8,6 +8,28 @@ public protocol LatchClient: Sendable {
     /// `latch events --follow`: a snapshot, then changes as they happen.
     /// Ends when the caller stops iterating.
     func events(after cursor: String?, lifecycleOnly: Bool) -> AsyncThrowingStream<LatchEvent, Error>
+    /// `latch login --events`: the code to text, then how it ends. Stopping
+    /// the iteration cancels the login.
+    func login() -> AsyncThrowingStream<LoginEvent, Error>
+    /// `latch shares set`: the folders `latch serve` shares from now on.
+    func setShares(_ folders: [String]) async throws -> Shares
+}
+
+/// Sharing in the background: starting and stopping the host the app
+/// keeps running.
+public protocol SharingService: Sendable {
+    func startSharing() async throws
+    func stopSharing() async throws
+}
+
+/// What the live app has until background sharing is built.
+public struct UnavailableSharing: SharingService {
+    public init() {}
+
+    public func startSharing() async throws { throw Self.error }
+    public func stopSharing() async throws { throw Self.error }
+
+    private static let error = LatchError.unreachable("Background sharing isn't in this build yet.")
 }
 
 /// Why a call to latch produced no answer.

@@ -8,6 +8,7 @@ public struct Theme: Sendable {
     public var space = Spacing()
     public var radius = Radius()
     public var motion = Motion()
+    public var brand = Brand()
 
     public init() {}
 

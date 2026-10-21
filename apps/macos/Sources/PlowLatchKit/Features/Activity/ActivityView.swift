@@ -17,7 +17,7 @@ struct ActivityView: View {
     @ViewBuilder private var content: some View {
         let entries = model.activity.entries
         if model.menuState == .loggedOut {
-            Unavailable(kind: .notLoggedIn) { Task { await model.refreshStatus() } }
+            Unavailable(kind: .notLoggedIn) { WindowRouter.shared.showOnboarding() }
         } else if entries.isEmpty, let error = model.activityError {
             Unavailable(kind: .unreachable(error.message)) { attempt += 1 }
         } else if entries.isEmpty, model.activity.cursor == nil {

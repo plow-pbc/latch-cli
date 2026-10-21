@@ -16,7 +16,7 @@ struct RulesView: View {
         case .loading:
             ProgressView()
         case let .failed(.failed(failure), nil) where failure.code == "not_logged_in":
-            Unavailable(kind: .notLoggedIn) { reload() }
+            Unavailable(kind: .notLoggedIn) { WindowRouter.shared.showOnboarding() }
         case let .failed(error, nil):
             Unavailable(kind: .unreachable(error.message)) { reload() }
         default:

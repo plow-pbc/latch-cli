@@ -15,7 +15,7 @@ struct OverviewView: View {
             default:
                 if let status = model.status.value {
                     if status.peer == nil {
-                        Unavailable(kind: .notLoggedIn) { refresh() }
+                        Unavailable(kind: .notLoggedIn) { WindowRouter.shared.showOnboarding() }
                     } else {
                         page(status)
                     }

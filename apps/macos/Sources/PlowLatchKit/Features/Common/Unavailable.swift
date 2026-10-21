@@ -20,7 +20,7 @@ struct Unavailable: View {
             } description: {
                 Text("Sign in to link this Mac to your Plow account.")
             } actions: {
-                Button("Check Again", action: action)
+                Button("Sign In…", action: action)
             }
         case .sharingStopped:
             ContentUnavailableView {

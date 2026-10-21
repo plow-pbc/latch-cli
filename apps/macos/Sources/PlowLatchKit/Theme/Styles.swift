@@ -44,3 +44,48 @@ extension MenuState {
         }
     }
 }
+
+/// Plow's primary button: an opaque volt capsule with dark text.
+public struct VoltButtonStyle: ButtonStyle {
+    @Environment(\.theme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
+        let brand = theme.brand
+        configuration.label
+            .font(brand.button)
+            .foregroundStyle(brand.content)
+            .padding(.horizontal, 18)
+            .frame(height: 32)
+            .background(brand.volt.opacity(isEnabled ? 1 : 0.35), in: Capsule())
+            .brightness(configuration.isPressed ? -0.06 : 0)
+            .offset(y: configuration.isPressed ? 0.5 : 0)
+            .shadow(color: brand.volt.opacity(isEnabled ? 0.25 : 0), radius: 10)
+    }
+}
+
+/// A thin spinning ring, for waiting.
+public struct Spinner: View {
+    var color: Color
+    var size: CGFloat
+    @ReducedMotion private var reduceMotion
+    @State private var turning = false
+
+    public init(color: Color, size: CGFloat = 10) {
+        self.color = color
+        self.size = size
+    }
+
+    public var body: some View {
+        Circle()
+            .trim(from: 0, to: 0.75)
+            .stroke(color, style: StrokeStyle(lineWidth: size / 6, lineCap: .round))
+            .frame(width: size, height: size)
+            .rotationEffect(.degrees(turning ? 360 : 0))
+            .animation(reduceMotion ? nil : .linear(duration: 1).repeatForever(autoreverses: false), value: turning)
+            .onAppear { turning = true }
+            .accessibilityLabel("Waiting")
+    }
+}

@@ -34,12 +34,25 @@ public struct LiveLatchClient: LatchClient {
         var arguments = ["events", "--follow"]
         if let cursor { arguments += ["--after", cursor] }
         if lifecycleOnly { arguments.append("--lifecycle-only") }
+        return stream(LatchEvent.self, arguments)
+    }
+
+    public func login() -> AsyncThrowingStream<LoginEvent, Error> {
+        stream(LoginEvent.self, ["login", "--events"])
+    }
+
+    public func setShares(_ folders: [String]) async throws -> Shares {
+        try await decode(Shares.self, from: run(["shares", "set"] + folders))
+    }
+
+    /// Runs latch and decodes each line it prints, until the caller stops.
+    private func stream<T: Decodable & Sendable>(_ type: T.Type, _ arguments: [String]) -> AsyncThrowingStream<T, Error> {
         let process = LatchProcess(executable: executable, arguments: withState(arguments))
         return AsyncThrowingStream { continuation in
             let reader = Task {
                 do {
                     for try await line in try process.lines() {
-                        continuation.yield(try decode(LatchEvent.self, from: Data(line.utf8)))
+                        continuation.yield(try decode(type, from: Data(line.utf8)))
                     }
                     continuation.finish(throwing: await process.failure())
                 } catch {

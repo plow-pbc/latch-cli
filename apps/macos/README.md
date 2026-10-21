@@ -15,7 +15,8 @@ Requires macOS 26.
   - `Features/`: the screens, the menu bar extra and Settings.
   - `Theme/`: every colour, font, spacing, motion and surface choice.
   - `App/WindowRouter.swift`: the one way windows open.
-- `Sources/Snapshots/`: renders every screen and state with the fake client.
+- `Features/Onboarding/`: the first-run window. `WelcomeEntrance.swift` holds the entrance's timeline as a function of time, so it plays live and renders frame by frame.
+- `Sources/Snapshots/`: renders every screen and state with the fake client, and the welcome entrance at fixed moments.
 
 ## Build, test, run
 
@@ -40,9 +41,11 @@ Dev runs use a state folder under the repo's `.dev/`, never `~/.latch`.
 
 ## The CLI it expects
 
-The app depends on three latch commands:
+The app depends on these latch commands:
 - `latch status --local`
 - `latch events --follow [--after CURSOR] [--lifecycle-only]`
 - `latch rules show`
+- `latch login --events` (onboarding's sign-in)
+- `latch shares set FOLDER...` (onboarding's folders)
 
 The exact JSON shapes are the samples in `Latch/FakeLatchClient.swift` (`Fixtures`). `scripts/stub-latch` serves the same shapes from files.

@@ -29,7 +29,7 @@ swiftc -O -o "$tool" scripts/measure.swift
 
 emit() { "$latch" --state-dir "$state" emit "$@"; }
 args=(-LatchExecutable "$bundle/Contents/Helpers/latch" -LatchStateDir "$state"
-      -ApplePersistenceIgnoreState YES)
+      -ApplePersistenceIgnoreState YES -Onboarded YES)
 pid=""
 post() { "$tool" post "$@"; }
 report() { rm -f "$state/report.json"; post report "$state/report.json"; sleep 0.5; cat "$state/report.json"; echo; }

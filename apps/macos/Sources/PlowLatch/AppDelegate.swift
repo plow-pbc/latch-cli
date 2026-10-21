@@ -3,13 +3,16 @@ import PlowLatchKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let model = AppModel(client: AppDelegate.client())
+    let model = AppDelegate.makeModel()
     private var hostWatch: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // After launch, so no CLI call delays the first frame.
         hostWatch = Task {
             await model.refreshStatus()
+            if case let .loaded(status, _) = model.status {
+                WindowRouter.shared.launched(loggedIn: status.peer != nil)
+            }
             await model.watchHost()
         }
         NotificationCenter.default.addObserver(
@@ -37,12 +40,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
-    /// The real latch, or with `-LatchFake <scenario>` the sample one.
-    private static func client() -> any LatchClient {
+    /// On the real latch, or with `-LatchFake <scenario>` the sample one.
+    private static func makeModel() -> AppModel {
         if let name = UserDefaults.standard.string(forKey: "LatchFake"),
            let scenario = FakeLatchClient.Scenario(rawValue: name) {
-            return FakeLatchClient(scenario, liveEvery: .seconds(3))
+            let fake = FakeLatchClient(scenario, liveEvery: .seconds(3))
+            return AppModel(client: fake, sharing: fake)
         }
-        return LiveLatchClient.bundled()
+        return AppModel(client: LiveLatchClient.bundled())
     }
 }

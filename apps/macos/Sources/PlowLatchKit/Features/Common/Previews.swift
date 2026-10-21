@@ -4,7 +4,8 @@ extension AppModel {
     /// A model on the sample latch, with its status already loaded, for
     /// previews and snapshots.
     public static func sample(_ scenario: FakeLatchClient.Scenario) async -> AppModel {
-        let model = AppModel(client: FakeLatchClient(scenario))
+        let fake = FakeLatchClient(scenario)
+        let model = AppModel(client: fake, sharing: fake)
         await model.refreshStatus()
         return model
     }

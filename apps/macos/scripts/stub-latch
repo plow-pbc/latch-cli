@@ -4,6 +4,8 @@
 # shapes from files in its state folder:
 #   stub-latch --state-dir D emit host serving|stopped|starting|error
 #   stub-latch --state-dir D emit activity OP DECISION
+#   stub-latch --state-dir D emit logout
+# `login --events` prints a code, then verifies after STUB_LOGIN_SECONDS (3).
 # appends an event to D/stub-events.ndjson; `events --follow` prints a
 # snapshot, then follows that file (tail -f, blocked on kqueue when idle).
 set -eu
@@ -26,12 +28,29 @@ case "$1 ${2:-}" in
     jq -cn --arg c "$n" --arg op "$3" --arg d "$4" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{type:"activity",cursor:$c,entry:{id:("e"+$c),time:$t,caller:"k1",caller_name:"owner-laptop",op:$op,decision:$d,outcome:"ok"}}' >> "$events"
     ;;
+"emit logout")
+    touch "$state/stub-logged-out"
+    ;;
 "status --local")
     h=$(host_state); [ -n "$h" ] || h=stopped
     serving=false; [ "$h" = serving ] && serving=true
-    jq -cn --arg d "$state" --argjson s "$serving" '{state_dir:$d,version:"0.0.0-stub",protocol:1,
-        peer:{name:"stub-host",key:"k0000000000000000000000000000000",kind:"device"},
-        serve:{running:$s,ready:$s},shares:["/tmp/stub-share"],last_error:null}'
+    peer='{"name":"stub-host","key":"k0000000000000000000000000000000","kind":"device"}'
+    [ -e "$state/stub-logged-out" ] && peer=null
+    shares=$(cat "$state/stub-shares.json" 2>/dev/null || echo '["/tmp/stub-share"]')
+    jq -cn --arg d "$state" --argjson s "$serving" --argjson p "$peer" --argjson sh "$shares" \
+        '{state_dir:$d,version:"0.0.0-stub",protocol:1,peer:$p,serve:{running:$s,ready:$s},shares:$sh,last_error:null}'
+    ;;
+"shares set")
+    shift 2
+    jq -cn '$ARGS.positional' --args "$@" > "$state/stub-shares.json"
+    jq -cn --argjson sh "$(cat "$state/stub-shares.json")" '{shares:$sh}'
+    ;;
+"login --events")
+    echo '{"type":"code","code":"K7P2Q","send_to":"+15555551234","send_to_display":"+1 555-555-1234","smsto":"SMSTO:+15555551234:K7P2Q","sms_link":"sms:+15555551234?&body=K7P2Q"}'
+    echo '{"type":"waiting"}'
+    sleep "${STUB_LOGIN_SECONDS:-3}"
+    rm -f "$state/stub-logged-out"
+    echo '{"type":"verified","peer":{"name":"stub-host","key":"k0000000000000000000000000000000","kind":"device"}}'
     ;;
 "rules show")
     echo '{"host":"stub-host","every_agent":{"text":"Stub rules.","revision":"r1"},"agents":[],"warning":null}'

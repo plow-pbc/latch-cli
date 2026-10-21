@@ -17,10 +17,27 @@ extension View {
     }
 }
 
+extension EnvironmentValues {
+    /// Overrides the system's Reduce Motion when set, so previews and
+    /// snapshots can show either path.
+    @Entry public var reduceMotionOverride: Bool? = nil
+}
+
+/// Whether to keep still: the system's Reduce Motion, unless overridden.
+@propertyWrapper
+public struct ReducedMotion: DynamicProperty {
+    @Environment(\.accessibilityReduceMotion) private var system
+    @Environment(\.reduceMotionOverride) private var override
+
+    public init() {}
+
+    public var wrappedValue: Bool { override ?? system }
+}
+
 private struct ReducibleAnimation<V: Equatable>: ViewModifier {
     var animation: Animation
     var value: V
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ReducedMotion private var reduceMotion
 
     func body(content: Content) -> some View {
         content.animation(reduceMotion ? nil : animation, value: value)
