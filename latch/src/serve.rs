@@ -577,49 +577,9 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
     let caller = connection.remote_id().to_string();
     tracing::Span::current().record("caller", display(&caller));
     if connection.alpn() == link::ALPN {
-        return serve_phone(&host, &caller, connection).await;
-    }
-
-    // First check: on connect. A refused caller's connection is closed with
-    // the "denied" code, which its client reports as exit 4.
-    let refusal = match host.check(&caller).await {
-        Ok(identity) => {
-            let who = format!("{} ({})", identity.name, identity.kind);
-            let record =
-                audit::record(&caller, identity.agent_uid, "connect", "allow", "connected");
-            match host.append(record).await {
-                Ok(_) => {
-                    log(&format!("connect: {who} {caller}: allowed"));
-                    None
-                }
-                Err(message) => Some(message),
-            }
-        }
-        Err(denial) => {
-            // Already refusing, so a failed audit write changes nothing here.
-            let record = audit::record(&caller, None, "connect", "deny", &denial.code);
-            let _ = host.append(record).await;
-            host.show_refusal(&caller, "connect", &denial.code);
-            Some(denial.message)
-        }
-    };
-    if let Some(message) = refusal {
-        log(&format!("connect: {caller}: denied: {message}"));
-        connection.close(VarInt::from_u32(wire::CLOSE_DENIED), message.as_bytes());
-        return;
-    }
-
-    // One stream per operation, until the client closes the connection or
-    // the host stops.
-    while let Some((send, recv)) = next_stream(&host, &connection).await {
-        let operation = tracing::info_span!("operation", op = Empty);
-        serve_operation(&host, &caller, send, recv)
-            .instrument(operation)
-            .await;
-        log(&format!(
-            "paths to {caller}: {}",
-            describe_paths(&connection)
-        ));
+        serve_phone(&host, &caller, &connection).await;
+    } else {
+        serve_caller(&host, &caller, &connection).await;
     }
     // A stopping host gives the client a moment to close: dropping the
     // connection at once could cut off the answer it was just sent.
@@ -631,13 +591,61 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
 /// How long a stopping host waits for a client to close its connection.
 const LINGER: Duration = Duration::from_secs(1);
 
+/// A latch client's connection: checked once on connect, then one
+/// operation per stream.
+async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
+    // First check: on connect. A refused caller's connection is closed with
+    // the "denied" code, which its client reports as exit 4.
+    let refusal = match host.check(caller).await {
+        Ok(identity) => {
+            let who = format!("{} ({})", identity.name, identity.kind);
+            let record = audit::record(caller, identity.agent_uid, "connect", "allow", "connected");
+            match host.append(record).await {
+                Ok(_) => {
+                    log(&format!("connect: {who} {caller}: allowed"));
+                    None
+                }
+                Err(message) => Some(message),
+            }
+        }
+        Err(denial) => {
+            // Already refusing, so a failed audit write changes nothing here.
+            let record = audit::record(caller, None, "connect", "deny", &denial.code);
+            let _ = host.append(record).await;
+            host.show_refusal(caller, "connect", &denial.code);
+            Some(denial.message)
+        }
+    };
+    if let Some(message) = refusal {
+        log(&format!("connect: {caller}: denied: {message}"));
+        connection.close(VarInt::from_u32(wire::CLOSE_DENIED), message.as_bytes());
+        return;
+    }
+
+    // One stream per operation, until the client closes the connection or
+    // the host stops.
+    while let Some((send, recv)) = next_stream(host, connection).await {
+        let operation = tracing::info_span!("operation", op = Empty);
+        serve_operation(host, caller, send, recv)
+            .instrument(operation)
+            .await;
+        log(&format!(
+            "paths to {caller}: {}",
+            describe_paths(connection)
+        ));
+    }
+}
+
 /// The connection's next operation, until the client closes it or the host
 /// is stopping.
 async fn next_stream(host: &Host, connection: &Connection) -> Option<(SendStream, RecvStream)> {
     let mut stopping = host.stopping.subscribe();
+    // Stopping wins over a stream that is also ready: no new operation
+    // starts once the host is stopping.
     tokio::select! {
-        stream = connection.accept_bi() => stream.ok(),
+        biased;
         _ = stopping.wait_for(|stopping| *stopping) => None,
+        stream = connection.accept_bi() => stream.ok(),
     }
 }
 
@@ -812,12 +820,12 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
 /// throwaway one Plow has never heard of: the link's code in each request
 /// is what lets it in, so Plow is not asked. It can fetch its link's form
 /// and save its link's item, nothing else.
-async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
+async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
     log(&format!(
         "phone {caller}: connected over {}",
-        describe_paths(&connection)
+        describe_paths(connection)
     ));
-    while let Some((mut send, mut recv)) = next_stream(host, &connection).await {
+    while let Some((mut send, mut recv)) = next_stream(host, connection).await {
         let Ok(json) = wire::read_frame(&mut recv).await else {
             return;
         };

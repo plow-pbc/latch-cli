@@ -2011,7 +2011,15 @@ fn a_stopping_host_finishes_the_operation_it_is_running() {
         let args = ["exec", "--host", "host", "--", "sh", "-c", script];
         latch(&client, &args, &[])
     });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !share.join("started").exists() {
+        if running.is_finished() {
+            panic!("the exec ended before it started: {:?}", running.join());
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the exec never started"
+        );
         thread::sleep(std::time::Duration::from_millis(20));
     }
     // Stopped (SIGTERM) while the exec runs: it finishes, and is answered.
