@@ -128,6 +128,8 @@ jobs:
           key: musl-${{ matrix.arch }}-${{ hashFiles('latch/build-musl.sh', 'latch/rust-toolchain.toml') }}-${{ hashFiles('latch/Cargo.lock') }}
           restore-keys: musl-${{ matrix.arch }}-${{ hashFiles('latch/build-musl.sh', 'latch/rust-toolchain.toml') }}-
       - run: ./build-musl.sh ${{ matrix.arch }}
+      - name: Make container build cache readable by the runner
+        run: sudo chown -R "$(id -u):$(id -g)" target/cargo-home target/musl-${{ matrix.arch }}
       - run: file target/musl-${{ matrix.arch }}/release/latch | tee /dev/stderr | grep -Eq "statically linked|static-pie linked"
       - run: target/musl-${{ matrix.arch }}/release/latch --version
       - uses: actions/upload-artifact@v4
