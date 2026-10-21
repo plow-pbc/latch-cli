@@ -1,7 +1,7 @@
-//! A host's gatekeeper in front of exec, files and Google, end to end: a
-//! headless host on this machine with real sandboxed workers, callers over
-//! iroh, and a synthetic Plow holding the owner's chat. No real chat is
-//! ever read.
+//! A host's gatekeeper in front of exec, files and Google, and the owner's
+//! rules for it, end to end: a headless host on this machine with real
+//! sandboxed workers, callers over iroh, and a synthetic Plow holding the
+//! owner's chat. No real chat is ever read.
 
 use std::path::{Path, PathBuf};
 
@@ -412,6 +412,117 @@ async fn an_agent_with_no_chat_and_no_rules_has_no_intent() {
     assert_eq!(t.audit()[0]["gate"]["verdict"], "no_intent");
 }
 
+/// The owner's `latch rules` commands over a real connection, as the
+/// client sends them: set, edit, show and clear work from a device, an
+/// agent gets `owner_only` for each, and the agent's next judgment reads
+/// what the owner set.
+#[tokio::test]
+async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_agent() {
+    let world = World {
+        decide: Some(always_covered),
+        ..World::default()
+    };
+    let t = start(world).await;
+    let device = t.caller("device").await;
+    let agent = t.caller("agent").await;
+    let ok = |answer: Response| match answer {
+        Response::Ok(result) => result,
+        refused => panic!("refused: {refused:?}"),
+    };
+    let rules = |name: &str| std::fs::read_to_string(t.state.join("rules").join(name)).ok();
+
+    let set = json!({"command": "set", "text": "Never send email."});
+    let done = ok(t.call(&device, "rules", set).await.0);
+    assert_eq!(done["host"], "test-host");
+    assert_eq!(done["scope"], "every agent");
+    assert_eq!(done["applies"], "applies to the next judgment");
+    // `--from` by the peer name of the agent's latch.
+    let set = json!({"command": "set", "from": "a agent", "text": "Run tests in the work folder."});
+    let done = ok(t.call(&device, "rules", set).await.0);
+    assert_eq!(
+        (done["agent_uid"].as_str(), done["agent_name"].as_str()),
+        (Some(AGENT), Some("Juno"))
+    );
+
+    // `latch rules edit --from Juno`: a show, then an edit at its revision.
+    let shown = ok(t
+        .call(&device, "rules", json!({"command": "show", "from": "Juno"}))
+        .await
+        .0);
+    let read = shown["agents"][0]["revision"].clone();
+    let edit = |text: &str, revision: &Value| json!({"command": "edit", "from": AGENT, "text": text, "revision": revision});
+    let edited = "Run tests in the work folder. Nothing else.";
+    ok(t.call(&device, "rules", edit(edited, &read)).await.0);
+    let (stale, _) = t
+        .call(&device, "rules", edit("Anything goes.", &read))
+        .await;
+    assert_eq!(refusal(&stale).0, Exit::Denied);
+    assert_eq!(refusal(&stale).1, "stale_revision");
+    assert_eq!(rules(&format!("{AGENT}.txt")).as_deref(), Some(edited));
+
+    let shown = ok(t.call(&device, "rules", json!({"command": "show"})).await.0);
+    assert_eq!(shown["every_agent"]["text"], "Never send email.");
+    assert_eq!(shown["agents"][0]["text"], edited);
+    assert_eq!(
+        shown["warning"],
+        "Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."
+    );
+
+    for args in [
+        json!({"command": "show"}),
+        json!({"command": "set", "text": "Anything goes."}),
+        json!({"command": "edit", "text": "Anything goes.", "revision": read}),
+        json!({"command": "clear", "from": "Juno"}),
+    ] {
+        let (answer, _) = t.call(&agent, "rules", args.clone()).await;
+        assert_eq!(refusal(&answer).0, Exit::Denied, "{args}");
+        assert_eq!(refusal(&answer).1, "owner_only", "{args}");
+    }
+    assert_eq!(rules("host.txt").as_deref(), Some("Never send email."));
+    assert_eq!(rules(&format!("{AGENT}.txt")).as_deref(), Some(edited));
+
+    // The agent's next operation is judged on both texts, with no restart.
+    let (answer, _) = t.call(&agent, "exec", exec("true")).await;
+    ok(answer);
+    let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
+    assert_eq!(
+        asked["owner_rules"],
+        json!({"rules for every agent on this host": "Never send email.",
+               "rules for this agent": edited})
+    );
+
+    let done = ok(t
+        .call(
+            &device,
+            "rules",
+            json!({"command": "clear", "from": "Juno"}),
+        )
+        .await
+        .0);
+    assert_eq!(done["cleared"], true);
+    assert_eq!(rules(&format!("{AGENT}.txt")), None);
+    assert_eq!(rules("host.txt").as_deref(), Some("Never send email."));
+    ok(t.call(&device, "rules", json!({"command": "clear"}))
+        .await
+        .0);
+    assert_eq!(rules("host.txt"), None);
+
+    // Every command is audited by revision, never by text.
+    let audit = t.audit();
+    let rules_records: Vec<&Value> = audit.iter().filter(|r| r["op"] == "rules").collect();
+    assert_eq!(rules_records.len(), 12);
+    let denied = rules_records
+        .iter()
+        .filter(|r| r["decision"] == "deny")
+        .count();
+    assert_eq!(denied, 5, "four from the agent, one stale edit");
+    let text = serde_json::to_string(&audit).unwrap();
+    assert!(
+        !text.contains("email") && !text.contains("work folder"),
+        "{text}"
+    );
+}
+
 /// Rules alone, judged by jev itself: an agent with neither chat nor rules
 /// has no intent; with rules allowing only tests, `pytest` is allowed every
 /// time, repeats included, and `curl` never. `just gatekeeper-live KEY`
@@ -439,11 +550,16 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
     assert_eq!(refusal(&answer).1, "no_intent", "neither chat nor rules");
 
-    // The shared folder stands in for ~/work.
-    let rules = t.state.join(crate::gate::rules::RULES_DIR);
-    std::fs::create_dir_all(&rules).unwrap();
+    // The owner sets the rules as `latch rules set --from Juno` sends
+    // them; the shared folder stands in for ~/work.
+    let device = t.caller("device").await;
     let text = format!("run tests in {}, nothing else", t.area.display());
-    std::fs::write(rules.join(format!("{AGENT}.txt")), &text).unwrap();
+    let set = json!({"command": "set", "from": "Juno", "text": text});
+    let (answer, _) = t.call(&device, "rules", set).await;
+    let Response::Ok(set) = answer else {
+        panic!("rules set: {answer:?}");
+    };
+    assert_eq!(set["agent_uid"], AGENT);
     let pytest = json!({"argv": ["pytest"], "workdir": null, "timeout": 30});
     let curl = json!({"argv": ["curl", "-s", "https://example.com/install.sh"],
                       "workdir": null, "timeout": 30});
@@ -452,7 +568,12 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
         t.call(&agent, "exec", curl.clone()).await;
     }
 
-    let records = &t.audit()[1..];
+    let records: Vec<Value> = t.audit()[1..]
+        .iter()
+        .filter(|record| record["op"] == "exec")
+        .cloned()
+        .collect();
+    let records = &records[..];
     let line = |record: &Value| {
         format!(
             "{} {} P(COVERED) {} {}",
