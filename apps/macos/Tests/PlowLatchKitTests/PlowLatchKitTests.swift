@@ -224,4 +224,15 @@ private func stopServe(_ serve: Process, state: String) async throws {
         #expect(arrived, "the second stream stalled behind the first")
         _ = idle
     }
+
+    @Test func stoppingAStreamEarlyEndsItCleanly() async throws {
+        // The app stops following as soon as it has what it waited for; the
+        // latch it ran may still be exiting when the stream winds down.
+        let client = LiveLatchClient(executable: stub, stateDir: try stubState())
+        for _ in 0..<40 {
+            var events = client.events(after: nil, lifecycleOnly: true).makeAsyncIterator()
+            _ = try await events.next()
+        }
+        try await Task.sleep(for: .seconds(1))
+    }
 }

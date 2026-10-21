@@ -54,6 +54,9 @@ public struct LiveLatchClient: LatchClient {
                     for await line in try process.lines() {
                         continuation.yield(try decode(type, from: Data(line.utf8)))
                     }
+                    // Stopped by its consumer: latch was told to go, and how
+                    // it ends is no one's concern.
+                    if Task.isCancelled { return continuation.finish() }
                     continuation.finish(throwing: await process.failure())
                 } catch {
                     continuation.finish(throwing: error)
@@ -103,7 +106,12 @@ public final class LatchProcess: @unchecked Sendable {
     /// the app dies, the system closes it and latch's stream sees that and
     /// exits, so no `latch events` outlives the app.
     private let lifeline: Pipe?
-    private let exited = AsyncStream<Int32>.makeStream()
+    /// latch's exit status once it has exited, and whoever waits for it.
+    private let exit = Exit()
+
+    private final class Exit: Sendable {
+        let state = Mutex<(status: Int32?, waiting: [CheckedContinuation<Int32, Never>])>((nil, []))
+    }
 
     init(executable: URL, arguments: [String], streaming: Bool = false) {
         process.executableURL = executable
@@ -112,10 +120,15 @@ public final class LatchProcess: @unchecked Sendable {
         process.standardInput = lifeline ?? FileHandle.nullDevice
         process.standardOutput = stdout
         process.standardError = stderr
-        process.terminationHandler = { [exited] process in
+        process.terminationHandler = { [exit] process in
             Self.running.withLock { _ = $0.removeValue(forKey: ObjectIdentifier(process)) }
-            exited.continuation.yield(process.terminationStatus)
-            exited.continuation.finish()
+            let status = process.terminationStatus
+            let waiting = exit.state.withLock { now in
+                now.status = status
+                defer { now.waiting = [] }
+                return now.waiting
+            }
+            for waiter in waiting { waiter.resume(returning: status) }
         }
     }
 
@@ -179,9 +192,16 @@ public final class LatchProcess: @unchecked Sendable {
         }
     }
 
+    /// Waits until latch has exited, even in a cancelled task: its status
+    /// can't be read while it still runs.
     private func exitStatus() async -> Int32 {
-        for await status in exited.stream { return status }
-        return process.terminationStatus
+        await withCheckedContinuation { continuation in
+            let status = exit.state.withLock { now in
+                if now.status == nil { now.waiting.append(continuation) }
+                return now.status
+            }
+            if let status { continuation.resume(returning: status) }
+        }
     }
 
     private static func readAll(_ pipe: Pipe) async -> Data {

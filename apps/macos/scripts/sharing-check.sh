@@ -42,8 +42,18 @@ pid=""
 terminal_serve=""
 
 say() { echo "$*" | tee -a "$out"; }
-post() { "$tool" post "$@"; }
-report() { rm -f "$state/report.json"; post report "$state/report.json"; sleep 0.5; cat "$state/report.json" 2>/dev/null; }
+# The app must outlive every step: a crash between checks would otherwise
+# pass unseen, since later steps launch it afresh.
+reports="$HOME/Library/Logs/DiagnosticReports"
+crashes_before=$(ls "$reports" 2>/dev/null | grep -c '^PlowLatch' || true)
+alive() {
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        say "FAIL: the app (pid $pid) died"
+        pid=""
+    fi
+}
+post() { alive; "$tool" post "$@"; }
+report() { rm -f "$state/report.json"; post report "$state/report.json"; sleep 0.5; cat "$state/report.json" 2>/dev/null; alive; }
 launch() { read -r _ pid < <("$tool" launch-ms "$app" "${args[@]}"); sleep 2; }
 quit_app() {
     [ -n "$pid" ] || return 0
@@ -77,6 +87,13 @@ cleanup() {
     defaults delete "$test_id" 2>/dev/null || true
     rm -f "$HOME/Library/Preferences/$test_id.plist"
     rm -rf "$HOME/Library/Saved Application State/$test_id.savedState"
+    crashes=$(( $(ls "$reports" 2>/dev/null | grep -c '^PlowLatch' || true) - crashes_before ))
+    if [ "$crashes" -gt 0 ]; then
+        say "FAIL: $crashes new PlowLatch crash report(s) in $reports"
+    fi
+    failures=$(grep -c 'FAIL' "$out" || true)
+    say "== $failures failure(s)"
+    [ "$failures" -eq 0 ] || exit 1
 }
 trap cleanup EXIT
 
