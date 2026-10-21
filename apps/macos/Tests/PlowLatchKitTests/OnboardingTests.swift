@@ -159,3 +159,28 @@ private func runFlow(startSharing: Bool) async throws -> (Onboarding, AppModel, 
     #expect(!AppModel.sameFolder("/tmp/a", nil))
     #expect(!AppModel.sameFolder("/tmp/a", "/tmp/b"))
 }
+
+@Test @MainActor func notNowAfterAFailedStartGoesOn() async {
+    let fake = FakeLatchClient(.stopped, start: .fails(.init(code: "register_failed", message: "Operation not permitted")))
+    let app = AppModel(client: fake, sharing: fake)
+    await app.refreshStatus()
+    let flow = Onboarding(app: app) { _ in }
+    flow.stage(.keepRunning, folders: [URL(filePath: "/tmp/work")])
+    await flow.keepRunning(startSharing: true)
+    #expect(flow.step == .keepRunning && flow.keepRunningError != nil)
+    await flow.keepRunning(startSharing: false)
+    #expect(flow.step == .done && flow.keepRunningError == nil && app.agent == .off)
+}
+
+@Test @MainActor func anAgentAwaitingApprovalStaysRegistered() async {
+    let fake = FakeLatchClient(.stopped, start: .needsApproval)
+    let app = AppModel(client: fake, sharing: fake)
+    await app.refreshStatus()
+    await app.startSharing()
+    // Unregistering would take it out of Login Items, where the person allows it.
+    #expect(app.agent == .needsApproval && fake.unregistrations == 0)
+    #expect(app.menuState == .needsApproval && app.sharingError != nil)
+    // Trying again doesn't pass for started, in onboarding or anywhere.
+    await app.startSharing()
+    #expect(app.sharingError != nil && fake.unregistrations == 0)
+}

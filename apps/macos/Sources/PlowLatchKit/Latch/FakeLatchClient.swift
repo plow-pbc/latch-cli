@@ -23,9 +23,23 @@ public final class FakeLatchClient: LatchClient, SharingService {
         case waiting
     }
 
+    /// How Start Sharing goes on the fake.
+    public enum StartOutcome: Sendable {
+        case serves
+        /// Registering fails outright.
+        case fails(LatchFailure)
+        /// Registered, but turned off in Login Items until the person allows it.
+        case needsApproval
+    }
+
     private struct State {
         var loggedIn: Bool
         var serving: Bool
+        /// The agent is registered; `waitingApproval`: but not allowed yet.
+        var registered: Bool
+        var waitingApproval = false
+        /// How many times the agent was unregistered.
+        var unregistered = 0
         var shares: [String]
         var lastError: LatchFailure?
         var watchers: [UUID: AsyncThrowingStream<LatchEvent, Error>.Continuation] = [:]
@@ -38,14 +52,20 @@ public final class FakeLatchClient: LatchClient, SharingService {
     public let loginOutcome: LoginOutcome
     private let state: Mutex<State>
 
-    public init(_ scenario: Scenario, liveEvery: Duration? = nil, login: LoginOutcome = .verified(after: .seconds(4))) {
+    public let startOutcome: StartOutcome
+
+    public init(_ scenario: Scenario, liveEvery: Duration? = nil, login: LoginOutcome = .verified(after: .seconds(4)),
+                start: StartOutcome = .serves) {
         self.scenario = scenario
+        startOutcome = start
         self.liveEvery = liveEvery
         loginOutcome = login
         let sample = Fixtures.sampleStatus
         state = Mutex(State(
             loggedIn: scenario != .loggedOut,
             serving: [.serving, .noActivity, .outside].contains(scenario),
+            registered: [.serving, .noActivity, .needsApproval].contains(scenario),
+            waitingApproval: scenario == .needsApproval,
             shares: scenario == .loggedOut ? [] : sample.shares,
             lastError: scenario == .hostError
                 ? LatchFailure(code: "folder_missing", message: "/Users/owner/work: no such folder") : nil))
@@ -136,23 +156,31 @@ public final class FakeLatchClient: LatchClient, SharingService {
     public var stateDir: String? { nil }
 
     public func agentProcess() async -> Int? {
-        scenario == .outside ? nil : state.withLock { $0.serving } ? 4242 : nil
+        state.withLock { $0.registered && $0.serving } ? 4242 : nil
     }
 
     public func agent() -> SharingAgent {
-        switch scenario {
-        case .outside: .off
-        case .needsApproval: .needsApproval
-        default: state.withLock { $0.serving } ? .on : .off
+        state.withLock { now in
+            !now.registered ? .off : now.waitingApproval ? .needsApproval : .on
         }
     }
 
+    /// How many times the app unregistered the agent.
+    public var unregistrations: Int { state.withLock { $0.unregistered } }
+
     public func startSharing() async throws {
-        change { $0.serving = true }
+        switch startOutcome {
+        case .serves:
+            change { $0.registered = true; $0.serving = true }
+        case let .fails(failure):
+            throw LatchError.failed(failure)
+        case .needsApproval:
+            change { $0.registered = true; $0.waitingApproval = true }
+        }
     }
 
     public func stopSharing() async throws {
-        change { $0.serving = false }
+        change { $0.registered = false; $0.waitingApproval = false; $0.serving = false; $0.unregistered += 1 }
     }
 
     /// Changes the host and tells everyone following it.

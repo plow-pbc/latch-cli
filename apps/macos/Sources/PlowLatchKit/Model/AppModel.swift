@@ -123,10 +123,14 @@ public final class AppModel {
     /// until it serves. Anything short of serving unregisters it again, so a
     /// failed start leaves nothing behind.
     public func startSharing() async {
+        // The error shown is this attempt's, never an earlier one's.
+        sharingError = nil
         await refreshAgent()
         guard canStartSharing else {
-            if menuState == .outside {
-                sharingError = "A latch serve started outside Plow Latch is already sharing this Mac."
+            switch menuState {
+            case .outside: sharingError = "A latch serve started outside Plow Latch is already sharing this Mac."
+            case .needsApproval: sharingError = Self.allowInLoginItems
+            default: break
             }
             return
         }
@@ -141,10 +145,12 @@ public final class AppModel {
             try await sharing.startSharing()
             agent = sharing.agent()
             if agent == .needsApproval {
-                throw LatchError.unreachable("Allow Plow Latch in Login Items to share in the background.")
+                // Left registered: Login Items lists it only while it is, and
+                // that is where the person allows it.
+                sharingError = Self.allowInLoginItems
+            } else {
+                host = try await waitForHost(starting: true)
             }
-            host = try await waitForHost(starting: true)
-            sharingError = nil
         } catch {
             try? await sharing.stopSharing()
             sharingError = Self.latchError(error).message
@@ -156,6 +162,7 @@ public final class AppModel {
     /// Unregisters the background host and waits, on latch's lifecycle
     /// stream, until it stopped.
     public func stopSharing() async {
+        sharingError = nil
         await refreshAgent()
         guard canStopSharing else { return }
         changingSharing = true
@@ -163,13 +170,14 @@ public final class AppModel {
         do {
             try await sharing.stopSharing()
             host = try await waitForHost(starting: false)
-            sharingError = nil
         } catch {
             sharingError = Self.latchError(error).message
         }
         await refreshStatus()
         await refreshAgent()
     }
+
+    private static let allowInLoginItems = "Allow Plow Latch in Login Items to share in the background."
 
     /// How long Start or Stop waits for latch to report the host's new state.
     nonisolated static let sharingTimeout = Duration.seconds(30)
