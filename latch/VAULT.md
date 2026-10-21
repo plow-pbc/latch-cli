@@ -183,7 +183,9 @@ if the page keeps them). A fill that stops part-way (a covered button, a
 refused field) is cleaned up the same way. If latch cannot confirm the
 values left the page, every session on the profile stays paused, through
 any later fill too, until a cleanup confirms the page holds none or the
-session that filled is closed. No reading is taken while a fill holds the
+session that filled is closed. Closing it never lets its pages send what
+they hold: on Chrome for Testing the guard stands until the browser exits;
+on Camoufox the browser is killed, ending every session on it. No reading is taken while a fill holds the
 browser, and an element list marks a field holding a filled value as
 `filled`, never showing the value. While a filled value may be on a page,
 in whichever of the session's tabs, `eval` and screenshots are refused

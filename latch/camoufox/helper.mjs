@@ -86,9 +86,7 @@ let nextDocument = 0;
 // (`guard`), by session; a session's `stopped` says one was stopped. Line
 // breaks count alike however written: a form sends a field's as CRLF.
 const oneNewline = (text) => text.replace(/\r\n?/g, "\n");
-// The guards of sessions that ended while they still had one.
-const ended = [];
-const guards = () => [...shares.values(), ...ended];
+const guards = () => [...shares.values()];
 const guarding = () => guards().some((s) => s.guard?.length);
 const guardRoute = (route, request) => {
   if (request.method() === "GET") {
@@ -407,11 +405,11 @@ const ops = {
   /// Ends this session: closes every tab it has. The others go on.
   async end() {
     const ending = shares.get(current);
+    // A session still holding a guard (its cleanup failed) keeps its
+    // pages: closing one lets it send what it holds as it goes, in a
+    // request the routing may not see. latch kills the browser instead.
+    if (ending?.guard?.length) return { guarded: true };
     shares.delete(current);
-    // Its guard, if it still has one, stays for as long as this browser
-    // runs: a page going away can still send what it holds, in a request
-    // that outlives it. It matches only those exact values.
-    if (ending?.guard?.length) ended.push({ guard: ending.guard });
     for (const t of ending?.tabs ?? []) await t.page.close().catch(() => {});
     await routeForGuards().catch(() => {});
     for (const d of ending?.downloads ?? []) if (d.file) fs.rmSync(d.file, { force: true });

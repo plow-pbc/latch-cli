@@ -533,7 +533,20 @@ impl Runtime for Camoufox {
 
     fn end(&mut self, key: &str) {
         self.select(key);
-        let _ = self.ask::<Value>("end", json!({}));
+        let ended = self.ask::<Value>("end", json!({}));
+        // Its pages may still hold a filled secret: they are not closed,
+        // which would let them send it as they go; the browser is killed,
+        // with every process it started, and the helper with it. Every
+        // other session on it then gets browser_gone.
+        if ended.is_ok_and(|ended| ended["guarded"] == true) {
+            for group in [self.browser, self.helper.id()] {
+                if group != 0 {
+                    // SAFETY: a signal only; each leads its own process group.
+                    unsafe { libc::killpg(group as libc::pid_t, libc::SIGKILL) };
+                }
+            }
+            let _ = self.helper.wait();
+        }
         self.seen.remove(key);
         let _ = fs::remove_dir_all(self.session_folder(key));
     }

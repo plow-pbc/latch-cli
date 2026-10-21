@@ -1237,11 +1237,19 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
     println!("the other session while the trap holds: {}", held.code);
     assert_eq!(held.code, "session_paused");
     h.call("close", json!({})).await.unwrap();
-    let seen = call_b("observe", &b, json!({})).await.unwrap();
-    println!("the other session once it is closed: {}", seen["title"]);
-    assert_eq!(seen["title"], "latch next page");
-
-    call_b("close", &b, json!({})).await.unwrap();
+    if engine == "cft" {
+        let seen = call_b("observe", &b, json!({})).await.unwrap();
+        println!("the other session once it is closed: {}", seen["title"]);
+        assert_eq!(seen["title"], "latch next page");
+        call_b("close", &b, json!({})).await.unwrap();
+    } else {
+        // Camoufox can't close a page that may hold a secret without
+        // letting it send it: the browser was killed instead.
+        let gone = call_b("observe", &b, json!({})).await.unwrap_err();
+        println!("the other session once it is closed: {}", gone.code);
+        assert_eq!(gone.code, "browser_gone");
+        call_b("close", &b, json!({})).await.ok();
+    }
 
     let everything = format!("{}\n{}", h.shown.join("\n"), shown_b.join("\n"));
     for value in [PASSWORD, NUMBER, CVV] {
