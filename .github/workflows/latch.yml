@@ -27,6 +27,22 @@ jobs:
       - run: rustup toolchain install
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
+      # The browser tests drive the pinned engines, Chrome for Testing and
+      # Camoufox, headed, from where `just cft` installs them; the caches
+      # keep their downloads (200 MB and 300 MB) to once per pin and
+      # architecture.
+      - if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/cft
+          key: cft-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/camoufox
+          key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
+      - if: runner.os == 'macOS'
+        run: cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox target/debug/latch
       - run: cargo test --locked
 
   # Static Linux client binaries, built natively on each architecture.
