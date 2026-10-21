@@ -177,12 +177,7 @@ def onboard(state, start_sharing, name):
     phone = f"+1555{random.randrange(10**7):07d}"
     say(f"texting the bare code from {phone} through the LinQ twin")
     text_code(code["code"], code["sendTo"], phone)
-    r = wait_for(lambda r: (r.get("onboarding") or {}).get("step") == "linked", timeout=12)
-    if not r:
-        # This stack's API may predate bare codes; the old message form.
-        say("not linked by the bare code in 12 s: texting \"Plow Activate: <code>\" instead")
-        text_code("Plow Activate: " + code["code"], code["sendTo"], phone)
-        r = wait_for(lambda r: (r.get("onboarding") or {}).get("step") == "linked", timeout=30)
+    r = wait_for(lambda r: (r.get("onboarding") or {}).get("step") == "linked", timeout=30)
     if not r:
         say(f"FAIL: not linked: {shown(report())}")
         return False
