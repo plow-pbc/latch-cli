@@ -4,11 +4,6 @@ name: release
 # release for a person to publish. Pull requests build and verify unsigned
 # archives and release nothing.
 on:
-  # Temporary, for the signing trial before this file is on main (a dispatch
-  # needs the workflow on the default branch): a pushed v*-trial.* tag runs
-  # the same pipeline as its own version. Remove after the trial.
-  push:
-    tags: ['v*-trial.*']
   pull_request:
     paths: ['latch/**', 'scripts/**', 'install-release.sh', '.github/workflows/release.yml']
   workflow_dispatch:
@@ -34,7 +29,6 @@ jobs:
           package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
           case '${{ github.event_name }}' in
             pull_request) tag="v$package-pr.${{ github.event.number }}" ;;
-            push) tag=$REF_NAME ;;
             workflow_dispatch)
               tag="v$package-build.$(date -u +%Y%m%d%H%M)"
               if [[ "$REF" != refs/heads/main ]]; then
@@ -168,7 +162,6 @@ jobs:
           codesign --force --options runtime --timestamp --identifier co.plow.latch.cli \
             --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY" "$binary"
           codesign --verify --strict --verbose=2 "$binary"
-          "$binary" --version
           echo "NAME=$name" >> "$GITHUB_ENV"
       # A bare binary takes no stapled ticket: Gatekeeper looks the ticket up
       # online the first time a quarantined copy runs.
@@ -269,9 +262,8 @@ jobs:
         with:
           name: release-downloads
           path: dist
-      # The tag is pushed only now, once every build is signed and verified;
-      # a trial run's tag was pushed by hand. Always a draft: a person
-      # publishes it after checking the signed builds.
+      # Push the tag only after every build is signed and verified. A person
+      # publishes the draft after checking the signed builds.
       - name: Create draft release
         run: |
           if [[ '${{ github.event_name }}' == workflow_dispatch ]]; then
