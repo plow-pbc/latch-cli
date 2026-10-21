@@ -262,14 +262,16 @@ impl StateDir {
     }
 }
 
-/// Writes a file only its owner can read, atomically (a temporary file
+/// Writes a file only its owner can read, atomically (`<name>.tmp`
 /// renamed over it). Skips the write when the file already holds exactly
 /// these bytes, so a repeated `login` changes nothing.
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if fs::read(path).is_ok_and(|current| current == bytes) {
         return Ok(());
     }
-    let temp = path.with_extension("tmp");
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)

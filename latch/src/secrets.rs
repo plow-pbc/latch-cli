@@ -39,6 +39,16 @@ pub enum Secret {
 impl Secret {
     const ALL: [Secret; 3] = [Secret::Key, Secret::PlowToken, Secret::VaultKey];
 
+    /// The temporary files a write of it may have left behind: today's
+    /// writer's, and for the vault key the one before it used.
+    fn temps(self) -> Vec<String> {
+        let mut temps = vec![format!("{}.tmp", self.file())];
+        if self == Secret::VaultKey {
+            temps.push("vault.tmp".into());
+        }
+        temps
+    }
+
     /// The file it is kept in by a build without the Keychain.
     pub fn file(self) -> &'static str {
         match self {
@@ -72,7 +82,7 @@ impl Secrets {
     /// The secrets of the state folder `dir`, where this build keeps them.
     /// A Keychain build first moves any secret files there.
     pub fn open(dir: &Path) -> Result<Secrets, Failure> {
-        match platform::keychain() {
+        match platform::keychain()? {
             None => Ok(Secrets {
                 dir: dir.to_path_buf(),
                 keychain: None,
@@ -142,13 +152,20 @@ impl Secrets {
 
     /// Moves the secret files into the store: writes each, reads it back
     /// and compares, and only once every one is confirmed deletes the
-    /// files. Anything short of that leaves every file in place.
+    /// files, and any temporary copies a write left beside them. Anything
+    /// short of that leaves every file in place.
     fn move_files_in(&self) -> Result<(), Failure> {
         let store = self.keychain.as_deref().expect("moves only into a store");
-        if !Secret::ALL
-            .iter()
-            .any(|secret| self.dir.join(secret.file()).exists())
-        {
+        let on_disk = |secret: Secret| {
+            let mut names = secret.temps();
+            names.insert(0, secret.file().to_string());
+            names
+                .into_iter()
+                .map(|name| self.dir.join(name))
+                .filter(|path| path.exists())
+                .collect::<Vec<PathBuf>>()
+        };
+        if Secret::ALL.iter().all(|secret| on_disk(*secret).is_empty()) {
             return Ok(());
         }
         // One move at a time per folder. A mover that waited reads the
@@ -164,20 +181,46 @@ impl Secrets {
             .map_err(|err| io_failure(&lock_path, err))?;
         lock.lock().map_err(|err| io_failure(&lock_path, err))?;
         let mut confirmed = Vec::new();
+        let mut moved = 0;
         for secret in Secret::ALL {
             let path = self.dir.join(secret.file());
+            let account = self.account(secret);
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
-                Err(err) if err.kind() == ErrorKind::NotFound => continue,
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    // A temporary copy with no file beside it may be the
+                    // only copy left: it goes only if the store has the
+                    // secret already.
+                    let left = on_disk(secret);
+                    if left.is_empty() {
+                        continue;
+                    }
+                    let stored = store
+                        .get(&account)
+                        .map_err(|why| self.refused("read", secret, &why))?;
+                    if stored.is_none() {
+                        let message = format!(
+                            "{} is there but {} is not: it may be the only copy of that \
+                             secret. Rename it to {} or delete it, then run latch again; \
+                             nothing was moved",
+                            left[0].display(),
+                            secret.file(),
+                            secret.file()
+                        );
+                        return Err(Failure::failed("keychain_failed", message));
+                    }
+                    confirmed.extend(left);
+                    continue;
+                }
                 Err(err) => return Err(io_failure(&path, err)),
             };
             // Until its file is gone the file is the secret: a copy already
             // in the store is from a move cut short, and is replaced.
-            let account = self.account(secret);
             store
                 .set(&account, &bytes)
                 .map_err(|why| self.refused("save", secret, &why))?;
-            test_stop_after(confirmed.len() + 1);
+            moved += 1;
+            test_stop_after(moved);
             let back = store
                 .get(&account)
                 .map_err(|why| self.refused("read", secret, &why))?;
@@ -188,7 +231,7 @@ impl Secrets {
                 );
                 return Err(Failure::failed("keychain_failed", message));
             }
-            confirmed.push(path);
+            confirmed.extend(on_disk(secret));
         }
         for path in confirmed {
             fs::remove_file(&path).map_err(|err| io_failure(&path, err))?;
@@ -239,6 +282,7 @@ mod platform {
     use core_foundation::boolean::CFBoolean;
     use core_foundation::data::CFData;
     use core_foundation::dictionary::CFDictionary;
+    use core_foundation::error::CFError;
     use core_foundation::string::{CFString, CFStringRef};
     use security_framework_sys::base::{errSecDuplicateItem, errSecItemNotFound};
     use security_framework_sys::item::{
@@ -249,6 +293,7 @@ mod platform {
     use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemUpdate};
 
     use super::Store;
+    use crate::failure::Failure;
 
     /// The Keychain access group Plow's signed builds share with the Mac app.
     const KEYCHAIN_GROUP: &str = "3559PD337Z.co.plow.latch";
@@ -267,38 +312,71 @@ mod platform {
     }
 
     /// The Keychain, if this build is signed with Plow's keychain group.
-    pub(super) fn keychain() -> Option<Box<dyn Store>> {
-        entitled().then(|| Box::new(Keychain) as Box<dyn Store>)
+    pub(super) fn keychain() -> Result<Option<Box<dyn Store>>, Failure> {
+        Ok(chosen(granted_groups())?.then(|| Box::new(Keychain) as Box<dyn Store>))
     }
 
-    /// Whether this process's signature grants `KEYCHAIN_GROUP`.
-    fn entitled() -> bool {
+    /// Whether to keep secrets in the Keychain, given the keychain groups
+    /// this process's signature grants (`None`: none). A signature macOS
+    /// could not read is an error, never taken for an unsigned build.
+    fn chosen(groups: Result<Option<Vec<String>>, String>) -> Result<bool, Failure> {
+        match groups {
+            Ok(None) => Ok(false),
+            Ok(Some(groups)) => Ok(groups.iter().any(|group| group == KEYCHAIN_GROUP)),
+            Err(why) => {
+                let message = format!(
+                    "macOS could not tell which keychain groups this latch is signed for \
+                     ({why}), so it can't tell where its secrets belong; nothing was \
+                     read or written"
+                );
+                Err(Failure::failed("keychain_failed", message))
+            }
+        }
+    }
+
+    /// The keychain groups this process's signature grants.
+    fn granted_groups() -> Result<Option<Vec<String>>, String> {
         let name = CFString::from_static_string("keychain-access-groups");
-        // SAFETY: plain Security calls; each Create/Copy result is owned and
-        // released by its wrapper, and both are checked for null first.
+        // SAFETY: plain Security calls; each Create/Copy result (task, value,
+        // error) is owned and released by its wrapper once non-null.
         unsafe {
             let task = SecTaskCreateFromSelf(std::ptr::null());
             if task.is_null() {
-                return false;
+                return Err("SecTaskCreateFromSelf returned nothing".into());
             }
             let task = CFType::wrap_under_create_rule(task);
+            let mut error: CFTypeRef = std::ptr::null();
             let value = SecTaskCopyValueForEntitlement(
                 task.as_CFTypeRef(),
                 name.as_concrete_TypeRef(),
-                std::ptr::null_mut(),
+                &mut error,
             );
-            if value.is_null() {
-                return false;
+            let value = (!value.is_null()).then(|| CFType::wrap_under_create_rule(value));
+            if !error.is_null() {
+                let error = CFType::wrap_under_create_rule(error);
+                let why = error
+                    .downcast::<CFError>()
+                    .map_or("an unknown error".to_string(), |error| {
+                        error.description().to_string()
+                    });
+                return Err(why);
             }
-            let value = CFType::wrap_under_create_rule(value);
-            let Some(groups) = value.downcast::<CFArray>() else {
-                return false;
+            let Some(value) = value else {
+                return Ok(None);
             };
-            groups.iter().any(|group| {
-                CFType::wrap_under_get_rule(*group)
-                    .downcast::<CFString>()
-                    .is_some_and(|group| group == KEYCHAIN_GROUP)
-            })
+            let Some(groups) = value.downcast::<CFArray>() else {
+                return Err("its keychain-access-groups entitlement is not a list".into());
+            };
+            Ok(Some(
+                groups
+                    .iter()
+                    .filter_map(|group| {
+                        CFType::wrap_under_get_rule(*group)
+                            .downcast::<CFString>()
+                            .map(|group| group.to_string())
+                    })
+                    .collect(),
+            ))
         }
     }
 
@@ -415,6 +493,27 @@ mod platform {
             })
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_signature_macos_could_not_read_fails_and_is_never_taken_as_unsigned() {
+            let refused = chosen(Err("the task's signature is invalid".into()))
+                .err()
+                .unwrap();
+            assert_eq!(refused.code, "keychain_failed");
+            assert!(
+                refused.message.contains("nothing was read or written"),
+                "{}",
+                refused.message
+            );
+            assert!(!chosen(Ok(None)).unwrap());
+            assert!(!chosen(Ok(Some(vec!["3559PD337Z.other".into()]))).unwrap());
+            assert!(chosen(Ok(Some(vec![KEYCHAIN_GROUP.into()]))).unwrap());
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -422,8 +521,8 @@ mod platform {
     use super::Store;
 
     /// Only macOS has a Keychain; other systems keep files.
-    pub(super) fn keychain() -> Option<Box<dyn Store>> {
-        None
+    pub(super) fn keychain() -> Result<Option<Box<dyn Store>>, crate::failure::Failure> {
+        Ok(None)
     }
 }
 
@@ -632,6 +731,44 @@ mod tests {
                 .unwrap(),
             b"new-login"
         );
+    }
+
+    #[test]
+    fn a_move_leaves_no_temporary_copy_of_a_secret_behind() {
+        let dir = folder_with_files();
+        // A write cut short before its rename, beside the file it was for,
+        // and the one before this writer's naming left for the vault key.
+        fs::write(dir.path().join("plow-token.tmp"), b"pending-login").unwrap();
+        fs::write(dir.path().join("vault.tmp"), b"vault-hex").unwrap();
+        let memory = Memory::default();
+        in_memory(dir.path(), &memory).unwrap();
+        let mut left: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, [MOVE_LOCK]);
+    }
+
+    #[test]
+    fn a_temporary_copy_with_no_secret_anywhere_else_is_kept_and_the_move_stops() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("plow-token.tmp"), b"only-copy").unwrap();
+        let memory = Memory::default();
+        let refused = in_memory(dir.path(), &memory).err().unwrap();
+        assert_eq!(refused.code, "keychain_failed");
+        assert!(refused.message.contains("only copy"), "{}", refused.message);
+        assert_eq!(
+            fs::read(dir.path().join("plow-token.tmp")).unwrap(),
+            b"only-copy"
+        );
+
+        // Once the Keychain holds the token, the copy is a leftover.
+        memory
+            .set(&files(dir.path()).account(Secret::PlowToken), b"only-copy")
+            .unwrap();
+        in_memory(dir.path(), &memory).unwrap();
+        assert!(!dir.path().join("plow-token.tmp").exists());
     }
 
     #[test]
