@@ -29,8 +29,6 @@ struct Unavailable: View {
                 Text("Your devices and agents can't reach this Mac until sharing starts.")
             } actions: {
                 Button("Start Sharing", action: action)
-                    .disabled(true)
-                    .help("Background sharing isn't available in this build yet.")
             }
         case .noActivity:
             ContentUnavailableView {

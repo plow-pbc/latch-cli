@@ -45,10 +45,10 @@ public struct Theme: Sendable {
     /// A theme's colour for a host state.
     public func color(for state: MenuState) -> Color {
         switch state {
-        case .serving: colors.serving
+        case .serving, .outside: colors.serving
         case .starting: colors.starting
         case .stopped, .loggedOut: colors.stopped
-        case .error, .unreachable: colors.error
+        case .error, .unreachable, .needsApproval: colors.error
         }
     }
 }

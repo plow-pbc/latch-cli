@@ -34,8 +34,10 @@ struct OverviewView: View {
                         .font(theme.type.detail)
                         .foregroundStyle(theme.colors.secondaryText)
                 }
+                sharing
                 if model.menuState == .stopped {
-                    Unavailable(kind: .sharingStopped) {}
+                    Unavailable(kind: .sharingStopped) { Task { await model.startSharing() } }
+                        .disabled(!model.canStartSharing)
                         .latchSurface(.card)
                 }
                 if case let .error(message) = model.menuState {
@@ -55,7 +57,36 @@ struct OverviewView: View {
             Text(status.peer?.name ?? "This Mac").font(theme.type.hero)
             StatusBadge(model.menuState)
             Spacer()
+            if model.canStopSharing {
+                Button("Stop Sharing") { Task { await model.stopSharing() } }
+            }
         }
+    }
+
+    /// What's special about how this Mac shares right now, if anything.
+    @ViewBuilder private var sharing: some View {
+        switch model.menuState {
+        case .outside:
+            note("A latch serve started outside Plow Latch is sharing this Mac. Stop it where it was started to manage sharing here.",
+                 symbol: "terminal")
+        case .needsApproval:
+            HStack {
+                note("Sharing in the background is turned off in Login Items.", symbol: "exclamationmark.circle")
+                Button("Open Login Items…") { BackgroundSharing.openLoginItems() }
+            }
+        default:
+            EmptyView()
+        }
+        if let error = model.sharingError {
+            problem(error)
+        }
+    }
+
+    private func note(_ message: String, symbol: String) -> some View {
+        Label(message, systemImage: symbol)
+            .font(theme.type.detail)
+            .foregroundStyle(theme.colors.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func problem(_ message: String) -> some View {

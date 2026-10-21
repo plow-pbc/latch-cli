@@ -8,6 +8,10 @@ import Synchronization
 public final class FakeLatchClient: LatchClient, SharingService {
     public enum Scenario: String, CaseIterable, Sendable {
         case serving, stopped, loggedOut, noActivity, hostError, unreachable
+        /// Serving from a `latch serve` the app didn't start.
+        case outside
+        /// The app's agent is registered but turned off in Login Items.
+        case needsApproval
     }
 
     /// How a fake login ends.
@@ -41,7 +45,7 @@ public final class FakeLatchClient: LatchClient, SharingService {
         let sample = Fixtures.sampleStatus
         state = Mutex(State(
             loggedIn: scenario != .loggedOut,
-            serving: scenario == .serving || scenario == .noActivity,
+            serving: [.serving, .noActivity, .outside].contains(scenario),
             shares: scenario == .loggedOut ? [] : sample.shares,
             lastError: scenario == .hostError
                 ? LatchFailure(code: "folder_missing", message: "/Users/owner/work: no such folder") : nil))
@@ -127,6 +131,14 @@ public final class FakeLatchClient: LatchClient, SharingService {
     public func setShares(_ folders: [String]) async throws -> Shares {
         state.withLock { $0.shares = folders }
         return Shares(shares: folders)
+    }
+
+    public func agent() -> SharingAgent {
+        switch scenario {
+        case .outside: .off
+        case .needsApproval: .needsApproval
+        default: state.withLock { $0.serving } ? .on : .off
+        }
     }
 
     public func startSharing() async throws {

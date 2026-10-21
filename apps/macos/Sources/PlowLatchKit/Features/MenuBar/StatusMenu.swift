@@ -9,10 +9,14 @@ public struct StatusMenu: View {
     public var body: some View {
         Text(statusLine)
         Divider()
-        if model.menuState == .serving || model.menuState == .starting {
-            Button("Stop Sharing") {}.disabled(true)
+        if model.menuState == .needsApproval {
+            Button("Open Login Items…") { BackgroundSharing.openLoginItems() }
+        }
+        if model.canStopSharing {
+            Button("Stop Sharing") { Task { await model.stopSharing() } }
         } else {
-            Button("Start Sharing") {}.disabled(true)
+            Button("Start Sharing") { Task { await model.startSharing() } }
+                .disabled(!model.canStartSharing)
         }
         Divider()
         Button("Open Plow Latch…") { WindowRouter.shared.showMain() }
@@ -26,6 +30,7 @@ public struct StatusMenu: View {
     private var statusLine: String {
         switch model.menuState {
         case let .error(message): "Sharing failed: \(message)"
+        case .outside: "Sharing from a latch serve started outside the app"
         case .serving:
             if let name = model.status.value?.peer?.name { "Sharing as \(name)" } else { "Sharing" }
         case let state: state.title

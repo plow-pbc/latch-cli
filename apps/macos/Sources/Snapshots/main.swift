@@ -52,6 +52,8 @@ try await render("overview-sharing-stopped", .stopped, MainView(screen: .overvie
 try await render("overview-not-logged-in", .loggedOut, MainView(screen: .overview))
 try await render("overview-host-error", .hostError, MainView(screen: .overview))
 try await render("overview-cant-reach-latch", .unreachable, MainView(screen: .overview))
+try await render("overview-sharing-outside-the-app", .outside, MainView(screen: .overview))
+try await render("overview-needs-approval", .needsApproval, MainView(screen: .overview))
 try await render("activity-no-activity", .noActivity, MainView(screen: .activity))
 try await render("activity-not-logged-in", .loggedOut, MainView(screen: .activity))
 try await render("activity-cant-reach-latch", .unreachable, MainView(screen: .activity))
@@ -65,7 +67,7 @@ for pane in SettingsView.Pane.allCases {
 }
 // The menu bar extra's menu items, laid out as a stack (a native menu only
 // draws while open), and its icon for each state.
-for scenario in [FakeLatchClient.Scenario.serving, .stopped, .hostError, .loggedOut, .unreachable] {
+for scenario in [FakeLatchClient.Scenario.serving, .stopped, .hostError, .loggedOut, .unreachable, .outside, .needsApproval] {
     try await render("menu-\(scenario.rawValue)", scenario, size: CGSize(width: 320, height: 260),
                      VStack(alignment: .leading, spacing: 8) { StatusMenu() }.padding())
     try await render("menu-icon-\(scenario.rawValue)", scenario, size: CGSize(width: 220, height: 44),

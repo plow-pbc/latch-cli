@@ -29,6 +29,8 @@ scripts/build-app.sh --latch PATH   # ... with another latch
 swift run Snapshots ../../.dev/mac-app/snapshots
 scripts/measure.sh                  # launch, idle, menu-bar and window checks against the budget,
                                     # on build/Plow Latch Test.app (bundle id co.plow.latch.test)
+scripts/sharing-check.sh            # background sharing end to end with the test agent
+                                    # (co.plow.latch.test.serve), unregistered at the end
 ```
 
 Launch arguments set these defaults for one run:
@@ -47,5 +49,6 @@ The app depends on these latch commands:
 - `latch rules show`
 - `latch login --events` (onboarding's sign-in)
 - `latch shares set FOLDER...` (onboarding's folders)
+- `latch serve` with no folders, serving the saved ones (the background agent runs this)
 
 The exact JSON shapes are the samples in `Latch/FakeLatchClient.swift` (`Fixtures`). `scripts/stub-latch` serves the same shapes from files.

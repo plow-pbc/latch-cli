@@ -15,21 +15,37 @@ public protocol LatchClient: Sendable {
     func setShares(_ folders: [String]) async throws -> Shares
 }
 
-/// Sharing in the background: starting and stopping the host the app
-/// keeps running.
+/// Sharing in the background: the host the app keeps running for this
+/// Mac, as a launch agent that outlives the app.
 public protocol SharingService: Sendable {
+    /// Whether the agent is registered with the system, right now.
+    func agent() -> SharingAgent
+    /// Registers the agent, which starts `latch serve`. Registered is not
+    /// serving: latch's own status says when it is.
     func startSharing() async throws
+    /// Unregisters the agent, which stops `latch serve` and keeps it stopped.
     func stopSharing() async throws
 }
 
-/// What the live app has until background sharing is built.
+public enum SharingAgent: String, Sendable {
+    /// Not registered: the app is not keeping a host running.
+    case off
+    case on
+    /// Registered, but the person turned it off in System Settings ▸ Login Items.
+    case needsApproval
+    /// This build has no agent to register.
+    case missing
+}
+
+/// What an app has when its bundle carries no agent.
 public struct UnavailableSharing: SharingService {
     public init() {}
 
+    public func agent() -> SharingAgent { .missing }
     public func startSharing() async throws { throw Self.error }
     public func stopSharing() async throws { throw Self.error }
 
-    private static let error = LatchError.unreachable("Background sharing isn't in this build yet.")
+    private static let error = LatchError.unreachable("This build of Plow Latch can't share in the background.")
 }
 
 /// Why a call to latch produced no answer.

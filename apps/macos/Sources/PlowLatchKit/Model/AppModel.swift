@@ -28,6 +28,12 @@ public final class AppModel {
     /// Why following activity stopped, while it is retrying.
     public private(set) var activityError: LatchError?
     public private(set) var rules: Loadable<RulesShow> = .loading
+    /// Whether the app's background-sharing agent is registered.
+    public private(set) var agent: SharingAgent = .off
+    /// Start or Stop Sharing is in progress.
+    public private(set) var changingSharing = false
+    /// Why the last Start or Stop Sharing failed.
+    public private(set) var sharingError: String?
 
     let client: any LatchClient
     let sharing: any SharingService
@@ -36,13 +42,16 @@ public final class AppModel {
     public init(client: any LatchClient, sharing: any SharingService = UnavailableSharing()) {
         self.client = client
         self.sharing = sharing
+        agent = sharing.agent()
     }
 
     /// What the menu bar icon and status line show.
     public var menuState: MenuState {
         if case .failed = status, status.value == nil { return .unreachable }
         if let status = status.value, status.peer == nil { return .loggedOut }
-        return switch host {
+        if agent == .needsApproval { return .needsApproval }
+        if changingSharing { return .starting }
+        let lifecycle: MenuState = switch host {
         case .serving: .serving
         case .starting: .starting
         case let .error(message): .error(message)
@@ -52,6 +61,86 @@ public final class AppModel {
             else if let error = status.value?.lastError { .error(error.message) }
             else { .stopped }
         }
+        // A host the app didn't start (a `latch serve` in a terminal) is
+        // shown, never taken over.
+        if agent != .on, lifecycle == .serving || lifecycle == .starting { return .outside }
+        return lifecycle
+    }
+
+    /// Whether Start Sharing makes sense now.
+    public var canStartSharing: Bool {
+        guard !changingSharing, agent == .off else { return false }
+        return switch menuState {
+        case .stopped, .error: true
+        default: false
+        }
+    }
+
+    /// Whether Stop Sharing makes sense now: only for the host the app runs.
+    public var canStopSharing: Bool {
+        !changingSharing && (agent == .on || agent == .needsApproval)
+    }
+
+    /// Reads whether the agent is registered; cheap, and the person can
+    /// change it in System Settings at any time.
+    public func refreshAgent() {
+        agent = sharing.agent()
+    }
+
+    /// Starts the background host and waits until latch says it serves.
+    public func startSharing() async {
+        refreshAgent()
+        guard canStartSharing else {
+            if menuState == .outside {
+                sharingError = "A latch serve started outside Plow Latch is already sharing this Mac."
+            }
+            return
+        }
+        changingSharing = true
+        defer { changingSharing = false }
+        do {
+            try await sharing.startSharing()
+            refreshAgent()
+            if agent == .needsApproval { throw LatchError.unreachable("Allow Plow Latch in Login Items to share in the background.") }
+            try await waitForServe(running: true)
+            sharingError = nil
+        } catch {
+            refreshAgent()
+            sharingError = Self.latchError(error).message
+        }
+    }
+
+    /// Stops the background host and waits until latch says it stopped.
+    public func stopSharing() async {
+        refreshAgent()
+        guard canStopSharing else { return }
+        changingSharing = true
+        defer { changingSharing = false }
+        do {
+            try await sharing.stopSharing()
+            refreshAgent()
+            try await waitForServe(running: false)
+            sharingError = nil
+        } catch {
+            refreshAgent()
+            sharingError = Self.latchError(error).message
+        }
+    }
+
+    /// Asks latch for its status every half second, for at most 30 s, until
+    /// its host is serving (or stopped). Only while Start or Stop runs.
+    private func waitForServe(running: Bool) async throws {
+        for _ in 0..<60 {
+            await refreshStatus()
+            if let serve = status.value?.serve {
+                if running ? serve.ready : !serve.running { return }
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        let detail = status.value?.lastError?.message
+        throw LatchError.unreachable(running
+            ? "latch didn't start serving\(detail.map { ": \($0)" } ?? ".")"
+            : "latch didn't stop serving.")
     }
 
     public func refreshStatus() async {
@@ -131,5 +220,9 @@ public final class AppModel {
 
 public enum MenuState: Equatable, Sendable {
     case serving, starting, stopped, loggedOut, unreachable
+    /// Serving, but from a `latch serve` the app didn't start.
+    case outside
+    /// The agent is registered but not allowed in Login Items.
+    case needsApproval
     case error(String)
 }

@@ -32,13 +32,16 @@ extension MenuState {
         case .loggedOut: "Not logged in"
         case .unreachable: "Can't reach latch"
         case .error: "Sharing failed"
+        case .outside: "Sharing outside the app"
+        case .needsApproval: "Needs approval"
         }
     }
 
     /// The template SF Symbol the menu bar shows for this state.
     public var symbol: String {
         switch self {
-        case .serving: "link.circle.fill"
+        case .serving, .outside: "link.circle.fill"
+        case .needsApproval: "exclamationmark.circle"
         case .starting, .stopped, .loggedOut: "link.circle"
         case .error, .unreachable: "exclamationmark.triangle"
         }

@@ -6,6 +6,8 @@
 #   stub-latch --state-dir D emit activity OP DECISION
 #   stub-latch --state-dir D emit logout
 # `login --events` prints a code, then verifies after STUB_LOGIN_SECONDS (3).
+# `serve` (no folders) holds D/stub-serve.pid as its lock, reports starting
+# then serving, and stopped when it ends; a second serve on D refuses.
 # appends an event to D/stub-events.ndjson; `events --follow` prints a
 # snapshot, then follows that file (tail -f, blocked on kqueue when idle).
 set -eu
@@ -16,12 +18,25 @@ mkdir -p "$state"
 touch "$events"
 
 lines() { wc -l < "$events" | tr -d ' '; }
+serve_pid() { local p; p=$(cat "$state/stub-serve.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
+emit_host() { jq -cn --arg s "$1" --arg c "$(($(lines) + 1))" '{type:"host",cursor:$c,state:$s}' >> "$events"; }
 host_state() { grep '"type":"host"' "$events" | tail -n 1 | jq -r '.state // "stopped"' || true; }
 
 case "$1 ${2:-}" in
 "emit host")
-    n=$(($(lines) + 1))
-    jq -cn --arg s "$3" --arg c "$n" '{type:"host",cursor:$c,state:$s}' >> "$events"
+    emit_host "$3"
+    ;;
+"serve ")
+    if p=$(serve_pid); then
+        jq -cn --arg p "$p" '{error:{code:"serve_running",message:("a latch serve is already running on this state (pid " + $p + ")")}}' >&2
+        exit 3
+    fi
+    echo $$ > "$state/stub-serve.pid"
+    trap 'kill $nap 2>/dev/null; emit_host stopped; rm -f "$state/stub-serve.pid"; exit 0' TERM INT
+    emit_host starting
+    sleep 1
+    emit_host serving
+    while :; do sleep 3600 & nap=$!; wait $nap; done
     ;;
 "emit activity")
     n=$(($(lines) + 1))
@@ -33,12 +48,15 @@ case "$1 ${2:-}" in
     ;;
 "status --local")
     h=$(host_state); [ -n "$h" ] || h=stopped
-    serving=false; [ "$h" = serving ] && serving=true
+    pid=$(serve_pid || true)
+    running=false; [ -n "$pid" ] && running=true
+    serving=false; [ -n "$pid" ] && [ "$h" = serving ] && serving=true
     peer='{"name":"stub-host","key":"k0000000000000000000000000000000","kind":"device"}'
     [ -e "$state/stub-logged-out" ] && peer=null
     shares=$(cat "$state/stub-shares.json" 2>/dev/null || echo '["/tmp/stub-share"]')
-    jq -cn --arg d "$state" --argjson s "$serving" --argjson p "$peer" --argjson sh "$shares" \
-        '{state_dir:$d,version:"0.0.0-stub",protocol:1,peer:$p,serve:{running:$s,ready:$s},shares:$sh,last_error:null}'
+    jq -cn --arg d "$state" --argjson r "$running" --argjson s "$serving" --argjson p "$peer" --argjson sh "$shares" \
+        --arg pid "$pid" '{state_dir:$d,version:"0.0.0-stub",protocol:1,peer:$p,
+        serve:({running:$r,ready:$s} + (if $pid == "" then {} else {pid:($pid|tonumber)} end)),shares:$sh,last_error:null}'
     ;;
 "shares set")
     shift 2

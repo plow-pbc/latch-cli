@@ -127,7 +127,10 @@ public final class Onboarding {
         defer { saving = false }
         do {
             _ = try await app.client.setShares(folders.map(\.path))
-            if startSharing { try await app.sharing.startSharing() }
+            if startSharing {
+                await app.startSharing()
+                if let error = app.sharingError { throw LatchError.unreachable(error) }
+            }
             sharing = startSharing
             keepRunningError = nil
             await app.refreshStatus()

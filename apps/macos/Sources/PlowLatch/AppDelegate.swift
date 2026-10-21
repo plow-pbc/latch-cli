@@ -20,6 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             MainActor.assumeIsolated { WindowRouter.shared.windowClosed() }
         }
+        // Login Items can be changed in System Settings while the app runs.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [model] _ in
+            MainActor.assumeIsolated { model.refreshAgent() }
+        }
         #if LATCH_TEST_HOOKS
         TestHooks.install(model: model)
         #endif
@@ -47,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let fake = FakeLatchClient(scenario, liveEvery: .seconds(3))
             return AppModel(client: fake, sharing: fake)
         }
-        return AppModel(client: LiveLatchClient.bundled())
+        let sharing: any SharingService = BackgroundSharing.bundled() ?? UnavailableSharing()
+        return AppModel(client: LiveLatchClient.bundled(), sharing: sharing)
     }
 }

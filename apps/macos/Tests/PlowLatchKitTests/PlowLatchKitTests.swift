@@ -86,7 +86,8 @@ private func emit(_ state: String, _ args: String...) throws {
     let client = LiveLatchClient(executable: stub, stateDir: state)
 
     let status = try await client.localStatus()
-    #expect(status.serve.ready && status.stateDir == state)
+    // A lifecycle event alone isn't a running host: no serve holds the lock.
+    #expect(!status.serve.running && status.stateDir == state)
 
     var events = client.events(after: nil, lifecycleOnly: false).makeAsyncIterator()
     guard case let .snapshot(_, host, activity) = try await events.next() else { Issue.record("no snapshot"); return }
