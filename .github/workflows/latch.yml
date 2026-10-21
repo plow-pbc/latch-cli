@@ -67,14 +67,18 @@ jobs:
       - if: matrix.shard == 1
         run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings
       - uses: actions/cache@v4
+        if: hashFiles('latch/src/browser/cft.json') != ''
         with:
           path: .dev/cft-state/plugins/cft
           key: cft-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
       - uses: actions/cache@v4
+        if: hashFiles('latch/src/browser/camoufox.json') != ''
         with:
           path: .dev/cft-state/plugins/camoufox
           key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
-      - run: cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox target/debug/latch
+      - run: cargo build --locked
+      - if: hashFiles('latch/src/browser/cft.json') != ''
+        run: HOME="$RUNNER_TEMP/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox target/debug/latch
       - run: python3 ../.ci-tools/latch/scripts/test-shard.py ${{ matrix.shard }} ${{ matrix.count }}
       - uses: actions/upload-artifact@v4
         if: always()
