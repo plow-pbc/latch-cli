@@ -1,5 +1,6 @@
-//! A synthetic Plow for tests: who a caller's key is, an agent's line, its
-//! chats and their messages, and a decision route answering by a rule.
+//! A synthetic Plow for tests: the account's one agent and its peers, who
+//! a caller's key is, the agent's line, its chats and their messages, and a
+//! decision route answering by a rule.
 //! No real chat is ever read.
 
 use std::collections::HashMap;
@@ -78,6 +79,24 @@ impl World {
             .and_then(|key| self.callers.get(key))
         {
             return (200, identity.clone());
+        }
+        if path == "/v1/agents" {
+            return (
+                200,
+                json!([{"uid": AGENT, "name": "Juno", "provider": "exe"}]),
+            );
+        }
+        if path == "/v1/latch/peers" {
+            let peers: Vec<Value> = self
+                .callers
+                .values()
+                .map(|identity| {
+                    json!({"key": identity["key"], "kind": identity["kind"],
+                    "name": identity["name"], "relay_url": null, "last_seen_at": null,
+                    "online": false})
+                })
+                .collect();
+            return (200, json!({"data": peers}));
         }
         if path == format!("/v1/agents/{AGENT}") {
             return (
