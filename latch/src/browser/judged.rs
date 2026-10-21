@@ -1,4 +1,4 @@
-//! What the gatekeeper judges of an agent's browser use, and how each is
+//! What the gatekeeper judges of a caller's browser use, and how each is
 //! put to the judge: opening a site the session has not been judged for,
 //! each plan, each vault fill and each confirmation that releases a card
 //! or identity, and every `eval`, upload and download. Clicks, typing,
@@ -106,7 +106,7 @@ pub(super) struct Judged<'a> {
 }
 
 impl Judged<'_> {
-    /// Records a one-time action (a plan or a fill) as done by the agent,
+    /// Records a one-time action (a plan or a fill) as done by the caller,
     /// with how it ended, for the judge's "already done". Opening a site,
     /// running a script, uploading or downloading again is normal, so
     /// these are not recorded.
@@ -125,8 +125,9 @@ impl Judged<'_> {
     }
 }
 
-/// Judges `action` for an agent's gate: no gate (an owner's device, or a
-/// test caller) is never judged. The judgment goes to the audit as `gate`.
+/// Judges `action` for the caller's gate: no gate (a caller in the
+/// browser's own tests) is never judged. The judgment goes to the audit as
+/// `gate`.
 pub(super) async fn judge<'a>(
     gate: Option<Gate<'a>>,
     action: Action,
