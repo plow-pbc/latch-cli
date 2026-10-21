@@ -10,9 +10,10 @@
 //!
 //! A Keychain build never writes a secret file. If the Keychain refuses, the
 //! command fails and says so. It does move secret files it finds (a folder
-//! from before, or from a dev build) into the Keychain, one at a time:
-//! write, read back, compare, and only then delete the file. A move that is
-//! cut short leaves the remaining files, and the next start picks it up.
+//! from before, or from a dev build) into the Keychain: it writes each,
+//! reads it back and compares, and deletes the files only once every one is
+//! confirmed. A move that is cut short leaves all the files, and the next
+//! start picks it up.
 //!
 //! An item is filed under the state folder's real path, so another folder
 //! on the same Mac, or a copy of this one, never shares its identity.
@@ -135,12 +136,12 @@ impl Secrets {
             .map_err(|why| self.refused("save", secret, &why))
     }
 
-    /// Moves each secret file into the store: write, read back, compare,
-    /// delete. Stops at the first that fails, leaving its file and the rest.
+    /// Moves the secret files into the store: writes each, reads it back
+    /// and compares, and only once every one is confirmed deletes the
+    /// files. Anything short of that leaves every file in place.
     fn move_files_in(&self) -> Result<(), Failure> {
         let store = self.keychain.as_deref().expect("moves only into a store");
-        let stop_after = test_stop_after();
-        let mut moved = 0;
+        let mut confirmed = Vec::new();
         for secret in Secret::ALL {
             let path = self.dir.join(secret.file());
             let bytes = match fs::read(&path) {
@@ -154,21 +155,20 @@ impl Secrets {
             store
                 .set(&account, &bytes)
                 .map_err(|why| self.refused("save", secret, &why))?;
-            moved += 1;
-            if stop_after == Some(moved) {
-                std::process::exit(75);
-            }
+            test_stop_after(confirmed.len() + 1);
             let back = store
                 .get(&account)
                 .map_err(|why| self.refused("read", secret, &why))?;
             if back.as_deref() != Some(&bytes[..]) {
                 let message = format!(
-                    "{} did not read back from the Keychain as written; {} was kept",
-                    secret.file(),
-                    path.display()
+                    "{} did not read back from the Keychain as written; every secret file was kept",
+                    secret.file()
                 );
                 return Err(Failure::failed("keychain_failed", message));
             }
+            confirmed.push(path);
+        }
+        for path in confirmed {
             fs::remove_file(&path).map_err(|err| io_failure(&path, err))?;
         }
         Ok(())
@@ -191,15 +191,20 @@ impl Secrets {
     }
 }
 
-/// Test only: `LATCH_TEST_STOP_MOVE_AFTER=N` ends the process right after
-/// the Nth secret is written to the Keychain during a move, as a kill there
-/// would, so a test can show the next start picks the move up.
-fn test_stop_after() -> Option<usize> {
-    std::env::var("LATCH_TEST_STOP_MOVE_AFTER")
-        .ok()?
-        .parse()
-        .ok()
+/// Test only, in debug builds: `LATCH_TEST_STOP_MOVE_AFTER=N` ends the
+/// process right after the Nth secret is written to the Keychain during a
+/// move, as a kill there would, so a test can show the next start picks
+/// the move up. A release build has no such hook.
+#[cfg(debug_assertions)]
+fn test_stop_after(written: usize) {
+    let stop = std::env::var("LATCH_TEST_STOP_MOVE_AFTER").ok();
+    if stop.and_then(|n| n.parse().ok()) == Some(written) {
+        std::process::exit(75);
+    }
 }
+
+#[cfg(not(debug_assertions))]
+fn test_stop_after(_written: usize) {}
 
 /// Writes a file only its owner can read, atomically. Skips the write when
 /// the file already holds exactly these bytes, so a repeated `login`
@@ -558,15 +563,15 @@ mod tests {
     #[test]
     fn a_move_cut_short_keeps_the_rest_and_the_next_start_finishes_it() {
         let dir = folder_with_files();
-        // The second write fails: the key moved; the token and the vault
-        // key are still files, and nothing is lost.
+        // The second write fails after the key's was confirmed: every file
+        // stays until all three are, and nothing is lost.
         let failing = Memory {
             fail_write: Some(2),
             ..Memory::default()
         };
         let refused = in_memory(dir.path(), &failing).err().unwrap();
         assert_eq!(refused.code, "keychain_failed");
-        assert_eq!(secret_files(dir.path()), ["plow-token", "vault.key"]);
+        assert_eq!(secret_files(dir.path()), ["key", "plow-token", "vault.key"]);
 
         let memory = Memory {
             items: failing.items.clone(),

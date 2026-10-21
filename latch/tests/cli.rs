@@ -2092,9 +2092,8 @@ fn a_signed_latch_moves_file_secrets_into_the_keychain_even_when_cut_short() {
     unsafe { std::env::set_var("LATCH_TEST_BIN", &signed) };
 
     // The signed latch's first start is cut short right after its second
-    // Keychain write: the key has moved (its file is gone), the Plow token
-    // is written but not yet checked, and both it and the vault key are
-    // still files.
+    // Keychain write, the key's already read back: every file stays until
+    // all three are confirmed. (The hook exists in debug builds only.)
     let stop = [("LATCH_TEST_STOP_MOVE_AFTER", Path::new("2"))];
     let cut = latch(
         &host,
@@ -2102,7 +2101,7 @@ fn a_signed_latch_moves_file_secrets_into_the_keychain_even_when_cut_short() {
         &stop,
     );
     assert_eq!(cut.status.code(), Some(75), "{cut:?}");
-    assert_eq!(secret_files_in(&host), ["plow-token", "vault.key"]);
+    assert_eq!(secret_files_in(&host), SECRET_FILES);
 
     // The next start finishes the move: the same identity (a different key
     // would fail `require_login`), the same login, the same vault.

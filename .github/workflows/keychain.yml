@@ -1,13 +1,15 @@
 name: keychain
 
 # A signed macOS latch keeps its secrets in the data-protection Keychain
-# (latch/src/secrets.rs). This builds one as a release would (Developer ID,
+# (latch/src/secrets.rs). This signs one as a release would (Developer ID,
 # in the helper bundle with its provisioning profile) and runs what only it
 # can show: the `--ignored` Keychain tests in tests/cli.rs, and a clear
-# failure where the Keychain is unusable.
+# failure where the Keychain is unusable. It signs a debug build: the
+# tests' interruption hook exists only there.
 on:
   workflow_dispatch:
-  # Temporary: registers this workflow, and runs it, before it is on main.
+  # TODO: remove once this file is on main, where workflow_dispatch can
+  # reach it. Until then it registers the workflow and runs it.
   push:
     branches: [keychain-storage]
 permissions:
@@ -25,8 +27,8 @@ jobs:
         working-directory: latch
         run: |
           rustup toolchain install
-          cargo build --release --locked
-          cargo test --release --locked --test cli --no-run
+          cargo build --locked
+          cargo test --locked --test cli --no-run
       - name: Load signing credentials
         uses: 1password/load-secrets-action@v2
         with:
@@ -55,7 +57,7 @@ jobs:
         shell: bash
         run: |
           app="$RUNNER_TEMP/Latch.app"
-          sh scripts/macos-helper-bundle.sh latch/target/release/latch "$app"
+          sh scripts/macos-helper-bundle.sh latch/target/debug/latch "$app"
           test -f "$app/Contents/embedded.provisionprofile"
           codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
             --entitlements latch/macos/helper.entitlements --sign "$IDENTITY" "$app"
@@ -69,8 +71,8 @@ jobs:
         working-directory: latch
         env:
           LATCH_TEST_BIN: ${{ runner.temp }}/bin/latch
-          LATCH_TEST_FILES_BIN: ${{ github.workspace }}/latch/target/release/latch
-        run: cargo test --release --locked --test cli -- --ignored --test-threads=1 --nocapture a_signed_latch
+          LATCH_TEST_FILES_BIN: ${{ github.workspace }}/latch/target/debug/latch
+        run: cargo test --locked --test cli -- --ignored --test-threads=1 --nocapture a_signed_latch
       # A system daemon runs outside any user session, where the
       # data-protection Keychain is unavailable (Apple TN3137): the signed
       # latch must fail and say so, and write no key file.
