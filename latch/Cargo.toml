@@ -36,7 +36,7 @@ sha2 = "0.11.1"
 # iroh and reqwest are async, so latch runs on tokio. `io-util` reads and
 # writes the wire frames; `signal` lets `serve` stop cleanly on SIGINT/SIGTERM;
 # `process` runs the sandboxed file workers; `fs` writes the client's files.
-tokio = { version = "1.53.3", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.53.3", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 # Per-call folders for Google and throwaway test state.
 tempfile = "3.27.0"

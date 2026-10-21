@@ -358,6 +358,37 @@ async fn a_google_change_is_already_done_the_next_time_and_a_read_is_not() {
     assert_eq!(done[0]["what"]["command"], send["gog_args"]);
 }
 
+/// Covered until the agent has already done something since the host started.
+fn covered_once(state: &Value) -> Option<[f64; 3]> {
+    Some(if state["already_done_by_agent"].is_string() {
+        [0.9, 0.08, 0.02]
+    } else {
+        [0.1, 0.85, 0.05]
+    })
+}
+
+#[tokio::test]
+async fn the_same_google_change_sent_twice_at_once_runs_once() {
+    let t = start(a_chat(covered_once)).await;
+    let agent = t.caller("agent").await;
+    let send = json!({"gog_args": ["gmail", "send", "--to", "a@example.com", "--body", "the body"],
+                      "account": [], "confirm_conflict": false, "inputs": []});
+    let (first, second) = tokio::join!(
+        t.call(&agent, "google", send.clone()),
+        t.call(&agent, "google", send.clone()),
+    );
+    // The second is judged after the first ran, and sees it already done.
+    // (The one that runs stops at the missing gog: it ran all the same.)
+    let refused = [&first.0, &second.0]
+        .into_iter()
+        .filter(
+            |answer| matches!(answer, Response::Error { code, .. } if code == "gatekeeper_denied"),
+        )
+        .count();
+    assert_eq!(refused, 1, "{first:?} {second:?}");
+    assert_eq!(t.judged(), 2);
+}
+
 #[tokio::test]
 async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
     let every_agent = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);

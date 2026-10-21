@@ -80,6 +80,9 @@ pub struct Gatekeeper {
     provider: Arc<dyn Provider>,
     rules: Box<dyn RulesSource>,
     done: Mutex<HashMap<String, VecDeque<Ran>>>,
+    /// Per agent, held from a one-time action's judgment until it is in
+    /// `done`, so the next one is judged knowing it ran.
+    turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// An operation an agent ran: when, what, and how it ended.
@@ -121,6 +124,16 @@ impl Gate<'_> {
         self.keeper.judge(self.agent, self.chat, &action).await
     }
 
+    /// Waits until no other one-time action of this agent is between its
+    /// judgment and its record, and holds that place until the guard drops.
+    pub async fn one_at_a_time(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        let turn = {
+            let mut turns = self.keeper.turns.lock().expect("gatekeeper turns lock");
+            turns.entry(self.agent.to_string()).or_default().clone()
+        };
+        turn.lock_owned().await
+    }
+
     /// Records `what` the agent ran, and how it ended.
     pub fn did(&self, what: &impl Serialize, outcome: &str) {
         let what = serde_json::to_value(what).expect("an action serializes");
@@ -141,6 +154,7 @@ impl Gatekeeper {
             provider,
             rules,
             done: Mutex::new(HashMap::new()),
+            turns: Mutex::new(HashMap::new()),
         }
     }
 
