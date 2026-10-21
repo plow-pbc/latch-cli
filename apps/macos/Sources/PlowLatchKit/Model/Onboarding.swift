@@ -26,7 +26,7 @@ public final class Onboarding {
     /// Whether the person chose Start Sharing, for Done's wording.
     public private(set) var sharing = false
 
-    private let app: AppModel
+    private unowned let app: AppModel
     private let open: @MainActor (URL) -> Void
     private var login: Task<Void, Never>?
 
@@ -67,8 +67,12 @@ public final class Onboarding {
         signIn = .starting
         let events = app.client.login()
         login = Task {
+            // latch reports how a login ended, then exits non-zero for an
+            // expired code or an error; the line already said why.
+            var ended = false
             do {
                 for try await event in events {
+                    if case .code = event {} else if case .waiting = event {} else { ended = true }
                     switch event {
                     case let .code(code):
                         signIn = .waiting(code)
@@ -84,9 +88,9 @@ public final class Onboarding {
                     }
                 }
             } catch is CancellationError {
-            } catch {
+            } catch where !ended {
                 signIn = .failed((error as? LatchError)?.message ?? error.localizedDescription)
-            }
+            } catch {}
         }
     }
 
@@ -97,6 +101,14 @@ public final class Onboarding {
         guard step == .welcome, let peer = app.status.value?.peer else { return }
         signIn = .verified(peer)
         step = .linked
+    }
+
+    /// The window came back while signing in: a login stopped by closing it
+    /// starts again.
+    public func resumeLogin() {
+        guard step == .signIn, login == nil else { return }
+        if case .verified = signIn { return }
+        startLogin()
     }
 
     /// Called once the morph into the check has played.
@@ -148,6 +160,12 @@ public final class Onboarding {
         self.folders = folders
         self.sharing = sharing
         keepRunningError = error
+    }
+
+    /// Done: the main window takes over and this flow ends.
+    public func finish() {
+        app.endOnboarding()
+        WindowRouter.shared.finishOnboarding()
     }
 
     /// Stops a login in progress; leaving the window does this.

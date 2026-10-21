@@ -47,7 +47,7 @@ public struct LiveLatchClient: LatchClient {
 
     /// Runs latch and decodes each line it prints, until the caller stops.
     private func stream<T: Decodable & Sendable>(_ type: T.Type, _ arguments: [String]) -> AsyncThrowingStream<T, Error> {
-        let process = LatchProcess(executable: executable, arguments: withState(arguments))
+        let process = LatchProcess(executable: executable, arguments: withState(arguments), streaming: true)
         return AsyncThrowingStream { continuation in
             let reader = Task {
                 do {
@@ -99,12 +99,17 @@ public final class LatchProcess: @unchecked Sendable {
     private let process = Process()
     private let stdout = Pipe()
     private let stderr = Pipe()
+    /// A stream's stdin: the app holds its write end and never writes. If
+    /// the app dies, the system closes it and latch's stream sees that and
+    /// exits, so no `latch events` outlives the app.
+    private let lifeline: Pipe?
     private let exited = AsyncStream<Int32>.makeStream()
 
-    init(executable: URL, arguments: [String]) {
+    init(executable: URL, arguments: [String], streaming: Bool = false) {
         process.executableURL = executable
         process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice
+        lifeline = streaming ? Pipe() : nil
+        process.standardInput = lifeline ?? FileHandle.nullDevice
         process.standardOutput = stdout
         process.standardError = stderr
         process.terminationHandler = { [exited] process in
@@ -159,6 +164,7 @@ public final class LatchProcess: @unchecked Sendable {
     }
 
     func terminate() {
+        try? lifeline?.fileHandleForWriting.close()
         if process.isRunning { process.terminate() }
     }
 

@@ -6,7 +6,7 @@ import SwiftUI
 public struct OnboardingView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.theme) private var theme
-    @State private var onboarding: Onboarding?
+    private var onboarding: Onboarding? { app.onboarding }
     /// For snapshots: show this step and sign-in state instead of running the flow.
     private let preset: Onboarding?
     private let entranceTime: Double?
@@ -45,10 +45,8 @@ public struct OnboardingView: View {
         .foregroundStyle(brand.text)
         .environment(\.colorScheme, .dark)
         .task {
-            guard preset == nil, onboarding == nil else { return }
-            let flow = Onboarding(app: app) { NSWorkspace.shared.open($0) }
-            flow.resumeIfLoggedIn()
-            onboarding = flow
+            guard preset == nil else { return }
+            app.beginOnboarding { NSWorkspace.shared.open($0) }.resumeLogin()
         }
         .onChange(of: app.status) { onboarding?.resumeIfLoggedIn() }
         .onDisappear { onboarding?.cancel() }
@@ -414,7 +412,7 @@ struct OnboardingFooter: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(onboarding.folders.isEmpty || onboarding.saving)
         case .done:
-            Button("Open Plow Latch") { WindowRouter.shared.finishOnboarding() }
+            Button("Open Plow Latch") { onboarding.finish() }
                 .buttonStyle(VoltButtonStyle())
                 .keyboardShortcut(.defaultAction)
         }

@@ -36,6 +36,9 @@ public final class AppModel {
     public private(set) var changingSharing = false
     /// Why the last Start or Stop Sharing failed.
     public private(set) var sharingError: String?
+    /// The first-run flow, while it is under way. It lives here, not in its
+    /// window, so closing and reopening the window picks it up again.
+    public private(set) var onboarding: Onboarding?
 
     let client: any LatchClient
     let sharing: any SharingService
@@ -45,6 +48,22 @@ public final class AppModel {
         self.client = client
         self.sharing = sharing
         agent = sharing.agent()
+    }
+
+    /// The onboarding under way, or a new one. `open` is how it hands a link
+    /// to the system, only ever on a click.
+    public func beginOnboarding(open: @escaping @MainActor (URL) -> Void) -> Onboarding {
+        if let onboarding { return onboarding }
+        let flow = Onboarding(app: self, open: open)
+        flow.resumeIfLoggedIn()
+        onboarding = flow
+        return flow
+    }
+
+    /// Onboarding's Done.
+    public func endOnboarding() {
+        onboarding?.cancel()
+        onboarding = nil
     }
 
     /// What the menu bar icon and status line show.

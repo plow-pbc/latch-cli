@@ -2,18 +2,31 @@
 # Exercises background sharing end to end on an isolated state folder, with
 # the test app's own agent label (co.plow.latch.test.serve), and makes sure
 # nothing it registers outlives the run.
-#   scripts/sharing-check.sh [--latch PATH] [OUT_DIR]
-# --latch PATH  the latch the agent runs (default: scripts/stub-latch, until the
-#               CLI has `status --local`, `events --follow` and saved shares)
+#   scripts/sharing-check.sh [--latch PATH] [--state DIR] [OUT_DIR]
+# --latch PATH  the latch the agent runs (default: scripts/stub-latch)
+# --state DIR   an isolated state folder already logged in (a real latch's
+#               serve needs a login); default: a fresh one, for the stub
 set -eu
 cd "$(dirname "$0")/.."
 latch="$PWD/scripts/stub-latch"
-if [ "${1:-}" = "--latch" ]; then latch="$2"; shift 2; fi
+dev="$(cd ../.. && pwd)/.dev/mac-app"
+state="$dev/sharing-state"
+fresh=true
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --latch) latch="$2"; shift 2 ;;
+        --state) state="$2"; fresh=false; shift 2 ;;
+        *) break ;;
+    esac
+done
+case "$state" in "$dev"/*) ;; *) echo "state must be under $dev" >&2; exit 2 ;; esac
 out="${1:-../../.dev/evidence/mac-app/chunk-4}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)/sharing-check.txt"
-state="$(cd ../.. && pwd)/.dev/mac-app/sharing-state"
-rm -rf "$state" && mkdir -p "$state"
+if $fresh; then rm -rf "$state"; fi
+mkdir -p "$state"
+share="$dev/sharing-share"
+mkdir -p "$share"
 
 bundle="$PWD/$(./scripts/build-app.sh --test-hooks --latch "$latch" --serve-state-dir "$state" | tail -n 1)"
 test_id="co.plow.latch.test"
@@ -70,7 +83,7 @@ trap cleanup EXIT
 : > "$out"
 say "== before the run"
 say "$(agent_line)"
-"$cli" --state-dir "$state" shares set /tmp/plow-latch-share > /dev/null
+"$cli" --state-dir "$state" shares set "$share" > /dev/null
 
 say "== the agent's plist: runs once per load, never restarted by launchd"
 say "$(plutil -p "$bundle/Contents/Library/LaunchAgents/$label.plist")"
@@ -101,7 +114,7 @@ say "15 s later: $(agent_line); $(serve_line)"
 quit_app
 
 say "== 6. a latch serve started in a terminal: shown as outside the app, never touched"
-"$cli" --state-dir "$state" serve > /dev/null 2>&1 &
+"$cli" --state-dir "$state" serve --no-dashboard > /dev/null 2>&1 &
 terminal_serve=$!
 sleep 2
 launch
@@ -115,15 +128,17 @@ kill -0 "$terminal_serve" 2>/dev/null && say "terminal serve pid $terminal_serve
 kill "$terminal_serve"; terminal_serve=""
 quit_app
 
-say "== 7. a serve that fails to start: Start reports it, unregisters, and launchd doesn't retry"
-touch "$state/stub-serve-fails"
+say "== 7. a serve that fails to start (its saved folder is gone): Start reports it, unregisters, and launchd doesn't retry"
+mkdir -p "$dev/sharing-gone"
+"$cli" --state-dir "$state" shares set "$dev/sharing-gone" > /dev/null
+rmdir "$dev/sharing-gone"
 launch
-post start-sharing; sleep 4
+post start-sharing; sleep 6
 say "$(report)"
 say "$(agent_line)"; say "$(serve_line)"
 sleep 12
-say "12 s later: $(agent_line); spawns of serve: $(grep -c '"starting"' "$state/stub-events.ndjson") starting events in all"
-rm "$state/stub-serve-fails"
+say "12 s later: $(agent_line); $(serve_line)"
+"$cli" --state-dir "$state" shares set "$share" > /dev/null
 quit_app
 
 say "== 8. an app on a different state folder from its agent: Start refuses, registers nothing"

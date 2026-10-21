@@ -35,10 +35,14 @@ public struct ActivityFeed: Equatable, Sendable {
         }
     }
 
+    /// Operations the audit log records that aren't activity people review:
+    /// a peer connecting is the start of a request, not a request.
+    public static let hiddenOps: Set<String> = ["connect"]
+
     /// Adds entries given oldest first, dropping any already held.
     private mutating func insert(_ new: [ActivityEntry]) {
         let held = Set(entries.map(\.id))
-        let fresh = new.filter { !held.contains($0.id) }
+        let fresh = new.filter { !held.contains($0.id) && !Self.hiddenOps.contains($0.op) }
         entries.insert(contentsOf: fresh.reversed(), at: 0)
         if entries.count > Self.limit { entries.removeLast(entries.count - Self.limit) }
     }

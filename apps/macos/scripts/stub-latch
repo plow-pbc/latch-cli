@@ -8,8 +8,8 @@
 # `login --events` prints a code, then verifies after STUB_LOGIN_SECONDS (3).
 # `serve` (no folders) holds D/serve.lock as latch does, naming itself in it,
 # reports starting then serving, and stopped when it ends; a second serve on
-# D refuses as latch does: `already_serving`, exit 1. With D/stub-serve-fails
-# present, serve fails at startup instead (a bad saved config, say).
+# D refuses as latch does: `already_serving`, exit 1. A saved folder that no
+# longer exists fails serve at startup, as in latch.
 # appends an event to D/stub-events.ndjson; `events --follow` prints a
 # snapshot, then follows that file (tail -f, blocked on kqueue when idle).
 set -eu
@@ -40,23 +40,24 @@ case "$1 ${2:-}" in
 "emit host")
     emit_host "$3"
     ;;
-"serve ")
+"serve "*)
     if serve_pid > /dev/null; then
         jq -cn --arg d "$state" --arg h "$(head -n 1 "$state/serve.lock")" \
             '{error:{code:"already_serving",message:($d + " is already served by " + $h + "; stop that `latch serve` first")}}' >&2
         exit 1
     fi
-    if [ -e "$state/stub-serve-fails" ]; then
-        emit_host starting
-        jq -cn '{error:{code:"folder_missing",message:"/tmp/plow-latch-share: no such folder"}}' >&2
-        emit_host stopped
-        exit 1
-    fi
+    emit_host starting
+    for folder in $(jq -r '.[]' "$state/stub-shares.json" 2>/dev/null); do
+        if [ ! -d "$folder" ]; then
+            jq -cn --arg f "$folder" '{error:{code:"folder_missing",message:($f + ": no such folder")}}' >&2
+            emit_host stopped
+            exit 1
+        fi
+    done
     echo "latch serve (pid $$, $0)" > "$state/serve.lock"
     # bash runs the trap once the current foreground command ends, so the
     # loop sleeps in short foreground steps: a stop always reports stopped.
     trap 'emit_host stopped; : > "$state/serve.lock"; exit 0' TERM INT
-    emit_host starting
     sleep 1
     emit_host serving
     while :; do sleep 1; done
