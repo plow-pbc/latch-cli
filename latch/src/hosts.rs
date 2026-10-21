@@ -11,6 +11,14 @@ use crate::login;
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
 
+/// Owner configuration without a target, or naming this peer, stays local.
+pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failure> {
+    Ok(match asked {
+        None => true,
+        Some(name) => state.require_login()?.peer.name == name,
+    })
+}
+
 /// Looks up the account's hosts in Plow and picks one. If Plow no longer
 /// lists this machine (an agent whose credential was rotated, say), it
 /// registers again first: a host refuses a caller Plow does not know.

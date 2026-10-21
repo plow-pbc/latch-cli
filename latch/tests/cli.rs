@@ -1953,3 +1953,258 @@ fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapsho
     }
     assert!(events.close().success());
 }
+
+#[test]
+fn vault_management_and_self_rules_are_local_without_serve() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let before = plow.seen().len();
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let listed = run(&["vault", "list"]);
+    println!("vault list without serve: {listed}");
+    assert_eq!(listed["items"], json!([]));
+    let added = run(&[
+        "vault",
+        "add",
+        "--kind",
+        "identity",
+        "--title",
+        "the owner",
+        "--field",
+        "city=Example",
+    ]);
+    println!("vault add without serve: {added}");
+    assert_eq!(added["item"]["item"], "v1");
+    assert_eq!(
+        run(&["vault", "list", "--host", "host"])["items"][0]["title"],
+        "the owner"
+    );
+    run(&[
+        "vault",
+        "edit",
+        "--host",
+        "host",
+        "v1",
+        "--revision",
+        "1",
+        "--title",
+        "Updated",
+    ]);
+    assert_eq!(run(&["vault", "list"])["items"][0]["revision"], 2);
+    run(&["rules", "set", "--host", "host", "Only local tests."]);
+    assert_eq!(
+        run(&["rules", "show", "--host", "host"])["every_agent"]["text"],
+        "Only local tests."
+    );
+    run(&["vault", "remove", "v1", "--revision", "2"]);
+    assert_eq!(run(&["vault", "list"])["items"], json!([]));
+    assert_eq!(plow.seen().len(), before, "local management contacted Plow");
+    let link = latch(
+        &host,
+        &[
+            "vault",
+            "link",
+            "--page",
+            "https://example.invalid/",
+            "--kind",
+            "identity",
+            "--title",
+            "the owner",
+        ],
+        &[],
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&link.stderr).unwrap()["error"]["code"],
+        "serve_required"
+    );
+}
+
+#[test]
+fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
+    let plow = LivePlow::start();
+    let (runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !host.join("vault-link.sock").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no local link receiver"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let client = dir.path().join("client");
+    let login = latch(
+        &client,
+        &[
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            dir.path().join("owner.token").to_str().unwrap(),
+            "--name",
+            "client",
+        ],
+        &[],
+    );
+    assert!(login.status.success(), "{login:?}");
+    let remote = |args: &[&str]| {
+        let output = latch(&client, args, &[]);
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    assert_eq!(
+        remote(&["vault", "list", "--host", "host"])["items"],
+        json!([])
+    );
+    // Separate CLI processes contend for the same vault, already cached by serve.
+    thread::scope(|scope| {
+        for _ in 0..6 {
+            let host = &host;
+            scope.spawn(move || {
+                let added = latch(
+                    host,
+                    &["vault", "add", "--kind", "identity", "--title", "the owner"],
+                    &[],
+                );
+                assert!(added.status.success(), "{added:?}");
+            });
+        }
+    });
+    assert_eq!(
+        remote(&["vault", "list", "--host", "host"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+    remote(&[
+        "vault", "add", "--host", "host", "--kind", "identity", "--title", "Remote",
+    ]);
+    let listed = latch(&host, &["vault", "list"], &[]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&listed.stdout).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        7
+    );
+    let opened = latch(
+        &host,
+        &[
+            "vault",
+            "link",
+            "--host",
+            "host",
+            "--kind",
+            "identity",
+            "--title",
+            "Phone",
+            "--page",
+            "https://example.invalid/",
+        ],
+        &[],
+    );
+    assert!(opened.status.success(), "link creation failed");
+    let opened: Value = serde_json::from_slice(&opened.stdout).unwrap();
+    let url = url::Url::parse(opened["url"].as_str().unwrap()).unwrap();
+    let parts: std::collections::HashMap<_, _> =
+        url::form_urlencoded::parse(url.fragment().unwrap().as_bytes())
+            .into_owned()
+            .collect();
+    runtime.block_on(async {
+        use tokio::io::AsyncReadExt;
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
+                .bind()
+                .await
+                .unwrap();
+            let addr = iroh::EndpointAddr::new(parts["h"].parse().unwrap())
+                .with_relay_url(relay.parse().unwrap());
+            let connection = endpoint.connect(addr, b"plow/latch-phone/1").await.unwrap();
+            for op in ["page", "submit"] {
+                let (mut send, mut recv) = connection.open_bi().await.unwrap();
+                let bytes = serde_json::to_vec(
+                    &json!({"op": op, "args": {"code": parts["c"], "values": {}}}),
+                )
+                .unwrap();
+                send.write_all(&(bytes.len() as u32).to_be_bytes())
+                    .await
+                    .unwrap();
+                send.write_all(&bytes).await.unwrap();
+                send.finish().unwrap();
+                let len = recv.read_u32().await.unwrap();
+                assert!(len < 100_000);
+                let mut bytes = vec![0; len as usize];
+                recv.read_exact(&mut bytes).await.unwrap();
+                let response: Value = serde_json::from_slice(&bytes).unwrap();
+                assert!(response.get("ok").is_some(), "phone request refused");
+            }
+            connection.close(0u32.into(), b"done");
+            endpoint.close().await;
+        })
+        .await
+        .expect("phone link timed out");
+    });
+    assert_eq!(
+        remote(&["vault", "list", "--host", "host"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
+}
+
+#[test]
+fn a_local_vault_import_saves_only_picked_rows_without_serve() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let file = dir.path().join("export.json");
+    fs::write(
+        &file,
+        r#"{"items":[{"type":3,"name":"Imported","identity":{"city":"Example"}}]}"#,
+    )
+    .unwrap();
+    let before = plow.seen().len();
+    let mut command = latch_command(&host, &["vault", "import", file.to_str().unwrap()], &[]);
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"all\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["saved"], 1);
+    assert_eq!(plow.seen().len(), before);
+}
+
+#[test]
+fn a_local_agent_cannot_manage_a_vault() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let path = host.join("config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["peer"]["kind"] = json!("agent");
+    fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let result = latch(&host, &["vault", "list"], &[]);
+    assert_eq!(result.status.code(), Some(4));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&result.stderr).unwrap()["error"]["code"],
+        "owner_only"
+    );
+    assert!(!host.join("vault.json").exists());
+}

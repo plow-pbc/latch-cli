@@ -1,6 +1,5 @@
-//! `latch vault …`: the owner's commands, run from an owner device (a latch
-//! client state logged in as a device, never the serving host's own state)
-//! and sent to the host over latch's connection.
+//! `latch vault …`: local owner management, or calls to another host.
+//! Phone links always use a running host's receiver.
 //!
 //! Secrets are typed at a prompt without echo, never taken from argv or the
 //! environment. An import shows what the export holds, values reduced to
@@ -22,25 +21,22 @@ use crate::term;
 use crate::wire::{self, Request};
 
 pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
-    let host = hosts::resolve(state, args.host).await?;
+    let host = if hosts::local_target(state, args.host.as_deref())? {
+        None
+    } else {
+        Some(hosts::resolve(state, args.host).await?)
+    };
+    let target = Target { state, host };
     let call = |args: Value| Request {
         op: "vault".to_string(),
         args,
         chat: None,
     };
     match args.command {
-        VaultCommand::List => {
-            dial::call(
-                state,
-                &host,
-                &call(json!({"command": "list"})),
-                ANSWER_WITHIN,
-            )
-            .await
-        }
+        VaultCommand::List => target.call(call(json!({"command": "list"}))).await,
         VaultCommand::Remove { item, revision } => {
             let request = call(json!({"command": "remove", "item": item, "revision": revision}));
-            dial::call(state, &host, &request, ANSWER_WITHIN).await
+            target.call(request).await
         }
         VaultCommand::Add {
             kind,
@@ -60,7 +56,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 "other_top_sites": other_top_site,
                 "values": values,
             }));
-            dial::call(state, &host, &request, ANSWER_WITHIN).await
+            target.call(request).await
         }
         VaultCommand::Edit {
             item,
@@ -89,13 +85,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 ));
             }
             // The item's kind says which fields it has and which are secret.
-            let listed = dial::call(
-                state,
-                &host,
-                &call(json!({"command": "list"})),
-                ANSWER_WITHIN,
-            )
-            .await?;
+            let listed = target.call(call(json!({"command": "list"}))).await?;
             let kind = listed["items"]
                 .as_array()
                 .into_iter()
@@ -120,7 +110,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             if let Some(tops) = other_top_sites {
                 request["other_top_sites"] = json!(tops);
             }
-            dial::call(state, &host, &call(request), ANSWER_WITHIN).await
+            target.call(call(request)).await
         }
         VaultCommand::Link {
             kind,
@@ -139,7 +129,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 "values": values,
                 "ask": ask,
             }));
-            let opened = dial::call(state, &host, &request, ANSWER_WITHIN).await?;
+            let opened = target.call(request).await?;
             let url = link_url(&page, &opened);
             if term::interactive() {
                 eprintln!("{}", term::qr(&url));
@@ -148,10 +138,31 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             Ok(json!({"url": url, "link": opened["link"], "expires_in": opened["expires_in"]}))
         }
         VaultCommand::Import { file } => {
-            let link = dial::connect(state, &host).await?;
+            let Some(host) = &target.host else {
+                return super::local::import(state, &file);
+            };
+            let link = dial::connect(state, host).await?;
             let result = import(&link.connection, &file).await;
             link.close().await;
             result
+        }
+    }
+}
+
+struct Target<'a> {
+    state: &'a StateDir,
+    host: Option<crate::plow::Peer>,
+}
+
+impl Target<'_> {
+    async fn call(&self, request: Request) -> Result<Value, Failure> {
+        if let Some(host) = &self.host {
+            return dial::call(self.state, host, &request, ANSWER_WITHIN).await;
+        }
+        if request.args["command"] == "link" {
+            super::local::link(self.state, request.args).await
+        } else {
+            super::local::call(self.state, request.args)
         }
     }
 }
@@ -302,18 +313,7 @@ async fn import(connection: &iroh::endpoint::Connection, path: &Path) -> Result<
         .map_err(|_| dial::lost(connection, true))?;
     let previewed = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     let preview = &previewed["preview"];
-    show(preview);
-    let rows = preview["items"].as_array().map_or(0, Vec::len);
-    let picks = if rows == 0 {
-        Vec::new()
-    } else {
-        pick(
-            &term::ask(
-                "Import which? Numbers or ranges (1,3-5), \"all\", or nothing to import none: ",
-            ),
-            rows,
-        )?
-    };
+    let picks = choose(preview)?;
     let picked = serde_json::to_vec(&json!({"picks": picks})).expect("serializes");
     wire::write_frame(&mut send, &picked)
         .await
@@ -323,6 +323,21 @@ async fn import(connection: &iroh::endpoint::Connection, path: &Path) -> Result<
     outcome["source"] = preview["source"].clone();
     outcome["picked"] = json!(picks);
     Ok(outcome)
+}
+
+pub(super) fn choose(preview: &Value) -> Result<Vec<usize>, Failure> {
+    show(preview);
+    let rows = preview["items"].as_array().map_or(0, Vec::len);
+    if rows == 0 {
+        Ok(Vec::new())
+    } else {
+        pick(
+            &term::ask(
+                "Import which? Numbers or ranges (1,3-5), \"all\", or nothing to import none: ",
+            ),
+            rows,
+        )
+    }
 }
 
 /// The preview, for the owner, on stderr: stdout stays the command's JSON.

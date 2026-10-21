@@ -1,7 +1,7 @@
 //! `latch rules …`: the owner's commands on a host's rules for agents.
-//! With `--host` they go to that host over latch's connection, as the
+//! With another `--host` they go over latch's connection, as the
 //! `rules` operation; a failed call never falls back to a local file.
-//! Without it they act on this machine's own host state, audited in its
+//! Without it, or naming this peer, they act locally, audited in its
 //! log as the host would.
 
 use std::io::Read;
@@ -72,8 +72,8 @@ struct Target<'a> {
 
 impl Target<'_> {
     async fn call(&self, args: Value) -> Result<Value, Failure> {
-        if let Some(host) = &self.host {
-            let host = hosts::resolve(self.state, Some(host.clone())).await?;
+        if !hosts::local_target(self.state, self.host.as_deref())? {
+            let host = hosts::resolve(self.state, self.host.clone()).await?;
             let request = Request {
                 op: "rules".to_string(),
                 args,
