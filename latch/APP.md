@@ -40,7 +40,7 @@ normal answer, not an error.
 {"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/1)","protocol":1,
  "peer":{"name":"studio","key":"d9438ef1…","kind":"device"},
  "serve":{"running":true,"ready":true,"state":"serving","pid":63632},
- "shares":["/Users/me/work"],"last_error":null}
+ "shares":["/Users/me/work"],"allow_read":["/Users/me/.rustup"],"last_error":null}
 ```
 
 Field by field:
@@ -49,19 +49,27 @@ Field by field:
 - `serve.running` means a `latch serve` holds the state folder's lock.
 - `serve.ready` means that serve is online and accepting callers.
 - `serve.state` is one of `starting`, `serving`, `stopped` or `error`.
+- `allow_read` lists the paths saved with `latch shares set --allow-read`, which callers may read but not write.
 - `last_error` says why the host last stopped, when it stopped because of a failure. A host that was killed or crashed shows `serve_ended`.
 
-## `latch shares` and `latch shares set FOLDER…`
+## `latch shares` and `latch shares set FOLDER… [--allow-read PATH]…`
 
 These show or replace the folders `latch serve` shares when it is started
-with no folders, so a service starts the host the way a person set it up.
+with no folders, and the paths outside them it lets callers read
+(`--allow-read`), so a service starts the host the way a person set it up.
 
-- Folders named on the command line still win over the saved ones.
+- Folders named on the command line still win over the saved ones, and
+  bring only their own `--allow-read` paths.
 - A running serve keeps its folders until it is restarted.
-- Each folder must exist. Each is saved as its real, absolute path.
+- Each folder and path must exist. Each is saved as its real, absolute path.
+- The home folder, its `Library` and the folders above them are refused,
+  shared or named with `--allow-read` (`bad_folder`, exit 2).
+- An `--allow-read` inside a place that holds credentials (`~/.ssh`,
+  `~/.aws`, …, listed in `latch serve --help`) or inside latch's state is
+  refused with `never_readable` (exit 2).
 
 ```
-{"shares":["/Users/me/work"]}
+{"shares":["/Users/me/work"],"allow_read":["/Users/me/.rustup"]}
 ```
 
 ## `latch events [--follow] [--after CURSOR] [--lifecycle-only]`

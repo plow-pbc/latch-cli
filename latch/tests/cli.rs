@@ -1416,7 +1416,7 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
     let none = latch(&host, &["shares"], &[]);
     assert_eq!(
         serde_json::from_slice::<Value>(&none.stdout).unwrap(),
-        json!({"shares": []})
+        json!({"shares": [], "allow_read": []})
     );
     let missing = latch(
         &host,
@@ -1424,14 +1424,39 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
         &[],
     );
     assert_eq!(missing.status.code(), Some(2), "{missing:?}");
-    let set = latch(&host, &["shares", "set", saved.to_str().unwrap()], &[]);
+    // A path inside credentials, or the home folder that holds its
+    // Library, can never be opted in to; another folder can.
+    let home = dir.path().join("home");
+    let refs = dir.path().join("refs");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::create_dir_all(&refs).unwrap();
+    fs::write(home.join(".ssh/config"), "Host *").unwrap();
+    let opt_in = |path: &Path| {
+        let args = ["shares", "set", saved.to_str().unwrap(), "--allow-read"];
+        latch(
+            &host,
+            &[&args[..], &[path.to_str().unwrap()]].concat(),
+            &[("HOME", &home)],
+        )
+    };
+    let refused = opt_in(&home.join(".ssh/config"));
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("never_readable"));
+    let refused = opt_in(&home);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Library"));
+    let set = opt_in(&refs);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
     let real = saved.canonicalize().unwrap();
+    let refs = refs.canonicalize().unwrap();
     let shown = latch(&host, &["shares"], &[]);
     assert_eq!(
         serde_json::from_slice::<Value>(&shown.stdout).unwrap(),
-        json!({"shares": [real]})
+        json!({"shares": [real], "allow_read": [refs]})
     );
+    let local = latch(&host, &["status", "--local"], &[]);
+    let local = serde_json::from_slice::<Value>(&local.stdout).unwrap();
+    assert_eq!(local["allow_read"], json!([refs]));
 
     let sharing = |lines: &[String]| {
         lines
@@ -1442,15 +1467,123 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
             })
             .unwrap()
     };
+    let reading = |lines: &[String]| {
+        lines
+            .iter()
+            .find_map(|line| line.split_once("also readable, never written: "))
+            .map(|(_, rest)| rest.to_string())
+    };
     let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
     drop(serve);
     assert_eq!(sharing(&lines), real.display().to_string());
+    assert_eq!(reading(&lines), Some(refs.display().to_string()));
+    // Named folders win, and bring no saved opt-ins with them.
     let (serve, lines) = serving_folders(&host, &[&named], &relay, &[]);
     drop(serve);
     assert_eq!(
         sharing(&lines),
         named.canonicalize().unwrap().display().to_string()
     );
+    assert_eq!(reading(&lines), None);
+}
+
+#[test]
+fn another_latch_state_folder_inside_a_share_stays_hidden() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    fs::write(share.join("notes.txt"), "notes").unwrap();
+    let existing = share.join("existing");
+    fs::create_dir(&existing).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    // Another peer's state, logged in for real, nested in the share.
+    let owner_token = dir.path().join("owner.token");
+    let nested = share.join("projects/peer");
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+        "--name",
+        "peer",
+    ];
+    let login = latch(&nested, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    // And one from before latch marked its folders: a key and a login.
+    let old = share.join("old-state");
+    fs::create_dir(&old).unwrap();
+    fs::copy(nested.join("key"), old.join("key")).unwrap();
+    fs::copy(nested.join("plow-token"), old.join("plow-token")).unwrap();
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+
+    let (serve, lines) = serving_folders(&host, &[&share], &relay, &[]);
+    for folder in [&nested, &old] {
+        let folder = folder.canonicalize().unwrap().display().to_string();
+        let line = format!("hidden latch state folder: {folder}");
+        assert!(lines.iter().any(|seen| seen.ends_with(&line)), "{lines:?}");
+    }
+    let exec = |script: &str| {
+        let exec = latch(
+            &agent,
+            &["exec", "--host", "host", "--", "/bin/sh", "-c", script],
+            &agent_env,
+        );
+        assert_eq!(exec.status.code(), Some(0), "{exec:?}");
+        let result: Value = serde_json::from_slice(&exec.stdout).unwrap();
+        result["stdout"].as_str().unwrap().to_string()
+    };
+    let get = |path: &str| {
+        let copy = dir.path().join("copied");
+        let args = [
+            "file",
+            "get",
+            "--host",
+            "host",
+            path,
+            copy.to_str().unwrap(),
+        ];
+        let get = latch(&agent, &args, &agent_env);
+        assert_ne!(get.status.code(), Some(0), "{get:?}");
+        assert!(!copy.exists());
+    };
+    let stdout = exec(
+        "cat notes.txt; cat projects/peer/key projects/peer/plow-token; \
+         ls projects/peer; cat old-state/key old-state/plow-token; true",
+    );
+    assert_eq!(stdout, "notes");
+    get("projects/peer/key");
+
+    // Made while the host runs: a new peer's state, and a login copied
+    // into a folder that was there all along.
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+        "--name",
+        "later",
+    ];
+    let login = latch(&share.join("later"), &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    fs::copy(nested.join("key"), existing.join("key")).unwrap();
+    fs::copy(nested.join("plow-token"), existing.join("plow-token")).unwrap();
+    let stdout = exec(
+        "cat notes.txt; cat later/key later/plow-token; ls later; \
+         cat existing/key existing/plow-token; true",
+    );
+    assert_eq!(stdout, "notes");
+    get("later/plow-token");
+    get("existing/key");
+    drop(serve);
 }
 
 #[test]
@@ -1775,6 +1908,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
         json!({"running": false, "ready": false, "state": "stopped", "pid": null})
     );
     assert_eq!(before["shares"], json!([]));
+    assert_eq!(before["allow_read"], json!([]));
     assert_eq!(before["last_error"], Value::Null);
 
     let host = owner_host_on(&plow, dir.path());

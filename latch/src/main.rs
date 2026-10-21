@@ -35,6 +35,7 @@ mod sandbox;
 mod serve;
 mod shares;
 mod state;
+mod state_folders;
 mod status;
 mod term;
 mod trace;
@@ -224,7 +225,14 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             let dashboard = !args.no_dashboard && term::stdout_is_terminal() && !term::no_color();
             paint::set_color(dashboard);
             let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
-            serve::run(&state, &args.folders, dashboard, deny_exec).await?;
+            serve::run(
+                &state,
+                &args.folders,
+                &args.allow_read,
+                dashboard,
+                deny_exec,
+            )
+            .await?;
             to_json(json!({}))
         }
         Command::Worker(_) => unreachable!("handled in main"),

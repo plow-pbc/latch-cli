@@ -521,6 +521,9 @@ mod tests {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let workers = WorkerSetup {
             areas: vec![dir.path().to_path_buf()],
+            reads: vec![],
+            hidden: vec![],
+            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: dir.path().join("state"),
             program,
         };
