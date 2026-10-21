@@ -543,6 +543,26 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
     assert_eq!(record["gate"]["caller"], "agent");
     assert_eq!(record["gate"]["verdict"], "not_covered");
     assert_eq!(record["agent"], AGENT);
+
+    // The host's rules hold for the owner too, read as the host's, and
+    // for an agent as every agent's.
+    let rules = t.state.join(crate::gate::rules::RULES_DIR);
+    std::fs::create_dir_all(&rules).unwrap();
+    std::fs::write(rules.join("host.txt"), "Never send email.").unwrap();
+    t.call(&device, "exec", exec("true")).await;
+    t.call(&agent, "exec", exec("true")).await;
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let [.., owners, agents] = &asked[..] else {
+        panic!("{asked:?}");
+    };
+    assert_eq!(
+        owners["owner_rules"],
+        json!({"rules on this host": "Never send email."})
+    );
+    assert_eq!(
+        agents["owner_rules"],
+        json!({"rules for every agent on this host": "Never send email."})
+    );
 }
 
 #[tokio::test]

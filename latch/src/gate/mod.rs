@@ -431,8 +431,12 @@ struct Entry<'a> {
     text: &'a str,
 }
 
+/// The owner's rules as the judge reads them: for an owner's call, the
+/// host's rules are the rules on this host, for everyone.
 #[derive(Serialize)]
 struct OwnerRules<'a> {
+    #[serde(rename = "rules on this host", skip_serializing_if = "Option::is_none")]
+    everyone: Option<&'a str>,
     #[serde(
         rename = "rules for every agent on this host",
         skip_serializing_if = "Option::is_none"
@@ -507,8 +511,13 @@ fn state(
         owner_rules: if rules.is_empty() {
             Listed::Nothing("(none)")
         } else {
+            let (everyone, host) = match intent.owner {
+                true => (rules.host.as_deref(), None),
+                false => (None, rules.host.as_deref()),
+            };
             Listed::Items(OwnerRules {
-                host: rules.host.as_deref(),
+                everyone,
+                host,
                 agent: rules.agent.as_deref(),
             })
         },
