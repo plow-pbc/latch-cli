@@ -35,7 +35,6 @@ pub struct Question {
 pub enum Kind {
     /// One of these options: (option, what it is).
     Choose(Vec<(String, String)>),
-    #[allow(dead_code)] // the browser asks yes-or-no questions
     YesNo,
 }
 
@@ -131,7 +130,6 @@ pub struct Model {
     pub calls: Vec<Value>,
 }
 
-#[allow(dead_code)] // the browser uses the rest of `Model`
 impl Model {
     pub fn new(provider: Box<dyn Provider>) -> Model {
         Model {

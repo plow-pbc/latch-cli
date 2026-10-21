@@ -13,9 +13,9 @@
 //!   (see `vault/store.rs`).
 //! - `jev.key`, on a dev host only: the key for the jev model provider
 //!   (see `model.rs`).
-//! - `browser/model.json`, on a host: which decision model it asks (see
-//!   `model.rs`).
-//! - `plugins/`, on a host: the pinned Google CLI.
+//! - `browser/`, on a host: profiles, the model's settings and each
+//!   session's journal.
+//! - `plugins/`, on a host: the pinned engines and the Google CLI.
 //! - `shares.json`: the folders `latch serve` shares when named none (see
 //!   `latch shares`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command

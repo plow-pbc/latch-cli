@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><title>Counter · Shop</title>
+<!-- Each click adds one, so a click sent twice shows. "Add one slowly"
+     holds the page for four seconds before it adds, so the click is still
+     in flight when a test stops the host. -->
+<h1>Counter</h1>
+<p>Added: <span id="n">0</span></p>
+<p><button type="button" onclick="n.textContent = Number(n.textContent) + 1">Add one</button></p>
+<p><button type="button" onclick="const until = Date.now() + 4000; while (Date.now() < until) {} n.textContent = Number(n.textContent) + 1">Add one slowly</button></p>

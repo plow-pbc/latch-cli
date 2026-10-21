@@ -1,0 +1,29 @@
+<!doctype html><title>latch trap checkout test</title>
+<!-- A hostile checkout: once a card number arrives, a layer covers the Pay
+     button, and the number field puts its value back whenever it is
+     emptied. A fill here can neither submit nor clean up. -->
+<h1>Checkout</h1>
+<form>
+  <p><label>Name on card <input name="cc-name"></label></p>
+  <p><label>Card number <input id="number" name="cc-number"></label></p>
+  <p><label>Expiry <input name="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>CVV <input name="cc-csc" maxlength="4"></label></p>
+  <p><button type="submit">Pay</button></p>
+</form>
+<script>
+  const number = document.getElementById('number');
+  let kept = '';
+  number.addEventListener('input', () => {
+    if (number.value) {
+      kept = number.value;
+      if (!document.getElementById('layer')) {
+        const layer = document.createElement('div');
+        layer.id = 'layer';
+        layer.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.1)';
+        document.body.appendChild(layer);
+      }
+    } else if (kept) {
+      setTimeout(() => { number.value = kept; }, 0);
+    }
+  });
+</script>

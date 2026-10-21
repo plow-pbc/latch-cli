@@ -123,7 +123,6 @@ fn launch(policy: &Policy) -> Result<(), Error> {
     }
 }
 
-#[allow(dead_code)] // the browser worker confines itself with it
 pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
     let result = if std::env::var_os(INNER).is_some() {
         filter(false, true)
@@ -140,7 +139,6 @@ pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
 /// What the engine and its display read: libraries and programs (Xvfb and
 /// the xkbcomp it runs), fonts, name resolution, certificates, the time
 /// zone, and the CPU list Chrome sizes itself by.
-#[allow(dead_code)] // the browser worker confines itself with it
 const BROWSER_SYSTEM: &[&str] = &[
     "/usr",
     "/lib",
@@ -164,7 +162,6 @@ const BROWSER_SYSTEM: &[&str] = &[
 /// connections. Its own `/proc` shows only the sandbox's processes, which
 /// Chrome's sandbox needs. A private `/tmp` holds the display's socket,
 /// so nothing outside reaches the display.
-#[allow(dead_code)] // the browser worker confines itself with it
 fn browser_command(view: &BrowserView, program: &Path) -> Result<Command, Error> {
     let mut command = Command::new(bubblewrap()?);
     for path in BROWSER_SYSTEM {

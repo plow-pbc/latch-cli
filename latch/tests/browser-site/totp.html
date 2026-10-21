@@ -1,0 +1,7 @@
+<!doctype html><title>latch code test</title>
+<!-- Posts to /verify, which checks the code against the test key. -->
+<h1>Two-step verification</h1>
+<form method="post" action="verify">
+  <p><label>Authentication code <input name="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="6"></label></p>
+  <p><button type="submit">Verify</button></p>
+</form>
