@@ -357,7 +357,10 @@ the confirmation used, `result` `dispatched`/`refused`/`unknown`, what
 changed, and `screenshot`: the handle `{"request": R, "shot": N}` of a
 screenshot taken after it, or `{"suppressed": true}` after a vault fill or
 while a filled value is on the page) and `page` (snapshot, URL, title, up to 40 lines, the element
-list). A plan stops at the first step that does not pass, or at its
+list, bounded as every answer's is). A plan that stopped before sending any
+action reads no new snapshot: its `page` is the tab's URL and title with a
+`note` saying so, and a ref still names the last page latch returned (a
+stop that offers refs, `candidates` or a `field`, reads one). A plan stops at the first step that does not pass, or at its
 deadline; nothing is replayed or retried. Exit 0 is `reached` or
 `dispatched`; a stop exits 1, or 4 for `confirm_needed`, `confirm_stale` and
 `step_not_allowed`.

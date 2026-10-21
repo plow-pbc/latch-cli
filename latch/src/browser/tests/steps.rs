@@ -626,12 +626,15 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
         .unwrap_err();
     stopped("b5-confirm-stale.json", &stale);
     assert_eq!(refused(&stale), (Exit::Denied, "confirm_stale"));
+    // Nothing was sent: the answer reads no new snapshot, and says so.
     assert!(
-        stale.details["page"]["lines"]
-            .to_string()
-            .contains("$100.00")
+        stale.details["page"]["note"].is_string(),
+        "{}",
+        stale.details
     );
-    assert!(!h.text().await.contains("Order placed"));
+    assert!(stale.details["page"].get("elements").is_none());
+    let text = h.text().await;
+    assert!(text.contains("$100.00") && !text.contains("Order placed"));
 
     // Issued on a page since replaced by a new load of it: stale.
     let page = h.open(&format!("{site}/order.html")).await;

@@ -521,6 +521,7 @@ pub async fn run(
         trail,
         records,
         audit,
+        actions,
         ..
     } = run;
     record_model(&model, audit);
@@ -546,11 +547,30 @@ pub async fn run(
         })
         .collect();
     audit.insert("step_outcomes".into(), json!(outcomes));
-    // Every answer ends with the page as it is now.
-    let page = call(entry, json!({"op": "glance"}), audit)
-        .await
-        .map(|(page, _)| page)
-        .unwrap_or(Value::Null);
+    // Every answer ends with the page as it is now. A plan that stopped
+    // before sending any action left the page to itself: no new snapshot
+    // is read, so the refs the agent holds stay the ones a ref without
+    // `--snapshot` names; unless the stop offers refs of its own.
+    let untouched = stop.as_ref().is_some_and(|(_, failure)| {
+        actions == 0
+            && failure.details.get("candidates").is_none()
+            && failure.details.get("field").is_none()
+    });
+    let page = if untouched {
+        call(entry, json!({"op": "page"}), audit)
+            .await
+            .map(|(mut page, _)| {
+                page["note"] = json!(
+                    "nothing was sent, so no new snapshot was read: a ref still names the last page latch returned; `latch browser observe` reads the page afresh"
+                );
+                page
+            })
+    } else {
+        call(entry, json!({"op": "glance"}), audit)
+            .await
+            .map(|(page, _)| page)
+    }
+    .unwrap_or(Value::Null);
     let mut out =
         json!({"request": request, "status": status, "steps": steps, "trail": trail, "page": page});
     // `--output F`: the page as the plan ended, kept as its `final` shot (a
