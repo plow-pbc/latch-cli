@@ -245,8 +245,6 @@ jobs:
         with:
           name: release-downloads
           path: dist
+      # Always a draft: a person publishes it after checking the signed builds.
       - name: Create release
-        run: |
-          args=()
-          if [[ '${{ github.event_name }}' == workflow_dispatch ]]; then args+=(--draft); fi
-          gh release create "$VERSION" dist/* --target "$GITHUB_SHA" --title "latch $VERSION" --generate-notes "${args[@]}"
+        run: gh release create "$VERSION" dist/* --draft --target "$GITHUB_SHA" --title "latch $VERSION" --generate-notes
