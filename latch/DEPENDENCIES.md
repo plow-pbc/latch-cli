@@ -6,7 +6,9 @@ the audit; its row was pulled from the same APIs on 2026-10-15, and the vault's 
 (`aes-gcm` to `zip`) on 2026-10-19, and `qrcode` on 2026-10-19. Downloads
 are all-time / last 90 days. The bar for a new crate: widely used, actively
 maintained, from a known owner. Add a row here in the same change that adds a
-crate to `Cargo.toml`.
+crate to `Cargo.toml`. `cargo deny --locked check` holds the whole locked graph
+to `deny.toml`: no published advisory, only the listed licenses, crates.io
+only. CI runs it on every dependency change and daily.
 
 | Crate | Used for | Downloads (all / 90 d) | Stars | Owner | Version (released) | License |
 |---|---|---|---|---|---|---|
