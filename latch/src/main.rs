@@ -152,7 +152,18 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             }
         }
         Command::Login(args) => {
-            let output = login::run(&state, args).await?;
+            let output = match login::run(&state, args).await {
+                Ok(output) => output,
+                // A person at a terminal reads the sentence; a pipe gets the JSON.
+                Err(failure) if term::stderr_is_terminal() => {
+                    eprintln!("{}", failure.message);
+                    return Ok(Printed {
+                        text: String::new(),
+                        exit: failure.exit.into(),
+                    });
+                }
+                Err(failure) => return Err(failure),
+            };
             // A person at a terminal reads one line; a pipe gets the JSON.
             if !term::stdout_is_terminal() {
                 return to_json(output);

@@ -3,6 +3,36 @@
 A command-line peer that lets an agent reach the files, programs and browser
 on a machine its owner trusts, over Plow's directory.
 
+## Install
+
+Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
+(`gh auth login`). Pick a release tag, then download and run its installer:
+
+```sh
+release=v0.1.0
+d=$(mktemp -d) && gh release download "$release" -R plow-pbc/latch-cli -p install-release.sh -D "$d" && sh "$d/install-release.sh" "$release"
+export PATH="$HOME/.local/bin:$PATH"
+latch --version
+```
+
+The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
+its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
+Pass `--bin-dir DIR` after the release tag to choose another binary directory.
+The archive's executable `install.sh` installs the adjacent `latch` with no
+arguments, accepts options before or after an explicit binary path, and shows
+usage with `--help`.
+It downloads pinned gog into `~/.latch/plugins`. Setup requires curl, tar and
+SHA-256 tools.
+Linux hosting needs bubblewrap and usable user namespaces; setup explains missing
+packages and may ask for sudo, including for Ubuntu's AppArmor profile;
+see [Docker hosting](latch/DOCKER.md).
+
+Update by rerunning with a newer tag. State and versioned plugins stay in place;
+restart an existing `latch serve` intentionally when ready to use the new binary.
+macOS downloads have no Developer ID signature or notarization: use `gh` as above
+rather than a browser download, which can add quarantine. No Homebrew tap or
+Mac app is included.
+
 ## For agents
 
 - **Log in with your own credential.** `latch login` with no flags finds a

@@ -114,6 +114,7 @@ async fn start_with(
         gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
         deny_exec,
         binary: Binary::at(&binary).unwrap(),
+        stopping: tokio::sync::watch::Sender::new(Stopping::No),
     });
     let serving = host.clone();
     tokio::spawn(async move {

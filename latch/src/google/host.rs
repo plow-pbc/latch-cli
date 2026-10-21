@@ -821,12 +821,18 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let running = AtomicUsize::new(0);
         let most = AtomicUsize::new(0);
+        // How many ran when a later one started: four again if each starts
+        // as soon as a slot frees, rather than after a whole batch.
+        let most_later = AtomicUsize::new(0);
         let futures = (0..9)
             .map(|i| {
-                let (running, most) = (&running, &most);
+                let (running, most, most_later) = (&running, &most, &most_later);
                 async move {
                     let now = running.fetch_add(1, Ordering::SeqCst) + 1;
                     most.fetch_max(now, Ordering::SeqCst);
+                    if i >= FANOUT_AT_ONCE {
+                        most_later.fetch_max(now, Ordering::SeqCst);
+                    }
                     // Later ones finish first, so order must come from the input.
                     tokio::time::sleep(Duration::from_millis(40 - 4 * i as u64)).await;
                     running.fetch_sub(1, Ordering::SeqCst);
@@ -834,18 +840,12 @@ mod tests {
                 }
             })
             .collect();
-        let started = std::time::Instant::now();
         assert_eq!(
             at_most(FANOUT_AT_ONCE, futures).await,
             (0..9).collect::<Vec<_>>()
         );
         assert_eq!(most.load(Ordering::SeqCst), 4);
-        // Nine 8-40 ms waits one after another take about 230 ms.
-        assert!(
-            started.elapsed() < Duration::from_millis(150),
-            "{:?}",
-            started.elapsed()
-        );
+        assert_eq!(most_later.load(Ordering::SeqCst), 4);
     }
     #[test]
     fn an_unavailable_connected_account_still_requires_account_selection() {

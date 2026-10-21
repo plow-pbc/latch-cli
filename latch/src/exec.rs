@@ -7,6 +7,8 @@
 //! kept up to 256 KiB (the rest is read and dropped, and `truncated` is
 //! set), so a runaway command cannot flood the agent. At the time limit the
 //! whole process group (the program and everything it started) is killed.
+//! So is it when the host stops before the program ends: the run is
+//! `interrupted`, and audited as that.
 //! The audit record holds the argv (up to 4 KiB, as run), the workdir and
 //! how it ended, never the output.
 //!
@@ -60,8 +62,10 @@ fn default_timeout() -> u64 {
     60
 }
 
-/// `exec`: runs `args.argv` and returns its result.
-pub async fn run(workers: &WorkerSetup, args: &Value) -> Done {
+/// `exec`: runs `args.argv` and returns its result. If `cut_off` finishes
+/// first, the program's process group is killed and the run is
+/// `interrupted`.
+pub async fn run(workers: &WorkerSetup, args: &Value, cut_off: impl Future<Output = ()>) -> Done {
     if !args.is_object() {
         return bad_request("exec arguments must be an object");
     }
@@ -101,7 +105,8 @@ pub async fn run(workers: &WorkerSetup, args: &Value) -> Done {
             return Done::failed("tmpdir_failed", message, audit);
         }
     };
-    let done = run_program(workers, workdir, &tmpdir, &argv, input, timeout, audit).await;
+    let limits = Limits { timeout, cut_off };
+    let done = run_program(workers, workdir, &tmpdir, &argv, input, limits, audit).await;
     // `remove_dir_all` deletes links the program left there, never what
     // they point to.
     if let Err(err) = std::fs::remove_dir_all(&tmpdir) {
@@ -131,14 +136,28 @@ fn make_tmpdir() -> std::io::Result<PathBuf> {
     path.canonicalize()
 }
 
-/// Starts the program and waits for it (up to `timeout` seconds).
+/// When a program must stop: at `timeout` seconds, or when `cut_off`
+/// finishes.
+struct Limits<F> {
+    timeout: u64,
+    cut_off: F,
+}
+
+/// How the wait for a program ended.
+enum End {
+    Exited,
+    TimedOut,
+    CutOff,
+}
+
+/// Starts the program and waits for it, within `limits`.
 async fn run_program(
     workers: &WorkerSetup,
     workdir: Option<&str>,
     tmpdir: &Path,
     argv: &[String],
     input: Option<Vec<u8>>,
-    timeout: u64,
+    limits: Limits<impl Future<Output = ()>>,
     mut audit: Value,
 ) -> Done {
     let started = Instant::now();
@@ -156,7 +175,8 @@ async fn run_program(
             let _ = pipe.write_all(&bytes).await;
         });
     }
-    let (status, timed_out) = wait_or_kill(&mut child, Duration::from_secs(timeout)).await;
+    let (status, end) = wait_or_kill(&mut child, limits).await;
+    let timed_out = matches!(end, End::TimedOut);
     // Both streams get the same grace, side by side.
     let ((stdout, stdout_cut), (stderr, stderr_cut)) = tokio::join!(
         collected(stdout, DRAIN_GRACE),
@@ -179,6 +199,20 @@ async fn run_program(
     audit["duration_ms"] = json!(duration_ms);
     // How much it wrote to stderr (never what), so the host's view can mark it.
     audit["stderr_bytes"] = json!(stderr.len());
+    if let End::CutOff = end {
+        let message =
+            format!("the host stopped while the program ran, and killed it after {duration_ms} ms");
+        return Done {
+            response: Response::Error {
+                exit: crate::failure::Exit::Unknown,
+                details: Value::Null,
+                code: "interrupted".to_string(),
+                message,
+            },
+            audit_args: audit,
+            outcome: "interrupted".to_string(),
+        };
+    }
     let result = json!({
         "exit_code": exit_code,
         "signal": signal,
@@ -198,12 +232,20 @@ fn argv_is_usable(argv: &[String]) -> bool {
     !argv.is_empty() && !argv[0].is_empty()
 }
 
-/// Waits for the program, up to `limit`. Past it, kills the program's
-/// whole process group and returns its (killed) status with `true`.
-async fn wait_or_kill(child: &mut Child, limit: Duration) -> (ExitStatus, bool) {
-    if let Ok(Ok(status)) = tokio::time::timeout(limit, child.wait()).await {
-        return (status, false);
-    }
+/// Waits for the program, within `limits`. Past them, kills the program's
+/// whole process group and returns its (killed) status, and why.
+async fn wait_or_kill(
+    child: &mut Child,
+    limits: Limits<impl Future<Output = ()>>,
+) -> (ExitStatus, End) {
+    let end = tokio::select! {
+        status = child.wait() => match status {
+            Ok(status) => return (status, End::Exited),
+            Err(_) => End::TimedOut,
+        },
+        () = tokio::time::sleep(Duration::from_secs(limits.timeout)) => End::TimedOut,
+        () = limits.cut_off => End::CutOff,
+    };
     if let Some(pid) = child.id() {
         // The worker started the program as the leader of a new process
         // group whose id is its pid, so this reaches every process in it.
@@ -214,7 +256,7 @@ async fn wait_or_kill(child: &mut Child, limit: Duration) -> (ExitStatus, bool) 
         .wait()
         .await
         .unwrap_or_else(|_| ExitStatus::from_raw(libc::SIGKILL));
-    (status, true)
+    (status, end)
 }
 
 /// What has been read from one output stream so far. A reader task fills
@@ -411,7 +453,7 @@ mod tests {
             for (case, value) in values.into_iter().enumerate() {
                 let mut args = json!({"argv": ["unused"]});
                 args[field] = value;
-                let done = run(&workers, &args).await;
+                let done = run(&workers, &args, std::future::pending()).await;
                 assert!(
                     !dir.path().join("worker-started").exists(),
                     "{field} case {case} started a worker"
@@ -428,7 +470,12 @@ mod tests {
     #[tokio::test]
     async fn positional_exec_args_never_start_a_worker() {
         let (dir, workers) = worker_setup();
-        let done = run(&workers, &json!([["unused"], 60, null, null])).await;
+        let done = run(
+            &workers,
+            &json!([["unused"], 60, null, null]),
+            std::future::pending(),
+        )
+        .await;
         assert!(!dir.path().join("worker-started").exists());
         assert!(matches!(
             done.response,
@@ -444,7 +491,7 @@ mod tests {
             json!({"argv": ["unused"]}),
             json!({"argv": ["unused"], "workdir": null, "stdin": null}),
         ] {
-            let done = run(&workers, &args).await;
+            let done = run(&workers, &args, std::future::pending()).await;
             assert!(matches!(done.response, Response::Ok(_)));
             assert!(dir.path().join("worker-started").exists());
             assert_eq!(done.audit_args["workdir"], json!(dir.path()));
