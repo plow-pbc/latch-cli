@@ -1,9 +1,10 @@
 #!/bin/bash
 # Runs one variant's probe from a throwaway launchd agent, waits for its
 # output, unloads the agent and prints what it said.
-#   run-variant.sh A|B|C [--dry] [RUN]
+#   run-variant.sh A|B|C|D [--dry] [RUN]
 # A: the bare binary. B: the app bundle's executable. C: the bundle's
 # executable starting the outside binary, which starts the probing worker.
+# D: the control for C, the outside binary alone, with no bundle above it.
 # --dry checks the plumbing without opening any protected path.
 set -euo pipefail
 variant=$1
@@ -15,7 +16,8 @@ case "$variant" in
   A) args=("$run/A/fda-probe") ;;
   B) args=("$app") ;;
   C) args=("$app" --chain "$run/C/latch") ;;
-  *) echo "variant A, B or C" >&2; exit 2 ;;
+  D) args=("$run/C/latch") ;;
+  *) echo "variant A, B, C or D" >&2; exit 2 ;;
 esac
 [[ -n "$dry" ]] && args+=("$dry")
 label="co.plow.latch.fdaspike.$(tr A-Z a-z <<< "$variant")"
