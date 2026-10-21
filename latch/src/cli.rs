@@ -122,7 +122,7 @@ pub struct BrowserArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum BrowserCommand {
-    /// Start a new session on a profile, load URL, and list the page's elements;
+    /// Start a new session on a profile, load URL, and list the elements on screen;
     /// answers the session's id, which every later command needs
     Open {
         /// The profile, whose logins the session shares (default: default)
@@ -145,6 +145,10 @@ pub enum BrowserCommand {
         /// Only the element with this ref and what is inside it
         #[arg(long)]
         scope: Option<String>,
+        /// Every element the snapshot read, off-screen ones too, and every
+        /// frame: answers show the elements on screen, at most 60
+        #[arg(long)]
+        all: bool,
     },
     /// The page's text
     Text,

@@ -292,9 +292,10 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "url", json!(url));
             "open"
         }
-        BrowserCommand::Observe { tab, scope } => {
+        BrowserCommand::Observe { tab, scope, all } => {
             set(request, "tab", json!(tab));
             set(request, "scope", json!(scope));
+            set(request, "all", json!(all.then_some(true)));
             "observe"
         }
         BrowserCommand::Text => "text",

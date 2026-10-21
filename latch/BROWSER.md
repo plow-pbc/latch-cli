@@ -98,7 +98,7 @@ whole state directory, profiles included.
 ```sh
 latch browser --host my-mac open http://example.com/   # a new session: its id is in the answer
 export LATCH_BROWSER_SESSION=sbkpanajj…                # or --session S on each command
-latch browser --host my-mac observe                    # snapshot o2: refs e1, e2, …
+latch browser --host my-mac observe                    # snapshot o2: refs e1, e2, … (on screen; --all for every one)
 latch browser --host my-mac do 'type e3 "Acme" -> field: e3=Acme' 'click e7 -> path: /cart'
 latch browser --host my-mac do --plan-file plan.json    # the canonical plan (- for stdin)
 latch browser --host my-mac do --confirm c4f1a09b2e3d7  # carry out a confirmation, then any steps
@@ -177,6 +177,15 @@ world; `opaque` for a sandboxed frame). A snapshot lists at most 200
 elements, reads at most 50 frames, and leaves out a frame that does not
 answer before the call's time is three quarters gone; any of these marks
 it `truncated`. `observe --scope eN` lists one element's subtree.
+
+An answer shows only the elements on screen, at most 60, and the frames
+they are in, each frame's address without its query and cut to 80
+characters; `omitted` says how many elements and frames it left out.
+`observe --all` lists every element the snapshot read and every frame.
+The snapshot holds them all either way, so a ref left out of the display
+is still valid once it is shown, after `observe --all` or a scroll and an
+`observe`. Only the display is cut: the audit, the gatekeeper and site
+reservations read the full addresses.
 
 A ref is bound to its frame's document: after a navigation, a ref from
 before it is refused with `stale_snapshot`, with a fresh element list in

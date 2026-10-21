@@ -612,10 +612,32 @@ async fn fill_resolved(
     super::fill::run(browsers, entry, args, audit).await
 }
 
+/// One command for `caller`, as `answer` runs it, each page in its answer
+/// bounded to what the agent is shown (`shown`), unless it asked for every
+/// element: `observe --all`, or `--scope`.
+pub(super) async fn call(
+    browsers: &Browsers,
+    caller: Caller<'_>,
+    command: &str,
+    name: &str,
+    args: &Value,
+    input: Option<&[u8]>,
+    audit: &mut Map<String, Value>,
+) -> Result<(Value, Option<Vec<u8>>), Failure> {
+    let mut answered = answer(browsers, caller, command, name, args, input, audit).await;
+    if args["all"] != true && args["scope"].is_null() {
+        match &mut answered {
+            Ok((result, _)) => super::shown::bound(result),
+            Err(failure) => super::shown::bound(&mut failure.details),
+        }
+    }
+    answered
+}
+
 /// One command for `caller`: `open` on profile `name`, `sessions`, or a
 /// command on session `name` (its id). An owner device may also `close`
 /// any session by its hash.
-pub(super) async fn call(
+async fn answer(
     browsers: &Browsers,
     caller: Caller<'_>,
     command: &str,
