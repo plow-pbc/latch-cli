@@ -16,7 +16,7 @@ use seccompiler::{
     SeccompRule,
 };
 
-use super::{BrowserView, Policy};
+use super::{BrowserView, Policy, exit_with_status, reap};
 
 type Error = Box<dyn std::error::Error>;
 const INNER: &str = "LATCH_BWRAP_INNER";
@@ -31,6 +31,17 @@ fn bubblewrap() -> Result<PathBuf, String> {
 
 pub fn check() -> Result<(), String> {
     bubblewrap().map(|_| ())
+}
+
+/// Nothing to hold: the launcher outside bubblewrap watches the host.
+pub struct HostWatch;
+
+pub fn watch_host() -> Result<HostWatch, String> {
+    Ok(HostWatch)
+}
+
+pub fn supervise(_watch: HostWatch, _kill_after: Option<u64>) -> Result<(), String> {
+    Ok(())
 }
 
 pub fn confine(policy: &Policy) -> Result<(), String> {
@@ -118,7 +129,7 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         .arg(program)
         .args(std::env::args_os().skip(1));
     match status {
-        Some(file) => launch_exec(&mut command, file),
+        Some(file) => launch_exec(&mut command, file, policy.kill_after),
         None => Err(command.exec().into()),
     }
 }
@@ -304,7 +315,24 @@ fn folders_above(policy: &Policy, program: &Path) -> Result<Vec<PathBuf>, Error>
     Ok(dirs)
 }
 
-fn launch_exec(command: &mut Command, mut file: tempfile::NamedTempFile) -> Result<(), Error> {
+fn launch_exec(
+    command: &mut Command,
+    mut file: tempfile::NamedTempFile,
+    kill_after: Option<u64>,
+) -> Result<(), Error> {
+    // This copy's own time limit, past which SIGALRM ends it. bubblewrap
+    // (`--die-with-parent`) then kills the sandbox and everything in it.
+    // The host kills this copy's process group at the call's timeout,
+    // before this. When the host itself dies, the kernel kills this copy
+    // (the host sets that up as it starts it, see `worker.rs`), with the
+    // same effect.
+    if let Some(seconds) = kill_after {
+        // SAFETY: plain signal-disposition and timer calls.
+        unsafe {
+            libc::signal(libc::SIGALRM, libc::SIG_DFL);
+            libc::alarm(u32::try_from(seconds).unwrap_or(u32::MAX));
+        }
+    }
     // Bubblewrap reports both SIGSEGV and a normal exit 139 as 139. The inner
     // supervisor writes the actual wait status here, so this outer copy can
     // reproduce the child's exit code or signal without guessing. The host
@@ -333,31 +361,9 @@ fn supervise_exec() -> Result<(), Error> {
     if pid == 0 {
         return Ok(());
     }
-    let mut status = 0;
-    loop {
-        // SAFETY: status is writable and pid is the child just created.
-        if unsafe { libc::waitpid(pid, &mut status, 0) } >= 0 {
-            break;
-        }
-        let err = std::io::Error::last_os_error();
-        if err.kind() != std::io::ErrorKind::Interrupted {
-            return Err(err.into());
-        }
-    }
-    std::fs::write(STATUS, status.to_ne_bytes())?;
+    let status = reap(pid)?;
+    std::fs::write(STATUS, status.into_raw().to_ne_bytes())?;
     std::process::exit(0);
-}
-
-fn exit_with_status(status: std::process::ExitStatus) -> ! {
-    if let Some(signal) = status.signal() {
-        // SAFETY: restore the signal's default action and deliver it to self.
-        unsafe {
-            libc::signal(signal, libc::SIG_DFL);
-            libc::raise(signal);
-        }
-        std::process::exit(128 + signal);
-    }
-    std::process::exit(status.code().unwrap_or(125));
 }
 
 fn mount(command: &mut Command, path: &Path, readonly: bool) -> Result<(), Error> {
@@ -498,6 +504,7 @@ mod tests {
                 state_dir: root.join("state"),
                 exec: mode == "exec",
                 tmpdir: (mode == "exec").then(|| root.join("outside")),
+                kill_after: None,
                 program: (mode == "google")
                     .then(|| PathBuf::from(std::env::var_os("LATCH_VIEW_PROGRAM").unwrap())),
                 break_for_test: false,

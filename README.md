@@ -17,6 +17,10 @@ latch --version
 
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
+Pass `--bin-dir DIR` after the release tag to choose another binary directory.
+The archive's executable `install.sh` installs the adjacent `latch` with no
+arguments, accepts options before or after an explicit binary path, and shows
+usage with `--help`.
 It downloads pinned gog into `~/.latch/plugins`. Setup requires curl, tar and
 SHA-256 tools.
 Linux hosting needs bubblewrap and usable user namespaces; setup explains missing

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::cli::{BUILD_API_URL, LoginArgs};
+use crate::cli::{self, BUILD_API_URL, LoginArgs};
 use crate::credential;
 use crate::failure::Failure;
 use crate::heartbeat;
@@ -47,18 +47,17 @@ enum Source {
 }
 
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
-    // Flags win; on a repeat login, fall back to what the first one saved.
-    // A cloud agent's `$PLOW_API_BASE` comes before `$PLOW_API_URL`: on
-    // exe.dev it is the proxy that adds the agent's credential.
     let saved = state.load_config()?;
-    let api_url = args
-        .api_url
-        .or_else(|| credential::env("PLOW_API_BASE"))
-        .or_else(|| credential::env("PLOW_API_URL"))
-        .or(BUILD_API_URL.map(String::from))
-        .or(saved.as_ref().map(|config| config.api_url.clone()));
+    let api_url = api_url(
+        args.api_url,
+        credential::env,
+        saved.as_ref(),
+        cli::BUILD_CHANNEL,
+    );
     let Some(api_url) = api_url else {
-        return Err(missing("--api-url, $PLOW_API_BASE or $PLOW_API_URL"));
+        let message = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co \
+                       (or set $PLOW_API_BASE or $PLOW_API_URL)";
+        return Err(Failure::usage("not_configured", message.to_string()));
     };
     let source = if let Some(path) = &args.token_file {
         Source::Given(credential::read(path)?)
@@ -364,6 +363,23 @@ fn hostname() -> Option<String> {
     Some(short.to_string()).filter(|name| !name.is_empty())
 }
 
+/// Which Plow to log in to. The flag wins; then a cloud agent's
+/// `$PLOW_API_BASE` (on exe.dev, the proxy that adds the agent's
+/// credential), then `$PLOW_API_URL`, then this build's baked-in URL; on a
+/// repeat login, what the first one saved; last, a release build's default.
+fn api_url(
+    flag: Option<String>,
+    env: impl Fn(&str) -> Option<String>,
+    saved: Option<&Config>,
+    channel: Option<&str>,
+) -> Option<String> {
+    flag.or_else(|| env("PLOW_API_BASE"))
+        .or_else(|| env("PLOW_API_URL"))
+        .or(BUILD_API_URL.map(String::from))
+        .or(saved.map(|config| config.api_url.clone()))
+        .or(cli::default_api_url(channel).map(String::from))
+}
+
 fn missing(what: &str) -> Failure {
     Failure::usage("not_configured", format!("first login needs {what}"))
 }
@@ -371,6 +387,28 @@ fn missing(what: &str) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_release_build_logs_in_to_plow_unless_something_names_another() {
+        let release = Some("standalone tag v0.2.0");
+        let none = |_: &str| None;
+        let plow = Some("https://api.plow.co".to_string());
+        assert_eq!(api_url(None, none, None, release), plow);
+        // A local build has no default: it points at a dev stack.
+        assert_eq!(api_url(None, none, None, None), None);
+
+        let local = "http://127.0.0.1:8000".to_string();
+        let flag = Some(local.clone());
+        assert_eq!(api_url(flag, none, None, release), Some(local.clone()));
+        let env = |name: &str| (name == "PLOW_API_URL").then(|| local.clone());
+        assert_eq!(api_url(None, env, None, release), Some(local.clone()));
+        let saved: Config = serde_json::from_value(json!({
+            "api_url": local,
+            "peer": {"name": "mac", "key": "k", "kind": "device"},
+        }))
+        .unwrap();
+        assert_eq!(api_url(None, none, Some(&saved), release), Some(local));
+    }
 
     #[test]
     fn the_qr_code_and_the_link_carry_the_number_and_the_text() {

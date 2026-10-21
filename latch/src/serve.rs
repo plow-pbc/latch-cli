@@ -225,6 +225,7 @@ async fn run_locked(
         Failure::failed("sandbox_unavailable", message)
     })?;
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
+    exec::sweep_tmpdirs();
     let config = state.require_login()?;
     let dashboard = if show_dashboard {
         let path = state.path.join("serve.log");
@@ -664,7 +665,7 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     // the host stops.
     while let Some((send, recv)) = next_stream(host, connection).await {
         let operation = tracing::info_span!("operation", op = Empty);
-        serve_operation(host, caller, send, recv)
+        serve_operation(host, caller, connection, send, recv)
             .instrument(operation)
             .await;
         log(&format!(
@@ -687,7 +688,13 @@ async fn next_stream(host: &Host, connection: &Connection) -> Option<(SendStream
     }
 }
 
-async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut recv: RecvStream) {
+async fn serve_operation(
+    host: &Host,
+    caller: &str,
+    connection: &Connection,
+    mut send: SendStream,
+    mut recv: RecvStream,
+) {
     let Ok(json) = wire::read_frame(&mut recv).await else {
         return;
     };
@@ -716,13 +723,6 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             }
         }
         Ok(identity) => {
-            // The dashboard's name for the caller, asked of Plow now: once
-            // the operation has run, nothing may wait between it and its
-            // audit record and answer.
-            let shown = match &host.dashboard {
-                Some(_) => Some(host.shown_name(&identity).await),
-                None => None,
-            };
             // An agent's exec, file or Google operation runs only if the
             // gatekeeper allows it.
             let gate = host.gate(&identity, request.chat.as_deref());
@@ -786,7 +786,9 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
-                    "exec" => exec::run(&host.workers, &request.args, host.cut_off()).await,
+                    "exec" => {
+                        exec::run(&host.workers, &request.args, cut_off(host, connection)).await
+                    }
                     "vault" => {
                         crate::vault::host::run(
                             &host.vault,
@@ -837,28 +839,47 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                 "{op}: {caller}: {decision}: {} {}",
                 done.outcome, done.audit_args
             ));
-            if let (Some(dashboard), Some(shown)) = (&host.dashboard, shown) {
-                let (target, result) =
-                    dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed());
+            let dashboard = host.dashboard.as_ref().map(|dashboard| {
+                (
+                    dashboard,
+                    dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed()),
+                )
+            });
+            let mut record = audit::record(
+                caller,
+                identity.agent_uid.clone(),
+                op,
+                decision,
+                &done.outcome,
+            );
+            record.args = done.audit_args;
+            record.gate = judgment.map(|judgment| judgment.gate);
+            let response = match host.append(record).await {
+                Ok(audit_id) => with_audit_id(done.response, audit_id),
+                Err(message) => failed("audit_failed", message),
+            };
+            if let Some((dashboard, (target, result))) = dashboard {
                 dashboard.call(Row {
                     at: jiff::Timestamp::now(),
-                    caller: shown,
+                    caller: host.shown_name(&identity).await,
                     op: op.to_string(),
                     target,
                     result,
                     refused: decision == "deny",
                 });
             }
-            let mut record = audit::record(caller, identity.agent_uid, op, decision, &done.outcome);
-            record.args = done.audit_args;
-            record.gate = judgment.map(|judgment| judgment.gate);
-            match host.append(record).await {
-                Ok(audit_id) => with_audit_id(done.response, audit_id),
-                Err(message) => failed("audit_failed", message),
-            }
+            response
         }
     };
     answer(&mut send, &response).await;
+}
+
+/// Finishes when an exec is cut off by the host or loses its caller.
+async fn cut_off(host: &Host, connection: &Connection) -> &'static str {
+    tokio::select! {
+        () = host.cut_off() => "interrupted",
+        _ = connection.closed() => "caller_gone",
+    }
 }
 
 /// A phone page's connection (see `vault/link.rs`). Its key is a
