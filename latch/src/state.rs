@@ -16,8 +16,8 @@
 //! - `browser/model.json`, on a host: which decision model it asks (see
 //!   `model.rs`).
 //! - `plugins/`, on a host: the pinned Google CLI.
-//! - `shares.json`: the folders `latch serve` shares when named none (see
-//!   `latch shares`).
+//! - `shares.json`: the folders `latch serve` shares when named none, and
+//!   the paths it lets callers read besides (see `latch shares`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
 //!
@@ -49,10 +49,13 @@ pub struct Config {
 /// would misread, together with the explicit upgrade for that change.
 const FORMAT: u32 = 1;
 
-/// `shares.json`: what `latch serve` shares when it is named no folders.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+/// `shares.json`: what `latch serve` shares when it is named no folders,
+/// and what it lets callers read besides (`--allow-read`).
+#[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
 pub struct Shares {
     pub folders: Vec<PathBuf>,
+    #[serde(default)]
+    pub allow_read: Vec<PathBuf>,
 }
 
 /// `latch.json`: the folder's format, and which latch first marked it.
@@ -166,26 +169,23 @@ impl StateDir {
         })
     }
 
-    /// The folders `latch shares set` saved, in order; none if it never ran.
-    pub fn load_shares(&self) -> Result<Vec<PathBuf>, Failure> {
+    /// What `latch shares set` saved, folders in order; none if it never ran.
+    pub fn load_shares(&self) -> Result<Shares, Failure> {
         let path = self.path.join("shares.json");
         if !path.exists() {
-            return Ok(Vec::new());
+            return Ok(Shares::default());
         }
         let text = self.read(&path)?;
         let shares: Shares = serde_json::from_str(&text).map_err(|err| {
             let message = format!("{} is not valid: {err}", path.display());
             Failure::failed("bad_state", message)
         })?;
-        Ok(shares.folders)
+        Ok(shares)
     }
 
-    pub fn save_shares(&self, folders: &[PathBuf]) -> Result<(), Failure> {
+    pub fn save_shares(&self, shares: &Shares) -> Result<(), Failure> {
         let path = self.path.join("shares.json");
-        let shares = Shares {
-            folders: folders.to_vec(),
-        };
-        let text = serde_json::to_string_pretty(&shares).expect("shares serialize") + "\n";
+        let text = serde_json::to_string_pretty(shares).expect("shares serialize") + "\n";
         write_private(&path, text.as_bytes()).map_err(|err| self.io_failure(&path, err))
     }
 

@@ -5,8 +5,11 @@
 //! cannot be lifted, not even by programs the worker starts: writes only
 //! inside the host's areas (and an `exec` call's own temp folder), never the
 //! host's state directory or the running latch. File and `exec` workers read
-//! the whole filesystem, as Codex CLI's do; Google workers read only their
-//! call's folder and the system locations programs need. A file worker gets no
+//! only the areas, an `exec` call's temp folder, the system's own files
+//! programs need, and the paths the owner opted in to with `--allow-read`
+//! (read-only); Google workers read only their call's folder and the system
+//! locations programs need. Credentials (`never_readable`) stay out of reach
+//! of every worker, even inside an area or an opt-in. A file worker gets no
 //! network; `exec` and Google workers may reach out to the network. Google
 //! can execute only its pinned binary; neither can send Apple Events. The
 //! kernel resolves every path (symlinks included) before checking it, so a
@@ -16,13 +19,19 @@
 //! Linux hides the state directory with an empty, read-only mount, even when
 //! an area contains it. Other systems refuse to run a worker at all.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What a worker may touch.
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub struct Policy {
     /// Directories the worker may read and write, with everything below them.
     pub areas: Vec<PathBuf>,
+    /// Files and folders a file or `exec` worker may also read, never write:
+    /// the owner's `--allow-read` opt-ins.
+    pub reads: Vec<PathBuf>,
+    /// Paths no worker may read or write, even inside an area or an opt-in
+    /// (`never_readable`). Those that do not exist are skipped.
+    pub hidden: Vec<PathBuf>,
     /// The host's state directory: denied on macOS, hidden on Linux, even in an area.
     pub state_dir: PathBuf,
     /// An `exec` worker: may start programs and use the outbound network.
@@ -36,6 +45,54 @@ pub struct Policy {
     /// Test only: make the OS refuse the sandbox, to show that a sandbox
     /// that cannot be applied fails the operation.
     pub break_for_test: bool,
+}
+
+/// Where a user keeps credentials and private data: ssh and gpg keys,
+/// keychains, browser profiles, mail, messages, calendars and contacts,
+/// macOS's privacy permissions (TCC), latch's own state, and cloud and
+/// developer tools' logins. No worker may read them, even when the owner
+/// shares or opts in to a folder that holds them (the sandbox denies them
+/// after everything it allows), and `--allow-read` of a path inside one is
+/// refused.
+pub fn never_readable(home: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = [
+        ".ssh",
+        ".gnupg",
+        "Library/Keychains",
+        "Library/Messages",
+        "Library/Mail",
+        "Library/Calendars",
+        "Library/Application Support/AddressBook",
+        "Library/Application Support/com.apple.TCC",
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Chromium",
+        "Library/Application Support/Firefox",
+        "Library/Application Support/BraveSoftware",
+        "Library/Application Support/Microsoft Edge",
+        "Library/Application Support/Arc",
+        "Library/Safari",
+        "Library/Cookies",
+        ".mozilla",
+        ".config/google-chrome",
+        ".config/chromium",
+        ".config/BraveSoftware",
+        ".config/microsoft-edge",
+        ".latch",
+        ".aws",
+        ".config/gcloud",
+        ".azure",
+        ".kube",
+        ".docker/config.json",
+        ".netrc",
+        ".npmrc",
+        ".git-credentials",
+        ".config/gh",
+    ]
+    .into_iter()
+    .map(|path| home.join(path))
+    .collect();
+    paths.push(PathBuf::from("/Library/Application Support/com.apple.TCC"));
+    paths
 }
 
 /// Confines the calling thread and any threads or processes it creates.
@@ -171,7 +228,7 @@ mod platform {
     }
 
     /// File and Google workers: deny by default, the system files programs
-    /// need to start, and the areas (file workers also read everything).
+    /// need to start, and the areas (file workers also read what `exec` does).
     fn narrow_rules(policy: &Policy) -> Result<Vec<String>, String> {
         let mut rules = vec![
             "(version 1)".to_string(),
@@ -182,10 +239,10 @@ mod platform {
                 .to_string(),
             "(allow sysctl-read)".to_string(),
         ];
-        // A file worker reads the whole filesystem, as `exec` does; it
-        // still writes only in the areas, and the state folder stays denied.
+        // A file worker reads what `exec` does; it still writes only in the
+        // areas, and the state folder stays denied.
         if policy.program.is_none() {
-            rules.push("(allow file-read*)".to_string());
+            rules.extend(read_rules(policy)?);
         }
         if let Some(program) = &policy.program {
             rules.push(format!(
@@ -226,12 +283,12 @@ mod platform {
     }
 
     /// `exec` workers follow Codex CLI's macOS sandbox (vendored, see
-    /// NOTICE): its base and network rules, reads of the whole filesystem
-    /// (what the user can read; macOS privacy protections still apply) and
-    /// preferences, and writes only in the areas and the call's temp folder.
+    /// NOTICE): its base and network rules and preferences, reads as in
+    /// `read_rules`, and writes only in the areas and the call's temp folder.
     /// Outbound network only, no Apple Events.
     fn exec_rules(policy: &Policy) -> Result<Vec<String>, String> {
-        let mut rules = vec![CODEX_BASE.to_string(), "(allow file-read*)".to_string()];
+        let mut rules = vec![CODEX_BASE.to_string()];
+        rules.extend(read_rules(policy)?);
         for root in policy.areas.iter().chain(&policy.tmpdir) {
             rules.push(format!(
                 "(allow file-read* file-write* (subpath {}))",
@@ -254,6 +311,51 @@ mod platform {
         ]);
         Ok(rules)
     }
+
+    /// What file and `exec` workers read besides the areas and the temp
+    /// folder: the system's own files and the owner's opt-ins. A file's
+    /// details (as `stat` gives them) only there and on the folders above
+    /// each place a worker may read, which looking a path up needs, and on
+    /// `/Applications`, which resolving Xcode's tools needs: so nothing
+    /// else, not even whether `~/.aws` exists, shows.
+    fn read_rules(policy: &Policy) -> Result<Vec<String>, String> {
+        let mut rules = vec![
+            SYSTEM_READS.to_string(),
+            "(allow file-read-metadata (literal \"/Applications\"))".to_string(),
+        ];
+        let roots = policy
+            .areas
+            .iter()
+            .chain(&policy.tmpdir)
+            .chain(&policy.reads);
+        for root in roots {
+            let real = root
+                .canonicalize()
+                .map_err(|err| format!("{}: {err}", root.display()))?;
+            for above in real.ancestors().skip(1) {
+                rules.push(format!(
+                    "(allow file-read-metadata (literal {}))",
+                    quoted(above)?
+                ));
+            }
+        }
+        for read in &policy.reads {
+            rules.push(format!("(allow file-read* (subpath {}))", quoted(read)?));
+        }
+        Ok(rules)
+    }
+
+    /// The system's own files: what programs, their libraries, the shell,
+    /// developer tools, Homebrew, name resolution and certificates need.
+    /// `/Users` and the like only as folders to pass through, not to list.
+    const SYSTEM_READS: &str = "(allow file-read*
+  (literal \"/\") (literal \"/Users\") (literal \"/private\") (literal \"/var\")
+  (literal \"/etc\") (literal \"/tmp\") (literal \"/opt\")
+  (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/System\")
+  (subpath \"/Library\") (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\")
+  (subpath \"/private/var/db/timezone\") (subpath \"/private/var/select\")
+  (literal \"/private/var/run/resolv.conf\") (subpath \"/dev\")
+  (subpath \"/opt/homebrew\") (subpath \"/Applications/Xcode.app\"))";
 
     /// Every embedded XPC service is denied but the speech synthesizer's.
     const SPEECH_XPC_EXCEPTION: &str = "(deny mach-lookup
@@ -282,11 +384,12 @@ mod platform {
     const CODEX_NETWORK: &str = include_str!("sandbox/codex/seatbelt_network_policy.sbpl");
     const CODEX_PREFERENCES: &str = include_str!("sandbox/codex/seatbelt_preferences_policy.sbpl");
 
-    /// For every kind, last: the state directory can be neither read nor
-    /// written, and the running latch never written. Seatbelt matches
-    /// paths, so renaming a folder above either would move it out of reach
-    /// of these rules; directories above them inside a writable folder, and
-    /// the writable folders themselves, cannot be renamed or removed.
+    /// For every kind, last: the state directory and the hidden paths can
+    /// be neither read nor written, and the running latch never written.
+    /// Seatbelt matches paths, so renaming a folder above any of them would
+    /// move it out of reach of these rules; directories above them inside a
+    /// writable folder, and the writable folders themselves, cannot be
+    /// renamed or removed.
     fn protections(policy: &Policy) -> Result<Vec<String>, String> {
         let real = |path: &Path| {
             path.canonicalize()
@@ -306,6 +409,15 @@ mod platform {
             ),
             format!("(deny file-write* (literal {}))", quoted(&latch)?),
         ];
+        let mut hidden = Vec::new();
+        for path in policy.hidden.iter().filter(|path| path.exists()) {
+            let path = real(path)?;
+            rules.push(format!(
+                "(deny file-read* file-write* (subpath {}))",
+                quoted(&path)?
+            ));
+            hidden.push(path);
+        }
         // The one part of the state folder a worker may see: a Google
         // worker reads, and runs, its own plugin's folder (gog's version
         // folder), never writes it.
@@ -319,7 +431,7 @@ mod platform {
             ));
         }
         let mut anchors: Vec<&Path> = writable.iter().map(PathBuf::as_path).collect();
-        for protected in [&state, &latch] {
+        for protected in [&state, &latch].into_iter().chain(&hidden) {
             for above in protected.ancestors().skip(1) {
                 if writable.iter().any(|root| above.starts_with(root)) {
                     anchors.push(above);
@@ -383,6 +495,8 @@ mod google_tests {
             let inside_state = call.starts_with(root.join("state"));
             let confined = confine(&Policy {
                 areas: vec![call.clone()],
+                reads: vec![],
+                hidden: vec![],
                 state_dir: root.join("state"),
                 exec: false,
                 tmpdir: None,
@@ -460,6 +574,8 @@ mod google_tests {
             let gog = root.join("state/plugins/gog/0.1/gog");
             confine(&Policy {
                 areas: vec![root.join("private/call")],
+                reads: vec![],
+                hidden: vec![],
                 state_dir: root.join("state"),
                 exec: mode == "exec",
                 tmpdir: (mode == "exec").then(|| root.join("private/call")),

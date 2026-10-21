@@ -25,9 +25,25 @@ accounts on a machine its owner trusts, over Plow's directory.
 
 - `latch login` names a machine after its hostname; `--name` picks another.
   If another of your machines holds the name, the login stops and says so.
+- `latch serve ~/work` lets callers' programs and file copies read and
+  write `~/work`, and read the system's own files (programs, libraries,
+  developer tools, Homebrew, certificates); nothing else of the machine.
+  `--allow-read PATH` (repeatable) adds a file or folder they may read but
+  never write, e.g. `--allow-read ~/.rustup --allow-read ~/.cargo` for a
+  Rust toolchain kept in the home folder.
+- Credentials and private data are never readable, even inside a shared or
+  `--allow-read` folder: `~/.ssh`, `~/.gnupg`, keychains, browser profiles,
+  Mail, Messages, Calendars, Contacts, macOS's privacy settings (TCC),
+  latch's state, `~/.aws`, `~/.config/gcloud`, `~/.azure`, `~/.kube`,
+  `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials` and
+  `~/.config/gh`. An `--allow-read` inside one of them is refused.
+- The home folder, its `Library` and the folders above them (`/Users`, `/`)
+  can be neither shared nor named with `--allow-read`: name the projects in
+  it instead.
+  `latch serve --help` has the whole list of what callers can reach.
 - `latch serve ~/work --deny-exec` refuses `exec` to every agent;
   `--deny-exec=AGENT_UID` (repeatable) to one agent, by its Plow uid. Your
   own machines are unaffected.
-- `latch shares set ~/work` saves the folders a `latch serve` named none
-  shares. `latch status --local`, `latch events --follow` and
+- `latch shares set ~/work [--allow-read PATH]` saves the folders, and the
+  read-only paths, a `latch serve` named none shares. `latch status --local`, `latch events --follow` and
   `latch login --events` are for an app: see [latch/APP.md](latch/APP.md).

@@ -1354,7 +1354,7 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
     let none = latch(&host, &["shares"], &[]);
     assert_eq!(
         serde_json::from_slice::<Value>(&none.stdout).unwrap(),
-        json!({"shares": []})
+        json!({"shares": [], "allow_read": []})
     );
     let missing = latch(
         &host,
@@ -1362,14 +1362,39 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
         &[],
     );
     assert_eq!(missing.status.code(), Some(2), "{missing:?}");
-    let set = latch(&host, &["shares", "set", saved.to_str().unwrap()], &[]);
+    // A path inside credentials, or the home folder that holds its
+    // Library, can never be opted in to; another folder can.
+    let home = dir.path().join("home");
+    let refs = dir.path().join("refs");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::create_dir_all(&refs).unwrap();
+    fs::write(home.join(".ssh/config"), "Host *").unwrap();
+    let opt_in = |path: &Path| {
+        let args = ["shares", "set", saved.to_str().unwrap(), "--allow-read"];
+        latch(
+            &host,
+            &[&args[..], &[path.to_str().unwrap()]].concat(),
+            &[("HOME", &home)],
+        )
+    };
+    let refused = opt_in(&home.join(".ssh/config"));
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("never_readable"));
+    let refused = opt_in(&home);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Library"));
+    let set = opt_in(&refs);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
     let real = saved.canonicalize().unwrap();
+    let refs = refs.canonicalize().unwrap();
     let shown = latch(&host, &["shares"], &[]);
     assert_eq!(
         serde_json::from_slice::<Value>(&shown.stdout).unwrap(),
-        json!({"shares": [real]})
+        json!({"shares": [real], "allow_read": [refs]})
     );
+    let local = latch(&host, &["status", "--local"], &[]);
+    let local = serde_json::from_slice::<Value>(&local.stdout).unwrap();
+    assert_eq!(local["allow_read"], json!([refs]));
 
     let sharing = |lines: &[String]| {
         lines
@@ -1380,15 +1405,24 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
             })
             .unwrap()
     };
+    let reading = |lines: &[String]| {
+        lines
+            .iter()
+            .find_map(|line| line.split_once("also readable, never written: "))
+            .map(|(_, rest)| rest.to_string())
+    };
     let (serve, lines) = serving_folders(&host, &[], &relay);
     drop(serve);
     assert_eq!(sharing(&lines), real.display().to_string());
+    assert_eq!(reading(&lines), Some(refs.display().to_string()));
+    // Named folders win, and bring no saved opt-ins with them.
     let (serve, lines) = serving_folders(&host, &[&named], &relay);
     drop(serve);
     assert_eq!(
         sharing(&lines),
         named.canonicalize().unwrap().display().to_string()
     );
+    assert_eq!(reading(&lines), None);
 }
 
 #[test]
@@ -1654,6 +1688,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
         json!({"running": false, "ready": false, "state": "stopped", "pid": null})
     );
     assert_eq!(before["shares"], json!([]));
+    assert_eq!(before["allow_read"], json!([]));
     assert_eq!(before["last_error"], Value::Null);
 
     let host = owner_host_on(&plow, dir.path());

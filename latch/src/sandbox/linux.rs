@@ -52,18 +52,22 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         return Err("forced sandbox-apply failure".into());
     }
     let program = std::env::current_exe()?.canonicalize()?;
-    // A shared `/` is the whole view, writable; `exec` and file workers
-    // read the whole filesystem, as Codex CLI's do (Google workers do not).
-    // Either binds `/` first, so the mounts below (a minimal /dev, a private
-    // /tmp, the areas) go on top.
+    // A shared `/` is the whole view, writable. Otherwise `exec` and file
+    // workers see the system's own files and the owner's opt-ins,
+    // read-only (Google workers get less, in `mounts`). Either comes first,
+    // so the mounts below (a minimal /dev, a private /tmp, the areas) go on
+    // top.
     let root_shared = policy.areas.iter().any(|area| area == Path::new("/"));
-    let reads_everything = policy.program.is_none();
-    let root_bound = root_shared || reads_everything;
     let mut command = Command::new(bubblewrap()?);
     if root_shared {
         command.args(["--bind", "/", "/"]);
-    } else if reads_everything {
-        command.args(["--ro-bind", "/", "/"]);
+    } else if policy.program.is_none() {
+        for path in SYSTEM.iter().map(Path::new).filter(|path| path.exists()) {
+            mount(&mut command, path, true)?;
+        }
+        for read in &policy.reads {
+            mount(&mut command, read, true)?;
+        }
     }
     command.args([
         "--unshare-user",
@@ -86,14 +90,40 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         // The program's TMPDIR is the private /tmp; the host's folder is
         // not in its view.
         command.args(["--setenv", "TMPDIR", "/tmp"]);
-        // With `/` bound, /run is the host's, where bwrap cannot create the
-        // status file; a private /run gives it somewhere to go.
+        // /run is missing, or with a shared `/` the host's, where bwrap
+        // cannot create the status file; a private /run gives it somewhere
+        // to go.
         command.args(["--tmpfs", "/run"]);
         command.arg("--bind").arg(file.path()).arg(STATUS);
         Some(file)
     } else {
         None
     };
+    // Credentials stay out of view even inside an area or an opt-in: an
+    // empty, read-only folder or an empty file in their place.
+    let visible: Vec<PathBuf> = policy
+        .areas
+        .iter()
+        .chain(&policy.reads)
+        .map(|root| root.canonicalize())
+        .collect::<Result<_, _>>()?;
+    for hidden in &policy.hidden {
+        let Ok(real) = hidden.canonicalize() else {
+            continue;
+        };
+        if !visible.iter().any(|root| real.starts_with(root)) {
+            continue;
+        }
+        if real.is_dir() {
+            command
+                .arg("--tmpfs")
+                .arg(&real)
+                .arg("--remount-ro")
+                .arg(&real);
+        } else {
+            command.arg("--ro-bind").arg("/dev/null").arg(&real);
+        }
+    }
     // Hide state last, including any area or runtime mount that contains it.
     // A Google worker gets its own plugin's folder back, read-only: the one
     // part of the state folder a worker may see.
@@ -108,7 +138,7 @@ fn launch(policy: &Policy) -> Result<(), Error> {
     }
     command.arg("--remount-ro").arg(&state);
     // Otherwise `/` is only the empty frame the mounts sit in: read-only.
-    if !root_bound {
+    if !root_shared {
         command.args(["--remount-ro", "/"]);
     }
     command
@@ -122,6 +152,13 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         None => Err(command.exec().into()),
     }
 }
+
+/// What `exec` and file workers read of the system, read-only: programs,
+/// libraries, configuration (name resolution, certificates, the password
+/// database) and what package managers install.
+const SYSTEM: &[&str] = &[
+    "/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc", "/opt", "/var/lib",
+];
 
 #[allow(dead_code)] // the browser worker confines itself with it
 pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
@@ -214,7 +251,7 @@ fn browser_command(view: &BrowserView, program: &Path) -> Result<Command, Error>
 
 fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), Error> {
     let mut runtime = if policy.exec {
-        // The whole filesystem is already there, read-only (see `launch`).
+        // The system's files are already there, read-only (see `launch`).
         command.args([
             "--ro-bind",
             "/proc",
@@ -226,7 +263,7 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
         ]);
         vec![]
     } else if policy.program.is_none() {
-        // A file worker sees the whole filesystem too, but no processes.
+        // A file worker sees the system's files too, but no processes.
         command.args(["--tmpfs", "/proc"]);
         vec![]
     } else {
@@ -241,7 +278,7 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
     };
     // Exec reuses Docker's masked procfs read-only (container PID metadata).
     // File and Google workers do not need procfs and get none (a file
-    // worker's whole-filesystem view has an empty /proc).
+    // worker's has an empty /proc).
     if !policy.exec && policy.program.is_some() {
         runtime.extend([
             "/etc/resolv.conf",
@@ -495,6 +532,8 @@ mod tests {
             let mode = std::env::var("LATCH_VIEW_MODE").unwrap();
             confine(&Policy {
                 areas: vec![root.join("area")],
+                reads: vec![],
+                hidden: vec![],
                 state_dir: root.join("state"),
                 exec: mode == "exec",
                 tmpdir: (mode == "exec").then(|| root.join("outside")),
@@ -506,11 +545,8 @@ mod tests {
             std::thread::spawn(move || {
                 assert_eq!(fs::read(root.join("area/inside")).unwrap(), b"inside");
                 assert!(fs::read(root.join("state/secret")).is_err());
-                // File and exec workers read the whole filesystem; Google's do not.
-                assert_eq!(
-                    fs::read(root.join("outside/other")).is_ok(),
-                    mode != "google"
-                );
+                // Nothing outside the area, for any kind of worker.
+                assert!(fs::read(root.join("outside/other")).is_err());
                 let connection = TcpStream::connect(std::env::var("LATCH_VIEW_ADDR").unwrap());
                 if mode == "file" {
                     assert_eq!(

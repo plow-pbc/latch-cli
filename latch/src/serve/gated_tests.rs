@@ -102,6 +102,8 @@ async fn start_with(
         dashboard: None,
         workers: WorkerSetup {
             areas: vec![area.clone()],
+            reads: vec![],
+            hidden: vec![],
             state_dir: state.clone(),
             program: latch_binary(),
         },
