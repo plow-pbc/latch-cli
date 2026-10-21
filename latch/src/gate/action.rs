@@ -1,4 +1,4 @@
-//! What the judge is shown of an agent's exec, file or Google operation,
+//! What the judge is shown of a caller's exec, file or Google operation,
 //! and what the audit keeps of one the judge refused.
 
 use std::path::Path;
@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::failure::Failure;
 
-/// The most stdin an agent's exec may bring: the judge reads all of it,
+/// The most stdin an exec may bring: the judge reads all of it,
 /// and the whole judgment must fit Plow's decision route (60 KiB).
 pub const JUDGED_STDIN: usize = 16 * 1024;
 
@@ -144,7 +144,7 @@ fn judged_stdin(stdin: &Value) -> Result<Option<String>, Failure> {
     }
     let refused = |why: &str| {
         let message = format!(
-            "this agent's exec stdin is {why}, and the gatekeeper must read all of it: \
+            "this exec's stdin is {why}, and the gatekeeper must read all of it: \
              send at most {} KiB of UTF-8 text, or put the input in a file and name it",
             JUDGED_STDIN / 1024
         );
