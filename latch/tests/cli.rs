@@ -2554,7 +2554,7 @@ fn local_socket_model_only_outage_refuses_with_plow_still_available() {
 
 #[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
 #[test]
-fn local_socket_browser_open_observe_close_uses_one_host_and_owner_judgments() {
+fn local_socket_browser_open_observe_close_uses_one_host_and_owner_audit() {
     let plow = LivePlow::start();
     let (_runtime, relay) = local_relay();
     let dir = test_dir();
@@ -2611,12 +2611,19 @@ fn local_socket_browser_open_observe_close_uses_one_host_and_owner_judgments() {
         .collect();
     assert_eq!(records.len(), 3);
     for record in records {
+        assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
+        assert_eq!(record["outcome"], "ok", "{record}");
         let gate = &record["args"]["gate"];
-        assert_eq!(gate["caller"], "owner_on_host", "{record}");
-        assert_eq!(gate["verdict"], "allow", "{record}");
+        if record["args"]["command"] == "open" {
+            assert_eq!(gate["caller"], "owner_on_host", "{record}");
+            assert_eq!(gate["verdict"], "allow", "{record}");
+        } else {
+            // Reads and close retain the browser's session authorization.
+            assert!(gate.is_null(), "{record}");
+        }
         println!(
-            "browser audit: command={} caller={} verdict={}",
-            record["args"]["command"], gate["caller"], gate["verdict"]
+            "browser audit: command={} caller={} judgment={}",
+            record["args"]["command"], record["gate"]["caller"], gate
         );
     }
 }
