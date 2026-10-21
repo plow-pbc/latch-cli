@@ -9,8 +9,8 @@ on a machine its owner trusts, over Plow's directory.
   Plow agent's own credential (`$PLOW_AGENT_TOKEN`, the token file, or
   `$PLOW_API_BASE`'s proxy) and registers under the agent's name in Plow.
   Never use a device login copied from one of the owner's machines: a device
-  login is the owner acting, and hosts never check it against what the owner
-  asked for.
+  login is the owner acting, and hosts judge it as the owner's own request,
+  not against what the owner asked the agent for.
 - **Denied, ask, retry.** A host's gatekeeper lets an agent do what the owner
   asked for, in their Plow chat with that agent or in the host's rules. A
   refusal is exit 4, `gatekeeper_denied`:

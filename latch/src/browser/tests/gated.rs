@@ -273,8 +273,10 @@ impl Host {
     fn gate(&self) -> Gate<'_> {
         Gate {
             keeper: &self.keeper,
-            agent: AGENT,
-            chat: None,
+            caller: crate::gate::Caller::Agent {
+                uid: AGENT,
+                chat: None,
+            },
         }
     }
 
