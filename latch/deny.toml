@@ -20,14 +20,7 @@ targets = [
 [advisories]
 unmaintained = "workspace"
 yanked = "deny"
-ignore = [
-    # zip's extraction advisories: latch only reads 1PUX's export.data into
-    # memory (vault/import.rs) and never extracts an archive to disk. Fixed in
-    # zip 9.
-    { id = "RUSTSEC-2026-0367", reason = "latch never extracts a zip to disk" },
-    { id = "RUSTSEC-2026-0368", reason = "latch never extracts a zip to disk" },
-    { id = "RUSTSEC-2026-0369", reason = "latch never extracts a zip to disk" },
-]
+ignore = []
 
 # The licenses found in the graph, all permissive except MPL-2.0 (a file-level
 # copyleft, from attohttpc under iroh's port mapping), which latch ships

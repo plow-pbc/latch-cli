@@ -29,7 +29,7 @@ only. CI runs it on every dependency change and daily.
 | `psl` | The vault: registrable domains (the public-suffix list, private suffixes included) | 36M / 7.9M | 38 | addr-rs org | 2.1.239 (2026-10-03); pinned in Cargo.lock, since each release is a new list | MIT/Apache-2.0 |
 | `totp-rs` (std) | The vault: authenticator codes (checked against RFC 6238's vectors) | 11M / 3.1M | 277 | constantoine | 6.0.0 (2026-08-06) | MIT |
 | `url` | The vault: reading sites and origins | 969M / 219M | 1.6k | servo org | 2.5.8 (2026-01-05) | MIT/Apache-2.0 |
-| `zip` (deflate) | The vault: reading 1Password's 1PUX exports | 307M / 87M | 360 | zip-rs org | 8.6.0 (2026-04-25) | MIT |
+| `zip` (deflate) | The vault: reading 1Password's 1PUX exports | 307M / 87M | 360 | zip-rs org | 9.0.5 (2026-10-17) | MIT |
 | `qrcode` (no default features) | `latch vault link`'s QR code in the terminal | 23M / 6.0M | 563 | kennytm | 0.14.1 (2024-07-05); the last release, small and finished rather than abandoned (repository active 2025-08) | MIT/Apache-2.0 |
 
 TLS comes with reqwest and iroh: `rustls` (1,003M / 232M downloads, 7.7k
