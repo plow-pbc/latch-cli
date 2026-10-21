@@ -25,6 +25,8 @@ use iroh::endpoint::{Connection, Incoming, RecvStream, SendStream, VarInt, prese
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
 use tokio::signal::unix::{Signal, SignalKind, signal};
+use tracing::Instrument;
+use tracing::field::{Empty, display};
 
 use crate::audit::{self, AuditLog, Record};
 use crate::credential;
@@ -319,7 +321,8 @@ async fn run_host(
         tokio::select! {
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => {
-                    tokio::spawn(serve_connection(host.clone(), incoming));
+                    let connection = tracing::info_span!("connection", caller = Empty);
+                    tokio::spawn(serve_connection(host.clone(), incoming).instrument(connection));
                 }
                 None => break,
             },
@@ -534,6 +537,7 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
     };
     // The caller's key, proven by the connection's own handshake.
     let caller = connection.remote_id().to_string();
+    tracing::Span::current().record("caller", display(&caller));
     if connection.alpn() == link::ALPN {
         return serve_phone(&host, &caller, connection).await;
     }
@@ -569,7 +573,10 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
 
     // One stream per operation, until the client closes the connection.
     while let Ok((send, recv)) = connection.accept_bi().await {
-        serve_operation(&host, &caller, send, recv).await;
+        let operation = tracing::info_span!("operation", op = Empty);
+        serve_operation(&host, &caller, send, recv)
+            .instrument(operation)
+            .await;
         log(&format!(
             "paths to {caller}: {}",
             describe_paths(&connection)
@@ -586,6 +593,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
         return answer(&mut send, &response).await;
     };
     let op = request.op.as_str();
+    tracing::Span::current().record("op", display(op));
     let started = Instant::now();
 
     // Second check: before the operation, in case the caller was revoked

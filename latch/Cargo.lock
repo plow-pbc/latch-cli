@@ -1938,6 +1938,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "totp-rs",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "zip",
 ]
