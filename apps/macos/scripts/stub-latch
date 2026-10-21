@@ -6,8 +6,9 @@
 #   stub-latch --state-dir D emit activity OP DECISION
 #   stub-latch --state-dir D emit logout
 # `login --events` prints a code, then verifies after STUB_LOGIN_SECONDS (3).
-# `serve` (no folders) holds D/stub-serve.pid as its lock, reports starting
-# then serving, and stopped when it ends; a second serve on D refuses.
+# `serve` (no folders) holds D/serve.lock as latch does, naming itself in it,
+# reports starting then serving, and stopped when it ends; a second serve on
+# D refuses as latch does: `already_serving`, exit 1.
 # appends an event to D/stub-events.ndjson; `events --follow` prints a
 # snapshot, then follows that file (tail -f, blocked on kqueue when idle).
 set -eu
@@ -18,7 +19,10 @@ mkdir -p "$state"
 touch "$events"
 
 lines() { wc -l < "$events" | tr -d ' '; }
-serve_pid() { local p; p=$(cat "$state/stub-serve.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
+serve_pid() {
+    local p
+    p=$(sed -n 's/^latch serve (pid \([0-9]*\),.*/\1/p' "$state/serve.lock" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo "$p"
+}
 emit_host() { jq -cn --arg s "$1" --arg c "$(($(lines) + 1))" '{type:"host",cursor:$c,state:$s}' >> "$events"; }
 host_state() { grep '"type":"host"' "$events" | tail -n 1 | jq -r '.state // "stopped"' || true; }
 
@@ -27,12 +31,13 @@ case "$1 ${2:-}" in
     emit_host "$3"
     ;;
 "serve ")
-    if p=$(serve_pid); then
-        jq -cn --arg p "$p" '{error:{code:"serve_running",message:("a latch serve is already running on this state (pid " + $p + ")")}}' >&2
-        exit 3
+    if serve_pid > /dev/null; then
+        jq -cn --arg d "$state" --arg h "$(head -n 1 "$state/serve.lock")" \
+            '{error:{code:"already_serving",message:($d + " is already served by " + $h + "; stop that `latch serve` first")}}' >&2
+        exit 1
     fi
-    echo $$ > "$state/stub-serve.pid"
-    trap 'kill $nap 2>/dev/null; emit_host stopped; rm -f "$state/stub-serve.pid"; exit 0' TERM INT
+    echo "latch serve (pid $$, $0)" > "$state/serve.lock"
+    trap 'kill $nap 2>/dev/null; emit_host stopped; : > "$state/serve.lock"; exit 0' TERM INT
     emit_host starting
     sleep 1
     emit_host serving

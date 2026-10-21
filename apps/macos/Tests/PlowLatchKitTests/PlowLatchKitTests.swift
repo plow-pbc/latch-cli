@@ -103,7 +103,7 @@ private func emit(_ state: String, _ args: String...) throws {
     #!/bin/sh
     echo 'starting' >&2
     echo '{"error":{"code":"not_logged_in","message":"not logged in: run `latch login`"}}' >&2
-    exit 3
+    exit 2
     """.write(to: refusing, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: refusing.path)
     let client = LiveLatchClient(executable: refusing, stateDir: nil)
@@ -140,4 +140,22 @@ private func emit(_ state: String, _ args: String...) throws {
     #expect(try await client.setShares(["/tmp/a b", "/tmp/c"]).shares == ["/tmp/a b", "/tmp/c"])
     let status = try await client.localStatus()
     #expect(status.peer?.name == "stub-host" && status.shares == ["/tmp/a b", "/tmp/c"])
+}
+
+@Test func aSecondServeIsRefusedAsLatchRefusesIt() async throws {
+    let state = try stubState()
+    let first = try Process.run(stub, arguments: ["--state-dir", state, "serve"])
+    defer { first.terminate() }
+    try await Task.sleep(for: .milliseconds(300))
+    let err = Pipe()
+    let second = Process()
+    second.executableURL = stub
+    second.arguments = ["--state-dir", state, "serve"]
+    second.standardError = err
+    try second.run()
+    second.waitUntilExit()
+    #expect(second.terminationStatus == 1)
+    let line = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    #expect(line.contains(#""code":"already_serving""#))
+    #expect(line.contains("is already served by latch serve (pid \(first.processIdentifier),"))
 }
