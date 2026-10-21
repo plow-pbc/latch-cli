@@ -134,19 +134,16 @@ impl Provider for Told {
                 .expect("the model was told"))(state);
             for question in questions {
                 let Kind::Choose(options) = &question.kind else {
-                    // The risk of the pass's own click: what the risk
-                    // question answers of that click. An Enter's is left
-                    // to its own call.
-                    let target = choice.target.unwrap_or_default();
+                    // The risk of the pass's own click, as the risk
+                    // question answers it of that click; of an Enter, by
+                    // whether the page shows such a button.
+                    let consequential = |text: &str| {
+                        text.contains("Place order") || text.contains("Delete my account")
+                    };
                     let yes = match question.id.as_str() {
-                        "risky_click"
-                            if target.contains("Place order")
-                                || target.contains("Delete my account") =>
-                        {
-                            0.95
-                        }
-                        "risky_click" => 0.03,
-                        _ => 0.5,
+                        "risky_click" if consequential(choice.target.unwrap_or_default()) => 0.95,
+                        "risky_enter" if consequential(&state["page"].to_string()) => 0.95,
+                        _ => 0.03,
                     };
                     answers.insert(question.id.clone(), Answer::Yes(yes));
                     continue;
@@ -1387,5 +1384,169 @@ async fn a_plan_stopped_for_the_owner_goes_on_after_the_handoff() {
     let went = h.send(plan(&steps, &site, &[], &[])).await.unwrap();
     println!("after the handoff: {}", went["status"]);
     assert_eq!(went["status"], "reached", "{went:#}");
+    h.close().await;
+}
+
+/// The stand-in model, slow to answer one pass (the `at`-th decision): as
+/// it answers, the test page's button is renamed, so the page a review
+/// reads after the pass is not the page the pass judged.
+struct Renaming {
+    told: Arc<Told>,
+    at: usize,
+    decisions: Mutex<usize>,
+    renamed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Provider for Renaming {
+    fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+        let rename = questions.iter().any(|q| q.id == "operation") && {
+            let mut decisions = self.decisions.lock().unwrap();
+            *decisions += 1;
+            *decisions == self.at
+        };
+        let answered = self.told.ask(state, questions);
+        Box::pin(async move {
+            if rename {
+                self.renamed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                // The page reads its button's name every 50 ms.
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            }
+            answered.await
+        })
+    }
+}
+
+/// A checkout form whose submit button reads "Continue" until the test
+/// renames it "Place order"; anything sent goes to /sent.
+fn serve_renaming(
+    renamed: Arc<std::sync::atomic::AtomicBool>,
+) -> (String, Arc<Mutex<Vec<String>>>) {
+    use std::io::{Read, Write};
+    let page = br#"<!doctype html><title>Review your order</title>
+<h1>Review your order</h1><p>Greek Salad, $11.99</p>
+<form action="sent"><p><label>Note <input name="note"></label></p>
+<p><button id="go" type="submit">Continue</button></p></form>
+<script>setInterval(async () => {
+  const name = await (await fetch('label')).text();
+  if (document.getElementById('go').textContent !== name) document.getElementById('go').textContent = name;
+}, 50);</script>"#;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let log = sent.clone();
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let Ok(mut socket) = socket else { continue };
+            let mut request = [0u8; 4096];
+            let n = socket.read(&mut request).unwrap_or(0);
+            let line = String::from_utf8_lossy(&request[..n]).to_string();
+            let path = line.split(' ').nth(1).unwrap_or("/").to_string();
+            let body: Vec<u8> = if path.starts_with("/label") {
+                let name = if renamed.load(std::sync::atomic::Ordering::SeqCst) {
+                    "Place order"
+                } else {
+                    "Continue"
+                };
+                name.as_bytes().to_vec()
+            } else if path.starts_with("/sent") {
+                log.lock().unwrap().push(path.clone());
+                b"<!doctype html><title>Order placed</title><h1>Order placed</h1>".to_vec()
+            } else {
+                page.to_vec()
+            };
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = socket.write_all(head.as_bytes());
+            let _ = socket.write_all(&body);
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), sent)
+}
+
+/// A pass answers the risk of a click on "Continue", low; as it answers,
+/// the button becomes "Place order". The review finds a button the pass
+/// never judged, so it gets its own risk call, and a confirmation.
+#[tokio::test]
+async fn a_button_renamed_during_its_pass_gets_its_own_risk_call() {
+    renamed_during_the_pass(false).await;
+}
+
+/// The same for an Enter in the form's field: the pass judged an Enter that
+/// submits "Continue"; the review finds it submits "Place order".
+#[tokio::test]
+async fn an_enter_whose_submit_is_renamed_during_its_pass_gets_its_own_risk_call() {
+    renamed_during_the_pass(true).await;
+}
+
+async fn renamed_during_the_pass(enter: bool) {
+    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let renamed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (site, sent) = serve_renaming(renamed.clone());
+    let told = Arc::new(Told::default());
+    let provider = Arc::new(Renaming {
+        told: told.clone(),
+        // The click's pass is the first; the Enter's, after the typing pass.
+        at: if enter { 2 } else { 1 },
+        decisions: Mutex::new(0),
+        renamed: renamed.clone(),
+    });
+    let mut h = Harness::start(&state, Some(provider)).await;
+    h.open(&format!("{site}/review.html")).await;
+    let step = if enter {
+        told.tell(|s| {
+            if title(s).starts_with("Order placed") {
+                complete("[title] Order placed", "done")
+            } else if s["actions_in_this_step"]
+                .as_array()
+                .is_some_and(|a| a.is_empty())
+            {
+                choose("type", Some("Note"))
+            } else {
+                choose("press_enter", None)
+            }
+        });
+        r#"write the note "leave it at the door" and send the form"#
+    } else {
+        told.tell(|s| {
+            if title(s).starts_with("Order placed") {
+                complete("[title] Order placed", "done")
+            } else {
+                choose("click", Some("Continue"))
+            }
+        });
+        "continue to the next page"
+    };
+    let sent_plan = h.send(plan(&[step], &site, &[], &[])).await;
+    if let Ok(went) = &sent_plan {
+        panic!("the plan went on to {}", went["page"]["title"]);
+    }
+    let (code, details) = stop(sent_plan);
+    println!("renamed during the pass: {code} {}", details["stop"]);
+    assert_eq!(code, "confirm_needed", "{details:#}");
+    let name = if enter {
+        &details["stop"]["confirmation"]["acts_on"]["name"]
+    } else {
+        &details["stop"]["confirmation"]["target"]["name"]
+    };
+    assert_eq!(name, "Place order");
+    assert!(sent.lock().unwrap().is_empty(), "the form was sent");
+    let audit = h.audits.last().unwrap();
+    let refused = audit["step_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["dispatch"] == "refused")
+        .unwrap();
+    assert_eq!(
+        (
+            &refused["risk_pass_p"],
+            &refused["risk_from"],
+            &refused["pass_context"]
+        ),
+        (&json!(0.03), &json!("own_call"), &json!("changed"))
+    );
     h.close().await;
 }

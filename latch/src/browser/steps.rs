@@ -94,6 +94,30 @@ pub(super) fn fill_to_confirm(entry: &Entry, id: &str) -> Option<Value> {
         })
 }
 
+/// A risk the pass that chose a click or Enter answered, and what the pass
+/// saw it act on: the element clicked (role, name and row), or what Enter
+/// submits (its form's submit control, else the form).
+pub(super) struct Passed {
+    pub(super) p: f64,
+    pub(super) seen: Value,
+}
+
+impl Passed {
+    /// Whether a fresh review still finds what the pass saw.
+    fn holds(&self, reviewed: &Value, enter: bool) -> bool {
+        let now = if enter {
+            &reviewed["acts_on"]
+        } else {
+            &reviewed["element"]
+        };
+        !self.seen.is_null()
+            && !now.is_null()
+            && ["role", "name", "row"]
+                .iter()
+                .all(|key| now[*key] == self.seen[*key])
+    }
+}
+
 /// Waits until `deadline` for `condition`, checking it a few times a
 /// second: between checks the browser is free for other sessions' calls.
 /// A check can also end the wait early: the condition's element is from a
@@ -730,22 +754,28 @@ impl Run<'_> {
     /// confirmation in its place.
     /// The risk decision on a click or Enter, then the action or its
     /// confirmation. `passed` is the risk the pass that chose the action
-    /// already answered, low enough to stand for the decision: then no
-    /// call of its own is made.
+    /// already answered, low enough to stand for the decision, with what
+    /// the pass saw the action act on: while the review finds that
+    /// unchanged, no call of its own is made.
     async fn risky(
         &mut self,
         n: usize,
         literal: &Literal,
         enter: bool,
-        passed: Option<f64>,
+        passed: Option<Passed>,
     ) -> Result<(), Failure> {
         let reviewed = self.review(literal, enter).await?;
         if !self.model.is_on() {
             return Err(model_unavailable(&self.model, "a click or Enter"));
         }
         let what = action_line(&reviewed, enter, literal.op == Op::Type);
-        let p = match passed {
-            Some(p) => p,
+        let changed = passed.as_ref().is_some_and(|p| !p.holds(&reviewed, enter));
+        if changed && let Some(choice) = self.choice.as_mut() {
+            choice["risk_from"] = json!("own_call");
+            choice["pass_context"] = json!("changed");
+        }
+        let p = match passed.filter(|_| !changed) {
+            Some(passed) => passed.p,
             None => {
                 let lines = strings(&reviewed["lines"]);
                 let judged = self

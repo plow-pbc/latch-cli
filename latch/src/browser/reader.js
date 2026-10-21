@@ -371,20 +371,23 @@
     return uids.get(el);
   };
   const SUBMITS = 'button:not([type]), button[type=submit], input[type=submit], input[type=image]';
+  // What Enter in `el` acts on: its form's submit control, else the form;
+  // and the element whose surroundings are read for it.
+  const enterOn = (el) => {
+    const form = el.form || el.closest('form');
+    const submit = form && [...form.querySelectorAll(SUBMITS)].find(rendered);
+    const actsOn = submit ? { role: role(submit), name: name(submit) }
+      : form ? { role: 'form', name: clean(form.getAttribute('aria-label') || form.getAttribute('name') || '') }
+        : null;
+    return { actsOn, around: submit || form || el };
+  };
   const review = (snap, index, enter) => {
     const el = element(snap, index);
     if (!el) return null;
     const { role: r, name: n, row } = describe(el);
     let actsOn = null;
     let around = el;
-    if (enter) {
-      const form = el.form || el.closest('form');
-      const submit = form && [...form.querySelectorAll(SUBMITS)].find(rendered);
-      actsOn = submit ? { role: role(submit), name: name(submit) }
-        : form ? { role: 'form', name: clean(form.getAttribute('aria-label') || form.getAttribute('name') || '') }
-          : null;
-      around = submit || form || el;
-    }
+    if (enter) ({ actsOn, around } = enterOn(el));
     const region = around.closest('dialog, [role=dialog], section, article, main')
       || around.closest('form') || document.body;
     const lines = (region ? region.innerText : '').split('\n').map((line) => clean(line, 160)).filter(Boolean).slice(0, 20);
@@ -489,6 +492,9 @@
     if (el.localName === 'select') item.options = [...el.options].slice(0, 50).map((o) => clean(o.label, 80));
     const form = el.form || el.closest('form');
     if (form) item.form = [...document.forms].indexOf(form);
+    // What Enter in a field would act on, as the pass saw it: an Enter's
+    // risk the pass answered stands only while a review still finds it.
+    if (item.kind === 'text') item.enter = enterOn(el).actsOn;
     if (covered(el)) item.covered = true;
     return item;
   });

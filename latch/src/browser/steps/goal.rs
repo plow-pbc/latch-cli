@@ -832,13 +832,35 @@ impl Run<'_> {
 
             // 11. The action, judged for risk where it clicks or presses Enter.
             let mut choice = choice_record(&decision, pick.as_ref());
-            let passed = passed_risk(&decision, &op, pick.as_ref());
+            let passed = passed_risk(&decision, &op, pick.as_ref()).map(|p| {
+                // What the pass saw its action act on, for the review to
+                // find again.
+                let seen = match (op.as_str(), chosen, &typed_into) {
+                    ("click", Some(t), _) => {
+                        let e = element(view, &t.at);
+                        json!({"role": e["role"], "name": e["name"], "row": e["row"]})
+                    }
+                    ("press_enter", _, Some(typed)) => view["elements"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|e| {
+                            e["kind"] == "text"
+                                && form_key(view, e["ref"].as_str().unwrap_or_default())
+                                    == typed.form
+                        })
+                        .map(|e| e["enter"].clone())
+                        .unwrap_or_default(),
+                    _ => Value::Null,
+                };
+                Passed { p, seen }
+            });
             if let Some(p) = match op.as_str() {
                 "click" => decision.risky_click,
                 "press_enter" => decision.risky_enter,
                 _ => None,
             } {
-                choice["risk_pass_p"] = json!(crate::browser::model::round(p));
+                choice["risk_pass_p"] = json!(model::round(p));
                 choice["risk_from"] = json!(if passed.is_some() { "pass" } else { "own_call" });
             }
             self.choice = Some(choice);
