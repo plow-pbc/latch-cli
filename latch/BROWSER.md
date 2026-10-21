@@ -279,7 +279,26 @@ operation and its target among those the page offers.
 one step: `click|type|select|press eN ["text"]`, or
 `fill --item vN (--field F=eN… | --suggested S) [--press eN]`; text to type goes in double
 quotes (straight or curly). A step's check follows its last ` -> ` outside
-quotes, so `type e3 "A -> B"` has none. `--plan-file` takes the canonical
+quotes, so `type e3 "A -> B"` has none. These are the examples `do
+--help` shows, one step per argument, each in single quotes so the shell
+keeps its double quotes:
+
+```sh
+latch browser do 'type e3 "Ada Lovelace"' 'select e5 "Large"' 'press e3 Enter' 'click e7'   # literal steps on refs
+latch browser do 'search for "blue mug"' 'add the note "Ring twice" for the driver'         # goals: they type only their quoted texts
+latch browser do 'click e7 -> path: /cart' 'type e3 "Acme" -> field: e3=Acme'               # typed checks
+latch browser do 'click e9 -> the cart shows 2 items'                                       # a sentence the model judges
+latch browser do --fact street='12 Elm Road' 'enter the delivery street {street}'           # a fact a goal names
+latch browser do --dry-run 'add the note "A -> B" for the driver'                           # the plan, nothing sent
+```
+
+A plan holds at most 10 steps. A ref is from the last page latch returned
+(or `--snapshot`); once the page has changed, `observe` again for fresh
+refs. Before going on after a stop, read `steps` (each step's outcome:
+those before the stop ran) and `stop` (its step, code and message), and
+send only what is left: resending the whole plan repeats what already ran.
+An answer that exited 5 names its request: read `do --history R` first,
+and never resend it. `--plan-file` takes the canonical
 plan object, which every short form compiles to:
 
 ```json

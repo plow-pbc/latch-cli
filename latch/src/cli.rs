@@ -56,6 +56,31 @@ Agents:
   model_unavailable (exit 1) is the same decision model, for a click's risk,
   a goal or a sentence check; nothing was sent, and nothing gets around it.";
 
+/// What `latch browser do --help` adds after its options: the short form
+/// by example. BROWSER.md shows the same examples.
+pub(crate) const DO_HELP: &str = "\
+Examples (one step per argument, each in single quotes so the shell keeps its double quotes):
+  Literal steps, on refs from the last page latch returned:
+    latch browser do 'type e3 \"Ada Lovelace\"' 'select e5 \"Large\"' 'press e3 Enter' 'click e7'
+  A goal in words; the texts in its double quotes are all it may type:
+    latch browser do 'search for \"blue mug\"' 'add the note \"Ring twice\" for the driver'
+  A check after ` -> `: typed (path:, text:, new text:, field: eN=..., query:, origin:,
+  download: complete), or a sentence the decision model judges:
+    latch browser do 'click e7 -> path: /cart' 'type e3 \"Acme\" -> field: e3=Acme'
+    latch browser do 'click e9 -> the cart shows 2 items'
+  A fact, which a goal types where it names it as {NAME}:
+    latch browser do --fact street='12 Elm Road' 'enter the delivery street {street}'
+  The plan as it would be sent, sending nothing (a ` -> ` inside double quotes is text):
+    latch browser do --dry-run 'add the note \"A -> B\" for the driver'
+
+At most 10 steps. A ref is from the last page latch returned (or --snapshot);
+once the page has changed, observe again for fresh refs.
+A plan stops at the first step that does not pass. Before going on, read
+`steps` (each step's outcome; those before the stop ran) and `stop` (its
+step, code and message), then send only what is left: resending the whole
+plan repeats what already ran. An answer that exited 5 names its request:
+read `do --history R` first, and never resend it.";
+
 #[derive(Parser, Debug)]
 #[command(
     name = "latch",
@@ -165,6 +190,7 @@ pub enum BrowserCommand {
     /// eN ["text"]`, `fill --item vN --field F=eN… [--press eN]`, or a goal in
     /// words with its texts in double quotes, with an optional check after
     /// ` -> `: `do 'click e7 -> path: /cart' 'add the note "Ring twice"'`
+    #[command(after_help = DO_HELP)]
     Do {
         /// The steps, one argument each
         steps: Vec<String>,

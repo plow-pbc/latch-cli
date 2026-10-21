@@ -799,6 +799,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_example_in_do_help_is_a_plan() {
+        use crate::cli::{Cli, Command, DO_HELP};
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        // A shell's words: single quotes keep spaces and double quotes.
+        let words = |line: &str| {
+            let (mut words, mut word, mut quoted) = (Vec::new(), String::new(), false);
+            for c in line.chars() {
+                match c {
+                    '\'' => quoted = !quoted,
+                    ' ' if !quoted => words.extend((!word.is_empty()).then(|| word.split_off(0))),
+                    c => word.push(c),
+                }
+            }
+            words.extend((!word.is_empty()).then_some(word));
+            words
+        };
+        let examples: Vec<&str> = DO_HELP
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("latch "))
+            .collect();
+        assert_eq!(examples.len(), 6);
+        for example in examples {
+            let mut argv = vec!["latch".to_string()];
+            argv.extend(words(example));
+            if !argv.iter().any(|word| word == "--dry-run") {
+                argv.push("--dry-run".into());
+            }
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            let Command::Browser(args) = cli.command else {
+                panic!("browser");
+            };
+            let shown = run(&state, args).await;
+            assert!(shown.is_ok(), "{example}: {shown:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn handoff_done_runs_on_the_hosts_own_state_and_handoff_needs_a_reason() {
         use crate::cli::{Cli, Command};
         use clap::Parser;
