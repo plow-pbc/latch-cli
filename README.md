@@ -17,14 +17,11 @@ latch --version
 
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
-It downloads pinned gog and Chrome for Testing into `~/.latch/plugins`; add
-`--with-camoufox` to the installer for the optional macOS engine. Setup requires
-curl, tar and SHA-256 tools (macOS also uses ditto; Linux browser setup uses unzip).
+It downloads pinned gog into `~/.latch/plugins`. Setup requires curl, tar and
+SHA-256 tools.
 Linux hosting needs bubblewrap and usable user namespaces; setup explains missing
-packages and may ask for sudo, including for Ubuntu's AppArmor profile. Linux
-arm64 browser hosts also need Xvfb and Chrome's system libraries. Linux x86_64
-currently has no pinned browser engine. Static Linux CLI builds do not make
-browser plugins independent of their system libraries; see [Docker hosting](latch/DOCKER.md).
+packages and may ask for sudo, including for Ubuntu's AppArmor profile;
+see [Docker hosting](latch/DOCKER.md).
 
 Update by rerunning with a newer tag. State and versioned plugins stay in place;
 restart an existing `latch serve` intentionally when ready to use the new binary.

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Download a private GitHub release and run its pinned plugin installer.
 set -eu
-[ "$#" -ge 1 ] || { echo 'usage: install-release.sh vVERSION [--state-dir DIR] [--with-camoufox]' >&2; exit 1; }
+[ "$#" -ge 1 ] || { echo 'usage: install-release.sh vVERSION [--state-dir DIR]' >&2; exit 1; }
 version=$1
 shift
 printf '%s\n' "$version" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || { echo 'expected a v-prefixed release version' >&2; exit 1; }
@@ -29,9 +29,8 @@ fi
 tar -xzf "$archive"
 setup="$tmp/latch-$version-$target"
 cd "$caller"
-echo 'Installing into ~/.local/bin; plugins use ~/.latch unless --state-dir is supplied.'
+echo 'Installing into ~/.local/bin; gog uses ~/.latch/plugins unless --state-dir is supplied.'
 echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
-echo 'Browser support: macOS and Linux arm64 (CfT); optional Camoufox is macOS only.'
 sh "$setup/install.sh" "$@" "$setup/latch"
 "$setup/latch" --version
 echo 'An already-running latch serve keeps its old binary; restart it intentionally to update.'
