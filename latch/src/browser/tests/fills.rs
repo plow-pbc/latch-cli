@@ -130,8 +130,17 @@ fn without_port(text: &str) -> String {
 /// The ports of the test sites [`site`] started.
 static SITE_PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
 
-/// How many times a test page reached `/beacon` on a test site.
-static BEACONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Each time a test page reached `/beacon`, the test site's port, and
+/// whether a value came along in the address (`leak=`).
+static BEACONS: std::sync::Mutex<Vec<(u16, bool)>> = std::sync::Mutex::new(Vec::new());
+
+/// How many times a page of the test site on `port` reached `/beacon`,
+/// and how many of those carried a value.
+fn beacons(port: u16) -> (usize, usize) {
+    let hits = BEACONS.lock().unwrap();
+    let mine = hits.iter().filter(|(p, _)| *p == port);
+    (mine.clone().count(), mine.filter(|(_, leak)| *leak).count())
+}
 
 /// A failure as shown, for the leak checks (`seen`): its message is left
 /// without the ids of the confirmations its details carry.
@@ -266,7 +275,7 @@ fn site() -> u16 {
                 };
                 let page = match path.as_str() {
                     "/beacon" => {
-                        BEACONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        BEACONS.lock().unwrap().push((port, line.contains("leak=")));
                         Some(Vec::new())
                     }
                     "/welcome" | "/slow-welcome" => {
@@ -2258,7 +2267,8 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
 }
 
 /// A fill that cannot clean up keeps its secret guarded after its call:
-/// the page's own requests still go on, checked between calls.
+/// the page's own requests still go on, checked between calls, and the
+/// guard stands until the session's tabs are closed.
 async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
     let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
@@ -2277,7 +2287,8 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
             ))
         })
         .unwrap();
-    let local = format!("http://127.0.0.1:{}", site());
+    let port = site();
+    let local = format!("http://127.0.0.1:{port}");
     let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
         latch(),
@@ -2297,7 +2308,7 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
         ["cvv", [find(&page, "textbox", "CVV")]],
     ]);
     let started = std::time::Instant::now();
-    let before = BEACONS.load(std::sync::atomic::Ordering::SeqCst);
+    let (before, _) = beacons(port);
     let (trapped, _) = h
         .fill(json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}))
         .await;
@@ -2309,10 +2320,14 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
     // The page reaches /beacon 20 seconds after the number arrived, with no
     // call under way.
     tokio::time::sleep(Duration::from_secs(24).saturating_sub(started.elapsed())).await;
-    let after = BEACONS.load(std::sync::atomic::Ordering::SeqCst);
+    let (after, _) = beacons(port);
     println!("beacons while the trap held: {}", after - before);
     assert!(after > before, "the page's request waited for a call");
+    // Closing the session closes the page, which tries to send the card
+    // number away in an address as it goes: still stopped.
     h.call("close", json!({})).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(beacons(port).1, 0, "the number left as its page closed");
 }
 
 async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {

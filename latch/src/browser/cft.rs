@@ -967,13 +967,8 @@ impl Runtime for Cft {
     /// Ends session `key`: closes every tab it has, and forgets its
     /// downloads (their files too) and its folder. The others go on.
     fn end(&mut self, key: &str) {
-        self.cdp.guards.remove(key);
-        self.cdp.stopped.remove(key);
-        let _ = self.pause_for_guards();
-        let Some(share) = self.shares.remove(key) else {
-            return;
-        };
-        for tab in &share.tabs {
+        let share = self.shares.remove(key);
+        for tab in share.iter().flat_map(|share| &share.tabs) {
             let _ = self.cdp.call(
                 "Target.closeTarget",
                 json!({"targetId": tab.target}),
@@ -981,6 +976,13 @@ impl Runtime for Cft {
                 self.by(COMMAND),
             );
         }
+        // Its guard, if it still has one, stays for as long as this browser
+        // runs: a page going away can still send what it holds, in a
+        // request that outlives it. It matches only those exact values.
+        self.cdp.stopped.remove(key);
+        let Some(share) = share else {
+            return;
+        };
         for (guid, _) in &share.downloads {
             let _ = fs::remove_file(self.scratch.join("downloads").join(guid));
         }

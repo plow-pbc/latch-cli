@@ -1,8 +1,9 @@
 # The vault
 
 One vault per latch install, on the host, shared by every browser engine
-and profile. Agents never see a value: `latch browser fill` puts values
-into pages itself, and no command returns one.
+and profile. `latch browser fill` puts values into pages itself, and no
+command returns a password or other secret field's value. A username is no
+secret: a page, or the address it goes to next, may show it.
 
 ## Items
 
