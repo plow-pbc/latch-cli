@@ -5,6 +5,8 @@
 //! exit 0; on failure `{"error": {"code", "message"}}` on stderr and an exit
 //! code from the table in `failure.rs`.
 
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 mod audit;
 mod browser;
 mod card;
@@ -34,6 +36,7 @@ mod sandbox;
 mod serve;
 mod shares;
 mod state;
+mod state_folders;
 mod status;
 mod term;
 mod trace;
@@ -259,6 +262,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             serve::run(
                 &state,
                 &args.folders,
+                &args.allow_read,
                 dashboard,
                 args.headless_browsers,
                 deny_exec,

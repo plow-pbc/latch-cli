@@ -531,6 +531,7 @@ impl Camoufox {
         let _ = self.helper.wait();
         let gone_by = Instant::now() + CLOSING;
         // A group with no process left answers ESRCH.
+        // SAFETY: signal 0 only checks whether the group still exists.
         let left = || groups.iter().any(|g| unsafe { libc::killpg(*g, 0) } == 0);
         while left() && Instant::now() < gone_by {
             std::thread::sleep(Duration::from_millis(50));
