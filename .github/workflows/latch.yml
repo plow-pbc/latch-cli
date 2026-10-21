@@ -4,7 +4,6 @@ on:
   push:
     branches: [main, ci-speed]
   pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       mode:
