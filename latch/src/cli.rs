@@ -251,6 +251,10 @@ pub struct WorkerArgs {
     /// An exec worker's own temp folder (its `TMPDIR`), which it may read and write
     #[arg(long)]
     pub tmpdir: Option<PathBuf>,
+    /// An exec worker's own time limit in seconds: past it, the worker
+    /// kills its program, whether or not the host is still there to
+    #[arg(long)]
+    pub kill_after: Option<u64>,
     /// Test only: make the sandbox fail to apply
     #[arg(long)]
     pub break_sandbox_for_test: bool,
