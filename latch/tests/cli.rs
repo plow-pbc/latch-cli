@@ -1053,6 +1053,9 @@ impl LivePlow {
                     .collect();
                 (200, json!({"data": listed}))
             }
+            ("GET", "/v1/agents") if kind == "device" => {
+                (200, json!([{"uid": AGENT_UID, "name": "Research bot"}]))
+            }
             ("GET", "/v1/agents/me") if kind == "agent" => (
                 200,
                 json!({"agent": {"uid": AGENT_UID, "name": "Research bot"}}),
@@ -1179,6 +1182,56 @@ fn local_relay() -> (tokio::runtime::Runtime, String) {
     (runtime, url)
 }
 
+/// A running `latch serve`, stopped when dropped: when the test ends,
+/// passing or not.
+struct Serving(std::process::Child);
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        // SAFETY: signals our own child.
+        unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while matches!(self.0.try_wait(), Ok(None)) {
+            if std::time::Instant::now() > deadline {
+                let _ = self.0.kill();
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = self.0.wait();
+    }
+}
+
+/// `latch serve` on `host`'s state, sharing `share`, through the local
+/// relay, once it has registered that relay with Plow.
+fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
+    let mut serve = Serving(
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args([
+                "--state-dir",
+                host.to_str().unwrap(),
+                "serve",
+                "--no-dashboard",
+            ])
+            .arg(share)
+            .env("LATCH_TEST_RELAY_URL", relay)
+            .env_remove("LATCH_HOST")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut log = BufReader::new(serve.0.stderr.take().unwrap());
+    loop {
+        let mut line = String::new();
+        assert_ne!(log.read_line(&mut line).unwrap(), 0, "serve stopped");
+        if line.contains("heartbeat: registered") {
+            break;
+        }
+    }
+    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    serve
+}
+
 #[test]
 fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     let plow = LivePlow::start();
@@ -1206,29 +1259,7 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
-    // The host, until it has registered its relay.
-    let mut serve = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .args([
-            "--state-dir",
-            host.to_str().unwrap(),
-            "serve",
-            "--no-dashboard",
-        ])
-        .arg(&share)
-        .env("LATCH_TEST_RELAY_URL", &relay)
-        .env_remove("LATCH_HOST")
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut log = BufReader::new(serve.stderr.take().unwrap());
-    loop {
-        let mut line = String::new();
-        assert_ne!(log.read_line(&mut line).unwrap(), 0, "serve stopped");
-        if line.contains("heartbeat: registered") {
-            break;
-        }
-    }
-    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    let serve = serving(&host, &share, &relay);
     let exec = |word: &str| {
         latch(
             &agent,
@@ -1244,10 +1275,7 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     plow.rotate("agent-rotated");
     fs::write(&agent_token, "agent-rotated\n").unwrap();
     let after = exec("after");
-
-    // SAFETY: signals our own child.
-    unsafe { libc::kill(serve.id() as i32, libc::SIGTERM) };
-    serve.wait().unwrap();
+    drop(serve);
     assert_eq!(after.status.code(), Some(0), "{after:?}");
     let result: Value = serde_json::from_slice(&after.stdout).unwrap();
     assert_eq!(result["stdout"], "after\n");
@@ -1258,5 +1286,167 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     assert!(
         again.is_some(),
         "no registration with the new credential: {seen:?}"
+    );
+}
+
+#[test]
+fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let owner_token = dir.path().join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let (host, owner, agent) = (
+        dir.path().join("host"),
+        dir.path().join("owner"),
+        dir.path().join("agent"),
+    );
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    for (state, name) in [(&host, "host"), (&owner, "owner-mac")] {
+        let token = owner_token.to_str().unwrap();
+        let args = [
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            token,
+            "--name",
+            name,
+        ];
+        assert_eq!(latch(state, &args, &[]).status.code(), Some(0), "{name}");
+    }
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let serve = serving(&host, &share, &relay);
+
+    let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
+        let output = latch(state, args, env);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json = serde_json::from_slice::<Value>(printed).unwrap_or(Value::Null);
+        (output.status.code(), json)
+    };
+    let rules_file = dir.path().join("bot.txt");
+    fs::write(&rules_file, "Run tests in the shared folder.").unwrap();
+    let editor = dir.path().join("editor.sh");
+    fs::write(&editor, "#!/bin/sh\nprintf ' Nothing else.' >> \"$1\"\n").unwrap();
+    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let file = rules_file.to_str().unwrap();
+    let owner_runs = [
+        run(
+            &owner,
+            &["rules", "set", "--host", "host", "Never send email."],
+            &[],
+        ),
+        run(
+            &owner,
+            &[
+                "rules",
+                "set",
+                "--host",
+                "host",
+                "--from",
+                "Research bot",
+                "--file",
+                file,
+            ],
+            &[],
+        ),
+        run(
+            &owner,
+            &["rules", "edit", "--host", "host", "--from", "Research bot"],
+            &[("EDITOR", editor.as_path())],
+        ),
+        run(&owner, &["rules", "show", "--host", "host"], &[]),
+    ];
+    let agent_runs: Vec<_> = [
+        &["rules", "show", "--host", "host"][..],
+        &["rules", "set", "--host", "host", "Anything goes."],
+        &["rules", "edit", "--host", "host"],
+        &["rules", "clear", "--host", "host", "--from", "Research bot"],
+    ]
+    .iter()
+    .map(|args| run(&agent, args, &[("EDITOR", editor.as_path()), agent_env[0]]))
+    .collect();
+    let rules_after_agent = fs::read_to_string(host.join(format!("rules/{AGENT_UID}.txt")));
+    let cleared = run(
+        &owner,
+        &["rules", "clear", "--host", "host", "--from", "Research bot"],
+        &[],
+    );
+
+    drop(serve);
+
+    for (code, json) in &owner_runs {
+        assert_eq!(*code, Some(0), "{json}");
+    }
+    let [set, set_agent, edited, shown] = owner_runs.map(|(_, json)| json);
+    assert_eq!(
+        (set["host"].as_str(), set["scope"].as_str()),
+        (Some("host"), Some("every agent"))
+    );
+    assert_eq!(set_agent["agent_uid"], AGENT_UID);
+    assert_eq!(set_agent["agent_name"], "Research bot");
+    assert_eq!(edited["agent_uid"], AGENT_UID);
+    let edited_text = "Run tests in the shared folder. Nothing else.";
+    assert_eq!(shown["every_agent"]["text"], "Never send email.");
+    assert_eq!(shown["agents"][0]["text"], edited_text);
+    assert_eq!(shown["agents"][0]["agent_name"], "Research bot");
+    for (code, json) in &agent_runs {
+        assert_eq!(*code, Some(4), "{json}");
+        assert_eq!(json["error"]["code"], "owner_only", "{json}");
+    }
+    assert_eq!(rules_after_agent.unwrap(), edited_text);
+    assert_eq!(cleared.0, Some(0), "{}", cleared.1);
+    assert_eq!(cleared.1["cleared"], true);
+    assert!(!host.join(format!("rules/{AGENT_UID}.txt")).exists());
+    assert_eq!(
+        fs::read_to_string(host.join("rules/host.txt")).unwrap(),
+        "Never send email."
+    );
+    // Nothing was written on the machines the commands came from.
+    assert!(!owner.join("rules").exists() && !agent.join("rules").exists());
+
+    // The host audited every command by revision, never by text.
+    let log = fs::read_to_string(host.join("audit.ndjson")).unwrap();
+    let records: Vec<Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|record: &Value| record["op"] == "rules")
+        .collect();
+    let decisions: Vec<(&str, &str)> = records
+        .iter()
+        .map(|r| {
+            (
+                r["args"]["command"].as_str().unwrap(),
+                r["decision"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        decisions,
+        [
+            ("set", "allow"),
+            ("set", "allow"),
+            ("show", "allow"),
+            ("edit", "allow"),
+            ("show", "allow"),
+            ("show", "deny"),
+            ("set", "deny"),
+            ("show", "deny"),
+            ("clear", "deny"),
+            ("clear", "allow"),
+        ]
+    );
+    assert!(
+        !log.contains("email") && !log.contains("shared folder"),
+        "{log}"
     );
 }

@@ -2,9 +2,9 @@
 //! put to the judge: opening a site the session has not been judged for,
 //! each plan, each vault fill and each confirmation that releases a card
 //! or identity, and every `eval`, upload and download. Clicks, typing,
-//! page reads and screenshots are not judged, nor is a plan of one such
-//! action (what `act` sends): they pass the browser's own checks (the risk
-//! decision, confirmations, fill and pause checks).
+//! page reads and screenshots are not judged, nor is `act`'s one such
+//! action (a `do` of one step is judged): they pass the browser's own
+//! checks (the risk decision, confirmations, fill and pause checks).
 //!
 //! Each is judged before anything of it is sent to the page. A refusal
 //! sends nothing; the audit gets the judgment's `gate` object either way.

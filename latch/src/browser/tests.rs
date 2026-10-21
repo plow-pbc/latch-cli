@@ -1534,6 +1534,7 @@ fn act(line: &str) -> serde_json::Value {
     json!({
         "request": format!("r{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff),
         "plan": super::plan::Plan { steps: vec![step], ..Default::default() },
+        "act": true,
     })
 }
 

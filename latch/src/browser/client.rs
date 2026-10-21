@@ -299,8 +299,12 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
         }
         BrowserCommand::Text => "text",
         BrowserCommand::Screenshot { .. } => "screenshot",
-        // Its plan is in the request already.
-        BrowserCommand::Act { .. } => "do",
+        // Its plan is in the request already. `act` marks it as one
+        // action, which the host's gatekeeper leaves to the risk decision.
+        BrowserCommand::Act { .. } => {
+            set(request, "act", json!(true));
+            "do"
+        }
         BrowserCommand::Do {
             history: Some(id),
             shot,
@@ -657,6 +661,26 @@ mod tests {
         );
         assert!(named.message.contains("plan step"));
         assert!(act_literal(None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn only_act_says_its_plan_is_one_action() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let sent = |argv: &[&str]| {
+            let cli = Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).unwrap();
+            let Command::Browser(args) = cli.command else {
+                panic!("browser");
+            };
+            let mut request = json!({"session": "s1"});
+            fill(&mut request, args.command).unwrap();
+            request
+        };
+        let act = sent(&["act", "click", "e1"]);
+        assert_eq!((&act["command"], &act["act"]), (&json!("do"), &json!(true)));
+        let one_step = sent(&["do", "click e1"]);
+        assert_eq!(one_step["command"], "do");
+        assert!(one_step.get("act").is_none(), "{one_step}");
     }
 
     #[tokio::test]

@@ -142,7 +142,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             let opened = dial::call(state, &host, &request, ANSWER_WITHIN).await?;
             let url = link_url(&page, &opened);
             if term::interactive() {
-                eprintln!("{}", qr(&url));
+                eprintln!("{}", term::qr(&url));
                 eprintln!("Open on your phone; it works once, for 15 minutes.");
             }
             Ok(json!({"url": url, "link": opened["link"], "expires_in": opened["expires_in"]}))
@@ -279,14 +279,6 @@ fn link_url(page: &str, opened: &Value) -> String {
     let part = |key: &str| opened[key].as_str().unwrap_or_default().to_string();
     let relay: String = url::form_urlencoded::byte_serialize(part("relay").as_bytes()).collect();
     format!("{page}#h={}&r={relay}&c={}", part("host"), part("code"))
-}
-
-/// The link as a QR code, two rows to a line of text.
-fn qr(url: &str) -> String {
-    let code = qrcode::QrCode::new(url.as_bytes()).expect("a link fits in a QR code");
-    code.render::<qrcode::render::unicode::Dense1x2>()
-        .quiet_zone(true)
-        .build()
 }
 
 /// Sends the export, shows the preview, asks which rows to import, and
