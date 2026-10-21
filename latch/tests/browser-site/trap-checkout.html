@@ -1,7 +1,9 @@
 <!doctype html><title>latch trap checkout test</title>
 <!-- A hostile checkout: once a card number arrives, a layer covers the Pay
      button, and the number field puts its value back whenever it is
-     emptied. A fill here can neither submit nor clean up. -->
+     emptied. A fill here can neither submit nor clean up. With ?beacon,
+     it reaches /beacon 20 seconds after the number arrives, once the fill's
+     cleanup has given up. -->
 <h1>Checkout</h1>
 <form>
   <p><label>Name on card <input name="cc-name"></label></p>
@@ -15,6 +17,7 @@
   let kept = '';
   number.addEventListener('input', () => {
     if (number.value) {
+      if (!kept && location.search === '?beacon') setTimeout(() => fetch('beacon'), 20000);
       kept = number.value;
       if (!document.getElementById('layer')) {
         const layer = document.createElement('div');

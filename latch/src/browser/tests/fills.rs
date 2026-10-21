@@ -36,7 +36,8 @@ conformance!(
     a_fill_in_one_session_pauses_every_session_on_its_browser,
     agent_code_is_noted_per_site_and_kept_with_the_profile,
     a_login_after_an_edit_fills_the_new_password,
-    a_password_never_goes_into_a_form_sent_by_get,
+    no_secret_goes_into_a_form_sent_by_get,
+    requests_go_on_while_a_guard_outlives_its_call,
     a_filled_value_is_guarded_in_every_tab_and_from_screenshots,
 );
 
@@ -128,6 +129,9 @@ fn without_port(text: &str) -> String {
 
 /// The ports of the test sites [`site`] started.
 static SITE_PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+
+/// How many times a test page reached `/beacon` on a test site.
+static BEACONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// A failure as shown, for the leak checks (`seen`): its message is left
 /// without the ids of the confirmations its details carry.
@@ -261,6 +265,10 @@ fn site() -> u16 {
                         .into_bytes()
                 };
                 let page = match path.as_str() {
+                    "/beacon" => {
+                        BEACONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Some(Vec::new())
+                    }
                     "/welcome" | "/slow-welcome" => {
                         if path == "/slow-welcome" {
                             std::thread::sleep(Duration::from_secs(3));
@@ -2149,19 +2157,24 @@ async fn a_filled_value_is_guarded_in_every_tab_and_from_screenshots(engine: &st
     h.call("close", json!({})).await.unwrap();
 }
 
-async fn a_password_never_goes_into_a_form_sent_by_get(engine: &str) {
+async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
+    const MEMO: &str = "made-up memo\nsecond line 5d2e";
     let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
-    let login = vault
-        .with(|s| {
-            s.add(item(
-                LOGIN,
-                "Shop",
-                &["shop.example"],
-                &[("username", "ada@shop.example"), ("password", PASSWORD)],
-            ))
-        })
-        .unwrap();
+    let mut shop = item(
+        LOGIN,
+        "Shop",
+        &["shop.example"],
+        &[("username", "ada@shop.example"), ("password", PASSWORD)],
+    );
+    // A hidden custom field: a secret, with a line break.
+    shop.raw.fields.push(crate::vault::item::Custom {
+        name: Some("memo".into()),
+        value: Some(MEMO.into()),
+        kind: 1,
+        linked_id: None,
+    });
+    let login = vault.with(|s| s.add(shop)).unwrap();
     let local = format!("http://127.0.0.1:{}", site());
     let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
@@ -2169,22 +2182,38 @@ async fn a_password_never_goes_into_a_form_sent_by_get(engine: &str) {
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
     let mut h = Harness::start(browsers).await;
-    for (email, password, button) in [
-        ("Email", "Password", "Sign in"),
-        ("Work email", "Work password", "Sign in at work"),
-        ("Other email", "Other password", "Sign in elsewhere"),
-    ] {
-        let page = h
-            .call("open", json!({"url": format!("{local}/get-login.html")}))
+    let open = async |h: &mut Harness| {
+        h.call("open", json!({"url": format!("{local}/get-login.html")}))
             .await
-            .unwrap();
+            .unwrap()
+    };
+    // A form that says GET, one whose button says so, one that says
+    // nothing (a GET too), and a secret's line breaks, sent as CRLF.
+    let rows: [(&[(&str, &str)], &str); 4] = [
+        (
+            &[("username", "Email"), ("password", "Password")],
+            "Sign in",
+        ),
+        (
+            &[("username", "Work email"), ("password", "Work password")],
+            "Sign in at work",
+        ),
+        (
+            &[("username", "Other email"), ("password", "Other password")],
+            "Sign in elsewhere",
+        ),
+        (&[("memo", "Memo")], "Send memo"),
+    ];
+    for (fields, button) in rows {
+        let page = open(&mut h).await;
+        let fields: Vec<Value> = fields
+            .iter()
+            .map(|(label, name)| json!([label, [find(&page, "textbox", name)]]))
+            .collect();
         let (refused, _) = h
             .fill(json!({
                 "item": login.item,
-                "fields": [
-                    ["username", [find(&page, "textbox", email)]],
-                    ["password", [find(&page, "textbox", password)]],
-                ],
+                "fields": fields,
                 "press": find(&page, "button", button),
             }))
             .await;
@@ -2195,14 +2224,94 @@ async fn a_password_never_goes_into_a_form_sent_by_get(engine: &str) {
             (crate::failure::Exit::Denied, "get_form")
         );
         // Nothing was sent: every tab is still on the page, none on the
-        // address that would carry the password, and the agent is back.
+        // address that would carry a secret, and the agent is back.
         let seen = h.call("observe", json!({})).await.unwrap();
         for tab in seen["tabs"].as_array().unwrap() {
             let url = tab["url"].as_str().unwrap();
             assert!(url.ends_with("/get-login.html"), "{seen}");
         }
     }
-    assert!(!h.shown.join("\n").contains(PASSWORD));
+    // A username alone is no secret: an email-first sign-in carries it to
+    // the next page in the address, and that goes on.
+    let page = open(&mut h).await;
+    let (went, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["username", [find(&page, "textbox", "Email")]]],
+            "press": find(&page, "button", "Sign in"),
+        }))
+        .await;
+    println!("a username alone: {went:?}");
+    if let Err(failure) = &went {
+        assert_ne!(failure.code, "get_form");
+    }
+    let seen = h.call("observe", json!({})).await.unwrap();
+    assert!(
+        seen["url"].as_str().unwrap().contains("/welcome?"),
+        "{seen}"
+    );
+    let everything = h.shown.join("\n");
+    for value in [PASSWORD, "second+line", "5d2e"] {
+        assert!(!everything.contains(value), "{value} was shown");
+    }
+    h.call("close", json!({})).await.unwrap();
+}
+
+/// A fill that cannot clean up keeps its secret guarded after its call:
+/// the page's own requests still go on, checked between calls.
+async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let vault = Vault::new(state.clone());
+    let card = vault
+        .with(|s| {
+            s.add(item(
+                CARD,
+                "Test Visa",
+                &[],
+                &[
+                    ("number", NUMBER),
+                    ("expiry month", "4"),
+                    ("expiry year", "2031"),
+                    ("code", CVV),
+                ],
+            ))
+        })
+        .unwrap();
+    let local = format!("http://127.0.0.1:{}", site());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers).await;
+    let page = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/trap-checkout.html?beacon")}),
+        )
+        .await
+        .unwrap();
+    let fields = json!([
+        ["number", [find(&page, "textbox", "Card number")]],
+        ["expiry", [find(&page, "textbox", "Expiry")]],
+        ["cvv", [find(&page, "textbox", "CVV")]],
+    ]);
+    let started = std::time::Instant::now();
+    let before = BEACONS.load(std::sync::atomic::Ordering::SeqCst);
+    let (trapped, _) = h
+        .fill(json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}))
+        .await;
+    assert_eq!(trapped.unwrap_err().code, "session_paused");
+    assert!(
+        started.elapsed() < Duration::from_secs(19),
+        "too slow to test"
+    );
+    // The page reaches /beacon 20 seconds after the number arrived, with no
+    // call under way.
+    tokio::time::sleep(Duration::from_secs(24).saturating_sub(started.elapsed())).await;
+    let after = BEACONS.load(std::sync::atomic::Ordering::SeqCst);
+    println!("beacons while the trap held: {}", after - before);
+    assert!(after > before, "the page's request waited for a call");
     h.call("close", json!({})).await.unwrap();
 }
 

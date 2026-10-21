@@ -100,7 +100,9 @@ host: `http`, IP addresses, local hosts, a page without an address and
 opaque (sandboxed) frames are refused (`origin_mismatch`). While a filled
 secret may be on a page, the browser stops every GET request whose address
 carries it as a query parameter, as a form sent by GET would; the press, or
-the agent's own click, then fails `get_form`, and nothing was sent.
+the agent's own click, then fails `get_form`, and nothing was sent. A
+username is no secret: an email-first sign-in may carry it to the password
+page in the address.
 
 - **login:** both share the item's registrable domain (public-suffix list,
   private suffixes included): `shop.example` fills on `login.shop.example`,

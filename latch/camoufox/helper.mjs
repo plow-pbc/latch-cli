@@ -83,23 +83,32 @@ const framesById = new Map();
 let nextFrame = 0;
 let nextDocument = 0;
 // Filled vault values no GET request may carry as a query parameter
-// (`guard`), and whether one was stopped since last asked.
-let guardValues = [];
-let guardStopped = false;
+// (`guard`), by session; a session's `stopped` says one was stopped. Line
+// breaks count alike however written: a form sends a field's as CRLF.
+const oneNewline = (text) => text.replace(/\r\n?/g, "\n");
+const guarding = () => [...shares.values()].some((s) => s.guard?.length);
 const guardRoute = (route, request) => {
   if (request.method() === "GET") {
     let params = [];
     try {
-      params = [...new URL(request.url()).searchParams.values()];
+      params = [...new URL(request.url()).searchParams.values()].map(oneNewline);
     } catch {}
-    if (params.some((value) => guardValues.includes(value))) {
-      guardStopped = true;
+    const carried = [...shares.values()].filter((s) => s.guard?.some((v) => params.includes(oneNewline(v))));
+    if (carried.length) {
+      for (const s of carried) s.stopped = true;
       // Aborted, so no error page keeps the address as the tab's.
       return route.abort("aborted");
     }
   }
   return route.fallback();
 };
+let routed = false;
+/// Requests are routed through the guard while any session has one.
+async function routeForGuards() {
+  if (guarding() && !routed) await guarded(context.route("**/*", guardRoute));
+  if (!guarding() && routed) await guarded(context.unroute("**/*", guardRoute));
+  routed = guarding();
+}
 
 /// `work`, unless a dialog opens or the deadline passes first. Input that
 /// opens a dialog is not finished until the dialog is answered, so it is
@@ -396,6 +405,7 @@ const ops = {
   async end() {
     const ending = shares.get(current);
     shares.delete(current);
+    await routeForGuards().catch(() => {});
     for (const t of ending?.tabs ?? []) await t.page.close().catch(() => {});
     for (const d of ending?.downloads ?? []) if (d.file) fs.rmSync(d.file, { force: true });
     return {};
@@ -661,19 +671,18 @@ const ops = {
     return { png: png.toString("base64"), css_width: width, css_height: height, scroll_x: scrollX, scroll_y: scrollY };
   },
 
-  /// Until called again with none, every GET request, in any tab, whose
-  /// address has a query parameter equal to one of `values` is stopped.
+  /// This session's guard: until called again with none, every GET
+  /// request, in any tab, whose address has a query parameter equal to one
+  /// of `values` is stopped.
   async guard({ values }) {
-    const was = guardValues.length > 0;
-    guardValues = values;
-    if (values.length && !was) await guarded(context.route("**/*", guardRoute));
-    if (!values.length && was) await guarded(context.unroute("**/*", guardRoute));
+    share().guard = values;
+    await routeForGuards();
     return {};
   },
 
   guard_stopped() {
-    const stopped = guardStopped;
-    guardStopped = false;
+    const stopped = Boolean(share().stopped);
+    share().stopped = false;
     return stopped;
   },
 

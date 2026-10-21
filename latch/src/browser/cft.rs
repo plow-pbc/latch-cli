@@ -119,6 +119,8 @@ pub struct Cft {
     scratch: PathBuf,
     /// When the call under way must have its answer (`Driver::limit`).
     deadline: Option<Instant>,
+    /// Whether every request is paused for the guards (`Driver::guard`).
+    pausing: bool,
     _lock: profile::Lock,
 }
 
@@ -176,6 +178,7 @@ impl Cft {
             unassigned: Vec::new(),
             scratch: scratch.to_path_buf(),
             deadline: None,
+            pausing: false,
             _lock: lock,
         };
         if let Err(failure) = browser.listen() {
@@ -214,6 +217,19 @@ impl Cft {
             None,
             deadline,
         )?;
+        Ok(())
+    }
+
+    /// Pauses every request while any session's guard stands, and only
+    /// loads off the web otherwise.
+    fn pause_for_guards(&mut self) -> Result<(), Failure> {
+        let guarding = !self.cdp.guards.is_empty();
+        if guarding != self.pausing {
+            let deadline = self.by(COMMAND);
+            self.cdp
+                .call("Fetch.enable", fetch_patterns(guarding), None, deadline)?;
+            self.pausing = guarding;
+        }
         Ok(())
     }
 
@@ -951,6 +967,9 @@ impl Runtime for Cft {
     /// Ends session `key`: closes every tab it has, and forgets its
     /// downloads (their files too) and its folder. The others go on.
     fn end(&mut self, key: &str) {
+        self.cdp.guards.remove(key);
+        self.cdp.stopped.remove(key);
+        let _ = self.pause_for_guards();
         let Some(share) = self.shares.remove(key) else {
             return;
         };
@@ -966,6 +985,17 @@ impl Runtime for Cft {
             let _ = fs::remove_file(self.scratch.join("downloads").join(guid));
         }
         let _ = fs::remove_dir_all(&share.folder);
+    }
+
+    /// While a guard stands every request waits for latch, so the worker
+    /// reads Chrome between calls too.
+    fn tend(&mut self) -> bool {
+        if self.cdp.guards.is_empty() {
+            return false;
+        }
+        // A wait of zero reads nothing new from the pipe; a millisecond does.
+        let _ = self.cdp.pump(Duration::from_millis(1));
+        true
     }
 
     /// Makes session `key` the one the driver contract acts for.
@@ -995,19 +1025,19 @@ impl Driver for Cft {
     fn limit(&mut self, deadline: Option<Instant>) {
         self.deadline = deadline;
     }
+    /// The selected session's guard; the browser stops requests carrying
+    /// any session's.
     fn guard(&mut self, values: &[String]) -> Result<(), Failure> {
-        let guarding = !values.is_empty();
-        let was = !self.cdp.guard.is_empty();
-        self.cdp.guard = values.to_vec();
-        if guarding != was {
-            let deadline = self.by(COMMAND);
-            self.cdp
-                .call("Fetch.enable", fetch_patterns(guarding), None, deadline)?;
+        let key = self.current.clone();
+        if values.is_empty() {
+            self.cdp.guards.remove(&key);
+        } else {
+            self.cdp.guards.insert(key, values.to_vec());
         }
-        Ok(())
+        self.pause_for_guards()
     }
     fn guard_stopped(&mut self) -> bool {
-        std::mem::take(&mut self.cdp.guard_stopped)
+        self.cdp.stopped.remove(&self.current)
     }
 
     fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {

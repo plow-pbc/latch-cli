@@ -76,8 +76,8 @@ pub struct Confirmation {
 
 enum Confirms {
     Click,
-    /// An Enter in a field: `press` Enter, or `type` text with a line
-    /// break; the op and its text as written.
+    /// Keys that activate: `press` Enter or Space, or `type` text with a
+    /// line break; the op and its text as written.
     Keys(Op, String),
     /// A fill releasing a secret field, with its arguments.
     Fill(Value),
@@ -863,9 +863,9 @@ impl Run<'_> {
                 acted => acted,
             };
         }
-        let kind = match enter {
-            true => Confirms::Keys(literal.op, literal.text.clone().unwrap_or_default()),
-            false => Confirms::Click,
+        let kind = match literal.op {
+            Op::Click => Confirms::Click,
+            op => Confirms::Keys(op, literal.text.clone().unwrap_or_default()),
         };
         let id = self.issue(kind, &reviewed);
         let mut record = json!({"step": n, "op": literal.op, "ref": literal.target,
@@ -965,7 +965,20 @@ impl Run<'_> {
         if used {
             return Err(stale("was already used"));
         }
-        let enter = matches!(kind, Confirms::Keys(..));
+        // What is carried out: the click, or the keys as written.
+        let literal = match &kind {
+            Confirms::Keys(op, text) => Literal {
+                op: *op,
+                text: Some(text.clone()),
+                snapshot: Some(snapshot.clone()),
+                ..Literal::click(&target)
+            },
+            _ => Literal {
+                snapshot: Some(snapshot.clone()),
+                ..Literal::click(&target)
+            },
+        };
+        let enter = presses_enter(&literal);
         let press = match &kind {
             Confirms::Fill(args) => args["press"].as_str().unwrap_or_default().to_string(),
             _ => target.clone(),
@@ -991,22 +1004,10 @@ impl Run<'_> {
                 "no longer matches the page: the element or the lines around it changed",
             ));
         }
-        let literal = Literal {
-            snapshot: Some(snapshot),
-            ..Literal::click(&target)
-        };
         let guard = Some((print.as_str(), enter));
         let sent = match kind {
-            Confirms::Click => self.dispatch(n, &literal, None, Some(id), guard).await,
-            Confirms::Keys(op, text) => {
-                let literal = Literal {
-                    op,
-                    text: Some(text),
-                    ..literal.clone()
-                };
-                self.dispatch(n, &literal, None, Some(id), guard).await
-            }
             Confirms::Fill(args) => self.fill_now(n, args, Some(id)).await,
+            _ => self.dispatch(n, &literal, None, Some(id), guard).await,
         };
         match sent {
             Err(failure) if failure.code == "context_changed" => {

@@ -312,7 +312,7 @@ impl<D: Driver> Core<D> {
         {
             return Err(refused("the document was replaced"));
         }
-        // Guarded before it reaches the page.
+        // A secret is guarded before it reaches the page.
         if secret && !self.fill.guarded.iter().any(|v| v == value) {
             self.fill.guarded.push(value.to_string());
             self.driver.guard(&self.fill.guarded)?;

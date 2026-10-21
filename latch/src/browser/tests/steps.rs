@@ -32,7 +32,6 @@ conformance!(
     consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewed,
     with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_dispatch,
     the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent,
-    space_on_a_button_is_judged_as_a_click,
     a_key_on_an_element_that_cannot_take_the_focus_is_refused,
 );
 
@@ -592,14 +591,23 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
         "no_such_request"
     );
 
-    // A plain click on the same ref is judged again: it stops with a new
-    // confirmation, and names the one command that carries it out.
-    let again = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
-    assert_eq!(refused(&again), (Exit::Denied, "confirm_needed"));
-    assert_ne!(confirmation(&again)["id"], issued["id"]);
-    assert!(again.message.contains("`latch browser do --confirm c"));
-    assert!(!again.message.contains("act click"));
-    assert!(!h.text().await.contains("Order placed"));
+    // A plain click on the same ref, or Space on it (which activates it as
+    // a click does), is judged again: it stops with a new confirmation,
+    // and names the one command that carries it out.
+    for (action, words) in [
+        (ActAction::Click, vec![place.as_str()]),
+        (ActAction::Press, vec![place.as_str(), "Space"]),
+    ] {
+        let again = h.act(action, &words, None).await.unwrap_err();
+        assert_eq!(refused(&again), (Exit::Denied, "confirm_needed"));
+        assert_eq!(confirmation(&again)["target"]["name"], "Place order");
+        assert_ne!(confirmation(&again)["id"], issued["id"]);
+        assert!(again.message.contains("`latch browser do --confirm c"));
+        assert!(!again.message.contains("act click"));
+        let text = h.text().await;
+        assert!(text.contains("Review your order"));
+        assert!(!text.contains("Order placed"));
+    }
 
     // `do --confirm C` carries it out, once.
     let placed = h.confirm(issued["id"].as_str().unwrap()).await.unwrap();
@@ -697,6 +705,18 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
     assert_eq!(placed["trail"][0]["op"], "press");
     assert_eq!(placed["page"]["title"], "Order · Shop");
 
+    // Space confirmed is carried out as Space, not as a click.
+    let page = h.open(&format!("{site}/order.html")).await;
+    let place = find(&page, "button", "Place order");
+    let failure = h
+        .act(ActAction::Press, &[&place, "Space"], None)
+        .await
+        .unwrap_err();
+    let issued = confirmation(&failure);
+    let placed = h.confirm(issued["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(placed["trail"][0]["op"], "press");
+    assert_eq!(placed["page"]["title"], "Order · Shop");
+
     let audits = serde_json::to_string(&h.audits).unwrap();
     assert!(audits.contains("\"confirmation\""));
     assert!(!audits.contains("$10.00") && !audits.contains("Sharp Objects"));
@@ -779,28 +799,6 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
     let read = bare.history(audit["request"].as_str().unwrap());
     assert_eq!(read["stop"]["model_failed"], "no_model");
     bare.close().await;
-}
-
-async fn space_on_a_button_is_judged_as_a_click(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
-    let site = site();
-    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
-    let mut h = Harness::start(&state, Some(fake)).await;
-    // Space on "Place order" activates it as a click would, so it stops
-    // for the same confirmation.
-    let page = h.open(&format!("{site}/order.html")).await;
-    let place = find(&page, "button", "Place order");
-    let failure = h
-        .act(ActAction::Press, &[&place, "Space"], None)
-        .await
-        .unwrap_err();
-    assert_eq!(refused(&failure), (Exit::Denied, "confirm_needed"));
-    assert_eq!(confirmation(&failure)["target"]["name"], "Place order");
-    assert!(
-        h.text().await.contains("Review your order"),
-        "nothing was placed"
-    );
-    h.close().await;
 }
 
 async fn a_key_on_an_element_that_cannot_take_the_focus_is_refused(engine: &str) {

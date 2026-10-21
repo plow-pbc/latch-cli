@@ -208,6 +208,11 @@ pub trait Runtime: Driver {
     /// Whether the engine left a command unanswered in time since this
     /// was last asked.
     fn unanswered(&mut self) -> bool;
+    /// Between calls: reads what the engine sent that cannot wait for the
+    /// next call. Answers whether it must be called again soon.
+    fn tend(&mut self) -> bool {
+        false
+    }
 }
 
 /// One session's view of a shared browser: the driver contract on that

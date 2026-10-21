@@ -190,6 +190,9 @@ pub fn run(
     })
 }
 
+/// How often the engine is tended between calls while it needs it.
+const TEND: Duration = Duration::from_millis(20);
+
 /// Says the browser is up, then answers each session's calls until the host
 /// closes the browser, stops writing, or every session has gone quiet for
 /// `idle`.
@@ -220,7 +223,14 @@ fn serve<B: Runtime>(
             .min()
             .unwrap_or(last_call + idle);
         let wait = due.saturating_duration_since(Instant::now());
-        if stdin.buffer().is_empty() && !cdp::readable(&*raw, wait).unwrap_or(false) {
+        // While the engine holds requests for latch to check, it is tended
+        // every few milliseconds, not left until the next call.
+        let tending = browser.borrow_mut().tend();
+        let slice = if tending { wait.min(TEND) } else { wait };
+        if stdin.buffer().is_empty() && !cdp::readable(&*raw, slice).unwrap_or(false) {
+            if tending && Instant::now() < due {
+                continue;
+            }
             let now = Instant::now();
             let idled: Vec<String> = sessions
                 .iter()

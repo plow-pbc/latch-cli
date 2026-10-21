@@ -3,7 +3,7 @@
 //! each message JSON ending in a NUL byte. The pipes are private to the
 //! worker and Chrome; nothing listens on a port.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -19,44 +19,15 @@ use crate::failure::Failure;
 /// other schemes are never paused.
 pub const OFF_THE_WEB: &[&str] = &["file", "filesystem", "chrome", "devtools", "view-source"];
 
-/// Whether `url` has a query parameter whose value, decoded as a form
-/// encodes it, is one of `values`.
+/// Whether `url` has a query parameter equal to one of `values`. Line
+/// breaks count alike however they are written: a form sends a field's
+/// as CRLF.
 pub fn carries(url: &str, values: &[String]) -> bool {
-    if values.is_empty() {
-        return false;
-    }
-    let Some((_, query)) = url.split_once('?') else {
-        return false;
-    };
-    let query = query.split('#').next().unwrap_or_default();
-    query
-        .split('&')
-        .filter_map(|pair| pair.split_once('=').map(|(_, value)| decoded(value)))
-        .any(|value| values.contains(&value))
-}
-
-/// A query value as a form encodes it: `+` for a space, `%XX` for a byte.
-fn decoded(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = bytes
-            .get(i + 1..i + 3)
-            .and_then(|pair| std::str::from_utf8(pair).ok())
-            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
-        match (bytes[i], hex) {
-            (b'%', Some(byte)) => {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-            (b'+', _) => out.push(b' '),
-            (byte, _) => out.push(byte),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    let lines = |text: &str| text.replace("\r\n", "\n").replace('\r', "\n");
+    url::Url::parse(url).is_ok_and(|url| {
+        url.query_pairs()
+            .any(|(_, value)| values.iter().any(|guarded| lines(guarded) == lines(&value)))
+    })
 }
 
 pub struct Cdp {
@@ -74,9 +45,10 @@ pub struct Cdp {
     /// A reply did not come in time since this was last asked.
     unanswered: bool,
     /// Filled vault values no GET request may carry as a query parameter
-    /// (`Driver::guard`), and whether one was stopped since last asked.
-    pub guard: Vec<String>,
-    pub guard_stopped: bool,
+    /// (`Driver::guard`), by session, and the sessions whose values a
+    /// request carried since each last asked.
+    pub guards: HashMap<String, Vec<String>>,
+    pub stopped: HashSet<String>,
 }
 
 /// The two pipes for one Chrome: the ends Chrome gets (to become its fd 3
@@ -103,8 +75,8 @@ pub fn pipes() -> io::Result<Pipes> {
             pages: HashSet::new(),
             removed: HashSet::new(),
             unanswered: false,
-            guard: Vec::new(),
-            guard_stopped: false,
+            guards: HashMap::new(),
+            stopped: HashSet::new(),
         },
     })
 }
@@ -309,7 +281,13 @@ impl Cdp {
                 let request = &params["request"];
                 let url = request["url"].as_str().unwrap_or_default();
                 let web = url.starts_with("http://") || url.starts_with("https://");
-                let carries = request["method"] == "GET" && carries(url, &self.guard);
+                let carriers: Vec<String> = self
+                    .guards
+                    .iter()
+                    .filter(|(_, values)| request["method"] == "GET" && carries(url, values))
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                let carries = !carriers.is_empty();
                 let session = event["sessionId"].as_str();
                 if web && !carries {
                     let _ = self.send(
@@ -318,7 +296,7 @@ impl Cdp {
                         session,
                     );
                 } else {
-                    self.guard_stopped |= carries;
+                    self.stopped.extend(carriers);
                     // An aborted navigation commits no error page, which
                     // would keep the address, value and all, as the tab's.
                     let reason = if carries {
@@ -434,6 +412,68 @@ mod tests {
         assert!(!found("https://a.example/w?p=pa+ss%26w%25rd2"));
         assert!(!found("https://a.example/pa ss&w%rd"));
         assert!(!carries("https://a.example/w?p=x", &[]));
+        // A form sends a field's line breaks as CRLF.
+        let lines = vec!["line one\nline two".to_string()];
+        assert!(carries(
+            "https://a.example/w?note=line+one%0D%0Aline+two",
+            &lines
+        ));
+    }
+
+    /// While guards stand, Chrome pauses every request: one carrying a
+    /// session's secret is aborted and reported to that session alone, the
+    /// rest go on, and a scheme off the web is still refused.
+    #[test]
+    fn a_paused_request_is_checked_against_every_sessions_guard() {
+        let Pipes {
+            chrome_reads,
+            chrome_writes,
+            mut cdp,
+        } = pipes().unwrap();
+        cdp.guards.insert("a".into(), vec!["secret-a".into()]);
+        cdp.guards.insert("b".into(), vec!["secret-b".into()]);
+        let paused = |id: &str, method: &str, url: &str| {
+            let event = json!({"method": "Fetch.requestPaused", "sessionId": "s",
+                               "params": {"requestId": id, "request": {"method": method, "url": url}}});
+            format!("{event}\0")
+        };
+        let mut chrome_out = File::from(chrome_writes);
+        for (id, method, url) in [
+            ("r1", "GET", "https://shop.example/login?pw=secret-a"),
+            ("r2", "GET", "https://shop.example/logo.png?v=2"),
+            ("r3", "POST", "https://shop.example/login?pw=secret-b"),
+            ("r4", "GET", "file:///etc/hosts"),
+        ] {
+            chrome_out
+                .write_all(paused(id, method, url).as_bytes())
+                .unwrap();
+        }
+        cdp.pump(Duration::from_millis(200)).unwrap();
+        let mut sent = vec![0u8; 4096];
+        let n = File::from(chrome_reads).read(&mut sent).unwrap();
+        let sent: Vec<Value> = sent[..n]
+            .split(|&b| b == 0)
+            .filter(|m| !m.is_empty())
+            .map(|m| serde_json::from_slice(m).unwrap())
+            .collect();
+        let answer = |id: &str| {
+            let m = sent
+                .iter()
+                .find(|m| m["params"]["requestId"] == id)
+                .unwrap();
+            (
+                m["method"].as_str().unwrap().to_string(),
+                m["params"]["errorReason"].clone(),
+            )
+        };
+        assert_eq!(answer("r1"), ("Fetch.failRequest".into(), json!("Aborted")));
+        assert_eq!(answer("r2"), ("Fetch.continueRequest".into(), Value::Null));
+        assert_eq!(answer("r3"), ("Fetch.continueRequest".into(), Value::Null));
+        assert_eq!(
+            answer("r4"),
+            ("Fetch.failRequest".into(), json!("BlockedByClient"))
+        );
+        assert_eq!(cdp.stopped, HashSet::from(["a".to_string()]));
     }
 
     #[test]
