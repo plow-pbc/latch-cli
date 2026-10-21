@@ -683,6 +683,12 @@ async fn answer(
     if entry.handing.load(Ordering::SeqCst) && command != "close" {
         return Err(super::handoff::handed_off());
     }
+    // Not on the web: refused before the gatekeeper is asked.
+    if matches!(command, "goto" | "tab")
+        && let Some(url) = args["url"].as_str()
+    {
+        super::egress::web(url)?;
+    }
     let judged = match caller.gate {
         Some(_) => match judged_action(browsers, &entry, command, args).await? {
             Some(action) => judged::judge(caller.gate, action, audit).await?,
@@ -832,6 +838,9 @@ async fn open(
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
     let url = args["url"].as_str();
+    if let Some(url) = url {
+        super::egress::web(url)?;
+    }
     let judged = match url {
         Some(url) => {
             let action = judged::open_site(browsers, url);

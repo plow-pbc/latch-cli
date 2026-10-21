@@ -1497,5 +1497,18 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
     went.unwrap();
     assert!(!audit.contains_key("gate"));
     assert_eq!(judge.calls(), asked);
+
+    // An address off the web is refused before the gatekeeper is asked.
+    for (command, name, url) in [
+        ("goto", id.as_str(), "file:///etc/hosts"),
+        ("tab", id.as_str(), "chrome://version"),
+        ("open", "default", "file:///etc/hosts"),
+    ] {
+        let args = json!({"action": "new", "url": url});
+        let (refusal, audit) = host.agent(command, name, args, None).await;
+        assert_eq!(refusal.unwrap_err().code, "url_refused", "{command} {url}");
+        assert!(!audit.contains_key("gate"), "{command}");
+    }
+    assert_eq!(judge.calls(), asked);
     host.look("close", &id, json!({})).await;
 }

@@ -537,7 +537,8 @@ own sandbox on for every renderer, GPU and utility process
 - where it goes. `open`, `goto`, `tab new` and a plan's navigation load
   only `http` and `https` addresses: `file:`, `chrome:`, `view-source:`,
   `data:` and every other scheme are refused with `url_refused` before
-  anything is sent, and a tab a page takes off the web anyway is blanked,
+  anything is sent (by the host, before the gatekeeper is asked, and by
+  the worker again), and a tab a page takes off the web anyway is blanked,
   never read. Both engines reach the network only through a proxy in the
   worker that resolves each name itself and connects only to the address
   it checked, so the host's loopback, link-local and private addresses

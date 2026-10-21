@@ -65,16 +65,9 @@ pub fn local_allowed(state_dir: &Path) -> Result<bool, Failure> {
 /// a host that resolves to a local address. A name that does not resolve
 /// is left to the engine, whose proxy refuses it again if it must.
 pub fn requested(url: &str, local: bool) -> Result<(), Failure> {
-    if url == "about:blank" {
+    let Some(parsed) = web(url)? else {
         return Ok(());
-    }
-    let parsed = url::Url::parse(url).map_err(|err| refused(format!("{url}: {err}")))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(refused(format!(
-            "this host's browser goes only to http and https addresses, not {}:",
-            parsed.scheme()
-        )));
-    }
+    };
     if local {
         return Ok(());
     }
@@ -89,6 +82,23 @@ pub fn requested(url: &str, local: bool) -> Result<(), Failure> {
         },
         Err(_) => Ok(()),
     }
+}
+
+/// Refuses an address of any scheme but `http` and `https` (`about:blank`
+/// aside, which is `None`): what the host checks before anything else, the
+/// gatekeeper included, and the worker again.
+pub fn web(url: &str) -> Result<Option<url::Url>, Failure> {
+    if url == "about:blank" {
+        return Ok(None);
+    }
+    let parsed = url::Url::parse(url).map_err(|err| refused(format!("{url}: {err}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(refused(format!(
+            "this host's browser goes only to http and https addresses, not {}:",
+            parsed.scheme()
+        )));
+    }
+    Ok(Some(parsed))
 }
 
 /// Whether a tab on `url` may be read: a web page, a blank one, a page's
