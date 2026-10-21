@@ -702,6 +702,13 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             }
         }
         Ok(identity) => {
+            // The dashboard's name for the caller, asked of Plow now: once
+            // the operation has run, nothing may wait between it and its
+            // audit record and answer.
+            let shown = match &host.dashboard {
+                Some(_) => Some(host.shown_name(&identity).await),
+                None => None,
+            };
             // An agent's exec, file or Google operation runs only if the
             // gatekeeper allows it.
             let gate = host.gate(&identity, request.chat.as_deref());
@@ -816,12 +823,12 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                 "{op}: {caller}: {decision}: {} {}",
                 done.outcome, done.audit_args
             ));
-            if let Some(dashboard) = &host.dashboard {
+            if let (Some(dashboard), Some(shown)) = (&host.dashboard, shown) {
                 let (target, result) =
                     dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed());
                 dashboard.call(Row {
                     at: jiff::Timestamp::now(),
-                    caller: host.shown_name(&identity).await,
+                    caller: shown,
                     op: op.to_string(),
                     target,
                     result,
