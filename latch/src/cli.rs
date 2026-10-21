@@ -122,6 +122,8 @@ pub enum Command {
     Rules(RulesArgs),
     /// The folders `latch serve` shares when it is named none: show them, or set them
     Shares(SharesArgs),
+    /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
+    Events(EventsArgs),
     /// Run this machine as a host, in the foreground, until stopped
     Serve(ServeArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
@@ -673,6 +675,19 @@ pub enum DevicesAction {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct EventsArgs {
+    /// Keep printing changes as they happen, until stopped (or, when stdin is a pipe, until it closes)
+    #[arg(long)]
+    pub follow: bool,
+    /// Pick up right after this cursor, from an earlier line; one that cannot be honoured gets `reset` and a fresh snapshot
+    #[arg(long, value_name = "CURSOR")]
+    pub after: Option<String>,
+    /// Only the host's state changes, no activity
+    #[arg(long)]
+    pub lifecycle_only: bool,
 }
 
 #[derive(Args, Debug)]

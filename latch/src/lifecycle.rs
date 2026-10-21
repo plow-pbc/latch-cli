@@ -116,9 +116,10 @@ pub fn now(state_dir: &Path) -> Host {
         };
     };
     let state = match (running, written.state) {
-        (true, Phase::Serving) => Phase::Serving,
-        // Locked, but this run has not written its first step yet.
-        (true, _) => Phase::Starting,
+        // Locked by a serve that has not written its first step yet: what
+        // is there is an earlier run's.
+        (true, _) if lock_holder(state_dir) != Some(written.pid) => Phase::Starting,
+        (true, phase) => phase,
         (false, Phase::Starting | Phase::Serving) => Phase::Error,
         (false, phase) => phase,
     };
@@ -137,6 +138,13 @@ pub fn now(state_dir: &Path) -> Host {
         run: Some(written.run),
         error,
     }
+}
+
+/// The pid `serve.lock` names (`latch serve (pid N, …)`).
+fn lock_holder(state_dir: &Path) -> Option<u32> {
+    let text = fs::read_to_string(state_dir.join("serve.lock")).ok()?;
+    let after = text.split_once("(pid ")?.1;
+    after.split([',', ')']).next()?.trim().parse().ok()
 }
 
 /// Whether a `latch serve` holds this folder's lock. The probe takes a
@@ -169,7 +177,8 @@ mod tests {
         assert_eq!(now(dir.path()), stopped);
         assert_eq!(now(&dir.path().join("missing")), stopped);
 
-        let lock = File::create(dir.path().join("serve.lock")).unwrap();
+        let mut lock = File::create(dir.path().join("serve.lock")).unwrap();
+        write!(lock, "latch serve (pid {}, /bin/latch)", std::process::id()).unwrap();
         // SAFETY: as in `holds_lock`.
         assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
         assert_eq!(now(dir.path()).state, Phase::Starting);

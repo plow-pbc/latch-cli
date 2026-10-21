@@ -13,6 +13,7 @@ mod credential;
 mod dashboard;
 mod devices;
 mod dial;
+mod events;
 mod exec;
 mod failure;
 mod files;
@@ -36,6 +37,7 @@ mod status;
 mod term;
 mod transfer;
 mod vault;
+mod watch;
 mod wire;
 mod worker;
 
@@ -96,7 +98,9 @@ fn main() -> ExitCode {
 async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
     match run(state_dir, command).await {
         Ok(output) => {
-            println!("{}", output.text);
+            if !output.text.is_empty() {
+                println!("{}", output.text);
+            }
             output.exit
         }
         Err(failure) => {
@@ -184,6 +188,14 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Shares(args) => to_json(shares::run(&state, args.action)?),
+        // Its lines, printed as they come, are its whole output.
+        Command::Events(args) => {
+            events::run(&state, args)?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
         Command::Exec(args) => {
             let mut request =
                 json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout });

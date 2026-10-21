@@ -1690,3 +1690,155 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
         .count();
     assert_eq!(statuses, 0, "{:?}", plow.seen());
 }
+
+/// A running `latch events`, its lines read as they come.
+struct Events {
+    child: std::process::Child,
+    lines: std::sync::mpsc::Receiver<Value>,
+}
+
+impl Events {
+    fn start(state: &Path, args: &[&str]) -> Events {
+        let mut child = latch_command(state, &[&["events"], args].concat(), &[])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let (send, lines) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            for line in stdout.lines() {
+                let _ = send.send(serde_json::from_str(&line.unwrap()).unwrap());
+            }
+        });
+        Events { child, lines }
+    }
+
+    fn next(&self) -> Value {
+        self.lines
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("no event within 20 s")
+    }
+
+    /// The next line that is not a host step or a connection's record.
+    fn next_activity(&self) -> Value {
+        loop {
+            let line = self.next();
+            if line["type"] != "host" && line["entry"]["op"] != "connect" {
+                return line;
+            }
+        }
+    }
+
+    /// Closes its stdin, as an app that went away does; it must exit.
+    fn close(mut self) -> std::process::ExitStatus {
+        drop(self.child.stdin.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "events outlived its stdin"
+            );
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+#[test]
+fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_restart() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let laptop = dir.path().join("laptop");
+    let token = dir.path().join("owner.token");
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        token.to_str().unwrap(),
+        "--name",
+        "laptop",
+    ];
+    assert_eq!(latch(&laptop, &args, &[]).status.code(), Some(0));
+    let exec = |word: &str| {
+        let output = latch(
+            &laptop,
+            &["exec", "--host", "host", "--", "echo", word],
+            &[],
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["audit_id"].clone()
+    };
+
+    let events = Events::start(&host, &["--follow"]);
+    let snapshot = events.next();
+    assert_eq!(snapshot["type"], "snapshot");
+    assert_eq!(snapshot["host"], json!({"state": "stopped"}));
+    assert_eq!(snapshot["activity"], json!([]));
+
+    let serve = serving(&host, &share, &relay);
+    let mut step = events.next();
+    while step["state"] != "serving" {
+        assert_eq!(step["type"], "host", "{step}");
+        step = events.next();
+    }
+    let first = exec("one");
+    let activity = events.next_activity();
+    assert_eq!(activity["type"], "activity");
+    assert_eq!(activity["entry"]["id"], first);
+    assert_eq!(activity["entry"]["op"], "exec");
+    assert_eq!(activity["entry"]["decision"], "allow");
+    let cursor = activity["cursor"].as_str().unwrap().to_string();
+    assert!(events.close().success());
+
+    // Missed while no one followed: picked up exactly, nothing twice.
+    let missed: Vec<Value> = ["two", "three", "four"]
+        .iter()
+        .map(|word| exec(word))
+        .collect();
+    let resumed = Events::start(&host, &["--follow", "--after", &cursor]);
+    let snapshot = resumed.next();
+    assert_eq!(snapshot["type"], "snapshot", "{snapshot}");
+    assert_eq!(snapshot["host"]["state"], "serving");
+    let ids: Vec<Value> = snapshot["activity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["op"] != "connect")
+        .map(|entry| entry["id"].clone())
+        .collect();
+    assert_eq!(ids, missed);
+    let fifth = exec("five");
+    assert_eq!(resumed.next_activity()["entry"]["id"], fifth);
+    assert!(resumed.close().success());
+
+    // The host restarted: the old cursor gets a reset and a fresh snapshot.
+    drop(serve);
+    let _serve = serving(&host, &share, &relay);
+    let after_restart = Events::start(&host, &["--follow", "--after", &cursor]);
+    assert_eq!(after_restart.next(), json!({"type": "reset"}));
+    let fresh = after_restart.next();
+    assert_eq!(fresh["type"], "snapshot");
+    assert_eq!(fresh["host"]["state"], "serving");
+    let replayed = fresh["activity"].as_array().unwrap();
+    assert!(replayed.iter().any(|entry| entry["id"] == fifth), "{fresh}");
+    assert!(after_restart.close().success());
+
+    let lifecycle = Events::start(&host, &["--follow", "--lifecycle-only"]);
+    assert_eq!(lifecycle.next()["activity"], json!([]));
+    exec("six");
+    drop(_serve);
+    let stopped = lifecycle.next();
+    assert_eq!(
+        (stopped["type"].clone(), stopped["state"].clone()),
+        (json!("host"), json!("stopped"))
+    );
+    assert!(lifecycle.close().success());
+}
