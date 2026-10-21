@@ -1,12 +1,11 @@
-//! The host's side of `latch vault`: the `vault` operation, for owner
-//! devices only. An agent's key gets exit 4. The owner's commands reach the
-//! vault the same way agents' calls reach the browser, over latch's own
-//! connection, even from the host's own machine (through a client state
-//! of its own): nothing edits the vault's files directly.
+//! The host's vault commands, shared by owner devices and local management.
+//! Agents get exit 4. Store transactions use a file lock across processes.
 //!
 //! The audit records which item and kind, never a value.
 
 use std::collections::HashMap;
+use std::fs::{self, OpenOptions};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -29,9 +28,21 @@ const PICK_WITHIN: Duration = Duration::from_secs(15 * 60);
 /// The host's one vault, opened on first use.
 pub struct Vault {
     dir: PathBuf,
-    store: Mutex<Option<OwnStore>>,
+    store: Mutex<Option<Cached>>,
     /// Open phone links, by the sha256 of their code (see `link.rs`).
     pub(super) links: Mutex<HashMap<String, super::link::Request>>,
+}
+
+struct Cached {
+    version: Version,
+    store: OwnStore,
+}
+
+#[derive(PartialEq, Eq)]
+struct Version {
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
 }
 
 impl Vault {
@@ -59,11 +70,41 @@ impl Vault {
         &self,
         f: impl FnOnce(&mut OwnStore) -> Result<T, Failure>,
     ) -> Result<T, Failure> {
-        let mut store = self.store.lock().expect("vault lock");
-        if store.is_none() {
-            *store = Some(OwnStore::open(&self.dir)?);
+        let mut cached = self.store.lock().expect("vault lock");
+        // Lock a stable sidecar: vault.json itself is replaced atomically on save.
+        let path = self.dir.join("vault.lock");
+        let io = |err| Failure::failed("vault_failed", format!("{}: {err}", path.display()));
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)
+            .map_err(io)?;
+        lock.lock().map_err(io)?;
+        let version = || -> Result<Version, Failure> {
+            let path = self.dir.join("vault.json");
+            let meta = fs::metadata(&path).map_err(|err| {
+                Failure::failed("vault_failed", format!("{}: {err}", path.display()))
+            })?;
+            Ok(Version {
+                inode: meta.ino(),
+                size: meta.len(),
+                modified: (meta.mtime(), meta.mtime_nsec()),
+            })
+        };
+        if cached.is_none() || version()? != cached.as_ref().expect("cached").version {
+            let store = OwnStore::open(&self.dir)?;
+            *cached = Some(Cached {
+                version: version()?,
+                store,
+            });
         }
-        f(store.as_mut().expect("opened"))
+        let cached = cached.as_mut().expect("opened");
+        let result = f(&mut cached.store);
+        cached.version = version()?;
+        result
     }
 }
 
@@ -83,23 +124,34 @@ pub async fn run(
         return done(Err(failure), audit);
     }
     let result = match command.as_str() {
-        "list" => vault.with(|store| Ok(json!({"items": store.list()}))),
-        "add" => add(vault, &args, &mut audit),
-        "edit" => edit(vault, &args, &mut audit),
         "link" => link::open(vault, here, &args, &mut audit),
-        "remove" => remove(vault, &args, &mut audit),
         "import" => import(vault, &args, send, recv, &mut audit).await,
-        _ => Err(Failure::usage(
-            "bad_command",
-            format!("unknown vault command {command:?}"),
-        )),
+        _ => manage(vault, &args, &mut audit),
     };
     done(result, audit)
 }
 
+/// Non-streaming management, after the caller has passed the owner check.
+pub(super) fn manage(
+    vault: &Vault,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    match args["command"].as_str().unwrap_or_default() {
+        "list" => vault.with(|store| Ok(json!({"items": store.list()}))),
+        "add" => add(vault, args, audit),
+        "edit" => edit(vault, args, audit),
+        "remove" => remove(vault, args, audit),
+        command => Err(Failure::usage(
+            "bad_command",
+            format!("unknown vault command {command:?}"),
+        )),
+    }
+}
+
 /// Only the owner's own devices may use the vault's commands; an agent's
 /// key, whoever's agent, gets exit 4.
-fn owner_only(kind: &str) -> Result<(), Failure> {
+pub(super) fn owner_only(kind: &str) -> Result<(), Failure> {
     if kind == "device" {
         return Ok(());
     }
@@ -533,5 +585,26 @@ mod tests {
             .unwrap();
         assert_eq!(outcome["saved"], 2);
         assert_eq!(vault.list_if_present().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    #[test]
+    fn a_cached_vault_reloads_edits_and_keeps_both_writers_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let serving = Vault::new(dir.path().into());
+        let local = Vault::new(dir.path().into());
+        assert!(serving.with(|s| Ok(s.list())).unwrap().is_empty());
+        let args = json!({"kind": "login", "title": "the owner", "sites": ["example.com"], "values": {"username": "the owner", "password": "synthetic-local-value"}});
+        add(&local, &args, &mut Map::new()).unwrap();
+        assert_eq!(
+            serving.with(|s| s.release("v1", "password")).unwrap(),
+            "synthetic-local-value"
+        );
+        add(&serving, &args, &mut Map::new()).unwrap();
+        assert_eq!(local.with(|s| Ok(s.list().len())).unwrap(), 2);
     }
 }

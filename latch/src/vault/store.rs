@@ -1,7 +1,7 @@
 //! The vault's backend interface, and latch's own store behind it.
 //!
 //! The own store is one file in the host's state directory, `vault.json`,
-//! written only by `latch serve`, atomically (a temporary file renamed over
+//! written by serve and local management under vault.lock, atomically (a temporary file renamed over
 //! it). Every item is sealed with AES-256-GCM under a random **data key**;
 //! the data key is sealed under a **custody key**, kept in `vault.key`
 //! beside it, owner-only (0600). Both files sit in the state directory,

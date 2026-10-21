@@ -104,7 +104,7 @@ pub enum Command {
 
 #[derive(Args, Debug)]
 pub struct VaultArgs {
-    /// Name of the host to use
+    /// Host to use (default: this machine's vault; naming this peer is local too)
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
     #[command(subcommand)]
@@ -171,7 +171,7 @@ pub enum VaultCommand {
         #[arg(long)]
         ask: Vec<String>,
     },
-    /// A one-time link that adds an item from your phone: the phone page
+    /// A one-time link through a running serve that adds an item from your phone: the phone page
     /// connects to the host itself, and the value goes straight there.
     /// Prints the link, and a QR code on a terminal; it works once, for 15
     /// minutes

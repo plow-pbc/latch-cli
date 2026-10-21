@@ -290,13 +290,6 @@ async fn run_host(
     let heartbeat_state = StateDir {
         path: state.path.clone(),
     };
-    let mut heartbeat = tokio::spawn(heartbeat::run(
-        plow.clone(),
-        endpoint.clone(),
-        heartbeat_state,
-        config,
-        dashboard.clone(),
-    ));
 
     let vault = crate::vault::host::Vault::new(workers.state_dir.clone());
     let host = Arc::new(Host {
@@ -311,12 +304,24 @@ async fn run_host(
         gatekeeper,
         binary,
     });
+    let local_links = crate::vault::local::LinkSocket::bind(&state.path)?;
     lifecycle::record(&state.path, Phase::Serving, None)?;
+    let mut heartbeat = tokio::spawn(heartbeat::run(
+        host.plow.clone(),
+        endpoint.clone(),
+        heartbeat_state,
+        config,
+        host.dashboard.clone(),
+    ));
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
     let mut stop = Box::pin(stop_requested(terminate));
     loop {
         tokio::select! {
+            accepted = local_links.listener.accept() => {
+                let (socket, _) = accepted.map_err(|err| Failure::failed("local_socket", err.to_string()))?;
+                tokio::spawn(serve_local_link(host.clone(), socket));
+            }
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => {
                     tokio::spawn(serve_connection(host.clone(), incoming));
@@ -739,6 +744,46 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
         }
     };
     answer(&mut send, &response).await;
+}
+
+/// Owner-only local link creation; phone requests still use the live iroh endpoint.
+async fn serve_local_link(host: Arc<Host>, mut socket: tokio::net::UnixStream) {
+    let Ok(Ok(bytes)) =
+        tokio::time::timeout(crate::dial::ANSWER_WITHIN, wire::read_frame(&mut socket)).await
+    else {
+        return;
+    };
+    let Ok(args) = serde_json::from_slice::<Value>(&bytes) else {
+        return;
+    };
+    let mut audit_args = serde_json::Map::new();
+    audit_args.insert("command".into(), serde_json::json!("link"));
+    let result = if host.binary.replaced() {
+        Err(host_upgraded())
+    } else if args["command"] == "link" {
+        link::open(&host.vault, &host.here(), &args, &mut audit_args)
+    } else {
+        Err(Failure::usage(
+            "bad_command",
+            "this socket only creates phone links".into(),
+        ))
+    };
+    let done = crate::vault::host::done(result, audit_args);
+    let mut record = audit::record(
+        &host.endpoint.id().to_string(),
+        None,
+        "vault",
+        decision(&done.response),
+        &done.outcome,
+    );
+    record.args = done.audit_args;
+    let response = match host.append(record) {
+        Ok(id) => with_audit_id(done.response, id),
+        Err(message) => failed("audit_failed", message),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&response) {
+        let _ = wire::write_frame(&mut socket, &bytes).await;
+    }
 }
 
 /// A phone page's connection (see `vault/link.rs`). Its key is a

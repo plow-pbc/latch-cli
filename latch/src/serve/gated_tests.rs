@@ -844,3 +844,66 @@ async fn exec_credentials_reach_the_judge_and_worker_but_not_logs_or_audit() {
         assert!(!log.contains(secret), "credential in serve.log ({mode})");
     }
 }
+
+#[tokio::test]
+async fn local_vault_edits_reach_a_running_hosts_cached_release_path() {
+    use crate::vault::store::Backend;
+    use tokio::io::AsyncWriteExt;
+    let t = start(a_chat(always_covered)).await;
+    let state = crate::state::StateDir {
+        path: t.state.clone(),
+    };
+    state.create().unwrap();
+    let key = state.load_or_create_key().unwrap().0.public().to_string();
+    state
+        .save_config(&crate::state::Config {
+            api_url: "http://127.0.0.1:9".into(),
+            peer: serde_json::from_value(
+                json!({"key": key, "name": "host", "kind": "device", "relay_url": null}),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    assert!(
+        t.host
+            .vault
+            .with(|store| Ok(store.list()))
+            .unwrap()
+            .is_empty()
+    );
+    let mut child = tokio::process::Command::new(latch_binary())
+        .arg("--state-dir")
+        .arg(&t.state)
+        .args([
+            "vault",
+            "add",
+            "--kind",
+            "login",
+            "--title",
+            "the owner",
+            "--site",
+            "example.com",
+        ])
+        .env_remove("LATCH_HOST")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"synthetic-fill-value\n")
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    assert!(output.status.success(), "local add failed");
+    assert_eq!(
+        t.host
+            .vault
+            .with(|store| store.release("v1", "password"))
+            .unwrap(),
+        "synthetic-fill-value"
+    );
+}
