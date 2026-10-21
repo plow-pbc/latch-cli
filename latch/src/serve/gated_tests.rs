@@ -100,7 +100,7 @@ async fn start_with(
     let host = Arc::new(Host {
         plow: plow.client(),
         audit: Arc::new(Mutex::new(
-            AuditLog::open(state.join("audit.ndjson")).unwrap(),
+            AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
         )),
         dashboard,
         workers: WorkerSetup {
@@ -189,7 +189,7 @@ impl TestHost {
 
     /// Every audit record, opened with the key, one JSON line each.
     fn audit_text(&self) -> String {
-        crate::audit::read_all(&self.state.join("audit.ndjson"))
+        crate::audit::read_all(&self.state.join(crate::audit::FILE))
             .unwrap()
             .iter()
             .map(|record| serde_json::to_string(record).unwrap() + "\n")
@@ -884,7 +884,7 @@ async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
     // The audit keeps the command as it ran, sealed on disk.
     let records = t.audit();
     assert_eq!(records[0]["args"]["argv"], argv);
-    let on_disk = std::fs::read_to_string(t.state.join("audit.ndjson")).unwrap();
+    let on_disk = std::fs::read_to_string(t.state.join(crate::audit::FILE)).unwrap();
     assert!(!on_disk.contains(secret) && !on_disk.contains("--token"));
 
     // serve.log and the dashboard show it with the credential hidden.

@@ -274,7 +274,7 @@ async fn run_host(
             .map_err(|why| Failure::failed("not_logged_in", why))?,
         Box::new(rules),
     );
-    let audit = AuditLog::open(state.path.join("audit.ndjson"))?;
+    let audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
     log(&format!("audit log verified: {} records", audit.len()));
     log(&format!("commands in this log: {}", crate::redact::NOTE));
     let names: Vec<String> = workers

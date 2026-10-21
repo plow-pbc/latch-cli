@@ -88,10 +88,9 @@ No Homebrew tap or Mac app is included.
   chain without the key; `latch audit rotate-key` starts a new key and keeps
   the old ones (a running `latch serve` uses it once restarted). The serve
   dashboard and `serve.log` hide credential-looking values in commands, best
-  effort: some can slip through. A plaintext log from an older latch is
-  converted on first use; one that fails its checks is left as it is, with a
-  warning, and only `latch serve` and local `latch rules` (which write it)
-  refuse to run until it is fixed.
+  effort: some can slip through. The sealed log is
+  `audit.sealed.ndjson`; a plaintext `audit.ndjson` from an older latch is
+  never read, and latch says it can be deleted.
 - `latch shares set ~/work [--allow-read PATH]` saves the folders, and the
   read-only paths, a `latch serve` named none shares. `latch status --local`,
   `latch events --follow` and `latch login --events` are for an app: see

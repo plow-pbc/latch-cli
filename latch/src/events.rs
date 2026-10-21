@@ -34,7 +34,7 @@ pub fn run(state: &StateDir, args: EventsArgs) -> Result<(), Failure> {
     // A folder that does not exist yet has a stopped host and no activity;
     // making it lets the watch start before the first login.
     state.create()?;
-    let audit = state.path.join("audit.ndjson");
+    let audit = state.path.join(audit::FILE);
     let watching = |err: std::io::Error| {
         Failure::failed("watch_failed", format!("{}: {err}", state.path.display()))
     };
@@ -148,7 +148,7 @@ impl Follower {
     fn fresh(&mut self) -> Result<Vec<Record>, Failure> {
         self.log = Tail::default();
         let Some(mut records) = self.read_new()? else {
-            let path = self.dir.join("audit.ndjson");
+            let path = self.dir.join(audit::FILE);
             let message = format!("{}: the audit log fails its checks", path.display());
             return Err(Failure::failed("audit_broken", message));
         };
@@ -238,7 +238,7 @@ impl Follower {
     /// the log no longer continues what was read (shorter, or a record
     /// that was changed or does not chain on).
     fn read_new(&mut self) -> Result<Option<Vec<Record>>, Failure> {
-        let path = self.dir.join("audit.ndjson");
+        let path = self.dir.join(audit::FILE);
         let mut file = match File::open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -316,7 +316,7 @@ mod tests {
     use crate::audit::{self, AuditLog};
 
     fn append(dir: &Path, op: &str) -> String {
-        let mut log = AuditLog::open(dir.join("audit.ndjson")).unwrap();
+        let mut log = AuditLog::open(dir.join(audit::FILE)).unwrap();
         log.append(audit::record("k1", None, op, "allow", "ok"))
             .unwrap()
     }
@@ -331,7 +331,7 @@ mod tests {
         assert_eq!((cursor.run.as_str(), cursor.count), ("-", 1));
 
         // Half a record: nothing yet; the rest of it: one entry.
-        let path = dir.path().join("audit.ndjson");
+        let path = dir.path().join(audit::FILE);
         let whole = fs_line(dir.path(), "file_get");
         let (start, rest) = whole.split_at(20);
         std::fs::OpenOptions::new()
@@ -367,7 +367,7 @@ mod tests {
         append(dir.path(), "exec");
         let mut follower = Follower::new(dir.path(), true);
         follower.fresh().unwrap();
-        let path = dir.path().join("audit.ndjson");
+        let path = dir.path().join(audit::FILE);
 
         // A record that chains on but was edited after it was hashed.
         let mut edited: Value = serde_json::from_str(&fs_line(dir.path(), "exec")).unwrap();
@@ -404,7 +404,7 @@ mod tests {
     fn an_entry_is_the_same_shape_as_before_and_carries_no_command() {
         let dir = tempfile::tempdir().unwrap();
         let secret = "synthetic-events-credential-2b9c";
-        let mut log = AuditLog::open(dir.path().join("audit.ndjson")).unwrap();
+        let mut log = AuditLog::open(dir.path().join(audit::FILE)).unwrap();
         let mut exec = audit::record("k1", Some("agent-uid".into()), "exec", "allow", "ok");
         exec.args = json!({"argv": ["curl", "-H", format!("Authorization: Bearer {secret}")]});
         let id = log.append(exec).unwrap();
@@ -423,7 +423,7 @@ mod tests {
 
     /// The line `append` would write next, without writing it.
     fn fs_line(dir: &Path, op: &str) -> String {
-        let path = dir.join("audit.ndjson");
+        let path = dir.join(audit::FILE);
         let before = std::fs::read_to_string(&path).unwrap();
         append(dir, op);
         let after = std::fs::read_to_string(&path).unwrap();

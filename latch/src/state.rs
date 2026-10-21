@@ -8,10 +8,10 @@
 //!   host's owner token). An agent's own credential is not copied here; see
 //!   `credential.rs`.
 //! - `config.json`: the Plow API URL and this peer's record as Plow returned it.
-//! - `audit.ndjson`, on a host: its audit log, each record sealed (see
-//!   `audit.rs`); `audit.keys`*: the keys that seal it; `audit.lock`: held
-//!   by what writes it; `audit.ndjson.plain`: a converted plaintext log,
-//!   for one run after its conversion (see `audit::absorb_old`).
+//! - `audit.sealed.ndjson`, on a host: its audit log, each record sealed
+//!   (see `audit.rs`); `audit.keys`*: the keys that seal it; `audit.lock`:
+//!   held by what writes it. A plaintext `audit.ndjson` from an older latch
+//!   is never read, and every command says it can be deleted.
 //! - `serve.log`, on a host: what `latch serve` logs while its dashboard
 //!   has the terminal.
 //! - `vault.json` and `vault.key`*, on a host: the vault and its custody key
@@ -55,14 +55,10 @@ pub struct Config {
 
 /// The layout of the files in a state folder. A latch reads only a folder
 /// of exactly its own format: an older latch would misread a newer folder (or
-/// silently drop what it does not know when it saves). Raise it only with a
-/// change an older latch would misread, together with the explicit upgrade
-/// for that change.
-///
-/// Format 2 seals the audit log. A folder of format 1 (a plaintext log) is
-/// upgraded on first use by `audit::upgrade`, and marked 2 only once that is
-/// done, so an upgrade cut short is picked up next time.
-const FORMAT: u32 = 2;
+/// silently drop what it does not know when it saves), and no newer latch
+/// converts older folders yet. Raise it only with a change an older latch
+/// would misread, together with the explicit upgrade for that change.
+const FORMAT: u32 = 1;
 
 /// What `latch serve` shares when it is named no folders, and what it lets
 /// callers read besides (`--allow-read`).
@@ -128,10 +124,9 @@ impl StateDir {
         self.check_format()
     }
 
-    /// Refuses a folder of another format than this latch's, and upgrades
-    /// one of format 1 (see `FORMAT`). A folder without a marker was made
-    /// before there was one, in format 1; a folder that does not exist yet
-    /// is marked by `create`.
+    /// Refuses a folder of another format than this latch's. A folder
+    /// without a marker was made before there was one, in format 1, and is
+    /// marked now; a folder that does not exist yet is marked by `create`.
     pub fn check_format(&self) -> Result<(), Failure> {
         let path = self.path.join("latch.json");
         let text = match fs::read_to_string(&path) {
@@ -140,8 +135,13 @@ impl StateDir {
                 if !self.path.is_dir() {
                     return Ok(());
                 }
-                // A folder from before there was a marker is format 1.
-                return self.upgraded();
+                let marker = Marker {
+                    format: FORMAT,
+                    written_by: crate::cli::version().to_string(),
+                };
+                let text = serde_json::to_string_pretty(&marker).expect("marker serializes") + "\n";
+                return write_private(&path, text.as_bytes())
+                    .map_err(|err| self.io_failure(&path, err));
             }
             Err(err) => return Err(self.io_failure(&path, err)),
         };
@@ -149,18 +149,10 @@ impl StateDir {
             let message = format!("{} is not valid: {err}", path.display());
             Failure::failed("bad_state", message)
         })?;
-        if marker.format == 1 {
-            return self.upgraded();
-        }
         let fix = match marker.format.cmp(&FORMAT) {
             std::cmp::Ordering::Equal => {
-                // What an older latch's writer added to the plaintext log
-                // after it was converted (see `audit::absorb_old`).
-                if let Err(failure) = crate::audit::absorb_old(&self.path) {
-                    eprintln!(
-                        "latch: warning: the audit log's old plaintext copy was kept: {}",
-                        failure.message
-                    );
+                if let Some(notice) = crate::audit::plaintext_notice(&self.path) {
+                    eprintln!("{notice}");
                 }
                 return Ok(());
             }
@@ -181,29 +173,6 @@ impl StateDir {
     /// Where this folder keeps its secrets (see `secrets.rs`).
     pub fn secrets(&self) -> Result<Secrets, Failure> {
         Secrets::open(&self.path)
-    }
-
-    /// Upgrades a format-1 folder (see `FORMAT`) and marks it this format.
-    /// An audit log that can't be converted (it fails its checks, say)
-    /// leaves the folder at format 1, says so, and lets the command go on:
-    /// only what writes the audit (a host, a local `rules` command) refuses
-    /// it, when it opens the log. The next command tries again.
-    fn upgraded(&self) -> Result<(), Failure> {
-        if let Err(failure) = crate::audit::upgrade(&self.path) {
-            eprintln!(
-                "latch: warning: the audit log was not converted to this latch's sealed \
-                 format yet, and until it is, commands that write it are refused: {}",
-                failure.message
-            );
-            return Ok(());
-        }
-        let path = self.path.join("latch.json");
-        let marker = Marker {
-            format: FORMAT,
-            written_by: crate::cli::version().to_string(),
-        };
-        let text = serde_json::to_string_pretty(&marker).expect("marker serializes") + "\n";
-        write_private(&path, text.as_bytes()).map_err(|err| self.io_failure(&path, err))
     }
 
     /// Loads this peer's key, generating and saving it on first use.
@@ -418,14 +387,14 @@ mod tests {
         assert!(!state.path.exists());
         state.create().unwrap();
         let written = fs::read_to_string(&marker).unwrap();
-        assert!(written.contains("\"format\": 2"), "{written}");
+        assert!(written.contains("\"format\": 1"), "{written}");
 
-        // A folder from before the marker is format 1, upgraded and marked.
+        // A folder from before the marker is format 1, and is marked.
         fs::remove_file(&marker).unwrap();
         state.check_format().unwrap();
         assert_eq!(fs::read_to_string(&marker).unwrap(), written);
 
-        for (format, fix) in [(3, "update this latch"), (0, "use the latch that wrote it")] {
+        for (format, fix) in [(2, "update this latch"), (0, "use the latch that wrote it")] {
             let other = format!(r#"{{"format": {format}, "written_by": "9.9.9"}}"#);
             fs::write(&marker, &other).unwrap();
             let refused = state.check_format().unwrap_err();
@@ -433,52 +402,6 @@ mod tests {
             assert!(refused.message.contains(fix), "{}", refused.message);
             assert!(refused.message.contains("9.9.9"), "{}", refused.message);
             assert_eq!(fs::read_to_string(&marker).unwrap(), other);
-        }
-    }
-
-    #[test]
-    fn a_format_1_folder_is_marked_2_only_once_its_audit_is_sealed() {
-        let dir = test_dir();
-        let state = StateDir::new(Some(dir.path().join("state"))).unwrap();
-        fs::create_dir(&state.path).unwrap();
-        let marker = state.path.join("latch.json");
-        let last = crate::audit::write_plaintext_log(&state.path, &["connect", "exec"]);
-        let audit = state.path.join("audit.ndjson");
-
-        // A tampered old log is not converted: the folder stays 1, the
-        // command goes on, and opening the log to write it is refused.
-        let good = fs::read_to_string(&audit).unwrap();
-        fs::write(&audit, good.replacen("connect", "oops", 1)).unwrap();
-        fs::write(&marker, r#"{"format": 1, "written_by": "0.1.0"}"#).unwrap();
-        state.check_format().unwrap();
-        assert!(
-            fs::read_to_string(&marker)
-                .unwrap()
-                .contains("\"format\": 1")
-        );
-        let refused = crate::audit::AuditLog::open(audit.clone()).err().unwrap();
-        assert_eq!(refused.code, "audit_broken");
-
-        fs::write(&audit, &good).unwrap();
-        state.check_format().unwrap();
-        assert!(
-            fs::read_to_string(&marker)
-                .unwrap()
-                .contains("\"format\": 2")
-        );
-        let sealed = fs::read_to_string(&audit).unwrap();
-        assert!(!sealed.contains("old-caller"), "{sealed}");
-        let records = crate::audit::read_all(&audit).unwrap();
-        assert_eq!(records[0].args["last_hash"], last);
-        assert_eq!(records.len(), 3);
-        // The old log, kept for a writer that still had it open, goes on
-        // the next run, and no plaintext copy is left.
-        assert!(state.path.join("audit.ndjson.plain").exists());
-        state.check_format().unwrap();
-        assert!(!state.path.join("audit.ndjson.plain").exists());
-        for entry in fs::read_dir(&state.path).unwrap() {
-            let body = fs::read(entry.unwrap().path()).unwrap_or_default();
-            assert!(!String::from_utf8_lossy(&body).contains("old-caller"));
         }
     }
 

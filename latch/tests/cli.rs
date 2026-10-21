@@ -984,50 +984,34 @@ fn an_agent_gets_owner_only_for_rules_on_its_own_state() {
 }
 
 #[test]
-fn an_old_audit_log_that_cannot_be_converted_refuses_only_what_writes_it() {
+fn an_older_plaintext_audit_is_left_alone_and_a_sealed_one_starts_beside_it() {
     let (_dir, state, _key) = owner_host();
-    // A folder from before the sealed audit, its plaintext log damaged.
-    fs::write(
-        state.join("latch.json"),
-        r#"{"format": 1, "written_by": "0.1.0"}"#,
-    )
-    .unwrap();
-    fs::write(state.join("audit.ndjson"), "not a record\n").unwrap();
+    let old = "{\"op\":\"exec\",\"caller\":\"older-latch\"}\n";
+    fs::write(state.join("audit.ndjson"), old).unwrap();
 
-    let shares = latch(&state, &["shares"], &[]);
-    assert_eq!(shares.status.code(), Some(0), "{shares:?}");
-    let warned = String::from_utf8_lossy(&shares.stderr);
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let said = String::from_utf8_lossy(&set.stderr);
+    assert_eq!(said.lines().count(), 1, "{said}");
     assert!(
-        warned.contains("warning: the audit log was not converted"),
-        "{warned}"
+        said.contains("audit.ndjson is an older latch's plaintext audit log"),
+        "{said}"
     );
-    let local = latch(&state, &["status", "--local"], &[]);
-    assert_eq!(local.status.code(), Some(0), "{local:?}");
+    assert!(said.contains("can be deleted"), "{said}");
 
-    let rules = latch(&state, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(rules.status.code(), Some(1), "{rules:?}");
-    let error: Value = serde_json::from_slice(
-        rules
-            .stderr
-            .split(|&b| b == b'\n')
-            .rev()
-            .find(|line| line.starts_with(b"{"))
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(error["error"]["code"], "audit_broken");
-    assert!(!state.join("rules/host.txt").exists());
-    assert!(
-        fs::read_to_string(state.join("latch.json"))
-            .unwrap()
-            .contains("\"format\": 1")
-    );
+    // Neither read nor changed; the new record is in the sealed log.
+    assert_eq!(fs::read_to_string(state.join("audit.ndjson")).unwrap(), old);
+    let records = audit_records(&state);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["op"], "rules");
+    let sealed = fs::read_to_string(state.join("audit.sealed.ndjson")).unwrap();
+    assert!(!sealed.contains("Never send email") && !sealed.contains("rules"));
 }
 
 #[test]
 fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
     let (_dir, state, _key) = owner_host();
-    fs::write(state.join("audit.ndjson"), "not a record\n").unwrap();
+    fs::write(state.join("audit.sealed.ndjson"), "not a record\n").unwrap();
     let output = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -1040,7 +1024,7 @@ fn a_local_rules_command_on_an_audit_log_it_cannot_write_changes_nothing() {
     let (_dir, state, _key) = owner_host();
     let show = latch(&state, &["rules", "show"], &[]);
     assert_eq!(show.status.code(), Some(0), "{show:?}");
-    let log = state.join("audit.ndjson");
+    let log = state.join("audit.sealed.ndjson");
     fs::set_permissions(&log, std::os::unix::fs::PermissionsExt::from_mode(0o400)).unwrap();
     let output = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
