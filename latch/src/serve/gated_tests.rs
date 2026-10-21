@@ -105,6 +105,9 @@ async fn start_with(
         dashboard,
         workers: WorkerSetup {
             areas: vec![area.clone()],
+            reads: vec![],
+            hidden: vec![],
+            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: state.clone(),
             program: latch_binary(),
         },

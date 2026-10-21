@@ -14,7 +14,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,7 +41,8 @@ use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
-use crate::state::{Config, StateDir};
+use crate::state::{self, Config, StateDir};
+use crate::state_folders::StateFolders;
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
@@ -151,6 +151,7 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 pub async fn run(
     state: &StateDir,
     folders: &[PathBuf],
+    allow_read: &[PathBuf],
     show_dashboard: bool,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
@@ -178,6 +179,7 @@ pub async fn run(
     let result = run_locked(
         state,
         folders,
+        allow_read,
         show_dashboard,
         deny_exec,
         state_dir,
@@ -201,21 +203,35 @@ pub async fn run(
 async fn run_locked(
     state: &StateDir,
     folders: &[PathBuf],
+    allow_read: &[PathBuf],
     show_dashboard: bool,
     deny_exec: DenyExec,
     state_dir: PathBuf,
     program: PathBuf,
 ) -> Result<(), Failure> {
-    // Named folders win; with none, the ones `latch shares set` saved.
+    // Named folders (with their `--allow-read`) win; with none, what
+    // `latch shares set` saved.
     let saved;
-    let folders = if folders.is_empty() {
+    let (folders, allow_read) = if folders.is_empty() {
         saved = state.load_shares()?;
-        &saved[..]
+        (&saved.folders[..], &saved.allow_read[..])
     } else {
-        folders
+        (folders, allow_read)
     };
+    let hidden = hidden_paths();
+    let areas = shared_folders(folders, std::env::home_dir().as_deref())?;
+    let reads = allowed_reads(
+        allow_read,
+        std::env::home_dir().as_deref(),
+        &hidden,
+        &state_dir,
+    )?;
+    let roots: Vec<PathBuf> = areas.iter().chain(&reads).cloned().collect();
     let workers = WorkerSetup {
-        areas: shared_folders(folders)?,
+        state_folders: StateFolders::new(&roots, &state_dir),
+        areas,
+        reads,
+        hidden,
         state_dir,
         program,
     };
@@ -266,6 +282,17 @@ async fn run_host(
         .map(|area| area.display().to_string())
         .collect();
     log(&format!("sharing: {}", names.join(", ")));
+    if !workers.reads.is_empty() {
+        let reads: Vec<String> = workers
+            .reads
+            .iter()
+            .map(|read| read.display().to_string())
+            .collect();
+        log(&format!(
+            "also readable, never written: {}",
+            reads.join(", ")
+        ));
+    }
     if let Some(refused) = deny_exec.describe() {
         log(&refused);
     }
@@ -533,8 +560,7 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
         .mode(0o600)
         .open(&path)
         .map_err(io)?;
-    // SAFETY: flock only reads the descriptor, which `file` keeps open.
-    let try_lock = || unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    let try_lock = || file.try_lock().is_ok();
     let mut locked = try_lock();
     for _ in 0..20 {
         if locked {
@@ -570,9 +596,11 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
 /// checked now, so a typo is a plain error rather than refused files later.
-/// Any folder may be shared, the home folder and `/` included: the sandbox
-/// always hides the state folder, even inside a shared one.
-pub fn shared_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
+/// Any folder may be shared but `home` (the home folder) and the folders
+/// that hold its `Library`, where macOS keeps mail, messages and the like:
+/// share the projects in it instead. The sandbox hides the state folder and
+/// the never-readable places even inside a shared folder.
+pub fn shared_folders(folders: &[PathBuf], home: Option<&Path>) -> Result<Vec<PathBuf>, Failure> {
     if folders.is_empty() {
         let message = "name the folders to share, e.g. `latch serve ~/code`, or save them \
                        with `latch shares set ~/code`"
@@ -591,9 +619,89 @@ pub fn shared_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
         if !area.is_dir() {
             return Err(refuse("it is not a folder"));
         }
+        if holds_library(&area, home) {
+            return Err(refuse(HOLDS_LIBRARY));
+        }
         areas.push(area);
     }
     Ok(areas)
+}
+
+/// Whether the real path `path` is the home folder's `Library`, where macOS
+/// keeps mail, messages and the like, or a folder that holds it (the home
+/// folder, `/Users`, `/`). Such a folder is neither shared nor opted in to.
+fn holds_library(path: &Path, home: Option<&Path>) -> bool {
+    home.is_some_and(|home| {
+        let home = home.canonicalize().unwrap_or(home.to_path_buf());
+        home.join("Library").starts_with(path)
+    })
+}
+
+const HOLDS_LIBRARY: &str = "it holds the home folder's Library (mail, messages, keychains); name the folders in it you need";
+
+/// The places no worker may read or write, even inside a shared folder:
+/// the credentials in the home folder (`sandbox::never_readable`). The
+/// state folder is hidden as well, on its own terms (see `sandbox.rs`).
+pub fn hidden_paths() -> Vec<PathBuf> {
+    let paths = std::env::home_dir()
+        .map(|home| crate::sandbox::never_readable(&home))
+        .unwrap_or_default();
+    with_targets(paths)
+}
+
+/// `paths`, each followed by where it really is when a link leads
+/// elsewhere (`~/.docker/config.json` to `~/private/login.json`, say).
+/// Resolved once, when the host starts, and kept: a worker that removes
+/// the link must not uncover its target to the next.
+fn with_targets(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut all = Vec::new();
+    for path in paths {
+        let target = path.canonicalize().ok().filter(|real| *real != path);
+        all.push(path);
+        all.extend(target);
+    }
+    all
+}
+
+/// The paths `--allow-read` names, which workers may read but not write:
+/// each made absolute and checked now, as shared folders are. One inside a
+/// hidden path or the state folder is refused, since no worker could read
+/// it anyway; one that holds them is allowed, and they stay hidden in it,
+/// but not one that holds the home folder's `Library`, as with shares.
+pub fn allowed_reads(
+    paths: &[PathBuf],
+    home: Option<&Path>,
+    hidden: &[PathBuf],
+    state_dir: &Path,
+) -> Result<Vec<PathBuf>, Failure> {
+    let mut reads = Vec::new();
+    for path in paths {
+        let refuse = |code: &str, why: String| {
+            let message = format!("cannot allow reads of {}: {why}", path.display());
+            Failure::usage(code, message)
+        };
+        let real = path
+            .canonicalize()
+            .map_err(|_| refuse("bad_folder", "it does not exist".to_string()))?;
+        if holds_library(&real, home) {
+            return Err(refuse("bad_folder", HOLDS_LIBRARY.to_string()));
+        }
+        let in_state = real.ancestors().find(|dir| state::is_state_folder(dir));
+        let hidden = hidden.iter().map(PathBuf::as_path).chain([state_dir]);
+        let never = hidden
+            .map(|never| never.canonicalize().unwrap_or(never.to_path_buf()))
+            .find(|never| real.starts_with(never))
+            .or(in_state.map(Path::to_path_buf));
+        if let Some(never) = never {
+            let why = format!(
+                "{} holds credentials or latch's own state, which no caller may ever read",
+                never.display()
+            );
+            return Err(refuse("never_readable", why));
+        }
+        reads.push(real);
+    }
+    Ok(reads)
 }
 
 /// Finishes when the host is asked to stop: Ctrl-C (SIGINT) in a terminal,
@@ -1248,21 +1356,28 @@ mod tests {
         }
         std::fs::write(home.join("notes.txt"), b"").unwrap();
 
+        std::fs::create_dir_all(home.join("Library/Developer")).unwrap();
+        let shared = |folders: &[PathBuf]| shared_folders(folders, Some(&home));
+
         assert_eq!(
-            shared_folders(&[code.join("../docs"), code.clone()]).unwrap(),
+            shared(&[code.join("../docs"), code.clone()]).unwrap(),
             [docs, code]
         );
-        // The home folder and `/` too: the state folder inside is hidden by the sandbox.
+        // Inside the Library, but not what holds it.
         assert_eq!(
-            shared_folders(&[home.clone(), PathBuf::from("/")]).unwrap(),
-            [home.clone(), PathBuf::from("/")]
+            shared(&[home.join("Library/Developer")]).unwrap(),
+            [home.join("Library/Developer")]
         );
-        assert_eq!(shared_folders(&[]).unwrap_err().code, "no_folders");
+        assert_eq!(shared(&[]).unwrap_err().code, "no_folders");
         for (folder, why) in [
             (home.join("missing"), "does not exist"),
             (home.join("notes.txt"), "not a folder"),
+            (home.clone(), "Library"),
+            (home.join("Library"), "Library"),
+            (home.join(".."), "Library"),
+            (PathBuf::from("/"), "Library"),
         ] {
-            let failure = shared_folders(std::slice::from_ref(&folder)).unwrap_err();
+            let failure = shared(std::slice::from_ref(&folder)).unwrap_err();
             assert_eq!(failure.code, "bad_folder", "{folder:?}");
             assert!(
                 failure.message.contains(why),
@@ -1270,6 +1385,80 @@ mod tests {
                 failure.message
             );
         }
+    }
+
+    #[test]
+    fn an_opt_in_inside_credentials_or_state_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let state = home.join("state");
+        for path in [".ssh", ".config/gh", "code", "state/keys"] {
+            std::fs::create_dir_all(home.join(path)).unwrap();
+        }
+        std::fs::write(home.join(".ssh/id_ed25519"), b"").unwrap();
+        let hidden = crate::sandbox::never_readable(&home);
+        let allowed = |path: &str| allowed_reads(&[home.join(path)], Some(&home), &hidden, &state);
+
+        // A folder that holds them is allowed (the sandbox hides them in
+        // it), unless it holds the Library: the home folder, or above it.
+        std::fs::create_dir_all(home.join("code/.ssh")).unwrap();
+        std::fs::create_dir_all(home.join("Library")).unwrap();
+        let in_code = crate::sandbox::never_readable(&home.join("code"));
+        let reads = allowed_reads(&[home.join("code")], None, &in_code, &state);
+        assert_eq!(reads.unwrap(), [home.join("code")]);
+        assert_eq!(allowed("code/../code").unwrap(), [home.join("code")]);
+        for path in [".", "..", "Library"] {
+            let failure = allowed(path).unwrap_err();
+            assert_eq!(failure.code, "bad_folder", "{path}");
+            assert!(failure.message.contains("Library"), "{path}");
+        }
+        for path in [".ssh", ".ssh/id_ed25519", ".config/gh", "state/keys"] {
+            let failure = allowed(path).unwrap_err();
+            assert_eq!(failure.code, "never_readable", "{path}");
+        }
+        assert_eq!(allowed("missing").unwrap_err().code, "bad_folder");
+    }
+
+    #[test]
+    fn an_opt_in_inside_another_state_folder_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for path in ["share/a/peer/sub", "share/b", "share/d/old"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+        }
+        let marker = r#"{"format": 1, "written_by": "test"}"#;
+        std::fs::write(root.join("share/a/peer/latch.json"), marker).unwrap();
+        // Made before the marker: a key and a Plow login, no latch.json.
+        std::fs::write(root.join("share/d/old/key"), "k").unwrap();
+        std::fs::write(root.join("share/d/old/plow-token"), "t").unwrap();
+        // A key alone is anyone's.
+        std::fs::write(root.join("share/b/key"), "k").unwrap();
+
+        let state = root.join("own-state");
+        for path in ["share/a/peer/sub", "share/d/old"] {
+            let inside = allowed_reads(&[root.join(path)], None, &[], &state);
+            assert_eq!(inside.unwrap_err().code, "never_readable", "{path}");
+        }
+        let beside = allowed_reads(&[root.join("share/b")], None, &[], &state);
+        assert_eq!(beside.unwrap(), [root.join("share/b")]);
+    }
+
+    #[test]
+    fn a_linked_credential_keeps_its_target_hidden_once_the_link_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(home.join(".docker")).unwrap();
+        std::fs::create_dir_all(home.join("private")).unwrap();
+        std::fs::write(home.join("private/login.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(
+            home.join("private/login.json"),
+            home.join(".docker/config.json"),
+        )
+        .unwrap();
+        let hidden = with_targets(crate::sandbox::never_readable(&home));
+        std::fs::remove_file(home.join(".docker/config.json")).unwrap();
+        assert!(hidden.contains(&home.join(".docker/config.json")));
+        assert!(hidden.contains(&home.join("private/login.json")));
     }
 
     #[test]

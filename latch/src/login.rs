@@ -349,7 +349,8 @@ fn escape(text: &str) -> String {
 /// `mac-studio.local`), if it has one.
 fn hostname() -> Option<String> {
     let mut buffer = [0u8; 256];
-    // SAFETY: gethostname writes at most `buffer.len()` bytes into it.
+    // SAFETY: std has no hostname API. `buffer` is writable for the supplied
+    // length, and we search for the terminator without reading past that length.
     let status = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
     if status != 0 {
         return None;
