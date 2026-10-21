@@ -3,9 +3,10 @@
 //! The own store is one file in the host's state directory, `vault.json`,
 //! written only by `latch serve`, atomically (a temporary file renamed over
 //! it). Every item is sealed with AES-256-GCM under a random **data key**;
-//! the data key is sealed under a **custody key**, kept in `vault.key`
-//! beside it, owner-only (0600). Both files sit in the state directory,
-//! which `exec` and file workers can never read.
+//! the data key is sealed under a **custody key**, kept with the state
+//! folder's other secrets (see `secrets.rs`): in the Keychain for a signed
+//! macOS latch, else in `vault.key` beside it, owner-only (0600). The state
+//! directory is one `exec` and file workers can never read.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::classify;
 use super::item::{Item, Meta};
 use crate::failure::{Exit, Failure};
+use crate::secrets::{Secret, Secrets};
 use crate::state::to_hex;
 
 /// What every vault backend offers. Deciding a release (which item, into
@@ -44,7 +46,6 @@ pub trait Backend: Send {
 }
 
 const FILE: &str = "vault.json";
-const KEY_FILE: &str = "vault.key";
 /// The `vault.json` layout this latch reads and writes; a vault of another
 /// version is refused, never misread or rewritten without what it holds.
 const VERSION: u32 = 1;
@@ -120,15 +121,19 @@ fn open(key: &[u8; 32], sealed: &Sealed, aad: &[u8]) -> Result<Vec<u8>, Failure>
         .map_err(|_| failed("the vault could not be opened with its custody key".into()))
 }
 
-/// Reads the custody key from `path`. It is read on each use, not kept.
-fn custody(path: &Path) -> Result<[u8; 32], Failure> {
-    from_hex(
-        fs::read_to_string(path)
-            .map_err(|err| failed(format!("{}: {err}", path.display())))?
-            .trim(),
-    )?
-    .try_into()
-    .map_err(|_| failed("the custody key is damaged".into()))
+/// Reads the custody key of the vault in `dir`. It is read on each use,
+/// not kept.
+fn custody(dir: &Path) -> Result<[u8; 32], Failure> {
+    let Some(bytes) = Secrets::open(dir)?.read(Secret::VaultKey)? else {
+        return Err(failed(format!(
+            "{}: the vault has no custody key",
+            dir.display()
+        )));
+    };
+    let text = String::from_utf8(bytes).map_err(|_| failed("the custody key is damaged".into()))?;
+    from_hex(text.trim())?
+        .try_into()
+        .map_err(|_| failed("the custody key is damaged".into()))
 }
 
 /// Writes `bytes` to `path` owner-only and atomically.
@@ -153,10 +158,9 @@ impl OwnStore {
     /// empty one with new keys on first use.
     pub fn open(dir: &Path) -> Result<OwnStore, Failure> {
         let path = dir.join(FILE);
-        let key_path = dir.join(KEY_FILE);
         if !path.exists() {
             let custody: [u8; 32] = rand::random();
-            write_private(&key_path, to_hex(&custody).as_bytes())?;
+            Secrets::open(dir)?.write(Secret::VaultKey, to_hex(&custody).as_bytes())?;
             let mut store = OwnStore {
                 dir: dir.to_path_buf(),
                 data_key: rand::random(),
@@ -166,7 +170,7 @@ impl OwnStore {
             store.save()?;
             return Ok(store);
         }
-        let custody = custody(&key_path)?;
+        let custody = custody(dir)?;
         let bytes = fs::read(&path).map_err(|err| failed(format!("{}: {err}", path.display())))?;
         // The version first: another version may lay the rest out differently.
         #[derive(Deserialize)]
@@ -211,7 +215,7 @@ impl OwnStore {
     }
 
     fn save(&mut self) -> Result<(), Failure> {
-        let custody = custody(&self.dir.join(KEY_FILE))?;
+        let custody = custody(&self.dir)?;
         let items = serde_json::to_vec(&self.items).expect("items serialize");
         let file = File {
             version: VERSION,
@@ -364,7 +368,7 @@ mod tests {
             );
         }
         use std::os::unix::fs::PermissionsExt;
-        for file in [FILE, KEY_FILE] {
+        for file in [FILE, Secret::VaultKey.file()] {
             let mode = fs::metadata(dir.path().join(file))
                 .unwrap()
                 .permissions()
@@ -378,7 +382,7 @@ mod tests {
         );
         assert_eq!(reopened.list(), store.list());
         // Another custody key opens nothing.
-        fs::write(dir.path().join(KEY_FILE), to_hex(&[7u8; 32])).unwrap();
+        fs::write(dir.path().join(Secret::VaultKey.file()), to_hex(&[7u8; 32])).unwrap();
         assert_eq!(
             OwnStore::open(dir.path()).err().unwrap().code,
             "vault_failed"
