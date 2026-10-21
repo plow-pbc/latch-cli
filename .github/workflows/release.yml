@@ -1,235 +1,20 @@
 name: release
-# A release is a manual run: it mints v<version>-build.<UTC minute> on main,
-# with a -dev.<ref> suffix from any other ref, signs, and leaves a draft
-# release for a person to publish. Pull requests build and verify unsigned
-# archives and release nothing.
+# fda-spike branch only: this file is replaced by one job that builds and
+# signs the Full Disk Access spike's probes. Nothing is released and
+# nothing is run against protected paths here. Throwaway branch.
 on:
-  # Temporary, for the signing trial before this file is on main (a dispatch
-  # needs the workflow on the default branch): a pushed v*-trial.* tag runs
-  # the same pipeline as its own version. Remove after the trial.
-  push:
-    tags: ['v*-trial.*']
-  pull_request:
-    branches: [main, latch-cli]
-    paths: ['latch/**', 'scripts/**', 'install-release.sh', '.github/workflows/release.yml']
   workflow_dispatch:
 permissions:
   contents: read
-# Releases run one at a time, so two can never mint the same tag.
-concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('release-pr-{0}', github.event.number) || 'release' }}
-  cancel-in-progress: false
 jobs:
-  version:
-    runs-on: ubuntu-24.04
-    outputs:
-      tag: ${{ steps.mint.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: mint
-        shell: bash
-        env:
-          REF: ${{ github.ref }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
-          case '${{ github.event_name }}' in
-            pull_request) tag="v$package-pr.${{ github.event.number }}" ;;
-            push) tag=$REF_NAME ;;
-            workflow_dispatch)
-              tag="v$package-build.$(date -u +%Y%m%d%H%M)"
-              if [[ "$REF" != refs/heads/main ]]; then
-                ref=$(printf '%s' "$REF_NAME" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
-                tag="$tag-dev.${ref:-ref}"
-              fi
-              if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-                echo "tag $tag already exists" >&2
-                exit 1
-              fi
-              ;;
-          esac
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
-          [[ "${tag#v}" == "$package"-* ]]
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Version: $tag"
-  build:
-    needs: version
-    strategy:
-      fail-fast: false
-      matrix: &release-matrix
-        include:
-          - { runner: macos-15, target: aarch64-apple-darwin, arch: arm64 }
-          - { runner: macos-15-intel, target: x86_64-apple-darwin, arch: x86_64 }
-          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, arch: amd64 }
-          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, arch: arm64 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    env:
-      VERSION: ${{ needs.version.outputs.tag }}
-      LATCH_BUILD_CHANNEL: standalone tag ${{ needs.version.outputs.tag }}
-      LATCH_BUILD_STATE_DIR: ''
-      LATCH_BUILD_API_URL: ''
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          test "$(uname -m)" = '${{ matrix.arch }}'
-          unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
-          export LATCH_BUILD_COMMIT="$GITHUB_SHA"
-          cd latch
-          rustup toolchain install
-          cargo build --release --locked --target '${{ matrix.target }}'
-          codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
-          'target/${{ matrix.target }}/release/latch' --version
-      - name: Build Linux
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
-          cd latch
-          ./build-musl.sh '${{ matrix.arch }}'
-          file 'target/musl-${{ matrix.arch }}/release/latch' | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
-          'target/musl-${{ matrix.arch }}/release/latch' --version
-      - name: Package
-        shell: bash
-        run: |
-          if [[ '${{ runner.os }}' == macOS ]]; then
-            binary='latch/target/${{ matrix.target }}/release/latch'
-          else
-            binary='latch/target/musl-${{ matrix.arch }}/release/latch'
-          fi
-          sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
-          tar -xzf "dist/latch-$VERSION-${{ matrix.target }}.tar.gz" -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/latch" --version
-      - uses: actions/upload-artifact@v4
-        with:
-          name: latch-${{ matrix.target }}
-          path: dist/*.tar.gz
-          if-no-files-found: error
-  # Releases only: pull requests never reach the release environment or its
-  # credentials, and keep their ad-hoc signed builds.
-  sign-macos:
-    needs: build
-    if: github.event_name != 'pull_request'
-    environment: release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: macos-15, target: aarch64-apple-darwin }
-          - { runner: macos-15-intel, target: x86_64-apple-darwin }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    env:
-      IDENTITY: 'Developer ID Application: The Plow Collective, Inc (3559PD337Z)'
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: latch-${{ matrix.target }}
-          path: dist
-      - name: Load signing credentials
-        uses: 1password/load-secrets-action@v2
-        with:
-          export-env: true
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          APPLE_CERTIFICATE_P12_BASE64: op://terraform/GitHub Actions Release Secrets/APPLE_CERTIFICATE_P12_BASE64
-          APPLE_CERTIFICATE_PASSWORD: op://terraform/GitHub Actions Release Secrets/APPLE_CERTIFICATE_PASSWORD  # pragma: allowlist secret
-          APPLE_NOTARY_APPLE_ID: op://terraform/GitHub Actions Release Secrets/APPLE_NOTARY_APPLE_ID
-          APPLE_NOTARY_TEAM_ID: op://terraform/GitHub Actions Release Secrets/APPLE_NOTARY_TEAM_ID
-          APPLE_NOTARY_PASSWORD: op://terraform/GitHub Actions Release Secrets/APPLE_NOTARY_PASSWORD  # pragma: allowlist secret
-      - name: Import signing identity
-        shell: bash
-        run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          keychain_password=$(openssl rand -base64 32)
-          security create-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
-          cert="$RUNNER_TEMP/cert.p12"
-          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$cert"
-          security import "$cert" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          rm "$cert"
-          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$KEYCHAIN_PATH"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$IDENTITY\""
-          xcrun notarytool store-credentials latch-notary --keychain "$KEYCHAIN_PATH" \
-            --apple-id "$APPLE_NOTARY_APPLE_ID" --team-id "$APPLE_NOTARY_TEAM_ID" --password "$APPLE_NOTARY_PASSWORD"
-      - name: Sign
-        shell: bash
-        run: |
-          archive=$(find dist -name 'latch-*-${{ matrix.target }}.tar.gz')
-          name=$(basename "$archive" .tar.gz)
-          mkdir unpacked
-          tar -xzf "$archive" -C unpacked
-          binary="unpacked/$name/latch"
-          codesign --force --options runtime --timestamp --identifier co.plow.latch.cli \
-            --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY" "$binary"
-          codesign --verify --strict --verbose=2 "$binary"
-          "$binary" --version
-          echo "NAME=$name" >> "$GITHUB_ENV"
-      # A bare binary takes no stapled ticket: Gatekeeper looks the ticket up
-      # online the first time a quarantined copy runs.
-      - name: Notarize
-        shell: bash
-        run: |
-          binary="unpacked/$NAME/latch"
-          ditto -c -k --keepParent "$binary" "$RUNNER_TEMP/latch.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/latch.zip" --keychain-profile latch-notary \
-            --keychain "$KEYCHAIN_PATH" --wait --timeout 30m --output-format json | tee "$RUNNER_TEMP/notary.json"
-          id=$(jq -r .id "$RUNNER_TEMP/notary.json")
-          if [[ "$(jq -r .status "$RUNNER_TEMP/notary.json")" != Accepted ]]; then
-            xcrun notarytool log "$id" --keychain-profile latch-notary --keychain "$KEYCHAIN_PATH"
-            exit 1
-          fi
-      - name: Verify and repackage
-        shell: bash
-        run: |
-          binary="unpacked/$NAME/latch"
-          details=$(codesign -dvvv "$binary" 2>&1)
-          echo "$details"
-          grep -Fx 'Identifier=co.plow.latch.cli' <<< "$details"
-          grep -Fx 'TeamIdentifier=3559PD337Z' <<< "$details"
-          grep -Fx "Authority=$IDENTITY" <<< "$details"
-          grep -E '^CodeDirectory .*flags=0x10000\(runtime\)' <<< "$details"
-          grep -E '^Timestamp=' <<< "$details"
-          assessment=$(spctl --assess -vvv --type open --context context:primary-signature "$binary" 2>&1)
-          echo "$assessment"
-          grep -Fx 'source=Notarized Developer ID' <<< "$assessment"
-          tar -czf "dist/$NAME.tar.gz" -C unpacked "$NAME"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: latch-${{ matrix.target }}
-          path: dist/*.tar.gz
-          if-no-files-found: error
-          overwrite: true
-      - name: Remove signing keychain
-        if: always()
-        shell: bash
-        run: if [[ -n "${KEYCHAIN_PATH:-}" ]]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi
-  # Whether the signed latch may keep secrets in the data-protection Keychain:
-  # from its helper bundle, through a PATH-style link, from launchd, and
-  # from launchd with the screen locked. Evidence only; nothing it builds
-  # is released.
-  keychain-proof:
-    needs: build
-    if: github.event_name != 'pull_request'
+  fda-spike:
     environment: release
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
       IDENTITY: 'Developer ID Application: The Plow Collective, Inc (3559PD337Z)'
-      GROUP: 3559PD337Z.co.plow.latch
-      LABEL: co.plow.latch.keychain-probe
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: latch-aarch64-apple-darwin
-          path: dist
       - name: Load signing credentials
         uses: 1password/load-secrets-action@v2
         with:
@@ -254,186 +39,56 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$IDENTITY\""
-      # Without a provisioning profile the restricted entitlements would stop
-      # the binary at launch, so it is then signed without them, and the probe
-      # shows the missing entitlement (-34018) instead.
-      - name: Build and sign the helper bundle
+      # Two builds of the same source, `one` and `two`, so the rebuild test
+      # swaps in a different cdhash under the same identity. Each build has
+      # variant A (a bare binary), B (an app bundle) and C's outside binary.
+      - name: Build and sign
         shell: bash
         run: |
-          mkdir unpacked
-          tar -xzf dist/latch-*-aarch64-apple-darwin.tar.gz -C unpacked
-          app="$RUNNER_TEMP/Latch.app"
-          sh scripts/macos-helper-bundle.sh unpacked/*/latch "$app"
-          entitlements=()
-          if [[ -f "$app/Contents/embedded.provisionprofile" ]]; then
-            entitlements=(--entitlements latch/macos/helper.entitlements)
-            security cms -D -i "$app/Contents/embedded.provisionprofile" > "$RUNNER_TEMP/profile.plist"
-            /usr/libexec/PlistBuddy -c 'Print :Entitlements' "$RUNNER_TEMP/profile.plist"
-          else
-            echo "::warning::latch/macos has no provisioning profile: signing without entitlements"
-          fi
-          codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
-            "${entitlements[@]}" --sign "$IDENTITY" "$app"
-          codesign --verify --strict --verbose=2 "$app"
-          codesign -dvvv --entitlements - "$app" 2>&1
-          mkdir -p "$RUNNER_TEMP/bin"
-          ln -s "$app/Contents/MacOS/latch" "$RUNNER_TEMP/bin/latch"
-          echo "APP=$app" >> "$GITHUB_ENV"
-      - name: Probe from the bundle and through a link
-        shell: bash
-        run: |
-          status=0
-          "$APP/Contents/MacOS/latch" keychain-probe --group "$GROUP" || status=1
-          "$RUNNER_TEMP/bin/latch" keychain-probe --group "$GROUP" || status=1
-          exit $status
-      # Runs even when the direct probes failed, for the full picture.
-      - name: Probe from launchd
-        if: ${{ !cancelled() && env.APP != '' }}
-        shell: bash
-        run: |
-          plist="$HOME/Library/LaunchAgents/$LABEL.plist"
-          echo "PLIST=$plist" >> "$GITHUB_ENV"
-          mkdir -p "$HOME/Library/LaunchAgents"
-          cat > "$plist" <<PLIST
+          sign() {
+            codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
+              --identifier "$1" --sign "$IDENTITY" "$2"
+          }
+          for build in one two; do
+            out="spike/$build"
+            mkdir -p "$out/A" "$out/C" "$out/B/Plow Latch CLI.app/Contents/MacOS"
+            clang -O2 -Wall -Wextra -arch arm64 -mmacosx-version-min=13.0 -DBUILD="\"$build\"" \
+              -o "$RUNNER_TEMP/fda-probe" latch/macos/fda-spike/fda-probe.c
+            cp "$RUNNER_TEMP/fda-probe" "$out/A/fda-probe"
+            sign co.plow.latch.fdaspike.bare "$out/A/fda-probe"
+            cp "$RUNNER_TEMP/fda-probe" "$out/C/latch"
+            sign co.plow.latch.fdaspike.outside "$out/C/latch"
+            app="$out/B/Plow Latch CLI.app"
+            cp "$RUNNER_TEMP/fda-probe" "$app/Contents/MacOS/latch"
+            cat > "$app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>Label</key><string>$LABEL</string>
-            <key>ProgramArguments</key>
-            <array>
-              <string>$RUNNER_TEMP/bin/latch</string>
-              <string>keychain-probe</string>
-              <string>--group</string>
-              <string>$GROUP</string>
-            </array>
-            <key>StandardOutPath</key><string>$RUNNER_TEMP/launchd.out</string>
-            <key>StandardErrorPath</key><string>$RUNNER_TEMP/launchd.err</string>
+            <key>CFBundleIdentifier</key><string>co.plow.latch.fdaspike.app</string>
+            <key>CFBundleName</key><string>Plow Latch CLI</string>
+            <key>CFBundleExecutable</key><string>latch</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.0.1</string>
+            <key>CFBundleVersion</key><string>$build</string>
+            <key>LSBackgroundOnly</key><true/>
+            <key>LSMinimumSystemVersion</key><string>13.0</string>
           </dict>
           </plist>
           PLIST
-          probe() {
-            rm -f "$RUNNER_TEMP/launchd.out" "$RUNNER_TEMP/launchd.err"
-            launchctl bootstrap "gui/$(id -u)" "$plist"
-            launchctl kickstart "gui/$(id -u)/$LABEL"
-            for _ in $(seq 30); do
-              [[ -s "$RUNNER_TEMP/launchd.out" ]] && break
-              sleep 1
+            sign co.plow.latch.fdaspike.app "$app"
+            for item in "$out/A/fda-probe" "$out/C/latch" "$app"; do
+              codesign --verify --strict --verbose=2 "$item"
+              codesign -dv --requirements - "$item" 2>&1 | grep -E 'Identifier|TeamIdentifier|CDHash|designated'
             done
-            launchctl print "gui/$(id -u)/$LABEL" | grep -E 'last exit code|state =' || true
-            launchctl bootout "gui/$(id -u)/$LABEL" || true
-            cat "$RUNNER_TEMP/launchd.err" 2>/dev/null || true
-            grep -q '"ok":true' "$RUNNER_TEMP/launchd.out" 2>/dev/null
-            local ok=$?
-            cat "$RUNNER_TEMP/launchd.out" 2>/dev/null || echo '(no output)'
-            return $ok
-          }
-          status=0
-          echo '--- screen unlocked'
-          probe || status=1
-          cat > "$RUNNER_TEMP/lock.swift" <<'SWIFT'
-          import CoreGraphics
-          import Foundation
-          func locked() -> Bool {
-              let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-              return session?["CGSSessionScreenIsLocked"] as? Bool ?? false
-          }
-          if CommandLine.arguments.contains("--lock") {
-              // The login window's own private call; there is no public one.
-              if let login = dlopen("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login", RTLD_NOW),
-                 let symbol = dlsym(login, "SACLockScreenImmediate") {
-                  typealias Lock = @convention(c) () -> Int32
-                  print("SACLockScreenImmediate:", unsafeBitCast(symbol, to: Lock.self)())
-                  sleep(3)
-              } else {
-                  print("SACLockScreenImmediate unavailable")
-              }
-          }
-          print("session:", CGSessionCopyCurrentDictionary() != nil, "locked:", locked())
-          SWIFT
-          swift "$RUNNER_TEMP/lock.swift" --lock
-          if swift "$RUNNER_TEMP/lock.swift" | grep -q 'locked: true'; then
-            echo '--- screen locked'
-            probe || status=1
-            swift "$RUNNER_TEMP/lock.swift"
-          else
-            echo "::warning::this runner could not lock its screen; the locked case needs the manual test"
-          fi
-          exit $status
-      - name: Clean up
-        if: always()
-        shell: bash
-        run: |
-          if [[ -n "${PLIST:-}" ]]; then rm -f "$PLIST"; fi
-          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi
-  assemble:
-    needs: [build, sign-macos]
-    # Pull requests skip signing and assemble their ad-hoc builds.
-    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.sign-macos.result == 'success' || (github.event_name == 'pull_request' && needs.sign-macos.result == 'skipped')) }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - run: python3 scripts/test-install-release.py
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: latch-*
-          merge-multiple: true
-          path: dist
-      - run: |
-          cp install-release.sh dist/
-          cd dist
-          sha256sum *.tar.gz install-release.sh > SHA256SUMS
+          done
+          tar -czf fda-spike.tar.gz spike
       - uses: actions/upload-artifact@v4
         with:
-          name: release-downloads
-          path: dist/*
-  verify-artifacts:
-    needs: assemble
-    # A skipped sign-macos would otherwise skip this too on pull requests.
-    if: ${{ !cancelled() && needs.assemble.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix: *release-matrix
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-downloads
-          path: downloads
-      - name: Run downloaded archive
+          name: fda-spike
+          path: fda-spike.tar.gz
+          if-no-files-found: error
+      - name: Remove signing keychain
+        if: always()
         shell: bash
-        run: |
-          cd downloads
-          if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
-          archive=$(find . -name 'latch-*-${{ matrix.target }}.tar.gz')
-          tar -xzf "$archive"
-          binary=$(find . -type f -name latch)
-          uname -sm
-          "$binary" --version
-  publish:
-    needs: [version, verify-artifacts]
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      VERSION: ${{ needs.version.outputs.tag }}
-      REF_NAME: ${{ github.ref_name }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-downloads
-          path: dist
-      # The tag is pushed only now, once every build is signed and verified;
-      # a trial run's tag was pushed by hand. Always a draft: a person
-      # publishes it after checking the signed builds.
-      - name: Create draft release
-        run: |
-          if [[ '${{ github.event_name }}' == workflow_dispatch ]]; then
-            git tag "$VERSION" "$GITHUB_SHA"
-            git push origin "refs/tags/$VERSION"
-          fi
-          gh release create "$VERSION" dist/* --draft --verify-tag --title "latch $VERSION" \
-            --notes "Built from \`$REF_NAME\` @ \`$GITHUB_SHA\`."
+        run: if [[ -n "${KEYCHAIN_PATH:-}" ]]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi
