@@ -126,8 +126,8 @@ jobs:
           path: |
             latch/target/cargo-home
             latch/target/musl-${{ matrix.arch }}
-          key: musl-${{ matrix.arch }}-${{ hashFiles('latch/build-musl.sh', 'latch/rust-toolchain.toml', 'latch/Cargo.lock') }}
-          restore-keys: musl-${{ matrix.arch }}-
+          key: musl-${{ matrix.arch }}-${{ hashFiles('latch/build-musl.sh', 'latch/rust-toolchain.toml') }}-${{ hashFiles('latch/Cargo.lock') }}
+          restore-keys: musl-${{ matrix.arch }}-${{ hashFiles('latch/build-musl.sh', 'latch/rust-toolchain.toml') }}-
       - run: ./build-musl.sh ${{ matrix.arch }}
       - run: file target/musl-${{ matrix.arch }}/release/latch | tee /dev/stderr | grep -Eq "statically linked|static-pie linked"
       - run: target/musl-${{ matrix.arch }}/release/latch --version
