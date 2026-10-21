@@ -514,6 +514,17 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
                         "confirm_conflict": false, "inputs": []});
     t.call(&device, "google", google).await;
     assert_eq!(t.judged(), 4, "exec, file get, file put and google");
+    // A browser open is judged too, before any engine starts.
+    let open = json!({"command": "open", "profile": "default", "url": "https://example.com/"});
+    t.call(&device, "browser", open).await;
+    assert_eq!(t.judged(), 5, "and the browser's open");
+    let browsed = t.audit().pop().unwrap();
+    assert_eq!(browsed["op"], "browser");
+    // The browser keeps its judgment with its arguments.
+    assert_eq!(
+        browsed["args"]["gate"]["caller"], "owner_device",
+        "{browsed}"
+    );
 
     // Judged as the owner's own request, sent just now: no agent's chat.
     let asked = t.plow.world.lock().unwrap().asked.clone();
@@ -544,6 +555,26 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
     assert_eq!(record["gate"]["caller"], "agent");
     assert_eq!(record["gate"]["verdict"], "not_covered");
     assert_eq!(record["agent"], AGENT);
+
+    // The host's rules hold for the owner too, read as the host's, and
+    // for an agent as every agent's.
+    let rules = t.state.join(crate::gate::rules::RULES_DIR);
+    std::fs::create_dir_all(&rules).unwrap();
+    std::fs::write(rules.join("host.txt"), "Never send email.").unwrap();
+    t.call(&device, "exec", exec("true")).await;
+    t.call(&agent, "exec", exec("true")).await;
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let [.., owners, agents] = &asked[..] else {
+        panic!("{asked:?}");
+    };
+    assert_eq!(
+        owners["owner_rules"],
+        json!({"rules on this host": "Never send email."})
+    );
+    assert_eq!(
+        agents["owner_rules"],
+        json!({"rules for every agent on this host": "Never send email."})
+    );
 }
 
 #[tokio::test]

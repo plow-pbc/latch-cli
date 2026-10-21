@@ -84,8 +84,8 @@ pub struct Browsers {
 }
 
 /// Who a command comes from: the client key the gate verified, whether
-/// Plow knows it as one of the owner's devices, and, for an agent, the
-/// gatekeeper's gate its judged commands pass.
+/// Plow knows it as one of the owner's devices, and the gatekeeper's gate
+/// its judged commands pass (none only for the browser's own tests).
 #[derive(Clone, Copy)]
 pub(super) struct Caller<'a> {
     pub(super) key: &'a str,
@@ -93,8 +93,8 @@ pub(super) struct Caller<'a> {
     pub(super) gate: Option<Gate<'a>>,
 }
 
-/// A caller that is not one of the owner's devices, and is not judged: an
-/// agent in tests of the browser itself.
+/// A caller that is not one of the owner's devices, and is not judged: a
+/// caller in tests of the browser itself.
 impl<'a> From<&'a str> for Caller<'a> {
     fn from(key: &'a str) -> Self {
         Caller {
