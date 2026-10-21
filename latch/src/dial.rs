@@ -75,7 +75,7 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
             endpoint.close().await;
             // Builds of one protocol version work together; only that differs.
             let message = format!(
-                "host {:?} does not speak {}, the protocol this latch ({}) speaks, so one of \
+                "host {:?} does not speak {}, the protocol of this latch {}, so one of \
                  the two runs an older latch; nothing was sent. Compare `latch --version` on \
                  both machines and update the older one",
                 host.name,

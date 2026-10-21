@@ -12,21 +12,30 @@ use clap::{Args, Parser, Subcommand};
 /// override them. Unset, latch uses `~/.latch` and has no default Plow.
 pub const BUILD_STATE_DIR: Option<&str> = option_env!("LATCH_BUILD_STATE_DIR");
 pub const BUILD_API_URL: Option<&str> = option_env!("LATCH_BUILD_API_URL");
+/// How this build is distributed (e.g. `standalone`), set by a release
+/// build. Unset, it is a local build: made by hand from a checkout.
+const BUILD_CHANNEL: Option<&str> = option_env!("LATCH_BUILD_CHANNEL");
 
-/// What `--version` prints. A build with baked-in defaults names them, so it
-/// is obvious which build this is.
+/// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
+/// 03:45 UTC, local build, protocol plow/latch/1)`: where this build came from
+/// (see `build.rs`), the protocol it speaks to peers and, for a build with
+/// baked-in defaults, those, so it is obvious which build this is.
 pub fn version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
     VERSION.get_or_init(|| {
-        let version = env!("CARGO_PKG_VERSION");
-        match (BUILD_STATE_DIR, BUILD_API_URL) {
-            (None, None) => version.to_string(),
-            (dir, url) => {
-                let dir = dir.unwrap_or("~/.latch");
-                let url = url.unwrap_or("none");
-                format!("{version} (local build: state {dir}, Plow {url})")
-            }
+        let mut about = format!(
+            "commit {}, built {}, {}, protocol {}",
+            env!("LATCH_COMMIT"),
+            env!("LATCH_BUILT"),
+            BUILD_CHANNEL.unwrap_or("local build"),
+            String::from_utf8_lossy(crate::wire::ALPN),
+        );
+        if BUILD_STATE_DIR.is_some() || BUILD_API_URL.is_some() {
+            let dir = BUILD_STATE_DIR.unwrap_or("~/.latch");
+            let url = BUILD_API_URL.unwrap_or("none");
+            about.push_str(&format!("; state {dir}, Plow {url}"));
         }
+        format!("{} ({about})", env!("CARGO_PKG_VERSION"))
     })
 }
 

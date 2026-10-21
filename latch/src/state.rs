@@ -114,7 +114,7 @@ impl StateDir {
             std::cmp::Ordering::Less => "use the latch that wrote it",
         };
         let message = format!(
-            "{} is in state format {}, set up by latch {}; this latch ({}) reads only format {FORMAT}: \
+            "{} is in state format {}, set up by latch {}; this latch {} reads only format {FORMAT}: \
              {fix}, or pass another --state-dir. Nothing was read or changed",
             self.path.display(),
             marker.format,
