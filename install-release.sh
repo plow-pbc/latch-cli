@@ -13,6 +13,7 @@ case "$(uname -s)/$(uname -m)" in
   *) echo 'unsupported OS/architecture' >&2; exit 1 ;;
 esac
 command -v gh >/dev/null || { echo 'install GitHub CLI and run gh auth login first' >&2; exit 1; }
+caller=$(pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 archive="latch-$version-$target.tar.gz"
@@ -26,10 +27,11 @@ else
   shasum -a 256 -c selected.sha256
 fi
 tar -xzf "$archive"
-cd "latch-$version-$target"
+setup="$tmp/latch-$version-$target"
+cd "$caller"
 echo 'Installing into ~/.local/bin; plugins use ~/.latch unless --state-dir is supplied.'
 echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
 echo 'Browser support: macOS and Linux arm64 (CfT); optional Camoufox is macOS only.'
-sh ./install.sh "$@" ./latch
-./latch --version
+sh "$setup/install.sh" "$@" "$setup/latch"
+"$setup/latch" --version
 echo 'An already-running latch serve keeps its old binary; restart it intentionally to update.'
