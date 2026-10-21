@@ -25,6 +25,8 @@ use iroh::endpoint::{Connection, Incoming, VarInt, presets};
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
 use tokio::signal::unix::{Signal, SignalKind, signal};
+use tracing::Instrument;
+use tracing::field::{Empty, display};
 
 use crate::audit::{self, AuditLog, Record};
 use crate::credential;
@@ -47,10 +49,13 @@ use crate::worker::WorkerSetup;
 /// same `Host`; the `Mutex` lets one task at a time append to the log.
 struct Host {
     plow: Plow,
-    audit: Mutex<AuditLog>,
+    /// Also held by the blocking thread that appends (see `Host::append`).
+    audit: Arc<Mutex<AuditLog>>,
     /// The live view, when `serve` shows one (see `dashboard.rs`).
     dashboard: Option<Dashboard>,
     workers: WorkerSetup,
+    /// Open browser sessions, one per profile.
+    browsers: crate::browser::host::Browsers,
     /// The host's vault, shared by every engine and profile.
     vault: std::sync::Arc<crate::vault::host::Vault>,
     /// Our own endpoint and name, which a phone link points at.
@@ -130,10 +135,12 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Runs the host until it is asked to stop. With `show_dashboard`, a live
 /// view takes the terminal and the log goes to `serve.log` in the state
 /// directory; the terminal is given back however the host stops.
+/// With `headless_browsers`, every browser session runs with no window.
 pub async fn run(
     state: &StateDir,
     folders: &[PathBuf],
     show_dashboard: bool,
+    headless_browsers: bool,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
     // A host that could not sandbox its workers would refuse every call;
@@ -161,6 +168,7 @@ pub async fn run(
         state,
         folders,
         show_dashboard,
+        headless_browsers,
         deny_exec,
         state_dir,
         program,
@@ -184,6 +192,7 @@ async fn run_locked(
     state: &StateDir,
     folders: &[PathBuf],
     show_dashboard: bool,
+    headless_browsers: bool,
     deny_exec: DenyExec,
     state_dir: PathBuf,
     program: PathBuf,
@@ -216,7 +225,16 @@ async fn run_locked(
     } else {
         None
     };
-    let result = run_host(state, config, workers, dashboard.clone(), rules, deny_exec).await;
+    let result = run_host(
+        state,
+        config,
+        workers,
+        dashboard.clone(),
+        headless_browsers,
+        rules,
+        deny_exec,
+    )
+    .await;
     if let Some(dashboard) = &dashboard {
         dashboard.stop();
     }
@@ -228,6 +246,7 @@ async fn run_host(
     config: Config,
     workers: WorkerSetup,
     dashboard: Option<Dashboard>,
+    headless_browsers: bool,
     rules: RuleFiles,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
@@ -292,11 +311,23 @@ async fn run_host(
     };
 
     let vault = crate::vault::host::Vault::new(workers.state_dir.clone());
+    if headless_browsers {
+        log("browsers: headless, with no window");
+    }
+    let browsers = crate::browser::host::Browsers::new(
+        workers.state_dir.clone(),
+        vault.clone(),
+        headless_browsers,
+    );
+    if let Some(dashboard) = &dashboard {
+        browsers.show_on(dashboard.clone());
+    }
     let host = Arc::new(Host {
         plow,
-        audit: Mutex::new(audit),
+        audit: Arc::new(Mutex::new(audit)),
         workers,
         dashboard,
+        browsers,
         vault,
         endpoint: endpoint.clone(),
         name,
@@ -324,7 +355,8 @@ async fn run_host(
             }
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => {
-                    tokio::spawn(serve_connection(host.clone(), incoming));
+                    let connection = tracing::info_span!("connection", caller = Empty);
+                    tokio::spawn(serve_connection(host.clone(), incoming).instrument(connection));
                 }
                 None => break,
             },
@@ -346,6 +378,7 @@ async fn run_host(
     }
     // Stop heartbeating first, so no late heartbeat lists us online again.
     heartbeat.abort();
+    host.browsers.close_all().await;
     go_offline(&host.plow, &endpoint.id().to_string()).await;
     endpoint.close().await;
     log("stopped");
@@ -539,6 +572,7 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
     };
     // The caller's key, proven by the connection's own handshake.
     let caller = connection.remote_id().to_string();
+    tracing::Span::current().record("caller", display(&caller));
     if connection.alpn() == link::ALPN {
         return serve_phone(&host, &caller, connection).await;
     }
@@ -550,7 +584,7 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
             let who = format!("{} ({})", identity.name, identity.kind);
             let record =
                 audit::record(&caller, identity.agent_uid, "connect", "allow", "connected");
-            match host.append(record) {
+            match host.append(record).await {
                 Ok(_) => {
                     log(&format!("connect: {who} {caller}: allowed"));
                     None
@@ -561,7 +595,7 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
         Err(denial) => {
             // Already refusing, so a failed audit write changes nothing here.
             let record = audit::record(&caller, None, "connect", "deny", &denial.code);
-            let _ = host.append(record);
+            let _ = host.append(record).await;
             host.show_refusal(&caller, "connect", &denial.code);
             Some(denial.message)
         }
@@ -574,7 +608,10 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
 
     // One stream per operation, until the client closes the connection.
     while let Ok((send, recv)) = connection.accept_bi().await {
-        serve_operation(&host, &caller, false, send.into(), recv.into()).await;
+        let operation = tracing::info_span!("operation", op = Empty);
+        serve_operation(&host, &caller, false, send.into(), recv.into())
+            .instrument(operation)
+            .await;
         log(&format!(
             "paths to {caller}: {}",
             describe_paths(&connection)
@@ -597,6 +634,7 @@ async fn serve_operation(
         return answer(&mut send, &response).await;
     };
     let op = request.op.as_str();
+    tracing::Span::current().record("op", display(op));
     let started = Instant::now();
 
     // Second check: before the operation, in case the caller was revoked
@@ -614,7 +652,9 @@ async fn serve_operation(
     };
     let response = match identity {
         Err(denial) => {
-            let _ = host.append(audit::record(caller, None, op, "deny", &denial.code));
+            let _ = host
+                .append(audit::record(caller, None, op, "deny", &denial.code))
+                .await;
             log(&format!("{op}: {caller}: denied: {}", denial.message));
             host.show_refusal(caller, op, &denial.code);
             Response::Error {
@@ -717,6 +757,25 @@ async fn serve_operation(
                         )
                         .await
                     }
+                    "browser" => match &gate {
+                        Ok(gate) => {
+                            crate::browser::host::run(
+                                &host.browsers,
+                                caller,
+                                &identity.kind,
+                                Some(*gate),
+                                request.args,
+                                &mut send,
+                                &mut recv,
+                            )
+                            .await
+                        }
+                        Err(failure) => Done {
+                            response: Response::error(failure),
+                            audit_args: Value::Null,
+                            outcome: failure.code.clone(),
+                        },
+                    },
                     "google" => {
                         crate::google::host::run(
                             &host.workers,
@@ -763,7 +822,7 @@ async fn serve_operation(
             record.gate = judgment
                 .map(|judgment| judgment.gate)
                 .or_else(|| local.then(|| serde_json::json!({"caller":"owner_on_host"})));
-            match host.append(record) {
+            match host.append(record).await {
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed("audit_failed", message),
             }
@@ -845,7 +904,7 @@ async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
         }
         let mut record = audit::record(caller, None, "vault_link", decision, &done.outcome);
         record.args = done.audit_args;
-        let response = match host.append(record) {
+        let response = match host.append(record).await {
             Ok(audit_id) => with_audit_id(done.response, audit_id),
             Err(message) => failed("audit_failed", message),
         };
@@ -992,10 +1051,21 @@ impl Host {
         }
     }
 
-    /// Appends to the audit log and returns the record's hash. On failure,
-    /// returns what the caller is told.
-    fn append(&self, record: Record) -> Result<String, String> {
-        let result = self.audit.lock().expect("audit log lock").append(record);
+    /// Appends to the audit log and returns the record's hash, once the
+    /// record is on disk. On failure, returns what the caller is told. The
+    /// lock, write and sync run on a blocking thread, so a slow disk holds
+    /// up only the callers waiting on the log.
+    async fn append(&self, record: Record) -> Result<String, String> {
+        let audit = self.audit.clone();
+        let appending = tokio::task::spawn_blocking(move || {
+            audit.lock().expect("audit log lock").append(record)
+        });
+        let result = appending.await.unwrap_or_else(|stopped| {
+            Err(Failure::failed(
+                "audit_failed",
+                format!("the append stopped: {stopped}"),
+            ))
+        });
         result.map_err(|failure| {
             log(&format!("audit: {}", failure.message));
             "the host could not write its audit log".to_string()

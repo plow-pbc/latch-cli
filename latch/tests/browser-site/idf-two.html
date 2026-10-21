@@ -1,0 +1,8 @@
+<!doctype html><title>latch two-button password stage test</title>
+<!-- A password stage whose form has two submit buttons: latch can't tell
+     which one the sign-in means. -->
+<h1>Enter your password</h1>
+<form method="post" action="welcome">
+  <p><label>Password <input type="password" name="password" autocomplete="current-password"></label></p>
+  <p><button type="submit">Sign in</button> <button type="submit" name="remember" value="1">Sign in and stay signed in</button></p>
+</form>

@@ -36,7 +36,6 @@ pub trait Backend: Send {
     /// import updating a changed password); never handed to an agent.
     fn item(&self, id: &str) -> Option<Item>;
     /// Exactly one value: the field `label` of item `id`.
-    #[allow(dead_code)] // the browser's fills call it
     fn release(&self, id: &str, label: &str) -> Result<String, Failure>;
     /// Compares secrets without handing them out: which of `password` and
     /// `totp` differ from the item's.

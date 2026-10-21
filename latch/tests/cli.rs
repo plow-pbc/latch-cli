@@ -89,6 +89,7 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         .env_remove("PLOW_API_BASE")
         .env_remove("PLOW_AGENT_TOKEN")
         .env_remove("LATCH_HOST")
+        .env_remove("LATCH_TRACE")
         .arg("--state-dir")
         .arg(state)
         .args(args);
@@ -1301,17 +1302,42 @@ fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
 /// `serving`, sharing `shares` (none: the saved ones). Also returns the
 /// log lines up to its registration.
 fn serving_folders(host: &Path, shares: &[&Path], relay: &str) -> (Serving, Vec<String>) {
+    let (serve, log, lines) = serving_with(serve_command(host, shares, relay));
+    thread::spawn(move || {
+        for line in log.lines() {
+            let line = line.unwrap();
+            if line.contains("owner_on_host over Unix socket") {
+                println!("{line}");
+            }
+        }
+    });
+    (serve, lines)
+}
+
+fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    command
+        .args([
+            "--state-dir",
+            host.to_str().unwrap(),
+            "serve",
+            "--no-dashboard",
+        ])
+        .args(shares)
+        .env("LATCH_TEST_RELAY_URL", relay)
+        .env_remove("LATCH_HOST")
+        .env_remove("LATCH_TRACE");
+    command
+}
+
+/// Starts `command`, a `latch serve`, and reads its log up to its
+/// registration. Returns the rest of the log still to read, and the lines
+/// read so far.
+fn serving_with(
+    mut command: Command,
+) -> (Serving, BufReader<std::process::ChildStderr>, Vec<String>) {
     let mut serve = Serving(
-        Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args([
-                "--state-dir",
-                host.to_str().unwrap(),
-                "serve",
-                "--no-dashboard",
-            ])
-            .args(shares)
-            .env("LATCH_TEST_RELAY_URL", relay)
-            .env_remove("LATCH_HOST")
+        command
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap(),
@@ -1330,15 +1356,7 @@ fn serving_folders(host: &Path, shares: &[&Path], relay: &str) -> (Serving, Vec<
             break;
         }
     }
-    thread::spawn(move || {
-        for line in log.lines() {
-            let line = line.unwrap();
-            if line.contains("owner_on_host over Unix socket") {
-                println!("{line}");
-            }
-        }
-    });
-    (serve, lines)
+    (serve, log, lines)
 }
 
 /// An owner's host state logged in to `plow` as `host`.
@@ -1466,6 +1484,64 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
         again.is_some(),
         "no registration with the new credential: {seen:?}"
     );
+}
+
+#[test]
+fn latch_trace_shows_iroh_on_stderr_inside_each_host_operation() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let filter = "iroh=debug,latch=info";
+
+    let mut traced = serve_command(&host, &[&share], &relay);
+    traced.env("LATCH_TRACE", filter);
+    let (serve, mut log, _) = serving_with(traced);
+    let exec = latch_command(
+        &agent,
+        &["exec", "--host", "host", "--", "echo", "hi"],
+        &agent_env,
+    )
+    .env("LATCH_TRACE", filter)
+    .output()
+    .unwrap();
+    drop(serve);
+    let mut host_log = String::new();
+    log.read_to_string(&mut host_log).unwrap();
+
+    // The client's stdout is still only its JSON; iroh's events are on stderr.
+    assert_eq!(exec.status.code(), Some(0), "{exec:?}");
+    let result: Value = serde_json::from_slice(&exec.stdout).unwrap();
+    assert_eq!(result["stdout"], "hi\n");
+    let stderr = String::from_utf8_lossy(&exec.stderr);
+    assert!(stderr.contains(" iroh::"), "{stderr}");
+    // On the host, the operation's span closes inside its connection's.
+    let closed = host_log
+        .lines()
+        .find(|line| line.contains("}:operation{op=exec}: ") && line.contains(" close "));
+    let closed = closed.unwrap_or_else(|| panic!("no closed operation span: {host_log}"));
+    assert!(closed.contains("connection{caller="), "{closed}");
+}
+
+#[test]
+fn a_latch_trace_that_is_not_a_filter_is_a_usage_error() {
+    let dir = test_dir();
+    let out = latch_command(dir.path(), &["status"], &[])
+        .env("LATCH_TRACE", "iroh=loud")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "bad_trace");
+    assert!(out.stdout.is_empty());
 }
 
 #[test]

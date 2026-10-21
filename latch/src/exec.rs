@@ -7,8 +7,8 @@
 //! kept up to 256 KiB (the rest is read and dropped, and `truncated` is
 //! set), so a runaway command cannot flood the agent. At the time limit the
 //! whole process group (the program and everything it started) is killed.
-//! The audit record holds the argv (up to 4 KiB, credential-looking values
-//! redacted), the workdir and how it ended, never the output.
+//! The audit record holds the argv (up to 4 KiB, as run), the workdir and
+//! how it ended, never the output.
 //!
 //! Each run gets a fresh, empty temp folder of its own as its `TMPDIR`,
 //! made in the host's OS temp folder and readable and writable by that
@@ -22,13 +22,12 @@ use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 use tokio::task::JoinHandle;
-
-mod redact;
 
 use crate::log::log;
 use crate::serve::Done;
@@ -48,30 +47,48 @@ pub const MAX_STDIN: usize = 256 * 1024;
 /// (a process that left the group could otherwise hold them open).
 const DRAIN_GRACE: Duration = Duration::from_secs(5);
 
+#[derive(Deserialize)]
+struct ExecArgs {
+    argv: Vec<String>,
+    #[serde(default = "default_timeout")]
+    timeout: u64,
+    workdir: Option<String>,
+    stdin: Option<Vec<u8>>,
+}
+
+fn default_timeout() -> u64 {
+    60
+}
+
 /// `exec`: runs `args.argv` and returns its result.
 pub async fn run(workers: &WorkerSetup, args: &Value) -> Done {
-    let argv = match serde_json::from_value::<Vec<String>>(args["argv"].clone()) {
-        Ok(argv) if argv_is_usable(&argv) => argv,
-        _ => return bad_request("argv must be a non-empty list of strings"),
+    if !args.is_object() {
+        return bad_request("exec arguments must be an object");
+    }
+    let args: ExecArgs = match serde_json::from_value(args.clone()) {
+        Ok(args) => args,
+        // A deserialization error may quote stdin, which must not be returned.
+        Err(_) => return bad_request("exec arguments have invalid types"),
     };
-    let timeout = args["timeout"].as_u64().unwrap_or(60);
+    let argv = args.argv;
+    if !argv_is_usable(&argv) {
+        return bad_request("argv must be a non-empty list of strings");
+    }
+    let timeout = args.timeout;
     if !(1..=MAX_TIMEOUT_SECS).contains(&timeout) {
         return bad_request("timeout must be 1 to 600 seconds");
     }
-    let workdir = args["workdir"].as_str();
+    let workdir = args.workdir.as_deref();
     // The workdir as asked, or the first area, where a worker starts.
     let shown_workdir = match workdir {
         Some(dir) => Some(dir.to_string()),
         None => workers.areas.first().map(|area| area.display().to_string()),
     };
     // What the program reads on stdin: the bytes the client sent, or none.
-    let input = match &args["stdin"] {
-        Value::Null => None,
-        bytes => match serde_json::from_value::<Vec<u8>>(bytes.clone()) {
-            Ok(bytes) if bytes.len() <= MAX_STDIN => Some(bytes),
-            _ => return bad_request("stdin must be at most 256 KiB of bytes"),
-        },
-    };
+    let input = args.stdin;
+    if input.as_ref().is_some_and(|bytes| bytes.len() > MAX_STDIN) {
+        return bad_request("stdin must be at most 256 KiB of bytes");
+    }
     let mut audit = json!({ "argv": capped_argv(&argv), "workdir": shown_workdir });
     if let Some(bytes) = &input {
         audit["stdin"] = stdin_audit(bytes);
@@ -256,12 +273,12 @@ async fn collected(capture: Capture, grace: Duration) -> (Vec<u8>, bool) {
     (kept, captured.cut || !finished)
 }
 
-/// Redacted argv, at most 4 KiB: whole arguments while they fit,
+/// argv as run, but at most 4 KiB of it: whole arguments while they fit,
 /// then the start of the one that does not, marked as cut.
 pub fn capped_argv(argv: &[String]) -> Value {
     let mut kept = Vec::new();
     let mut room = ARGV_AUDIT_CAP;
-    for arg in &redact::redact(argv) {
+    for arg in argv {
         if arg.len() <= room {
             room -= arg.len();
             kept.push(arg.clone());
@@ -331,14 +348,115 @@ fn bad_request(message: &str) -> Done {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
+    use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;
+
+    fn worker_setup() -> (tempfile::TempDir, WorkerSetup) {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let program = dir.path().join("worker");
+        std::fs::write(&program, "#!/bin/sh\necho started > worker-started\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let workers = WorkerSetup {
+            areas: vec![dir.path().to_path_buf()],
+            state_dir: dir.path().join("state"),
+            program,
+        };
+        (dir, workers)
+    }
+
+    #[tokio::test]
+    async fn malformed_exec_args_never_start_a_worker() {
+        let (dir, workers) = worker_setup();
+        for (field, values) in [
+            (
+                "timeout",
+                vec![
+                    json!(null),
+                    json!("1"),
+                    json!(true),
+                    json!(1.5),
+                    json!(-1),
+                    json!(0),
+                    json!(601),
+                ],
+            ),
+            (
+                "workdir",
+                vec![json!(1), json!(false), json!([]), json!({})],
+            ),
+            (
+                "argv",
+                vec![
+                    json!(null),
+                    json!("true"),
+                    json!([1]),
+                    json!([]),
+                    json!([""]),
+                ],
+            ),
+            (
+                "stdin",
+                vec![
+                    json!("text"),
+                    json!(true),
+                    json!([-1]),
+                    json!([256]),
+                    json!(vec![0; MAX_STDIN + 1]),
+                ],
+            ),
+        ] {
+            for (case, value) in values.into_iter().enumerate() {
+                let mut args = json!({"argv": ["unused"]});
+                args[field] = value;
+                let done = run(&workers, &args).await;
+                assert!(
+                    !dir.path().join("worker-started").exists(),
+                    "{field} case {case} started a worker"
+                );
+                let Response::Error { exit, code, .. } = done.response else {
+                    panic!("{field} case {case} was accepted");
+                };
+                assert_eq!((exit, code.as_str()), (Exit::Failed, "bad_request"));
+                assert_eq!(done.audit_args, Value::Null);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn positional_exec_args_never_start_a_worker() {
+        let (dir, workers) = worker_setup();
+        let done = run(&workers, &json!([["unused"], 60, null, null])).await;
+        assert!(!dir.path().join("worker-started").exists());
+        assert!(matches!(
+            done.response,
+            Response::Error { code, .. } if code == "bad_request"
+        ));
+        assert_eq!(done.audit_args, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn omitted_and_null_optional_exec_args_still_run() {
+        let (dir, workers) = worker_setup();
+        for args in [
+            json!({"argv": ["unused"]}),
+            json!({"argv": ["unused"], "workdir": null, "stdin": null}),
+        ] {
+            let done = run(&workers, &args).await;
+            assert!(matches!(done.response, Response::Ok(_)));
+            assert!(dir.path().join("worker-started").exists());
+            assert_eq!(done.audit_args["workdir"], json!(dir.path()));
+        }
+    }
 
     #[test]
     fn argv_is_audited_up_to_four_kib() {
         let short = vec!["echo".to_string(), "hi".to_string()];
         assert_eq!(capped_argv(&short), json!(["echo", "hi"]));
 
-        let long = vec!["echo".to_string(), "x ".repeat(2500)];
+        let long = vec!["echo".to_string(), "x".repeat(5000)];
         let capped = capped_argv(&long);
         assert_eq!(capped["truncated"], true);
         let kept: usize = capped["kept"]
@@ -348,16 +466,6 @@ mod tests {
             .map(|arg| arg.as_str().unwrap().trim_end_matches('…').len())
             .sum();
         assert_eq!(kept, ARGV_AUDIT_CAP);
-    }
-
-    #[test]
-    fn credential_redaction_precedes_the_audit_cap() {
-        let argv = vec![
-            "tool".into(),
-            format!("--token={}", "short-secret".repeat(500)),
-        ];
-        assert_eq!(capped_argv(&argv), json!(["tool", "--token=[redacted]"]));
-        assert!(argv[1].contains("short-secret"));
     }
 
     #[tokio::test]

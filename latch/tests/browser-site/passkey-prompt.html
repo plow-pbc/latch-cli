@@ -1,0 +1,10 @@
+<!doctype html><title>latch passkey prompt test</title>
+<!-- A sign-in that asks for a passkey as soon as it loads, with no
+     conditional mediation: the browser or the OS shows its own sheet. -->
+<h1>Sign in with a passkey</h1>
+<p id="out">asking</p>
+<script>
+  navigator.credentials.get({publicKey: {challenge: new Uint8Array(32), timeout: 5000, userVerification: 'preferred'}})
+    .then(() => { document.getElementById('out').textContent = 'answered'; },
+          (error) => { document.getElementById('out').textContent = 'refused: ' + error.name; });
+</script>

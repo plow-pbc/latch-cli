@@ -1,0 +1,9 @@
+<!doctype html><title>latch embedded login test</title>
+<!-- Another site's page embedding a login form in a frame: open
+     embed-login.html?cross=PORT, and the frame comes from the second origin. -->
+<h1>Portal</h1>
+<iframe id="login" width="460" height="260"></iframe>
+<script>
+  const cross = new URLSearchParams(location.search).get('cross');
+  if (cross) document.getElementById('login').src = 'http://localhost:' + cross + '/login.html';
+</script>

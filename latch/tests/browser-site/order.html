@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>Checkout · Shop</title>
+<!-- A checkout whose "Place order" can't be undone: the plan tests'
+     confirmations. "Upgrade to express shipping" reprices the total from
+     $10.00 to $100.00 on the same page, "Reprice in a moment" two seconds
+     later; Enter in the gift note submits the order. Posts to /placed. -->
+<h1>Review your order</h1>
+<p><a href="basket.html">Back to basket</a></p>
+<form method="post" action="placed">
+  <p>Sharp Objects</p>
+  <p>Total <span id="total">$10.00</span></p>
+  <p><label for="note">Gift note</label> <input id="note" name="note"></p>
+  <p><button>Place order</button></p>
+</form>
+<p><button type="button" onclick="document.getElementById('total').textContent = '$100.00'">Upgrade to express shipping</button></p>
+<p><button type="button" onclick="setTimeout(() => { document.getElementById('total').textContent = '$100.00'; }, 2000)">Reprice in a moment</button></p>
