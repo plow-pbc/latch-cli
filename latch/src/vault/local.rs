@@ -2,17 +2,15 @@
 
 use std::fs;
 use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Map, Value, json};
-use tokio::net::{UnixListener, UnixStream};
 
 use super::{client, host, import};
 use crate::audit::{self, AuditLog};
-use crate::failure::{Exit, Failure};
+use crate::failure::Failure;
 use crate::state::StateDir;
-use crate::wire::{self, Response};
+use crate::wire::Response;
 
 fn audited(
     state: &StateDir,
@@ -97,66 +95,17 @@ pub(super) fn result(response: Response) -> Result<Value, Failure> {
 
 pub(super) async fn link(state: &StateDir, args: Value) -> Result<Value, Failure> {
     host::owner_only(&state.require_login()?.peer.kind)?;
-    let mut socket = UnixStream::connect(state.path.join("vault-link.sock")).await.map_err(|err| {
-        if matches!(err.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) {
-            Failure::new(Exit::Unreachable, "serve_required", "phone links need this machine's live receiver; start `latch serve` on this state folder, then retry `latch vault link`".into())
-        } else {
-            Failure::failed("local_socket", format!("could not reach this machine's phone-link receiver: {err}"))
-        }
-    })?;
-    let lost = |_| {
-        Failure::new(
-            Exit::Unknown,
-            "connection_lost",
-            "the local phone-link receiver did not answer; check before retrying".into(),
-        )
-    };
-    wire::write_frame(
-        &mut socket,
-        &serde_json::to_vec(&args).expect("args serialize"),
+    let mut peer = state.require_login()?.peer;
+    peer.this_machine = true;
+    crate::dial::call(
+        state,
+        &peer,
+        &crate::wire::Request {
+            op: "vault".into(),
+            args,
+            chat: None,
+        },
+        crate::dial::ANSWER_WITHIN,
     )
     .await
-    .map_err(lost)?;
-    let bytes = tokio::time::timeout(crate::dial::ANSWER_WITHIN, wire::read_frame(&mut socket))
-        .await
-        .map_err(|_| lost(std::io::Error::from(std::io::ErrorKind::TimedOut)))?
-        .map_err(lost)?;
-    let response = serde_json::from_slice(&bytes).map_err(|_| {
-        Failure::failed(
-            "bad_response",
-            "the local phone-link receiver sent an invalid response".into(),
-        )
-    })?;
-    result(response)
-}
-
-/// The socket grants only link creation; its directory and mode restrict it to the owner.
-pub(crate) struct LinkSocket {
-    pub listener: UnixListener,
-    path: PathBuf,
-}
-
-impl LinkSocket {
-    pub fn bind(state: &Path) -> Result<Self, Failure> {
-        let path = state.join("vault-link.sock");
-        let io = |err| Failure::failed("local_socket", format!("{}: {err}", path.display()));
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(io(err)),
-        }
-        let listener = UnixListener::bind(&path).map_err(io)?;
-        let socket = Self {
-            listener,
-            path: path.clone(),
-        };
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(io)?;
-        Ok(socket)
-    }
-}
-
-impl Drop for LinkSocket {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
 }

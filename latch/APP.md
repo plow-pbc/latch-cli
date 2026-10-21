@@ -105,3 +105,23 @@ record that fails those checks is never sent: the stream starts over if the
 log was replaced by a sound one, and otherwise stops with `audit_broken`.
 
 `--lifecycle-only` leaves the activity out. That is the menu bar's subscription.
+
+## Calling this machine's receiver
+
+Run ordinary `latch exec`, `latch file` and `latch google` commands on the
+host's state folder. A saved host resolves locally, even while Plow is
+unreachable; explicitly naming this machine with `--host` also resolves
+locally. The CLI connects to `<state-dir>/serve.sock`, inside the private
+state folder, mode 0600. It never dials its own iroh key.
+
+The socket accepts the same length-prefixed `Request` and `Response`
+frames as the network, including file-transfer bytes, one operation per
+connection. The receiver establishes the caller as `owner_on_host`; a
+request cannot choose its caller identity. Owner-only vault and rules
+operations also work over the socket, without asking the model. The app
+can use the CLI rather than implement this protocol itself.
+
+A stopped receiver gives exit 3 `serve_required`, with instructions to
+start `latch serve`. Plow or model outages give exit 3
+`gatekeeper_unavailable` for gated work. Local configuration commands
+continue to edit state directly, with the same file locks as `serve`.

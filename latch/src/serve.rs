@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iroh::endpoint::{Connection, Incoming, RecvStream, SendStream, VarInt, presets};
+use iroh::endpoint::{Connection, Incoming, VarInt, presets};
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -304,7 +304,7 @@ async fn run_host(
         gatekeeper,
         binary,
     });
-    let local_links = crate::vault::local::LinkSocket::bind(&state.path)?;
+    let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(&state.path, Phase::Serving, None)?;
     let mut heartbeat = tokio::spawn(heartbeat::run(
         host.plow.clone(),
@@ -318,9 +318,9 @@ async fn run_host(
     let mut stop = Box::pin(stop_requested(terminate));
     loop {
         tokio::select! {
-            accepted = local_links.listener.accept() => {
+            accepted = local_socket.listener.accept() => {
                 let (socket, _) = accepted.map_err(|err| Failure::failed("local_socket", err.to_string()))?;
-                tokio::spawn(serve_local_link(host.clone(), socket));
+                tokio::spawn(serve_local(host.clone(), socket));
             }
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => {
@@ -574,7 +574,7 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
 
     // One stream per operation, until the client closes the connection.
     while let Ok((send, recv)) = connection.accept_bi().await {
-        serve_operation(&host, &caller, send, recv).await;
+        serve_operation(&host, &caller, false, send.into(), recv.into()).await;
         log(&format!(
             "paths to {caller}: {}",
             describe_paths(&connection)
@@ -582,7 +582,13 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
     }
 }
 
-async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut recv: RecvStream) {
+async fn serve_operation(
+    host: &Host,
+    caller: &str,
+    local: bool,
+    mut send: crate::transport::SendStream,
+    mut recv: crate::transport::RecvStream,
+) {
     let Ok(json) = wire::read_frame(&mut recv).await else {
         return;
     };
@@ -595,7 +601,18 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
 
     // Second check: before the operation, in case the caller was revoked
     // since it connected.
-    let response = match host.check(caller).await {
+    let identity = if local {
+        Ok(Identity {
+            key: caller.to_string(),
+            kind: "device".into(),
+            name: host.name.clone(),
+            agent_uid: None,
+            permissions: crate::plow::Permissions { call: true },
+        })
+    } else {
+        host.check(caller).await
+    };
+    let response = match identity {
         Err(denial) => {
             let _ = host.append(audit::record(caller, None, op, "deny", &denial.code));
             log(&format!("{op}: {caller}: denied: {}", denial.message));
@@ -610,7 +627,14 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
         Ok(identity) => {
             // Any caller's exec, file or Google operation runs only if the
             // gatekeeper allows it.
-            let gate = host.gate(&identity, request.chat.as_deref());
+            let gate = if local {
+                Ok(Gate {
+                    keeper: &host.gatekeeper,
+                    caller: Caller::OwnerOnHost,
+                })
+            } else {
+                host.gate(&identity, request.chat.as_deref())
+            };
             // An exec this host's owner denies is refused without asking.
             let denied_exec = op == "exec" && host.deny_exec.refuses(&identity);
             // A worker started now would run the new latch under this old
@@ -736,7 +760,9 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             }
             let mut record = audit::record(caller, identity.agent_uid, op, decision, &done.outcome);
             record.args = done.audit_args;
-            record.gate = judgment.map(|judgment| judgment.gate);
+            record.gate = judgment
+                .map(|judgment| judgment.gate)
+                .or_else(|| local.then(|| serde_json::json!({"caller":"owner_on_host"})));
             match host.append(record) {
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed("audit_failed", message),
@@ -746,44 +772,21 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
     answer(&mut send, &response).await;
 }
 
-/// Owner-only local link creation; phone requests still use the live iroh endpoint.
-async fn serve_local_link(host: Arc<Host>, mut socket: tokio::net::UnixStream) {
-    let Ok(Ok(bytes)) =
-        tokio::time::timeout(crate::dial::ANSWER_WITHIN, wire::read_frame(&mut socket)).await
-    else {
-        return;
-    };
-    let Ok(args) = serde_json::from_slice::<Value>(&bytes) else {
-        return;
-    };
-    let mut audit_args = serde_json::Map::new();
-    audit_args.insert("command".into(), serde_json::json!("link"));
-    let result = if host.binary.replaced() {
-        Err(host_upgraded())
-    } else if args["command"] == "link" {
-        link::open(&host.vault, &host.here(), &args, &mut audit_args)
-    } else {
-        Err(Failure::usage(
-            "bad_command",
-            "this socket only creates phone links".into(),
-        ))
-    };
-    let done = crate::vault::host::done(result, audit_args);
-    let mut record = audit::record(
-        &host.endpoint.id().to_string(),
-        None,
-        "vault",
-        decision(&done.response),
-        &done.outcome,
-    );
-    record.args = done.audit_args;
-    let response = match host.append(record) {
-        Ok(id) => with_audit_id(done.response, id),
-        Err(message) => failed("audit_failed", message),
-    };
-    if let Ok(bytes) = serde_json::to_vec(&response) {
-        let _ = wire::write_frame(&mut socket, &bytes).await;
-    }
+/// Local callers are trusted by the private socket, never by a request field.
+async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
+    let caller = host.endpoint.id().to_string();
+    log(&format!(
+        "connect: {caller}: owner_on_host over Unix socket"
+    ));
+    let (recv, send) = socket.into_split();
+    serve_operation(
+        &host,
+        &caller,
+        true,
+        crate::transport::SendStream::Local(Some(send)),
+        crate::transport::RecvStream::Local(recv),
+    )
+    .await;
 }
 
 /// A phone page's connection (see `vault/link.rs`). Its key is a
@@ -895,10 +898,10 @@ fn failed(code: &str, message: String) -> Response {
 }
 
 /// Sends the one response frame and ends our side of the stream.
-async fn answer(send: &mut SendStream, response: &Response) {
+async fn answer(send: &mut (impl tokio::io::AsyncWrite + Unpin), response: &Response) {
     let json = serde_json::to_vec(response).expect("a response serializes");
     if wire::write_frame(send, &json).await.is_ok() {
-        let _ = send.finish();
+        let _ = tokio::io::AsyncWriteExt::shutdown(send).await;
     }
 }
 

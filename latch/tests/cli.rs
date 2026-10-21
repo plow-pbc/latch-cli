@@ -598,48 +598,27 @@ fn serving_before_any_login_says_to_log_in() {
 }
 
 #[test]
-fn calling_the_host_this_state_dir_serves_names_the_fix() {
-    let relay = json!("https://relay.example/");
-    let (login_url, login_server) = fake_plow(vec![(
-        200,
-        peer(Value::Null, "mac", "device", relay.clone()),
-    )]);
+fn calling_a_stopped_local_host_names_the_fix_without_plow() {
+    let plow = LivePlow::start();
     let dir = test_dir();
-    let owner_token = dir.path().join("owner.token");
-    fs::write(&owner_token, "owner-login\n").unwrap();
-    let state = dir.path().join("state");
-    let args = [
-        "login",
-        "--api-url",
-        &login_url,
-        "--token-file",
-        owner_token.to_str().unwrap(),
-        "--name",
-        "mac",
-    ];
-    let login = latch(&state, &args, &[]);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let own_key = serde_json::from_slice::<Value>(&login.stdout).unwrap()["peer"]["key"].clone();
-    login_server.join().unwrap();
-
-    // The directory lists this machine as the host, under its own key.
-    let (api_url, server) = fake_plow(vec![(
-        200,
-        json!({"data": [peer(own_key, "mac", "device", relay)]}),
-    )]);
-    let config_path = state.join("config.json");
-    let mut config: Value =
-        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-    config["api_url"] = json!(api_url);
-    fs::write(&config_path, config.to_string()).unwrap();
-
-    let exec = latch(&state, &["exec", "--host", "mac", "--", "true"], &[]);
-    assert_eq!(exec.status.code(), Some(2), "{exec:?}");
-    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "own_host", "{error}");
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(message.contains("--state-dir"), "{message}");
-    server.join().unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    use_plow(&host, "http://127.0.0.1:1");
+    for args in [
+        vec!["exec", "--host", "host", "--", "true"],
+        vec!["google", "--host", "host", "--", "accounts"],
+    ] {
+        let output = latch(&host, &args, &[]);
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "serve_required", "{error}");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("latch serve")
+        );
+        println!("stopped local {}: {error}", args[0]);
+    }
 }
 
 #[test]
@@ -1036,12 +1015,15 @@ const AGENT_UID: &str = "0123456789abcdef0123456789abcdef";
 #[derive(Clone)]
 struct LivePlow {
     url: String,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
     state: std::sync::Arc<std::sync::Mutex<LiveState>>,
 }
 
 struct LiveState {
     owner: String,
     agent: String,
+    model_down: bool,
+    decisions: Vec<Value>,
     /// Each peer with the credential that registered it.
     peers: Vec<(Value, String)>,
     /// Request lines and their bearers, in order.
@@ -1053,8 +1035,11 @@ impl LivePlow {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let plow = LivePlow {
             url: format!("http://{}", listener.local_addr().unwrap()),
+            running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             state: std::sync::Arc::new(std::sync::Mutex::new(LiveState {
                 owner: "owner-login".to_string(),
+                model_down: false,
+                decisions: Vec::new(),
                 agent: "agent-credential".to_string(),
                 peers: Vec::new(),
                 seen: Vec::new(),
@@ -1063,6 +1048,9 @@ impl LivePlow {
         let serving = plow.clone();
         thread::spawn(move || {
             for socket in listener.incoming() {
+                if !serving.running.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
                 let plow = serving.clone();
                 thread::spawn(move || {
                     let mut socket = socket.unwrap();
@@ -1075,6 +1063,20 @@ impl LivePlow {
             }
         });
         plow
+    }
+
+    fn stop(&self) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(self.url.trim_start_matches("http://"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::net::TcpStream::connect(self.url.trim_start_matches("http://")).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake Plow did not stop"
+            );
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// The agent's credential is replaced: the old one stops working, and
@@ -1106,7 +1108,18 @@ impl LivePlow {
         };
         let mut words = request.line().split(' ');
         let (method, path) = (words.next().unwrap(), words.next().unwrap());
+        if path == "/v1/decisions" {
+            state
+                .decisions
+                .push(serde_json::from_slice(&request.body).unwrap());
+            if state.model_down {
+                return (503, json!({}));
+            }
+        }
         match (method, path) {
+            ("POST", "/v1/connectors/gmail/access-token") => {
+                (200, json!({"data": {"accounts": []}}))
+            }
             ("POST", "/v1/latch/peers") => {
                 let sent: Value = serde_json::from_slice(&request.body).unwrap();
                 let name = sent["name"].as_str().unwrap_or("agent");
@@ -1317,7 +1330,14 @@ fn serving_folders(host: &Path, shares: &[&Path], relay: &str) -> (Serving, Vec<
             break;
         }
     }
-    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    thread::spawn(move || {
+        for line in log.lines() {
+            let line = line.unwrap();
+            if line.contains("owner_on_host over Unix socket") {
+                println!("{line}");
+            }
+        }
+    });
     (serve, lines)
 }
 
@@ -2034,7 +2054,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &share, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("vault-link.sock").exists() {
+    while !host.join("serve.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -2207,4 +2227,215 @@ fn a_local_agent_cannot_manage_a_vault() {
         "owner_only"
     );
     assert!(!host.join("vault.json").exists());
+}
+
+/// The Mac app can send the same operation frames without a second CLI path.
+fn local_operation(host: &Path, op: &str, args: Value) -> Value {
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve.sock")).unwrap();
+    socket
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let request = serde_json::to_vec(&json!({"op":op,"args":args})).unwrap();
+    socket
+        .write_all(&(request.len() as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&request).unwrap();
+    let mut length = [0; 4];
+    socket.read_exact(&mut length).unwrap();
+    let mut bytes = vec![0; u32::from_be_bytes(length) as usize];
+    socket.read_exact(&mut bytes).unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[test]
+fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    assert_eq!(
+        fs::metadata(host.join("serve.sock"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        assert!(output.status.success(), "{output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        println!("local {}: {value}", args[0]);
+        value
+    };
+    let before = plow.seen().len();
+    run(&["rules", "set", "Only read and echo in this test."]);
+    assert_eq!(plow.seen().len(), before);
+    let exec = run(&["exec", "--", "echo", "local socket"]);
+    assert_eq!(exec["stdout"], "local socket\n");
+    assert_eq!(
+        run(&["google", "--host", "host", "--", "accounts"])["accounts"],
+        json!([])
+    );
+    let source = dir.path().join("source.txt");
+    let remote = share.join("copied.txt");
+    let downloaded = dir.path().join("downloaded.txt");
+    fs::write(&source, "socket transfer").unwrap();
+    run(&[
+        "file",
+        "put",
+        source.to_str().unwrap(),
+        remote.to_str().unwrap(),
+    ]);
+    run(&[
+        "file",
+        "get",
+        remote.to_str().unwrap(),
+        downloaded.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&downloaded).unwrap(), b"socket transfer");
+    let decisions = plow.state.lock().unwrap().decisions.clone();
+    assert_eq!(decisions.len(), 4);
+    assert!(
+        decisions[0]
+            .to_string()
+            .contains("Only read and echo in this test.")
+    );
+    assert!(
+        !plow.seen()[before..]
+            .iter()
+            .any(|(line, _)| line.starts_with("GET /v1/latch/peers")),
+        "local operations used directory/identity lookup"
+    );
+    let listed = local_operation(&host, "vault", json!({"command":"list"}));
+    assert_eq!(listed["ok"]["items"], json!([]));
+    let rules = local_operation(
+        &host,
+        "rules",
+        json!({"command":"set","text":"Updated through the socket."}),
+    );
+    assert!(rules.get("ok").is_some(), "{rules}");
+    assert_eq!(
+        plow.state.lock().unwrap().decisions.len(),
+        4,
+        "owner config was judged"
+    );
+    run(&["exec", "--host", "host", "--", "true"]);
+    assert!(
+        plow.state
+            .lock()
+            .unwrap()
+            .decisions
+            .last()
+            .unwrap()
+            .to_string()
+            .contains("Updated through the socket.")
+    );
+    let records: Vec<Value> = fs::read_to_string(host.join("audit.ndjson"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let gated: Vec<_> = records
+        .iter()
+        .filter(|r| {
+            matches!(
+                r["op"].as_str(),
+                Some("exec" | "google" | "file_put" | "file_get")
+            )
+        })
+        .collect();
+    assert_eq!(gated.len(), 5);
+    for record in gated {
+        assert_eq!(record["gate"]["caller"], "owner_on_host");
+        assert_eq!(record["gate"]["verdict"], "allow");
+        println!(
+            "socket audit: op={} caller={} verdict={}",
+            record["op"], record["gate"]["caller"], record["gate"]["verdict"]
+        );
+    }
+}
+
+#[test]
+fn local_socket_full_plow_outage_refuses_gated_work_but_config_still_works() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    plow.stop();
+    for args in [
+        vec!["exec", "--", "touch", "must-not-exist"],
+        vec!["google", "--host", "host", "--", "accounts"],
+    ] {
+        let output = latch(&host, &args, &[]);
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+        println!("Plow unreachable, local {}: {error}", args[0]);
+    }
+    assert!(!share.join("must-not-exist").exists());
+    for args in [
+        vec!["rules", "set", "Config stays available."],
+        vec!["vault", "list"],
+        vec!["shares"],
+    ] {
+        let output = latch(&host, &args, &[]);
+        assert!(output.status.success(), "{output:?}");
+        println!(
+            "Plow unreachable, config {}: {}",
+            args[0],
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    assert!(
+        local_operation(&host, "vault", json!({"command":"list"}))
+            .get("ok")
+            .is_some()
+    );
+    let record: Value = serde_json::from_str(
+        fs::read_to_string(host.join("audit.ndjson"))
+            .unwrap()
+            .lines()
+            .find(|line| line.contains("\"op\":\"exec\""))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["gate"]["caller"], "owner_on_host");
+    assert_eq!(record["decision"], "deny");
+}
+
+#[test]
+fn local_socket_model_only_outage_refuses_with_plow_still_available() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    plow.state.lock().unwrap().model_down = true;
+    let output = latch(
+        &host,
+        &["exec", "--host", "host", "--", "touch", "must-not-exist"],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+    assert!(!share.join("must-not-exist").exists());
+    assert_eq!(plow.state.lock().unwrap().decisions.len(), 1);
+    assert!(
+        local_operation(&host, "rules", json!({"command":"show"}))
+            .get("ok")
+            .is_some()
+    );
+    assert_eq!(plow.state.lock().unwrap().decisions.len(), 1);
+    println!("Plow up, model down, local exec: {error}");
 }

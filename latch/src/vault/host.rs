@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iroh::endpoint::{RecvStream, SendStream};
+use crate::transport::{RecvStream, SendStream};
 use serde_json::{Map, Value, json};
 
 use super::import;
@@ -514,16 +514,19 @@ mod tests {
             });
         let export = fs_export();
         let serving = async {
-            let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
+            let (send, mut recv) = accepted.accept_bi().await.unwrap();
             let request: Value =
                 serde_json::from_slice(&wire::read_frame(&mut recv).await.unwrap()).unwrap();
             let args = request["args"].clone();
+            let (mut send, mut recv) = (send.into(), recv.into());
             let result = import(vault, &args, &mut send, &mut recv, &mut Map::new()).await;
             if let Ok(outcome) = &result {
                 let answer = serde_json::to_vec(&Response::Ok(outcome.clone())).unwrap();
                 wire::write_frame(&mut send, &answer).await.unwrap();
                 send.finish().unwrap();
-                let _ = send.stopped().await;
+                if let SendStream::Remote(send) = &mut send {
+                    let _ = send.stopped().await;
+                }
             }
             result
         };

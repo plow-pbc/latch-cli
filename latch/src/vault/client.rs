@@ -294,7 +294,7 @@ fn link_url(page: &str, opened: &Value) -> String {
 
 /// Sends the export, shows the preview, asks which rows to import, and
 /// commits only those.
-async fn import(connection: &iroh::endpoint::Connection, path: &Path) -> Result<Value, Failure> {
+async fn import(connection: &crate::transport::Connection, path: &Path) -> Result<Value, Failure> {
     let local =
         |err: std::io::Error| Failure::usage("local_file", format!("{}: {err}", path.display()));
     let mut file = File::open(path).await.map_err(local)?;
