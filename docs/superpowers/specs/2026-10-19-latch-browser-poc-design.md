@@ -317,6 +317,7 @@ Each pass observes the page and makes **one decision-model request**. In that re
   - fill bundles: latch's complete suggestions for the items the plan names, each shown as the item's title and kind, its map (item field → the element's name on the page) and its press button, **always with `none`**, even when there is only one.
 
   Every model-chosen field × value pair and fill bundle keeps its `none`.
+- **the risk of the pass's own action:** the §6.5 risk question, asked of "the click this pass would make" when a click is offered, and of "pressing Enter in the field just typed into" when `press_enter` is. Each is asked only while the request has room under the route's limit of 8 questions; otherwise the action gets its own risk call (§6.5).
 
   **Size.** A request that would pass the route's 64 KiB is cut to fit (latch budgets 60 KiB): the page's other lines first, then click targets from the end of the page, then field and dropdown pairs, then on-screen lines, then field lines and the step's action lines. The request says what was left out, and so does the action's trail entry. What is never cut (the plan, the step's own values, the page's address and title) may still not fit: then the step stops `request_too_large` and nothing is sent.
 
@@ -393,6 +394,7 @@ These stop with `confirm_needed` (exit 4) before anything is sent:
 
 This applies whether the model chose the target or the agent named it in a literal step, and whether or not the agent has seen the page.
 - **The decision.** It is a decision-model yes/no on the exact element (or, for Enter, the form's submit control), at p ≥ 0.5. Enter in a form with no submit control latch can identify is judged as a submit of that form.
+- **One call where there were two.** For an action an instruction step chose, the pass's own answer to the risk question (§6.2) stands for that decision when it is below 0.3 and, for a click, the pass was at least 0.9 sure of its target: then the question about "the click this pass would make" was about that element. Otherwise (the pass's yes at 0.3 or above, a less certain target, or no room to ask), the element gets its own call as above, which alone can issue a confirmation. Literal steps always get their own call. Each action's record says which (`risk_from`: `pass` or `own_call`) and holds the pass's yes (`risk_pass_p`).
 - **There is no keyword fallback.** If no decision model is reachable when a risk decision is needed, the step stops with `model_unavailable` and nothing is sent. It never passes silently.
 - **An issued, still-valid confirmation dispatches normally,** with no new decision (all hosts reach a model through Plow inference, B5b).
 

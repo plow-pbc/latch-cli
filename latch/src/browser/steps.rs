@@ -716,8 +716,8 @@ impl Run<'_> {
         };
         match literal.op {
             Op::Fill => self.fill(n, literal).await?,
-            Op::Click => self.risky(n, literal, false).await?,
-            _ if presses_enter(literal) => self.risky(n, literal, true).await?,
+            Op::Click => self.risky(n, literal, false, None).await?,
+            _ if presses_enter(literal) => self.risky(n, literal, true, None).await?,
             _ => {
                 self.dispatch(n, literal, None, None, None).await?;
             }
@@ -728,23 +728,38 @@ impl Run<'_> {
     /// A click or Enter: the model's risk decision on what it would act on,
     /// then the action, made only if that is still what the page shows, or a
     /// confirmation in its place.
-    async fn risky(&mut self, n: usize, literal: &Literal, enter: bool) -> Result<(), Failure> {
+    /// The risk decision on a click or Enter, then the action or its
+    /// confirmation. `passed` is the risk the pass that chose the action
+    /// already answered, low enough to stand for the decision: then no
+    /// call of its own is made.
+    async fn risky(
+        &mut self,
+        n: usize,
+        literal: &Literal,
+        enter: bool,
+        passed: Option<f64>,
+    ) -> Result<(), Failure> {
         let reviewed = self.review(literal, enter).await?;
         if !self.model.is_on() {
             return Err(model_unavailable(&self.model, "a click or Enter"));
         }
         let what = action_line(&reviewed, enter, literal.op == Op::Type);
-        let lines = strings(&reviewed["lines"]);
-        let judged = self
-            .model
-            .risky(
-                reviewed["title"].as_str().unwrap_or_default(),
-                &what,
-                &lines,
-            )
-            .await;
-        record_model(&self.model, self.audit);
-        let p = judged.map_err(|_| model_unavailable(&self.model, "a click or Enter"))?;
+        let p = match passed {
+            Some(p) => p,
+            None => {
+                let lines = strings(&reviewed["lines"]);
+                let judged = self
+                    .model
+                    .risky(
+                        reviewed["title"].as_str().unwrap_or_default(),
+                        &what,
+                        &lines,
+                    )
+                    .await;
+                record_model(&self.model, self.audit);
+                judged.map_err(|_| model_unavailable(&self.model, "a click or Enter"))?
+            }
+        };
         if p < RISKY_P {
             let guard = fingerprint(&reviewed);
             return match self
@@ -765,8 +780,12 @@ impl Run<'_> {
             false => Confirms::Click,
         };
         let id = self.issue(kind, &reviewed);
-        self.records.push(json!({"step": n, "op": literal.op, "ref": literal.target,
-                                 "risk_p": model::round(p), "confirmation": id, "dispatch": "refused"}));
+        let mut record = json!({"step": n, "op": literal.op, "ref": literal.target,
+                                "risk_p": model::round(p), "confirmation": id, "dispatch": "refused"});
+        for (key, value) in self.choice.iter().flat_map(|c| c.as_object()).flatten() {
+            record[key] = value.clone();
+        }
+        self.records.push(record);
         let mut failure = Failure::new(
             Exit::Denied,
             "confirm_needed",

@@ -134,6 +134,21 @@ impl Provider for Told {
                 .expect("the model was told"))(state);
             for question in questions {
                 let Kind::Choose(options) = &question.kind else {
+                    // The risk of the pass's own click: what the risk
+                    // question answers of that click. An Enter's is left
+                    // to its own call.
+                    let target = choice.target.unwrap_or_default();
+                    let yes = match question.id.as_str() {
+                        "risky_click"
+                            if target.contains("Place order")
+                                || target.contains("Delete my account") =>
+                        {
+                            0.95
+                        }
+                        "risky_click" => 0.03,
+                        _ => 0.5,
+                    };
+                    answers.insert(question.id.clone(), Answer::Yes(yes));
                     continue;
                 };
                 let holding = |part: &str| {
@@ -332,6 +347,21 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
         json!([{"step": 1, "kind": "goal", "outcome": "model_assessed", "actions": 2}])
     );
     assert_eq!(audit["model_calls"][0]["purpose"], "decide");
+    // Each click's risk was answered in the pass that chose it, low and of
+    // a target it was sure of: no call of its own.
+    let purposes: Vec<&str> = audit["model_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["purpose"].as_str())
+        .collect();
+    assert!(!purposes.contains(&"risk"), "{purposes:?}");
+    for record in audit["step_records"].as_array().unwrap() {
+        assert_eq!(
+            (&record["risk_from"], &record["risk_pass_p"]),
+            (&json!("pass"), &json!(0.03))
+        );
+    }
     assert_eq!(
         audit["step_records"][1]["screenshot"]["sha256"],
         crate::state::to_hex(&sha2::Sha256::digest(&png))
@@ -814,6 +844,25 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     told.tell(|_| choose("click", Some("Place order")));
     let (code, details) = stop(h.send(plan(&["place the order"], &site, &[], &[])).await);
     assert_eq!(code, "confirm_needed", "{details:#}");
+    // A risk the pass found high is decided on the element with its own
+    // call.
+    let audit = h.audits.last().unwrap();
+    let purposes: Vec<&str> = audit["model_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["purpose"].as_str())
+        .collect();
+    assert_eq!(purposes, ["decide", "risk"]);
+    let refused = &audit["step_records"].as_array().unwrap()[0];
+    assert_eq!(
+        (
+            &refused["risk_from"],
+            &refused["risk_pass_p"],
+            &refused["risk_p"]
+        ),
+        (&json!("own_call"), &json!(0.95), &json!(0.95))
+    );
     let id = details["stop"]["confirmation"]["id"]
         .as_str()
         .unwrap()

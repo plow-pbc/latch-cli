@@ -205,7 +205,8 @@ step count and how many are goals, its status and stop (step and code),
 each step's kind and outcome, and per action the step and action number,
 operation, ref and role, how it was chosen (`ref`, or `model` with the
 operation's and target's `p`, and what was left out to fit), the risk
-`p`, the confirmation id when one was used, the origin and path, the
+`p` (and for a model-chosen click or Enter, the pass's own risk answer,
+`risk_pass_p`, and `risk_from`: `pass` or `own_call`), the confirmation id when one was used, the origin and path, the
 dispatch (`sent`, `refused`, `unknown`) and its screenshot's size and
 sha256. Each decision-model call records its purpose, provider, model,
 the provider's request id, latency and the kinds of data sent, never
@@ -358,7 +359,12 @@ out, create credentials or otherwise can't be undone, judged on the exact
 element, its row text, the page title and the lines of the form or section
 around it; an Enter in a field is judged as its form's submit (the form's
 submit control, else the form), and so is `type` text with a line break,
-which the engine types as Enter. The action is then made only if the
+which the engine types as Enter. For a click or Enter an instruction step
+chose, the pass that chose it also answers the risk question of "the
+click this pass would make" (or the Enter): below 0.3, for a click whose
+target the pass was at least 0.9 sure of, that answer stands for the
+decision and no call of its own is made; otherwise the element gets its
+own call, which alone can stop for a confirmation. The action is then made only if the
 worker, at dispatch, still finds that element and those lines unchanged;
 a page that changed while the model answered stops with `stale_snapshot`,
 nothing sent. At p ≥ 0.5 the step stops with
