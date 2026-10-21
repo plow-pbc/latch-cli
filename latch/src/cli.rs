@@ -180,7 +180,12 @@ pub enum BrowserCommand {
         all: bool,
     },
     /// The page's text
-    Text,
+    Text {
+        /// Print only the text, as it is in the answer (the same cut and
+        /// the same fields left out), not JSON
+        #[arg(long)]
+        raw: bool,
+    },
     /// A PNG of the page, written to a file on this machine
     Screenshot {
         #[arg(long, short)]

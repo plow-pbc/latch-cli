@@ -46,7 +46,7 @@ use clap::error::ErrorKind;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use cli::{Cli, Command, DevicesAction, FileCommand, HostArg};
+use cli::{BrowserCommand, Cli, Command, DevicesAction, FileCommand, HostArg};
 use failure::{Exit, Failure};
 use state::StateDir;
 use wire::Request;
@@ -164,7 +164,20 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             to_json(transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?)
         }
         Command::Google(args) => to_json(google::client::run(&state, args).await?),
-        Command::Browser(args) => to_json(browser::client::run(&state, args).await?),
+        Command::Browser(args) => {
+            let raw = matches!(args.command, BrowserCommand::Text { raw: true });
+            let result = browser::client::run(&state, args).await?;
+            if !raw {
+                return to_json(result);
+            }
+            if result["truncated"] == true {
+                eprintln!("latch: the page's text was cut short; this is its beginning");
+            }
+            Ok(Printed {
+                text: result["text"].as_str().unwrap_or_default().to_string(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Exec(args) => {
