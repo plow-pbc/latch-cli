@@ -367,74 +367,62 @@ mod tests {
         (dir, workers)
     }
 
-    async fn malformed_args(field: &str, values: &[Value]) {
+    #[tokio::test]
+    async fn malformed_exec_args_never_start_a_worker() {
         let (dir, workers) = worker_setup();
-        for (case, value) in values.iter().enumerate() {
-            let mut args = json!({"argv": ["unused"]});
-            args[field] = value.clone();
-            let done = run(&workers, &args).await;
-            assert!(
-                !dir.path().join("worker-started").exists(),
-                "{field} case {case} started a worker"
-            );
-            let Response::Error { exit, code, .. } = done.response else {
-                panic!("{field} case {case} was accepted");
-            };
-            assert_eq!((exit, code.as_str()), (Exit::Failed, "bad_request"));
-            assert_eq!(done.audit_args, Value::Null);
+        for (field, values) in [
+            (
+                "timeout",
+                vec![
+                    json!(null),
+                    json!("1"),
+                    json!(true),
+                    json!(1.5),
+                    json!(-1),
+                    json!(0),
+                    json!(601),
+                ],
+            ),
+            (
+                "workdir",
+                vec![json!(1), json!(false), json!([]), json!({})],
+            ),
+            (
+                "argv",
+                vec![
+                    json!(null),
+                    json!("true"),
+                    json!([1]),
+                    json!([]),
+                    json!([""]),
+                ],
+            ),
+            (
+                "stdin",
+                vec![
+                    json!("text"),
+                    json!(true),
+                    json!([-1]),
+                    json!([256]),
+                    json!(vec![0; MAX_STDIN + 1]),
+                ],
+            ),
+        ] {
+            for (case, value) in values.into_iter().enumerate() {
+                let mut args = json!({"argv": ["unused"]});
+                args[field] = value;
+                let done = run(&workers, &args).await;
+                assert!(
+                    !dir.path().join("worker-started").exists(),
+                    "{field} case {case} started a worker"
+                );
+                let Response::Error { exit, code, .. } = done.response else {
+                    panic!("{field} case {case} was accepted");
+                };
+                assert_eq!((exit, code.as_str()), (Exit::Failed, "bad_request"));
+                assert_eq!(done.audit_args, Value::Null);
+            }
         }
-    }
-
-    #[tokio::test]
-    async fn malformed_timeout_never_starts_a_worker() {
-        malformed_args(
-            "timeout",
-            &[
-                json!(null),
-                json!("1"),
-                json!(true),
-                json!(1.5),
-                json!(-1),
-                json!(0),
-                json!(601),
-            ],
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn malformed_workdir_never_starts_a_worker() {
-        malformed_args("workdir", &[json!(1), json!(false), json!([]), json!({})]).await;
-    }
-
-    #[tokio::test]
-    async fn malformed_argv_never_starts_a_worker() {
-        malformed_args(
-            "argv",
-            &[
-                json!(null),
-                json!("true"),
-                json!([1]),
-                json!([]),
-                json!([""]),
-            ],
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn malformed_stdin_never_starts_a_worker() {
-        malformed_args(
-            "stdin",
-            &[
-                json!("text"),
-                json!(true),
-                json!([-1]),
-                json!([256]),
-                json!(vec![0; MAX_STDIN + 1]),
-            ],
-        )
-        .await;
     }
 
     #[tokio::test]
