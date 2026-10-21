@@ -143,7 +143,9 @@ the items that fit, what the page asks for and latch's suggestions.
 `open` answers the new session's id, once: 128 random bits, never derived
 from the profile (`--profile` defaults to `default`). Every other session
 command needs it, as `--session S` or `LATCH_BROWSER_SESSION`; there is no
-default session. The id is a capability, and a session is reachable only
+default session, and a command without one gets `no_session` (exit 2),
+which says so. Keep the id when `open` answers: latch never shows it again,
+and a session whose id is lost closes itself after 30 idle minutes. The id is a capability, and a session is reachable only
 with it and only by the caller (client key) that opened it: an id the
 caller has no session for gets `no_such_session` (exit 1), another
 caller's session `not_owner` (exit 4), and nothing reaches the session

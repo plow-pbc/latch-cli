@@ -454,7 +454,10 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
     if !matches!(name, "open" | "sessions") && request["session"].is_null() {
         return Err(Failure::usage(
             "no_session",
-            "name the session with --session S (the id `open` answered) or LATCH_BROWSER_SESSION"
+            "this command needs a session: give --session S, or set LATCH_BROWSER_SESSION, to \
+             the `session` id `latch browser open` answered. Keep that id when you open: it is \
+             shown only then, and `latch browser sessions` lists your sessions without ids. A \
+             session whose id is lost closes itself after 30 idle minutes; open a new one"
                 .into(),
         ));
     }
@@ -666,6 +669,25 @@ mod tests {
         );
         assert!(named.message.contains("plan step"));
         assert!(act_literal(None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn a_command_with_no_session_says_to_keep_the_id_open_answered() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["latch", "browser", "close"]).unwrap();
+        let Command::Browser(args) = cli.command else {
+            panic!("browser");
+        };
+        let mut request = json!({"session": null});
+        let failure = fill(&mut request, args.command).unwrap_err();
+        println!("{}", failure.to_json());
+        assert_eq!(
+            (failure.exit, failure.code.as_str()),
+            (Exit::Usage, "no_session")
+        );
+        assert!(failure.message.contains("Keep that id"));
+        assert!(failure.message.contains("without ids"));
     }
 
     #[test]
