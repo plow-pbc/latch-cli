@@ -141,6 +141,7 @@ jobs:
           path: latch/target/musl-${{ matrix.arch }}/release/latch
 
   ci-required:
+    name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
     needs: [mac, linux, linux-static]
     runs-on: ubuntu-24.04
