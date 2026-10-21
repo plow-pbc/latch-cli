@@ -12,7 +12,7 @@ INSTALLER = Path(__file__).resolve().parents[1] / "install-release.sh"
 
 
 class ReleaseInstall(unittest.TestCase):
-    def run_install(self, system, machine, target, corrupt=False, relative_state=False):
+    def run_install(self, system, machine, target, corrupt=False, relative_state=False, release="v0.1.0"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             caller = root / "caller"
@@ -39,6 +39,7 @@ touch "$2/setup-marker"
             digest = "0" * 64 if corrupt else hashlib.sha256(archive.read_bytes()).hexdigest()
             (root / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n")
             (tools / "gh").write_text('''#!/bin/sh
+if [ "$1 $2" = "release view" ]; then echo v0.1.0; exit; fi
 while [ "$#" -gt 0 ]; do
   if [ "$1" = --dir ]; then shift; destination=$1; fi
   shift
@@ -52,7 +53,7 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
                 tool.chmod(0o755)
             result_file = root / "result"
             result = subprocess.run(
-                ["sh", str(INSTALLER), "v0.1.0", "--state-dir", state_arg],
+                ["sh", str(INSTALLER), release, "--state-dir", state_arg],
                 cwd=caller,
                 env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
                      "FIXTURE": str(root), "RESULT": str(result_file)},
@@ -82,6 +83,9 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
 
     def test_relative_state_directory_survives_download_cleanup(self):
         self.run_install("Darwin", "arm64", "aarch64-apple-darwin", relative_state=True)
+
+    def test_latest_installs_the_newest_published_release(self):
+        self.run_install("Darwin", "arm64", "aarch64-apple-darwin", release="latest")
 
     def test_bad_checksum_never_runs_setup(self):
         self.run_install("Darwin", "arm64", "aarch64-apple-darwin", corrupt=True)

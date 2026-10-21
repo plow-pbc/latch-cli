@@ -6,10 +6,12 @@ on a machine its owner trusts, over Plow's directory.
 ## Install
 
 Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
-(`gh auth login`). Pick a release tag, then download and run its installer:
+(`gh auth login`). Releases are tagged `v<version>-build.<UTC yyyymmddHHMM>`,
+e.g. `v0.1.0-build.202610211830`. This installs the newest published one; set
+`release` to a tag to pick another:
 
 ```sh
-release=v0.1.0
+release=$(gh release view -R plow-pbc/latch-cli --json tagName --jq .tagName)
 d=$(mktemp -d) && gh release download "$release" -R plow-pbc/latch-cli -p install-release.sh -D "$d" && sh "$d/install-release.sh" "$release"
 export PATH="$HOME/.local/bin:$PATH"
 latch --version
@@ -26,11 +28,11 @@ arm64 browser hosts also need Xvfb and Chrome's system libraries. Linux x86_64
 currently has no pinned browser engine. Static Linux CLI builds do not make
 browser plugins independent of their system libraries; see [Docker hosting](latch/DOCKER.md).
 
-Update by rerunning with a newer tag. State and versioned plugins stay in place;
+Update by rerunning the commands above; `install-release.sh latest` also
+resolves the newest published release itself. State and versioned plugins stay in place;
 restart an existing `latch serve` intentionally when ready to use the new binary.
-macOS downloads have no Developer ID signature or notarization: use `gh` as above
-rather than a browser download, which can add quarantine. No Homebrew tap or
-Mac app is included.
+The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
+No Homebrew tap or Mac app is included.
 
 ## For agents
 

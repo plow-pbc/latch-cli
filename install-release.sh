@@ -1,10 +1,15 @@
 #!/bin/sh
 # Download a private GitHub release and run its pinned plugin installer.
 set -eu
-[ "$#" -ge 1 ] || { echo 'usage: install-release.sh vVERSION [--state-dir DIR] [--with-camoufox]' >&2; exit 1; }
+[ "$#" -ge 1 ] || { echo 'usage: install-release.sh TAG|latest [--state-dir DIR] [--with-camoufox]' >&2; exit 1; }
 version=$1
 shift
-printf '%s\n' "$version" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || { echo 'expected a v-prefixed release version' >&2; exit 1; }
+command -v gh >/dev/null || { echo 'install GitHub CLI and run gh auth login first' >&2; exit 1; }
+# `latest` is the newest published release; drafts are never picked.
+if [ "$version" = latest ]; then
+  version=$(gh release view --repo plow-pbc/latch-cli --json tagName --jq .tagName)
+fi
+printf '%s\n' "$version" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || { echo 'expected a release tag such as v0.1.0-build.202610211830, or latest' >&2; exit 1; }
 case "$(uname -s)/$(uname -m)" in
   Darwin/arm64) target=aarch64-apple-darwin ;;
   Darwin/x86_64) target=x86_64-apple-darwin ;;
@@ -12,7 +17,6 @@ case "$(uname -s)/$(uname -m)" in
   Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-musl ;;
   *) echo 'unsupported OS/architecture' >&2; exit 1 ;;
 esac
-command -v gh >/dev/null || { echo 'install GitHub CLI and run gh auth login first' >&2; exit 1; }
 caller=$(pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
