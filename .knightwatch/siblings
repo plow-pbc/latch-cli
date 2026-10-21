@@ -1,0 +1,14 @@
+# Repos a reviewer of THIS repo may search and cite, materialized under
+# .siblings/<owner>/<repo>. One per line. Declared explicitly: with no file,
+# the reviewer sees no siblings at all.
+#
+# plow owns everything latch asks of Plow: the peer directory
+# (api/plow/latch.py), owner and agent auth, login by text, the decisions
+# route the gatekeeper judges through, and the chats and agents it reads. A
+# latch reviewer that cannot see it reviews the host half of that contract
+# blind.
+plow-pbc/plow
+# latch is the earlier Electron Mac app this CLI replaces; its DESIGN.md and
+# review history record decisions (sandboxing, the browser, approvals) this
+# repo revisits.
+plow-pbc/latch
