@@ -13,6 +13,12 @@ use serde_json::{Value, json};
 
 use crate::failure::Failure;
 
+/// The schemes whose loads the driver stops before they start: those that
+/// read the host's own files or the browser's own pages, which no proxy
+/// sees (the PDF viewer's extension pages are left alone). Requests of
+/// other schemes are never paused.
+pub const OFF_THE_WEB: &[&str] = &["file", "filesystem", "chrome", "devtools", "view-source"];
+
 pub struct Cdp {
     to_chrome: File,
     from_chrome: File,
@@ -249,6 +255,13 @@ impl Cdp {
                     }
                     None => true,
                 }
+            }
+            // Only a load of a scheme off the web is paused: it never goes on.
+            "Fetch.requestPaused" => {
+                let fail =
+                    json!({"requestId": params["requestId"], "errorReason": "BlockedByClient"});
+                let _ = self.send("Fetch.failRequest", fail, event["sessionId"].as_str());
+                false
             }
             // An open dialog blocks its page until latch answers it, so
             // these come one at a time.

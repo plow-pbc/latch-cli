@@ -538,8 +538,13 @@ own sandbox on for every renderer, GPU and utility process
   only `http` and `https` addresses: `file:`, `chrome:`, `view-source:`,
   `data:` and every other scheme are refused with `url_refused` before
   anything is sent (by the host, before the gatekeeper is asked, and by
-  the worker again), and a tab a page takes off the web anyway is blanked,
-  never read. Both engines reach the network only through a proxy in the
+  the worker again). In CfT, every load of a `file:`, `filesystem:`,
+  `chrome:`, `devtools:` or `view-source:` address, in any tab or frame
+  and however it came about, is stopped before it starts
+  (`ERR_BLOCKED_BY_CLIENT`). Camoufox has no such hook: there, a page's
+  own link, redirect or script to a file is stopped only by Firefox's own
+  rules. In both, a tab that ends up off the web anyway is blanked, never
+  read. Both engines reach the network only through a proxy in the
   worker that resolves each name itself and connects only to the address
   it checked, so the host's loopback, link-local and private addresses
   (Tailscale's included) are refused, by number or by a name that resolves

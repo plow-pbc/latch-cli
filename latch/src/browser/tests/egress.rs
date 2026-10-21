@@ -219,3 +219,50 @@ async fn the_web_loads_as_before(engine: &str) {
         h.call(CALLER, "close", &s, json!({})).await.unwrap();
     }
 }
+
+/// A file Chrome would itself load (the driver's own navigation, a new
+/// tab on it) is stopped by latch's interception before it starts: the
+/// worker's check of the address is bypassed here, by driving the engine
+/// directly, so only the engine-level stop is left to hold.
+#[tokio::test]
+async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
+    use crate::browser::cft::Cft;
+    use crate::browser::driver::{Driver, Runtime};
+    let (_dir, state, _area) = test_state("cft", &["intercepted"]);
+    let secret = sentinel("SENTINEL");
+    let file = state.join("sentinel-config.json");
+    fs::write(&file, format!(r#"{{"plow_token": "{secret}"}}"#)).unwrap();
+    let file_url = format!("file://{}", file.canonicalize().unwrap().display());
+    let scratch = tempfile::tempdir().unwrap();
+    let state = state.canonicalize().unwrap();
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    let proxy = crate::browser::egress::Proxy::start(true).unwrap().url();
+    let mut browser = Cft::launch(
+        &state,
+        "intercepted",
+        &scratch_path,
+        super::HEADLESS,
+        None,
+        &proxy,
+    )
+    .unwrap();
+    browser.begin("k1").unwrap();
+    let went = browser.navigate(&file_url);
+    let opened = browser.new_tab(Some(&file_url));
+    let mut shown = Vec::new();
+    for tab in browser.tabs().unwrap() {
+        browser.switch_tab(&tab.tab).unwrap();
+        let text = browser.eval("document.documentElement.innerText");
+        shown.push(format!("{} {text:?}", tab.url));
+    }
+    browser.close();
+    println!("navigate: {went:?}\nnew tab: {opened:?}\ntabs: {shown:?}");
+    for attempt in [went.map(|_| String::new()), opened] {
+        let failure = attempt.unwrap_err();
+        assert!(
+            failure.message.contains("ERR_BLOCKED_BY_CLIENT"),
+            "{failure:?}"
+        );
+    }
+    assert!(!format!("{shown:?}").contains(&secret), "{shown:?}");
+}

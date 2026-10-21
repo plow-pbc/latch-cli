@@ -201,6 +201,19 @@ impl Cft {
             None,
             deadline,
         )?;
+        // Every tab's and frame's loads of a scheme off the web stop before
+        // they start, in any tab and however they came about; `cdp` fails
+        // each one it hears of (`Fetch.requestPaused`).
+        let patterns: Vec<Value> = cdp::OFF_THE_WEB
+            .iter()
+            .map(|scheme| json!({"urlPattern": format!("{scheme}:*")}))
+            .collect();
+        self.cdp.call(
+            "Fetch.enable",
+            json!({"patterns": patterns}),
+            None,
+            deadline,
+        )?;
         let folder = self.scratch.join("downloads");
         fs::create_dir_all(&folder).map_err(io_failure)?;
         self.cdp.call(
