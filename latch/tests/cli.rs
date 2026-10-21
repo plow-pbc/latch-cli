@@ -1559,29 +1559,11 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let dir = test_dir();
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
-    let owner_token = dir.path().join("owner.token");
-    fs::write(&owner_token, "owner-login\n").unwrap();
+    let (host, owner) = host_and_owner(&plow, dir.path());
     let agent_token = dir.path().join("agent.token");
     fs::write(&agent_token, "agent-credential\n").unwrap();
-    let (host, owner, agent) = (
-        dir.path().join("host"),
-        dir.path().join("owner"),
-        dir.path().join("agent"),
-    );
+    let agent = dir.path().join("agent");
     let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
-    for (state, name) in [(&host, "host"), (&owner, "owner-mac")] {
-        let token = owner_token.to_str().unwrap();
-        let args = [
-            "login",
-            "--api-url",
-            &plow.url,
-            "--token-file",
-            token,
-            "--name",
-            name,
-        ];
-        assert_eq!(latch(state, &args, &[]).status.code(), Some(0), "{name}");
-    }
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     let serve = serving(&host, &share, &relay);

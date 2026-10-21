@@ -20,6 +20,8 @@
 //! - `plugins/`, on a host: the pinned Google CLI.
 //! - `shares.json`: the folders `latch serve` shares when named none (see
 //!   `latch shares`).
+//! - `secrets.lock`: held while a Keychain latch moves secret files in (see
+//!   `secrets.rs`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
 //!
@@ -260,22 +262,25 @@ impl StateDir {
     }
 }
 
-/// Writes a file only its owner can read. Skips the write when the file
-/// already holds exactly these bytes, so a repeated `login` changes nothing.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Writes a file only its owner can read, atomically (a temporary file
+/// renamed over it). Skips the write when the file already holds exactly
+/// these bytes, so a repeated `login` changes nothing.
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if fs::read(path).is_ok_and(|current| current == bytes) {
         return Ok(());
     }
-    // `mode` only applies when the file is created; `set_permissions` covers
-    // a file that already existed with looser permissions.
+    let temp = path.with_extension("tmp");
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(path)?;
+        .open(&temp)?;
+    // `mode` applies only when the file is created.
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    fs::rename(&temp, path)
 }
 
 /// Bytes as lowercase hex, two characters per byte.

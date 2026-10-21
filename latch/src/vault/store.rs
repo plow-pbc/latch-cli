@@ -8,9 +8,7 @@
 //! macOS latch, else in `vault.key` beside it, owner-only (0600). The state
 //! directory is one `exec` and file workers can never read.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -21,7 +19,7 @@ use super::classify;
 use super::item::{Item, Meta};
 use crate::failure::{Exit, Failure};
 use crate::secrets::{Secret, Secrets};
-use crate::state::to_hex;
+use crate::state::{to_hex, write_private};
 
 /// What every vault backend offers. Deciding a release (which item, into
 /// which page) is never a backend's job; it hands over one value when the
@@ -136,23 +134,6 @@ fn custody(dir: &Path) -> Result<[u8; 32], Failure> {
         .map_err(|_| failed("the custody key is damaged".into()))
 }
 
-/// Writes `bytes` to `path` owner-only and atomically.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Failure> {
-    let temp = path.with_extension("tmp");
-    let io = |err: std::io::Error| failed(format!("{}: {err}", path.display()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)
-        .map_err(io)?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(io)?;
-    fs::rename(&temp, path).map_err(io)
-}
-
 impl OwnStore {
     /// Opens the vault in `dir` (the host's state directory), creating an
     /// empty one with new keys on first use.
@@ -223,10 +204,9 @@ impl OwnStore {
             items: seal(&self.data_key, &items, ITEMS_AAD),
             next_id: Some(self.next_id),
         };
-        write_private(
-            &self.dir.join(FILE),
-            &serde_json::to_vec(&file).expect("file serializes"),
-        )
+        let path = self.dir.join(FILE);
+        write_private(&path, &serde_json::to_vec(&file).expect("file serializes"))
+            .map_err(|err| failed(format!("{}: {err}", path.display())))
     }
 
     fn find(&self, id: &str) -> Result<usize, Failure> {

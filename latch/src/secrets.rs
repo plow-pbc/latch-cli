@@ -20,10 +20,11 @@
 
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::failure::Failure;
+use crate::state::write_private;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Secret {
@@ -47,6 +48,9 @@ impl Secret {
         }
     }
 }
+
+/// The file a move into the Keychain holds locked, in the state folder.
+const MOVE_LOCK: &str = "secrets.lock";
 
 /// A Keychain-like store of named items: the real Keychain, or the tests'.
 trait Store: Send + Sync {
@@ -104,7 +108,7 @@ impl Secrets {
     pub fn write(&self, secret: Secret, bytes: &[u8]) -> Result<(), Failure> {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
-            return write_file(&path, bytes).map_err(|err| io_failure(&path, err));
+            return write_private(&path, bytes).map_err(|err| io_failure(&path, err));
         };
         store
             .set(&self.account(secret), bytes)
@@ -141,6 +145,24 @@ impl Secrets {
     /// files. Anything short of that leaves every file in place.
     fn move_files_in(&self) -> Result<(), Failure> {
         let store = self.keychain.as_deref().expect("moves only into a store");
+        if !Secret::ALL
+            .iter()
+            .any(|secret| self.dir.join(secret.file()).exists())
+        {
+            return Ok(());
+        }
+        // One move at a time per folder. A mover that waited reads the
+        // files only now, so it never puts back a secret another one has
+        // already moved, and maybe a login has since replaced.
+        let lock_path = self.dir.join(MOVE_LOCK);
+        let lock = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&lock_path)
+            .map_err(|err| io_failure(&lock_path, err))?;
+        lock.lock().map_err(|err| io_failure(&lock_path, err))?;
         let mut confirmed = Vec::new();
         for secret in Secret::ALL {
             let path = self.dir.join(secret.file());
@@ -205,27 +227,6 @@ fn test_stop_after(written: usize) {
 
 #[cfg(not(debug_assertions))]
 fn test_stop_after(_written: usize) {}
-
-/// Writes a file only its owner can read, atomically. Skips the write when
-/// the file already holds exactly these bytes, so a repeated `login`
-/// changes nothing.
-fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if fs::read(path).is_ok_and(|current| current == bytes) {
-        return Ok(());
-    }
-    let temp = path.with_extension("tmp");
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)?;
-    // `mode` applies only when the file is created.
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(&temp, path)
-}
 
 fn io_failure(path: &Path, err: std::io::Error) -> Failure {
     Failure::failed("state_io", format!("{}: {err}", path.display()))
@@ -430,6 +431,7 @@ mod platform {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -587,6 +589,48 @@ mod tests {
         assert_eq!(
             secrets.read(Secret::VaultKey).unwrap().unwrap(),
             b"vault-hex"
+        );
+    }
+
+    #[test]
+    fn a_second_mover_waits_and_puts_back_nothing_the_first_moved() {
+        let dir = folder_with_files();
+        let memory = Memory::default();
+        // Another process is moving this folder's files: it holds the lock.
+        let held = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.path().join(MOVE_LOCK))
+            .unwrap();
+        held.lock().unwrap();
+        let waiting = std::thread::spawn({
+            let (dir, memory) = (dir.path().to_path_buf(), memory.clone());
+            move || in_memory(&dir, &memory).map(|_| ())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!waiting.is_finished(), "a move waits for the folder's lock");
+
+        // The other finishes its move, then a login replaces the token.
+        let other = files(dir.path());
+        for secret in Secret::ALL {
+            let path = dir.path().join(secret.file());
+            let bytes = fs::read(&path).unwrap();
+            memory.set(&other.account(secret), &bytes).unwrap();
+            fs::remove_file(path).unwrap();
+        }
+        memory
+            .set(&other.account(Secret::PlowToken), b"new-login")
+            .unwrap();
+        drop(held);
+
+        waiting.join().unwrap().unwrap();
+        assert_eq!(
+            memory
+                .get(&other.account(Secret::PlowToken))
+                .unwrap()
+                .unwrap(),
+            b"new-login"
         );
     }
 
