@@ -281,6 +281,9 @@ impl Gatekeeper {
                     gate[field] = value.clone();
                 }
             }
+            if let Some(reason) = call.get("reason") {
+                gate["model_failed"] = reason.clone();
+            }
         }
         let answers = asked.map_err(|why| unavailable(&why))?;
         let Some(Answer::Chose { probabilities, .. }) = answers.get("decision") else {

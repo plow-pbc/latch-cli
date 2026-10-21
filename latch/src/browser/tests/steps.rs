@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use super::{CALLER, find, latch, test_state};
 use crate::browser::client::{act_literal, do_plan};
 use crate::browser::host::{self, Browsers};
-use crate::browser::model::{Answer, Asked, CallMeta, Kind, Provider, Question};
+use crate::browser::model::{Answer, Asked, CallFailed, CallMeta, Kind, Provider, Question};
 use crate::browser::plan::{Check, Plan, Step};
 use crate::browser::steps;
 use crate::cli::ActAction;
@@ -120,7 +120,12 @@ const FAKE_VAGUE: [&str; 1] = ["finish the expense report"];
 impl Provider for Fake {
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         if self.down.load(Ordering::SeqCst) {
-            return Box::pin(async { Err("the fake model could not be reached".to_string()) });
+            return Box::pin(async {
+                Err(CallFailed::new(
+                    "unreachable",
+                    "the fake model could not be reached",
+                ))
+            });
         }
         let sentence = state["condition"].as_str().unwrap_or_default();
         let fact = FAKE_FACTS
@@ -714,6 +719,16 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         stopped("b5-no-model.json", &failure);
         assert_eq!(refused(&failure), (Exit::Failed, "model_unavailable"));
         assert!(failure.details["trail"].as_array().unwrap().is_empty());
+        // Why the model failed, in the audit and the journal as well.
+        assert_eq!(failure.details["stop"]["reason"], "unreachable");
+        let audit = h.audits.last().unwrap();
+        assert_eq!(audit["model_calls"][0]["outcome"], "failed");
+        assert_eq!(audit["model_calls"][0]["reason"], "unreachable");
+        assert_eq!(audit["stop"]["reason"], "unreachable");
+        let read = h.history(audit["request"].as_str().unwrap());
+        assert_eq!(read["stop"]["code"], "model_unavailable");
+        assert_eq!(read["stop"]["reason"], "unreachable");
+        assert_eq!(read["steps"][0]["reason"], "unreachable");
     }
     assert!(
         h.text().await.contains("$10.00"),
@@ -754,6 +769,11 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         "{}",
         failure.message
     );
+    let audit = bare.audits.last().unwrap();
+    assert_eq!(audit["stop"]["reason"], "no_model");
+    assert!(audit.get("model_calls").is_none(), "no call was made");
+    let read = bare.history(audit["request"].as_str().unwrap());
+    assert_eq!(read["stop"]["reason"], "no_model");
     bare.close().await;
 }
 

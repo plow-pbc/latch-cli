@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 
 use super::{CALLER, Calm, HEADLESS, act, find, latch, test_state};
 use crate::browser::host::{self, Browsers, Caller};
-use crate::browser::model::{Answer, Asked, CallMeta, Provider, Question};
+use crate::browser::model::{Answer, Asked, CallFailed, CallMeta, Provider, Question};
 use crate::failure::{Exit, Failure};
 use crate::gate::rules::{Rules, RulesSource};
 use crate::gate::{Gate, Gatekeeper};
@@ -152,7 +152,7 @@ impl Provider for Judge {
         let down = self.down.load(std::sync::atomic::Ordering::SeqCst);
         Box::pin(async move {
             if down {
-                return Err("the model is down".to_string());
+                return Err(CallFailed::new("http_503", "the model is down"));
             }
             let top = if c >= n && c >= f {
                 "COVERED"

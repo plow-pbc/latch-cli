@@ -223,13 +223,17 @@ fn request_id(args: &Value) -> Result<String, Failure> {
 }
 
 fn model_unavailable(model: &Model, what: &str) -> Failure {
-    Failure::failed(
+    let mut failure = Failure::failed(
         "model_unavailable",
         format!(
             "{what} needs the decision model, and {}; nothing was sent",
             model.why_off()
         ),
-    )
+    );
+    if let Some(reason) = model.reason() {
+        failure.details = json!({"reason": reason});
+    }
+    failure
 }
 
 /// Refuses sentence checks before anything runs: all of them when there is
@@ -259,6 +263,16 @@ async fn check_sentences(sentences: &[(usize, String)], model: &mut Model) -> Re
 }
 
 /// The model's calls so far, for the audit: never their content.
+/// Where a run stopped, for the journal and the audit: the step, the code,
+/// and the failure's reason when it gives one.
+fn stopped_at(step: usize, failure: &Failure) -> Value {
+    let mut stop = json!({"step": step, "code": failure.code});
+    if let Some(reason) = failure.details.get("reason") {
+        stop["reason"] = reason.clone();
+    }
+    stop
+}
+
 fn record_model(model: &Model, audit: &mut Map<String, Value>) {
     if !model.calls.is_empty() {
         audit.insert("model_calls".into(), json!(model.calls));
@@ -459,6 +473,9 @@ pub async fn run(
             Err(failure) => {
                 shown["outcome"] = json!("stopped");
                 shown["code"] = json!(failure.code);
+                if let Some(reason) = failure.details.get("reason") {
+                    shown["reason"] = reason.clone();
+                }
                 if let Some(evidence) = failure.details.get("evidence") {
                     shown["evidence"] = evidence.clone();
                 }
@@ -489,7 +506,7 @@ pub async fn run(
     };
     let mut end = json!({"t": "end", "status": status});
     if let Some((step, failure)) = &stop {
-        end["stop"] = json!({"step": step, "code": failure.code});
+        end["stop"] = stopped_at(*step, failure);
     }
     let journaled = run.journal.write(end);
     browsers.running(&running, false);
@@ -556,7 +573,7 @@ pub async fn run(
         return Ok(out);
     };
     rebase(&mut failure.details, &page);
-    audit.insert("stop".into(), json!({"step": step, "code": failure.code}));
+    audit.insert("stop".into(), stopped_at(step, &failure));
     let mut shown = json!({"step": step, "code": failure.code, "message": failure.message});
     for (key, value) in failure.details.as_object().into_iter().flatten() {
         shown[key] = value.clone();
