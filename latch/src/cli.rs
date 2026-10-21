@@ -120,6 +120,8 @@ pub enum Command {
     /// The owner's standing rules for agents on a host, which the host's
     /// gatekeeper reads at every judgment (owner devices only)
     Rules(RulesArgs),
+    /// The folders `latch serve` shares when it is named none: show them, or set them
+    Shares(SharesArgs),
     /// Run this machine as a host, in the foreground, until stopped
     Serve(ServeArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
@@ -674,6 +676,21 @@ pub enum DevicesAction {
 }
 
 #[derive(Args, Debug)]
+pub struct SharesArgs {
+    #[command(subcommand)]
+    pub action: Option<SharesAction>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SharesAction {
+    /// Replace the saved folders; a running `latch serve` keeps its own until restarted
+    Set {
+        #[arg(value_name = "FOLDER", required = true)]
+        folders: Vec<PathBuf>,
+    },
+}
+
+#[derive(Args, Debug)]
 pub struct StatusArgs {
     /// Show a card for a person, with key art to compare between machines, instead of JSON
     #[arg(long)]
@@ -682,7 +699,7 @@ pub struct StatusArgs {
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
-    /// Folders to share: callers may read and write only inside these (the first is where `exec` starts)
+    /// Folders to share: callers may read and write only inside these (the first is where `exec` starts) [default: the ones `latch shares set` saved]
     #[arg(value_name = "FOLDER")]
     pub folders: Vec<PathBuf>,
 

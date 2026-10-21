@@ -158,6 +158,14 @@ pub async fn run(
         .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
     // Held until this process ends, however it ends.
     let _lock = lock_state(&state_dir)?;
+    // Named folders win; with none, the ones `latch shares set` saved.
+    let saved;
+    let folders = if folders.is_empty() {
+        saved = state.load_shares()?;
+        &saved[..]
+    } else {
+        folders
+    };
     let workers = WorkerSetup {
         areas: shared_folders(folders)?,
         state_dir,
@@ -465,9 +473,11 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
 /// checked now, so a typo is a plain error rather than refused files later.
 /// Any folder may be shared, the home folder and `/` included: the sandbox
 /// always hides the state folder, even inside a shared one.
-fn shared_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
+pub fn shared_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
     if folders.is_empty() {
-        let message = "name the folders to share, e.g. `latch serve ~/code`".to_string();
+        let message = "name the folders to share, e.g. `latch serve ~/code`, or save them \
+                       with `latch shares set ~/code`"
+            .to_string();
         return Err(Failure::usage("no_folders", message));
     }
     let mut areas = Vec::new();

@@ -16,6 +16,8 @@
 //! - `browser/`, on a host: profiles, the model's settings and each
 //!   session's journal.
 //! - `plugins/`, on a host: the pinned engines and the Google CLI.
+//! - `shares.json`: the folders `latch serve` shares when named none (see
+//!   `latch shares`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
 //!
@@ -46,6 +48,12 @@ pub struct Config {
 /// converts older folders yet. Raise it only with a change an older latch
 /// would misread, together with the explicit upgrade for that change.
 const FORMAT: u32 = 1;
+
+/// `shares.json`: what `latch serve` shares when it is named no folders.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct Shares {
+    pub folders: Vec<PathBuf>,
+}
 
 /// `latch.json`: the folder's format, and which latch first marked it.
 #[derive(Serialize, Deserialize)]
@@ -156,6 +164,29 @@ impl StateDir {
             let message = format!("{} does not hold a valid key", path.display());
             Failure::failed("bad_state", message)
         })
+    }
+
+    /// The folders `latch shares set` saved, in order; none if it never ran.
+    pub fn load_shares(&self) -> Result<Vec<PathBuf>, Failure> {
+        let path = self.path.join("shares.json");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let text = self.read(&path)?;
+        let shares: Shares = serde_json::from_str(&text).map_err(|err| {
+            let message = format!("{} is not valid: {err}", path.display());
+            Failure::failed("bad_state", message)
+        })?;
+        Ok(shares.folders)
+    }
+
+    pub fn save_shares(&self, folders: &[PathBuf]) -> Result<(), Failure> {
+        let path = self.path.join("shares.json");
+        let shares = Shares {
+            folders: folders.to_vec(),
+        };
+        let text = serde_json::to_string_pretty(&shares).expect("shares serialize") + "\n";
+        write_private(&path, text.as_bytes()).map_err(|err| self.io_failure(&path, err))
     }
 
     /// The token saved by `login --token-file`, if there is one.

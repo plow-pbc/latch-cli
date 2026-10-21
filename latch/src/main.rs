@@ -29,6 +29,7 @@ mod paint;
 mod plow;
 mod sandbox;
 mod serve;
+mod shares;
 mod state;
 mod status;
 mod term;
@@ -180,6 +181,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         }
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
+        Command::Shares(args) => to_json(shares::run(&state, args.action)?),
         Command::Exec(args) => {
             let mut request =
                 json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout });

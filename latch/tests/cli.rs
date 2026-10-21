@@ -1282,6 +1282,12 @@ impl Drop for Serving {
 /// `latch serve` on `host`'s state, sharing `share`, through the local
 /// relay, once it has registered that relay with Plow.
 fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
+    serving_folders(host, &[share], relay).0
+}
+
+/// `serving`, sharing `shares` (none: the saved ones). Also returns the
+/// log lines up to its registration.
+fn serving_folders(host: &Path, shares: &[&Path], relay: &str) -> (Serving, Vec<String>) {
     let mut serve = Serving(
         Command::new(env!("CARGO_BIN_EXE_latch"))
             .args([
@@ -1290,7 +1296,7 @@ fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
                 "serve",
                 "--no-dashboard",
             ])
-            .arg(share)
+            .args(shares)
             .env("LATCH_TEST_RELAY_URL", relay)
             .env_remove("LATCH_HOST")
             .stderr(std::process::Stdio::piped())
@@ -1298,15 +1304,91 @@ fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
             .unwrap(),
     );
     let mut log = BufReader::new(serve.0.stderr.take().unwrap());
+    let mut lines = Vec::new();
     loop {
         let mut line = String::new();
-        assert_ne!(log.read_line(&mut line).unwrap(), 0, "serve stopped");
+        assert_ne!(
+            log.read_line(&mut line).unwrap(),
+            0,
+            "serve stopped: {lines:?}"
+        );
+        lines.push(line.trim_end().to_string());
         if line.contains("heartbeat: registered") {
             break;
         }
     }
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
-    serve
+    (serve, lines)
+}
+
+/// An owner's host state logged in to `plow` as `host`.
+fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
+    let owner_token = dir.join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let host = dir.join("host");
+    let token = owner_token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        token,
+        "--name",
+        "host",
+    ];
+    let login = latch(&host, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    host
+}
+
+#[test]
+fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let (saved, named) = (dir.path().join("saved"), dir.path().join("named"));
+    fs::create_dir(&saved).unwrap();
+    fs::create_dir(&named).unwrap();
+
+    let none = latch(&host, &["shares"], &[]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&none.stdout).unwrap(),
+        json!({"shares": []})
+    );
+    let missing = latch(
+        &host,
+        &["shares", "set", dir.path().join("gone").to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(missing.status.code(), Some(2), "{missing:?}");
+    let set = latch(&host, &["shares", "set", saved.to_str().unwrap()], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let real = saved.canonicalize().unwrap();
+    let shown = latch(&host, &["shares"], &[]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&shown.stdout).unwrap(),
+        json!({"shares": [real]})
+    );
+
+    let sharing = |lines: &[String]| {
+        lines
+            .iter()
+            .find_map(|line| {
+                line.split_once("sharing: ")
+                    .map(|(_, rest)| rest.to_string())
+            })
+            .unwrap()
+    };
+    let (serve, lines) = serving_folders(&host, &[], &relay);
+    drop(serve);
+    assert_eq!(sharing(&lines), real.display().to_string());
+    let (serve, lines) = serving_folders(&host, &[&named], &relay);
+    drop(serve);
+    assert_eq!(
+        sharing(&lines),
+        named.canonicalize().unwrap().display().to_string()
+    );
 }
 
 #[test]
