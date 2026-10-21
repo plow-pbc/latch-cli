@@ -46,7 +46,7 @@ pub fn supervise(_watch: HostWatch, _kill_after: Option<u64>) -> Result<(), Stri
 
 pub fn confine(policy: &Policy) -> Result<(), String> {
     let result = if std::env::var_os(INNER).is_some() {
-        filter(!policy.exec && policy.program.is_none(), false).and_then(|()| {
+        filter(!policy.exec && !policy.network, false).and_then(|()| {
             if policy.exec {
                 supervise_exec()?;
             }

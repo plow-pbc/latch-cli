@@ -49,7 +49,8 @@ struct TestHost {
     plow: FakePlow,
     area: PathBuf,
     state: PathBuf,
-    /// The owner's home folder, as `messages` and `contacts` read it.
+    /// The owner's home folder, as `messages` and `contacts` read it (macOS).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     home: PathBuf,
     /// What the host watches as its own binary: a stand-in, so a test can
     /// replace it without touching the workers' real one.
