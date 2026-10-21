@@ -510,11 +510,30 @@ fn a_name_clash_stops_a_login_at_a_terminal_too() {
     // Even a person ready to say yes is not asked to replace the machine.
     let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false);
     assert_eq!(code, Some(2), "{shown}");
-    assert!(shown.contains("\"conflict\""), "{shown}");
+    // A person reads the sentence, not the JSON.
+    assert!(!shown.contains("\"conflict\""), "{shown}");
     assert!(shown.contains("latch devices remove mac"), "{shown}");
     assert!(!shown.contains("Replace it?"), "{shown}");
     assert!(!state.join("config.json").exists());
     assert_eq!(server.join().unwrap().len(), 2);
+}
+
+#[test]
+fn a_login_that_knows_no_plow_says_so_in_a_sentence_at_a_terminal_and_json_piped() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+
+    let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", false);
+    assert_eq!(code, Some(2), "{shown}");
+    let sentence = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co";
+    assert!(shown.contains(sentence), "{shown}");
+    assert!(!shown.contains("\"error\""), "{shown}");
+
+    let piped = latch(&state, &["login"], &[]);
+    assert_eq!(piped.status.code(), Some(2), "{piped:?}");
+    let error: Value = serde_json::from_slice(&piped.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "not_configured");
+    assert!(!state.join("config.json").exists());
 }
 
 /// A login by text: Plow gives a code, the phone texts it at once, and

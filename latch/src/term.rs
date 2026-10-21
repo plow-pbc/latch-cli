@@ -22,6 +22,11 @@ pub fn stdout_is_terminal() -> bool {
     std::io::stdout().is_terminal()
 }
 
+/// Whether a person reads latch's errors, rather than a program.
+pub fn stderr_is_terminal() -> bool {
+    std::io::stderr().is_terminal()
+}
+
 /// Whether a person can be asked something: stdin and stderr are both a
 /// terminal. Questions go to stderr, so stdout stays the command's JSON.
 pub fn interactive() -> bool {
