@@ -493,17 +493,31 @@ impl Driver for Camoufox {
     /// Asks the helper to close the browser, waits for it, then kills
     /// whatever is left of the helper's and the browser's process groups
     /// and waits until both are empty.
+    /// While a session holds a guard, the browser is killed at once, as
+    /// closing its pages would let them send what they hold.
     fn close(&mut self) -> Value {
-        let deadline = Instant::now() + CLOSING;
-        let _ = self.request::<Value>("close", json!({}), CLOSING);
-        let mut forced = false;
-        while self.helper.try_wait().ok().flatten().is_none() {
-            if Instant::now() >= deadline {
-                forced = true;
-                break;
+        let guarded = self.ask::<bool>("guarded", json!({})).unwrap_or(true);
+        let mut forced = guarded;
+        if !guarded {
+            let deadline = Instant::now() + CLOSING;
+            let _ = self.request::<Value>("close", json!({}), CLOSING);
+            while self.helper.try_wait().ok().flatten().is_none() {
+                if Instant::now() >= deadline {
+                    forced = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
+        let closed = self.kill();
+        json!({"closed": closed, "forced": forced})
+    }
+}
+
+impl Camoufox {
+    /// Kills the helper and the browser, with every process each started,
+    /// and waits a while for them to go; whether they did.
+    fn kill(&mut self) -> bool {
         let groups: Vec<libc::pid_t> = [self.helper.id(), self.browser]
             .into_iter()
             .filter(|pid| *pid != 0)
@@ -521,7 +535,7 @@ impl Driver for Camoufox {
         while left() && Instant::now() < gone_by {
             std::thread::sleep(Duration::from_millis(50));
         }
-        json!({"closed": !left(), "forced": forced})
+        !left()
     }
 }
 
@@ -535,17 +549,10 @@ impl Runtime for Camoufox {
         self.select(key);
         let ended = self.ask::<Value>("end", json!({}));
         // Its pages may still hold a filled secret: they are not closed,
-        // which would let them send it as they go; the browser is killed,
-        // with every process it started, and the helper with it. Every
-        // other session on it then gets browser_gone.
+        // which would let them send it as they go; the browser is killed.
+        // Every other session on it then gets browser_gone.
         if ended.is_ok_and(|ended| ended["guarded"] == true) {
-            for group in [self.browser, self.helper.id()] {
-                if group != 0 {
-                    // SAFETY: a signal only; each leads its own process group.
-                    unsafe { libc::killpg(group as libc::pid_t, libc::SIGKILL) };
-                }
-            }
-            let _ = self.helper.wait();
+            self.kill();
         }
         self.seen.remove(key);
         let _ = fs::remove_dir_all(self.session_folder(key));

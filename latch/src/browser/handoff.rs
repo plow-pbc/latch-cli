@@ -213,8 +213,8 @@ pub fn line(pending: &Value) -> String {
     )
 }
 
-/// `latch browser handoff done [--session HASH]`, on the host: hands the
-/// session back. Without `--session`, there must be exactly one pending.
+/// `latch browser handoff done [HASH]`, on the host: hands the session
+/// back. Without a hash, there must be exactly one pending.
 pub fn done(state_dir: &Path, session: Option<&str>) -> Result<Value, Failure> {
     let all = pending(state_dir);
     let hashes: Vec<&str> = all.iter().filter_map(|p| p["session"].as_str()).collect();
@@ -238,7 +238,8 @@ pub fn done(state_dir: &Path, session: Option<&str>) -> Result<Value, Failure> {
                 let mut failure = Failure::new(
                     Exit::Usage,
                     "which_handoff",
-                    "several handoffs are pending: name one with --session".into(),
+                    "several handoffs are pending: name one, `latch browser handoff done HASH`"
+                        .into(),
                 );
                 failure.details = json!({"pending": all});
                 return Err(failure);
@@ -275,7 +276,10 @@ mod tests {
             line(&pending(dir.path())[0]),
             "handoff pending: session aaaa (captcha) for k1 · `latch browser handoff done`"
         );
-        assert_eq!(done(dir.path(), None).unwrap_err().code, "which_handoff");
+        let which = done(dir.path(), None).unwrap_err();
+        assert_eq!(which.code, "which_handoff");
+        // What it says to run names a handoff the way `done` takes one.
+        assert!(which.message.contains("`latch browser handoff done HASH`"));
         assert_eq!(
             done(dir.path(), Some("cccc")).unwrap_err().code,
             "no_handoff"
