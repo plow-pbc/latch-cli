@@ -1,14 +1,16 @@
 # Getting started with latch
 
-latch lets you, and agents you allow, reach the files, programs and browser on
-your own machines. You log each machine in with your Plow account. One machine
+latch lets you, and agents you allow, reach the files and programs (and, in
+builds that carry it, the browser) on your own machines. You log each machine in with your Plow account. One machine
 *serves* a folder. Your other machines and your agents *call* it.
 
 This guide takes you from nothing to a Mac serving a folder and a second
 machine calling it, in about 10 minutes. The commands below were run as
-written with build `v0.1.0-pr.2`, against a local Plow stack in place of
+written with a `v0.1.0-pr.2` build, against a local Plow stack in place of
 `https://api.plow.co`; only the release download (there is no release yet)
 and the agent's allowed path (that stack has no decision model) were not.
+The browser commands were run on an earlier build of that PR that still
+carried the browser; today's builds don't (see 1).
 Every command prints one JSON object, except at a terminal, where
 `login` and `status --pretty` print for a person.
 
@@ -44,6 +46,13 @@ Archives: `aarch64-apple-darwin` (Apple silicon Mac), `x86_64-apple-darwin`
 (Intel Mac), `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`
 (Linux, including a Raspberry Pi).
 
+**Which build has the browser.** The packaging PR's builds are **core only**:
+login, status, devices, shares, serve, exec, file, google, vault and rules,
+but no `latch browser`, and the installer downloads no browser. `latch browser`
+comes with the browser PR: builds and releases cut after it merges carry the
+command, and their installer adds Chrome for Testing (below). `latch --help`
+lists `browser` when your build has it.
+
 **What it puts where:**
 
 | What | Where |
@@ -51,7 +60,7 @@ Archives: `aarch64-apple-darwin` (Apple silicon Mac), `x86_64-apple-darwin`
 | The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer says so; add it. |
 | Your machine's state: its key, Plow login, config, audit log | `~/.latch` (made by the installer, filled in by `latch login`) |
 | gog, the Google CLI a host runs for `latch google` | `~/.latch/plugins/gog/<version>/` |
-| Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64; about 200 MB) | `~/.latch/plugins/cft/<version>/` |
+| Builds with the browser only: Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64; about 200 MB) | `~/.latch/plugins/cft/<version>/` |
 
 `--state-dir DIR` on the installer puts the plugins in another state folder
 instead; pass the same `--state-dir DIR` to every `latch` command then.
@@ -65,13 +74,13 @@ Check it:
 
 ```sh
 latch --version
-# latch 0.1.0 (commit d0fd4d1…, built 2026-10-21 17:37 UTC, standalone tag v0.1.0-pr.2, protocol plow/latch/1)
+# latch 0.1.0 (commit 081605f…, built 2026-10-21 21:05 UTC, standalone tag v0.1.0-pr.2, protocol plow/latch/1)
 ```
 
 **Linux:** a host sandboxes what it runs with bubblewrap. The installer
 installs it (and, on Ubuntu 24.04 and later, loads the AppArmor profile that
-lets it work), asking for `sudo` once, only if something is missing. A Pi also
-gets Xvfb and unzip for its browser.
+lets it work), asking for `sudo` once, only if something is missing. With a build that
+has the browser, a Pi also gets Xvfb and unzip for it.
 
 ## 2. Log in
 
@@ -173,7 +182,8 @@ echo "note from my laptop" > notes.txt
 latch file put --host my-mac notes.txt notes.txt    # into the shared folder
 ```
 
-**Drive a browser on the host.** `open` answers a session id that every
+**Drive a browser on the host** (needs a build with the browser, on both
+machines; see 1). `open` answers a session id that every
 later command needs; `LATCH_BROWSER_SESSION` carries it. On a Mac the window
 opens behind yours and never takes focus.
 
@@ -297,12 +307,17 @@ gatekeeper couldn't reach its decision model, so the call was not run.
 Retrying runs it from the start.
 
 **`model_unavailable` (exit 1, browser).** A browser step needed the decision
-model (a click's risk, a goal in words, a sentence check) and couldn't get it.
-Nothing was sent *for that step*, but a plan stops at its first failed step
-and never undoes or replays what came before: earlier steps in the same `do`
-may already have clicked, typed or submitted. Before retrying, read `steps`
-(each step's `outcome`) and `trail` (each action sent, with its `result`) in
-the answer, and retry only what didn't happen.
+model (a click's risk, a goal in words, a sentence check) and couldn't get it,
+and the plan stopped there. It never undoes or replays anything, and actions
+may already have gone out:
+- earlier steps in the same `do` may have clicked, typed or submitted;
+- the failed step itself may have acted first: a goal in words runs several
+  actions before the call that failed, and a step's check (` -> …`) runs
+  after its action was sent.
+
+Before retrying, read `steps` (each step's `outcome`) and `trail` (each action
+sent, with its `result`) in the answer, including the failed step's own
+entries, and retry only what didn't happen.
 
 For either one, the message says why the model couldn't answer:
 - "out of credits for the decision model": the **host's** Plow account is out
