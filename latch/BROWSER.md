@@ -113,6 +113,7 @@ latch browser --host my-mac act back
 latch browser --host my-mac find --role button --name Download
 latch browser --host my-mac wait --text "Saved" | --ref e4 --state hidden | --url-path /done
 latch browser --host my-mac screenshot --output page.png
+latch browser --host my-mac goto https://example.com/next   # the active tab loads it
 latch browser --host my-mac text | tab new URL | tab switch t2 | tab close
 latch browser --host my-mac text --raw > page.txt        # the same text alone, not JSON
 latch browser --host my-mac dialog accept | dismiss
@@ -166,8 +167,8 @@ carries `shared_site`: that session's id hash and how many seconds ago.
 `open --reserve-site URL` holds URL's site for the session until it
 closes: another session's action there (a click, typing, `eval`, a fill,
 a dialog) gets `site_busy` (exit 1) before anything is sent, and so does
-one that would load a page of the site from elsewhere: opening it, `tab
-new` on it, Back to it, or a click, Enter or Space on a link or form that
+one that would load a page of the site from elsewhere: opening it, `goto`
+or `tab new` on it, Back to it, or a click, Enter or Space on a link or form that
 leads there. Reading its page goes on. A page's own script can still
 navigate where latch can't tell beforehand, and the reservation is this
 host's only.
@@ -248,7 +249,7 @@ agent and the owner's rules on the host. The owner's own devices are
 never judged. Judged, each before anything of it reaches the page:
 
 - opening a site this session has not been judged for: `open URL`, or
-  `tab new URL` on another site;
+  `goto URL` or `tab new URL` on another site;
 - each plan (`do`): its steps as written with each step's values, the
   page it starts on (URL and title), the sites it names and the vault
   items it may fill (kind and title). Every `do` is judged, one of a

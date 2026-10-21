@@ -353,6 +353,10 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "within", json!(within));
             "wait"
         }
+        BrowserCommand::Goto { url } => {
+            set(request, "url", json!(url));
+            "goto"
+        }
         BrowserCommand::Tab { command } => {
             let (action, tab, url) = match command {
                 TabCommand::New { url } => ("new", None, url),

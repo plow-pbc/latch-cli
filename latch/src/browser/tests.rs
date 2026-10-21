@@ -2077,6 +2077,18 @@ async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent(engine: &s
         let outcome = h.call(other, "do", &b, act(&line)).await;
         outcomes.push((line, outcome.map_or_else(|f| f.code, |_| "sent".into())));
     }
+    let went = h
+        .call(
+            other,
+            "goto",
+            &b,
+            json!({"url": format!("{local}/next.html")}),
+        )
+        .await;
+    outcomes.push((
+        "goto".into(),
+        went.map_or_else(|f| f.code, |_| "sent".into()),
+    ));
     let tab = h.call(other, "observe", &b, json!({})).await.unwrap();
     println!(
         "into the reserved site from localhost: {outcomes:?}; now on {}",

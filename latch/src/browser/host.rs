@@ -712,7 +712,7 @@ async fn answer(
     if let Some(judged) = judged {
         judged.ended(&result);
     }
-    if command == "tab"
+    if matches!(command, "tab" | "goto")
         && result.is_ok()
         && let Some(site) = args["url"].as_str().and_then(sites::site_of)
     {
@@ -737,7 +737,8 @@ async fn answer(
 }
 
 /// What the gatekeeper judges of a session command before it runs, if
-/// anything: a tab opened on a site the session has not been judged for,
+/// anything: a tab opened or a `goto` on a site the session has not been
+/// judged for,
 /// a plan (with a card or identity fill it confirms first), a confirmed
 /// fill alone, and every `eval`, upload and download. A `fill` is judged
 /// once its suggestion is resolved (`fill`).
@@ -748,7 +749,7 @@ async fn judged_action(
     args: &Value,
 ) -> Result<Option<judged::Action>, Failure> {
     Ok(Some(match command {
-        "tab" => {
+        "tab" | "goto" => {
             let Some(url) = args["url"].as_str() else {
                 return Ok(None);
             };
@@ -1014,7 +1015,8 @@ fn worker_call(command: &str, args: &Value) -> Result<Value, Failure> {
         call
     };
     let mut call = match command {
-        "open" => pick(&["url"]),
+        // The active tab loads the URL, as `open` loads a new session's.
+        "open" | "goto" => pick(&["url"]),
         "observe" => pick(&["tab", "scope"]),
         "text" | "screenshot" => Map::new(),
         "tab" => pick(&["action", "tab", "url"]),
@@ -1030,7 +1032,8 @@ fn worker_call(command: &str, args: &Value) -> Result<Value, Failure> {
             ));
         }
     };
-    call.insert("op".into(), json!(command));
+    let op = if command == "goto" { "open" } else { command };
+    call.insert("op".into(), json!(op));
     Ok(Value::Object(call))
 }
 
@@ -1155,6 +1158,11 @@ mod tests {
             json!({"op": "upload", "target": "e3", "snapshot": "o2", "name": "a.csv", "size": 3})
         );
         assert_eq!(worker_call("text", &args).unwrap(), json!({"op": "text"}));
+        assert_eq!(
+            worker_call("goto", &args).unwrap(),
+            json!({"op": "open", "url": "ignored"}),
+            "the active tab loads it, as a new session's does"
+        );
         assert_eq!(worker_call("hover", &args).unwrap_err().code, "bad_command");
     }
 

@@ -37,6 +37,7 @@ conformance!(
     only_plans_and_fills_are_already_done,
     a_one_step_do_plan_is_judged_and_act_is_not,
     a_host_out_of_plow_credits_says_its_account_owner_must_add_them,
+    goto_on_a_new_site_is_judged_as_a_tab_there_is,
 );
 
 /// The owner's chat, oldest message first; a test may add to it between
@@ -1406,4 +1407,95 @@ async fn a_host_out_of_plow_credits_says_its_account_owner_must_add_them(engine:
     assert!(failure.message.contains("nothing was sent"));
     assert_eq!(failure.details["trail"], json!([]));
     h.look("close", &id, json!({})).await;
+}
+
+/// `goto` loads a URL in the active tab: on a site the session was judged
+/// for, nothing more is asked; on another, the judge is asked first, as
+/// for `tab new` there, and a refusal loads nothing.
+async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (site, _hits) = serve_site();
+    let (other, other_hits) = serve_site();
+    let other = other.replace("127.0.0.1", "localhost");
+    let chat = vec![message(
+        "m1",
+        true,
+        "look at the files page on my test site",
+        5,
+    )];
+    let judge = Judge::new(|state| {
+        let action = &state["proposed_action"];
+        let ours = action["url"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("https://shop.example/"));
+        if action["kind"] == "open_site" && ours {
+            COVERED
+        } else {
+            NOT_COVERED
+        }
+    });
+    let host = Host::start(&state, &site, &judge, chat.clone());
+    let (page, _) = host
+        .agent(
+            "open",
+            "default",
+            json!({"url": format!("{site}/files.html")}),
+            None,
+        )
+        .await;
+    let id = page.unwrap()["session"].as_str().unwrap().to_string();
+    assert_eq!(judge.calls(), 1);
+
+    let (went, audit) = host
+        .agent(
+            "goto",
+            &id,
+            json!({"url": format!("{site}/login.html")}),
+            None,
+        )
+        .await;
+    let went = went.unwrap();
+    println!("goto on the judged site: {} {}", went["url"], went["title"]);
+    assert!(went["url"].as_str().unwrap().ends_with("/login.html"));
+    assert!(went["elements"].is_array() && went["snapshot"].is_string());
+    assert!(!audit.contains_key("gate"), "the site was judged at open");
+    assert_eq!(judge.calls(), 1);
+
+    let elsewhere = format!("{other}/files.html");
+    let refusal = host
+        .agent("goto", &id, json!({"url": elsewhere}), None)
+        .await;
+    refused(&refusal, "not_covered", &chat);
+    println!(
+        "goto elsewhere: {}",
+        refusal.0.as_ref().unwrap_err().to_json()
+    );
+    assert_eq!(
+        judge.last_action(),
+        json!({"kind": "open_site", "url": elsewhere})
+    );
+    assert!(fetched(&other_hits).is_empty(), "nothing was loaded there");
+    let still = host.look("text", &id, json!({})).await;
+    assert!(still["url"].as_str().unwrap().ends_with("/login.html"));
+
+    // Allowed there, the site is the session's: its next goto asks nothing.
+    judge.answer(|_| COVERED);
+    let (went, audit) = host
+        .agent("goto", &id, json!({"url": elsewhere}), None)
+        .await;
+    assert_eq!(went.unwrap()["url"], json!(elsewhere));
+    assert_eq!(audit["gate"]["verdict"], "allow");
+    let asked = judge.calls();
+    let (went, audit) = host
+        .agent(
+            "goto",
+            &id,
+            json!({"url": format!("{other}/login.html")}),
+            None,
+        )
+        .await;
+    went.unwrap();
+    assert!(!audit.contains_key("gate"));
+    assert_eq!(judge.calls(), asked);
+    host.look("close", &id, json!({})).await;
 }

@@ -287,6 +287,9 @@ pub enum BrowserCommand {
         #[arg(long, value_name = "S")]
         within: Option<f64>,
     },
+    /// Load URL in the session's active tab, and list its elements; a site
+    /// the session has not been judged for is judged first, as `tab new URL`
+    Goto { url: String },
     /// Open, switch to or close a tab
     Tab {
         #[command(subcommand)]
