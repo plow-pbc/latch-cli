@@ -1819,12 +1819,14 @@ fn start(
             Ok(())
         });
     }
-    command.spawn().map_err(|err| {
+    let child = command.spawn().map_err(|err| {
         Failure::failed(
             "engine_failed",
             format!("{}: {err}", engine.executable.display()),
         )
-    })
+    })?;
+    super::worker::started_group(child.id());
+    Ok(child)
 }
 
 pub fn io_failure(err: io::Error) -> Failure {

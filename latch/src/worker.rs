@@ -282,7 +282,7 @@ impl WorkerSetup {
 /// with the host. bubblewrap (`--die-with-parent`) then kills the sandbox
 /// and the program in it.
 #[cfg(target_os = "linux")]
-fn die_with_host(command: &mut Command) {
+pub fn die_with_host(command: &mut Command) {
     let host = std::process::id() as libc::pid_t;
     // SAFETY: pre_exec is needed to set Linux's parent-death signal in the
     // child. The closure uses only scalar syscalls and allocation-free OS error
