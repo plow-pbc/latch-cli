@@ -46,8 +46,11 @@ public struct OnboardingView: View {
         .environment(\.colorScheme, .dark)
         .task {
             guard preset == nil, onboarding == nil else { return }
-            onboarding = Onboarding(app: app) { NSWorkspace.shared.open($0) }
+            let flow = Onboarding(app: app) { NSWorkspace.shared.open($0) }
+            flow.resumeIfLoggedIn()
+            onboarding = flow
         }
+        .onChange(of: app.status) { onboarding?.resumeIfLoggedIn() }
         .onDisappear { onboarding?.cancel() }
     }
 

@@ -46,21 +46,19 @@ public final class WindowRouter {
         }
     }
 
-    /// Onboarding is done: the main window takes its place.
+    /// Onboarding's Done: the main window takes its place.
     public func finishOnboarding() {
         UserDefaults.standard.set(true, forKey: Self.onboardedKey)
         window(Self.onboardingWindowID)?.close()
         showMain()
     }
 
-    /// Once latch has said whether this Mac is logged in, makes sure the
-    /// window that opened at launch is the right one.
+    /// Once latch has said whether this Mac is logged in: a logged-out Mac
+    /// gets onboarding. Being logged in never ends onboarding; only its Done
+    /// button does, so folders and sharing are always chosen.
     public func launched(loggedIn: Bool) {
-        let onboarding = window(Self.onboardingWindowID) != nil
-        if !loggedIn, !onboarding {
+        if !loggedIn, window(Self.onboardingWindowID) == nil {
             showOnboarding()
-        } else if loggedIn, onboarding {
-            finishOnboarding()
         }
     }
 

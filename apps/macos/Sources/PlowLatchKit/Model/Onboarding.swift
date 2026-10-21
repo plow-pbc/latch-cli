@@ -90,6 +90,15 @@ public final class Onboarding {
         }
     }
 
+    /// A Mac that is already logged in (a sign-in that finished before the
+    /// app quit, or a login from a terminal) picks up at Linked instead of
+    /// signing in again.
+    public func resumeIfLoggedIn() {
+        guard step == .welcome, let peer = app.status.value?.peer else { return }
+        signIn = .verified(peer)
+        step = .linked
+    }
+
     /// Called once the morph into the check has played.
     public func showLinked() {
         if case .verified = signIn, step == .signIn { step = .linked }

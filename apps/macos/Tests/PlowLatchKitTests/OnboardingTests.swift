@@ -106,3 +106,25 @@ private func runFlow(startSharing: Bool) async throws -> (Onboarding, AppModel, 
     await flow.keepRunning(startSharing: true)
     #expect(flow.step == .keepRunning)
 }
+
+@Test @MainActor func aLoggedInMacResumesAtLinkedAndStillChoosesFolders() async {
+    let fake = FakeLatchClient(.stopped)
+    let app = AppModel(client: fake, sharing: fake)
+    let flow = Onboarding(app: app) { _ in }
+    flow.resumeIfLoggedIn()
+    #expect(flow.step == .welcome)  // status not known yet: nothing to resume from
+    await app.refreshStatus()
+    flow.resumeIfLoggedIn()
+    #expect(flow.step == .linked && flow.signIn == .verified(.init(name: "mac-host", key: "k7f3a9c2e1d04b58a6f2c9e3d1b7a4f0", kind: "device")))
+    flow.next()
+    #expect(flow.step == .keepRunning)
+}
+
+@Test @MainActor func aLoggedOutMacStaysAtWelcome() async {
+    let fake = FakeLatchClient(.loggedOut)
+    let app = AppModel(client: fake, sharing: fake)
+    await app.refreshStatus()
+    let flow = Onboarding(app: app) { _ in }
+    flow.resumeIfLoggedIn()
+    #expect(flow.step == .welcome)
+}
