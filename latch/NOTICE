@@ -26,3 +26,21 @@ Docker profiles are derived from moby/profiles commit
 Copyright 2013-2018 Docker, Inc. All rights reserved.
 The seccomp default has four additional bubblewrap setup rule groups.
 The AppArmor template is adapted into an untested latch-bwrap candidate.
+
+The Messages reader (messages-reader/) is ported from plow-messages
+(plow-pbc/plow-messages, commit 47c14af), Copyright 2026 The Plow Collective,
+Inc, Apache-2.0. Its two captured message bodies (Tests/ReaderTests/Fixtures)
+come from that project's test suite.
+
+Its typedstream body parser (Sources/TypedStream) and address book reader
+(Sources/MessagesReader/AddressBook.swift) are ported from imsg
+(openclaw/imsg, commit 2040293): Sources/IMsgCore/TypedStreamParser.swift and
+AddressBookContacts.swift. Copyright (c) 2026 Peter Steinberger. Licensed
+under the MIT license (LICENSE-imsg). Modified to read bytes only, with
+per-message limits, and to read the address book without the Contacts
+framework or the Accounts database.
+
+It links PhoneNumberKit (PhoneNumberKit/PhoneNumberKit 5.0.12), whose
+metadata is embedded in the binary. Copyright (c) 2018 Roy Marmelstein,
+Copyright (c) 2026 Bruno Guidolim and contributors. Licensed under the MIT
+license (LICENSE-PhoneNumberKit).

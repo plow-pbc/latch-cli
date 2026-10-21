@@ -4,6 +4,15 @@ test:
     cargo clippy --locked --all-targets -- -D warnings
     cargo test --locked
 
+# The Messages reader (macOS): its tests, with a longer fuzz run of the body
+# parser than the default, against synthetic databases only.
+messages-reader-test iterations="200000":
+    cd messages-reader && LATCH_FUZZ_ITERATIONS={{iterations}} swift test
+
+# The Messages reader, built and signed into messages-reader/dist/; prints its sha256.
+messages-reader:
+    messages-reader/build.sh
+
 # A headless host judging exec on rules alone, on jev 1.14 (synthetic
 # chats only).
 gatekeeper-live key:

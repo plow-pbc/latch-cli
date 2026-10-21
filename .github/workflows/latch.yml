@@ -140,10 +140,26 @@ jobs:
           name: latch-linux-${{ matrix.arch }}
           path: latch/target/musl-${{ matrix.arch }}/release/latch
 
+  # The Messages reader (Swift, macOS only): its tests against synthetic
+  # databases, with a bounded fuzz run of its body parser.
+  messages-reader:
+    if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: latch/messages-reader
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - run: swift --version
+      - run: LATCH_FUZZ_ITERATIONS=50000 swift test
+
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
-    needs: [mac, linux, linux-static]
+    needs: [mac, linux, linux-static, messages-reader]
     runs-on: ubuntu-24.04
     env:
       RESULTS: ${{ toJSON(needs) }}
