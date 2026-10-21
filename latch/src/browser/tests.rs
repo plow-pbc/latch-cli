@@ -2200,6 +2200,12 @@ async fn camoufox_runs_with_page_windows_as_background_tabs() {
     .unwrap();
     session.close().await.unwrap();
     let prefs = fs::read_to_string(profile::root(&state).join("fox-tabs/data/prefs.js")).unwrap();
+    if HEADLESS {
+        assert!(
+            prefs.contains(r#"user_pref("widget.macos.allow-native-select", false);"#),
+            "headless Firefox must disable native macOS select menus"
+        );
+    }
     for pref in [
         r#"user_pref("browser.link.open_newwindow.restriction", 0);"#,
         r#"user_pref("browser.tabs.loadDivertedInBackground", true);"#,
