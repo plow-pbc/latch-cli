@@ -39,6 +39,7 @@ use crate::lifecycle::{self, Phase};
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
 use crate::state::{self, Config, StateDir};
+use crate::state_folders::StateFolders;
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
@@ -200,7 +201,7 @@ async fn run_locked(
     } else {
         (folders, allow_read)
     };
-    let mut hidden = hidden_paths();
+    let hidden = hidden_paths();
     let areas = shared_folders(folders, std::env::home_dir().as_deref())?;
     let reads = allowed_reads(
         allow_read,
@@ -208,14 +209,9 @@ async fn run_locked(
         &hidden,
         &state_dir,
     )?;
-    let mut others = state_folders_in(areas.iter().chain(&reads));
-    others.retain(|dir| *dir != state_dir);
-    if !others.is_empty() {
-        let names: Vec<String> = others.iter().map(|dir| dir.display().to_string()).collect();
-        log(&format!("hidden latch state folders: {}", names.join(", ")));
-    }
-    hidden.extend(others);
+    let roots: Vec<PathBuf> = areas.iter().chain(&reads).cloned().collect();
     let workers = WorkerSetup {
+        state_folders: StateFolders::new(&roots, &state_dir),
         areas,
         reads,
         hidden,
@@ -613,30 +609,6 @@ pub fn allowed_reads(
         reads.push(real);
     }
     Ok(reads)
-}
-
-/// The latch state folders inside `roots` (another peer's, a test's): each
-/// holds a key and a Plow login, so no worker may read one. Found when the
-/// host starts, so one made later is not; links are not followed, and a
-/// state folder is not searched further.
-pub fn state_folders_in<'a>(roots: impl Iterator<Item = &'a PathBuf>) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let mut pending: Vec<PathBuf> = roots.cloned().collect();
-    while let Some(dir) = pending.pop() {
-        if state::is_state_folder(&dir) {
-            found.push(dir);
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                pending.push(entry.path());
-            }
-        }
-    }
-    found
 }
 
 /// Finishes when the host is asked to stop: Ctrl-C (SIGINT) in a terminal,
@@ -1275,33 +1247,19 @@ mod tests {
     }
 
     #[test]
-    fn state_folders_inside_shares_are_found_and_never_opted_in_to() {
+    fn an_opt_in_inside_another_state_folder_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        for path in [
-            "share/a/peer/sub",
-            "share/b",
-            "share/c",
-            "share/d/old",
-            "refs",
-        ] {
+        for path in ["share/a/peer/sub", "share/b", "share/d/old"] {
             std::fs::create_dir_all(root.join(path)).unwrap();
         }
+        let marker = r#"{"format": 1, "written_by": "test"}"#;
+        std::fs::write(root.join("share/a/peer/latch.json"), marker).unwrap();
         // Made before the marker: a key and a Plow login, no latch.json.
         std::fs::write(root.join("share/d/old/key"), "k").unwrap();
         std::fs::write(root.join("share/d/old/plow-token"), "t").unwrap();
         // A key alone is anyone's.
         std::fs::write(root.join("share/b/key"), "k").unwrap();
-        let marker = r#"{"format": 1, "written_by": "test"}"#;
-        std::fs::write(root.join("share/a/peer/latch.json"), marker).unwrap();
-        std::fs::write(root.join("share/a/peer/sub/latch.json"), marker).unwrap();
-        // A project's own latch.json is not latch's marker.
-        std::fs::write(root.join("share/b/latch.json"), r#"{"name": "x"}"#).unwrap();
-        std::os::unix::fs::symlink(root.join("share/a"), root.join("share/c/link")).unwrap();
-
-        let mut found = state_folders_in([root.join("share"), root.join("refs")].iter());
-        found.sort();
-        assert_eq!(found, [root.join("share/a/peer"), root.join("share/d/old")]);
 
         let state = root.join("own-state");
         for path in ["share/a/peer/sub", "share/d/old"] {

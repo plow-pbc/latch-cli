@@ -1433,6 +1433,8 @@ fn another_latch_state_folder_inside_a_share_stays_hidden() {
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
     fs::write(share.join("notes.txt"), "notes").unwrap();
+    let existing = share.join("existing");
+    fs::create_dir(&existing).unwrap();
     let host = owner_host_on(&plow, dir.path());
     // Another peer's state, logged in for real, nested in the share.
     let owner_token = dir.path().join("owner.token");
@@ -1461,41 +1463,65 @@ fn another_latch_state_folder_inside_a_share_stays_hidden() {
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
     let (serve, lines) = serving_folders(&host, &[&share], &relay);
-    let hidden = lines
-        .iter()
-        .find_map(|line| line.split_once("hidden latch state folders: "))
-        .map(|(_, rest)| rest.to_string())
-        .unwrap_or_default();
     for folder in [&nested, &old] {
         let folder = folder.canonicalize().unwrap().display().to_string();
-        assert!(hidden.split(", ").any(|name| name == folder), "{lines:?}");
+        let line = format!("hidden latch state folder: {folder}");
+        assert!(lines.iter().any(|seen| seen.ends_with(&line)), "{lines:?}");
     }
-    let script = "cat notes.txt; cat projects/peer/key projects/peer/plow-token; \
-                  ls projects/peer; cat old-state/key old-state/plow-token; true";
-    let exec = latch(
-        &agent,
-        &["exec", "--host", "host", "--", "/bin/sh", "-c", script],
-        &agent_env,
-    );
-    assert_eq!(exec.status.code(), Some(0), "{exec:?}");
-    let result: Value = serde_json::from_slice(&exec.stdout).unwrap();
-    assert_eq!(result["stdout"], "notes", "{result}");
-    let copy = dir.path().join("copied");
-    let get = latch(
-        &agent,
-        &[
+    let exec = |script: &str| {
+        let exec = latch(
+            &agent,
+            &["exec", "--host", "host", "--", "/bin/sh", "-c", script],
+            &agent_env,
+        );
+        assert_eq!(exec.status.code(), Some(0), "{exec:?}");
+        let result: Value = serde_json::from_slice(&exec.stdout).unwrap();
+        result["stdout"].as_str().unwrap().to_string()
+    };
+    let get = |path: &str| {
+        let copy = dir.path().join("copied");
+        let args = [
             "file",
             "get",
             "--host",
             "host",
-            "projects/peer/key",
+            path,
             copy.to_str().unwrap(),
-        ],
-        &agent_env,
+        ];
+        let get = latch(&agent, &args, &agent_env);
+        assert_ne!(get.status.code(), Some(0), "{get:?}");
+        assert!(!copy.exists());
+    };
+    let stdout = exec(
+        "cat notes.txt; cat projects/peer/key projects/peer/plow-token; \
+         ls projects/peer; cat old-state/key old-state/plow-token; true",
     );
+    assert_eq!(stdout, "notes");
+    get("projects/peer/key");
+
+    // Made while the host runs: a new peer's state, and a login copied
+    // into a folder that was there all along.
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+        "--name",
+        "later",
+    ];
+    let login = latch(&share.join("later"), &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    fs::copy(nested.join("key"), existing.join("key")).unwrap();
+    fs::copy(nested.join("plow-token"), existing.join("plow-token")).unwrap();
+    let stdout = exec(
+        "cat notes.txt; cat later/key later/plow-token; ls later; \
+         cat existing/key existing/plow-token; true",
+    );
+    assert_eq!(stdout, "notes");
+    get("later/plow-token");
+    get("existing/key");
     drop(serve);
-    assert_ne!(get.status.code(), Some(0), "{get:?}");
-    assert!(!copy.exists());
 }
 
 #[test]
