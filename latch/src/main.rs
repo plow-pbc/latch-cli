@@ -8,6 +8,7 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 mod audit;
+mod browser;
 mod card;
 mod cli;
 mod credential;
@@ -54,7 +55,7 @@ use clap::error::ErrorKind;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use cli::{Cli, Command, DevicesAction, FileCommand, HostArg};
+use cli::{BrowserCommand, Cli, Command, DevicesAction, FileCommand, HostArg};
 use failure::{Exit, Failure};
 use state::StateDir;
 use wire::Request;
@@ -75,6 +76,25 @@ fn main() -> ExitCode {
     // Workers confine the initial thread before any runtime threads exist.
     let command = match cli.command {
         Command::Worker(args) => return worker::run(args),
+        // A browser worker drives its engine on plain threads, no runtime.
+        Command::BrowserWorker(args) => {
+            return match StateDir::new(cli.state_dir) {
+                Ok(state) => browser::worker::run(
+                    &state.path,
+                    &args.profile,
+                    &args.scratch,
+                    Duration::from_secs(args.idle_timeout),
+                    Duration::from_secs(args.call_limit),
+                    args.headless,
+                    args.private_display,
+                    args.allow_local_browsing,
+                ),
+                Err(failure) => {
+                    eprintln!("{}", failure.to_json());
+                    failure.exit.into()
+                }
+            };
+        }
         command => command,
     };
     run_async(cli.state_dir, command)
@@ -192,6 +212,20 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             to_json(transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?)
         }
         Command::Google(args) => to_json(google::client::run(&state, args).await?),
+        Command::Browser(args) => {
+            let raw = matches!(args.command, BrowserCommand::Text { raw: true });
+            let result = browser::client::run(&state, args).await?;
+            if !raw {
+                return to_json(result);
+            }
+            if result["truncated"] == true {
+                eprintln!("latch: the page's text was cut short; this is its beginning");
+            }
+            Ok(Printed {
+                text: result["text"].as_str().unwrap_or_default().to_string(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Shares(args) => to_json(shares::run(&state, args.action)?),
@@ -230,12 +264,13 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 &args.folders,
                 &args.allow_read,
                 dashboard,
+                args.headless_browsers,
                 deny_exec,
             )
             .await?;
             to_json(json!({}))
         }
-        Command::Worker(_) => unreachable!("handled in main"),
+        Command::Worker(_) | Command::BrowserWorker(_) => unreachable!("handled in main"),
     }
 }
 

@@ -13,9 +13,9 @@ The goal is strong engineering judgment with low ceremony.
 
 ## Scope
 
-- `latch/` is the latch CLI, one Rust crate (and the root of its Cargo workspace): a peer that lets an agent reach the files, programs and Google accounts on a machine its owner trusts, over Plow's directory.
-- `latch/tests/` holds the integration tests and their fixtures.
-- `latch/*.md` documents each area: `VAULT.md`, `GOOGLE.md`, `GOOGLE-AGENT-GUIDE.md`, `DOCKER.md`, `DEPENDENCIES.md`.
+- `latch/` is the latch CLI, one Rust crate (and the root of its Cargo workspace): a peer that lets an agent reach the files, programs, Google accounts and browser on a machine its owner trusts, over Plow's directory.
+- `latch/tests/` holds the integration tests, their fixtures, and `browser-site/`, the local site the browser tests drive.
+- `latch/*.md` documents each area: `BROWSER.md`, `VAULT.md`, `GOOGLE.md`, `GOOGLE-AGENT-GUIDE.md`, `DOCKER.md`, `DEPENDENCIES.md`.
 - Plow's side of latch (the peer directory API in `api/plow/latch.py`, its model and migration) lives in [`plow-pbc/plow`](https://github.com/plow-pbc/plow), not here. latch reaches it over HTTP.
 
 ## Read First
@@ -28,6 +28,7 @@ Before making meaningful changes, read:
 ## Dev State
 
 - All dev and test state lives under the gitignored `.dev/` at the repo root, passed with `--state-dir`. Tests make their throwaway folders in `.dev/tests/`.
+- `just cft` (run by `just test` on macOS) installs the pinned Chrome for Testing into `.dev/cft-state`, where the browser tests look for it.
 - A binary built with `LATCH_BUILD_STATE_DIR` set has that state folder as its default. Running hosts and clients may depend on it: do not move, copy, or delete another peer's state folder, and do not stop or restart a running `latch serve`, unless asked.
 - Never print a token, key, or vault value. Credentials stay in their files with mode 600.
 
@@ -96,7 +97,7 @@ Important:
 A skipped test is a lie — it tells you the suite is green when it is not. Skipping accumulates quietly until the suite is meaningless.
 
 - **Do not skip tests because credentials or keys are missing.** Get them. If you don't have them, ask the user — do not `#[ignore]` your way past the failure.
-- **Do not skip tests because the environment is not set up.** Set up the environment: start Docker for the Linux gate. The test is telling you what needs to be true — make it true.
+- **Do not skip tests because the environment is not set up.** Set up the environment: install Chrome for Testing (`just cft`), start Docker for the Linux gate. The test is telling you what needs to be true — make it true.
 - **Do not comment out failing assertions.** That is the same as deleting the test but pretending you didn't.
 - **Do not weaken assertions to make tests pass.** The fix is in the code, not in the assertion.
 
@@ -121,7 +122,7 @@ The gates are fmt, clippy with `-D warnings`, and the tests, on macOS and on Lin
 macOS, from `latch/`:
 
 ```bash
-just test    # cargo fmt --check, cargo clippy --locked --all-targets -- -D warnings, cargo test --locked
+just test    # just cft, cargo fmt --check, cargo clippy --locked --all-targets -- -D warnings, cargo test --locked
 ```
 
 Linux, from the repo root, in the sandbox latch runs under (`latch-linux-gates:local` is `rust:alpine` plus `musl-dev` and `bubblewrap`):
@@ -135,7 +136,7 @@ docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL \
   sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
 ```
 
-`just gatekeeper-live KEY` runs a gatekeeper test that calls the decision model for real.
+`just test-model KEY` runs the browser tests that call the decision model for real.
 
 Rules:
 

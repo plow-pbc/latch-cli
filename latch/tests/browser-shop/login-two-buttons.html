@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Sign in — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header();
+// A sign-in form with two submit buttons: latch can't tell which one the
+// sign-in means, so it suggests the mapping with no button.
+document.querySelector('main').innerHTML = `<h1>Sign in</h1><form id="f" onsubmit="return false">
+<label>Email <input type="email" id="email" autocomplete="username"></label>
+<label>Password <input type="password" id="pw" autocomplete="current-password"></label>
+<p><button type="submit">Sign in</button> <button type="submit">Sign in and stay signed in</button></p></form>`;
+</script></body></html>

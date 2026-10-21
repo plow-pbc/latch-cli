@@ -113,7 +113,6 @@ impl Params {
     }
 
     /// The code for `unix_time`.
-    #[allow(dead_code)] // the browser's fills call it
     pub fn code(&self, unix_time: u64) -> String {
         Builder::new()
             .with_algorithm(self.algorithm)
@@ -126,7 +125,6 @@ impl Params {
     }
 
     /// The code now.
-    #[allow(dead_code)] // the browser's fills call it
     pub fn current(&self) -> String {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

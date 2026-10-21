@@ -1,0 +1,23 @@
+<!doctype html><title>latch churning frames test</title>
+<!-- Like an ad-heavy page: cross-site frames come and go every few
+     milliseconds, as tracking frames do, each gone soon after it loads or
+     after 300 ms if it never does, so a slow machine sees a few dozen at
+     most. Open churn.html?cross=PORT, and the frames come from
+     http://localhost:PORT. -->
+<h1>Churn</h1>
+<p><button id="go">Go</button></p>
+<p id="out">frames added: 0</p>
+<script>
+  const cross = new URLSearchParams(location.search).get('cross');
+  let added = 0;
+  setInterval(() => {
+    const frame = document.createElement('iframe');
+    frame.width = 10;
+    frame.height = 10;
+    frame.onload = () => setTimeout(() => frame.remove(), Math.random() * 30);
+    setTimeout(() => frame.remove(), 300);
+    frame.src = 'http://localhost:' + cross + '/cross.html?' + added;
+    document.body.appendChild(frame);
+    document.getElementById('out').textContent = 'frames added: ' + ++added;
+  }, 15);
+</script>

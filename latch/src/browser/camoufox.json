@@ -1,0 +1,38 @@
+{
+  "engine": "camoufox",
+  "version": "152.0.4-beta.30",
+  "driver_contract": 1,
+  "builds": {
+    "mac_arm64": {
+      "camoufox": {
+        "url": "https://github.com/daijro/camoufox/releases/download/v152.0.4-beta.30/camoufox-152.0.4-beta.30-mac.arm64.zip",
+        "sha256": "3b43e766574f286a6a63296cf58b660b7a3120952086c869b4df4c9a71604bc3",
+        "tree_sha256": "504e110d7961a5bcc846ea401cc3a7d78015e6ecec215f691eaf5baa0b8ecddf"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+        "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+        "folder": "node-v24.21.0-darwin-arm64",
+        "tree_sha256": "a9f59a913e22c8f050a49116d0b6632c82dbc47d2f2f59259393a51a0a82f611"
+      },
+      "runtime_tree_sha256": "b7cb0dc75f253dfd7cdf2ad4e0be7ecf8d7fa113c72457ed3ee52ca6ad61d930"
+    },
+    "mac_x64": {
+      "camoufox": {
+        "url": "https://github.com/daijro/camoufox/releases/download/v152.0.4-beta.30/camoufox-152.0.4-beta.30-mac.x86_64.zip",
+        "sha256": "f12f90a3650478e670064a2f071c13b998fdd1125f79dc9f6cad5a9b9395b4bc",
+        "tree_sha256": "a2c73c244bbcf37ea7660ef3d9d7b60831dd47a87596c77b12118819bf8f4da3"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-x64.tar.gz",
+        "sha256": "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
+        "folder": "node-v24.21.0-darwin-x64",
+        "tree_sha256": "48e291f88ed36af8b9053da318afeb3dd47928ce68da6b7ac3b8543a4dee05ee"
+      },
+      "runtime_tree_sha256": "bfe79aa42a3954da9abfa11093800d786fa91b25318cf68d82a0206124591e7e"
+    }
+  },
+  "os": "macos",
+  "capabilities": ["eval", "upload", "downloads"],
+  "licence": "Camoufox (https://camoufox.com), built from Firefox: Mozilla Public License 2.0. Node.js: MIT and others (https://github.com/nodejs/node/blob/main/LICENSE). Playwright: Apache-2.0. camoufox-js: MIT. Downloaded at install time with --with-camoufox, never shipped with latch."
+}

@@ -1,0 +1,11 @@
+<!doctype html><title>latch checkout test</title>
+<!-- Posts to /pay, which answers with a new page saying which card fields
+     matched the test card. -->
+<h1>Checkout</h1>
+<form method="post" action="pay">
+  <p><label>Name on card <input name="cc-name" autocomplete="cc-name"></label></p>
+  <p><label>Card number <input name="cc-number" autocomplete="cc-number" inputmode="numeric"></label></p>
+  <p><label>Expiry <input name="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>CVV <input name="cc-csc" autocomplete="cc-csc" maxlength="4"></label></p>
+  <p><button type="submit">Pay</button></p>
+</form>
