@@ -38,7 +38,6 @@ conformance!(
     a_login_after_an_edit_fills_the_new_password,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
-    a_host_stopping_with_a_guard_lets_no_page_send_it,
     a_filled_value_is_guarded_in_every_tab_and_from_screenshots,
 );
 
@@ -2278,55 +2277,10 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
 /// A fill that cannot clean up keeps its secret guarded after its call:
 /// the page's own requests still go on, checked between calls, and the
 /// guard stands until the session's tabs are closed.
-/// A host that stops while a fill could not clean up closes its browsers
-/// without letting a page send the secret it holds as it goes.
-async fn a_host_stopping_with_a_guard_lets_no_page_send_it(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
-    let vault = Vault::new(state.clone());
-    let card = vault
-        .with(|s| {
-            s.add(item(
-                CARD,
-                "Test Visa",
-                &[],
-                &[
-                    ("number", NUMBER),
-                    ("expiry month", "4"),
-                    ("expiry year", "2031"),
-                    ("code", CVV),
-                ],
-            ))
-        })
-        .unwrap();
-    let port = site();
-    let local = format!("http://127.0.0.1:{port}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
-    browsers.test = Some((
-        latch(),
-        vec![(local.clone(), "https://login.shop.example".into())],
-    ));
-    let mut h = Harness::start(browsers).await;
-    let page = h
-        .call(
-            "open",
-            json!({"url": format!("{local}/trap-checkout.html?beacon")}),
-        )
-        .await
-        .unwrap();
-    let fields = json!([
-        ["number", [find(&page, "textbox", "Card number")]],
-        ["expiry", [find(&page, "textbox", "Expiry")]],
-        ["cvv", [find(&page, "textbox", "CVV")]],
-    ]);
-    let (trapped, _) = h
-        .fill(json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}))
-        .await;
-    assert_eq!(trapped.unwrap_err().code, "session_paused");
-    h.browsers.close_all().await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(beacons(port).1, 0, "the number left as the host stopped");
-}
-
+/// A fill that cannot clean up keeps its secret guarded after its call:
+/// the page's own requests still go on, checked between calls; and
+/// however it ends, its session closed or its host stopped, no page sends
+/// the secret it holds as it goes.
 async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
     let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
@@ -2345,47 +2299,62 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
             ))
         })
         .unwrap();
-    let port = site();
-    let local = format!("http://127.0.0.1:{port}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
-    browsers.test = Some((
-        latch(),
-        vec![(local.clone(), "https://login.shop.example".into())],
-    ));
-    let mut h = Harness::start(browsers).await;
-    let page = h
-        .call(
-            "open",
-            json!({"url": format!("{local}/trap-checkout.html?beacon")}),
-        )
-        .await
-        .unwrap();
-    let fields = json!([
-        ["number", [find(&page, "textbox", "Card number")]],
-        ["expiry", [find(&page, "textbox", "Expiry")]],
-        ["cvv", [find(&page, "textbox", "CVV")]],
-    ]);
-    let started = std::time::Instant::now();
-    let (before, _) = beacons(port);
-    let (trapped, _) = h
-        .fill(json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}))
-        .await;
-    assert_eq!(trapped.unwrap_err().code, "session_paused");
-    assert!(
-        started.elapsed() < Duration::from_secs(19),
-        "too slow to test"
-    );
-    // The page reaches /beacon 20 seconds after the number arrived, with no
-    // call under way.
-    tokio::time::sleep(Duration::from_secs(24).saturating_sub(started.elapsed())).await;
-    let (after, _) = beacons(port);
-    println!("beacons while the trap held: {}", after - before);
-    assert!(after > before, "the page's request waited for a call");
-    // Closing the session closes the page, which tries to send the card
-    // number away in an address as it goes: still stopped.
-    h.call("close", json!({})).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(beacons(port).1, 0, "the number left as its page closed");
+    for host_stops in [false, true] {
+        let port = site();
+        let local = format!("http://127.0.0.1:{port}");
+        let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+        browsers.test = Some((
+            latch(),
+            vec![(local.clone(), "https://login.shop.example".into())],
+        ));
+        let mut h = Harness::start(browsers).await;
+        let page = h
+            .call(
+                "open",
+                json!({"url": format!("{local}/trap-checkout.html?beacon")}),
+            )
+            .await
+            .unwrap();
+        let fields = json!([
+            ["number", [find(&page, "textbox", "Card number")]],
+            ["expiry", [find(&page, "textbox", "Expiry")]],
+            ["cvv", [find(&page, "textbox", "CVV")]],
+        ]);
+        let started = std::time::Instant::now();
+        let (before, _) = beacons(port);
+        let (trapped, _) = h
+            .fill(
+                json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}),
+            )
+            .await;
+        assert_eq!(trapped.unwrap_err().code, "session_paused");
+        if !host_stops {
+            assert!(
+                started.elapsed() < Duration::from_secs(19),
+                "too slow to test"
+            );
+            // The page reaches /beacon 20 seconds after the number arrived,
+            // with no call under way.
+            tokio::time::sleep(Duration::from_secs(24).saturating_sub(started.elapsed())).await;
+            let (after, _) = beacons(port);
+            println!("beacons while the trap held: {}", after - before);
+            assert!(after > before, "the page's request waited for a call");
+        }
+        // The page tries to send the card number away in an address as it
+        // goes: still stopped.
+        if host_stops {
+            h.browsers.close_all().await;
+        } else {
+            h.call("close", json!({})).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let how = if host_stops {
+            "host stopped"
+        } else {
+            "session closed"
+        };
+        assert_eq!(beacons(port).1, 0, "the number left as the {how}");
+    }
 }
 
 async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {
