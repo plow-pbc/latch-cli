@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: latch-${{ github.event.pull_request.number || github.ref }}-${{ inputs.mode || github.event_name }}
+  group: latch-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.mode || github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -58,6 +58,8 @@ jobs:
           path: .ci-tools
           sparse-checkout: latch/scripts
       - run: rustup toolchain install
+      - if: matrix.shard == 1
+        run: python3 ../.ci-tools/latch/scripts/test-test-shard.py
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: latch -> target
