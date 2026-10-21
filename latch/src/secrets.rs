@@ -24,9 +24,6 @@ use std::path::{Path, PathBuf};
 
 use crate::failure::Failure;
 
-/// The Keychain access group Plow's signed builds share with the Mac app.
-pub const KEYCHAIN_GROUP: &str = "3559PD337Z.co.plow.latch";
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Secret {
     /// This peer's ed25519 secret key, as hex.
@@ -245,8 +242,10 @@ mod platform {
     };
     use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemUpdate};
 
-    use super::{KEYCHAIN_GROUP, Store};
+    use super::Store;
 
+    /// The Keychain access group Plow's signed builds share with the Mac app.
+    const KEYCHAIN_GROUP: &str = "3559PD337Z.co.plow.latch";
     const SERVICE: &str = "co.plow.latch";
 
     #[allow(non_upper_case_globals)]
