@@ -1,0 +1,68 @@
+#!/bin/bash
+# A stand-in latch for exercising the app's process plumbing before the real
+# `status --local` and `events --follow` exist. It answers in the same JSON
+# shapes from files in its state folder:
+#   stub-latch --state-dir D emit host serving|stopped|starting|error
+#   stub-latch --state-dir D emit activity OP DECISION
+# appends an event to D/stub-events.ndjson; `events --follow` prints a
+# snapshot, then follows that file (tail -f, blocked on kqueue when idle).
+set -eu
+state="$HOME/.latch"
+if [ "${1:-}" = "--state-dir" ]; then state="$2"; shift 2; fi
+events="$state/stub-events.ndjson"
+mkdir -p "$state"
+touch "$events"
+
+lines() { wc -l < "$events" | tr -d ' '; }
+host_state() { grep '"type":"host"' "$events" | tail -n 1 | jq -r '.state // "stopped"' || true; }
+
+case "$1 ${2:-}" in
+"emit host")
+    n=$(($(lines) + 1))
+    jq -cn --arg s "$3" --arg c "$n" '{type:"host",cursor:$c,state:$s}' >> "$events"
+    ;;
+"emit activity")
+    n=$(($(lines) + 1))
+    jq -cn --arg c "$n" --arg op "$3" --arg d "$4" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{type:"activity",cursor:$c,entry:{id:("e"+$c),time:$t,caller:"k1",caller_name:"owner-laptop",op:$op,decision:$d,outcome:"ok"}}' >> "$events"
+    ;;
+"status --local")
+    h=$(host_state); [ -n "$h" ] || h=stopped
+    serving=false; [ "$h" = serving ] && serving=true
+    jq -cn --arg d "$state" --argjson s "$serving" '{state_dir:$d,version:"0.0.0-stub",protocol:1,
+        peer:{name:"stub-host",key:"k0000000000000000000000000000000",kind:"device"},
+        serve:{running:$s,ready:$s},shares:["/tmp/stub-share"],last_error:null}'
+    ;;
+"rules show")
+    echo '{"host":"stub-host","every_agent":{"text":"Stub rules.","revision":"r1"},"agents":[],"warning":null}'
+    ;;
+"events --follow")
+    shift 2
+    after=0 lifecycle=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --after) after="$2"; shift ;;
+            --lifecycle-only) lifecycle=true ;;
+        esac
+        shift
+    done
+    n=$(lines)
+    h=$(host_state); [ -n "$h" ] || h=stopped
+    if $lifecycle; then activity='[]'; else
+        activity=$(tail -n +"$((after + 1))" "$events" | grep '"type":"activity"' | jq -cs 'map(.entry)' || echo '[]')
+    fi
+    jq -cn --arg c "$n" --arg h "$h" --argjson a "${activity:-[]}" '{type:"snapshot",cursor:$c,host:{state:$h},activity:$a}'
+    if $lifecycle; then
+        # Two processes: stop both when the app stops this one.
+        tail -n +"$((n + 1))" -f "$events" | grep --line-buffered '"type":"host"' &
+        trap 'pkill -P $$; exit 0' TERM INT
+        wait
+    else
+        exec tail -n +"$((n + 1))" -f "$events"
+    fi
+    ;;
+*)
+    echo '{"error":{"code":"bad_arguments","message":"stub-latch: unsupported command"}}' >&2
+    exit 2
+    ;;
+esac

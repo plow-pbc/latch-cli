@@ -1,0 +1,50 @@
+import SwiftUI
+
+/// The menu bar extra's menu: a plain menu, per the HIG.
+public struct StatusMenu: View {
+    @Environment(AppModel.self) private var model
+
+    public init() {}
+
+    public var body: some View {
+        Text(statusLine)
+        Divider()
+        if model.menuState == .serving || model.menuState == .starting {
+            Button("Stop Sharing") {}.disabled(true)
+        } else {
+            Button("Start Sharing") {}.disabled(true)
+        }
+        Divider()
+        Button("Open Plow Latch…") { WindowRouter.shared.showMain() }
+        Button("Settings…") { WindowRouter.shared.showSettings() }
+            .keyboardShortcut(",")
+        Divider()
+        Button("Quit Plow Latch") { NSApplication.shared.terminate(nil) }
+            .keyboardShortcut("q")
+    }
+
+    private var statusLine: String {
+        switch model.menuState {
+        case let .error(message): "Sharing failed: \(message)"
+        case .serving:
+            if let name = model.status.value?.peer?.name { "Sharing as \(name)" } else { "Sharing" }
+        case let state: state.title
+        }
+    }
+}
+
+/// The menu bar icon: a template symbol for the host's state. It also hands
+/// the router SwiftUI's window actions, since it lives as long as the app.
+public struct StatusIcon: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+
+    public init() {}
+
+    public var body: some View {
+        Image(systemName: model.menuState.symbol)
+            .accessibilityLabel("Plow Latch: \(model.menuState.title)")
+            .onAppear { WindowRouter.shared.install(openWindow: openWindow, openSettings: openSettings) }
+    }
+}
