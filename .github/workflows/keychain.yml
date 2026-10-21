@@ -6,12 +6,19 @@ name: keychain
 # can show: the `--ignored` Keychain tests in tests/cli.rs, and a clear
 # failure where the Keychain is unusable. It signs a debug build: the
 # tests' interruption hook exists only there.
+# The release environment signs only on main: after a merge that touches
+# secret custody, and by hand.
 on:
   workflow_dispatch:
-  # TODO: remove once this file is on main, where workflow_dispatch can
-  # reach it. Until then it registers the workflow and runs it.
   push:
-    branches: [keychain-storage]
+    branches: [main]
+    paths:
+      - latch/src/secrets.rs
+      - latch/src/state.rs
+      - latch/src/vault/**
+      - latch/macos/**
+      - scripts/macos-helper-bundle.sh
+      - .github/workflows/keychain.yml
 permissions:
   contents: read
 jobs:
