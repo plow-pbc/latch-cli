@@ -1302,7 +1302,8 @@ impl Plow {
             path: state_dir.to_path_buf(),
         };
         let not_in = || {
-            "this host is not logged in to Plow, which answers its decision-model questions"
+            "this host is not logged in to Plow, which answers its decision-model questions: \
+             the host's owner must run `latch login` on it"
                 .to_string()
         };
         let config = state.load_config().ok().flatten().ok_or_else(not_in)?;
@@ -1336,7 +1337,11 @@ impl Provider for Plow {
                 .send()
                 .await
                 .map_err(|_| {
-                    CallFailed::new("unreachable", "Plow's decision route could not be reached")
+                    CallFailed::new(
+                        "unreachable",
+                        "Plow's decision route could not be reached from this host; retry once \
+                         its network and Plow are up",
+                    )
                 })?;
             let latency_ms = started.elapsed().as_millis() as u64;
             let status = response.status();
@@ -1344,20 +1349,32 @@ impl Provider for Plow {
                 return Err(match status.as_u16() {
                     402 => CallFailed::new(
                         "out_of_credits",
-                        "this host's Plow account is out of credits for the decision model",
+                        "this host's Plow account is out of credits for the decision model: \
+                         the host's account owner must add Plow credits, and until then every \
+                         retry fails the same way",
+                    ),
+                    401 => CallFailed::new(
+                        "http_401",
+                        "Plow refused this host's login: the host's owner must log it in again \
+                         with `latch login` on the host",
                     ),
                     403 => CallFailed::new(
                         "not_allowed",
-                        "this host's Plow login may not ask the decision model",
+                        "this host's Plow login may not ask the decision model: the host's \
+                         owner must log it in again with `latch login` on the host, on an \
+                         account that may",
                     ),
                     code => CallFailed::new(
                         &format!("http_{code}"),
-                        format!("Plow's decision route answered HTTP {code}"),
+                        format!("Plow's decision route answered HTTP {code}; retry later"),
                     ),
                 });
             }
             let reply: Value = response.json().await.map_err(|_| {
-                CallFailed::new("not_json", "Plow's decision route did not answer JSON")
+                CallFailed::new(
+                    "not_json",
+                    "Plow's decision route did not answer JSON; retry later",
+                )
             })?;
             let meta = CallMeta {
                 provider: "plow",
@@ -1938,8 +1955,17 @@ pub mod tests {
         assert_eq!(m.reason(), Some("http_503"));
         assert_eq!(m.calls[0]["reason"], "http_503");
         for (status, says, reason) in [
-            (402, "out of credits", "out_of_credits"),
-            (403, "may not ask", "not_allowed"),
+            (
+                402,
+                "out of credits for the decision model: the host's account owner must add Plow credits",
+                "out_of_credits",
+            ),
+            (401, "log it in again", "http_401"),
+            (
+                403,
+                "may not ask the decision model: the host's owner must log it in again",
+                "not_allowed",
+            ),
         ] {
             let (url, _seen) = plow_route(status, json!({"detail": "made-up refusal"}));
             let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));

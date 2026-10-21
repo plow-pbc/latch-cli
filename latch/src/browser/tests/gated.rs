@@ -36,6 +36,7 @@ conformance!(
     a_fill_inside_a_plan_is_judged_as_a_fill,
     only_plans_and_fills_are_already_done,
     a_one_step_do_plan_is_judged_and_act_is_not,
+    a_host_out_of_plow_credits_says_its_account_owner_must_add_them,
 );
 
 /// The owner's chat, oldest message first; a test may add to it between
@@ -1306,4 +1307,103 @@ async fn a_gated_shopping_task_on_the_decision_model() {
     std::fs::write(out.join("summary.json"), format!("{summary:#}\n")).unwrap();
     host.browsers.close_all().await;
     assert!(after_stop.is_err(), "the plan after the owner's stop ran");
+}
+
+/// Plow's decision route, answering every call with `status` as Plow
+/// answers an account out of credits.
+fn decisions_answering(status: u16) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let Ok(mut socket) = socket else { continue };
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; length];
+            let _ = reader.read_exact(&mut body);
+            let reply = json!({"detail": "You're out of Plow credits."}).to_string();
+            let _ = write!(
+                socket,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+        }
+    });
+    url
+}
+
+/// A host whose Plow account is out of credits: the gatekeeper can't judge
+/// an agent's command, and a device's click can't get its risk decision.
+/// Both fail closed, and both say the host's account owner must add credits.
+async fn a_host_out_of_plow_credits_says_its_account_owner_must_add_them(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (site, hits) = serve_site();
+    let route: Arc<dyn Provider> = Arc::new(crate::browser::model::Plow::new(
+        &decisions_answering(402),
+        "made-up-login".into(),
+    ));
+    let mut browsers = Browsers::new(state.to_path_buf(), Vault::new(state.clone()), HEADLESS);
+    browsers.test = Some((latch(), Vec::new()));
+    browsers.provider = Some(route.clone());
+    let messages = Arc::new(Mutex::new(vec![message("m1", true, "Order the mug", 1)]));
+    let h = Host {
+        keeper: Gatekeeper::new(plow(messages.clone()), route, Box::new(NoRules)),
+        browsers,
+        messages,
+    };
+    let owner_adds = "the host's account owner must add Plow credits";
+    let shown = |failure: &Failure| {
+        let text = failure.to_json();
+        println!("{text}");
+        if let Some(dir) = std::env::var_os("LATCH_BROWSER_EVIDENCE") {
+            std::fs::write(
+                Path::new(&dir).join(format!("{}-402.json", failure.code)),
+                &text,
+            )
+            .unwrap();
+        }
+    };
+
+    let url = format!("{site}/order.html");
+    let (opened, _) = h.agent("open", "default", json!({"url": url}), None).await;
+    let failure = opened.unwrap_err();
+    shown(&failure);
+    assert_eq!(
+        (failure.exit, failure.code.as_str()),
+        (Exit::Unreachable, "gatekeeper_unavailable")
+    );
+    assert!(failure.message.contains(owner_adds), "{}", failure.message);
+    assert!(fetched(&hits).is_empty(), "nothing was opened");
+
+    let page = h.look("open", "default", json!({"url": url})).await;
+    let id = page["session"].as_str().unwrap().to_string();
+    let place = find(&page, "button", "Place order");
+    let (clicked, _) = h
+        .run(
+            CALLER.into(),
+            "do",
+            &id,
+            act(&format!("click {place}")),
+            None,
+        )
+        .await;
+    let failure = clicked.unwrap_err();
+    shown(&failure);
+    assert_eq!(
+        (failure.exit, failure.code.as_str()),
+        (Exit::Failed, "model_unavailable")
+    );
+    assert!(failure.message.contains(owner_adds), "{}", failure.message);
+    assert!(failure.message.contains("nothing was sent"));
+    assert_eq!(failure.details["trail"], json!([]));
+    h.look("close", &id, json!({})).await;
 }

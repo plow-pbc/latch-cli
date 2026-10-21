@@ -259,7 +259,8 @@ fill and pause checks above still hold. A refusal is exit 4,
 `gatekeeper_denied`, and nothing was sent: with reason `not_covered`, ask
 the owner in chat, saying exactly what you will do, then retry; with
 `owner_said_no`, don't. A gatekeeper that can't judge (the chat or the
-model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs.
+model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs;
+its message says what fixes it (below, under the decision model).
 An agent whose line has more than one chat names the one it acts for
 with `--chat C` or `LATCH_CHAT`. The call's audit record holds the
 judgment as `gate` (verdict, probabilities, model, cost, latency, the
@@ -448,7 +449,14 @@ request id. Only a host set up for development calls TypeSafe jev
 `{"provider": "jev"}` and its key is in `jev.key` (0600); a key file alone
 is never used. A host not logged in to Plow, an account out of credits,
 or a route that fails or can't be reached, means what needs a decision
-stops with `model_unavailable`; there is no keyword stand-in.
+stops with `model_unavailable`; there is no keyword stand-in. The message
+says what fixes it: an account out of credits (Plow's 402) waits for the
+host's account owner to add Plow credits, and every retry fails until
+then; a login Plow refuses (401, 403) waits for the host's owner to run
+`latch login` on the host again; an unreachable route or another error is
+worth a retry later. The gatekeeper asks the same route, and its
+`gatekeeper_unavailable` says the same. No command asks the model only to
+report its health: a failure shows when something needs a decision.
 
 ## Handoff and screenless hosts
 

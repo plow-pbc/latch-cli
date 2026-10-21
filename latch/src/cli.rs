@@ -50,7 +50,11 @@ Agents:
   reason not_covered, is the one to retry: ask the owner in your Plow chat,
   naming exactly what you will do, then retry once they agree. owner_said_no
   and exec_denied (the owner turned exec off on that host) mean no.
-  Exit 3, gatekeeper_unavailable: the host could not judge; retry later.";
+  Exit 3, gatekeeper_unavailable: the host could not judge. Its message says
+  what fixes it: often a retry later, but a host out of Plow credits fails
+  until the host's account owner adds them. A browser step's
+  model_unavailable (exit 1) is the same decision model, for a click's risk,
+  a goal or a sentence check; nothing was sent, and nothing gets around it.";
 
 #[derive(Parser, Debug)]
 #[command(
