@@ -44,6 +44,9 @@ pub trait Backend: Send {
 
 const FILE: &str = "vault.json";
 const KEY_FILE: &str = "vault.key";
+/// The `vault.json` layout this latch reads and writes; a vault of another
+/// version is refused, never misread or rewritten without what it holds.
+const VERSION: u32 = 1;
 /// Binds every sealed blob to what it is.
 const DATA_KEY_AAD: &[u8] = b"latch vault data key v1";
 const ITEMS_AAD: &[u8] = b"latch vault items v1";
@@ -158,10 +161,29 @@ impl OwnStore {
             return Ok(store);
         }
         let custody = custody(&key_path)?;
-        let file: File = serde_json::from_slice(
-            &fs::read(&path).map_err(|err| failed(format!("{}: {err}", path.display())))?,
-        )
-        .map_err(|_| failed("the vault file is damaged".into()))?;
+        let bytes = fs::read(&path).map_err(|err| failed(format!("{}: {err}", path.display())))?;
+        // The version first: another version may lay the rest out differently.
+        #[derive(Deserialize)]
+        struct Versioned {
+            version: u32,
+        }
+        let Versioned { version } = serde_json::from_slice(&bytes)
+            .map_err(|_| failed("the vault file is damaged".into()))?;
+        if version != VERSION {
+            let fix = if version > VERSION {
+                "update this latch"
+            } else {
+                "use the latch that wrote it"
+            };
+            let message = format!(
+                "{} is vault version {}; this latch reads only version {VERSION}: {fix}",
+                path.display(),
+                version
+            );
+            return Err(Failure::failed("vault_version", message));
+        }
+        let file: File = serde_json::from_slice(&bytes)
+            .map_err(|_| failed("the vault file is damaged".into()))?;
         let data_key: [u8; 32] = open(&custody, &file.data_key, DATA_KEY_AAD)?
             .try_into()
             .map_err(|_| failed("the vault's data key is damaged".into()))?;
@@ -185,7 +207,7 @@ impl OwnStore {
         let custody = custody(&self.dir.join(KEY_FILE))?;
         let items = serde_json::to_vec(&self.items).expect("items serialize");
         let file = File {
-            version: 1,
+            version: VERSION,
             data_key: seal(&custody, &self.data_key, DATA_KEY_AAD),
             items: seal(&self.data_key, &items, ITEMS_AAD),
         };
@@ -353,6 +375,34 @@ mod tests {
             OwnStore::open(dir.path()).err().unwrap().code,
             "vault_failed"
         );
+    }
+
+    #[test]
+    fn a_vault_of_another_version_is_refused_and_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        OwnStore::open(dir.path())
+            .unwrap()
+            .add(login("made-up-pass-4417"))
+            .unwrap();
+        let path = dir.path().join(FILE);
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // A newer layout: another version, its items no longer where they were.
+        file["version"] = 2.into();
+        file["sealed_items"] = file["items"].take();
+        file.as_object_mut().unwrap().remove("items");
+        let newer = serde_json::to_vec(&file).unwrap();
+        fs::write(&path, &newer).unwrap();
+
+        let refused = OwnStore::open(dir.path()).err().unwrap();
+        assert_eq!(refused.code, "vault_version");
+        assert!(refused.message.contains("version 2"), "{}", refused.message);
+        assert!(
+            refused.message.contains("update this latch"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(fs::read(&path).unwrap(), newer);
     }
 
     #[test]

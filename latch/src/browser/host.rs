@@ -612,10 +612,32 @@ async fn fill_resolved(
     super::fill::run(browsers, entry, args, audit).await
 }
 
+/// One command for `caller`, as `answer` runs it, the page in its answer
+/// (or under its `page`) bounded to what the agent is shown (`shown`),
+/// unless it asked for every element: `observe --all`, or `--scope`.
+pub(super) async fn call(
+    browsers: &Browsers,
+    caller: Caller<'_>,
+    command: &str,
+    name: &str,
+    args: &Value,
+    input: Option<&[u8]>,
+    audit: &mut Map<String, Value>,
+) -> Result<(Value, Option<Vec<u8>>), Failure> {
+    let mut answered = answer(browsers, caller, command, name, args, input, audit).await;
+    if args["all"] != true && args["scope"].is_null() {
+        match &mut answered {
+            Ok((result, _)) => super::shown::bound(result),
+            Err(failure) => super::shown::bound(&mut failure.details),
+        }
+    }
+    answered
+}
+
 /// One command for `caller`: `open` on profile `name`, `sessions`, or a
 /// command on session `name` (its id). An owner device may also `close`
 /// any session by its hash.
-pub(super) async fn call(
+async fn answer(
     browsers: &Browsers,
     caller: Caller<'_>,
     command: &str,
@@ -690,7 +712,7 @@ pub(super) async fn call(
     if let Some(judged) = judged {
         judged.ended(&result);
     }
-    if command == "tab"
+    if matches!(command, "tab" | "goto")
         && result.is_ok()
         && let Some(site) = args["url"].as_str().and_then(sites::site_of)
     {
@@ -715,7 +737,8 @@ pub(super) async fn call(
 }
 
 /// What the gatekeeper judges of a session command before it runs, if
-/// anything: a tab opened on a site the session has not been judged for,
+/// anything: a tab opened or a `goto` on a site the session has not been
+/// judged for,
 /// a plan (with a card or identity fill it confirms first), a confirmed
 /// fill alone, and every `eval`, upload and download. A `fill` is judged
 /// once its suggestion is resolved (`fill`).
@@ -726,7 +749,7 @@ async fn judged_action(
     args: &Value,
 ) -> Result<Option<judged::Action>, Failure> {
     Ok(Some(match command {
-        "tab" => {
+        "tab" | "goto" => {
             let Some(url) = args["url"].as_str() else {
                 return Ok(None);
             };
@@ -992,7 +1015,8 @@ fn worker_call(command: &str, args: &Value) -> Result<Value, Failure> {
         call
     };
     let mut call = match command {
-        "open" => pick(&["url"]),
+        // The active tab loads the URL, as `open` loads a new session's.
+        "open" | "goto" => pick(&["url"]),
         "observe" => pick(&["tab", "scope"]),
         "text" | "screenshot" => Map::new(),
         "tab" => pick(&["action", "tab", "url"]),
@@ -1008,7 +1032,8 @@ fn worker_call(command: &str, args: &Value) -> Result<Value, Failure> {
             ));
         }
     };
-    call.insert("op".into(), json!(command));
+    let op = if command == "goto" { "open" } else { command };
+    call.insert("op".into(), json!(op));
     Ok(Value::Object(call))
 }
 
@@ -1133,6 +1158,11 @@ mod tests {
             json!({"op": "upload", "target": "e3", "snapshot": "o2", "name": "a.csv", "size": 3})
         );
         assert_eq!(worker_call("text", &args).unwrap(), json!({"op": "text"}));
+        assert_eq!(
+            worker_call("goto", &args).unwrap(),
+            json!({"op": "open", "url": "ignored"}),
+            "the active tab loads it, as a new session's does"
+        );
         assert_eq!(worker_call("hover", &args).unwrap_err().code, "bad_command");
     }
 

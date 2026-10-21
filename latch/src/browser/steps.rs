@@ -258,6 +258,24 @@ async fn check_sentences(sentences: &[(usize, String)], model: &mut Model) -> Re
     Ok(())
 }
 
+/// Where a run stopped, for the journal and the audit: the step, the code,
+/// and, when it stopped for want of the model, the model's coded reason.
+/// Never a failure's details, which can hold sentences.
+fn stopped_at(step: usize, failure: &Failure, model: &Model) -> Value {
+    let mut stop = json!({"step": step, "code": failure.code});
+    if let Some(reason) = model_failed(failure, model) {
+        stop["model_failed"] = json!(reason);
+    }
+    stop
+}
+
+/// Why the model was unavailable, if that is why `failure` stopped.
+fn model_failed<'m>(failure: &Failure, model: &'m Model) -> Option<&'m str> {
+    (failure.code == "model_unavailable")
+        .then(|| model.reason())
+        .flatten()
+}
+
 /// The model's calls so far, for the audit: never their content.
 fn record_model(model: &Model, audit: &mut Map<String, Value>) {
     if !model.calls.is_empty() {
@@ -459,6 +477,9 @@ pub async fn run(
             Err(failure) => {
                 shown["outcome"] = json!("stopped");
                 shown["code"] = json!(failure.code);
+                if let Some(reason) = model_failed(&failure, &run.model) {
+                    shown["model_failed"] = json!(reason);
+                }
                 if let Some(evidence) = failure.details.get("evidence") {
                     shown["evidence"] = evidence.clone();
                 }
@@ -489,7 +510,7 @@ pub async fn run(
     };
     let mut end = json!({"t": "end", "status": status});
     if let Some((step, failure)) = &stop {
-        end["stop"] = json!({"step": step, "code": failure.code});
+        end["stop"] = stopped_at(*step, failure, &run.model);
     }
     let journaled = run.journal.write(end);
     browsers.running(&running, false);
@@ -500,6 +521,7 @@ pub async fn run(
         trail,
         records,
         audit,
+        actions,
         ..
     } = run;
     record_model(&model, audit);
@@ -525,11 +547,30 @@ pub async fn run(
         })
         .collect();
     audit.insert("step_outcomes".into(), json!(outcomes));
-    // Every answer ends with the page as it is now.
-    let page = call(entry, json!({"op": "glance"}), audit)
-        .await
-        .map(|(page, _)| page)
-        .unwrap_or(Value::Null);
+    // Every answer ends with the page as it is now. A plan that stopped
+    // before sending any action left the page to itself: no new snapshot
+    // is read, so the refs the agent holds stay the ones a ref without
+    // `--snapshot` names; unless the stop offers refs of its own.
+    let untouched = stop.as_ref().is_some_and(|(_, failure)| {
+        actions == 0
+            && failure.details.get("candidates").is_none()
+            && failure.details.get("field").is_none()
+    });
+    let page = if untouched {
+        call(entry, json!({"op": "page"}), audit)
+            .await
+            .map(|(mut page, _)| {
+                page["note"] = json!(
+                    "nothing was sent, so no new snapshot was read: a ref still names the last page latch returned; `latch browser observe` reads the page afresh"
+                );
+                page
+            })
+    } else {
+        call(entry, json!({"op": "glance"}), audit)
+            .await
+            .map(|(page, _)| page)
+    }
+    .unwrap_or(Value::Null);
     let mut out =
         json!({"request": request, "status": status, "steps": steps, "trail": trail, "page": page});
     // `--output F`: the page as the plan ended, kept as its `final` shot (a
@@ -556,7 +597,7 @@ pub async fn run(
         return Ok(out);
     };
     rebase(&mut failure.details, &page);
-    audit.insert("stop".into(), json!({"step": step, "code": failure.code}));
+    audit.insert("stop".into(), stopped_at(step, &failure, &model));
     let mut shown = json!({"step": step, "code": failure.code, "message": failure.message});
     for (key, value) in failure.details.as_object().into_iter().flatten() {
         shown[key] = value.clone();

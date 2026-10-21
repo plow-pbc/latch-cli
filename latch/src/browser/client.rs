@@ -103,8 +103,11 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
             dry_run,
             ..
         } => {
-            let plan = with_facts(
-                do_plan(steps, plan_file.as_deref(), confirm.is_some(), *within)?,
+            let plan = do_plan(
+                steps,
+                plan_file.as_deref(),
+                confirm.is_some(),
+                *within,
                 fact,
                 item,
             )?;
@@ -292,12 +295,13 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "url", json!(url));
             "open"
         }
-        BrowserCommand::Observe { tab, scope } => {
+        BrowserCommand::Observe { tab, scope, all } => {
             set(request, "tab", json!(tab));
             set(request, "scope", json!(scope));
+            set(request, "all", json!(all.then_some(true)));
             "observe"
         }
-        BrowserCommand::Text => "text",
+        BrowserCommand::Text { .. } => "text",
         BrowserCommand::Screenshot { .. } => "screenshot",
         // Its plan is in the request already. `act` marks it as one
         // action, which the host's gatekeeper leaves to the risk decision.
@@ -348,6 +352,10 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "url_path", json!(url_path));
             set(request, "within", json!(within));
             "wait"
+        }
+        BrowserCommand::Goto { url } => {
+            set(request, "url", json!(url));
+            "goto"
         }
         BrowserCommand::Tab { command } => {
             let (action, tab, url) = match command {
@@ -450,7 +458,10 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
     if !matches!(name, "open" | "sessions") && request["session"].is_null() {
         return Err(Failure::usage(
             "no_session",
-            "name the session with --session S (the id `open` answered) or LATCH_BROWSER_SESSION"
+            "this command needs a session: give --session S, or set LATCH_BROWSER_SESSION, to \
+             the `session` id `latch browser open` answered. Keep that id when you open: it is \
+             shown only then, and `latch browser sessions` lists your sessions without ids. A \
+             session whose id is lost closes itself after 30 idle minutes; open a new one"
                 .into(),
         ));
     }
@@ -534,12 +545,14 @@ async fn fetch_final(
 }
 
 /// The plan command's plan: from `--plan-file`, or one short-form step per
-/// argument, checked whole before it is sent.
+/// argument, with its facts and items, checked whole before it is sent.
 pub(super) fn do_plan(
     steps: &[String],
     plan_file: Option<&Path>,
     confirm: bool,
     within: Option<f64>,
+    facts: &[String],
+    items: &[String],
 ) -> Result<Plan, Failure> {
     let bad = |why: String| Failure::usage("bad_arguments", why);
     let mut plan = match plan_file {
@@ -564,8 +577,7 @@ pub(super) fn do_plan(
             "do takes steps, --plan-file, --confirm C or --history R".into(),
         ));
     }
-    plan.validate().map_err(bad)?;
-    Ok(plan)
+    with_facts(plan, facts, items)
 }
 
 /// `act`'s words as one literal step. A direction to scroll may come
@@ -661,6 +673,25 @@ mod tests {
         );
         assert!(named.message.contains("plan step"));
         assert!(act_literal(None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn a_command_with_no_session_says_to_keep_the_id_open_answered() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["latch", "browser", "close"]).unwrap();
+        let Command::Browser(args) = cli.command else {
+            panic!("browser");
+        };
+        let mut request = json!({"session": null});
+        let failure = fill(&mut request, args.command).unwrap_err();
+        println!("{}", failure.to_json());
+        assert_eq!(
+            (failure.exit, failure.code.as_str()),
+            (Exit::Usage, "no_session")
+        );
+        assert!(failure.message.contains("Keep that id"));
+        assert!(failure.message.contains("without ids"));
     }
 
     #[test]
@@ -771,6 +802,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_goal_types_a_fact_it_names_from_the_command_line() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        let cli = Cli::try_parse_from([
+            "latch",
+            "browser",
+            "do",
+            "type the delivery street {street}",
+            "--fact",
+            "street=12 Elm Road",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Command::Browser(args) = cli.command else {
+            panic!("browser");
+        };
+        let shown = run(&state, args).await.unwrap();
+        assert_eq!(shown["plan"]["steps"][0]["values"]["street"], "12 Elm Road");
+    }
+
+    #[tokio::test]
+    async fn every_example_in_do_help_is_a_plan() {
+        use crate::cli::{Cli, Command, DO_HELP};
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        // A shell's words: single quotes keep spaces and double quotes.
+        let words = |line: &str| {
+            let (mut words, mut word, mut quoted) = (Vec::new(), String::new(), false);
+            for c in line.chars() {
+                match c {
+                    '\'' => quoted = !quoted,
+                    ' ' if !quoted => words.extend((!word.is_empty()).then(|| word.split_off(0))),
+                    c => word.push(c),
+                }
+            }
+            words.extend((!word.is_empty()).then_some(word));
+            words
+        };
+        let examples: Vec<&str> = DO_HELP
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("latch "))
+            .collect();
+        assert_eq!(examples.len(), 6);
+        for example in examples {
+            let mut argv = vec!["latch".to_string()];
+            argv.extend(words(example));
+            if !argv.iter().any(|word| word == "--dry-run") {
+                argv.push("--dry-run".into());
+            }
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            let Command::Browser(args) = cli.command else {
+                panic!("browser");
+            };
+            let shown = run(&state, args).await;
+            assert!(shown.is_ok(), "{example}: {shown:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn handoff_done_runs_on_the_hosts_own_state_and_handoff_needs_a_reason() {
         use crate::cli::{Cli, Command};
         use clap::Parser;
@@ -810,12 +903,12 @@ mod tests {
             "click e7 -> path: /checkout".to_string(),
             "type e3".to_string(),
         ];
-        let bad = do_plan(&steps, None, false, None).unwrap_err();
+        let bad = do_plan(&steps, None, false, None, &[], &[]).unwrap_err();
         assert!(bad.message.starts_with("step 2:"), "{}", bad.message);
-        assert!(do_plan(&[], None, false, None).is_err());
-        assert!(do_plan(&[], None, true, None).is_ok());
-        let plan = do_plan(&steps[..1], None, false, Some(30.0)).unwrap();
+        assert!(do_plan(&[], None, false, None, &[], &[]).is_err());
+        assert!(do_plan(&[], None, true, None, &[], &[]).is_ok());
+        let plan = do_plan(&steps[..1], None, false, Some(30.0), &[], &[]).unwrap();
         assert_eq!(plan.within(), 30.0);
-        assert!(do_plan(&steps[..1], None, false, Some(301.0)).is_err());
+        assert!(do_plan(&steps[..1], None, false, Some(301.0), &[], &[]).is_err());
     }
 }

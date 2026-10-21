@@ -1,6 +1,7 @@
 //! `latch serve`: the host. It runs in the foreground (as launchd and other
 //! service managers expect) until it is stopped.
 //!
+//! One `latch serve` runs per state folder; a second one refuses to start.
 //! On start it checks its audit log, starts its iroh endpoint, and keeps
 //! itself registered with Plow (see `heartbeat.rs`). It stops cleanly on
 //! Ctrl-C (SIGINT) or SIGTERM, which launchd sends, telling Plow it is
@@ -11,7 +12,12 @@
 //! "yes" (unknown key, another account's key, a revoked credential, Plow
 //! unreachable) denies. Every allow and every deny goes into the audit log.
 
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,6 +35,7 @@ use crate::files;
 use crate::gate::rules::RuleFiles;
 use crate::gate::{self, Gate, Gatekeeper};
 use crate::heartbeat;
+use crate::lifecycle::{self, Phase};
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
 use crate::state::{Config, StateDir};
@@ -54,6 +61,7 @@ struct Host {
     deny_exec: DenyExec,
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
+    binary: Binary,
 }
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
@@ -149,6 +157,51 @@ pub async fn run(
     };
     let program = std::env::current_exe()
         .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
+    // Held until this process ends, however it ends.
+    let _lock = lock_state(&state_dir)?;
+    // From here on, other processes see this host's steps (`lifecycle.rs`).
+    lifecycle::record(&state.path, Phase::Starting, None)?;
+    let result = run_locked(
+        state,
+        folders,
+        show_dashboard,
+        headless_browsers,
+        deny_exec,
+        state_dir,
+        program,
+    )
+    .await;
+    let (phase, error) = match &result {
+        Ok(()) => (Phase::Stopped, None),
+        Err(failure) => (Phase::Error, Some(failure)),
+    };
+    if let Err(failure) = lifecycle::record(&state.path, phase, error) {
+        log(&format!(
+            "could not record the host's last step: {}",
+            failure.message
+        ));
+    }
+    result
+}
+
+/// `run`, once this serve holds the state folder.
+async fn run_locked(
+    state: &StateDir,
+    folders: &[PathBuf],
+    show_dashboard: bool,
+    headless_browsers: bool,
+    deny_exec: DenyExec,
+    state_dir: PathBuf,
+    program: PathBuf,
+) -> Result<(), Failure> {
+    // Named folders win; with none, the ones `latch shares set` saved.
+    let saved;
+    let folders = if folders.is_empty() {
+        saved = state.load_shares()?;
+        &saved[..]
+    } else {
+        folders
+    };
     let workers = WorkerSetup {
         areas: shared_folders(folders)?,
         state_dir,
@@ -194,6 +247,7 @@ async fn run_host(
     rules: RuleFiles,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
+    let binary = Binary::at(&workers.program)?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
     let gatekeeper = Gatekeeper::new(
         plow.clone(),
@@ -283,7 +337,9 @@ async fn run_host(
         name,
         deny_exec,
         gatekeeper,
+        binary,
     });
+    lifecycle::record(&state.path, Phase::Serving, None)?;
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
     let mut stop = Box::pin(stop_requested(terminate));
@@ -337,14 +393,139 @@ async fn go_offline(plow: &Plow, key: &str) {
     }
 }
 
+/// The latch binary this host started from, as it was on disk then. A host
+/// starts its workers from this path, so once the file there changes (an
+/// upgrade renames a new one over it, or rewrites it) the host refuses new
+/// work and says to restart it. It does not restart itself: a restart would
+/// drop open browser sessions and in-flight calls, and the new latch may
+/// refuse this state folder, leaving the host silently gone.
+struct Binary {
+    path: PathBuf,
+    on_disk: OnDisk,
+    told: AtomicBool,
+}
+
+/// What tells one file at a path from another, or from itself rewritten.
+#[derive(PartialEq)]
+struct OnDisk {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+}
+
+impl OnDisk {
+    /// Follows a symlink, so one pointed at another latch counts as replaced.
+    fn of(path: &Path) -> Option<OnDisk> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(OnDisk {
+            device: meta.dev(),
+            inode: meta.ino(),
+            size: meta.size(),
+            modified: (meta.mtime(), meta.mtime_nsec()),
+        })
+    }
+}
+
+impl Binary {
+    /// `path`, the latch the workers run, as it is on disk now.
+    fn at(path: &Path) -> Result<Binary, Failure> {
+        let on_disk = OnDisk::of(path).ok_or_else(|| {
+            let message = format!("latch cannot find its own binary {}", path.display());
+            Failure::failed("no_binary", message)
+        })?;
+        Ok(Binary {
+            path: path.to_path_buf(),
+            on_disk,
+            told: AtomicBool::new(false),
+        })
+    }
+
+    /// Whether the file is no longer the one this host started from (gone
+    /// counts too). The host's log says so once.
+    fn replaced(&self) -> bool {
+        let replaced = OnDisk::of(&self.path).as_ref() != Some(&self.on_disk);
+        if replaced && !self.told.swap(true, Ordering::Relaxed) {
+            log(&format!(
+                "{} was replaced since this host started: refusing every operation; \
+                 restart `latch serve` to run the new latch",
+                self.path.display()
+            ));
+        }
+        replaced
+    }
+}
+
+/// What every operation gets once the host's binary was replaced.
+fn host_upgraded() -> Failure {
+    let message = "latch on this host was replaced since `latch serve` started; nothing ran. \
+                   Restart `latch serve` on the host to run the new latch, then try again";
+    Failure::failed("host_upgraded", message.to_string())
+}
+
+/// Makes this the one `latch serve` on `state_dir`: two hosts on one state
+/// would share one key and one audit log. The lock is an exclusive `flock` on
+/// `serve.lock`, which the system releases when its holder exits, so one
+/// left behind by a crash never blocks. The file says who holds it, for the
+/// refusal a second serve prints. A lock held for less than a second is
+/// another process asking whether a serve runs (`lifecycle::holds_lock`),
+/// so this waits that long before refusing.
+fn lock_state(state_dir: &Path) -> Result<File, Failure> {
+    let path = state_dir.join("serve.lock");
+    let io =
+        |err: std::io::Error| Failure::failed("state_io", format!("{}: {err}", path.display()));
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(io)?;
+    // SAFETY: flock only reads the descriptor, which `file` keeps open.
+    let try_lock = || unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    let mut locked = try_lock();
+    for _ in 0..20 {
+        if locked {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        locked = try_lock();
+    }
+    if !locked {
+        let mut holder = String::new();
+        let _ = file.read_to_string(&mut holder);
+        let holder = holder.trim();
+        let holder = if holder.is_empty() {
+            "another process"
+        } else {
+            holder
+        };
+        let message = format!(
+            "{} is already served by {holder}; stop that `latch serve` first",
+            state_dir.display()
+        );
+        return Err(Failure::failed("already_serving", message));
+    }
+    let exe =
+        std::env::current_exe().map_or_else(|_| "latch".into(), |exe| exe.display().to_string());
+    let holder = format!("latch serve (pid {}, {exe})\n", std::process::id());
+    file.set_len(0)
+        .and_then(|()| file.write_all(holder.as_bytes()))
+        .map_err(io)?;
+    Ok(file)
+}
+
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
 /// checked now, so a typo is a plain error rather than refused files later.
 /// Any folder may be shared, the home folder and `/` included: the sandbox
 /// always hides the state folder, even inside a shared one.
-fn shared_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
+pub fn shared_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
     if folders.is_empty() {
-        let message = "name the folders to share, e.g. `latch serve ~/code`".to_string();
+        let message = "name the folders to share, e.g. `latch serve ~/code`, or save them \
+                       with `latch shares set ~/code`"
+            .to_string();
         return Err(Failure::usage("no_folders", message));
     }
     let mut areas = Vec::new();
@@ -456,8 +637,11 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             let gate = host.gate(&identity, request.chat.as_deref());
             // An exec this host's owner denies is refused without asking.
             let denied_exec = op == "exec" && host.deny_exec.refuses(&identity);
-            let gated =
-                gate::gated(op, &request.args, &host.workers.areas[0]).filter(|_| !denied_exec);
+            // A worker started now would run the new latch under this old
+            // host: nothing runs, and nothing is judged.
+            let upgraded = host.binary.replaced();
+            let gated = gate::gated(op, &request.args, &host.workers.areas[0])
+                .filter(|_| !denied_exec && !upgraded);
             let judgment = match (&gate, &gated) {
                 (Ok(Some(gate)), Some(gated)) => Some(gate.judge(&gated.action).await),
                 _ => None,
@@ -472,7 +656,10 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                 audit_args: gated.audit.clone(),
                 outcome: failure.code.clone(),
             });
-            let done = if let Some(refused) = refused {
+            let done = if upgraded {
+                let failure = host_upgraded();
+                Done::failed(&failure.code, failure.message, Value::Null)
+            } else if let Some(refused) = refused {
                 refused
             } else {
                 match op {
@@ -607,6 +794,8 @@ async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
         let mut audit_args = serde_json::Map::new();
         audit_args.insert("command".into(), Value::String(request.op.clone()));
         let result = match request.op.as_str() {
+            // The link's item would be saved by this old host's code.
+            _ if host.binary.replaced() => Err(host_upgraded()),
             "page" => link::page(&host.vault, &host.here(), &request.args, &mut audit_args),
             "submit" => link::submit(&host.vault, &request.args, &mut audit_args),
             op => Err(Failure::new(
@@ -660,7 +849,9 @@ pub(crate) fn decision(response: &Response) -> &'static str {
             ..
         } => "deny",
         Response::Error { code, .. }
-            if code == "sandbox_failed" || code == "gatekeeper_unavailable" =>
+            if code == "sandbox_failed"
+                || code == "gatekeeper_unavailable"
+                || code == "host_upgraded" =>
         {
             "deny"
         }
@@ -869,6 +1060,52 @@ mod tests {
             "the sandbox could not be applied".to_string(),
         );
         assert_eq!(decision(&unconfined), "deny");
+        let upgraded = failed("host_upgraded", "restart the host".to_string());
+        assert_eq!(decision(&upgraded), "deny");
+    }
+
+    #[test]
+    fn a_binary_renamed_over_rewritten_or_removed_counts_as_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("latch");
+        let binary = |path: &Path| Binary::at(path).unwrap();
+        std::fs::write(&path, b"old latch").unwrap();
+        let running = binary(&path);
+        assert!(!running.replaced());
+
+        // How install.sh upgrades: a new file renamed over the old one.
+        std::fs::write(dir.path().join("latch.tmp"), b"new latch").unwrap();
+        std::fs::rename(dir.path().join("latch.tmp"), &path).unwrap();
+        assert!(running.replaced());
+
+        let running = binary(&path);
+        std::fs::write(&path, b"new latch, again").unwrap();
+        assert!(running.replaced());
+
+        let running = binary(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert!(running.replaced());
+    }
+
+    #[test]
+    fn one_serve_holds_a_state_folder_until_it_lets_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = lock_state(dir.path()).unwrap();
+
+        let refused = lock_state(dir.path()).unwrap_err();
+        assert_eq!(refused.code, "already_serving");
+        let pid = format!("pid {}", std::process::id());
+        assert!(refused.message.contains(&pid), "{}", refused.message);
+
+        drop(first);
+
+        // What a crashed serve leaves: the file, naming it, but no lock.
+        let crashed = tempfile::tempdir().unwrap();
+        let stale = "latch serve (pid 999999, /old/latch)\n";
+        std::fs::write(crashed.path().join("serve.lock"), stale).unwrap();
+        let _held = lock_state(crashed.path()).unwrap();
+        let now = std::fs::read_to_string(crashed.path().join("serve.lock")).unwrap();
+        assert!(now.contains(&pid), "{now}");
     }
 
     #[test]

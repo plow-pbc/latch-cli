@@ -3,6 +3,7 @@
 //! generates the parser for us.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use clap::{Args, Parser, Subcommand};
 
@@ -11,20 +12,31 @@ use clap::{Args, Parser, Subcommand};
 /// override them. Unset, latch uses `~/.latch` and has no default Plow.
 pub const BUILD_STATE_DIR: Option<&str> = option_env!("LATCH_BUILD_STATE_DIR");
 pub const BUILD_API_URL: Option<&str> = option_env!("LATCH_BUILD_API_URL");
+/// How this build is distributed (e.g. `standalone`), set by a release
+/// build. Unset, it is a local build: made by hand from a checkout.
+const BUILD_CHANNEL: Option<&str> = option_env!("LATCH_BUILD_CHANNEL");
 
-/// What `--version` prints. A build with baked-in defaults names them, so it
-/// is obvious which build this is. clap wants a `&'static str`; leaking the
-/// one string, once per run, gives it that.
-fn version() -> &'static str {
-    let version = env!("CARGO_PKG_VERSION");
-    match (BUILD_STATE_DIR, BUILD_API_URL) {
-        (None, None) => version,
-        (dir, url) => {
-            let dir = dir.unwrap_or("~/.latch");
-            let url = url.unwrap_or("none");
-            Box::leak(format!("{version} (local build: state {dir}, Plow {url})").into_boxed_str())
+/// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
+/// 03:45 UTC, local build, protocol plow/latch/1)`: where this build came from
+/// (see `build.rs`), the protocol it speaks to peers and, for a build with
+/// baked-in defaults, those, so it is obvious which build this is.
+pub fn version() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        let mut about = format!(
+            "commit {}, built {}, {}, protocol {}",
+            env!("LATCH_COMMIT"),
+            env!("LATCH_BUILT"),
+            BUILD_CHANNEL.unwrap_or("local build"),
+            String::from_utf8_lossy(crate::wire::ALPN),
+        );
+        if BUILD_STATE_DIR.is_some() || BUILD_API_URL.is_some() {
+            let dir = BUILD_STATE_DIR.unwrap_or("~/.latch");
+            let url = BUILD_API_URL.unwrap_or("none");
+            about.push_str(&format!("; state {dir}, Plow {url}"));
         }
-    }
+        format!("{} ({about})", env!("CARGO_PKG_VERSION"))
+    })
 }
 
 /// What `latch --help` adds after the commands: how an agent uses latch.
@@ -38,7 +50,36 @@ Agents:
   reason not_covered, is the one to retry: ask the owner in your Plow chat,
   naming exactly what you will do, then retry once they agree. owner_said_no
   and exec_denied (the owner turned exec off on that host) mean no.
-  Exit 3, gatekeeper_unavailable: the host could not judge; retry later.";
+  Exit 3, gatekeeper_unavailable: the host could not judge. Its message says
+  what fixes it: often a retry later, but a host out of Plow credits fails
+  until the host's account owner adds them. A browser step's
+  model_unavailable (exit 1) is the same decision model, for a click's risk,
+  a goal or a sentence check; nothing was sent, and nothing gets around it.";
+
+/// What `latch browser do --help` adds after its options: the short form
+/// by example. BROWSER.md shows the same examples.
+pub(crate) const DO_HELP: &str = "\
+Examples (one step per argument, each in single quotes so the shell keeps its double quotes):
+  Literal steps, on refs from the last page latch returned:
+    latch browser do 'type e3 \"Ada Lovelace\"' 'select e5 \"Large\"' 'press e3 Enter' 'click e7'
+  A goal in words; the texts in its double quotes are all it may type:
+    latch browser do 'search for \"blue mug\"' 'add the note \"Ring twice\" for the driver'
+  A check after ` -> `: typed (path:, text:, new text:, field: eN=..., query:, origin:,
+  download: complete), or a sentence the decision model judges:
+    latch browser do 'click e7 -> path: /cart' 'type e3 \"Acme\" -> field: e3=Acme'
+    latch browser do 'click e9 -> the cart shows 2 items'
+  A fact, which a goal types where it names it as {NAME}:
+    latch browser do --fact street='12 Elm Road' 'enter the delivery street {street}'
+  The plan as it would be sent, sending nothing (a ` -> ` inside double quotes is text):
+    latch browser do --dry-run 'add the note \"A -> B\" for the driver'
+
+At most 10 steps. A ref is from the last page latch returned (or --snapshot);
+once the page has changed, observe again for fresh refs.
+A plan stops at the first step that does not pass. Before going on, read
+`steps` (each step's outcome; those before the stop ran) and `stop` (its
+step, code and message), then send only what is left: resending the whole
+plan repeats what already ran. An answer that exited 5 names its request:
+read `do --history R` first, and never resend it.";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -79,6 +120,10 @@ pub enum Command {
     /// The owner's standing rules for agents on a host, which the host's
     /// gatekeeper reads at every judgment (owner devices only)
     Rules(RulesArgs),
+    /// The folders `latch serve` shares when it is named none: show them, or set them
+    Shares(SharesArgs),
+    /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
+    Events(EventsArgs),
     /// Run this machine as a host, in the foreground, until stopped
     Serve(ServeArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
@@ -110,7 +155,7 @@ pub struct BrowserArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum BrowserCommand {
-    /// Start a new session on a profile, load URL, and list the page's elements;
+    /// Start a new session on a profile, load URL, and list the elements on screen;
     /// answers the session's id, which every later command needs
     Open {
         /// The profile, whose logins the session shares (default: default)
@@ -133,9 +178,18 @@ pub enum BrowserCommand {
         /// Only the element with this ref and what is inside it
         #[arg(long)]
         scope: Option<String>,
+        /// Every element the snapshot read, off-screen ones too, and every
+        /// frame: answers show the elements on screen, at most 60
+        #[arg(long)]
+        all: bool,
     },
     /// The page's text
-    Text,
+    Text {
+        /// Print only the text, as it is in the answer (the same cut and
+        /// the same fields left out), not JSON
+        #[arg(long)]
+        raw: bool,
+    },
     /// A PNG of the page, written to a file on this machine
     Screenshot {
         #[arg(long, short)]
@@ -145,6 +199,7 @@ pub enum BrowserCommand {
     /// eN ["text"]`, `fill --item vN --field F=eN… [--press eN]`, or a goal in
     /// words with its texts in double quotes, with an optional check after
     /// ` -> `: `do 'click e7 -> path: /cart' 'add the note "Ring twice"'`
+    #[command(after_help = DO_HELP)]
     Do {
         /// The steps, one argument each
         steps: Vec<String>,
@@ -236,6 +291,9 @@ pub enum BrowserCommand {
         #[arg(long, value_name = "S")]
         within: Option<f64>,
     },
+    /// Load URL in the session's active tab, and list its elements; a site
+    /// the session has not been judged for is judged first, as `tab new URL`
+    Goto { url: String },
     /// Open, switch to or close a tab
     Tab {
         #[command(subcommand)]
@@ -620,15 +678,47 @@ pub enum DevicesAction {
 }
 
 #[derive(Args, Debug)]
+pub struct EventsArgs {
+    /// Keep printing changes as they happen, until stopped (or, when stdin is a pipe, until it closes)
+    #[arg(long)]
+    pub follow: bool,
+    /// Pick up right after this cursor, from an earlier line; one that cannot be honoured gets `reset` and a fresh snapshot
+    #[arg(long, value_name = "CURSOR")]
+    pub after: Option<String>,
+    /// Only the host's state changes, no activity
+    #[arg(long)]
+    pub lifecycle_only: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SharesArgs {
+    #[command(subcommand)]
+    pub action: Option<SharesAction>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SharesAction {
+    /// Replace the saved folders; a running `latch serve` keeps its own until restarted
+    Set {
+        #[arg(value_name = "FOLDER", required = true)]
+        folders: Vec<PathBuf>,
+    },
+}
+
+#[derive(Args, Debug)]
 pub struct StatusArgs {
     /// Show a card for a person, with key art to compare between machines, instead of JSON
     #[arg(long)]
     pub pretty: bool,
+    /// Only this machine's own latch, asking no one: state folder, login,
+    /// whether a host serves it, version and saved shares. Works offline and before login
+    #[arg(long, conflicts_with = "pretty")]
+    pub local: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
-    /// Folders to share: callers may read and write only inside these (the first is where `exec` starts)
+    /// Folders to share: callers may read and write only inside these (the first is where `exec` starts) [default: the ones `latch shares set` saved]
     #[arg(value_name = "FOLDER")]
     pub folders: Vec<PathBuf>,
 
@@ -665,6 +755,10 @@ pub struct LoginArgs {
     /// Name of this peer, unique in the account [default: a machine's hostname; an agent's own name in Plow]
     #[arg(long)]
     pub name: Option<String>,
+
+    /// For an app: report the login as JSON lines on stdout (code, waiting, verified, expired, error), logging in by text with no terminal needed. Never prints the token
+    #[arg(long)]
+    pub events: bool,
 }
 
 /// Which host a command goes to. Without `--host` or `$LATCH_HOST`, latch

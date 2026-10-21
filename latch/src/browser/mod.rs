@@ -17,6 +17,7 @@
 //! - `session.rs`: one session's handle on its profile's worker.
 //! - `worker.rs`: the long-lived browser worker; runs each session's core.
 //! - `core.rs`: the shared core: snapshots, refs, actions and results.
+//! - `shown.rs`: what an answer shows the agent of a page.
 //! - `reader.js`: the page reader the core runs in every frame.
 //! - `driver.rs`: the driver contract every engine implements.
 //! - `cft.rs`: the Chrome for Testing driver.
@@ -42,6 +43,7 @@ pub mod plan;
 pub mod profile;
 pub mod runtime;
 pub mod session;
+mod shown;
 mod steps;
 pub mod suggest;
 pub mod tags;

@@ -98,7 +98,7 @@ whole state directory, profiles included.
 ```sh
 latch browser --host my-mac open http://example.com/   # a new session: its id is in the answer
 export LATCH_BROWSER_SESSION=sbkpanajj…                # or --session S on each command
-latch browser --host my-mac observe                    # snapshot o2: refs e1, e2, …
+latch browser --host my-mac observe                    # snapshot o2: refs e1, e2, … (on screen; --all for every one)
 latch browser --host my-mac do 'type e3 "Acme" -> field: e3=Acme' 'click e7 -> path: /cart'
 latch browser --host my-mac do --plan-file plan.json    # the canonical plan (- for stdin)
 latch browser --host my-mac do --confirm c4f1a09b2e3d7  # carry out a confirmation, then any steps
@@ -113,7 +113,9 @@ latch browser --host my-mac act back
 latch browser --host my-mac find --role button --name Download
 latch browser --host my-mac wait --text "Saved" | --ref e4 --state hidden | --url-path /done
 latch browser --host my-mac screenshot --output page.png
+latch browser --host my-mac goto https://example.com/next   # the active tab loads it
 latch browser --host my-mac text | tab new URL | tab switch t2 | tab close
+latch browser --host my-mac text --raw > page.txt        # the same text alone, not JSON
 latch browser --host my-mac dialog accept | dismiss
 latch browser --host my-mac eval --script-file check.js   # its JSON value
 latch browser --host my-mac upload e4 ./invoice.pdf
@@ -129,6 +131,11 @@ latch browser --host my-mac sessions | close
 latch browser --host my-mac open --profile shop --task basket --reserve-site https://shop.example/
 ```
 
+`text` answers the page's main-frame text, at most 20,000 characters
+(`truncated` when cut); `text --raw` prints that same text alone, for a
+pipe, with a note on stderr when it was cut. An error is the usual JSON on
+stderr with its exit code either way.
+
 `fill` takes values from the host's vault without the agent ever seeing
 one, into the elements the agent maps or latch suggested; `observe` shows
 the items that fit, what the page asks for and latch's suggestions.
@@ -137,7 +144,9 @@ the items that fit, what the page asks for and latch's suggestions.
 `open` answers the new session's id, once: 128 random bits, never derived
 from the profile (`--profile` defaults to `default`). Every other session
 command needs it, as `--session S` or `LATCH_BROWSER_SESSION`; there is no
-default session. The id is a capability, and a session is reachable only
+default session, and a command without one gets `no_session` (exit 2),
+which says so. Keep the id when `open` answers: latch never shows it again,
+and a session whose id is lost closes itself after 30 idle minutes. The id is a capability, and a session is reachable only
 with it and only by the caller (client key) that opened it: an id the
 caller has no session for gets `no_such_session` (exit 1), another
 caller's session `not_owner` (exit 4), and nothing reaches the session
@@ -158,8 +167,8 @@ carries `shared_site`: that session's id hash and how many seconds ago.
 `open --reserve-site URL` holds URL's site for the session until it
 closes: another session's action there (a click, typing, `eval`, a fill,
 a dialog) gets `site_busy` (exit 1) before anything is sent, and so does
-one that would load a page of the site from elsewhere: opening it, `tab
-new` on it, Back to it, or a click, Enter or Space on a link or form that
+one that would load a page of the site from elsewhere: opening it, `goto`
+or `tab new` on it, Back to it, or a click, Enter or Space on a link or form that
 leads there. Reading its page goes on. A page's own script can still
 navigate where latch can't tell beforehand, and the reservation is this
 host's only.
@@ -177,6 +186,15 @@ world; `opaque` for a sandboxed frame). A snapshot lists at most 200
 elements, reads at most 50 frames, and leaves out a frame that does not
 answer before the call's time is three quarters gone; any of these marks
 it `truncated`. `observe --scope eN` lists one element's subtree.
+
+An answer shows only the elements on screen, at most 60, and the frames
+they are in, each frame's address without its query and cut to 80
+characters; `omitted` says how many elements and frames it left out.
+`observe --all` lists every element the snapshot read and every frame.
+The snapshot holds them all either way, so a ref left out of the display
+is still valid once it is shown, after `observe --all` or a scroll and an
+`observe`. Only the display is cut: the audit, the gatekeeper and site
+reservations read the full addresses.
 
 A ref is bound to its frame's document: after a navigation, a ref from
 before it is refused with `stale_snapshot`, with a fresh element list in
@@ -231,7 +249,7 @@ agent and the owner's rules on the host. The owner's own devices are
 never judged. Judged, each before anything of it reaches the page:
 
 - opening a site this session has not been judged for: `open URL`, or
-  `tab new URL` on another site;
+  `goto URL` or `tab new URL` on another site;
 - each plan (`do`): its steps as written with each step's values, the
   page it starts on (URL and title), the sites it names and the vault
   items it may fill (kind and title). Every `do` is judged, one of a
@@ -250,7 +268,8 @@ fill and pause checks above still hold. A refusal is exit 4,
 `gatekeeper_denied`, and nothing was sent: with reason `not_covered`, ask
 the owner in chat, saying exactly what you will do, then retry; with
 `owner_said_no`, don't. A gatekeeper that can't judge (the chat or the
-model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs.
+model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs;
+its message says what fixes it (below, under the decision model).
 An agent whose line has more than one chat names the one it acts for
 with `--chat C` or `LATCH_CHAT`. The call's audit record holds the
 judgment as `gate` (verdict, probabilities, model, cost, latency, the
@@ -269,7 +288,26 @@ operation and its target among those the page offers.
 one step: `click|type|select|press eN ["text"]`, or
 `fill --item vN (--field F=eN… | --suggested S) [--press eN]`; text to type goes in double
 quotes (straight or curly). A step's check follows its last ` -> ` outside
-quotes, so `type e3 "A -> B"` has none. `--plan-file` takes the canonical
+quotes, so `type e3 "A -> B"` has none. These are the examples `do
+--help` shows, one step per argument, each in single quotes so the shell
+keeps its double quotes:
+
+```sh
+latch browser do 'type e3 "Ada Lovelace"' 'select e5 "Large"' 'press e3 Enter' 'click e7'   # literal steps on refs
+latch browser do 'search for "blue mug"' 'add the note "Ring twice" for the driver'         # goals: they type only their quoted texts
+latch browser do 'click e7 -> path: /cart' 'type e3 "Acme" -> field: e3=Acme'               # typed checks
+latch browser do 'click e9 -> the cart shows 2 items'                                       # a sentence the model judges
+latch browser do --fact street='12 Elm Road' 'enter the delivery street {street}'           # a fact a goal names
+latch browser do --dry-run 'add the note "A -> B" for the driver'                           # the plan, nothing sent
+```
+
+A plan holds at most 10 steps. A ref is from the last page latch returned
+(or `--snapshot`); once the page has changed, `observe` again for fresh
+refs. Before going on after a stop, read `steps` (each step's outcome:
+those before the stop ran) and `stop` (its step, code and message), and
+send only what is left: resending the whole plan repeats what already ran.
+An answer that exited 5 names its request: read `do --history R` first,
+and never resend it. `--plan-file` takes the canonical
 plan object, which every short form compiles to:
 
 ```json
@@ -348,7 +386,10 @@ the confirmation used, `result` `dispatched`/`refused`/`unknown`, what
 changed, and `screenshot`: the handle `{"request": R, "shot": N}` of a
 screenshot taken after it, or `{"suppressed": true}` after a vault fill or
 while a filled value is on the page) and `page` (snapshot, URL, title, up to 40 lines, the element
-list). A plan stops at the first step that does not pass, or at its
+list, bounded as every answer's is). A plan that stopped before sending any
+action reads no new snapshot: its `page` is the tab's URL and title with a
+`note` saying so, and a ref still names the last page latch returned (a
+stop that offers refs, `candidates` or a `field`, reads one). A plan stops at the first step that does not pass, or at its
 deadline; nothing is replayed or retried. Exit 0 is `reached` or
 `dispatched`; a stop exits 1, or 4 for `confirm_needed`, `confirm_stale` and
 `step_not_allowed`.
@@ -436,7 +477,14 @@ request id. Only a host set up for development calls TypeSafe jev
 `{"provider": "jev"}` and its key is in `jev.key` (0600); a key file alone
 is never used. A host not logged in to Plow, an account out of credits,
 or a route that fails or can't be reached, means what needs a decision
-stops with `model_unavailable`; there is no keyword stand-in.
+stops with `model_unavailable`; there is no keyword stand-in. The message
+says what fixes it: an account out of credits (Plow's 402) waits for the
+host's account owner to add Plow credits, and every retry fails until
+then; a login Plow refuses (401, 403) waits for the host's owner to run
+`latch login` on the host again; an unreachable route or another error is
+worth a retry later. The gatekeeper asks the same route, and its
+`gatekeeper_unavailable` says the same. No command asks the model only to
+report its health: a failure shows when something needs a decision.
 
 ## Handoff and screenless hosts
 

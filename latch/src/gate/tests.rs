@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use super::fake::{self, AGENT, LINE, World, agent_self, member, message, owner};
 use super::rules::{RULES_DIR, RuleFiles, Rules, RulesSource};
 use super::*;
-use crate::browser::model::{Asked, CallMeta, system_one};
+use crate::browser::model::{Asked, CallFailed, CallMeta, system_one};
 use serde_json::value::RawValue;
 
 /// A local Plow serving `world`, and the requests it saw.
@@ -64,7 +64,7 @@ impl Provider for Recorder {
             .push((state.get().to_string(), system_one(questions)));
         let p = self.p;
         Box::pin(async move {
-            let [c, n, f] = p.ok_or("the model is down")?;
+            let [c, n, f] = p.ok_or(CallFailed::new("http_503", "the model is down"))?;
             let top = if c >= n && c >= f {
                 "COVERED"
             } else if n >= f {
@@ -475,6 +475,10 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         .judge(AGENT, None, &order())
         .await;
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
+    assert_eq!(
+        judgment.gate["model_failed"], "http_503",
+        "the audit keeps why"
+    );
 }
 
 #[tokio::test]

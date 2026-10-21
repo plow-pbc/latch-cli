@@ -81,14 +81,32 @@ pub struct CallMeta {
     pub cost: Option<f64>,
 }
 
-pub type Asked<'a> =
-    Pin<Box<dyn Future<Output = Result<(HashMap<String, Answer>, CallMeta), String>> + Send + 'a>>;
+/// Why a call failed: a short code the audit and the journal keep, such as
+/// `out_of_credits` or `http_503`, and a sentence for the agent. Neither
+/// holds a key, a credential or what was asked.
+#[derive(Debug, Clone)]
+pub struct CallFailed {
+    pub reason: String,
+    pub message: String,
+}
+
+impl CallFailed {
+    pub fn new(reason: &str, message: impl Into<String>) -> CallFailed {
+        CallFailed {
+            reason: reason.to_string(),
+            message: message.into(),
+        }
+    }
+}
+
+pub type Asked<'a> = Pin<
+    Box<dyn Future<Output = Result<(HashMap<String, Answer>, CallMeta), CallFailed>> + Send + 'a>,
+>;
 
 /// One way of reaching a decision model.
 pub trait Provider: Send + Sync {
     /// Asks every question in one call, about `state`. The answers are
-    /// checked by [`Model::ask`], not here. An error's text must hold no
-    /// key or credential.
+    /// checked by [`Model::ask`], not here.
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a>;
 
     /// Like [`Provider::ask`], with the state sent exactly as this JSON
@@ -96,7 +114,8 @@ pub trait Provider: Send + Sync {
     /// another order, and a `Value` sorts them.
     fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
         Box::pin(async move {
-            let state: Value = serde_json::from_str(state.get()).map_err(|e| e.to_string())?;
+            let state: Value = serde_json::from_str(state.get())
+                .map_err(|e| CallFailed::new("bad_state", e.to_string()))?;
             self.ask(&state, questions).await
         })
     }
@@ -129,6 +148,8 @@ pub struct Model {
     provider: Option<Box<dyn Provider>>,
     /// Why there is no provider, for `model_unavailable`'s message.
     off: String,
+    /// The same as a short code, for the audit and the journal.
+    reason: Option<String>,
     pub calls: Vec<Value>,
 }
 
@@ -137,6 +158,7 @@ impl Model {
         Model {
             provider: Some(provider),
             off: String::new(),
+            reason: None,
             calls: Vec::new(),
         }
     }
@@ -145,6 +167,7 @@ impl Model {
         Model {
             provider: None,
             off: why.to_string(),
+            reason: Some("no_model".to_string()),
             calls: Vec::new(),
         }
     }
@@ -164,6 +187,12 @@ impl Model {
     /// Why the model is not available.
     pub fn why_off(&self) -> &str {
         &self.off
+    }
+
+    /// Why the model is not available, as a short code: a failed call's
+    /// reason, or `no_model` when the host has none.
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
     }
 
     /// One call, its answers checked against its questions. `purpose` and
@@ -205,7 +234,8 @@ impl Model {
             if let Some(cost) = meta.cost {
                 record["cost"] = json!(cost);
             }
-            let corrected = check(&questions, &mut answers)?;
+            let corrected = check(&questions, &mut answers)
+                .map_err(|why| CallFailed::new("bad_answer", why))?;
             if !corrected.is_empty() {
                 record["corrected"] = json!(corrected);
             }
@@ -215,12 +245,16 @@ impl Model {
             record["latency_ms"] = json!(started.elapsed().as_millis() as u64);
         }
         record["outcome"] = json!(if outcome.is_ok() { "ok" } else { "failed" });
-        self.calls.push(record);
-        if let Err(why) = &outcome {
-            self.provider = None;
-            self.off = format!("the decision model failed: {why}");
+        if let Err(failed) = &outcome {
+            record["reason"] = json!(failed.reason);
         }
-        outcome
+        self.calls.push(record);
+        outcome.map_err(|failed| {
+            self.provider = None;
+            self.off = format!("the decision model failed: {}", failed.message);
+            self.reason = Some(failed.reason);
+            failed.message
+        })
     }
 
     /// For each sentence, the chance it is a checkable fact about a page
@@ -1180,7 +1214,8 @@ impl Provider for Jev {
 
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         Box::pin(async move {
-            let state = serde_json::value::to_raw_value(state).map_err(|e| e.to_string())?;
+            let state = serde_json::value::to_raw_value(state)
+                .map_err(|e| CallFailed::new("bad_state", e.to_string()))?;
             self.ask_as_written(&state, questions).await
         })
     }
@@ -1196,7 +1231,7 @@ impl Provider for Jev {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|_| "jev could not be reached".to_string())?;
+                .map_err(|_| CallFailed::new("unreachable", "jev could not be reached"))?;
             let latency_ms = started.elapsed().as_millis() as u64;
             let status = response.status();
             let request_id = response
@@ -1206,12 +1241,16 @@ impl Provider for Jev {
                 .map(str::to_string);
             if !status.is_success() {
                 // Jev's own error text is not passed on: it could echo the request.
-                return Err(format!("jev answered HTTP {}", status.as_u16()));
+                let code = status.as_u16();
+                return Err(CallFailed::new(
+                    &format!("http_{code}"),
+                    format!("jev answered HTTP {code}"),
+                ));
             }
             let reply: Value = response
                 .json()
                 .await
-                .map_err(|_| "jev's answer was not JSON".to_string())?;
+                .map_err(|_| CallFailed::new("not_json", "jev's answer was not JSON"))?;
             let answers = system_one_answers(&reply, questions);
             let meta = CallMeta {
                 provider: "typesafe",
@@ -1263,7 +1302,8 @@ impl Plow {
             path: state_dir.to_path_buf(),
         };
         let not_in = || {
-            "this host is not logged in to Plow, which answers its decision-model questions"
+            "this host is not logged in to Plow, which answers its decision-model questions: \
+             the host's owner must run `latch login` on it"
                 .to_string()
         };
         let config = state.load_config().ok().flatten().ok_or_else(not_in)?;
@@ -1279,7 +1319,8 @@ impl Provider for Plow {
 
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         Box::pin(async move {
-            let state = serde_json::value::to_raw_value(state).map_err(|e| e.to_string())?;
+            let state = serde_json::value::to_raw_value(state)
+                .map_err(|e| CallFailed::new("bad_state", e.to_string()))?;
             self.ask_as_written(&state, questions).await
         })
     }
@@ -1295,21 +1336,46 @@ impl Provider for Plow {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|_| "Plow's decision route could not be reached".to_string())?;
+                .map_err(|_| {
+                    CallFailed::new(
+                        "unreachable",
+                        "Plow's decision route could not be reached from this host; retry once \
+                         its network and Plow are up",
+                    )
+                })?;
             let latency_ms = started.elapsed().as_millis() as u64;
             let status = response.status();
             if !status.is_success() {
                 return Err(match status.as_u16() {
-                    402 => "this host's Plow account is out of credits for the decision model"
-                        .to_string(),
-                    403 => "this host's Plow login may not ask the decision model".to_string(),
-                    code => format!("Plow's decision route answered HTTP {code}"),
+                    402 => CallFailed::new(
+                        "out_of_credits",
+                        "this host's Plow account is out of credits for the decision model: \
+                         the host's account owner must add Plow credits, and until then every \
+                         retry fails the same way",
+                    ),
+                    401 => CallFailed::new(
+                        "http_401",
+                        "Plow refused this host's login: the host's owner must log it in again \
+                         with `latch login` on the host",
+                    ),
+                    403 => CallFailed::new(
+                        "not_allowed",
+                        "this host's Plow login may not ask the decision model: the host's \
+                         owner must log it in again with `latch login` on the host, on an \
+                         account that may",
+                    ),
+                    code => CallFailed::new(
+                        &format!("http_{code}"),
+                        format!("Plow's decision route answered HTTP {code}; retry later"),
+                    ),
                 });
             }
-            let reply: Value = response
-                .json()
-                .await
-                .map_err(|_| "Plow's decision route did not answer JSON".to_string())?;
+            let reply: Value = response.json().await.map_err(|_| {
+                CallFailed::new(
+                    "not_json",
+                    "Plow's decision route did not answer JSON; retry later",
+                )
+            })?;
             let meta = CallMeta {
                 provider: "plow",
                 model: reply["model"].as_str().unwrap_or(&self.model).to_string(),
@@ -1381,6 +1447,7 @@ pub mod tests {
             assert!(err.contains(why), "{err}");
             assert!(!m.is_on());
             assert_eq!(m.calls[0]["outcome"], "failed");
+            assert_eq!(m.calls[0]["reason"], "bad_answer");
         }
         let mut m = model(vec![vec![
             ("met", Answer::Yes(0.9)),
@@ -1885,11 +1952,27 @@ pub mod tests {
         let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
         assert!(m.risky("t", "click", &[]).await.is_err());
         assert!(m.why_off().contains("HTTP 503"), "{}", m.why_off());
-        for (status, says) in [(402, "out of credits"), (403, "may not ask")] {
+        assert_eq!(m.reason(), Some("http_503"));
+        assert_eq!(m.calls[0]["reason"], "http_503");
+        for (status, says, reason) in [
+            (
+                402,
+                "out of credits for the decision model: the host's account owner must add Plow credits",
+                "out_of_credits",
+            ),
+            (401, "log it in again", "http_401"),
+            (
+                403,
+                "may not ask the decision model: the host's owner must log it in again",
+                "not_allowed",
+            ),
+        ] {
             let (url, _seen) = plow_route(status, json!({"detail": "made-up refusal"}));
             let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
             assert!(m.risky("t", "click", &[]).await.is_err());
             assert!(m.why_off().contains(says), "{}", m.why_off());
+            assert_eq!(m.reason(), Some(reason));
+            assert_eq!(m.calls[0]["reason"], reason, "the audit keeps why");
         }
         assert_eq!(
             m.calls[0]["provider"], "plow",
@@ -1906,5 +1989,6 @@ pub mod tests {
             m.why_off()
         );
         assert!(!m.why_off().contains("made-up-login"));
+        assert_eq!(m.reason(), Some("unreachable"));
     }
 }

@@ -326,6 +326,7 @@ conformance!(
     a_dialog_in_one_session_does_not_hold_another_sessions_download,
     a_download_heard_before_another_sessions_dialog_does_not_wait_on_it,
     back_into_a_reserved_site_is_refused_after_a_return_visit,
+    an_answer_shows_the_screen_and_observe_all_every_element,
 );
 
 /// At most this many tests drive a real engine at once: two engines' worth
@@ -2076,6 +2077,18 @@ async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent(engine: &s
         let outcome = h.call(other, "do", &b, act(&line)).await;
         outcomes.push((line, outcome.map_or_else(|f| f.code, |_| "sent".into())));
     }
+    let went = h
+        .call(
+            other,
+            "goto",
+            &b,
+            json!({"url": format!("{local}/next.html")}),
+        )
+        .await;
+    outcomes.push((
+        "goto".into(),
+        went.map_or_else(|f| f.code, |_| "sent".into()),
+    ));
     let tab = h.call(other, "observe", &b, json!({})).await.unwrap();
     println!(
         "into the reserved site from localhost: {outcomes:?}; now on {}",
@@ -2242,4 +2255,78 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
     for id in [&a, &b] {
         h.call(CALLER, "close", id, json!({})).await.unwrap();
     }
+}
+
+/// An answer shows the elements on screen and the frames they are in;
+/// `observe --all` lists the rest, whose refs work, and a scroll brings
+/// them into the bounded view.
+async fn an_answer_shows_the_screen_and_observe_all_every_element(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["shown"]);
+    let page = br#"<!doctype html><title>long page</title>
+        <button>Top</button>
+        <iframe src="/frame.html" style="height:80px"></iframe>
+        <div style="height:4000px"></div>
+        <button onclick="this.after('Bottom pressed')">Bottom</button>"#;
+    let frame = b"<!doctype html><button>In frame</button>";
+    let port = serve(vec![
+        ("/".into(), page.to_vec()),
+        ("/frame.html".into(), frame.to_vec()),
+    ]);
+    let mut h = Host::new(&state);
+    let (id, opened) = h
+        .open(
+            CALLER,
+            "shown",
+            json!({"url": format!("http://127.0.0.1:{port}/")}),
+        )
+        .await;
+    let names = |page: &serde_json::Value| -> Vec<String> {
+        page["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    println!("open: {:?}; omitted: {}", names(&opened), opened["omitted"]);
+    assert_eq!(names(&opened), ["Top", "In frame"]);
+    assert_eq!(opened["frames"][1]["frame"], "f1");
+    assert!(
+        opened["omitted"]
+            .as_str()
+            .unwrap()
+            .starts_with("1 element (off screen")
+    );
+
+    let all = h
+        .call(CALLER, "observe", &id, json!({"all": true}))
+        .await
+        .unwrap();
+    assert_eq!(names(&all), ["Top", "Bottom", "In frame"]);
+    assert!(all.get("omitted").is_none());
+    let bottom = find(&all, "button", "Bottom");
+    let clicked = h
+        .call(
+            CALLER,
+            "do",
+            &id,
+            act(&format!("click {bottom} -> text: Bottom pressed")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(clicked["status"], "reached");
+    // Scrolled to it by the click, it is on screen now.
+    let now = h.call(CALLER, "observe", &id, json!({})).await.unwrap();
+    println!("after the click: {:?}", names(&now));
+    assert!(names(&now).contains(&"Bottom".to_string()));
+    assert!(!names(&now).contains(&"Top".to_string()));
+
+    // A page's own value, however it looks, is not latch's page.
+    let mine = json!({"snapshot": "o9", "elements": [{"ref": "e1", "offscreen": true}]});
+    let evaluated = h
+        .call(CALLER, "eval", &id, json!({"script": format!("({mine})")}))
+        .await
+        .unwrap();
+    assert_eq!(evaluated["value"], mine);
+    h.call(CALLER, "close", &id, json!({})).await.unwrap();
 }

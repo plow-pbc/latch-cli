@@ -51,6 +51,9 @@ pub struct Activation {
     pub display_code: String,
     pub activation_secret: String,
     pub send_to: String,
+    /// When the code stops working, if Plow says.
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 /// One poll of `POST /v1/auth/activate/redeem`. Only the first `verified`

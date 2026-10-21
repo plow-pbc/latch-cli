@@ -73,10 +73,14 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
         }),
         Ok(Err(err)) if speaks_another_version(&err) => {
             endpoint.close().await;
+            // Builds of one protocol version work together; only that differs.
             let message = format!(
-                "host {:?} runs a latch that speaks another protocol version; \
-                 nothing was sent: update latch on both machines to the same build",
-                host.name
+                "host {:?} does not speak {}, the protocol of this latch {}, so one of \
+                 the two runs an older latch; nothing was sent. Compare `latch --version` on \
+                 both machines and update the older one",
+                host.name,
+                String::from_utf8_lossy(wire::ALPN),
+                crate::cli::version(),
             );
             Err(Failure::failed("protocol_mismatch", message))
         }
@@ -92,7 +96,7 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
 }
 
 /// The host refused the handshake because it speaks no protocol version we
-/// offered (TLS alert 120, "no application protocol"): a different build.
+/// offered (TLS alert 120, "no application protocol").
 fn speaks_another_version(err: &ConnectError) -> bool {
     let closed = match err {
         ConnectError::Connection { source, .. } => source,

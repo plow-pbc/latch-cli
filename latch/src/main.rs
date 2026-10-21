@@ -13,6 +13,7 @@ mod credential;
 mod dashboard;
 mod devices;
 mod dial;
+mod events;
 mod exec;
 mod failure;
 mod files;
@@ -22,6 +23,7 @@ mod heartbeat;
 mod hosts;
 mod input;
 mod keyart;
+mod lifecycle;
 mod log;
 mod login;
 mod logo;
@@ -29,11 +31,13 @@ mod paint;
 mod plow;
 mod sandbox;
 mod serve;
+mod shares;
 mod state;
 mod status;
 mod term;
 mod transfer;
 mod vault;
+mod watch;
 mod wire;
 mod worker;
 
@@ -46,7 +50,7 @@ use clap::error::ErrorKind;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use cli::{Cli, Command, DevicesAction, FileCommand, HostArg};
+use cli::{BrowserCommand, Cli, Command, DevicesAction, FileCommand, HostArg};
 use failure::{Exit, Failure};
 use state::StateDir;
 use wire::Request;
@@ -94,7 +98,9 @@ fn main() -> ExitCode {
 async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
     match run(state_dir, command).await {
         Ok(output) => {
-            println!("{}", output.text);
+            if !output.text.is_empty() {
+                println!("{}", output.text);
+            }
             output.exit
         }
         Err(failure) => {
@@ -116,7 +122,31 @@ struct Printed {
 /// Runs one command and returns its JSON output.
 async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Failure> {
     let state = StateDir::new(state_dir)?;
+    state.check_format()?;
     match command {
+        Command::Login(args) if args.events => {
+            // Every ending is a line too; the failure still goes to stderr.
+            match login::run(&state, args).await {
+                Ok(output) => {
+                    let peer = &output.peer;
+                    login::event(json!({"type": "verified", "peer":
+                        {"name": peer.name, "key": peer.key, "kind": peer.kind}}));
+                    Ok(Printed {
+                        text: String::new(),
+                        exit: ExitCode::SUCCESS,
+                    })
+                }
+                Err(failure) if failure.code == "code_expired" => {
+                    login::event(json!({"type": "expired"}));
+                    Err(failure)
+                }
+                Err(failure) => {
+                    login::event(json!({"type": "error", "error":
+                        {"code": failure.code, "message": failure.message}}));
+                    Err(failure)
+                }
+            }
+        }
         Command::Login(args) => {
             let output = login::run(&state, args).await?;
             // A person at a terminal reads one line; a pipe gets the JSON.
@@ -134,6 +164,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 to_json(devices::remove(&state, &name, yes).await?)
             }
         },
+        Command::Status(args) if args.local => to_json(status::local(&state)?),
         Command::Status(args) => {
             let output = status::run(&state).await?;
             if !args.pretty {
@@ -163,9 +194,31 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             to_json(transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?)
         }
         Command::Google(args) => to_json(google::client::run(&state, args).await?),
-        Command::Browser(args) => to_json(browser::client::run(&state, args).await?),
+        Command::Browser(args) => {
+            let raw = matches!(args.command, BrowserCommand::Text { raw: true });
+            let result = browser::client::run(&state, args).await?;
+            if !raw {
+                return to_json(result);
+            }
+            if result["truncated"] == true {
+                eprintln!("latch: the page's text was cut short; this is its beginning");
+            }
+            Ok(Printed {
+                text: result["text"].as_str().unwrap_or_default().to_string(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
+        Command::Shares(args) => to_json(shares::run(&state, args.action)?),
+        // Its lines, printed as they come, are its whole output.
+        Command::Events(args) => {
+            events::run(&state, args)?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
         Command::Exec(args) => {
             let mut request =
                 json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout });

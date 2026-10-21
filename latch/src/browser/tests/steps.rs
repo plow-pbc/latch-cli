@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use super::{CALLER, find, latch, test_state};
 use crate::browser::client::{act_literal, do_plan};
 use crate::browser::host::{self, Browsers};
-use crate::browser::model::{Answer, Asked, CallMeta, Kind, Provider, Question};
+use crate::browser::model::{Answer, Asked, CallFailed, CallMeta, Kind, Provider, Question};
 use crate::browser::plan::{Check, Plan, Step};
 use crate::browser::steps;
 use crate::cli::ActAction;
@@ -120,7 +120,12 @@ const FAKE_VAGUE: [&str; 1] = ["finish the expense report"];
 impl Provider for Fake {
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
         if self.down.load(Ordering::SeqCst) {
-            return Box::pin(async { Err("the fake model could not be reached".to_string()) });
+            return Box::pin(async {
+                Err(CallFailed::new(
+                    "unreachable",
+                    "the fake model could not be reached",
+                ))
+            });
         }
         let sentence = state["condition"].as_str().unwrap_or_default();
         let fact = FAKE_FACTS
@@ -326,7 +331,7 @@ impl Harness {
     /// The plan command's short form, as the client compiles it.
     pub(super) async fn short(&mut self, steps: &[&str]) -> Result<Value, Failure> {
         let steps: Vec<String> = steps.iter().map(|s| s.to_string()).collect();
-        let plan = do_plan(&steps, None, false, None).unwrap();
+        let plan = do_plan(&steps, None, false, None, &[], &[]).unwrap();
         self.send(json!({"plan": plan})).await
     }
 
@@ -334,7 +339,7 @@ impl Harness {
     async fn plan_file(&mut self, plan: Value) -> Result<Value, Failure> {
         let file = self.state.join("plan.json");
         std::fs::write(&file, plan.to_string()).unwrap();
-        let plan = do_plan(&[], Some(&file), false, None).unwrap();
+        let plan = do_plan(&[], Some(&file), false, None, &[], &[]).unwrap();
         self.send(json!({"plan": plan})).await
     }
 
@@ -621,12 +626,15 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
         .unwrap_err();
     stopped("b5-confirm-stale.json", &stale);
     assert_eq!(refused(&stale), (Exit::Denied, "confirm_stale"));
+    // Nothing was sent: the answer reads no new snapshot, and says so.
     assert!(
-        stale.details["page"]["lines"]
-            .to_string()
-            .contains("$100.00")
+        stale.details["page"]["note"].is_string(),
+        "{}",
+        stale.details
     );
-    assert!(!h.text().await.contains("Order placed"));
+    assert!(stale.details["page"].get("elements").is_none());
+    let text = h.text().await;
+    assert!(text.contains("$100.00") && !text.contains("Order placed"));
 
     // Issued on a page since replaced by a new load of it: stale.
     let page = h.open(&format!("{site}/order.html")).await;
@@ -714,6 +722,15 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         stopped("b5-no-model.json", &failure);
         assert_eq!(refused(&failure), (Exit::Failed, "model_unavailable"));
         assert!(failure.details["trail"].as_array().unwrap().is_empty());
+        // Why the model failed, in the audit and the journal as well.
+        let audit = h.audits.last().unwrap();
+        assert_eq!(audit["model_calls"][0]["outcome"], "failed");
+        assert_eq!(audit["model_calls"][0]["reason"], "unreachable");
+        assert_eq!(audit["stop"]["model_failed"], "unreachable");
+        let read = h.history(audit["request"].as_str().unwrap());
+        assert_eq!(read["stop"]["code"], "model_unavailable");
+        assert_eq!(read["stop"]["model_failed"], "unreachable");
+        assert_eq!(read["steps"][0]["model_failed"], "unreachable");
     }
     assert!(
         h.text().await.contains("$10.00"),
@@ -754,6 +771,11 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         "{}",
         failure.message
     );
+    let audit = bare.audits.last().unwrap();
+    assert_eq!(audit["stop"]["model_failed"], "no_model");
+    assert!(audit.get("model_calls").is_none(), "no call was made");
+    let read = bare.history(audit["request"].as_str().unwrap());
+    assert_eq!(read["stop"]["model_failed"], "no_model");
     bare.close().await;
 }
 
@@ -766,7 +788,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
     let slowly = find(&page, "button", "Add one slowly");
 
     // The host stops while the click is in flight.
-    let args = json!({"request": "r-crash", "plan": do_plan(&[format!("click {slowly}")], None, false, None).unwrap()});
+    let args = json!({"request": "r-crash", "plan": do_plan(&[format!("click {slowly}")], None, false, None, &[], &[]).unwrap()});
     let (browsers, entry, crashed) = (h.browsers.clone(), h.entry.clone(), h.id.clone());
     let session = crashed.clone();
     let running = tokio::spawn(async move {
@@ -803,7 +825,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
     // can't be sent again.
     let page = h.open(&format!("{site}/counter.html")).await;
     let add = find(&page, "button", "Add one");
-    let args = json!({"request": "r-lost", "plan": do_plan(&[format!("click {add}")], None, false, None).unwrap()});
+    let args = json!({"request": "r-lost", "plan": do_plan(&[format!("click {add}")], None, false, None, &[], &[]).unwrap()});
     let _lost = h.send(args.clone()).await;
     let read = h.history("r-lost");
     evidence("b5-history-lost-reply.json", &read);

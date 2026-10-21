@@ -1282,6 +1282,12 @@ impl Drop for Serving {
 /// `latch serve` on `host`'s state, sharing `share`, through the local
 /// relay, once it has registered that relay with Plow.
 fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
+    serving_folders(host, &[share], relay).0
+}
+
+/// `serving`, sharing `shares` (none: the saved ones). Also returns the
+/// log lines up to its registration.
+fn serving_folders(host: &Path, shares: &[&Path], relay: &str) -> (Serving, Vec<String>) {
     let mut serve = Serving(
         Command::new(env!("CARGO_BIN_EXE_latch"))
             .args([
@@ -1290,7 +1296,7 @@ fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
                 "serve",
                 "--no-dashboard",
             ])
-            .arg(share)
+            .args(shares)
             .env("LATCH_TEST_RELAY_URL", relay)
             .env_remove("LATCH_HOST")
             .stderr(std::process::Stdio::piped())
@@ -1298,15 +1304,91 @@ fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
             .unwrap(),
     );
     let mut log = BufReader::new(serve.0.stderr.take().unwrap());
+    let mut lines = Vec::new();
     loop {
         let mut line = String::new();
-        assert_ne!(log.read_line(&mut line).unwrap(), 0, "serve stopped");
+        assert_ne!(
+            log.read_line(&mut line).unwrap(),
+            0,
+            "serve stopped: {lines:?}"
+        );
+        lines.push(line.trim_end().to_string());
         if line.contains("heartbeat: registered") {
             break;
         }
     }
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
-    serve
+    (serve, lines)
+}
+
+/// An owner's host state logged in to `plow` as `host`.
+fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
+    let owner_token = dir.join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let host = dir.join("host");
+    let token = owner_token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        token,
+        "--name",
+        "host",
+    ];
+    let login = latch(&host, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    host
+}
+
+#[test]
+fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let (saved, named) = (dir.path().join("saved"), dir.path().join("named"));
+    fs::create_dir(&saved).unwrap();
+    fs::create_dir(&named).unwrap();
+
+    let none = latch(&host, &["shares"], &[]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&none.stdout).unwrap(),
+        json!({"shares": []})
+    );
+    let missing = latch(
+        &host,
+        &["shares", "set", dir.path().join("gone").to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(missing.status.code(), Some(2), "{missing:?}");
+    let set = latch(&host, &["shares", "set", saved.to_str().unwrap()], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let real = saved.canonicalize().unwrap();
+    let shown = latch(&host, &["shares"], &[]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&shown.stdout).unwrap(),
+        json!({"shares": [real]})
+    );
+
+    let sharing = |lines: &[String]| {
+        lines
+            .iter()
+            .find_map(|line| {
+                line.split_once("sharing: ")
+                    .map(|(_, rest)| rest.to_string())
+            })
+            .unwrap()
+    };
+    let (serve, lines) = serving_folders(&host, &[], &relay);
+    drop(serve);
+    assert_eq!(sharing(&lines), real.display().to_string());
+    let (serve, lines) = serving_folders(&host, &[&named], &relay);
+    drop(serve);
+    assert_eq!(
+        sharing(&lines),
+        named.canonicalize().unwrap().display().to_string()
+    );
 }
 
 #[test]
@@ -1526,4 +1608,348 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         !log.contains("email") && !log.contains("shared folder"),
         "{log}"
     );
+}
+
+#[test]
+fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let marker = r#"{"format": 2, "written_by": "0.2.0"}"#;
+    fs::write(state.join("latch.json"), marker).unwrap();
+    // Not valid for this latch either way: a newer layout it would misread.
+    fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
+
+    let status = latch(&state, &["status"], &[]);
+
+    assert_eq!(status.status.code(), Some(1), "{status:?}");
+    let error: Value = serde_json::from_slice(&status.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "state_format", "{error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("update this latch"), "{message}");
+    assert_eq!(
+        fs::read_to_string(state.join("latch.json")).unwrap(),
+        marker
+    );
+}
+
+#[test]
+fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let local = |state: &Path| {
+        let output = latch(state, &["status", "--local"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+
+    let never = dir.path().join("never");
+    let before = local(&never);
+    assert!(!never.exists(), "status --local made the state folder");
+    assert_eq!(before["peer"], Value::Null);
+    assert_eq!(before["protocol"], 1);
+    assert_eq!(
+        before["serve"],
+        json!({"running": false, "ready": false, "state": "stopped", "pid": null})
+    );
+    assert_eq!(before["shares"], json!([]));
+    assert_eq!(before["last_error"], Value::Null);
+
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let logged_in = local(&host);
+    assert_eq!(logged_in["peer"]["name"], "host");
+    assert_eq!(logged_in["peer"]["kind"], "device");
+    assert_eq!(logged_in["serve"]["running"], false);
+    let asked = plow.seen().len();
+
+    let serve = serving(&host, &share, &relay);
+    let pid = serve.0.id();
+    let up = local(&host);
+    assert_eq!(
+        up["serve"],
+        json!({"running": true, "ready": true, "state": "serving", "pid": pid})
+    );
+    drop(serve);
+    let stopped = local(&host);
+    assert_eq!(stopped["serve"]["state"], "stopped");
+    assert_eq!(stopped["last_error"], Value::Null);
+
+    let mut killed = serving(&host, &share, &relay);
+    killed.0.kill().unwrap();
+    killed.0.wait().unwrap();
+    let ended = local(&host);
+    assert_eq!(ended["serve"]["state"], "error");
+    assert_eq!(ended["last_error"]["code"], "serve_ended");
+    // Only the serves spoke to Plow; status --local never did.
+    let statuses = plow.seen()[asked..]
+        .iter()
+        .filter(|(line, _)| !line.contains("/v1/latch/peers") && !line.contains("offline"))
+        .count();
+    assert_eq!(statuses, 0, "{:?}", plow.seen());
+}
+
+/// A running `latch events`, its lines read as they come.
+struct Events {
+    child: std::process::Child,
+    lines: std::sync::mpsc::Receiver<Value>,
+}
+
+impl Events {
+    fn start(state: &Path, args: &[&str]) -> Events {
+        let mut child = latch_command(state, &[&["events"], args].concat(), &[])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let (send, lines) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            for line in stdout.lines() {
+                let _ = send.send(serde_json::from_str(&line.unwrap()).unwrap());
+            }
+        });
+        Events { child, lines }
+    }
+
+    fn next(&self) -> Value {
+        self.lines
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("no event within 20 s")
+    }
+
+    /// The next line that is not a host step or a connection's record.
+    fn next_activity(&self) -> Value {
+        loop {
+            let line = self.next();
+            if line["type"] != "host" && line["entry"]["op"] != "connect" {
+                return line;
+            }
+        }
+    }
+
+    /// Closes its stdin, as an app that went away does; it must exit.
+    fn close(mut self) -> std::process::ExitStatus {
+        drop(self.child.stdin.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "events outlived its stdin"
+            );
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+#[test]
+fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_restart() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let laptop = dir.path().join("laptop");
+    let token = dir.path().join("owner.token");
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        token.to_str().unwrap(),
+        "--name",
+        "laptop",
+    ];
+    assert_eq!(latch(&laptop, &args, &[]).status.code(), Some(0));
+    let exec = |word: &str| {
+        let output = latch(
+            &laptop,
+            &["exec", "--host", "host", "--", "echo", word],
+            &[],
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["audit_id"].clone()
+    };
+
+    let events = Events::start(&host, &["--follow"]);
+    let snapshot = events.next();
+    assert_eq!(snapshot["type"], "snapshot");
+    assert_eq!(snapshot["host"], json!({"state": "stopped"}));
+    assert_eq!(snapshot["activity"], json!([]));
+
+    let serve = serving(&host, &share, &relay);
+    let mut step = events.next();
+    while step["state"] != "serving" {
+        assert_eq!(step["type"], "host", "{step}");
+        step = events.next();
+    }
+    let first = exec("one");
+    let activity = events.next_activity();
+    assert_eq!(activity["type"], "activity");
+    assert_eq!(activity["entry"]["id"], first);
+    assert_eq!(activity["entry"]["op"], "exec");
+    assert_eq!(activity["entry"]["decision"], "allow");
+    let cursor = activity["cursor"].as_str().unwrap().to_string();
+    assert!(events.close().success());
+
+    // Missed while no one followed: picked up exactly, nothing twice.
+    let missed: Vec<Value> = ["two", "three", "four"]
+        .iter()
+        .map(|word| exec(word))
+        .collect();
+    let resumed = Events::start(&host, &["--follow", "--after", &cursor]);
+    let snapshot = resumed.next();
+    assert_eq!(snapshot["type"], "snapshot", "{snapshot}");
+    assert_eq!(snapshot["host"]["state"], "serving");
+    let ids: Vec<Value> = snapshot["activity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["op"] != "connect")
+        .map(|entry| entry["id"].clone())
+        .collect();
+    assert_eq!(ids, missed);
+    let fifth = exec("five");
+    assert_eq!(resumed.next_activity()["entry"]["id"], fifth);
+    assert!(resumed.close().success());
+
+    // The host restarted: the old cursor gets a reset and a fresh snapshot.
+    drop(serve);
+    let _serve = serving(&host, &share, &relay);
+    let after_restart = Events::start(&host, &["--follow", "--after", &cursor]);
+    assert_eq!(after_restart.next(), json!({"type": "reset"}));
+    let fresh = after_restart.next();
+    assert_eq!(fresh["type"], "snapshot");
+    assert_eq!(fresh["host"]["state"], "serving");
+    let replayed = fresh["activity"].as_array().unwrap();
+    assert!(replayed.iter().any(|entry| entry["id"] == fifth), "{fresh}");
+    assert!(after_restart.close().success());
+
+    let lifecycle = Events::start(&host, &["--follow", "--lifecycle-only"]);
+    assert_eq!(lifecycle.next()["activity"], json!([]));
+    exec("six");
+    drop(_serve);
+    let stopped = lifecycle.next();
+    assert_eq!(
+        (stopped["type"].clone(), stopped["state"].clone()),
+        (json!("host"), json!("stopped"))
+    );
+    assert!(lifecycle.close().success());
+}
+
+fn event_lines(output: &Output) -> Vec<Value> {
+    String::from_utf8(output.stdout.clone())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_login_with_events_reports_each_step_as_json_with_no_terminal_and_no_token() {
+    let (api_url, server) = plow_texted_at_once();
+    let dir = test_dir();
+    let state = dir.path().join("state");
+
+    let login = latch(
+        &state,
+        &["login", "--events", "--api-url", &api_url, "--name", "mac"],
+        &[],
+    );
+
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let lines = event_lines(&login);
+    let key = lines[2]["peer"]["key"].clone();
+    assert_eq!(
+        lines,
+        [
+            json!({"type": "code", "code": "TRY12", "send_to": "+14155550100",
+                   "send_to_display": "+1 415-555-0100", "smsto": "SMSTO:+14155550100:TRY12",
+                   "sms_link": "sms:+14155550100?&body=TRY12", "expires_at": null}),
+            json!({"type": "waiting"}),
+            json!({"type": "verified", "peer": {"name": "mac", "key": key, "kind": "device"}}),
+        ]
+    );
+    assert!(login.stderr.is_empty(), "{login:?}");
+    assert!(!String::from_utf8_lossy(&login.stdout).contains("texted-login"));
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+#[test]
+fn a_login_with_events_whose_code_expires_says_so_and_fails() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100", "expires_at": "2026-10-21T06:00:00Z"});
+    let (api_url, server) = fake_plow(vec![(200, activation), (410, json!({"detail": "expired"}))]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+
+    let login = latch(
+        &state,
+        &["login", "--events", "--api-url", &api_url, "--name", "mac"],
+        &[],
+    );
+
+    assert_eq!(login.status.code(), Some(1), "{login:?}");
+    let lines = event_lines(&login);
+    assert_eq!(lines[0]["expires_at"], "2026-10-21T06:00:00Z");
+    assert_eq!(
+        lines[1..],
+        [json!({"type": "waiting"}), json!({"type": "expired"})]
+    );
+    let error: Value = serde_json::from_slice(&login.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "code_expired");
+    server.join().unwrap();
+}
+
+#[test]
+fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapshot() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+
+    let serve = serving(&host, &share, &relay);
+    let events = Events::start(&host, &["--follow"]);
+    let first = events.next();
+    assert_eq!(first["host"]["state"], "serving", "{first}");
+    let run = |cursor: &Value| {
+        cursor
+            .as_str()
+            .unwrap()
+            .split(':')
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    let old_run = run(&first["cursor"]);
+
+    drop(serve);
+    let stopped = events.next();
+    assert_eq!(
+        (stopped["type"].clone(), stopped["state"].clone()),
+        (json!("host"), json!("stopped"))
+    );
+    let _serve = serving(&host, &share, &relay);
+    assert_eq!(events.next(), json!({"type": "reset"}));
+    let fresh = events.next();
+    assert_eq!(fresh["type"], "snapshot", "{fresh}");
+    assert_ne!(run(&fresh["cursor"]), old_run);
+    // Nothing from the new run arrives as a mere host step before the reset,
+    // and the stream goes on: serving, if the snapshot caught it starting.
+    if fresh["host"]["state"] != "serving" {
+        let step = events.next();
+        assert_eq!(
+            (step["type"].clone(), step["state"].clone()),
+            (json!("host"), json!("serving"))
+        );
+    }
+    assert!(events.close().success());
 }
