@@ -31,11 +31,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15-xlarge, macos-15-large, ubuntu-latest-8-cores]
+        runner: [macos-15-xlarge, macos-15-large, ubuntu-latest-8-cores, latch-linux-arm64-8core]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 5
     steps:
-      - run: uname -sm
+      - run: uname -sm && getconf _NPROCESSORS_ONLN
 
   mac:
     if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
@@ -110,7 +110,8 @@ jobs:
       matrix:
         include:
           - { arch: amd64, runner: ubuntu-latest-8-cores }
-          - { arch: arm64, runner: ubuntu-24.04-arm }
+          # Organization-managed Linux ARM64, 8 vCPU pool.
+          - { arch: arm64, runner: latch-linux-arm64-8core }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     defaults:
