@@ -530,6 +530,39 @@ fn plow_texted_at_once() -> (String, thread::JoinHandle<Vec<String>>) {
 }
 
 #[test]
+fn a_login_by_text_stops_at_plows_refusal_and_retries_a_slow_down() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let dir = test_dir();
+
+    // A refusal (4xx) ends the login: asking again would be refused again.
+    let (api_url, server) = fake_plow(vec![
+        (200, activation.clone()),
+        (403, json!({"detail": "forbidden"})),
+    ]);
+    let state = dir.path().join("refused");
+    let args = ["login", "--api-url", &api_url, "--name", "mac", "--events"];
+    let output = latch(&state, &args, &[]);
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let lines = String::from_utf8(output.stdout).unwrap();
+    assert!(lines.contains(r#""code":"plow_denied""#), "{lines}");
+    assert_eq!(server.join().unwrap().len(), 2, "one ask, no retry");
+
+    // 429 is Plow asking us to slow down: the login asks again.
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (429, json!({"detail": "slow down"})),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ]);
+    let state = dir.path().join("slowed");
+    let args = ["login", "--api-url", &api_url, "--name", "mac", "--events"];
+    let output = latch(&state, &args, &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(server.join().unwrap().len(), 4);
+}
+
+#[test]
 fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
     let (api_url, server) = plow_texted_at_once();
     let dir = test_dir();
