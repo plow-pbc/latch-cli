@@ -20,6 +20,7 @@
 //! - `shown.rs`: what an answer shows the agent of a page.
 //! - `reader.js`: the page reader the core runs in every frame.
 //! - `driver.rs`: the driver contract every engine implements.
+//! - `egress.rs`: where the browser may go, and the proxy it goes through.
 //! - `cft.rs`: the Chrome for Testing driver.
 //! - `cdp.rs`: the DevTools protocol over the engine's pipe.
 //! - `camoufox.rs`: the Camoufox driver, through the helper in `camoufox/`.
@@ -32,6 +33,7 @@ pub mod client;
 pub mod core;
 pub mod display;
 pub mod driver;
+pub mod egress;
 pub mod engine;
 mod fill;
 pub mod handoff;

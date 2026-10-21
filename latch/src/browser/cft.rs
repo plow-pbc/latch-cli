@@ -131,6 +131,7 @@ impl Cft {
         scratch: &Path,
         headless: bool,
         display: Option<&str>,
+        proxy: &str,
     ) -> Result<Self, Failure> {
         if CFT.driver_contract != driver::CONTRACT {
             return Err(Failure::failed(
@@ -157,6 +158,7 @@ impl Cft {
             scratch,
             headless,
             display,
+            proxy,
             &chrome_reads,
             &chrome_writes,
         )?;
@@ -1690,12 +1692,14 @@ fn stale() -> Failure {
 /// Starts the engine on its profile, headed unless `headless`, with the CDP
 /// pipe as its fd 3 (commands in) and fd 4 (replies out), in a process
 /// group of its own.
+#[allow(clippy::too_many_arguments)]
 fn start(
     engine: &Engine,
     data: &Path,
     scratch: &Path,
     headless: bool,
     display: Option<&str>,
+    proxy: &str,
     reads: &impl AsRawFd,
     writes: &impl AsRawFd,
 ) -> Result<Child, Failure> {
@@ -1711,7 +1715,12 @@ fn start(
     if headless {
         command.arg("--headless");
     }
+    // Every request through the worker's proxy, loopback ones too (Chrome
+    // sends those direct unless told not to), and WebRTC with it.
     command
+        .arg(format!("--proxy-server={proxy}"))
+        .arg("--proxy-bypass-list=<-loopback>")
+        .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
         .arg(format!("--user-data-dir={}", data.display()))
         .env_clear()
         .env("PATH", PATH)

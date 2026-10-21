@@ -75,6 +75,7 @@ impl Camoufox {
         scratch: &Path,
         headless: bool,
         display: Option<&str>,
+        proxy: &str,
     ) -> Result<Self, Failure> {
         if CAMOUFOX.driver_contract != driver::CONTRACT {
             return Err(Failure::failed(
@@ -153,6 +154,7 @@ impl Camoufox {
                 "os": CAMOUFOX.os,
                 "reader": READER,
                 "env": env,
+                "proxy": proxy,
             }),
             STARTUP,
         );

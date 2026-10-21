@@ -123,6 +123,9 @@ impl Runtime {
         if headless {
             command.arg("--headless");
         }
+        if super::egress::local_allowed(state_dir)? {
+            command.arg("--allow-local-browsing");
+        }
         if super::display::for_runtime(headless) {
             command.arg("--private-display");
         }

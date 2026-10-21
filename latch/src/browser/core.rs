@@ -198,14 +198,24 @@ impl Call {
         }
     }
 
-    fn acts(&self) -> Acts<'_> {
+    /// The address this call loads, when it names one.
+    pub fn loads(&self) -> Option<&str> {
         match self {
             Call::Open { url: Some(url) }
             | Call::Tab {
                 action: TabAction::New,
                 url: Some(url),
                 ..
-            } => Acts::Url(url),
+            } => Some(url),
+            _ => None,
+        }
+    }
+
+    fn acts(&self) -> Acts<'_> {
+        if let Some(url) = self.loads() {
+            return Acts::Url(url);
+        }
+        match self {
             Call::Act { .. }
             | Call::Dialog { .. }
             | Call::Eval { .. }
@@ -1070,6 +1080,11 @@ impl<D: Driver> Core<D> {
         let (origin, path) = origin_and_path(&active.url);
         audit.insert("origin".into(), json!(origin));
         audit.insert("path".into(), json!(path));
+        if !super::egress::shown(&active.url) {
+            let failure = super::egress::not_shown(&active.url);
+            self.driver.navigate("about:blank")?;
+            return Err(failure);
+        }
         let mut page = Map::new();
         page.insert("tab".into(), json!(active.tab));
         page.insert("url".into(), json!(active.url));
@@ -1363,15 +1378,17 @@ mod tests {
     }
 
     /// An engine with no optional features: only enough of the contract
-    /// to say where it is.
-    struct Bare;
+    /// to say where it is, and to go somewhere else.
+    struct Bare {
+        url: String,
+    }
 
     impl Driver for Bare {
         fn limit(&mut self, _: Option<Instant>) {}
         fn tabs(&mut self) -> Result<Vec<super::super::driver::Tab>, Failure> {
             Ok(vec![super::super::driver::Tab {
                 tab: "t1".into(),
-                url: "https://shop.example/cart?id=7".into(),
+                url: self.url.clone(),
                 title: "Cart".into(),
                 opener: None,
                 active: true,
@@ -1398,8 +1415,9 @@ mod tests {
         fn close_tab(&mut self, _: &str) -> Result<(), Failure> {
             unreachable!()
         }
-        fn navigate(&mut self, _: &str) -> Result<(), Failure> {
-            unreachable!()
+        fn navigate(&mut self, url: &str) -> Result<(), Failure> {
+            self.url = url.to_string();
+            Ok(())
         }
         fn back(&mut self) -> Result<bool, Failure> {
             unreachable!()
@@ -1475,9 +1493,39 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_a_page_took_off_the_web_is_never_read() {
+        // Reading it would panic: the refusal comes first, and leaves it blank.
+        let mut core = Core::new(Bare { url: String::new() });
+        for (call, url, scheme) in [
+            (
+                Call::Text,
+                "file:///Users/someone/latch/state/config.json",
+                "file:",
+            ),
+            (Call::Screenshot, "data:text/html,hi", "data:"),
+            (
+                Call::Eval { script: "1".into() },
+                "chrome://version/",
+                "chrome:",
+            ),
+        ] {
+            core.driver.url = url.into();
+            let failure = core.call(call, None).err().unwrap();
+            assert_eq!(
+                (failure.exit, failure.code.as_str()),
+                (Exit::Denied, "url_refused")
+            );
+            assert!(failure.message.contains(scheme), "{}", failure.message);
+            assert_eq!(core.driver.url, "about:blank");
+        }
+    }
+
+    #[test]
     fn a_missing_capability_is_refused_before_dispatch_and_audited() {
         // Every driver method that would dispatch panics: refusing must come first.
-        let mut core = Core::new(Bare);
+        let mut core = Core::new(Bare {
+            url: "https://shop.example/cart?id=7".into(),
+        });
         for (call, capability) in [
             (Call::Eval { script: "1".into() }, "eval"),
             (Call::Downloads, "downloads"),
@@ -1514,7 +1562,10 @@ mod tests {
         }
         fn limit(&mut self, _: Option<Instant>) {}
         fn tabs(&mut self) -> Result<Vec<super::super::driver::Tab>, Failure> {
-            Bare.tabs()
+            Bare {
+                url: "https://shop.example/cart?id=7".into(),
+            }
+            .tabs()
         }
         fn active_tab(&self) -> String {
             "t1".into()

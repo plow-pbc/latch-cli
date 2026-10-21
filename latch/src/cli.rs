@@ -612,6 +612,10 @@ pub struct BrowserWorkerArgs {
     /// Linux: start a private Xvfb display for the engine
     #[arg(long)]
     pub private_display: bool,
+    /// Let the engine reach this machine's local addresses (the owner's
+    /// `allow_local_browsing` in host.json)
+    #[arg(long)]
+    pub allow_local_browsing: bool,
 }
 
 /// Arguments the host gives a worker (see `worker.rs`).

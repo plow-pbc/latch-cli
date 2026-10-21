@@ -283,6 +283,13 @@ const BACKGROUND_TABS = {
   "browser.tabs.loadDivertedInBackground": true,
 };
 
+// Every request goes through latch's proxy (`params.proxy`), loopback
+// ones too, and WebRTC with it.
+const THROUGH_PROXY = {
+  "network.proxy.allow_hijacking_localhost": true,
+  "media.peerconnection.ice.proxy_only": true,
+};
+
 async function launch(params) {
   reader = params.reader;
   // One fingerprint per profile, made on its first launch: a site sees the
@@ -307,7 +314,8 @@ async function launch(params) {
     executablePath: params.executable,
     headless: params.headless,
     env: { ...identity.env, ...params.env },
-    firefoxUserPrefs: { ...identity.prefs, ...BACKGROUND_TABS },
+    firefoxUserPrefs: { ...identity.prefs, ...BACKGROUND_TABS, ...THROUGH_PROXY },
+    proxy: { server: params.proxy },
     acceptDownloads: true,
     downloadsPath: params.downloads,
     viewport: null,

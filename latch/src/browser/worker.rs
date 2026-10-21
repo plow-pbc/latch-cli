@@ -1,5 +1,6 @@
 //! The browser worker: one long-lived process per profile runtime, run as
-//! `latch browser-worker --profile P --scratch DIR [--headless]` (hidden
+//! `latch browser-worker --profile P --scratch DIR [--headless]
+//! [--allow-local-browsing]` (hidden
 //! from `--help`). It launches the engine its profile is bound to (a
 //! profile not made yet is made for CfT) and drives it, CfT over the CDP
 //! pipe and Camoufox through its helper, for every session on the profile:
@@ -14,7 +15,10 @@
 //! launch; a recipe that never opens a debug port or turns the sandbox off;
 //! the profile locked to this runtime; and a minimal environment (`PATH`, a
 //! home, a temp folder and the engine's own settings), all in the runtime's
-//! scratch folder.
+//! scratch folder; and where it goes: only web addresses, and the network
+//! only through the worker's proxy, which refuses the host's local
+//! addresses (`egress.rs`), so neither the state folder's files nor the
+//! host's own services are in a page's reach.
 //!
 //! On Linux it confines itself first, in bubblewrap (`sandbox::BrowserView`):
 //! of the state directory it sees only its profile and the engine's plugin
@@ -63,6 +67,7 @@ use super::cdp;
 use super::cft::{self, Cft};
 use super::core::{Answer, Call, Core};
 use super::driver::{Runtime, Seat};
+use super::egress;
 use super::engine::{CAMOUFOX, CFT};
 use super::profile;
 use crate::failure::Failure;
@@ -97,6 +102,7 @@ fn confine(state_dir: &Path, profile_name: &str, scratch: &Path) -> Result<(), F
     crate::sandbox::confine_browser(&view).map_err(|why| Failure::failed("sandbox_failed", why))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     state_dir: &Path,
     profile_name: &str,
@@ -105,6 +111,7 @@ pub fn run(
     call_limit: Duration,
     headless: bool,
     private_display: bool,
+    local: bool,
 ) -> ExitCode {
     #[cfg(target_os = "linux")]
     if let Err(failure) = confine(state_dir, profile_name, scratch) {
@@ -125,6 +132,15 @@ pub fn run(
         None
     };
     let display = private.as_ref().map(|d| d.name.as_str());
+    // The engine reaches the network only through this proxy.
+    let proxy = match egress::Proxy::start(local) {
+        Ok(proxy) => proxy.url(),
+        Err(err) => {
+            let failure = cft::io_failure(err);
+            answer(&mut io::stdout().lock(), Response::error(&failure), None);
+            return ExitCode::FAILURE;
+        }
+    };
     // The engine runs from its scratch folder, so every path it gets is absolute.
     let absolute = |path: &Path| path.canonicalize().map_err(cft::io_failure);
     let launched = absolute(state_dir).and_then(|state_dir| {
@@ -132,26 +148,38 @@ pub fn run(
         Ok(
             match profile::engine_of(&state_dir, profile_name)?.as_deref() {
                 Some("camoufox") => {
-                    let browser =
-                        Camoufox::launch(&state_dir, profile_name, &scratch, headless, display)?;
+                    let browser = Camoufox::launch(
+                        &state_dir,
+                        profile_name,
+                        &scratch,
+                        headless,
+                        display,
+                        &proxy,
+                    )?;
                     let ready = json!({
                         "engine": CAMOUFOX.engine,
                         "version": CAMOUFOX.version,
                         "driver_contract": CAMOUFOX.driver_contract,
                         "pid": browser.pid(),
                     });
-                    serve(ready, browser, idle, call_limit)
+                    serve(ready, browser, idle, call_limit, local)
                 }
                 _ => {
-                    let browser =
-                        Cft::launch(&state_dir, profile_name, &scratch, headless, display)?;
+                    let browser = Cft::launch(
+                        &state_dir,
+                        profile_name,
+                        &scratch,
+                        headless,
+                        display,
+                        &proxy,
+                    )?;
                     let ready = json!({
                         "engine": CFT.engine,
                         "version": CFT.version,
                         "driver_contract": CFT.driver_contract,
                         "pid": browser.pid(),
                     });
-                    serve(ready, browser, idle, call_limit)
+                    serve(ready, browser, idle, call_limit, local)
                 }
             },
         )
@@ -165,7 +193,13 @@ pub fn run(
 /// Says the browser is up, then answers each session's calls until the host
 /// closes the browser, stops writing, or every session has gone quiet for
 /// `idle`.
-fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration, call_limit: Duration) -> ExitCode {
+fn serve<B: Runtime>(
+    ready: Value,
+    browser: B,
+    idle: Duration,
+    call_limit: Duration,
+    local: bool,
+) -> ExitCode {
     let mut stdout = io::stdout().lock();
     answer(&mut stdout, Response::Ok(ready), None);
     let browser = Rc::new(RefCell::new(browser));
@@ -280,6 +314,10 @@ fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration, call_limit: Durat
                 Some(_) if held && !matches!(call, Call::Tabs | Call::Forget) => Err(paused()),
                 Some(live) => {
                     live.core.limit(deadline);
+                    // An address that is not on the web is never sent.
+                    let refused = call
+                        .loads()
+                        .and_then(|url| egress::requested(url, local).err());
                     let reserved: Vec<&str> = line["reserved"]
                         .as_array()
                         .into_iter()
@@ -298,9 +336,10 @@ fn serve<B: Runtime>(ready: Value, browser: B, idle: Duration, call_limit: Durat
                             None => Some(None),
                         }
                     };
-                    let reply = match busy {
-                        Some(site) => Err(site_busy(site.as_deref())),
-                        None => live.core.call(call, input).map_err(|mut failure| {
+                    let reply = match (refused, busy) {
+                        (Some(failure), _) => Err(failure),
+                        (None, Some(site)) => Err(site_busy(site.as_deref())),
+                        (None, None) => live.core.call(call, input).map_err(|mut failure| {
                             if failure.code != "browser_gone" {
                                 live.core.reading_for(&mut failure);
                             }

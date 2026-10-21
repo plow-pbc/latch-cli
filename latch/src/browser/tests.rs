@@ -47,6 +47,7 @@ macro_rules! conformance {
         }
     };
 }
+mod egress;
 mod fills;
 mod gated;
 mod goals;
@@ -455,6 +456,8 @@ fn test_state_taking(
     for name in profiles {
         profile::open(&state, name, engine).unwrap();
     }
+    // The test sites are on 127.0.0.1 and localhost.
+    fs::write(state.join("host.json"), r#"{"allow_local_browsing": true}"#).unwrap();
     (dir, state, area)
 }
 
@@ -1123,7 +1126,9 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
         .arg(&state)
         .args(["browser-worker", "--profile", "hang-stuck", "--scratch"])
         .arg(scratch.path())
-        .args(["--call-limit", "2"]);
+        .args(["--call-limit", "2"])
+        // As the host's runtime passes it for a test state: the page is local.
+        .arg("--allow-local-browsing");
     if HEADLESS {
         command.arg("--headless");
     }
@@ -1186,8 +1191,9 @@ async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
     // The engine gets absolute paths, as the worker gives it.
     let state = state.canonicalize().unwrap();
     let scratch_path = scratch.path().canonicalize().unwrap();
+    let proxy = super::egress::Proxy::start(true).unwrap().url();
     let mut browser =
-        Camoufox::launch(&state, "helper-late", &scratch_path, HEADLESS, None).unwrap();
+        Camoufox::launch(&state, "helper-late", &scratch_path, HEADLESS, None, &proxy).unwrap();
     browser.begin("k1").unwrap();
     browser.navigate(&local_page()).unwrap();
     let pid = browser.pid() as libc::pid_t;

@@ -82,6 +82,7 @@ fn main() -> ExitCode {
                     Duration::from_secs(args.call_limit),
                     args.headless,
                     args.private_display,
+                    args.allow_local_browsing,
                 ),
                 Err(failure) => {
                     eprintln!("{}", failure.to_json());
