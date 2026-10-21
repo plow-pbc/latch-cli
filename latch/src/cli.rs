@@ -9,12 +9,21 @@ use clap::{Args, Parser, Subcommand};
 
 /// Defaults baked in when latch is built with these variables set, for a
 /// local build that keeps its own state and talks to one Plow. Flags still
-/// override them. Unset, latch uses `~/.latch` and has no default Plow.
+/// override them. Unset, latch uses `~/.latch`, and only a release build has
+/// a default Plow (`default_api_url`).
 pub const BUILD_STATE_DIR: Option<&str> = option_env!("LATCH_BUILD_STATE_DIR");
 pub const BUILD_API_URL: Option<&str> = option_env!("LATCH_BUILD_API_URL");
 /// How this build is distributed (e.g. `standalone`), set by a release
 /// build. Unset, it is a local build: made by hand from a checkout.
-const BUILD_CHANNEL: Option<&str> = option_env!("LATCH_BUILD_CHANNEL");
+pub const BUILD_CHANNEL: Option<&str> = option_env!("LATCH_BUILD_CHANNEL");
+
+/// The Plow a build from `channel` logs in to when nothing else names one:
+/// real Plow for a release (`standalone`), none for a local build, which
+/// points at a dev stack.
+pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
+    let first = channel.and_then(|channel| channel.split_whitespace().next());
+    (first == Some("standalone")).then_some("https://api.plow.co")
+}
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
 /// 03:45 UTC, local build, protocol plow/latch/1)`: where this build came from
@@ -258,6 +267,10 @@ pub struct WorkerArgs {
     /// An exec worker's own temp folder (its `TMPDIR`), which it may read and write
     #[arg(long)]
     pub tmpdir: Option<PathBuf>,
+    /// An exec worker's own time limit in seconds: past it, the worker
+    /// kills its program, whether or not the host is still there to
+    #[arg(long)]
+    pub kill_after: Option<u64>,
     /// Test only: make the sandbox fail to apply
     #[arg(long)]
     pub break_sandbox_for_test: bool,

@@ -25,6 +25,8 @@ use iroh::endpoint::{Connection, Incoming, RecvStream, SendStream, VarInt, prese
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
 use tokio::signal::unix::{Signal, SignalKind, signal};
+use tokio::sync::watch;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::Instrument;
 use tracing::field::{Empty, display};
 
@@ -64,6 +66,19 @@ struct Host {
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
     binary: Binary,
+    /// How far the host is into stopping.
+    stopping: watch::Sender<Stopping>,
+}
+
+/// How far a host is into stopping.
+#[derive(Clone, Copy, PartialEq)]
+enum Stopping {
+    No,
+    /// Each connection finishes the operation it is on and takes no other.
+    Draining,
+    /// Running execs are killed, with all they started, and audited as
+    /// `interrupted`.
+    CuttingOff,
 }
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
@@ -227,6 +242,7 @@ async fn run_locked(
         Failure::failed("sandbox_unavailable", message)
     })?;
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
+    exec::sweep_tmpdirs();
     let config = state.require_login()?;
     let dashboard = if show_dashboard {
         let path = state.path.join("serve.log");
@@ -341,42 +357,88 @@ async fn run_host(
         deny_exec,
         gatekeeper,
         binary,
+        stopping: watch::Sender::new(Stopping::No),
     });
     lifecycle::record(&state.path, Phase::Serving, None)?;
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
     let mut stop = Box::pin(stop_requested(terminate));
-    loop {
+    let mut connections = JoinSet::new();
+    let moved = loop {
         tokio::select! {
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => {
                     let connection = tracing::info_span!("connection", caller = Empty);
-                    tokio::spawn(serve_connection(host.clone(), incoming).instrument(connection));
+                    connections.spawn(serve_connection(host.clone(), incoming).instrument(connection));
                 }
-                None => break,
+                None => break None,
             },
+            // Connections that ended are let go of as they end.
+            Some(_) = connections.join_next() => {}
             () = &mut stop => {
                 log("stopping: signal received");
-                break;
+                break None;
             }
             // The heartbeat only ends when Plow gave our name to another
-            // key. That key is not ours any more, so there is nothing to
-            // take offline.
+            // key.
             ended = &mut heartbeat => {
-                endpoint.close().await;
-                log("stopped");
-                return Err(ended.unwrap_or_else(|err| {
+                break Some(ended.unwrap_or_else(|err| {
                     Failure::failed("heartbeat", format!("the heartbeat stopped: {err}"))
                 }));
             }
         }
+    };
+    shut_down(&host, moved.is_none().then_some(heartbeat), connections).await;
+    // A name that moved is not ours any more: there is nothing of ours to
+    // take offline.
+    if moved.is_none() {
+        go_offline(&host.plow, &endpoint.id().to_string()).await;
     }
-    // Stop heartbeating first, so no late heartbeat lists us online again.
-    heartbeat.abort();
-    go_offline(&host.plow, &endpoint.id().to_string()).await;
     endpoint.close().await;
     log("stopped");
-    Ok(())
+    moved.map_or(Ok(()), Err)
+}
+
+/// Longest a stopping host waits for the operations it is running, and
+/// then for the execs it cut off to be killed and audited.
+const DRAIN_WITHIN: Duration = Duration::from_secs(10);
+const CUT_OFF_WITHIN: Duration = Duration::from_secs(10);
+
+/// What a host does once it stops serving, however it stopped: no new
+/// connections (the accept loop is over), no heartbeat that could list it
+/// online again, and every connection's operation finished. Once
+/// `DRAIN_WITHIN` has passed, running execs are killed with everything they
+/// started and audited as `interrupted`; anything still left after
+/// `CUT_OFF_WITHIN` is dropped.
+async fn shut_down(
+    host: &Host,
+    heartbeat: Option<JoinHandle<Failure>>,
+    mut connections: JoinSet<()>,
+) {
+    if let Some(heartbeat) = heartbeat {
+        heartbeat.abort();
+        let _ = heartbeat.await;
+    }
+    host.stopping.send_replace(Stopping::Draining);
+    if within(DRAIN_WITHIN, &mut connections).await {
+        return;
+    }
+    log(&format!(
+        "stopping: cutting off {} connection(s) still running after {} seconds",
+        connections.len(),
+        DRAIN_WITHIN.as_secs()
+    ));
+    host.stopping.send_replace(Stopping::CuttingOff);
+    if !within(CUT_OFF_WITHIN, &mut connections).await {
+        log("stopping: a cut-off operation did not end; dropping it");
+        connections.shutdown().await;
+    }
+}
+
+/// Whether every connection task ended within `limit`.
+async fn within(limit: Duration, connections: &mut JoinSet<()>) -> bool {
+    let ended = async { while connections.join_next().await.is_some() {} };
+    tokio::time::timeout(limit, ended).await.is_ok()
 }
 
 /// Longest a stopping host waits for Plow: stopping never hangs on Plow.
@@ -650,16 +712,29 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
     let caller = connection.remote_id().to_string();
     tracing::Span::current().record("caller", display(&caller));
     if connection.alpn() == link::ALPN {
-        return serve_phone(&host, &caller, connection).await;
+        serve_phone(&host, &caller, &connection).await;
+    } else {
+        serve_caller(&host, &caller, &connection).await;
     }
+    // A stopping host gives the client a moment to close: dropping the
+    // connection at once could cut off the answer it was just sent.
+    if *host.stopping.borrow() != Stopping::No {
+        let _ = tokio::time::timeout(LINGER, connection.closed()).await;
+    }
+}
 
+/// How long a stopping host waits for a client to close its connection.
+const LINGER: Duration = Duration::from_secs(1);
+
+/// A latch client's connection: checked once on connect, then one
+/// operation per stream.
+async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     // First check: on connect. A refused caller's connection is closed with
     // the "denied" code, which its client reports as exit 4.
-    let refusal = match host.check(&caller).await {
+    let refusal = match host.check(caller).await {
         Ok(identity) => {
             let who = format!("{} ({})", identity.name, identity.kind);
-            let record =
-                audit::record(&caller, identity.agent_uid, "connect", "allow", "connected");
+            let record = audit::record(caller, identity.agent_uid, "connect", "allow", "connected");
             match host.append(record).await {
                 Ok(_) => {
                     log(&format!("connect: {who} {caller}: allowed"));
@@ -670,9 +745,9 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
         }
         Err(denial) => {
             // Already refusing, so a failed audit write changes nothing here.
-            let record = audit::record(&caller, None, "connect", "deny", &denial.code);
+            let record = audit::record(caller, None, "connect", "deny", &denial.code);
             let _ = host.append(record).await;
-            host.show_refusal(&caller, "connect", &denial.code);
+            host.show_refusal(caller, "connect", &denial.code);
             Some(denial.message)
         }
     };
@@ -682,20 +757,40 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
         return;
     }
 
-    // One stream per operation, until the client closes the connection.
-    while let Ok((send, recv)) = connection.accept_bi().await {
+    // One stream per operation, until the client closes the connection or
+    // the host stops.
+    while let Some((send, recv)) = next_stream(host, connection).await {
         let operation = tracing::info_span!("operation", op = Empty);
-        serve_operation(&host, &caller, send, recv)
+        serve_operation(host, caller, connection, send, recv)
             .instrument(operation)
             .await;
         log(&format!(
             "paths to {caller}: {}",
-            describe_paths(&connection)
+            describe_paths(connection)
         ));
     }
 }
 
-async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut recv: RecvStream) {
+/// The connection's next operation, until the client closes it or the host
+/// is stopping.
+async fn next_stream(host: &Host, connection: &Connection) -> Option<(SendStream, RecvStream)> {
+    let mut stopping = host.stopping.subscribe();
+    // Stopping wins over a stream that is also ready: no new operation
+    // starts once the host is stopping.
+    tokio::select! {
+        biased;
+        _ = stopping.wait_for(|stopping| *stopping != Stopping::No) => None,
+        stream = connection.accept_bi() => stream.ok(),
+    }
+}
+
+async fn serve_operation(
+    host: &Host,
+    caller: &str,
+    connection: &Connection,
+    mut send: SendStream,
+    mut recv: RecvStream,
+) {
     let Ok(json) = wire::read_frame(&mut recv).await else {
         return;
     };
@@ -787,7 +882,9 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
-                    "exec" => exec::run(&host.workers, &request.args).await,
+                    "exec" => {
+                        exec::run(&host.workers, &request.args, cut_off(host, connection)).await
+                    }
                     "vault" => {
                         crate::vault::host::run(
                             &host.vault,
@@ -838,9 +935,26 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                 "{op}: {caller}: {decision}: {} {}",
                 done.outcome, done.audit_args
             ));
-            if let Some(dashboard) = &host.dashboard {
-                let (target, result) =
-                    dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed());
+            let dashboard = host.dashboard.as_ref().map(|dashboard| {
+                (
+                    dashboard,
+                    dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed()),
+                )
+            });
+            let mut record = audit::record(
+                caller,
+                identity.agent_uid.clone(),
+                op,
+                decision,
+                &done.outcome,
+            );
+            record.args = done.audit_args;
+            record.gate = judgment.map(|judgment| judgment.gate);
+            let response = match host.append(record).await {
+                Ok(audit_id) => with_audit_id(done.response, audit_id),
+                Err(message) => failed("audit_failed", message),
+            };
+            if let Some((dashboard, (target, result))) = dashboard {
                 dashboard.call(Row {
                     at: jiff::Timestamp::now(),
                     caller: host.shown_name(&identity).await,
@@ -850,28 +964,30 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                     refused: decision == "deny",
                 });
             }
-            let mut record = audit::record(caller, identity.agent_uid, op, decision, &done.outcome);
-            record.args = done.audit_args;
-            record.gate = judgment.map(|judgment| judgment.gate);
-            match host.append(record).await {
-                Ok(audit_id) => with_audit_id(done.response, audit_id),
-                Err(message) => failed("audit_failed", message),
-            }
+            response
         }
     };
     answer(&mut send, &response).await;
+}
+
+/// Finishes when an exec is cut off by the host or loses its caller.
+async fn cut_off(host: &Host, connection: &Connection) -> &'static str {
+    tokio::select! {
+        () = host.cut_off() => "interrupted",
+        _ = connection.closed() => "caller_gone",
+    }
 }
 
 /// A phone page's connection (see `vault/link.rs`). Its key is a
 /// throwaway one Plow has never heard of: the link's code in each request
 /// is what lets it in, so Plow is not asked. It can fetch its link's form
 /// and save its link's item, nothing else.
-async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
+async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
     log(&format!(
         "phone {caller}: connected over {}",
-        describe_paths(&connection)
+        describe_paths(connection)
     ));
-    while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+    while let Some((mut send, mut recv)) = next_stream(host, connection).await {
         let Ok(json) = wire::read_frame(&mut recv).await else {
             return;
         };
@@ -986,6 +1102,14 @@ struct Denial {
 }
 
 impl Host {
+    /// Finishes when the host cuts off the operations still running.
+    async fn cut_off(&self) {
+        let mut stopping = self.stopping.subscribe();
+        let _ = stopping
+            .wait_for(|stopping| *stopping == Stopping::CuttingOff)
+            .await;
+    }
+
     /// Where a phone link points: our key, name and current relay.
     fn here(&self) -> link::Here {
         link::Here {
