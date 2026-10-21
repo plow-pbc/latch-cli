@@ -34,13 +34,14 @@ accounts on a machine its owner trusts, over Plow's directory.
 - Credentials and private data are never readable, even inside a shared or
   `--allow-read` folder: `~/.ssh`, `~/.gnupg`, keychains, browser profiles,
   Mail, Messages, Calendars, Contacts, macOS's privacy settings (TCC),
-  latch's state, `~/.aws`, `~/.config/gcloud`, `~/.azure`, `~/.kube`,
-  `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials` and
-  `~/.config/gh`. An `--allow-read` inside one of them is refused.
+  latch's state (any state folder in the shares too), `~/.aws`,
+  `~/.config/gcloud`, `~/.azure`, `~/.kube`, `~/.docker/config.json`,
+  `~/.netrc`, `~/.npmrc`, `~/.git-credentials` and `~/.config/gh`. An
+  `--allow-read` inside one of them is refused.
 - The home folder, its `Library` and the folders above them (`/Users`, `/`)
   can be neither shared nor named with `--allow-read`: name the projects in
-  it instead.
-  `latch serve --help` has the whole list of what callers can reach.
+  it instead. `latch serve --help` has the whole list of what callers can
+  reach.
 - `latch serve ~/work --deny-exec` refuses `exec` to every agent;
   `--deny-exec=AGENT_UID` (repeatable) to one agent, by its Plow uid. Your
   own machines are unaffected.

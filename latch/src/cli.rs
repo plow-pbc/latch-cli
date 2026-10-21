@@ -380,7 +380,8 @@ What callers can reach (`exec`'s programs and `file get`/`file put` alike):
   rest of your home folder, not other projects.
   Never, even inside a shared or --allow-read folder: ~/.ssh, ~/.gnupg,
   keychains, browser profiles, Mail, Messages, Calendars, Contacts, macOS's
-  privacy settings (TCC), latch's state (this host's and ~/.latch), ~/.aws,
+  privacy settings (TCC), latch's state (this host's, ~/.latch, and any
+  other state folder found in the shares when the host starts), ~/.aws,
   ~/.config/gcloud, ~/.azure, ~/.kube, ~/.docker/config.json, ~/.netrc,
   ~/.npmrc, ~/.git-credentials and ~/.config/gh. An --allow-read inside one
   of these is refused.

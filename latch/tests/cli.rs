@@ -1426,6 +1426,79 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
 }
 
 #[test]
+fn another_latch_state_folder_inside_a_share_stays_hidden() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    fs::write(share.join("notes.txt"), "notes").unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    // Another peer's state, logged in for real, nested in the share.
+    let owner_token = dir.path().join("owner.token");
+    let nested = share.join("projects/peer");
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+        "--name",
+        "peer",
+    ];
+    let login = latch(&nested, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    // And one from before latch marked its folders: a key and a login.
+    let old = share.join("old-state");
+    fs::create_dir(&old).unwrap();
+    fs::copy(nested.join("key"), old.join("key")).unwrap();
+    fs::copy(nested.join("plow-token"), old.join("plow-token")).unwrap();
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+
+    let (serve, lines) = serving_folders(&host, &[&share], &relay);
+    let hidden = lines
+        .iter()
+        .find_map(|line| line.split_once("hidden latch state folders: "))
+        .map(|(_, rest)| rest.to_string())
+        .unwrap_or_default();
+    for folder in [&nested, &old] {
+        let folder = folder.canonicalize().unwrap().display().to_string();
+        assert!(hidden.split(", ").any(|name| name == folder), "{lines:?}");
+    }
+    let script = "cat notes.txt; cat projects/peer/key projects/peer/plow-token; \
+                  ls projects/peer; cat old-state/key old-state/plow-token; true";
+    let exec = latch(
+        &agent,
+        &["exec", "--host", "host", "--", "/bin/sh", "-c", script],
+        &agent_env,
+    );
+    assert_eq!(exec.status.code(), Some(0), "{exec:?}");
+    let result: Value = serde_json::from_slice(&exec.stdout).unwrap();
+    assert_eq!(result["stdout"], "notes", "{result}");
+    let copy = dir.path().join("copied");
+    let get = latch(
+        &agent,
+        &[
+            "file",
+            "get",
+            "--host",
+            "host",
+            "projects/peer/key",
+            copy.to_str().unwrap(),
+        ],
+        &agent_env,
+    );
+    drop(serve);
+    assert_ne!(get.status.code(), Some(0), "{get:?}");
+    assert!(!copy.exists());
+}
+
+#[test]
 fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
