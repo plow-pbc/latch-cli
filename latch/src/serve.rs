@@ -642,12 +642,19 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             let upgraded = host.binary.replaced();
             let gated = gate::gated(op, &request.args, &host.workers.areas[0])
                 .filter(|_| !denied_exec && !upgraded);
+            let unjudgeable = match (&gate, &gated) {
+                (Ok(Some(_)), Some(gated)) => gated.unjudgeable.as_ref(),
+                _ => None,
+            };
             let judgment = match (&gate, &gated) {
-                (Ok(Some(gate)), Some(gated)) => Some(gate.judge(&gated.action).await),
+                (Ok(Some(gate)), Some(gated)) if unjudgeable.is_none() => {
+                    Some(gate.judge(&gated.action).await)
+                }
                 _ => None,
             };
             let refusal = match (&gate, &judgment) {
                 (Err(failure), _) => Some(failure),
+                _ if unjudgeable.is_some() => unjudgeable,
                 (_, Some(judgment)) => judgment.verdict.as_ref().err(),
                 _ => None,
             };
@@ -676,7 +683,9 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                                       (latch serve --deny-exec); asking again will not help"
                                 .to_string(),
                         },
-                        audit_args: request.args.clone(),
+                        // As a refused judgment keeps it: no stdin.
+                        audit_args: gate::gated(op, &request.args, &host.workers.areas[0])
+                            .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
                     "exec" => exec::run(&host.workers, &request.args).await,

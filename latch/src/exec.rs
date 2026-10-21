@@ -71,10 +71,8 @@ pub async fn run(workers: &WorkerSetup, args: &Value) -> Done {
         },
     };
     let mut audit = json!({ "argv": capped_argv(&argv), "workdir": shown_workdir });
-    // Its size and sha256, never its content.
     if let Some(bytes) = &input {
-        let sha256 = to_hex(&Sha256::digest(bytes));
-        audit["stdin"] = json!({ "size": bytes.len(), "sha256": sha256 });
+        audit["stdin"] = stdin_audit(bytes);
     }
 
     let tmpdir = match make_tmpdir() {
@@ -94,6 +92,12 @@ pub async fn run(workers: &WorkerSetup, args: &Value) -> Done {
         ));
     }
     done
+}
+
+/// What the audit keeps of an exec's stdin: its size and sha256, never
+/// its content.
+pub fn stdin_audit(bytes: &[u8]) -> Value {
+    json!({ "size": bytes.len(), "sha256": to_hex(&Sha256::digest(bytes)) })
 }
 
 /// A new, empty folder `latch-exec-<random>` in the OS temp folder, for

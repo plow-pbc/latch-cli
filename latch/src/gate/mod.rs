@@ -40,6 +40,8 @@ use crate::browser::model::{
 use crate::failure::{Exit, Failure};
 use crate::plow::Plow;
 use crate::state::to_hex;
+#[cfg(test)]
+pub use action::JUDGED_STDIN;
 pub use action::gated;
 use chat::Conversation;
 use rules::{Rules, RulesSource};

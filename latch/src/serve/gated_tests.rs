@@ -378,6 +378,78 @@ async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
     assert_eq!(t.judged(), 1);
 }
 
+/// An exec of `/bin/sh` reading its script from `stdin`.
+fn exec_stdin(stdin: &[u8]) -> Value {
+    json!({"argv": ["/bin/sh"], "workdir": null, "timeout": 10, "stdin": stdin})
+}
+
+/// Whether the host's log or audit holds `text` anywhere.
+fn kept(t: &TestHost, text: &str) -> bool {
+    let audit = std::fs::read_to_string(t.state.join("audit.ndjson")).unwrap();
+    audit.contains(text)
+        || crate::log::captured()
+            .iter()
+            .any(|line| line.contains(text))
+}
+
+#[tokio::test]
+async fn an_agents_exec_stdin_is_judged_with_its_argv_and_never_kept() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let script = "touch made # stdin-judged-7f3a";
+    let (answer, _) = t.call(&agent, "exec", exec_stdin(script.as_bytes())).await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert!(t.area.join("made").exists());
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    assert_eq!(asked[0]["proposed_action"]["argv"], json!(["/bin/sh"]));
+    assert_eq!(asked[0]["proposed_action"]["stdin"], script);
+    assert_eq!(t.audit()[0]["args"]["stdin"]["size"], script.len());
+    assert!(!kept(&t, "stdin-judged-7f3a"));
+}
+
+#[tokio::test]
+async fn an_agents_stdin_the_judge_cannot_read_runs_nothing() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let mut too_long = b"touch made\n".to_vec();
+    too_long.resize(crate::gate::JUDGED_STDIN + 1, b'#');
+    for stdin in [too_long, b"touch made\n\xff".to_vec()] {
+        let (answer, _) = t.call(&agent, "exec", exec_stdin(&stdin)).await;
+        let (exit, code, _) = refusal(&answer);
+        assert_eq!((exit, code), (Exit::Usage, "stdin_not_judgeable"));
+        assert!(!t.area.join("made").exists());
+    }
+    assert_eq!(t.judged(), 0);
+    let records = t.audit();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|record| record["decision"] == "deny"));
+    // A device's stdin is never judged, so neither bound applies.
+    let device = t.caller("device").await;
+    let mut long = b"touch made\n".to_vec();
+    long.resize(crate::gate::JUDGED_STDIN + 1, b'#');
+    let (answer, _) = t.call(&device, "exec", exec_stdin(&long)).await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert!(t.area.join("made").exists());
+}
+
+#[tokio::test]
+async fn an_exec_the_host_denies_keeps_no_trace_of_its_stdin() {
+    let every_agent = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);
+    let t = start_denying(a_chat(always_covered), every_agent).await;
+    let agent = t.caller("agent").await;
+    let secret = b"echo denied-stdin-91c2";
+    let (answer, _) = t.call(&agent, "exec", exec_stdin(secret)).await;
+    assert_eq!(refusal(&answer).1, "exec_denied");
+    let record = &t.audit()[0];
+    assert_eq!(record["args"]["argv"], json!(["/bin/sh"]));
+    assert_eq!(record["args"]["stdin"]["size"], secret.len());
+    // The bytes as the request carried them, and as text.
+    let as_numbers = serde_json::to_string(&secret.to_vec()).unwrap();
+    let as_numbers = &as_numbers[1..as_numbers.len() - 1];
+    assert!(!kept(&t, "denied-stdin-91c2"));
+    assert!(!kept(&t, as_numbers));
+}
+
 #[tokio::test]
 async fn devices_are_never_judged() {
     let t = start(a_chat(down)).await;

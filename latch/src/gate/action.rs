@@ -7,6 +7,12 @@ use serde::Serialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
+use crate::failure::Failure;
+
+/// The most stdin an agent's exec may bring: the judge reads all of it,
+/// and the whole judgment must fit Plow's decision route (60 KiB).
+pub const JUDGED_STDIN: usize = 16 * 1024;
+
 /// An operation the gatekeeper judges.
 pub struct Gated {
     /// What the judge is shown.
@@ -19,6 +25,8 @@ pub struct Gated {
     /// reading or searching again is normal, so exec, files and Google
     /// reads are not.
     pub once: bool,
+    /// Why the judge cannot be asked at all: an exec's stdin it cannot read.
+    pub unjudgeable: Option<Failure>,
 }
 
 /// The proposed action, its keys in this order.
@@ -27,6 +35,8 @@ struct Action<'a> {
     operation: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     argv: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stdin: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     working_folder: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -42,11 +52,22 @@ struct Action<'a> {
 }
 
 /// `op` with `args` as the judge sees it, if the gatekeeper judges `op`.
-/// An exec without a working folder runs in `first_area`.
+/// An exec without a working folder runs in `first_area`. An exec's stdin
+/// may be the program itself (`sh`, `python -`), so the judge reads it
+/// too; the audit keeps only its size and sha256.
 pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
+    let mut unjudgeable = None;
+    let stdin = match op {
+        "exec" => judged_stdin(&args["stdin"]).unwrap_or_else(|failure| {
+            unjudgeable = Some(failure);
+            None
+        }),
+        _ => None,
+    };
     let none = Action {
         operation: op,
         argv: None,
+        stdin: None,
         working_folder: None,
         path: None,
         size: None,
@@ -61,13 +82,17 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
             let folder = args["workdir"].as_str().unwrap_or(&first_area);
             let action = Action {
                 argv: Some(&args["argv"]),
+                stdin: stdin.as_deref(),
                 working_folder: Some(folder),
                 ..none
             };
             let argv: Vec<String> =
                 serde_json::from_value(args["argv"].clone()).unwrap_or_default();
-            let audit =
+            let mut audit =
                 json!({"argv": crate::exec::capped_argv(&argv), "workdir": args["workdir"]});
+            if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(args["stdin"].clone()) {
+                audit["stdin"] = crate::exec::stdin_audit(&bytes);
+            }
             (action, audit)
         }
         "file_get" => {
@@ -107,5 +132,29 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
         action: serde_json::value::to_raw_value(&action).expect("an action serializes"),
         audit,
         once,
+        unjudgeable,
     })
+}
+
+/// An exec's stdin as the judge reads it: text, at most `JUDGED_STDIN`
+/// bytes. None when it brings none.
+fn judged_stdin(stdin: &Value) -> Result<Option<String>, Failure> {
+    if stdin.is_null() {
+        return Ok(None);
+    }
+    let refused = |why: &str| {
+        let message = format!(
+            "this agent's exec stdin is {why}, and the gatekeeper must read all of it: \
+             send at most {} KiB of UTF-8 text, or put the input in a file and name it",
+            JUDGED_STDIN / 1024
+        );
+        Failure::usage("stdin_not_judgeable", message)
+    };
+    let bytes: Vec<u8> = serde_json::from_value(stdin.clone()).map_err(|_| refused("not bytes"))?;
+    if bytes.len() > JUDGED_STDIN {
+        return Err(refused(&format!("{} bytes", bytes.len())));
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| refused("not UTF-8 text"))
 }

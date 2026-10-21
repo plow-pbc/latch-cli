@@ -13,6 +13,11 @@ static FILE: OnceLock<Mutex<File>> = OnceLock::new();
 
 pub fn log(message: &str) {
     let line = format!("{} {message}", jiff::Timestamp::now());
+    #[cfg(test)]
+    CAPTURED
+        .lock()
+        .expect("captured log lock")
+        .push(line.clone());
     match FILE.get() {
         Some(file) => {
             let _ = writeln!(file.lock().expect("log file lock"), "{line}");
@@ -29,4 +34,13 @@ pub fn to_file(path: &Path) -> std::io::Result<()> {
         .open(path)?;
     let _ = FILE.set(Mutex::new(file));
     Ok(())
+}
+
+/// Every line logged in this test process, for tests to look through.
+#[cfg(test)]
+static CAPTURED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub fn captured() -> Vec<String> {
+    CAPTURED.lock().expect("captured log lock").clone()
 }
