@@ -342,7 +342,13 @@ async function launch(params) {
     executablePath: params.executable,
     headless: params.headless,
     env: { ...identity.env, ...params.env },
-    firefoxUserPrefs: { ...identity.prefs, ...BACKGROUND_TABS, ...THROUGH_PROXY },
+    firefoxUserPrefs: {
+      ...identity.prefs,
+      ...BACKGROUND_TABS,
+      ...THROUGH_PROXY,
+      // Firefox can open a native macOS select menu even with -headless.
+      "widget.macos.allow-native-select": !params.headless,
+    },
     proxy: { server: params.proxy },
     acceptDownloads: true,
     downloadsPath: params.downloads,
