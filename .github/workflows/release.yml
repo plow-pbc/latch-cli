@@ -2,6 +2,9 @@ name: release
 on:
   push:
     tags: ['v*']
+  pull_request:
+    branches: [main, latch-cli]
+    paths: ['latch/**', 'scripts/**', 'install-release.sh', '.github/workflows/release.yml']
   workflow_dispatch:
     inputs:
       version:
@@ -35,6 +38,11 @@ jobs:
       - name: Validate version
         shell: bash
         run: |
+          package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
+          if [[ '${{ github.event_name }}' == pull_request ]]; then
+            VERSION="v$package-pr.${{ github.event.number }}"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
           package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
           [[ "${VERSION#v}" == "$package" || "${VERSION#v}" == "$package"-* ]]
@@ -76,14 +84,9 @@ jobs:
           name: latch-${{ matrix.target }}
           path: dist/*.tar.gz
           if-no-files-found: error
-  release:
+  assemble:
     needs: build
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/test-install-release.py
@@ -100,8 +103,48 @@ jobs:
         with:
           name: release-downloads
           path: dist/*
+  verify-artifacts:
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-downloads
+          path: downloads
+      - name: Run downloaded archive
+        shell: bash
+        run: |
+          cd downloads
+          if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
+          archive=$(find . -name 'latch-*-${{ matrix.target }}.tar.gz')
+          tar -xzf "$archive"
+          binary=$(find . -type f -name latch)
+          uname -sm
+          "$binary" --version
+  publish:
+    needs: verify-artifacts
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.draft)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-downloads
+          path: dist
       - name: Create release
-        if: github.event_name == 'push' || inputs.draft
         run: |
           args=()
           if [[ '${{ github.event_name }}' == workflow_dispatch ]]; then args+=(--draft); fi
