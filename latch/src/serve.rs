@@ -838,6 +838,7 @@ async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
         "connect: {caller}: owner_on_host over Unix socket"
     ));
     let (recv, send) = socket.into_split();
+    let operation = tracing::info_span!("operation", op = Empty);
     serve_operation(
         &host,
         &caller,
@@ -845,6 +846,7 @@ async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
         crate::transport::SendStream::Local(Some(send)),
         crate::transport::RecvStream::Local(recv),
     )
+    .instrument(operation)
     .await;
 }
 

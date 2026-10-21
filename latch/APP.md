@@ -108,7 +108,7 @@ log was replaced by a sound one, and otherwise stops with `audit_broken`.
 
 ## Calling this machine's receiver
 
-Run ordinary `latch exec`, `latch file` and `latch google` commands on the
+Run ordinary `latch exec`, `latch file`, `latch browser` and `latch google` commands on the
 host's state folder. A saved host resolves locally, even while Plow is
 unreachable; explicitly naming this machine with `--host` also resolves
 locally. The CLI connects to `<state-dir>/serve.sock`, inside the private

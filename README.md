@@ -42,7 +42,7 @@ on a machine its owner trusts, over Plow's directory.
 After `latch serve` has registered this machine, commands with no `--host`
 use its private local receiver. `--host NAME` or `LATCH_HOST` still selects
 another host; naming this machine uses the same local receiver. Exec,
-files and Google calls pass through the same gatekeeper and audit as remote
+files, browser and Google calls pass through the same gatekeeper and audit as remote
 calls, recorded as `owner_on_host`. If the receiver is stopped, start
 `latch serve` on the same state folder (`serve_required`, exit 3).
 

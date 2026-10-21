@@ -607,6 +607,13 @@ fn calling_a_stopped_local_host_names_the_fix_without_plow() {
     for args in [
         vec!["exec", "--host", "host", "--", "true"],
         vec!["google", "--host", "host", "--", "accounts"],
+        vec![
+            "browser",
+            "--host",
+            "host",
+            "open",
+            "https://example.invalid/",
+        ],
     ] {
         let output = latch(&host, &args, &[]);
         assert_eq!(output.status.code(), Some(3), "{output:?}");
@@ -1096,6 +1103,9 @@ impl LivePlow {
         state
             .seen
             .push((request.line().to_string(), bearer.clone()));
+        if request.line().starts_with("GET /socket-page ") {
+            return (200, json!({"fixture": "Local socket browser page"}));
+        }
         let token = bearer.unwrap_or_default();
         let kind = if token == state.owner {
             "device"
@@ -2449,6 +2459,13 @@ fn local_socket_full_plow_outage_refuses_gated_work_but_config_still_works() {
     for args in [
         vec!["exec", "--", "touch", "must-not-exist"],
         vec!["google", "--host", "host", "--", "accounts"],
+        vec![
+            "browser",
+            "--host",
+            "host",
+            "open",
+            "https://example.invalid/",
+        ],
     ] {
         let output = latch(&host, &args, &[]);
         assert_eq!(output.status.code(), Some(3), "{output:?}");
@@ -2497,21 +2514,109 @@ fn local_socket_model_only_outage_refuses_with_plow_still_available() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &share, &relay);
     plow.state.lock().unwrap().model_down = true;
-    let output = latch(
-        &host,
-        &["exec", "--host", "host", "--", "touch", "must-not-exist"],
-        &[],
-    );
-    assert_eq!(output.status.code(), Some(3), "{output:?}");
-    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+    for args in [
+        vec!["exec", "--host", "host", "--", "touch", "must-not-exist"],
+        vec![
+            "browser",
+            "--host",
+            "host",
+            "open",
+            "https://example.invalid/",
+        ],
+        vec!["google", "--host", "host", "--", "accounts"],
+    ] {
+        let output = latch(&host, &args, &[]);
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+        println!("Plow up, model down, local {}: {error}", args[0]);
+    }
     assert!(!share.join("must-not-exist").exists());
-    assert_eq!(plow.state.lock().unwrap().decisions.len(), 1);
+    assert_eq!(plow.state.lock().unwrap().decisions.len(), 3);
     assert!(
         local_operation(&host, "rules", json!({"command":"show"}))
             .get("ok")
             .is_some()
     );
-    assert_eq!(plow.state.lock().unwrap().decisions.len(), 1);
-    println!("Plow up, model down, local exec: {error}");
+    for args in [
+        vec!["vault", "list"],
+        vec!["shares", "set", share.to_str().unwrap()],
+    ] {
+        let output = latch(&host, &args, &[]);
+        assert!(output.status.success(), "{output:?}");
+    }
+    assert_eq!(
+        plow.state.lock().unwrap().decisions.len(),
+        3,
+        "owner config was judged"
+    );
+}
+
+#[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
+#[test]
+fn local_socket_browser_open_observe_close_uses_one_host_and_owner_judgments() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let installed = std::env::var_os("LATCH_CFT_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
+    let plugins = installed.canonicalize().unwrap().join("plugins");
+    std::os::unix::fs::symlink(plugins, host.join("plugins")).unwrap();
+    fs::write(host.join("host.json"), r#"{"allow_local_browsing":true}"#).unwrap();
+    let mut command = serve_command(&host, &[&share], &relay);
+    command.arg("--headless-browsers");
+    let (serve, log, _) = serving_with(command);
+    let logging = thread::spawn(move || log.lines().map(Result::unwrap).collect::<Vec<_>>());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        assert!(output.status.success(), "{output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        println!("socket browser {args:?}: {value}");
+        value
+    };
+    let url = format!("{}/socket-page", plow.url);
+    let opened = run(&["browser", "open", &url]);
+    let session = opened["session"].as_str().unwrap();
+    let observed = run(&["browser", "--host", "host", "--session", session, "observe"]);
+    assert!(
+        observed.to_string().contains("Local socket browser page"),
+        "{observed}"
+    );
+    run(&["browser", "--session", session, "close"]);
+    drop(serve);
+    let lines = logging.join().unwrap();
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains("owner_on_host over Unix socket"))
+            .count(),
+        3,
+        "{lines:?}"
+    );
+    for line in lines
+        .iter()
+        .filter(|line| line.contains("owner_on_host over Unix socket"))
+    {
+        println!("{line}");
+    }
+    let records: Vec<Value> = fs::read_to_string(host.join("audit.ndjson"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|r: &Value| r["op"] == "browser")
+        .collect();
+    assert_eq!(records.len(), 3);
+    for record in records {
+        let gate = &record["args"]["gate"];
+        assert_eq!(gate["caller"], "owner_on_host", "{record}");
+        assert_eq!(gate["verdict"], "allow", "{record}");
+        println!(
+            "browser audit: command={} caller={} verdict={}",
+            record["args"]["command"], gate["caller"], gate["verdict"]
+        );
+    }
 }
