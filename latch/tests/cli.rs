@@ -1286,12 +1286,31 @@ fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
     serving_folders(host, &[share], relay).0
 }
 
-/// `serving`, sharing `shares` (none: the saved ones). Also returns the
-/// log lines up to its registration.
+/// `serving`, sharing `shares` (none: the saved ones), once it says it
+/// serves (it registers with Plow a moment before). Also returns the log
+/// lines up to its registration.
 fn serving_folders(host: &Path, shares: &[&Path], relay: &str) -> (Serving, Vec<String>) {
     let (serve, mut log, lines) = serving_with(serve_command(host, shares, relay));
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    until_serving(host, &serve);
     (serve, lines)
+}
+
+/// Waits until `serve`, on `host`'s state, says in serve.json that it serves.
+fn until_serving(host: &Path, serve: &Serving) {
+    let says_serving = || {
+        let written = fs::read(host.join("serve.json")).unwrap_or_default();
+        let written: Value = serde_json::from_slice(&written).unwrap_or_default();
+        written["state"] == "serving" && written["pid"] == serve.0.id()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !says_serving() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "serve never said it serves"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
@@ -1485,6 +1504,7 @@ fn latch_trace_shows_iroh_on_stderr_inside_each_host_operation() {
     let mut traced = serve_command(&host, &[&share], &relay);
     traced.env("LATCH_TRACE", filter);
     let (serve, mut log, _) = serving_with(traced);
+    until_serving(&host, &serve);
     let exec = latch_command(
         &agent,
         &["exec", "--host", "host", "--", "echo", "hi"],
