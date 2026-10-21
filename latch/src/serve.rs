@@ -35,6 +35,7 @@ use crate::files;
 use crate::gate::rules::RuleFiles;
 use crate::gate::{self, Gate, Gatekeeper};
 use crate::heartbeat;
+use crate::lifecycle::{self, Phase};
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
 use crate::state::{Config, StateDir};
@@ -158,6 +159,41 @@ pub async fn run(
         .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
     // Held until this process ends, however it ends.
     let _lock = lock_state(&state_dir)?;
+    // From here on, other processes see this host's steps (`lifecycle.rs`).
+    lifecycle::record(&state.path, Phase::Starting, None)?;
+    let result = run_locked(
+        state,
+        folders,
+        show_dashboard,
+        headless_browsers,
+        deny_exec,
+        state_dir,
+        program,
+    )
+    .await;
+    let (phase, error) = match &result {
+        Ok(()) => (Phase::Stopped, None),
+        Err(failure) => (Phase::Error, Some(failure)),
+    };
+    if let Err(failure) = lifecycle::record(&state.path, phase, error) {
+        log(&format!(
+            "could not record the host's last step: {}",
+            failure.message
+        ));
+    }
+    result
+}
+
+/// `run`, once this serve holds the state folder.
+async fn run_locked(
+    state: &StateDir,
+    folders: &[PathBuf],
+    show_dashboard: bool,
+    headless_browsers: bool,
+    deny_exec: DenyExec,
+    state_dir: PathBuf,
+    program: PathBuf,
+) -> Result<(), Failure> {
     // Named folders win; with none, the ones `latch shares set` saved.
     let saved;
     let folders = if folders.is_empty() {
@@ -303,6 +339,7 @@ async fn run_host(
         gatekeeper,
         binary,
     });
+    lifecycle::record(&state.path, Phase::Serving, None)?;
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
     let mut stop = Box::pin(stop_requested(terminate));
@@ -430,7 +467,9 @@ fn host_upgraded() -> Failure {
 /// would share one key and one audit log. The lock is an exclusive `flock` on
 /// `serve.lock`, which the system releases when its holder exits, so one
 /// left behind by a crash never blocks. The file says who holds it, for the
-/// refusal a second serve prints.
+/// refusal a second serve prints. A lock held for less than a second is
+/// another process asking whether a serve runs (`lifecycle::holds_lock`),
+/// so this waits that long before refusing.
 fn lock_state(state_dir: &Path) -> Result<File, Failure> {
     let path = state_dir.join("serve.lock");
     let io =
@@ -444,7 +483,16 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
         .open(&path)
         .map_err(io)?;
     // SAFETY: flock only reads the descriptor, which `file` keeps open.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    let try_lock = || unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    let mut locked = try_lock();
+    for _ in 0..20 {
+        if locked {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        locked = try_lock();
+    }
+    if !locked {
         let mut holder = String::new();
         let _ = file.read_to_string(&mut holder);
         let holder = holder.trim();

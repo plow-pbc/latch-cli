@@ -26,6 +26,16 @@ use crate::state::to_hex;
 /// added `exec`'s stdin, which an older host would silently drop.
 pub const ALPN: &[u8] = b"plow/latch/1";
 
+/// The protocol version in `ALPN`, as a number.
+pub fn protocol() -> u32 {
+    let alpn = std::str::from_utf8(ALPN).expect("the ALPN is text");
+    let version = alpn
+        .rsplit('/')
+        .next()
+        .expect("the ALPN ends in its version");
+    version.parse().expect("the ALPN's version is a number")
+}
+
 /// The code a host closes a connection with when it refuses the caller.
 /// The client turns it into exit 4 (denied), with the close reason as message.
 pub const CLOSE_DENIED: u32 = 4;

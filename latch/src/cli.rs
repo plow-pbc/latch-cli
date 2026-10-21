@@ -695,6 +695,10 @@ pub struct StatusArgs {
     /// Show a card for a person, with key art to compare between machines, instead of JSON
     #[arg(long)]
     pub pretty: bool,
+    /// Only this machine's own latch, asking no one: state folder, login,
+    /// whether a host serves it, version and saved shares. Works offline and before login
+    #[arg(long, conflicts_with = "pretty")]
+    pub local: bool,
 }
 
 #[derive(Args, Debug)]

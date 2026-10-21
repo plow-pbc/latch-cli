@@ -1632,3 +1632,61 @@ fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
         marker
     );
 }
+
+#[test]
+fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let local = |state: &Path| {
+        let output = latch(state, &["status", "--local"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+
+    let never = dir.path().join("never");
+    let before = local(&never);
+    assert!(!never.exists(), "status --local made the state folder");
+    assert_eq!(before["peer"], Value::Null);
+    assert_eq!(before["protocol"], 1);
+    assert_eq!(
+        before["serve"],
+        json!({"running": false, "ready": false, "state": "stopped", "pid": null})
+    );
+    assert_eq!(before["shares"], json!([]));
+    assert_eq!(before["last_error"], Value::Null);
+
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let logged_in = local(&host);
+    assert_eq!(logged_in["peer"]["name"], "host");
+    assert_eq!(logged_in["peer"]["kind"], "device");
+    assert_eq!(logged_in["serve"]["running"], false);
+    let asked = plow.seen().len();
+
+    let serve = serving(&host, &share, &relay);
+    let pid = serve.0.id();
+    let up = local(&host);
+    assert_eq!(
+        up["serve"],
+        json!({"running": true, "ready": true, "state": "serving", "pid": pid})
+    );
+    drop(serve);
+    let stopped = local(&host);
+    assert_eq!(stopped["serve"]["state"], "stopped");
+    assert_eq!(stopped["last_error"], Value::Null);
+
+    let mut killed = serving(&host, &share, &relay);
+    killed.0.kill().unwrap();
+    killed.0.wait().unwrap();
+    let ended = local(&host);
+    assert_eq!(ended["serve"]["state"], "error");
+    assert_eq!(ended["last_error"]["code"], "serve_ended");
+    // Only the serves spoke to Plow; status --local never did.
+    let statuses = plow.seen()[asked..]
+        .iter()
+        .filter(|(line, _)| !line.contains("/v1/latch/peers") && !line.contains("offline"))
+        .count();
+    assert_eq!(statuses, 0, "{:?}", plow.seen());
+}

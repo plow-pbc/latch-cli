@@ -22,6 +22,7 @@ mod heartbeat;
 mod hosts;
 mod input;
 mod keyart;
+mod lifecycle;
 mod log;
 mod login;
 mod logo;
@@ -136,6 +137,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 to_json(devices::remove(&state, &name, yes).await?)
             }
         },
+        Command::Status(args) if args.local => to_json(status::local(&state)?),
         Command::Status(args) => {
             let output = status::run(&state).await?;
             if !args.pretty {
