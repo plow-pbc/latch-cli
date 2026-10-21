@@ -20,6 +20,9 @@
 //! - `plugins/`, on a host: the pinned Google CLI.
 //! - `shares.json`: the folders `latch serve` shares when named none (see
 //!   `latch shares`).
+//! - `allow-read.json`: the paths it lets callers read besides, a file of
+//!   its own so that a latch from before `--allow-read`, rewriting
+//!   `shares.json`, leaves them alone.
 //! - `secrets.lock`: held while a Keychain latch moves secret files in (see
 //!   `secrets.rs`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
@@ -54,10 +57,24 @@ pub struct Config {
 /// would misread, together with the explicit upgrade for that change.
 const FORMAT: u32 = 1;
 
-/// `shares.json`: what `latch serve` shares when it is named no folders.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+/// What `latch serve` shares when it is named no folders, and what it lets
+/// callers read besides (`--allow-read`).
+#[derive(Debug, PartialEq, Default)]
 pub struct Shares {
     pub folders: Vec<PathBuf>,
+    pub allow_read: Vec<PathBuf>,
+}
+
+/// `shares.json`.
+#[derive(Serialize, Deserialize, Default)]
+struct SharedFolders {
+    folders: Vec<PathBuf>,
+}
+
+/// `allow-read.json`.
+#[derive(Serialize, Deserialize, Default)]
+struct AllowRead {
+    paths: Vec<PathBuf>,
 }
 
 /// `latch.json`: the folder's format, and which latch first marked it.
@@ -69,6 +86,14 @@ struct Marker {
 
 pub struct StateDir {
     pub path: PathBuf,
+}
+
+/// Whether `dir` is a latch state folder: it holds latch's `latch.json`
+/// marker, or, made before there was one, both a key and a Plow login.
+pub fn is_state_folder(dir: &Path) -> bool {
+    let marked = fs::read_to_string(dir.join("latch.json"))
+        .is_ok_and(|text| serde_json::from_str::<Marker>(&text).is_ok());
+    marked || (dir.join("key").is_file() && dir.join("plow-token").is_file())
 }
 
 impl StateDir {
@@ -172,26 +197,46 @@ impl StateDir {
         })
     }
 
-    /// The folders `latch shares set` saved, in order; none if it never ran.
-    pub fn load_shares(&self) -> Result<Vec<PathBuf>, Failure> {
-        let path = self.path.join("shares.json");
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let text = self.read(&path)?;
-        let shares: Shares = serde_json::from_str(&text).map_err(|err| {
-            let message = format!("{} is not valid: {err}", path.display());
-            Failure::failed("bad_state", message)
-        })?;
-        Ok(shares.folders)
+    /// What `latch shares set` saved, folders in order; none if it never ran.
+    pub fn load_shares(&self) -> Result<Shares, Failure> {
+        let folders: SharedFolders = self.load_json("shares.json")?;
+        let allow_read: AllowRead = self.load_json("allow-read.json")?;
+        Ok(Shares {
+            folders: folders.folders,
+            allow_read: allow_read.paths,
+        })
     }
 
-    pub fn save_shares(&self, folders: &[PathBuf]) -> Result<(), Failure> {
-        let path = self.path.join("shares.json");
-        let shares = Shares {
-            folders: folders.to_vec(),
+    pub fn save_shares(&self, shares: &Shares) -> Result<(), Failure> {
+        let folders = SharedFolders {
+            folders: shares.folders.clone(),
         };
-        let text = serde_json::to_string_pretty(&shares).expect("shares serialize") + "\n";
+        let allow_read = AllowRead {
+            paths: shares.allow_read.clone(),
+        };
+        self.save_json("shares.json", &folders)?;
+        self.save_json("allow-read.json", &allow_read)
+    }
+
+    /// The file `name` in the state folder, or the default if there is none.
+    fn load_json<T: serde::de::DeserializeOwned + Default>(
+        &self,
+        name: &str,
+    ) -> Result<T, Failure> {
+        let path = self.path.join(name);
+        if !path.exists() {
+            return Ok(T::default());
+        }
+        let text = self.read(&path)?;
+        serde_json::from_str(&text).map_err(|err| {
+            let message = format!("{} is not valid: {err}", path.display());
+            Failure::failed("bad_state", message)
+        })
+    }
+
+    fn save_json(&self, name: &str, value: &impl Serialize) -> Result<(), Failure> {
+        let path = self.path.join(name);
+        let text = serde_json::to_string_pretty(value).expect("state serializes") + "\n";
         write_private(&path, text.as_bytes()).map_err(|err| self.io_failure(&path, err))
     }
 
@@ -299,6 +344,29 @@ mod tests {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         fs::create_dir_all(&parent).unwrap();
         tempfile::tempdir_in(parent).unwrap()
+    }
+
+    #[test]
+    fn an_older_latch_rewriting_the_folders_leaves_the_reads_alone() {
+        let dir = test_dir();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let shares = Shares {
+            folders: vec![PathBuf::from("/work")],
+            allow_read: vec![PathBuf::from("/refs")],
+        };
+        state.save_shares(&shares).unwrap();
+        assert_eq!(state.load_shares().unwrap(), shares);
+        // What a latch from before `--allow-read` writes for `shares set /other`.
+        fs::write(dir.path().join("shares.json"), r#"{"folders": ["/other"]}"#).unwrap();
+        assert_eq!(
+            state.load_shares().unwrap(),
+            Shares {
+                folders: vec![PathBuf::from("/other")],
+                allow_read: vec![PathBuf::from("/refs")],
+            }
+        );
     }
 
     #[test]
