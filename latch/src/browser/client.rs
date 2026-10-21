@@ -103,8 +103,11 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
             dry_run,
             ..
         } => {
-            let plan = with_facts(
-                do_plan(steps, plan_file.as_deref(), confirm.is_some(), *within)?,
+            let plan = do_plan(
+                steps,
+                plan_file.as_deref(),
+                confirm.is_some(),
+                *within,
                 fact,
                 item,
             )?;
@@ -535,12 +538,14 @@ async fn fetch_final(
 }
 
 /// The plan command's plan: from `--plan-file`, or one short-form step per
-/// argument, checked whole before it is sent.
+/// argument, with its facts and items, checked whole before it is sent.
 pub(super) fn do_plan(
     steps: &[String],
     plan_file: Option<&Path>,
     confirm: bool,
     within: Option<f64>,
+    facts: &[String],
+    items: &[String],
 ) -> Result<Plan, Failure> {
     let bad = |why: String| Failure::usage("bad_arguments", why);
     let mut plan = match plan_file {
@@ -565,8 +570,7 @@ pub(super) fn do_plan(
             "do takes steps, --plan-file, --confirm C or --history R".into(),
         ));
     }
-    plan.validate().map_err(bad)?;
-    Ok(plan)
+    with_facts(plan, facts, items)
 }
 
 /// `act`'s words as one literal step. A direction to scroll may come
@@ -772,6 +776,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_goal_types_a_fact_it_names_from_the_command_line() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        let cli = Cli::try_parse_from([
+            "latch",
+            "browser",
+            "do",
+            "type the delivery street {street}",
+            "--fact",
+            "street=12 Elm Road",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Command::Browser(args) = cli.command else {
+            panic!("browser");
+        };
+        let shown = run(&state, args).await.unwrap();
+        assert_eq!(shown["plan"]["steps"][0]["values"]["street"], "12 Elm Road");
+    }
+
+    #[tokio::test]
     async fn handoff_done_runs_on_the_hosts_own_state_and_handoff_needs_a_reason() {
         use crate::cli::{Cli, Command};
         use clap::Parser;
@@ -811,12 +838,12 @@ mod tests {
             "click e7 -> path: /checkout".to_string(),
             "type e3".to_string(),
         ];
-        let bad = do_plan(&steps, None, false, None).unwrap_err();
+        let bad = do_plan(&steps, None, false, None, &[], &[]).unwrap_err();
         assert!(bad.message.starts_with("step 2:"), "{}", bad.message);
-        assert!(do_plan(&[], None, false, None).is_err());
-        assert!(do_plan(&[], None, true, None).is_ok());
-        let plan = do_plan(&steps[..1], None, false, Some(30.0)).unwrap();
+        assert!(do_plan(&[], None, false, None, &[], &[]).is_err());
+        assert!(do_plan(&[], None, true, None, &[], &[]).is_ok());
+        let plan = do_plan(&steps[..1], None, false, Some(30.0), &[], &[]).unwrap();
         assert_eq!(plan.within(), 30.0);
-        assert!(do_plan(&steps[..1], None, false, Some(301.0)).is_err());
+        assert!(do_plan(&steps[..1], None, false, Some(301.0), &[], &[]).is_err());
     }
 }

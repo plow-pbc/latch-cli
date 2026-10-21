@@ -331,7 +331,7 @@ impl Harness {
     /// The plan command's short form, as the client compiles it.
     pub(super) async fn short(&mut self, steps: &[&str]) -> Result<Value, Failure> {
         let steps: Vec<String> = steps.iter().map(|s| s.to_string()).collect();
-        let plan = do_plan(&steps, None, false, None).unwrap();
+        let plan = do_plan(&steps, None, false, None, &[], &[]).unwrap();
         self.send(json!({"plan": plan})).await
     }
 
@@ -339,7 +339,7 @@ impl Harness {
     async fn plan_file(&mut self, plan: Value) -> Result<Value, Failure> {
         let file = self.state.join("plan.json");
         std::fs::write(&file, plan.to_string()).unwrap();
-        let plan = do_plan(&[], Some(&file), false, None).unwrap();
+        let plan = do_plan(&[], Some(&file), false, None, &[], &[]).unwrap();
         self.send(json!({"plan": plan})).await
     }
 
@@ -788,7 +788,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
     let slowly = find(&page, "button", "Add one slowly");
 
     // The host stops while the click is in flight.
-    let args = json!({"request": "r-crash", "plan": do_plan(&[format!("click {slowly}")], None, false, None).unwrap()});
+    let args = json!({"request": "r-crash", "plan": do_plan(&[format!("click {slowly}")], None, false, None, &[], &[]).unwrap()});
     let (browsers, entry, crashed) = (h.browsers.clone(), h.entry.clone(), h.id.clone());
     let session = crashed.clone();
     let running = tokio::spawn(async move {
@@ -825,7 +825,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
     // can't be sent again.
     let page = h.open(&format!("{site}/counter.html")).await;
     let add = find(&page, "button", "Add one");
-    let args = json!({"request": "r-lost", "plan": do_plan(&[format!("click {add}")], None, false, None).unwrap()});
+    let args = json!({"request": "r-lost", "plan": do_plan(&[format!("click {add}")], None, false, None, &[], &[]).unwrap()});
     let _lost = h.send(args.clone()).await;
     let read = h.history("r-lost");
     evidence("b5-history-lost-reply.json", &read);
