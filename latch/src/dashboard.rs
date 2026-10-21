@@ -26,6 +26,9 @@ use crate::term;
 /// How many calls the dashboard remembers (more than any screen shows).
 const KEEP: usize = 500;
 
+/// How long a stopping host waits to give the terminal back.
+const GIVE_BACK_WITHIN: Duration = Duration::from_secs(1);
+
 /// Column widths, in characters.
 const TIME: usize = 8;
 const AGENT: usize = 14;
@@ -125,12 +128,20 @@ impl Dashboard {
         dashboard
     }
 
-    /// Gives the terminal back as it was.
+    /// Gives the terminal back as it was, waiting at most
+    /// `GIVE_BACK_WITHIN`: a terminal that takes no output is left as it
+    /// is, so stopping never hangs on it.
     pub fn stop(&self) {
-        let mut screen = self.screen.lock().expect("screen lock");
-        screen.given_back = true;
-        let _ = write!(screen.out, "{}{}", term::SHOW_CURSOR, term::MAIN_SCREEN);
-        let _ = screen.out.flush();
+        let screen = self.screen.clone();
+        let (given, back) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut screen = screen.lock().expect("screen lock");
+            screen.given_back = true;
+            let _ = write!(screen.out, "{}{}", term::SHOW_CURSOR, term::MAIN_SCREEN);
+            let _ = screen.out.flush();
+            let _ = given.send(());
+        });
+        let _ = back.recv_timeout(GIVE_BACK_WITHIN);
     }
 
     pub fn heartbeat(&self) {
@@ -337,6 +348,22 @@ mod tests {
         finished
             .recv_timeout(Duration::from_secs(5))
             .expect("the host's calls returned while the terminal took nothing");
+    }
+
+    #[test]
+    fn a_terminal_that_takes_no_output_never_holds_up_stopping() {
+        let (_never, wait) = mpsc::channel();
+        let dashboard = Dashboard::start_on("host", Box::new(Stuck(Mutex::new(wait))));
+        // The drawing thread is stuck in its first write, holding the screen.
+        std::thread::sleep(Duration::from_millis(100));
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            dashboard.stop();
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(GIVE_BACK_WITHIN + Duration::from_secs(4))
+            .expect("stop returned while the terminal took nothing");
     }
 
     #[test]

@@ -214,6 +214,14 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             paint::set_color(dashboard);
             let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
             serve::run(&state, &args.folders, dashboard, deny_exec).await?;
+            // The dashboard's terminal may take no output: print nothing
+            // more to it, so stopping never waits on it.
+            if dashboard {
+                return Ok(Printed {
+                    text: String::new(),
+                    exit: ExitCode::SUCCESS,
+                });
+            }
             to_json(json!({}))
         }
         Command::Worker(_) => unreachable!("handled in main"),
