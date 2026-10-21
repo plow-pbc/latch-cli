@@ -69,7 +69,8 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
         confirm_conflict: args.confirm_conflict || lifted.confirm_conflict,
         inputs,
     };
-    let result = exchange(&link.connection, request, files, plan.as_ref()).await;
+    let chat = args.host.chat;
+    let result = exchange(&link.connection, chat, request, files, plan.as_ref()).await;
     link.close().await;
     result
 }
@@ -79,6 +80,7 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
 /// the final answer.
 async fn exchange(
     connection: &iroh::endpoint::Connection,
+    chat: Option<String>,
     request: Request,
     mut inputs: Vec<File>,
     plan: Option<&policy::Plan>,
@@ -86,7 +88,7 @@ async fn exchange(
     let request = wire::Request {
         op: "google".into(),
         args: serde_json::to_value(&request).expect("request serializes"),
-        chat: None,
+        chat,
     };
     let (mut send, mut recv) = dial::start(connection, &request).await?;
     let first = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;

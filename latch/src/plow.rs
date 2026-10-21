@@ -97,6 +97,13 @@ pub struct Agent {
     pub line: Line,
 }
 
+/// One of the account's agents, from `GET /v1/agents`, by its uid and name.
+#[derive(Deserialize, Debug, Clone)]
+pub struct NamedAgent {
+    pub uid: String,
+    pub name: String,
+}
+
 /// A messaging line (a phone number or a mailbox).
 #[derive(Deserialize, Debug, Clone)]
 pub struct Line {
@@ -289,6 +296,13 @@ impl Plow {
     /// One of the account's agents, with the line it serves.
     pub async fn agent(&self, agent_uid: &str) -> Result<Agent, Failure> {
         let url = format!("{}/v1/agents/{agent_uid}", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// Every live agent in the account. Owner logins only.
+    pub async fn agents(&self) -> Result<Vec<NamedAgent>, Failure> {
+        let url = format!("{}/v1/agents", self.api_url);
         let response = self.send(self.http.get(url)).await?;
         response.json().await.map_err(|_| bad_answer())
     }

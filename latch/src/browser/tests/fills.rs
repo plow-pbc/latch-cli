@@ -40,40 +40,63 @@ conformance!(
 
 /// `value` as an agent or the audit saw it, for the leak checks, less what
 /// holds digits by chance and is no value: a screenshot's size and digest,
-/// a confirmation's id, and the test site's port.
+/// the id of each confirmation it carries, wherever it is quoted, and the
+/// test site's ports.
 fn seen(value: &Value) -> String {
     let mut value = value.clone();
-    without_incidentals(&mut value);
+    let mut ids = Vec::new();
+    confirmation_ids(&value, &mut ids);
+    without_incidentals(&mut value, &ids);
     value.to_string()
 }
 
-fn without_incidentals(value: &mut Value) {
+/// The ids of the confirmations `value` carries: a `confirmation`'s `id`,
+/// and a `confirmation` or `confirm` given as an id.
+fn confirmation_ids(value: &Value, ids: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, item) in map {
+                let id = match (key.as_str(), item) {
+                    ("confirmation", Value::Object(confirmation)) => confirmation["id"].as_str(),
+                    ("confirmation" | "confirm", Value::String(id)) => Some(id.as_str()),
+                    _ => None,
+                };
+                ids.extend(id.map(str::to_string));
+                confirmation_ids(item, ids);
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| confirmation_ids(item, ids)),
+        _ => {}
+    }
+}
+
+fn without_incidentals(value: &mut Value, ids: &[String]) {
     match value {
         Value::Object(map) => {
             if let Some(shot) = map.get_mut("screenshot").and_then(Value::as_object_mut) {
                 shot.remove("size");
                 shot.remove("sha256");
             }
-            match map.get_mut("confirmation") {
-                Some(Value::Object(confirmation)) => {
-                    confirmation.remove("id");
-                }
-                Some(Value::String(_)) => {
-                    map.remove("confirmation");
-                }
-                _ => {}
-            }
-            map.values_mut().for_each(without_incidentals);
+            map.values_mut()
+                .for_each(|item| without_incidentals(item, ids));
         }
-        Value::Array(items) => items.iter_mut().for_each(without_incidentals),
-        Value::String(text) => *text = without_port(text),
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| without_incidentals(item, ids)),
+        Value::String(text) => {
+            *text = ids
+                .iter()
+                .fold(without_port(text), |text, id| text.replace(id.as_str(), ""));
+        }
         _ => {}
     }
 }
 
-/// `text` with the port after the test site's host left out.
+/// `text` with the port after the test site's host left out, and a test
+/// site's own port where the payment page's address names it
+/// (`?frame=PORT`); any other `?frame=` value stays.
 fn without_port(text: &str) -> String {
-    ["127.0.0.1:", "localhost:"]
+    let text = ["127.0.0.1:", "localhost:"]
         .iter()
         .fold(text.to_string(), |text, host| {
             let mut parts = text.split(host);
@@ -83,17 +106,32 @@ fn without_port(text: &str) -> String {
                 out.push_str(part.trim_start_matches(|ch: char| ch.is_ascii_digit()));
             }
             out
-        })
+        });
+    let ports = SITE_PORTS.lock().unwrap();
+    let mut parts = text.split("?frame=");
+    let mut out = parts.next().unwrap_or_default().to_string();
+    for part in parts {
+        out.push_str("?frame=");
+        let digits = part.len()
+            - part
+                .trim_start_matches(|ch: char| ch.is_ascii_digit())
+                .len();
+        let ours = part[..digits]
+            .parse()
+            .is_ok_and(|port: u16| ports.contains(&port));
+        out.push_str(if ours { &part[digits..] } else { part });
+    }
+    out
 }
 
-/// A failure as shown, for the leak checks (`seen`).
+/// The ports of the test sites [`site`] started.
+static SITE_PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+
+/// A failure as shown, for the leak checks (`seen`): its message is left
+/// without the ids of the confirmations its details carry.
 fn seen_failure(failure: &crate::failure::Failure) -> String {
-    format!(
-        "{} {} {}",
-        failure.code,
-        without_port(&failure.message),
-        seen(&failure.details)
-    )
+    let shown = json!({"message": failure.message, "details": failure.details});
+    format!("{} {}", failure.code, seen(&shown))
 }
 
 #[test]
@@ -111,6 +149,40 @@ fn the_leak_check_leaves_out_incidental_digits_and_nothing_else() {
     // The size, digest, confirmation id and port are gone; the two values
     // in the page's text and its query are still there.
     assert_eq!(shown.matches(CVV).count(), 2, "{shown}");
+
+    // An issued confirmation's id is left out wherever it is quoted, and a
+    // test site's port (here 50319) wherever the page's address names it; a
+    // value, and an id-like string no confirmation carries, are still there.
+    SITE_PORTS.lock().unwrap().push(50319);
+    let stale = crate::failure::Failure {
+        details: json!({
+            "steps": [{"code": "confirm_stale", "confirm": "c3190a1b2c3d4"}],
+            "stop": {"message": "confirmation c3190a1b2c3d4 was already used"},
+            "page": {"url": "http://127.0.0.1:50000/processor.html?frame=50319",
+                     "lines": ["c3190ffffffff", "frame=319"],
+                     "links": ["http://127.0.0.1:50000/processor.html?frame=319"]},
+        }),
+        ..crate::failure::Failure::usage(
+            "confirm_stale",
+            "confirmation c3190a1b2c3d4 was already used; nothing was sent".into(),
+        )
+    };
+    let shown = seen_failure(&stale);
+    assert_eq!(shown.matches(CVV).count(), 3, "{shown}");
+    assert!(
+        shown.contains("c3190ffffffff") && shown.contains("\"frame=319\""),
+        "{shown}"
+    );
+    // A secret where the processor's port goes is no port of a test site.
+    assert!(shown.contains("processor.html?frame=319\""), "{shown}");
+    let needed = crate::failure::Failure {
+        details: json!({"confirmation": {"id": "c3190a1b2c3d4", "lines": ["cvv 319"]}}),
+        ..crate::failure::Failure::usage(
+            "confirm_needed",
+            "confirm it with `latch browser do --confirm c3190a1b2c3d4`".into(),
+        )
+    };
+    assert_eq!(seen_failure(&needed).matches(CVV).count(), 1);
 }
 
 /// Form fields from a POST body.
@@ -145,6 +217,7 @@ fn site() -> u16 {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-site");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
+    SITE_PORTS.lock().unwrap().push(port);
     std::thread::spawn(move || {
         for socket in listener.incoming() {
             let Ok(socket) = socket else { continue };

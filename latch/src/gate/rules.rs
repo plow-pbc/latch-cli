@@ -2,10 +2,15 @@
 //! own words, one text for every agent and one per agent. The judge reads
 //! them as text; where they come from is a [`RulesSource`]'s business.
 
-use std::io::ErrorKind;
+use std::fs::{self, File};
+use std::io::{ErrorKind, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use crate::failure::Failure;
+use sha2::{Digest, Sha256};
+
+use crate::failure::{Exit, Failure};
+use crate::state::to_hex;
 
 /// The owner's rules that apply to one agent.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -123,8 +128,214 @@ impl RulesSource for RuleFiles {
     }
 }
 
+/// Which of the owner's texts a command is about.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Scope {
+    /// The rules for every agent on this host.
+    Host,
+    /// The rules for the agent with this uid.
+    Agent(String),
+}
+
+impl Scope {
+    fn file(&self) -> String {
+        match self {
+            Scope::Host => HOST_FILE.to_string(),
+            Scope::Agent(uid) => format!("{uid}.txt"),
+        }
+    }
+}
+
+/// A text's revision: its sha256, as hex.
+pub fn revision(text: &str) -> String {
+    to_hex(&Sha256::digest(text.as_bytes()))
+}
+
+/// A change to one text, by revision: `None` is no text.
+pub struct Change {
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+/// The rules folder as the owner's commands change it: every change is
+/// made under one lock, and each file is replaced whole (a temporary file,
+/// then a rename), so a judgment reads the old text or the new, never part.
+pub struct RulesDir {
+    dir: PathBuf,
+}
+
+impl RulesDir {
+    pub fn new(state_dir: &Path) -> RulesDir {
+        RulesDir {
+            dir: state_dir.join(RULES_DIR),
+        }
+    }
+
+    pub fn text(&self, scope: &Scope) -> Result<Option<String>, Failure> {
+        self.read(&scope.file())
+    }
+
+    /// The peer key stored for `uid` when its rules were set, if it had one.
+    pub fn peer(&self, uid: &str) -> Result<Option<String>, Failure> {
+        self.read(&format!("{uid}.peer"))
+    }
+
+    /// The uids that have rules of their own.
+    pub fn agents(&self) -> Result<Vec<String>, Failure> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(self.failure(&self.dir, err)),
+        };
+        let mut uids = Vec::new();
+        for entry in entries {
+            let name = entry
+                .map_err(|err| self.failure(&self.dir, err))?
+                .file_name();
+            let name = name.to_string_lossy();
+            if let Some(uid) = name.strip_suffix(".txt").filter(|uid| is_agent_uid(uid)) {
+                uids.push(uid.to_string());
+            }
+        }
+        uids.sort();
+        Ok(uids)
+    }
+
+    /// Replaces `scope`'s text with `text`. With `expected`, only if the
+    /// current text is still at that revision (`None`: there is none). An
+    /// agent's `peer`, its peer key now, is stored beside its text.
+    /// Refused, nothing changes.
+    pub fn set(
+        &self,
+        scope: &Scope,
+        text: &str,
+        expected: Option<Option<&str>>,
+        peer: Option<&str>,
+    ) -> Result<Change, Failure> {
+        if text.trim().is_empty() {
+            let message = "the rules are empty; to remove them, use `latch rules clear`";
+            return Err(Failure::usage("empty_rules", message.into()));
+        }
+        let _lock = self.lock()?;
+        let before = self.text(scope)?.as_deref().map(revision);
+        if let Some(expected) = expected
+            && expected != before.as_deref()
+        {
+            let mut refused = Failure::new(
+                Exit::Denied,
+                "stale_revision",
+                "the rules changed since they were read; nothing was saved, and the current text is kept".into(),
+            );
+            refused.details = serde_json::json!({"revision": before});
+            return Err(refused);
+        }
+        let others = match scope {
+            Scope::Host => {
+                let mut largest = 0;
+                for uid in self.agents()? {
+                    let text = self.text(&Scope::Agent(uid))?.unwrap_or_default();
+                    largest = largest.max(text.len());
+                }
+                largest
+            }
+            Scope::Agent(_) => self.text(&Scope::Host)?.map_or(0, |text| text.len()),
+        };
+        if (text.len() + others) as u64 > MAX_RULES {
+            let message = format!(
+                "the rules for every agent and one agent's own may come to {MAX_RULES} bytes together; these would come to {}",
+                text.len() + others
+            );
+            return Err(Failure::usage("rules_too_long", message));
+        }
+        if let Scope::Agent(uid) = scope {
+            let peer_file = format!("{uid}.peer");
+            match peer {
+                Some(key) => self.replace(&peer_file, key)?,
+                None => self.remove(&peer_file)?,
+            }
+        }
+        self.replace(&scope.file(), text)?;
+        Ok(Change {
+            before,
+            after: Some(revision(text)),
+        })
+    }
+
+    /// Removes `scope`'s text, and an agent's stored peer key.
+    pub fn clear(&self, scope: &Scope) -> Result<Change, Failure> {
+        let _lock = self.lock()?;
+        let before = self.text(scope)?.as_deref().map(revision);
+        self.remove(&scope.file())?;
+        if let Scope::Agent(uid) = scope {
+            self.remove(&format!("{uid}.peer"))?;
+        }
+        Ok(Change {
+            before,
+            after: None,
+        })
+    }
+
+    fn lock(&self) -> Result<File, Failure> {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.dir)
+            .map_err(|err| self.failure(&self.dir, err))?;
+        let path = self.dir.join(".lock");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|err| self.failure(&path, err))?;
+        file.lock().map_err(|err| self.failure(&path, err))?;
+        Ok(file)
+    }
+
+    fn read(&self, name: &str) -> Result<Option<String>, Failure> {
+        let path = self.dir.join(name);
+        match fs::read_to_string(&path) {
+            Ok(text) => Ok(Some(text)),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(self.failure(&path, err)),
+        }
+    }
+
+    /// Writes `name` whole: into `<name>.tmp`, then renamed over it.
+    fn replace(&self, name: &str, text: &str) -> Result<(), Failure> {
+        let path = self.dir.join(name);
+        let temporary = self.dir.join(format!("{name}.tmp"));
+        let written = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temporary)
+            .and_then(|mut file| {
+                file.write_all(text.as_bytes())?;
+                file.sync_all()
+            });
+        written
+            .and_then(|()| fs::rename(&temporary, &path))
+            .map_err(|err| self.failure(&path, err))
+    }
+
+    fn remove(&self, name: &str) -> Result<(), Failure> {
+        let path = self.dir.join(name);
+        match fs::remove_file(&path) {
+            Err(err) if err.kind() != ErrorKind::NotFound => Err(self.failure(&path, err)),
+            _ => Ok(()),
+        }
+    }
+
+    fn failure(&self, path: &Path, err: std::io::Error) -> Failure {
+        Failure::failed("rules_io", format!("{}: {err}", path.display()))
+    }
+}
+
 /// Whether `id` has the shape of a Plow agent uid.
-fn is_agent_uid(id: &str) -> bool {
+pub fn is_agent_uid(id: &str) -> bool {
     id.len() == 32
         && id
             .bytes()
