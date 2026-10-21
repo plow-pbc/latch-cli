@@ -1,7 +1,8 @@
 name: release
-# A release is a manual run on main: it mints v<version>-build.<UTC minute>,
-# signs, and leaves a draft release for a person to publish. Pull requests
-# build and verify unsigned archives and release nothing.
+# A release is a manual run: it mints v<version>-build.<UTC minute> on main,
+# with a -dev.<ref> suffix from any other ref, signs, and leaves a draft
+# release for a person to publish. Pull requests build and verify unsigned
+# archives and release nothing.
 on:
   # Temporary, for the signing trial before this file is on main (a dispatch
   # needs the workflow on the default branch): a pushed v*-trial.* tag runs
@@ -36,12 +37,11 @@ jobs:
             pull_request) tag="v$package-pr.${{ github.event.number }}" ;;
             push) tag=$REF_NAME ;;
             workflow_dispatch)
-              # The release environment enforces this; failing here says so sooner.
-              if [[ "$REF" != refs/heads/main ]]; then
-                echo "releases are cut from main, not $REF" >&2
-                exit 1
-              fi
               tag="v$package-build.$(date -u +%Y%m%d%H%M)"
+              if [[ "$REF" != refs/heads/main ]]; then
+                ref=$(printf '%s' "$REF_NAME" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
+                tag="$tag-dev.${ref:-ref}"
+              fi
               if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
                 echo "tag $tag already exists" >&2
                 exit 1
