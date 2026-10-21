@@ -5,6 +5,8 @@
 //! exit 0; on failure `{"error": {"code", "message"}}` on stderr and an exit
 //! code from the table in `failure.rs`.
 
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 mod audit;
 mod card;
 mod cli;
