@@ -106,8 +106,17 @@ pub(super) struct Judged<'a> {
 }
 
 impl Judged<'_> {
-    /// Records the action as done by the agent, with how it ended.
+    /// Records a one-time action (a plan or a fill) as done by the agent,
+    /// with how it ended, for the judge's "already done". Opening a site,
+    /// running a script, uploading or downloading again is normal, so
+    /// these are not recorded.
     pub(super) fn ended<T>(self, result: &Result<T, Failure>) {
+        if !matches!(
+            self.action,
+            Action::BrowserPlan { .. } | Action::VaultFill { .. }
+        ) {
+            return;
+        }
         let outcome = match result {
             Ok(_) => "ok",
             Err(failure) => failure.code.as_str(),

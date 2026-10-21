@@ -14,7 +14,12 @@
 //! counts at once. The audit gets the `gate` object [`Judgment::gate`]:
 //! never chat text, rules text or a secret.
 
+mod action;
 mod chat;
+pub mod client;
+#[cfg(test)]
+pub mod fake;
+pub(crate) mod owner;
 pub mod rules;
 #[cfg(test)]
 mod tests;
@@ -35,6 +40,7 @@ use crate::browser::model::{
 use crate::failure::{Exit, Failure};
 use crate::plow::Plow;
 use crate::state::to_hex;
+pub use action::gated;
 use chat::Conversation;
 use rules::{Rules, RulesSource};
 
@@ -44,7 +50,7 @@ pub const MODEL: &str = "typesafe/jev-1.14";
 const JEV_MODEL: &str = "jev-1.14.0";
 /// An action is allowed at this P(COVERED) or above.
 pub const ALLOW_P: f64 = 0.5;
-/// How many of an agent's latest operations the judge sees.
+/// How many of an agent's latest one-time operations the judge sees.
 const DONE_SHOWN: usize = 20;
 
 const RULES_OF_JUDGMENT: [&str; 5] = [
@@ -54,6 +60,9 @@ const RULES_OF_JUDGMENT: [&str; 5] = [
     "Each message shows how long ago it was sent. An old request may still stand if the owner meant it to keep applying; otherwise it is not a request to act now.",
     "Rules on the host are the owner's standing limits; a chat message does not lift a host rule's prohibition.",
 ];
+/// Added to the rules of judgment only when the judge sees host rules: a
+/// rule naming a kind of task covers the commands that plainly do it.
+const RULES_NAME_TASKS: &str = "A rule may name a kind of task, like running tests or checking mail, rather than the exact command; a command that plainly does that task is covered by it.";
 
 const QUESTION: &str = "Do the owner's messages cover this proposed action, as it is now?";
 const COVERED: &str = "The owner asked for or approved this action (what, to whom, when; the amount is what the owner stated or would plausibly expect, tax and fees included), now or as a standing or earlier instruction the owner hasn't withdrawn, and the agent hasn't already done it.";
@@ -155,8 +164,8 @@ impl Gatekeeper {
         Judgment { verdict, gate }
     }
 
-    /// Records an operation the gatekeeper let `agent` run, and how it
-    /// ended, for the judge's "already done".
+    /// Records a one-time operation the gatekeeper let `agent` run, and how
+    /// it ended, for the judge's "already done".
     pub fn did(&self, agent: &str, what: Value, outcome: &str) {
         let mut done = self.done.lock().expect("gatekeeper history lock");
         let list = done.entry(agent.to_string()).or_default();
@@ -334,7 +343,7 @@ fn questions() -> Vec<Question> {
 /// differently when its keys come in another order.
 #[derive(Serialize)]
 struct State<'a> {
-    rules_of_judgment: [&'static str; 5],
+    rules_of_judgment: Vec<&'static str>,
     now: &'a str,
     conversation: Listed<Vec<Entry<'a>>>,
     owner_rules: Listed<OwnerRules<'a>>,
@@ -410,7 +419,11 @@ fn state(
         .as_ref()
         .is_some_and(|c| c.more_before || shown < c.messages.len());
     let state = State {
-        rules_of_judgment: RULES_OF_JUDGMENT,
+        rules_of_judgment: if rules.is_empty() {
+            RULES_OF_JUDGMENT.to_vec()
+        } else {
+            [&RULES_OF_JUDGMENT[..], &[RULES_NAME_TASKS]].concat()
+        },
         now: clock,
         conversation,
         owner_rules: if rules.is_empty() {

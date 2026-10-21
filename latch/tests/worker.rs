@@ -207,6 +207,66 @@ fn an_exec_worker_runs_programs_inside_the_sandbox() {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
+fn an_agent_can_neither_read_nor_change_the_owners_rules() {
+    let dir = setup();
+    let rules = dir.path().join("state/rules");
+    fs::create_dir(&rules).unwrap();
+    fs::write(rules.join("host.txt"), "Never send email.").unwrap();
+    let exec = |script: &str| {
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args([
+                "worker", "--area", "..", "--denied", "../state", "--tmpdir", "../tmp", "exec",
+                "--", "/bin/sh", "-c", script,
+            ])
+            .current_dir(dir.path().join("area"))
+            .env_clear()
+            .output()
+            .unwrap()
+    };
+    for script in [
+        "cat ../state/rules/host.txt",
+        "echo 'Anything goes.' > ../state/rules/host.txt",
+        "rm ../state/rules/host.txt",
+        "echo 'Anything goes.' > ../state/rules/0123456789abcdef0123456789abcdef.txt",
+        "mv ../state/rules ../state/gone",
+    ] {
+        let output = exec(script);
+        assert!(!output.status.success(), "{script}: {output:?}");
+        assert!(output.stdout.is_empty(), "{script}");
+    }
+    let read = worker(
+        dir.path(),
+        &["--area", ".."],
+        &["read"],
+        "../state/rules/host.txt",
+        b"",
+    );
+    assert!(
+        ["not_found", "sandbox_denied"].contains(&code(&read).as_str()),
+        "{read:?}"
+    );
+    assert!(read.stdout.is_empty());
+    let write = worker(
+        dir.path(),
+        &["--area", ".."],
+        &["write", "--size", "1"],
+        "../state/rules/host.txt",
+        b"x",
+    );
+    assert!(!write.status.success(), "{write:?}");
+    assert_eq!(
+        fs::read_dir(&rules).unwrap().count(),
+        1,
+        "nothing added or removed"
+    );
+    assert_eq!(
+        fs::read_to_string(rules.join("host.txt")).unwrap(),
+        "Never send email."
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
 fn a_workdir_outside_the_areas_is_refused() {
     let dir = setup();
     let real = dir.path().canonicalize().unwrap();

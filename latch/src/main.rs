@@ -140,20 +140,21 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             local_dest,
             host,
         }) => {
-            let host = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::get(&state, &host, &remote_path, local_dest).await?)
+            let peer = hosts::resolve(&state, host.host).await?;
+            to_json(transfer::get(&state, &peer, host.chat, &remote_path, local_dest).await?)
         }
         Command::File(FileCommand::Put {
             local_path,
             remote_path,
             host,
         }) => {
-            let host = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::put(&state, &host, &local_path, &remote_path).await?)
+            let peer = hosts::resolve(&state, host.host).await?;
+            to_json(transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?)
         }
         Command::Google(args) => to_json(google::client::run(&state, args).await?),
         Command::Browser(args) => to_json(browser::client::run(&state, args).await?),
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
+        Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Exec(args) => {
             let mut request =
                 json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout });
@@ -198,13 +199,13 @@ async fn call_host(
     args: Value,
     answer_within: Duration,
 ) -> Result<Value, Failure> {
-    let host = hosts::resolve(state, host.host).await?;
+    let peer = hosts::resolve(state, host.host).await?;
     let request = Request {
         op: op.to_string(),
         args,
-        chat: None,
+        chat: host.chat,
     };
-    dial::call(state, &host, &request, answer_within).await
+    dial::call(state, &peer, &request, answer_within).await
 }
 
 fn to_json(output: impl Serialize) -> Result<Printed, Failure> {
