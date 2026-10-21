@@ -547,7 +547,9 @@ fn an_exec_worker_writes_only_its_own_temp_folder_outside_the_areas() {
     // Two per-call folders in the OS temp folder, as a host makes them.
     let mine = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();
-    let script = r#"echo x > "$TMPDIR/t" && cat "$TMPDIR/t"; echo y > "$0/stolen""#;
+    // The refused write is in a subshell: how a shell exits when a
+    // redirection fails differs (bash 1, dash 2).
+    let script = r#"echo x > "$TMPDIR/t" && cat "$TMPDIR/t"; (echo y > "$0/stolen") 2>/dev/null && echo stolen; exit 0"#;
     let output = Command::new(env!("CARGO_BIN_EXE_latch"))
         .arg("worker")
         .arg("--area")
@@ -563,10 +565,7 @@ fn an_exec_worker_writes_only_its_own_temp_folder_outside_the_areas() {
         .env("TMPDIR", mine.path().canonicalize().unwrap())
         .output()
         .unwrap();
-    assert!(
-        output.status.success() || output.status.code() == Some(1),
-        "{output:?}"
-    );
+    assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"x\n", "{output:?}");
     if cfg!(target_os = "macos") {
         // macOS: the program's TMPDIR is the folder it was given, and nothing else of the OS temp folder.
