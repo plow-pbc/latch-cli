@@ -132,6 +132,9 @@ pub enum Command {
     /// Internal: the process a host starts for each browser session
     #[command(hide = true)]
     BrowserWorker(BrowserWorkerArgs),
+    /// Internal: whether this build may keep secrets in the Keychain (see `keychain_probe.rs`)
+    #[command(hide = true)]
+    KeychainProbe(KeychainProbeArgs),
 }
 
 #[derive(Args, Debug)]
@@ -616,6 +619,13 @@ pub struct BrowserWorkerArgs {
     /// `allow_local_browsing` in host.json)
     #[arg(long)]
     pub allow_local_browsing: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct KeychainProbeArgs {
+    /// The Keychain access group to store the throwaway item under
+    #[arg(long)]
+    pub group: String,
 }
 
 /// Arguments the host gives a worker (see `worker.rs`).

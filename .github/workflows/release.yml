@@ -210,6 +210,162 @@ jobs:
         if: always()
         shell: bash
         run: if [[ -n "${KEYCHAIN_PATH:-}" ]]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi
+  # Whether the signed latch may keep secrets in the data-protection Keychain:
+  # from its helper bundle, through a PATH-style link, from launchd, and
+  # from launchd with the screen locked. Evidence only; nothing it builds
+  # is released.
+  keychain-proof:
+    needs: build
+    if: github.event_name != 'pull_request'
+    environment: release
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      IDENTITY: 'Developer ID Application: The Plow Collective, Inc (3559PD337Z)'
+      GROUP: 3559PD337Z.co.plow.latch
+      LABEL: co.plow.latch.keychain-probe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: latch-aarch64-apple-darwin
+          path: dist
+      - name: Load signing credentials
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APPLE_CERTIFICATE_P12_BASE64: op://terraform/GitHub Actions Release Secrets/APPLE_CERTIFICATE_P12_BASE64
+          APPLE_CERTIFICATE_PASSWORD: op://terraform/GitHub Actions Release Secrets/APPLE_CERTIFICATE_PASSWORD  # pragma: allowlist secret
+      - name: Import signing identity
+        shell: bash
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          keychain_password=$(openssl rand -base64 32)
+          security create-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
+          cert="$RUNNER_TEMP/cert.p12"
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$cert"
+          security import "$cert" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm "$cert"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$IDENTITY\""
+      # Without a provisioning profile the restricted entitlements would stop
+      # the binary at launch, so it is then signed without them, and the probe
+      # shows the missing entitlement (-34018) instead.
+      - name: Build and sign the helper bundle
+        shell: bash
+        run: |
+          mkdir unpacked
+          tar -xzf dist/latch-*-aarch64-apple-darwin.tar.gz -C unpacked
+          app="$RUNNER_TEMP/Latch.app"
+          sh scripts/macos-helper-bundle.sh unpacked/*/latch "$app"
+          entitlements=()
+          if [[ -f "$app/Contents/embedded.provisionprofile" ]]; then
+            entitlements=(--entitlements latch/macos/helper.entitlements)
+            security cms -D -i "$app/Contents/embedded.provisionprofile" > "$RUNNER_TEMP/profile.plist"
+            /usr/libexec/PlistBuddy -c 'Print :Entitlements' "$RUNNER_TEMP/profile.plist"
+          else
+            echo "::warning::latch/macos has no provisioning profile: signing without entitlements"
+          fi
+          codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
+            "${entitlements[@]}" --sign "$IDENTITY" "$app"
+          codesign --verify --strict --verbose=2 "$app"
+          codesign -dvvv --entitlements - "$app" 2>&1
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -s "$app/Contents/MacOS/latch" "$RUNNER_TEMP/bin/latch"
+          echo "APP=$app" >> "$GITHUB_ENV"
+      - name: Probe from the bundle and through a link
+        shell: bash
+        run: |
+          status=0
+          "$APP/Contents/MacOS/latch" keychain-probe --group "$GROUP" || status=1
+          "$RUNNER_TEMP/bin/latch" keychain-probe --group "$GROUP" || status=1
+          exit $status
+      # Runs even when the direct probes failed, for the full picture.
+      - name: Probe from launchd
+        if: ${{ !cancelled() && env.APP != '' }}
+        shell: bash
+        run: |
+          plist="$HOME/Library/LaunchAgents/$LABEL.plist"
+          echo "PLIST=$plist" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/Library/LaunchAgents"
+          cat > "$plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key><string>$LABEL</string>
+            <key>ProgramArguments</key>
+            <array>
+              <string>$RUNNER_TEMP/bin/latch</string>
+              <string>keychain-probe</string>
+              <string>--group</string>
+              <string>$GROUP</string>
+            </array>
+            <key>StandardOutPath</key><string>$RUNNER_TEMP/launchd.out</string>
+            <key>StandardErrorPath</key><string>$RUNNER_TEMP/launchd.err</string>
+          </dict>
+          </plist>
+          PLIST
+          probe() {
+            rm -f "$RUNNER_TEMP/launchd.out" "$RUNNER_TEMP/launchd.err"
+            launchctl bootstrap "gui/$(id -u)" "$plist"
+            launchctl kickstart "gui/$(id -u)/$LABEL"
+            for _ in $(seq 30); do
+              [[ -s "$RUNNER_TEMP/launchd.out" ]] && break
+              sleep 1
+            done
+            launchctl print "gui/$(id -u)/$LABEL" | grep -E 'last exit code|state =' || true
+            launchctl bootout "gui/$(id -u)/$LABEL" || true
+            cat "$RUNNER_TEMP/launchd.err" 2>/dev/null || true
+            grep -q '"ok":true' "$RUNNER_TEMP/launchd.out" 2>/dev/null
+            local ok=$?
+            cat "$RUNNER_TEMP/launchd.out" 2>/dev/null || echo '(no output)'
+            return $ok
+          }
+          status=0
+          echo '--- screen unlocked'
+          probe || status=1
+          cat > "$RUNNER_TEMP/lock.swift" <<'SWIFT'
+          import CoreGraphics
+          import Foundation
+          func locked() -> Bool {
+              let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+              return session?["CGSSessionScreenIsLocked"] as? Bool ?? false
+          }
+          if CommandLine.arguments.contains("--lock") {
+              // The login window's own private call; there is no public one.
+              if let login = dlopen("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login", RTLD_NOW),
+                 let symbol = dlsym(login, "SACLockScreenImmediate") {
+                  typealias Lock = @convention(c) () -> Int32
+                  print("SACLockScreenImmediate:", unsafeBitCast(symbol, to: Lock.self)())
+                  sleep(3)
+              } else {
+                  print("SACLockScreenImmediate unavailable")
+              }
+          }
+          print("session:", CGSessionCopyCurrentDictionary() != nil, "locked:", locked())
+          SWIFT
+          swift "$RUNNER_TEMP/lock.swift" --lock
+          if swift "$RUNNER_TEMP/lock.swift" | grep -q 'locked: true'; then
+            echo '--- screen locked'
+            probe || status=1
+            swift "$RUNNER_TEMP/lock.swift"
+          else
+            echo "::warning::this runner could not lock its screen; the locked case needs the manual test"
+          fi
+          exit $status
+      - name: Clean up
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${PLIST:-}" ]]; then rm -f "$PLIST"; fi
+          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi
   assemble:
     needs: [build, sign-macos]
     # Pull requests skip signing and assemble their ad-hoc builds.
