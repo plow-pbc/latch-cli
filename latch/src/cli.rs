@@ -755,6 +755,10 @@ pub struct LoginArgs {
     /// Name of this peer, unique in the account [default: a machine's hostname; an agent's own name in Plow]
     #[arg(long)]
     pub name: Option<String>,
+
+    /// For an app: report the login as JSON lines on stdout (code, waiting, verified, expired, error), logging in by text with no terminal needed. Never prints the token
+    #[arg(long)]
+    pub events: bool,
 }
 
 /// Which host a command goes to. Without `--host` or `$LATCH_HOST`, latch

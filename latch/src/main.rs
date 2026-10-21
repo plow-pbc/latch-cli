@@ -124,6 +124,29 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
     let state = StateDir::new(state_dir)?;
     state.check_format()?;
     match command {
+        Command::Login(args) if args.events => {
+            // Every ending is a line too; the failure still goes to stderr.
+            match login::run(&state, args).await {
+                Ok(output) => {
+                    let peer = &output.peer;
+                    login::event(json!({"type": "verified", "peer":
+                        {"name": peer.name, "key": peer.key, "kind": peer.kind}}));
+                    Ok(Printed {
+                        text: String::new(),
+                        exit: ExitCode::SUCCESS,
+                    })
+                }
+                Err(failure) if failure.code == "code_expired" => {
+                    login::event(json!({"type": "expired"}));
+                    Err(failure)
+                }
+                Err(failure) => {
+                    login::event(json!({"type": "error", "error":
+                        {"code": failure.code, "message": failure.message}}));
+                    Err(failure)
+                }
+            }
+        }
         Command::Login(args) => {
             let output = login::run(&state, args).await?;
             // A person at a terminal reads one line; a pipe gets the JSON.

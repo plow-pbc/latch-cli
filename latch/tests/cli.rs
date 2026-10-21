@@ -1842,3 +1842,67 @@ fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_rest
     );
     assert!(lifecycle.close().success());
 }
+
+fn event_lines(output: &Output) -> Vec<Value> {
+    String::from_utf8(output.stdout.clone())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_login_with_events_reports_each_step_as_json_with_no_terminal_and_no_token() {
+    let (api_url, server) = plow_texted_at_once();
+    let dir = test_dir();
+    let state = dir.path().join("state");
+
+    let login = latch(
+        &state,
+        &["login", "--events", "--api-url", &api_url, "--name", "mac"],
+        &[],
+    );
+
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let lines = event_lines(&login);
+    let key = lines[2]["peer"]["key"].clone();
+    assert_eq!(
+        lines,
+        [
+            json!({"type": "code", "code": "TRY12", "send_to": "+14155550100",
+                   "send_to_display": "+1 415-555-0100", "smsto": "SMSTO:+14155550100:TRY12",
+                   "sms_link": "sms:+14155550100?&body=TRY12", "expires_at": null}),
+            json!({"type": "waiting"}),
+            json!({"type": "verified", "peer": {"name": "mac", "key": key, "kind": "device"}}),
+        ]
+    );
+    assert!(login.stderr.is_empty(), "{login:?}");
+    assert!(!String::from_utf8_lossy(&login.stdout).contains("texted-login"));
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+#[test]
+fn a_login_with_events_whose_code_expires_says_so_and_fails() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100", "expires_at": "2026-10-21T06:00:00Z"});
+    let (api_url, server) = fake_plow(vec![(200, activation), (410, json!({"detail": "expired"}))]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+
+    let login = latch(
+        &state,
+        &["login", "--events", "--api-url", &api_url, "--name", "mac"],
+        &[],
+    );
+
+    assert_eq!(login.status.code(), Some(1), "{login:?}");
+    let lines = event_lines(&login);
+    assert_eq!(lines[0]["expires_at"], "2026-10-21T06:00:00Z");
+    assert_eq!(
+        lines[1..],
+        [json!({"type": "waiting"}), json!({"type": "expired"})]
+    );
+    let error: Value = serde_json::from_slice(&login.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "code_expired");
+    server.join().unwrap();
+}

@@ -6,9 +6,11 @@
 //! token); the owner token saved here by an earlier login; the agent's own
 //! credential; and, only with a person at the terminal, a login by text.
 
+use std::io::Write;
 use std::time::Duration;
 
 use serde::Serialize;
+use serde_json::{Value, json};
 
 use crate::cli::{BUILD_API_URL, LoginArgs};
 use crate::credential;
@@ -59,7 +61,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         Source::Saved(token)
     } else if let Some(token) = credential::agent_token_if_present()? {
         Source::Agent(token)
-    } else if term::interactive() {
+    } else if args.events || term::interactive() {
         Source::ByText
     } else {
         // Never wait on a text nobody will see.
@@ -86,7 +88,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             let Some(name) = &name else {
                 return Err(missing("--name"));
             };
-            by_text(state, &api_url, name).await?
+            by_text(state, &api_url, name, args.events).await?
         }
     };
 
@@ -176,19 +178,35 @@ pub async fn register_again(state: &StateDir) -> Result<(), Failure> {
 /// phone, and the phone's account gets a new owner login for this machine.
 /// The token is saved at once, so a login that fails after this point
 /// (a name already taken, say) does not need another text. The code is
-/// shown once and never logged.
-async fn by_text(state: &StateDir, api_url: &str, name: &str) -> Result<String, Failure> {
+/// shown once and never logged. With `events`, what to text is a JSON line
+/// for an app to show instead.
+async fn by_text(
+    state: &StateDir,
+    api_url: &str,
+    name: &str,
+    events: bool,
+) -> Result<String, Failure> {
     let plow = Plow::anonymous(api_url);
     let activation = plow.activate(name).await?;
     let code = &activation.display_code;
-    // Clicking the QR code or the link under it opens Messages on a Mac, in a
-    // terminal that shows links; elsewhere they are just drawn.
     let link = sms_link(&activation.send_to, code);
-    for line in term::qr(&smsto(&activation.send_to, code)).lines() {
-        eprintln!("{}", term::link(&link, line));
+    if events {
+        event(
+            json!({"type": "code", "code": code, "send_to": activation.send_to,
+                     "send_to_display": for_people(&activation.send_to),
+                     "smsto": smsto(&activation.send_to, code), "sms_link": link,
+                     "expires_at": activation.expires_at}),
+        );
+        event(json!({"type": "waiting"}));
+    } else {
+        // Clicking the QR code or the link under it opens Messages on a Mac,
+        // in a terminal that shows links; elsewhere they are just drawn.
+        for line in term::qr(&smsto(&activation.send_to, code)).lines() {
+            eprintln!("{}", term::link(&link, line));
+        }
+        eprintln!("{}", term::link(&link, &link));
+        eprintln!("Text {code} to {}", for_people(&activation.send_to));
     }
-    eprintln!("{}", term::link(&link, &link));
-    eprintln!("Text {code} to {}", for_people(&activation.send_to));
 
     let mut failures = 0;
     loop {
@@ -202,7 +220,7 @@ async fn by_text(state: &StateDir, api_url: &str, name: &str) -> Result<String, 
                 state.create()?;
                 state.save_token(&token)?;
                 // At a terminal, the result says it, with the name.
-                if !term::stdout_is_terminal() {
+                if !term::stdout_is_terminal() && !events {
                     eprintln!("Logged in.");
                 }
                 return Ok(token);
@@ -227,6 +245,12 @@ async fn by_text(state: &StateDir, api_url: &str, name: &str) -> Result<String, 
         };
         tokio::time::sleep(wait).await;
     }
+}
+
+/// One line of `login --events`, printed at once.
+pub fn event(line: Value) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}").and_then(|()| out.flush());
 }
 
 /// What the QR code holds: a phone's camera opens its messaging app with
