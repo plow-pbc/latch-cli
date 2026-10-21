@@ -97,7 +97,10 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
 
 Both the field's frame and the top-level page must be HTTPS with a real
 host: `http`, IP addresses, local hosts, a page without an address and
-opaque (sandboxed) frames are refused (`origin_mismatch`).
+opaque (sandboxed) frames are refused (`origin_mismatch`). While a filled
+secret may be on a page, the browser stops every GET request whose address
+carries it as a query parameter, as a form sent by GET would; the press, or
+the agent's own click, then fails `get_form`, and nothing was sent.
 
 - **login:** both share the item's registrable domain (public-suffix list,
   private suffixes included): `shop.example` fills on `login.shop.example`,
@@ -179,8 +182,9 @@ values left the page, every session on the profile stays paused, through
 any later fill too, until a cleanup confirms the page holds none or the
 session that filled is closed. No reading is taken while a fill holds the
 browser, and an element list marks a field holding a filled value as
-`filled`, never showing the value. While a filled value is on the page,
-`eval` is refused (`secret_on_page`). The result says
+`filled`, never showing the value. While a filled value may be on a page,
+in whichever of the session's tabs, `eval` and screenshots are refused
+(`secret_on_page`) until it is gone or its tab is closed. The result says
 `submitted`, not "logged in" or "paid", with each field's outcome and the
 number of stages.
 

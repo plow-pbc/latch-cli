@@ -281,6 +281,14 @@ impl Driver for Camoufox {
     fn limit(&mut self, deadline: Option<Instant>) {
         self.deadline = deadline;
     }
+    fn guard(&mut self, values: &[String]) -> Result<(), Failure> {
+        self.ask::<Value>("guard", json!({"values": values}))?;
+        Ok(())
+    }
+    fn guard_stopped(&mut self) -> bool {
+        self.ask::<bool>("guard_stopped", json!({}))
+            .unwrap_or(false)
+    }
 
     fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
         self.ask("tabs", json!({}))

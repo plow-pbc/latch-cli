@@ -178,6 +178,18 @@ pub trait Driver {
 
     /// A PNG of the active tab's viewport and how its pixels map to CSS pixels.
     fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure>;
+
+    /// Until called again with none, the browser stops every GET request,
+    /// in any tab, whose address has a query parameter equal to one of
+    /// `values`: a form sent by GET would put a filled vault value there.
+    fn guard(&mut self, values: &[String]) -> Result<(), Failure> {
+        let _ = values;
+        Ok(())
+    }
+    /// Whether the guard stopped a request since this was last asked.
+    fn guard_stopped(&mut self) -> bool {
+        false
+    }
     /// Closes the browser and reaps every process it started.
     fn close(&mut self) -> Value;
 }
@@ -229,6 +241,12 @@ impl<B: Runtime> Driver for Seat<B> {
     }
     fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
         self.browser().tabs()
+    }
+    fn guard(&mut self, values: &[String]) -> Result<(), Failure> {
+        self.browser().guard(values)
+    }
+    fn guard_stopped(&mut self) -> bool {
+        self.browser().guard_stopped()
     }
     fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure> {
         self.browser().new_tab(url)

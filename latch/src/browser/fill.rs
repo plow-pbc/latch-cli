@@ -842,7 +842,8 @@ async fn release_and_set(
             )
         })?;
         for (target, piece) in boxes.iter().zip(pieces) {
-            let set = json!({"op": "set_value", "target": target["ref"], "value": piece});
+            let set = json!({"op": "set_value", "target": target["ref"], "value": piece,
+                             "secret": suggest::secret_field(&meta, label)});
             let answer = step(session, set, audit).await?;
             if answer["held"] != true {
                 return Err(Failure::failed(

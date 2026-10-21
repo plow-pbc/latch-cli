@@ -32,6 +32,8 @@ conformance!(
     consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewed,
     with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_dispatch,
     the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent,
+    space_on_a_button_is_judged_as_a_click,
+    a_key_on_an_element_that_cannot_take_the_focus_is_refused,
 );
 
 /// The test site, plus the answers to its expense and order forms.
@@ -777,6 +779,57 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
     let read = bare.history(audit["request"].as_str().unwrap());
     assert_eq!(read["stop"]["model_failed"], "no_model");
     bare.close().await;
+}
+
+async fn space_on_a_button_is_judged_as_a_click(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let site = site();
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let mut h = Harness::start(&state, Some(fake)).await;
+    // Space on "Place order" activates it as a click would, so it stops
+    // for the same confirmation.
+    let page = h.open(&format!("{site}/order.html")).await;
+    let place = find(&page, "button", "Place order");
+    let failure = h
+        .act(ActAction::Press, &[&place, "Space"], None)
+        .await
+        .unwrap_err();
+    assert_eq!(refused(&failure), (Exit::Denied, "confirm_needed"));
+    assert_eq!(confirmation(&failure)["target"]["name"], "Place order");
+    assert!(
+        h.text().await.contains("Review your order"),
+        "nothing was placed"
+    );
+    h.close().await;
+}
+
+async fn a_key_on_an_element_that_cannot_take_the_focus_is_refused(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let site = site();
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let mut h = Harness::start(&state, Some(fake)).await;
+    // The key would go to whatever had the focus before, here the search
+    // field, and send its form.
+    let page = h.open(&format!("{site}/disabled.html")).await;
+    let field = find(&page, "textbox", "Search");
+    let archive = find(&page, "button", "Archive");
+    h.act(ActAction::Type, &[&field, "socks"], None)
+        .await
+        .unwrap();
+    let failure = h
+        .act(ActAction::Press, &[&archive, "Enter"], None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused(&failure),
+        (Exit::Failed, "not_focused"),
+        "{failure:?}"
+    );
+    assert!(
+        h.text().await.contains("Search the shop"),
+        "the form was not sent"
+    );
+    h.close().await;
 }
 
 async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(engine: &str) {

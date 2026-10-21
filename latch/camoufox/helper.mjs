@@ -82,6 +82,24 @@ const frameIds = new WeakMap();
 const framesById = new Map();
 let nextFrame = 0;
 let nextDocument = 0;
+// Filled vault values no GET request may carry as a query parameter
+// (`guard`), and whether one was stopped since last asked.
+let guardValues = [];
+let guardStopped = false;
+const guardRoute = (route, request) => {
+  if (request.method() === "GET") {
+    let params = [];
+    try {
+      params = [...new URL(request.url()).searchParams.values()];
+    } catch {}
+    if (params.some((value) => guardValues.includes(value))) {
+      guardStopped = true;
+      // Aborted, so no error page keeps the address as the tab's.
+      return route.abort("aborted");
+    }
+  }
+  return route.fallback();
+};
 
 /// `work`, unless a dialog opens or the deadline passes first. Input that
 /// opens a dialog is not finished until the dialog is answered, so it is
@@ -641,6 +659,22 @@ const ops = {
       page.mainFrame().evaluate("[innerWidth, innerHeight, scrollX, scrollY]"),
     );
     return { png: png.toString("base64"), css_width: width, css_height: height, scroll_x: scrollX, scroll_y: scrollY };
+  },
+
+  /// Until called again with none, every GET request, in any tab, whose
+  /// address has a query parameter equal to one of `values` is stopped.
+  async guard({ values }) {
+    const was = guardValues.length > 0;
+    guardValues = values;
+    if (values.length && !was) await guarded(context.route("**/*", guardRoute));
+    if (!values.length && was) await guarded(context.unroute("**/*", guardRoute));
+    return {};
+  },
+
+  guard_stopped() {
+    const stopped = guardStopped;
+    guardStopped = false;
+    return stopped;
   },
 
   async close() {

@@ -204,7 +204,8 @@ person's pace (`isTrusted` is true); `select` focuses the list and types
 the option's label, as a person picks one without opening it. `type`
 never types into a password or secret field (`secret_field`, exit 4).
 While a dialog is open, every call but `dialog` is refused with
-`dialog_open`.
+`dialog_open`. A key goes only to an element that takes the focus: a hidden
+or disabled one is refused (`not_focused`).
 
 `eval` runs the script's expression in the page's main frame, in the
 page's own world (a promise is awaited), and answers its JSON value (at
@@ -279,7 +280,8 @@ measures a shopping task's judgments on the decision model.
 ## Plans, literal steps and confirmations
 
 The agent writes every step and every piece of text; latch's decision
-model only chooses: whether a click or Enter can't be undone, whether a
+model only chooses: whether a click or Enter (or Space, which activates as
+a click does) can't be undone, whether a
 sentence check holds, and, in a step written as a goal, the next
 operation and its target among those the page offers.
 

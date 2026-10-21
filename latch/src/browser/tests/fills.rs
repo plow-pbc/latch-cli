@@ -36,6 +36,8 @@ conformance!(
     a_fill_in_one_session_pauses_every_session_on_its_browser,
     agent_code_is_noted_per_site_and_kept_with_the_profile,
     a_login_after_an_edit_fills_the_new_password,
+    a_password_never_goes_into_a_form_sent_by_get,
+    a_filled_value_is_guarded_in_every_tab_and_from_screenshots,
 );
 
 /// `value` as an agent or the audit saw it, for the leak checks, less what
@@ -2081,6 +2083,127 @@ async fn a_card_confirmation_binds_its_mapping_and_frames(engine: &str) {
         );
     }
     h.call("close", json!({})).await.ok();
+}
+
+async fn a_filled_value_is_guarded_in_every_tab_and_from_screenshots(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let vault = Vault::new(state.clone());
+    let identity = vault
+        .with(|s| {
+            s.add(item(
+                IDENTITY,
+                "Home",
+                &[],
+                &[("first name", "Ada"), ("city", "Lovelace-on-Thames")],
+            ))
+        })
+        .unwrap();
+    let local = format!("http://127.0.0.1:{}", site());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers).await;
+    let address = h
+        .call("open", json!({"url": format!("{local}/address.html")}))
+        .await
+        .unwrap();
+    let fields = json!([
+        ["first name", [find(&address, "textbox", "First name")]],
+        ["city", [find(&address, "textbox", "City")]],
+    ]);
+    let (filled, _) = h
+        .fill(json!({"item": identity.item, "fields": fields}))
+        .await;
+    assert_eq!(filled.unwrap()["submitted"], false);
+    let refused = |result: Result<Value, crate::failure::Failure>| {
+        let failure = result.unwrap_err();
+        (failure.exit, failure.code)
+    };
+    let guarded = (crate::failure::Exit::Denied, "secret_on_page".to_string());
+
+    // A picture would show the values.
+    assert_eq!(refused(h.call("screenshot", json!({})).await), guarded);
+    // Nor does another tab let anything read them: eval there, and back
+    // on the filled tab, are refused alike.
+    h.call(
+        "tab",
+        json!({"action": "new", "url": format!("{local}/login.html")}),
+    )
+    .await
+    .unwrap();
+    let read = json!({"script": "document.title"});
+    assert_eq!(refused(h.call("eval", read.clone()).await), guarded);
+    h.call("tab", json!({"action": "switch", "tab": "t1"}))
+        .await
+        .unwrap();
+    let values = json!({"script": "[...document.querySelectorAll('input')].map((i) => i.value)"});
+    assert_eq!(refused(h.call("eval", values).await), guarded);
+    // Once the filled tab is closed, nothing of it is left to guard.
+    h.call("tab", json!({"action": "close"})).await.unwrap();
+    let title = h.call("eval", read).await.unwrap();
+    assert_eq!(title["value"], "latch login test");
+    assert!(h.call("screenshot", json!({})).await.is_ok());
+    assert!(!h.shown.join("\n").contains("Lovelace-on-Thames"));
+    h.call("close", json!({})).await.unwrap();
+}
+
+async fn a_password_never_goes_into_a_form_sent_by_get(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let local = format!("http://127.0.0.1:{}", site());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers).await;
+    for (email, password, button) in [
+        ("Email", "Password", "Sign in"),
+        ("Work email", "Work password", "Sign in at work"),
+        ("Other email", "Other password", "Sign in elsewhere"),
+    ] {
+        let page = h
+            .call("open", json!({"url": format!("{local}/get-login.html")}))
+            .await
+            .unwrap();
+        let (refused, _) = h
+            .fill(json!({
+                "item": login.item,
+                "fields": [
+                    ["username", [find(&page, "textbox", email)]],
+                    ["password", [find(&page, "textbox", password)]],
+                ],
+                "press": find(&page, "button", button),
+            }))
+            .await;
+        let refused = refused.unwrap_err();
+        println!("{button}: {} ({})", refused.code, refused.message);
+        assert_eq!(
+            (refused.exit, refused.code.as_str()),
+            (crate::failure::Exit::Denied, "get_form")
+        );
+        // Nothing was sent: every tab is still on the page, none on the
+        // address that would carry the password, and the agent is back.
+        let seen = h.call("observe", json!({})).await.unwrap();
+        for tab in seen["tabs"].as_array().unwrap() {
+            let url = tab["url"].as_str().unwrap();
+            assert!(url.ends_with("/get-login.html"), "{seen}");
+        }
+    }
+    assert!(!h.shown.join("\n").contains(PASSWORD));
+    h.call("close", json!({})).await.unwrap();
 }
 
 async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {

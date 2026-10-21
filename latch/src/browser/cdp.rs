@@ -19,6 +19,46 @@ use crate::failure::Failure;
 /// other schemes are never paused.
 pub const OFF_THE_WEB: &[&str] = &["file", "filesystem", "chrome", "devtools", "view-source"];
 
+/// Whether `url` has a query parameter whose value, decoded as a form
+/// encodes it, is one of `values`.
+pub fn carries(url: &str, values: &[String]) -> bool {
+    if values.is_empty() {
+        return false;
+    }
+    let Some((_, query)) = url.split_once('?') else {
+        return false;
+    };
+    let query = query.split('#').next().unwrap_or_default();
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('=').map(|(_, value)| decoded(value)))
+        .any(|value| values.contains(&value))
+}
+
+/// A query value as a form encodes it: `+` for a space, `%XX` for a byte.
+fn decoded(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+            (b'+', _) => out.push(b' '),
+            (byte, _) => out.push(byte),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 pub struct Cdp {
     to_chrome: File,
     from_chrome: File,
@@ -33,6 +73,10 @@ pub struct Cdp {
     removed: HashSet<String>,
     /// A reply did not come in time since this was last asked.
     unanswered: bool,
+    /// Filled vault values no GET request may carry as a query parameter
+    /// (`Driver::guard`), and whether one was stopped since last asked.
+    pub guard: Vec<String>,
+    pub guard_stopped: bool,
 }
 
 /// The two pipes for one Chrome: the ends Chrome gets (to become its fd 3
@@ -59,6 +103,8 @@ pub fn pipes() -> io::Result<Pipes> {
             pages: HashSet::new(),
             removed: HashSet::new(),
             unanswered: false,
+            guard: Vec::new(),
+            guard_stopped: false,
         },
     })
 }
@@ -256,11 +302,33 @@ impl Cdp {
                     None => true,
                 }
             }
-            // Only a load of a scheme off the web is paused: it never goes on.
+            // A load of a scheme off the web never goes on; while a guard
+            // stands, every request is paused, and a GET carrying a guarded
+            // value is stopped too.
             "Fetch.requestPaused" => {
-                let fail =
-                    json!({"requestId": params["requestId"], "errorReason": "BlockedByClient"});
-                let _ = self.send("Fetch.failRequest", fail, event["sessionId"].as_str());
+                let request = &params["request"];
+                let url = request["url"].as_str().unwrap_or_default();
+                let web = url.starts_with("http://") || url.starts_with("https://");
+                let carries = request["method"] == "GET" && carries(url, &self.guard);
+                let session = event["sessionId"].as_str();
+                if web && !carries {
+                    let _ = self.send(
+                        "Fetch.continueRequest",
+                        json!({"requestId": params["requestId"]}),
+                        session,
+                    );
+                } else {
+                    self.guard_stopped |= carries;
+                    // An aborted navigation commits no error page, which
+                    // would keep the address, value and all, as the tab's.
+                    let reason = if carries {
+                        "Aborted"
+                    } else {
+                        "BlockedByClient"
+                    };
+                    let fail = json!({"requestId": params["requestId"], "errorReason": reason});
+                    let _ = self.send("Fetch.failRequest", fail, session);
+                }
                 false
             }
             // An open dialog blocks its page until latch answers it, so
@@ -356,6 +424,17 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guarded_value_is_found_only_as_a_whole_query_value() {
+        let guard = vec!["pa ss&w%rd".to_string()];
+        let found = |url: &str| carries(url, &guard);
+        assert!(found("https://a.example/w?u=ada&p=pa+ss%26w%25rd"));
+        assert!(found("https://a.example/w?p=pa%20ss%26w%25rd#top"));
+        assert!(!found("https://a.example/w?p=pa+ss%26w%25rd2"));
+        assert!(!found("https://a.example/pa ss&w%rd"));
+        assert!(!carries("https://a.example/w?p=x", &[]));
+    }
 
     #[test]
     fn base64_decodes_every_padding() {

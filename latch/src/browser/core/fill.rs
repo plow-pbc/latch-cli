@@ -23,8 +23,9 @@
 //!
 //! `FillInventory` reports every element of a snapshot as a fill sees it
 //! (`__latch.controls`), for the host's suggestions and checks; it pauses
-//! nothing. No step answers with a value. While a filled value is still on
-//! the page (a fill without a press), `eval` is refused.
+//! nothing. No step answers with a value. While a filled value may still be
+//! on a page (a fill without a press), in whichever tab, `eval` and
+//! screenshots are refused.
 
 use std::time::{Duration, Instant};
 
@@ -72,13 +73,23 @@ pub struct State {
     /// The snapshot the fill was prepared on.
     snapshot: Option<String>,
     targets: Vec<Target>,
-    /// Frames a value went into, to check for leftovers and clean.
-    filled: Vec<Frame>,
+    /// Frames a value went into, with their tab, to check for leftovers
+    /// and clean.
+    filled: Vec<(String, Frame)>,
     /// A cleanup could not confirm the values left the page; until a later
     /// one does, nobody is let back in.
     unclean: bool,
     /// The page's fields as the fill was prepared: a later stage differs.
     stage: Option<String>,
+    /// Secrets filled into the page, which no GET request may carry while
+    /// they may be on it (`Driver::guard`).
+    guarded: Vec<String>,
+}
+
+/// The filled frames still open, in the active tab and in others.
+struct Filled {
+    here: Vec<(String, Frame)>,
+    elsewhere: Vec<(String, Frame)>,
 }
 
 impl<D: Driver> Core<D> {
@@ -274,7 +285,12 @@ impl<D: Driver> Core<D> {
 
     /// One value into one prepared field, after checking its element,
     /// document and origin again. Answers whether the field holds it.
-    pub(super) fn set_value(&mut self, target: &str, value: &str) -> Result<Value, Failure> {
+    pub(super) fn set_value(
+        &mut self,
+        target: &str,
+        value: &str,
+        secret: bool,
+    ) -> Result<Value, Failure> {
         let Some(at) = self.fill.targets.iter().position(|t| t.reference == target) else {
             return Err(Failure::usage(
                 "bad_request",
@@ -295,6 +311,11 @@ impl<D: Driver> Core<D> {
             .any(|f| f.id == target.frame.id && f.document == target.frame.document)
         {
             return Err(refused("the document was replaced"));
+        }
+        // Guarded before it reaches the page.
+        if secret && !self.fill.guarded.iter().any(|v| v == value) {
+            self.fill.guarded.push(value.to_string());
+            self.driver.guard(&self.fill.guarded)?;
         }
         let (frame, snapshot, index, origin, token) = (
             target.frame.clone(),
@@ -318,9 +339,10 @@ impl<D: Driver> Core<D> {
             .fill
             .filled
             .iter()
-            .any(|f| f.id == frame.id && f.document == frame.document)
+            .any(|(_, f)| f.id == frame.id && f.document == frame.document)
         {
-            self.fill.filled.push(frame);
+            let tab = self.driver.active_tab();
+            self.fill.filled.push((tab, frame));
         }
         if let Some(why) = answer["refused"].as_str() {
             return Err(refused(why));
@@ -348,6 +370,7 @@ impl<D: Driver> Core<D> {
         let at = self.locate(&snapshot, position)?;
         self.driver.click(at.x, at.y)?;
         let events = self.driver.settle()?;
+        self.no_secret_sent()?;
         Ok(json!({"pressed": target, "events": events}))
     }
 
@@ -371,7 +394,7 @@ impl<D: Driver> Core<D> {
             std::thread::sleep(Duration::from_millis(200));
             let _ = self.driver.settle();
         }
-        for frame in self.live_filled()? {
+        for (_, frame) in self.live_filled()?.here {
             let _ = self.driver.run(&frame, "__latch.clearFilled()");
         }
         // Clean only on a positive answer, given after the page had a moment
@@ -402,22 +425,44 @@ impl<D: Driver> Core<D> {
         Ok(Value::Object(result))
     }
 
-    /// Filled frames whose document is still the one filled.
-    fn live_filled(&mut self) -> Result<Vec<Frame>, Failure> {
+    /// Filled frames whose document may still be the one filled: in the
+    /// active tab, those whose document is unchanged; in another tab, every
+    /// one while that tab is open, since only the active tab's frames can
+    /// be read.
+    fn live_filled(&mut self) -> Result<Filled, Failure> {
+        let active = self.driver.active_tab();
+        let tabs = self.driver.tabs()?;
         let frames = self.driver.frames()?;
-        self.fill.filled.retain(|f| {
-            frames
-                .iter()
-                .any(|now| now.id == f.id && now.document == f.document)
+        self.fill.filled.retain(|(tab, f)| {
+            if *tab == active {
+                frames
+                    .iter()
+                    .any(|now| now.id == f.id && now.document == f.document)
+            } else {
+                tabs.iter().any(|open| open.tab == *tab)
+            }
         });
-        Ok(self.fill.filled.clone())
+        let (here, elsewhere) = self
+            .fill
+            .filled
+            .iter()
+            .cloned()
+            .partition(|(tab, _)| *tab == active);
+        Ok(Filled { here, elsewhere })
     }
 
     /// How many filled fields still hold a value; an error when a filled
-    /// document cannot be read.
+    /// document cannot be read, as in a tab that is not the active one.
     fn holding(&mut self) -> Result<u64, Failure> {
+        let filled = self.live_filled()?;
+        if !filled.elsewhere.is_empty() {
+            return Err(Failure::failed(
+                "engine_error",
+                "a tab latch filled is not the active one".into(),
+            ));
+        }
         let mut total = 0;
-        for frame in self.live_filled()? {
+        for (_, frame) in filled.here {
             // A frame whose document is still the filled one but cannot be
             // read is not known to be empty.
             let count = self.driver.run(&frame, "__latch.holding()")?;
@@ -428,16 +473,37 @@ impl<D: Driver> Core<D> {
                 )
             })?;
         }
+        // Nothing filled is left anywhere: no request needs stopping.
+        if total == 0 && !self.fill.guarded.is_empty() {
+            self.fill.guarded.clear();
+            self.driver.guard(&[])?;
+        }
         Ok(total)
     }
 
-    /// `eval` is refused while a filled value is still on the page.
-    pub(super) fn no_value_on_page(&mut self) -> Result<(), Failure> {
+    /// Refused when the page just tried to send a filled secret in a GET
+    /// request's address: the browser stopped it, and nothing was sent.
+    pub(super) fn no_secret_sent(&mut self) -> Result<(), Failure> {
+        if self.driver.guard_stopped() {
+            return Err(Failure::new(
+                Exit::Denied,
+                "get_form",
+                "the page tried to send a value latch filled from the vault in an address (a GET request); latch stopped it, and nothing was sent".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `eval` and screenshots are refused while a filled value may still
+    /// be on a page of the session, in any of its tabs.
+    pub(super) fn no_value_on_page(&mut self, what: &str) -> Result<(), Failure> {
         if self.holding().ok() != Some(0) {
             return Err(Failure::new(
                 Exit::Denied,
                 "secret_on_page",
-                "a value latch filled from the vault is still on this page; eval waits until it is gone".into(),
+                format!(
+                    "a value latch filled from the vault may still be on a page of this session; {what} waits until it is gone (or its tab is closed)"
+                ),
             ));
         }
         Ok(())
@@ -563,11 +629,14 @@ mod tests {
     fn a_cleanup_that_fails_keeps_every_later_resume_out() {
         let mut core = Core::new(Broken);
         core.paused = true;
-        core.fill.filled.push(Frame {
-            id: "f1".into(),
-            parent: None,
-            document: "d1".into(),
-        });
+        core.fill.filled.push((
+            "t1".into(),
+            Frame {
+                id: "f1".into(),
+                parent: None,
+                document: "d1".into(),
+            },
+        ));
         let cleaned = core.call(Call::FillCleanup, None).err().unwrap();
         assert_eq!(cleaned.code, "engine_error");
         // As after a later fill that failed before releasing anything.

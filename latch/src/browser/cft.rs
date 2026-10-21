@@ -204,16 +204,8 @@ impl Cft {
         // Every tab's and frame's loads of a scheme off the web stop before
         // they start, in any tab and however they came about; `cdp` fails
         // each one it hears of (`Fetch.requestPaused`).
-        let patterns: Vec<Value> = cdp::OFF_THE_WEB
-            .iter()
-            .map(|scheme| json!({"urlPattern": format!("{scheme}:*")}))
-            .collect();
-        self.cdp.call(
-            "Fetch.enable",
-            json!({"patterns": patterns}),
-            None,
-            deadline,
-        )?;
+        self.cdp
+            .call("Fetch.enable", fetch_patterns(false), None, deadline)?;
         let folder = self.scratch.join("downloads");
         fs::create_dir_all(&folder).map_err(io_failure)?;
         self.cdp.call(
@@ -986,9 +978,36 @@ impl Runtime for Cft {
     }
 }
 
+/// What `Fetch.enable` pauses: loads of a scheme off the web, and while a
+/// guard stands (`Driver::guard`) every request, for `cdp` to check.
+fn fetch_patterns(guarding: bool) -> Value {
+    let mut patterns: Vec<Value> = cdp::OFF_THE_WEB
+        .iter()
+        .map(|scheme| json!({"urlPattern": format!("{scheme}:*")}))
+        .collect();
+    if guarding {
+        patterns.push(json!({"urlPattern": "*", "requestStage": "Request"}));
+    }
+    json!({"patterns": patterns})
+}
+
 impl Driver for Cft {
     fn limit(&mut self, deadline: Option<Instant>) {
         self.deadline = deadline;
+    }
+    fn guard(&mut self, values: &[String]) -> Result<(), Failure> {
+        let guarding = !values.is_empty();
+        let was = !self.cdp.guard.is_empty();
+        self.cdp.guard = values.to_vec();
+        if guarding != was {
+            let deadline = self.by(COMMAND);
+            self.cdp
+                .call("Fetch.enable", fetch_patterns(guarding), None, deadline)?;
+        }
+        Ok(())
+    }
+    fn guard_stopped(&mut self) -> bool {
+        std::mem::take(&mut self.cdp.guard_stopped)
     }
 
     fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {

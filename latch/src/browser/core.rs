@@ -58,8 +58,7 @@ pub enum Call {
     },
     Text,
     Screenshot,
-    /// A screenshot for a plan's trail: refused while a value latch filled
-    /// from the vault is on the page.
+    /// A screenshot for a plan's trail.
     Shot,
     Act {
         snapshot: Option<String>,
@@ -155,6 +154,10 @@ pub enum Call {
     SetValue {
         target: String,
         value: String,
+        /// A secret (a password, a code, a card or identity secret): no GET
+        /// request may carry it while it may be on the page.
+        #[serde(default)]
+        secret: bool,
     },
     FillSubmit {
         target: String,
@@ -404,7 +407,11 @@ impl<D: Driver> Core<D> {
             Call::FillInventory { snapshot } => self.fill_inventory(snapshot.as_deref()),
             Call::PrepareFill(prepare) => self.prepare_fill(prepare, &mut audit),
             Call::NextStage => self.next_stage(),
-            Call::SetValue { target, value } => self.set_value(&target, &value),
+            Call::SetValue {
+                target,
+                value,
+                secret,
+            } => self.set_value(&target, &value, secret),
             Call::FillSubmit { target, guard } => self.fill_submit(&target, guard.as_ref()),
             Call::FillCleanup => self.fill_cleanup(),
             Call::FillResume => self.fill_resume(&mut audit),
@@ -413,10 +420,7 @@ impl<D: Driver> Core<D> {
                 self.observe(tab.as_deref(), scope.as_deref(), &mut audit)
             }
             Call::Text => self.text(&mut audit),
-            Call::Screenshot => self.screenshot(&mut audit),
-            Call::Shot => self
-                .no_value_on_page()
-                .and_then(|()| self.screenshot(&mut audit)),
+            Call::Screenshot | Call::Shot => self.screenshot(&mut audit),
             Call::Act {
                 snapshot,
                 action,
@@ -648,7 +652,7 @@ impl<D: Driver> Core<D> {
         self.page(audit)?;
         self.needs("eval", audit)?;
         self.no_dialog()?;
-        self.no_value_on_page()?;
+        self.no_value_on_page("eval")?;
         let value = self.driver.eval(script)?;
         let size = serde_json::to_vec(&value).map_or(0, |bytes| bytes.len());
         if size > MAX_EVAL_RESULT {
@@ -758,9 +762,12 @@ impl<D: Driver> Core<D> {
         Ok(Value::Object(result))
     }
 
+    /// Refused while a value latch filled may still be on a page: a
+    /// picture would show it.
     fn screenshot(&mut self, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
         self.no_dialog()?;
         self.page(audit)?;
+        self.no_value_on_page("a screenshot")?;
         let (meta, png) = self.driver.screenshot()?;
         self.bytes = Some(png);
         Ok(meta)
@@ -836,6 +843,7 @@ impl<D: Driver> Core<D> {
         }
         result.insert("dispatched".into(), json!(true));
         let events = self.driver.settle()?;
+        self.no_secret_sent()?;
         self.after(&before, events, &mut result)?;
         Ok(Value::Object(result))
     }
@@ -927,8 +935,7 @@ impl<D: Driver> Core<D> {
                 }
                 // Focused, the list takes the option's label typed as keys,
                 // as a person picks one without opening it.
-                self.driver
-                    .run(&frame, &format!("__latch.focus({snapshot:?}, {index})"))?;
+                self.focus(&frame, snapshot, index)?;
                 self.driver.type_text(choice)?;
                 let selected = self
                     .driver
@@ -943,12 +950,7 @@ impl<D: Driver> Core<D> {
             }
             Action::Press => {
                 let key = required(text, "press needs a key, such as Enter")?;
-                let focused = self
-                    .driver
-                    .run(&frame, &format!("__latch.focus({snapshot:?}, {index})"))?;
-                if focused != true {
-                    return Err(stale());
-                }
+                self.focus(&frame, snapshot, index)?;
                 self.driver.press(key)
             }
             Action::Scroll => {
@@ -957,6 +959,25 @@ impl<D: Driver> Core<D> {
             }
             Action::Back => unreachable!("handled without a target"),
         }
+    }
+
+    /// Gives the element the focus, so keys go to it; refused when it does
+    /// not take it (hidden, disabled, or not focusable).
+    fn focus(&mut self, frame: &Frame, snapshot: &str, index: usize) -> Result<(), Failure> {
+        let focused = self
+            .driver
+            .run(frame, &format!("__latch.focus({snapshot:?}, {index})"))?;
+        if focused.is_null() {
+            return Err(stale());
+        }
+        if focused != true {
+            return Err(Failure::failed(
+                "not_focused",
+                "that element did not take the focus (hidden, disabled or not focusable); nothing was pressed"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Brings the element into view and finds a point that reaches it,

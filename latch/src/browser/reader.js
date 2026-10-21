@@ -603,7 +603,14 @@
     elementAt: (snap, index) => element(snap, index),
     isFileInput: (snap, index) => { const el = element(snap, index); return el ? fileInput(el) : null; },
     describeAt: (snap, index) => { const el = element(snap, index); return el ? describe(el) : null; },
-    focus: (snap, index) => { const el = element(snap, index); if (!el) return false; el.focus(); return true; },
+    // Whether the element now has the focus: a hidden or disabled one
+    // cannot take it, and a key would go to whatever had it before.
+    focus: (snap, index) => {
+      const el = element(snap, index);
+      if (!el) return null;
+      el.focus();
+      return el.getRootNode().activeElement === el;
+    },
     leadsTo: (snap, index, key) => { const el = element(snap, index); return el ? leadsTo(el, key) : null; },
     leadsToFocused: (key) => (document.activeElement ? leadsTo(document.activeElement, key) : null),
     selected: (snap, index) => { const el = element(snap, index); return el ? [...el.selectedOptions].map((o) => o.label) : null; },

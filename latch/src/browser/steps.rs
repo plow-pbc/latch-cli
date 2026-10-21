@@ -799,6 +799,7 @@ impl Run<'_> {
             Op::Fill => self.fill(n, literal).await?,
             Op::Click => self.risky(n, literal, false, None).await?,
             _ if presses_enter(literal) => self.risky(n, literal, true, None).await?,
+            _ if presses_space(literal) => self.risky(n, literal, false, None).await?,
             _ => {
                 self.dispatch(n, literal, None, None, None).await?;
             }
@@ -1438,6 +1439,15 @@ fn presses_enter(literal: &Literal) -> bool {
         Op::Type => text.contains(['\n', '\r']),
         _ => false,
     }
+}
+
+/// Space on a button or check box activates it as a click does.
+fn presses_space(literal: &Literal) -> bool {
+    literal.op == Op::Press
+        && literal
+            .text
+            .as_deref()
+            .is_some_and(|key| key.eq_ignore_ascii_case("space"))
 }
 
 fn action_of(op: Op) -> Action {
