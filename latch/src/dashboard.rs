@@ -6,9 +6,14 @@
 //! While the dashboard has the screen, the host's log lines go to a file
 //! in the state directory instead (see `log.rs`). With `--no-dashboard`,
 //! `NO_COLOR`, or stdout not a terminal, `serve` logs exactly as before.
+//!
+//! Only the dashboard's own thread writes to the terminal. A terminal that
+//! takes no output (paused, or a stalled ssh session) blocks that thread
+//! alone: the host keeps serving, and the screen catches up once it can.
 
 use std::collections::VecDeque;
 use std::io::Write;
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,31 +49,77 @@ pub struct Row {
 struct Board {
     host: String,
     last_heartbeat: Option<Timestamp>,
+    /// What a starting or stopping host is doing, shown in place of the
+    /// heartbeat until the next one.
+    step: Option<String>,
     rows: VecDeque<Row>,
+}
+
+/// Where the screen goes, and whether the host gave the terminal back.
+struct Screen {
+    out: Box<dyn Write + Send>,
+    given_back: bool,
 }
 
 #[derive(Clone)]
 pub struct Dashboard {
     board: Arc<Mutex<Board>>,
+    /// Asks the drawing thread for a redraw; when one is already asked
+    /// for, the change shows in that one.
+    redraw: SyncSender<()>,
+    screen: Arc<Mutex<Screen>>,
 }
 
 impl Dashboard {
     /// Takes over the terminal: the alternate screen, cursor hidden.
     pub fn start(host: &str) -> Dashboard {
-        print!("{}{}", term::ALTERNATE_SCREEN, term::HIDE_CURSOR);
+        Dashboard::start_on(host, Box::new(std::io::stdout()))
+    }
+
+    fn start_on(host: &str, out: Box<dyn Write + Send>) -> Dashboard {
         let board = Board {
             host: host.to_string(),
             last_heartbeat: None,
+            step: None,
             rows: VecDeque::new(),
         };
+        let (redraw, asked) = mpsc::sync_channel(1);
         let dashboard = Dashboard {
             board: Arc::new(Mutex::new(board)),
+            redraw,
+            screen: Arc::new(Mutex::new(Screen {
+                out,
+                given_back: false,
+            })),
         };
-        let redraw = dashboard.clone();
-        tokio::spawn(async move {
+        let board = dashboard.board.clone();
+        let screen = dashboard.screen.clone();
+        std::thread::spawn(move || {
+            let mut first = true;
             loop {
-                redraw.draw();
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let (width, height) = term::size();
+                let text = board.lock().expect("board lock").screen(width, height);
+                let mut screen = screen.lock().expect("screen lock");
+                if screen.given_back {
+                    return;
+                }
+                if first {
+                    let _ = write!(
+                        screen.out,
+                        "{}{}",
+                        term::ALTERNATE_SCREEN,
+                        term::HIDE_CURSOR
+                    );
+                    first = false;
+                }
+                let _ = write!(screen.out, "{}{text}", term::CLEAR);
+                let _ = screen.out.flush();
+                drop(screen);
+                if let Err(RecvTimeoutError::Disconnected) =
+                    asked.recv_timeout(Duration::from_secs(1))
+                {
+                    return;
+                }
             }
         });
         dashboard
@@ -76,12 +127,23 @@ impl Dashboard {
 
     /// Gives the terminal back as it was.
     pub fn stop(&self) {
-        print!("{}{}", term::SHOW_CURSOR, term::MAIN_SCREEN);
-        let _ = std::io::stdout().flush();
+        let mut screen = self.screen.lock().expect("screen lock");
+        screen.given_back = true;
+        let _ = write!(screen.out, "{}{}", term::SHOW_CURSOR, term::MAIN_SCREEN);
+        let _ = screen.out.flush();
     }
 
     pub fn heartbeat(&self) {
-        self.board.lock().expect("board lock").last_heartbeat = Some(Timestamp::now());
+        let mut board = self.board.lock().expect("board lock");
+        board.last_heartbeat = Some(Timestamp::now());
+        board.step = None;
+        drop(board);
+        self.draw();
+    }
+
+    /// Shows what the host is doing now, while it starts or stops.
+    pub fn step(&self, step: &str) {
+        self.board.lock().expect("board lock").step = Some(step.to_string());
         self.draw();
     }
 
@@ -93,12 +155,9 @@ impl Dashboard {
         self.draw();
     }
 
+    /// Asks for a redraw, never waiting for the terminal.
     fn draw(&self) {
-        let (width, height) = term::size();
-        let screen = self.board.lock().expect("board lock").screen(width, height);
-        let mut out = std::io::stdout();
-        let _ = write!(out, "{}{screen}", term::CLEAR);
-        let _ = out.flush();
+        let _ = self.redraw.try_send(());
     }
 }
 
@@ -116,7 +175,10 @@ impl Board {
 
         let mut lines = Vec::new();
         let title = format!(" latch serve · {}", term::one_line(&self.host));
-        let status = format!("last heartbeat {heartbeat} · {per_minute} calls/min ");
+        let status = match &self.step {
+            Some(step) => format!("{step} "),
+            None => format!("last heartbeat {heartbeat} · {per_minute} calls/min "),
+        };
         let gap = width.saturating_sub(title.chars().count() + status.chars().count());
         lines.push(format!(
             "{}{}{}",
@@ -239,6 +301,44 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A terminal that takes no output: every write waits forever.
+    struct Stuck(Mutex<mpsc::Receiver<()>>);
+
+    impl Write for Stuck {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.lock().unwrap().recv();
+            Ok(0)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_terminal_that_takes_no_output_never_holds_up_the_host() {
+        let (_never, wait) = mpsc::channel();
+        let dashboard = Dashboard::start_on("host", Box::new(Stuck(Mutex::new(wait))));
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..100 {
+                dashboard.call(Row {
+                    at: Timestamp::now(),
+                    caller: "agent".to_string(),
+                    op: "exec".to_string(),
+                    target: "pytest".to_string(),
+                    result: "exit 0".to_string(),
+                    refused: false,
+                });
+                dashboard.heartbeat();
+                dashboard.step("stopping");
+            }
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the host's calls returned while the terminal took nothing");
+    }
+
     #[test]
     fn a_multiline_argv_stays_on_one_row() {
         // `latch exec -- sh -c $'echo a\necho b'`, plus an escape sequence.
@@ -251,6 +351,7 @@ mod tests {
         let board = Board {
             host: "host".to_string(),
             last_heartbeat: None,
+            step: None,
             rows: VecDeque::from([Row {
                 at: Timestamp::now(),
                 caller: "agent".to_string(),
