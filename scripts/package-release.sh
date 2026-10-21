@@ -5,13 +5,16 @@ set -eu
 version=$1 target=$2 binary=$3
 cd "$(dirname "$0")/.."
 out="dist/latch-$version-$target"
-mkdir -p "$out/src/google" "$out/src/browser" "$out/camoufox"
+mkdir -p "$out/src/google"
 cp "$binary" "$out/latch"
 cp latch/install.sh "$out/"
 cp latch/src/google/pin.json "$out/src/google/"
-cp latch/src/browser/cft.json latch/src/browser/camoufox.json "$out/src/browser/"
-cp latch/camoufox/package.json latch/camoufox/package-lock.json "$out/camoufox/"
-cp -R latch/camoufox/sqlite "$out/camoufox/"
+if [ -d latch/src/browser ]; then
+  mkdir -p "$out/src/browser" "$out/camoufox"
+  cp latch/src/browser/cft.json latch/src/browser/camoufox.json "$out/src/browser/"
+  cp latch/camoufox/package.json latch/camoufox/package-lock.json "$out/camoufox/"
+  cp -R latch/camoufox/sqlite "$out/camoufox/"
+fi
 cp latch/DOCKER.md "$out/"
 mkdir -p "$out/docker"
 cp latch/docker/seccomp.json latch/docker/latch-bwrap.apparmor "$out/docker/"
