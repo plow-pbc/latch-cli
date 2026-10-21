@@ -21,12 +21,16 @@ folders this host needs. Leave Docker's masked/read-only system paths in place.
 File and Google workers have no `/proc`. Exec workers reuse the container's
 existing `/proc` read-only; this retains Docker's masks but exposes container
 process metadata rather than a private process view. All workers get a minimal
-`/dev` and their permitted writable folders. Exec sees the container's whole
-filesystem read-only, with the shared folders writable on top, a private empty
-`/tmp` and `/run`. File and Google workers get only explicit runtime mounts.
-State is covered by an empty read-only mount, including when an area contains it;
-the running latch is mounted read-only, and folders above either inside a shared
-folder are mount points, so they cannot be renamed.
+`/dev` and their permitted writable folders. Exec and file workers see the
+container's system folders (`/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, `/opt`,
+`/var/lib`) and each `--allow-read` path read-only, the shared folders writable,
+and nothing else; exec also gets a private empty `/tmp` and `/run`. A volume
+mounted elsewhere in the container is visible to workers only if it is shared
+or named with `--allow-read`. Google workers get only explicit runtime mounts.
+State and credentials (see `latch serve --help`) are covered by empty read-only
+mounts, including inside a shared folder; the running latch is mounted
+read-only, and folders above any of these inside a shared folder are mount
+points, so they cannot be renamed.
 
 The profile is Moby's published Docker default at commit
 `4b8214fc4971e06172938a1f1554ccff6647ee80`, plus four allowance groups:

@@ -491,68 +491,6 @@ fn exec_preserves_signals_and_does_not_confuse_them_with_exit_codes() {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn sharing_the_root_folder_allows_writes_but_still_hides_the_state_folder() {
-    let dir = setup();
-    let real = dir.path().canonicalize().unwrap();
-    // A folder on the root filesystem itself, not on a separate mount (the
-    // test folder may be one), where any user may write.
-    let on_root = tempfile::tempdir_in("/var/tmp").unwrap();
-    let on_root = on_root.path().canonicalize().unwrap();
-    let root_worker = |args: &[&str], path: &Path, stdin: &[u8]| {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args(["worker", "--area", "/", "--denied"])
-            .arg(real.join("state"))
-            .arg("--tmpdir")
-            .arg(real.join("tmp"))
-            .args(args)
-            .arg(path)
-            .current_dir(&real)
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let _ = child.stdin.take().unwrap().write_all(stdin);
-        child.wait_with_output().unwrap()
-    };
-
-    let write = root_worker(
-        &["write", "--size", "7", "--"],
-        &on_root.join("new.txt"),
-        b"written",
-    );
-    assert!(write.status.success(), "{write:?}");
-    assert_eq!(fs::read(on_root.join("new.txt")).unwrap(), b"written");
-    let exec = root_worker(
-        &["exec", "--", "/bin/sh", "-c", "touch \"$0\""],
-        &on_root.join("by-exec"),
-        b"",
-    );
-    assert!(exec.status.success(), "{exec:?}");
-    assert!(on_root.join("by-exec").exists());
-
-    let secret = root_worker(&["read", "--"], &real.join("state/secret"), b"");
-    assert!(!secret.status.success(), "{secret:?}");
-    assert!(!String::from_utf8_lossy(&secret.stdout).contains("secret"));
-    let into_state = root_worker(
-        &["write", "--size", "1", "--"],
-        &real.join("state/new"),
-        b"x",
-    );
-    assert!(!into_state.status.success(), "{into_state:?}");
-    let by_exec = root_worker(
-        &["exec", "--", "/bin/sh", "-c", "touch \"$0\""],
-        &real.join("state/by-exec"),
-        b"",
-    );
-    assert!(!by_exec.status.success(), "{by_exec:?}");
-    assert!(!real.join("state/new").exists() && !real.join("state/by-exec").exists());
-    assert_eq!(fs::read(real.join("state/secret")).unwrap(), b"secret");
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-#[test]
 fn an_exec_worker_writes_only_its_own_temp_folder_outside_the_areas() {
     let dir = setup();
     let real = dir.path().canonicalize().unwrap();
@@ -851,4 +789,62 @@ fn a_hidden_path_can_be_neither_hard_linked_nor_moved_out_of_reach() {
     for path in ["stolen-key", "stolen-netrc", "moved", "moved-conf"] {
         assert!(!real.join("area").join(path).exists(), "{path}");
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn a_share_inside_a_hidden_path_stays_hidden() {
+    let dir = setup();
+    let real = dir.path().canonicalize().unwrap();
+    fs::create_dir_all(real.join("outside/.aws/cli/cache")).unwrap();
+    fs::write(real.join("outside/.aws/cli/cache/token"), "SECRET TOKEN").unwrap();
+    let flags = [
+        "--area",
+        "../outside/.aws/cli/cache",
+        "--hidden",
+        "../outside/.aws",
+    ];
+    let read = worker(
+        dir.path(),
+        &flags,
+        &["read"],
+        "../outside/.aws/cli/cache/token",
+        b"",
+    );
+    assert!(
+        !String::from_utf8_lossy(&read.stdout).contains("SECRET"),
+        "{read:?}"
+    );
+    assert!(!read.status.success(), "{read:?}");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn an_opt_in_in_the_system_temp_folder_is_readable_by_exec() {
+    let dir = setup();
+    let reference = tempfile::tempdir().unwrap();
+    let reference = reference.path().canonicalize().unwrap();
+    fs::write(reference.join("notes.txt"), "reference notes").unwrap();
+    let output = exec_script(
+        dir.path(),
+        &["--read", reference.to_str().unwrap()],
+        &format!("cat {}/notes.txt", reference.display()),
+    );
+    assert_eq!(output.stdout, b"reference notes", "{output:?}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn exec_cannot_read_preferences_through_the_preferences_daemon() {
+    // `defaults` asks cfprefsd, not the filesystem, for the host user's
+    // preferences: only a sandbox that refuses cfprefsd keeps them out.
+    let outside = Command::new("/usr/bin/defaults")
+        .args(["read", "-g"])
+        .output()
+        .unwrap();
+    assert!(outside.status.success(), "{outside:?}");
+    let dir = setup();
+    let inside = exec_script(dir.path(), &[], "/usr/bin/defaults read -g");
+    assert!(!inside.status.success(), "{inside:?}");
+    assert!(inside.stdout.is_empty(), "{inside:?}");
 }

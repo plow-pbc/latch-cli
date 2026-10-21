@@ -52,21 +52,13 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         return Err("forced sandbox-apply failure".into());
     }
     let program = std::env::current_exe()?.canonicalize()?;
-    // A shared `/` is the whole view, writable. Otherwise `exec` and file
-    // workers see the system's own files and the owner's opt-ins,
-    // read-only (Google workers get less, in `mounts`). Either comes first,
-    // so the mounts below (a minimal /dev, a private /tmp, the areas) go on
-    // top.
-    let root_shared = policy.areas.iter().any(|area| area == Path::new("/"));
+    // `exec` and file workers see the system's own files, read-only
+    // (Google workers get less, in `mounts`). They come first, so the mounts
+    // below (a minimal /dev, a private /tmp, the areas) go on top.
     let mut command = Command::new(bubblewrap()?);
-    if root_shared {
-        command.args(["--bind", "/", "/"]);
-    } else if policy.program.is_none() {
+    if policy.program.is_none() {
         for path in SYSTEM.iter().map(Path::new).filter(|path| path.exists()) {
             mount(&mut command, path, true)?;
-        }
-        for read in &policy.reads {
-            mount(&mut command, read, true)?;
         }
     }
     command.args([
@@ -80,40 +72,32 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         "--dev",
         "/dev",
     ]);
-    mounts(&mut command, policy, &program)?;
     let status = if policy.exec {
         let folder = policy
             .tmpdir
             .as_ref()
             .ok_or("exec worker needs a temp folder")?;
         let file = tempfile::NamedTempFile::new_in(folder)?;
-        // The program's TMPDIR is the private /tmp; the host's folder is
-        // not in its view.
+        // The program's TMPDIR is a private /tmp; the host's folder is not
+        // in its view. A private /run holds the status file.
         command.args(["--setenv", "TMPDIR", "/tmp"]);
-        // /run is missing, or with a shared `/` the host's, where bwrap
-        // cannot create the status file; a private /run gives it somewhere
-        // to go.
-        command.args(["--tmpfs", "/run"]);
+        command.args(["--perms", "1777", "--tmpfs", "/tmp", "--tmpfs", "/run"]);
         command.arg("--bind").arg(file.path()).arg(STATUS);
         Some(file)
     } else {
         None
     };
-    // Credentials stay out of view even inside an area or an opt-in: an
-    // empty, read-only folder or an empty file in their place.
-    let visible: Vec<PathBuf> = policy
-        .areas
-        .iter()
-        .chain(&policy.reads)
-        .map(|root| root.canonicalize())
-        .collect::<Result<_, _>>()?;
+    // After the private /tmp and /run, so an opt-in inside either shows.
+    for read in &policy.reads {
+        mount(&mut command, read, true)?;
+    }
+    mounts(&mut command, policy, &program)?;
+    // Credentials stay out of view even inside an area or an opt-in, or
+    // above one: an empty, read-only folder or an empty file in their place.
     for hidden in &policy.hidden {
         let Ok(real) = hidden.canonicalize() else {
             continue;
         };
-        if !visible.iter().any(|root| real.starts_with(root)) {
-            continue;
-        }
         if real.is_dir() {
             command
                 .arg("--tmpfs")
@@ -137,10 +121,8 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         }
     }
     command.arg("--remount-ro").arg(&state);
-    // Otherwise `/` is only the empty frame the mounts sit in: read-only.
-    if !root_shared {
-        command.args(["--remount-ro", "/"]);
-    }
+    // `/` is only the empty frame the mounts sit in: read-only.
+    command.args(["--remount-ro", "/"]);
     command
         .arg("--chdir")
         .arg(std::env::current_dir()?)
@@ -251,16 +233,8 @@ fn browser_command(view: &BrowserView, program: &Path) -> Result<Command, Error>
 
 fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), Error> {
     let mut runtime = if policy.exec {
-        // The system's files are already there, read-only (see `launch`).
-        command.args([
-            "--ro-bind",
-            "/proc",
-            "/proc",
-            "--perms",
-            "1777",
-            "--tmpfs",
-            "/tmp",
-        ]);
+        // The system's files, /tmp and /run are already there (see `launch`).
+        command.args(["--ro-bind", "/proc", "/proc"]);
         vec![]
     } else if policy.program.is_none() {
         // A file worker sees the system's files too, but no processes.
@@ -298,7 +272,7 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
             mount(command, Path::new(path), true)?;
         }
     }
-    for area in policy.areas.iter().filter(|area| *area != Path::new("/")) {
+    for area in &policy.areas {
         mount(command, area, false)?;
     }
     // A worker could otherwise rename a folder above the state folder, the

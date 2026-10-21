@@ -267,20 +267,10 @@ mod platform {
             rules.push("(allow file-read* (subpath \"/private/etc\") (literal \"/private/var/run/resolv.conf\") (subpath \"/Library/Keychains\"))".to_string());
             rules.push("(allow mach-lookup (global-name \"com.apple.SystemConfiguration.configd\") (global-name \"com.apple.SystemConfiguration.DNSConfiguration\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.trustd\"))".to_string());
         }
+        // Looking a path up inside an area (as `pwd` does) needs the details
+        // of each folder above it: `read_rules` grants them to a file
+        // worker, the blanket metadata rule to a Google worker.
         for area in &policy.areas {
-            // Looking up a path inside an area (as `pwd` does) needs the
-            // details, not the contents, of each directory above it.
-            let real = area
-                .canonicalize()
-                .map_err(|err| format!("{}: {err}", area.display()))?;
-            let mut parent = real.parent();
-            while let Some(dir) = parent {
-                rules.push(format!(
-                    "(allow file-read-metadata (literal {}))",
-                    quoted(dir)?
-                ));
-                parent = dir.parent();
-            }
             rules.push(format!(
                 "(allow file-read* file-write* (subpath {}))",
                 quoted(area)?
@@ -290,9 +280,11 @@ mod platform {
     }
 
     /// `exec` workers follow Codex CLI's macOS sandbox (vendored, see
-    /// NOTICE): its base and network rules and preferences, reads as in
-    /// `read_rules`, and writes only in the areas and the call's temp folder.
-    /// Outbound network only, no Apple Events.
+    /// NOTICE): its base and network rules, reads as in `read_rules`, and
+    /// writes only in the areas and the call's temp folder. Not its
+    /// preferences rules: they read any preference through `cfprefsd`, which
+    /// Codex allows only with reads of the whole filesystem. Outbound network
+    /// only, no Apple Events.
     fn exec_rules(policy: &Policy) -> Result<Vec<String>, String> {
         let mut rules = vec![CODEX_BASE.to_string()];
         rules.extend(read_rules(policy)?);
@@ -306,7 +298,6 @@ mod platform {
             "(allow network-outbound)".to_string(),
             "(allow system-socket (socket-domain AF_UNIX))".to_string(),
             CODEX_NETWORK.to_string(),
-            CODEX_PREFERENCES.to_string(),
             // As Codex: no embedded XPC services, except the speech
             // synthesizer `say` uses, and no fcntls that change a file
             // through a read-only descriptor (F_MAKECOMPRESSED,
@@ -389,7 +380,6 @@ mod platform {
 
     const CODEX_BASE: &str = include_str!("sandbox/codex/seatbelt_base_policy.sbpl");
     const CODEX_NETWORK: &str = include_str!("sandbox/codex/seatbelt_network_policy.sbpl");
-    const CODEX_PREFERENCES: &str = include_str!("sandbox/codex/seatbelt_preferences_policy.sbpl");
 
     /// For every kind, last: the state directory and the hidden paths can
     /// be neither read nor written, and the running latch never written.

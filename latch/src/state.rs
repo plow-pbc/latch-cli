@@ -16,8 +16,11 @@
 //! - `browser/model.json`, on a host: which decision model it asks (see
 //!   `model.rs`).
 //! - `plugins/`, on a host: the pinned Google CLI.
-//! - `shares.json`: the folders `latch serve` shares when named none, and
-//!   the paths it lets callers read besides (see `latch shares`).
+//! - `shares.json`: the folders `latch serve` shares when named none (see
+//!   `latch shares`).
+//! - `allow-read.json`: the paths it lets callers read besides, a file of
+//!   its own so that a latch from before `--allow-read`, rewriting
+//!   `shares.json`, leaves them alone.
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
 //!
@@ -49,13 +52,24 @@ pub struct Config {
 /// would misread, together with the explicit upgrade for that change.
 const FORMAT: u32 = 1;
 
-/// `shares.json`: what `latch serve` shares when it is named no folders,
-/// and what it lets callers read besides (`--allow-read`).
-#[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
+/// What `latch serve` shares when it is named no folders, and what it lets
+/// callers read besides (`--allow-read`).
+#[derive(Debug, PartialEq, Default)]
 pub struct Shares {
     pub folders: Vec<PathBuf>,
-    #[serde(default)]
     pub allow_read: Vec<PathBuf>,
+}
+
+/// `shares.json`.
+#[derive(Serialize, Deserialize, Default)]
+struct SharedFolders {
+    folders: Vec<PathBuf>,
+}
+
+/// `allow-read.json`.
+#[derive(Serialize, Deserialize, Default)]
+struct AllowRead {
+    paths: Vec<PathBuf>,
 }
 
 /// `latch.json`: the folder's format, and which latch first marked it.
@@ -179,21 +193,44 @@ impl StateDir {
 
     /// What `latch shares set` saved, folders in order; none if it never ran.
     pub fn load_shares(&self) -> Result<Shares, Failure> {
-        let path = self.path.join("shares.json");
-        if !path.exists() {
-            return Ok(Shares::default());
-        }
-        let text = self.read(&path)?;
-        let shares: Shares = serde_json::from_str(&text).map_err(|err| {
-            let message = format!("{} is not valid: {err}", path.display());
-            Failure::failed("bad_state", message)
-        })?;
-        Ok(shares)
+        let folders: SharedFolders = self.load_json("shares.json")?;
+        let allow_read: AllowRead = self.load_json("allow-read.json")?;
+        Ok(Shares {
+            folders: folders.folders,
+            allow_read: allow_read.paths,
+        })
     }
 
     pub fn save_shares(&self, shares: &Shares) -> Result<(), Failure> {
-        let path = self.path.join("shares.json");
-        let text = serde_json::to_string_pretty(shares).expect("shares serialize") + "\n";
+        let folders = SharedFolders {
+            folders: shares.folders.clone(),
+        };
+        let allow_read = AllowRead {
+            paths: shares.allow_read.clone(),
+        };
+        self.save_json("shares.json", &folders)?;
+        self.save_json("allow-read.json", &allow_read)
+    }
+
+    /// The file `name` in the state folder, or the default if there is none.
+    fn load_json<T: serde::de::DeserializeOwned + Default>(
+        &self,
+        name: &str,
+    ) -> Result<T, Failure> {
+        let path = self.path.join(name);
+        if !path.exists() {
+            return Ok(T::default());
+        }
+        let text = self.read(&path)?;
+        serde_json::from_str(&text).map_err(|err| {
+            let message = format!("{} is not valid: {err}", path.display());
+            Failure::failed("bad_state", message)
+        })
+    }
+
+    fn save_json(&self, name: &str, value: &impl Serialize) -> Result<(), Failure> {
+        let path = self.path.join(name);
+        let text = serde_json::to_string_pretty(value).expect("state serializes") + "\n";
         write_private(&path, text.as_bytes()).map_err(|err| self.io_failure(&path, err))
     }
 
@@ -294,6 +331,29 @@ mod tests {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         fs::create_dir_all(&parent).unwrap();
         tempfile::tempdir_in(parent).unwrap()
+    }
+
+    #[test]
+    fn an_older_latch_rewriting_the_folders_leaves_the_reads_alone() {
+        let dir = test_dir();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let shares = Shares {
+            folders: vec![PathBuf::from("/work")],
+            allow_read: vec![PathBuf::from("/refs")],
+        };
+        state.save_shares(&shares).unwrap();
+        assert_eq!(state.load_shares().unwrap(), shares);
+        // What a latch from before `--allow-read` writes for `shares set /other`.
+        fs::write(dir.path().join("shares.json"), r#"{"folders": ["/other"]}"#).unwrap();
+        assert_eq!(
+            state.load_shares().unwrap(),
+            Shares {
+                folders: vec![PathBuf::from("/other")],
+                allow_read: vec![PathBuf::from("/refs")],
+            }
+        );
     }
 
     #[test]
