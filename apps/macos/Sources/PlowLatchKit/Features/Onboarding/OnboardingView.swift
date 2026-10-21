@@ -85,24 +85,31 @@ struct WelcomeView: View {
     @ReducedMotion private var reduceMotion
     @State private var start = Date.now
     @State private var settled = false
+    /// Whether the window is on screen. A hidden window shows the entrance
+    /// at rest and doesn't breathe: its views live on, and would keep
+    /// drawing for no one.
+    @State private var onScreen = false
 
     var body: some View {
-        if let time {
-            content(EntranceFrame.at(time), breathing: false)
-        } else if reduceMotion {
-            content(.rest, breathing: false)
-        } else if settled {
-            content(.rest, breathing: true)
-        } else {
-            TimelineView(.animation) { context in
-                content(.at(context.date.timeIntervalSince(start)), breathing: false)
-            }
-            .task {
-                start = .now
-                try? await Task.sleep(for: .seconds(EntranceFrame.settlesAt))
-                settled = true
+        Group {
+            if let time {
+                content(EntranceFrame.at(time), breathing: false)
+            } else if reduceMotion || !onScreen && !settled {
+                content(.rest, breathing: false)
+            } else if settled {
+                content(.rest, breathing: onScreen)
+            } else {
+                TimelineView(.animation) { context in
+                    content(.at(context.date.timeIntervalSince(start)), breathing: false)
+                }
+                .task {
+                    start = .now
+                    try? await Task.sleep(for: .seconds(EntranceFrame.settlesAt))
+                    settled = true
+                }
             }
         }
+        .trackingOnScreen($onScreen)
     }
 
     private func content(_ frame: EntranceFrame, breathing: Bool) -> some View {

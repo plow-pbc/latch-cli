@@ -15,7 +15,7 @@ enum TestHooks {
         self.model = model
         let center = DistributedNotificationCenter.default()
         for command in ["show-main", "show-settings", "close-windows", "report", "quit", "start-sharing", "stop-sharing",
-                        "menu-item", "snapshot", "onboarding-next", "onboarding-folder", "onboarding-keep-running",
+                        "show-screen", "snapshot", "onboarding-next", "onboarding-folder", "onboarding-keep-running",
                         "onboarding-not-now", "onboarding-done"] {
             center.addObserver(forName: .init("co.plow.latch.test.\(command)"), object: nil, queue: .main) { note in
                 let path = note.object as? String
@@ -43,6 +43,9 @@ enum TestHooks {
             "active": NSApp.isActive,
             "key": NSApp.keyWindow?.identifier?.rawValue ?? NSNull(),
             "visible": WindowRouter.visibleWindows().map { $0.identifier?.rawValue ?? $0.title },
+            "windows": NSApp.windows.map {
+                "\($0.identifier?.rawValue ?? $0.className) visible=\($0.isVisible) onscreen=\($0.occlusionState.contains(.visible))"
+            },
         ]
         let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         FileManager.default.createFile(atPath: path, contents: data)
@@ -95,15 +98,7 @@ enum TestHooks {
         case "report":
             guard let path else { return }
             Task { await report(to: path) }
-        // The object names a main-menu item, e.g. "Activity" (View ▸ Activity, ⌘2).
-        case "menu-item":
-            guard let title = path else { return }
-            for menu in NSApp.mainMenu?.items.compactMap(\.submenu) ?? [] {
-                if let index = menu.items.firstIndex(where: { $0.title == title }) {
-                    menu.performActionForItem(at: index)
-                    return
-                }
-            }
+        case "show-screen": if let name = path, let screen = Screen(rawValue: name) { model?.screen = screen }
         // The app's own drawing of its front window, to the PNG at the object's path.
         case "snapshot":
             guard let path, let window = WindowRouter.visibleWindows().first, let view = window.contentView else { return }

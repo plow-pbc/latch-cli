@@ -23,30 +23,37 @@ public enum Screen: String, CaseIterable, Identifiable, Sendable {
 
 /// The main window: a sidebar of screens and the selected one.
 public struct MainView: View {
-    @State private var screen: Screen
+    @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    private let initialScreen: Screen?
 
-    public init(screen: Screen = .overview) {
-        _screen = State(initialValue: screen)
+    /// Shows `screen`, or else the one the app last showed.
+    public init(screen: Screen? = nil) {
+        initialScreen = screen
     }
 
     public var body: some View {
-        NavigationSplitView {
-            List(Screen.allCases, selection: Binding($screen)) { screen in
+        @Bindable var model = model
+        let screen = model.screen
+        return NavigationSplitView {
+            List(Screen.allCases, selection: Binding($model.screen)) { screen in
                 Label(screen.title, systemImage: screen.symbol)
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
         } detail: {
             switch screen {
             case .overview: OverviewView()
-            case .activity: ActivityView { screen = .overview }
+            case .activity: ActivityView { model.screen = .overview }
             case .rules: RulesView()
             }
         }
         .frame(minWidth: 640, minHeight: 420)
-        .onAppear { WindowRouter.shared.install(openWindow: openWindow, openSettings: openSettings) }
-        .focusedSceneValue(\.screen, $screen)
+        .onAppear {
+            if let initialScreen { model.screen = initialScreen }
+            WindowRouter.shared.install(openWindow: openWindow, openSettings: openSettings)
+        }
+        .focusedSceneValue(\.screen, $model.screen)
     }
 }
 

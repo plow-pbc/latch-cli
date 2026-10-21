@@ -139,9 +139,7 @@ struct EntranceMark: View {
             .offset(y: size * 0.08)
             .allowsHitTesting(false)
         if breathing {
-            glow.phaseAnimator([false, true]) { view, deep in
-                view.opacity(deep ? 0.82 : 0.7).scaleEffect(deep ? 1.05 : 1)
-            } animation: { _ in .easeInOut(duration: 3) }
+            glow.modifier(Breathing())
         } else {
             glow.opacity(frame.bloomOpacity).scaleEffect(frame.bloomScale)
         }
@@ -162,5 +160,23 @@ struct EntranceMark: View {
             .offset(x: frame.sheenX * unit)
             .opacity(frame.sheenOpacity)
             .mask { PlowMark().fill(style: FillStyle(eoFill: true)) }
+    }
+}
+
+/// The settled bloom's slow breath: 0.7 ↔ 0.82 opacity, 1 ↔ 1.05 scale, 6 s
+/// a cycle. Driven by a task, so it stops when the view leaves the screen.
+private struct Breathing: ViewModifier {
+    @State private var deep = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(deep ? 0.82 : 0.7)
+            .scaleEffect(deep ? 1.05 : 1)
+            .task {
+                while !Task.isCancelled {
+                    withAnimation(.easeInOut(duration: 3)) { deep.toggle() }
+                    try? await Task.sleep(for: .seconds(3))
+                }
+            }
     }
 }

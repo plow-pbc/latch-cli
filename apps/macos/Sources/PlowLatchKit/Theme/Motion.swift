@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The app's named animations.
@@ -41,5 +42,49 @@ private struct ReducibleAnimation<V: Equatable>: ViewModifier {
 
     func body(content: Content) -> some View {
         content.animation(reduceMotion ? nil : animation, value: value)
+    }
+}
+
+extension View {
+    /// Keeps `isOnScreen` true while this view's window is visible on screen.
+    /// SwiftUI keeps a closed or hidden window's views alive, and anything
+    /// that animates in them keeps the app busy; this is how they stop.
+    public func trackingOnScreen(_ isOnScreen: Binding<Bool>) -> some View {
+        background(WindowOnScreen(isOnScreen: isOnScreen))
+    }
+}
+
+private struct WindowOnScreen: NSViewRepresentable {
+    @Binding var isOnScreen: Bool
+
+    func makeNSView(context: Context) -> Probe {
+        let probe = Probe()
+        probe.changed = { visible in
+            if isOnScreen != visible { isOnScreen = visible }
+        }
+        return probe
+    }
+
+    func updateNSView(_ nsView: Probe, context: Context) {}
+
+    final class Probe: NSView {
+        var changed: (Bool) -> Void = { _ in }
+        private var observer: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            guard let window else { return changed(false) }
+            observer = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.report() }
+            }
+            report()
+        }
+
+        private func report() {
+            changed(window.map { $0.isVisible && $0.occlusionState.contains(.visible) } ?? false)
+        }
     }
 }

@@ -5,6 +5,7 @@
 #   stub-latch --state-dir D emit host serving|stopped|starting|error
 #   stub-latch --state-dir D emit activity OP DECISION
 #   stub-latch --state-dir D emit logout
+#   stub-latch --state-dir D stop          (ends a running `serve`)
 # `login --events` prints a code, then verifies after STUB_LOGIN_SECONDS (3).
 # `serve` (no folders) holds D/serve.lock as latch does, naming itself in it,
 # reports starting then serving, and stopped when it ends; a second serve on
@@ -54,18 +55,30 @@ case "$1 ${2:-}" in
             exit 1
         fi
     done
+    rm -f "$state/stub-serve.stop"
     echo "latch serve (pid $$, $0)" > "$state/serve.lock"
     # bash runs the trap once the current foreground command ends, so the
     # loop sleeps in short foreground steps: a stop always reports stopped.
     trap 'emit_host stopped; : > "$state/serve.lock"; exit 0' TERM INT
     sleep 1
     emit_host serving
-    while :; do sleep 1; done
+    while :; do
+        sleep 1
+        # `stub-latch stop`: for callers whose SIGTERM can't reach it (a
+        # signal ignored by its parent stays ignored in a shell script).
+        if [ -e "$state/stub-serve.stop" ]; then
+            rm -f "$state/stub-serve.stop"
+            emit_host stopped; : > "$state/serve.lock"; exit 0
+        fi
+    done
     ;;
 "emit activity")
     n=$(($(lines) + 1))
     jq -cn --arg c "$n" --arg op "$3" --arg d "$4" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{type:"activity",cursor:$c,entry:{id:("e"+$c),time:$t,caller:"k1",caller_name:"owner-laptop",op:$op,decision:$d,outcome:"ok"}}' >> "$events"
+    ;;
+"stop ")
+    touch "$state/stub-serve.stop"
     ;;
 "emit logout")
     touch "$state/stub-logged-out"

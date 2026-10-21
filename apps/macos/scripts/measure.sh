@@ -58,7 +58,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-emit host serving
+# The stub can be told what the host is doing; a real latch's host is
+# followed in scripts/real-cli-check.py, with a real serve.
+stub=false; [ "$latch" = "$PWD/scripts/stub-latch" ] && stub=true
+if $stub; then emit host serving; fi
 
 echo "== warm launch (1 discarded + 10)" | tee "$out/launch.txt"
 times=()
@@ -95,6 +98,7 @@ awk -v c0="$cpu0" -v c1="$cpu1" -v w0="$w0" -v w1="$w1" -v fp="$fp" -v k0="$kcpu
         cpu, wakes, fp, (cpu <= 0.1 && wakes <= 6 && fp <= 50) ? "PASS" : "FAIL"
     printf "latch children (separate): CPU %.3f %%, footprint %.1f MB\n", (k1 - k0) / 60 * 100, kfp }' | tee -a "$out/idle.txt"
 
+if $stub; then
 echo "== menu bar follows the host, every window closed" | tee "$out/menu-latency.txt"
 for target in stopped serving; do
     want="link.circle"; [ "$target" = serving ] && want="link.circle.fill"
@@ -111,6 +115,7 @@ for target in stopped serving; do
     done
     echo "$target: $result" | tee -a "$out/menu-latency.txt"
 done
+fi
 quit_app
 
 echo "== open from the menu bar: Dock mode, then menu-bar-only mode" | tee "$out/open-from-menu.txt"

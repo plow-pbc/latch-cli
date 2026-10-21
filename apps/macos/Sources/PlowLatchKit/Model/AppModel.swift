@@ -36,6 +36,8 @@ public final class AppModel {
     public private(set) var changingSharing = false
     /// Why the last Start or Stop Sharing failed.
     public private(set) var sharingError: String?
+    /// The main window's screen.
+    public var screen: Screen = .overview
     /// The first-run flow, while it is under way. It lives here, not in its
     /// window, so closing and reopening the window picks it up again.
     public private(set) var onboarding: Onboarding?
