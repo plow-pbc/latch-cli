@@ -269,8 +269,9 @@ impl WorkerSetup {
 #[cfg(target_os = "linux")]
 fn die_with_host(command: &mut Command) {
     let host = std::process::id() as libc::pid_t;
-    // SAFETY: between fork and exec the child makes only async-signal-safe
-    // calls, and allocates nothing.
+    // SAFETY: pre_exec is needed to set Linux's parent-death signal in the
+    // child. The closure uses only scalar syscalls and allocation-free OS error
+    // constructors, with no Rust locks or allocation between fork and exec.
     unsafe {
         command.pre_exec(move || {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
@@ -290,7 +291,8 @@ impl Drop for Running {
         if let Some(pid) = self.child.id() {
             // Workers lead their own process group. Cancellation must also
             // stop gog, which may otherwise finish a write after we time out.
-            // SAFETY: killpg sends a signal and touches no Rust memory.
+            // SAFETY: std's child kill cannot reach descendants. The live worker
+            // leads the group we created; killpg takes only scalar arguments.
             unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
         }
     }

@@ -327,7 +327,9 @@ fn launch_exec(
     // (the host sets that up as it starts it, see `worker.rs`), with the
     // same effect.
     if let Some(seconds) = kill_after {
-        // SAFETY: plain signal-disposition and timer calls.
+        // SAFETY: std has no process alarm API. SIGALRM and SIG_DFL are valid
+        // signal arguments, and alarm takes a bounded scalar number of seconds;
+        // neither call accesses Rust memory or installs a Rust signal handler.
         unsafe {
             libc::signal(libc::SIGALRM, libc::SIG_DFL);
             libc::alarm(u32::try_from(seconds).unwrap_or(u32::MAX));
@@ -352,8 +354,10 @@ fn launch_exec(
 const STATUS: &str = "/run/latch-exit-status";
 
 fn supervise_exec() -> Result<(), Error> {
-    // SAFETY: the inner worker is still single-threaded. Only the child
-    // continues to the workload; the parent waits and writes its status.
+    // SAFETY: fork preserves the workload's raw wait status outside it. This
+    // inner worker has not started other threads, so no other thread can leave
+    // a Rust lock held in the child. Only the child returns to run the workload;
+    // the parent waits and writes its status.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -428,8 +432,9 @@ fn filter(offline: bool, namespaces: bool) -> Result<(), Error> {
         std::env::consts::ARCH.try_into()?,
     )?
     .try_into()?;
-    // SAFETY: prctl takes integer arguments; this is the single-threaded
-    // inner worker. Future threads and executed programs inherit the filter.
+    // SAFETY: std cannot set no_new_privs before seccomp. This documented prctl
+    // operation takes only integer arguments, touches no Rust memory, and
+    // restricts the current worker; its threads and executed programs inherit it.
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }

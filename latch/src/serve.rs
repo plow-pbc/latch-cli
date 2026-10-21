@@ -14,7 +14,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -519,8 +518,7 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
         .mode(0o600)
         .open(&path)
         .map_err(io)?;
-    // SAFETY: flock only reads the descriptor, which `file` keeps open.
-    let try_lock = || unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    let try_lock = || file.try_lock().is_ok();
     let mut locked = try_lock();
     for _ in 0..20 {
         if locked {

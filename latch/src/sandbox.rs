@@ -76,7 +76,8 @@ fn reap(pid: libc::pid_t) -> std::io::Result<std::process::ExitStatus> {
     use std::os::unix::process::ExitStatusExt;
     let mut status = 0;
     loop {
-        // SAFETY: pid is our child and status is writable.
+        // SAFETY: std has no Child handle for this forked supervisor child.
+        // `pid` is that child, and `status` is writable for one wait status.
         if unsafe { libc::waitpid(pid, &mut status, 0) } >= 0 {
             return Ok(std::process::ExitStatus::from_raw(status));
         }
@@ -93,7 +94,9 @@ fn reap(pid: libc::pid_t) -> std::io::Result<std::process::ExitStatus> {
 fn exit_with_status(status: std::process::ExitStatus) -> ! {
     use std::os::unix::process::ExitStatusExt;
     if let Some(signal) = status.signal() {
-        // SAFETY: restore the signal's default action and deliver it to self.
+        // SAFETY: std::process::exit cannot reproduce a signal termination.
+        // The signal came from waitpid, SIG_DFL is a valid disposition, and
+        // raise targets this process; neither call accesses Rust memory.
         unsafe {
             libc::signal(signal, libc::SIG_DFL);
             libc::raise(signal);
@@ -171,6 +174,8 @@ mod platform {
 
     // `sandbox_init` is part of macOS's system library. Apple marks it
     // deprecated but it is what `sandbox-exec` and other tools still use.
+    // SAFETY: these declarations match libsystem's C ABI; their checked
+    // callers keep the profile alive and release errors with sandbox_free_error.
     unsafe extern "C" {
         fn sandbox_init(profile: *const c_char, flags: u64, errorbuf: *mut *mut c_char) -> c_int;
         fn sandbox_free_error(errorbuf: *mut c_char);
@@ -185,13 +190,13 @@ mod platform {
     pub struct HostWatch(c_int);
 
     pub fn watch_host() -> Result<HostWatch, String> {
-        // SAFETY: plain system calls on a descriptor we own.
+        // SAFETY: std has no kqueue API. This no-argument call accesses no
+        // Rust memory; a negative result is rejected before using the descriptor.
         let queue = unsafe { libc::kqueue() };
         if queue < 0 {
             return Err(format!("kqueue: {}", std::io::Error::last_os_error()));
         }
-        // SAFETY: as above.
-        let host = unsafe { libc::getppid() };
+        let host = std::os::unix::process::parent_id() as libc::pid_t;
         // A worker whose host is gone already belongs to launchd.
         if host == 1 {
             return Err("the host that started this worker is gone".to_string());
@@ -211,7 +216,8 @@ mod platform {
             data: 0,
             udata: std::ptr::null_mut(),
         };
-        // SAFETY: one valid change in, no events out.
+        // SAFETY: std has no process-exit watch API. `queue` is our kqueue,
+        // `change` stays live for its one input entry, and null output has count 0.
         let added =
             unsafe { libc::kevent(queue, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
         if added < 0 {
@@ -221,9 +227,10 @@ mod platform {
     }
 
     pub fn supervise(watch: HostWatch, kill_after: Option<u64>) -> Result<(), String> {
-        // SAFETY: the worker has no other threads, so only the child goes
-        // on to confine itself. The supervisor stays outside its sandbox. A
-        // kqueue is not inherited across `fork`: the child holds no watch.
+        // SAFETY: fork is needed to supervise outside Seatbelt. This worker
+        // has not started other threads, so no other thread can leave a Rust
+        // lock held in the child. Only the child returns to confine itself;
+        // the parent watches and waits. kqueue descriptors are not inherited.
         let program = unsafe { libc::fork() };
         if program < 0 {
             return Err(format!("fork: {}", std::io::Error::last_os_error()));
@@ -244,12 +251,15 @@ mod platform {
                         tv_nsec: libc::c_long::from(left.subsec_nanos()),
                     }
                 });
-                // SAFETY: zeroed is a valid `kevent` to receive into.
+                // SAFETY: kevent needs output storage. Its integer fields may
+                // be zero and its raw udata pointer may be null; neither is a reference.
                 let mut event: libc::kevent = unsafe { std::mem::zeroed() };
                 let timeout = left
                     .as_ref()
                     .map_or(std::ptr::null(), |left| left as *const _);
-                // SAFETY: no changes in, room for one event out.
+                // SAFETY: std has no kqueue wait API. `queue` is open, `event`
+                // holds one output entry, null input has count 0, and any timeout
+                // points to the live timespec in `left` for the duration of the call.
                 let got =
                     unsafe { libc::kevent(queue, std::ptr::null(), 0, &mut event, 1, timeout) };
                 let interrupted =
@@ -273,9 +283,11 @@ mod platform {
     /// started, and this process. The host makes each worker the leader of
     /// a group of its own; a worker run any other way kills its program alone.
     fn kill_all(program: libc::pid_t) {
-        // SAFETY: plain signal calls.
+        // SAFETY: std cannot kill a process group. The group is ours only when
+        // we are its leader; otherwise we target only our positive fork result.
+        // These scalar-only signal calls access no Rust memory.
         unsafe {
-            if libc::getpgrp() == libc::getpid() {
+            if libc::getpgrp() == std::process::id() as libc::pid_t {
                 libc::killpg(libc::getpgrp(), libc::SIGKILL);
             }
             libc::kill(program, libc::SIGKILL);
@@ -298,8 +310,9 @@ mod platform {
         let profile =
             CString::new(profile).map_err(|_| "profile contains a NUL byte".to_string())?;
         let mut error: *mut c_char = std::ptr::null_mut();
-        // SAFETY: `profile` is a valid C string for the duration of the call,
-        // and `error` is either left null or set to a message we free below.
+        // SAFETY: Seatbelt has no std wrapper. `profile` is a live NUL-terminated
+        // CString and `error` is writable pointer storage; the API leaves it null
+        // or returns an allocated diagnostic that we release below.
         let status = unsafe { sandbox_init(profile.as_ptr(), 0, &mut error) };
         if status == 0 {
             return Ok(());
@@ -307,11 +320,14 @@ mod platform {
         let message = if error.is_null() {
             std::io::Error::last_os_error().to_string()
         } else {
-            // SAFETY: on failure `error` points to a C string owned by the
-            // sandbox library, which we copy and then hand back to free.
+            // SAFETY: reading the C diagnostic needs CStr::from_ptr. On failure,
+            // this non-null error points to the library's NUL-terminated string,
+            // which stays allocated until sandbox_free_error below.
             let text = unsafe { CStr::from_ptr(error) }
                 .to_string_lossy()
                 .into_owned();
+            // SAFETY: the diagnostic must use the library's deallocator. This
+            // is its original error pointer, copied into `text` and not freed yet.
             unsafe { sandbox_free_error(error) };
             text
         };
