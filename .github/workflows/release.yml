@@ -1,0 +1,105 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version label (v0.1.0 or v0.1.0-proof.1); builds selected ref'
+        required: true
+        type: string
+      draft:
+        description: 'Create a draft release (otherwise workflow artifacts only)'
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, target: aarch64-apple-darwin, arch: arm64 }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin, arch: x86_64 }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ inputs.version || github.ref_name }}
+      LATCH_BUILD_STATE_DIR: ''
+      LATCH_BUILD_API_URL: ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate version
+        shell: bash
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
+          package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
+          [[ "${VERSION#v}" == "$package" || "${VERSION#v}" == "$package"-* ]]
+          echo "LATCH_BUILD_CHANNEL=standalone tag $VERSION" >> "$GITHUB_ENV"
+      - name: Build macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          test "$(uname -m)" = '${{ matrix.arch }}'
+          unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
+          export LATCH_BUILD_COMMIT="$GITHUB_SHA"
+          cd latch
+          rustup toolchain install
+          cargo build --release --locked --target '${{ matrix.target }}'
+          codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
+          'target/${{ matrix.target }}/release/latch' --version
+      - name: Build Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
+          cd latch
+          ./build-musl.sh '${{ matrix.arch }}'
+          file 'target/musl-${{ matrix.arch }}/release/latch' | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
+          'target/musl-${{ matrix.arch }}/release/latch' --version
+      - name: Package
+        shell: bash
+        run: |
+          if [[ '${{ runner.os }}' == macOS ]]; then
+            binary='latch/target/${{ matrix.target }}/release/latch'
+          else
+            binary='latch/target/musl-${{ matrix.arch }}/release/latch'
+          fi
+          sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: latch-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: latch-*
+          merge-multiple: true
+          path: dist
+      - run: |
+          cp install-release.sh dist/
+          cd dist
+          sha256sum *.tar.gz install-release.sh > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-downloads
+          path: dist/*
+      - name: Create release
+        if: github.event_name == 'push' || inputs.draft
+        run: |
+          args=()
+          if [[ '${{ github.event_name }}' == workflow_dispatch ]]; then args+=(--draft); fi
+          gh release create "$VERSION" dist/* --target "$GITHUB_SHA" --title "latch $VERSION" --generate-notes "${args[@]}"

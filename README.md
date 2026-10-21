@@ -3,6 +3,35 @@
 A command-line peer that lets an agent reach the files, programs and browser
 on a machine its owner trusts, over Plow's directory.
 
+## Install
+
+Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
+(`gh auth login`). Pick a release tag, then download and run its installer:
+
+```sh
+release=v0.1.0
+d=$(mktemp -d) && gh release download "$release" -R plow-pbc/latch-cli -p install-release.sh -D "$d" && sh "$d/install-release.sh" "$release"
+export PATH="$HOME/.local/bin:$PATH"
+latch --version
+```
+
+The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
+its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
+It downloads pinned gog and Chrome for Testing into `~/.latch/plugins`; add
+`--with-camoufox` to the installer for the optional macOS engine. Setup requires
+curl, tar and SHA-256 tools (macOS also uses ditto; Linux browser setup uses unzip).
+Linux hosting needs bubblewrap and usable user namespaces; setup explains missing
+packages and may ask for sudo, including for Ubuntu's AppArmor profile. Linux
+arm64 browser hosts also need Xvfb and Chrome's system libraries. Linux x86_64
+currently has no pinned browser engine. Static Linux CLI builds do not make
+browser plugins independent of their system libraries; see [Docker hosting](latch/DOCKER.md).
+
+Update by rerunning with a newer tag. State and versioned plugins stay in place;
+restart an existing `latch serve` intentionally when ready to use the new binary.
+macOS downloads have no Developer ID signature or notarization: use `gh` as above
+rather than a browser download, which can add quarantine. No Homebrew tap or
+Mac app is included.
+
 ## For agents
 
 - **Log in with your own credential.** `latch login` with no flags finds a
