@@ -862,3 +862,12 @@ fn an_opt_in_of_run_or_tmp_still_reports_the_programs_exit() {
         assert_eq!(output.stdout, b"ran\n", "{opt_in}: {output:?}");
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
+    let dir = setup();
+    let script = r#"f=$(mktemp) && echo made > "$f" && cat "$f""#;
+    let output = exec_script(dir.path(), &["--read", "/tmp"], script);
+    assert_eq!(output.stdout, b"made\n", "{output:?}");
+}

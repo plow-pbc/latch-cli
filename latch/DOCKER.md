@@ -24,7 +24,7 @@ process metadata rather than a private process view. All workers get a minimal
 `/dev` and their permitted writable folders. Exec and file workers see the
 container's system folders (`/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, `/opt`,
 `/var/lib`) and each `--allow-read` path read-only, the shared folders writable,
-and nothing else; exec also gets a private empty `/tmp` and `/run`. A volume
+and nothing else; exec also gets a private empty `/tmp`, `/run` and `TMPDIR`. A volume
 mounted elsewhere in the container is visible to workers only if it is shared
 or named with `--allow-read`. Google workers get only explicit runtime mounts.
 State and credentials (see `latch serve --help`) are covered by empty read-only

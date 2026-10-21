@@ -78,10 +78,13 @@ fn launch(policy: &Policy) -> Result<(), Error> {
             .as_ref()
             .ok_or("exec worker needs a temp folder")?;
         let file = tempfile::NamedTempFile::new_in(folder)?;
-        // The program's TMPDIR is a private /tmp; the host's folder is not
-        // in its view. The status file sits at the top of the sandbox's
-        // own `/`, where no opt-in or area can cover it.
-        command.args(["--setenv", "TMPDIR", "/tmp"]);
+        // A private /tmp and /run, and the program's TMPDIR a private
+        // folder of its own outside them, writable even when an opt-in
+        // covers /tmp. The host's temp folder is not in its view. The
+        // status file sits at the top of the sandbox's own `/`, where no
+        // opt-in or area can cover it.
+        command.args(["--setenv", "TMPDIR", PRIVATE_TMPDIR]);
+        command.args(["--perms", "1777", "--tmpfs", PRIVATE_TMPDIR]);
         command.args(["--perms", "1777", "--tmpfs", "/tmp", "--tmpfs", "/run"]);
         command.arg("--bind").arg(file.path()).arg(STATUS);
         Some(file)
@@ -342,6 +345,10 @@ fn launch_exec(command: &mut Command, mut file: tempfile::NamedTempFile) -> Resu
 }
 
 const STATUS: &str = "/.latch-exit-status";
+
+/// An exec program's TMPDIR, at the top of the sandbox's own `/` as
+/// `STATUS` is, where no opt-in or area can cover it.
+const PRIVATE_TMPDIR: &str = "/.latch-tmp";
 
 fn supervise_exec() -> Result<(), Error> {
     // SAFETY: the inner worker is still single-threaded. Only the child

@@ -569,9 +569,24 @@ const HOLDS_LIBRARY: &str = "it holds the home folder's Library (mail, messages,
 /// the credentials in the home folder (`sandbox::never_readable`). The
 /// state folder is hidden as well, on its own terms (see `sandbox.rs`).
 pub fn hidden_paths() -> Vec<PathBuf> {
-    std::env::home_dir()
+    let paths = std::env::home_dir()
         .map(|home| crate::sandbox::never_readable(&home))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    with_targets(paths)
+}
+
+/// `paths`, each followed by where it really is when a link leads
+/// elsewhere (`~/.docker/config.json` to `~/private/login.json`, say).
+/// Resolved once, when the host starts, and kept: a worker that removes
+/// the link must not uncover its target to the next.
+fn with_targets(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut all = Vec::new();
+    for path in paths {
+        let target = path.canonicalize().ok().filter(|real| *real != path);
+        all.push(path);
+        all.extend(target);
+    }
+    all
 }
 
 /// The paths `--allow-read` names, which workers may read but not write:
@@ -1290,6 +1305,24 @@ mod tests {
         }
         let beside = allowed_reads(&[root.join("share/b")], None, &[], &state);
         assert_eq!(beside.unwrap(), [root.join("share/b")]);
+    }
+
+    #[test]
+    fn a_linked_credential_keeps_its_target_hidden_once_the_link_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(home.join(".docker")).unwrap();
+        std::fs::create_dir_all(home.join("private")).unwrap();
+        std::fs::write(home.join("private/login.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(
+            home.join("private/login.json"),
+            home.join(".docker/config.json"),
+        )
+        .unwrap();
+        let hidden = with_targets(crate::sandbox::never_readable(&home));
+        std::fs::remove_file(home.join(".docker/config.json")).unwrap();
+        assert!(hidden.contains(&home.join(".docker/config.json")));
+        assert!(hidden.contains(&home.join("private/login.json")));
     }
 
     #[test]
