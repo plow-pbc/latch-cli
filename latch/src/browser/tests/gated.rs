@@ -38,6 +38,7 @@ conformance!(
     a_one_step_do_plan_is_judged_and_act_is_not,
     a_host_out_of_plow_credits_says_its_account_owner_must_add_them,
     goto_on_a_new_site_is_judged_as_a_tab_there_is,
+    the_owners_devices_are_judged_as_the_owner,
 );
 
 /// The owner's chat, oldest message first; a test may add to it between
@@ -278,6 +279,24 @@ impl Host {
                 chat: None,
             },
         }
+    }
+
+    /// One command from one of the owner's devices, through its gate.
+    async fn device(
+        &self,
+        command: &str,
+        name: &str,
+        args: Value,
+    ) -> (Result<Value, Failure>, Map<String, Value>) {
+        let caller = Caller {
+            key: CALLER,
+            device: true,
+            gate: Some(Gate {
+                keeper: &self.keeper,
+                caller: crate::gate::Caller::Owner,
+            }),
+        };
+        self.run(caller, command, name, args, None).await
     }
 
     /// One command from the agent, through its gate, and its audit.
@@ -1511,4 +1530,52 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
     }
     assert_eq!(judge.calls(), asked);
     host.look("close", &id, json!({})).await;
+}
+
+async fn the_owners_devices_are_judged_as_the_owner(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (site, hits) = serve_site();
+    // The owner's own request is covered; an agent with no chat is not.
+    let judge = Judge::new(|state| {
+        let owner = state["rules_of_judgment"]
+            .to_string()
+            .contains("The caller is the owner");
+        if owner { COVERED } else { NOT_COVERED }
+    });
+    let host = Host::start(&state, &site, &judge, Vec::new());
+    let files = format!("{site}/files.html");
+
+    let (page, audit) = host.device("open", "default", json!({"url": files})).await;
+    let page = page.unwrap();
+    assert_eq!(judge.calls(), 1, "the owner's open is judged");
+    assert_eq!(audit["gate"]["caller"], "owner_device");
+    assert_eq!(audit["gate"]["verdict"], "allow");
+    let id = page["session"].as_str().unwrap().to_string();
+    let link = find(&page, "link", "Download the report");
+
+    let (planned, audit) = host.device("do", &id, two_clicks(&link)).await;
+    planned.unwrap();
+    assert_eq!(judge.calls(), 2, "the owner's plan is judged");
+    assert_eq!(judge.last_action()["kind"], "browser_plan");
+    assert_eq!(audit["gate"]["caller"], "owner_device");
+
+    let script = json!({"script": "document.title"});
+    let (ran, audit) = host.device("eval", &id, script).await;
+    ran.unwrap();
+    assert_eq!(judge.calls(), 3, "the owner's script is judged");
+    assert_eq!(audit["gate"]["caller"], "owner_device");
+    host.look("close", &id, json!({})).await;
+
+    // An agent on the same host is still judged as an agent.
+    let loaded = fetched(&hits).len();
+    let (opened, audit) = host
+        .agent("open", "default", json!({"url": files}), None)
+        .await;
+    assert_eq!(opened.unwrap_err().code, "gatekeeper_denied");
+    assert_eq!(audit["gate"]["caller"], "agent");
+    assert_eq!(
+        fetched(&hits).len(),
+        loaded,
+        "the refused open loaded nothing"
+    );
 }

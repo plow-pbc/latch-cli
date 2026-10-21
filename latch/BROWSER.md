@@ -244,10 +244,11 @@ and command.
 
 ## The gatekeeper
 
-An agent's browser commands pass the host's gatekeeper, which asks
-whether the owner asked for them, in the owner's Plow chat with that
-agent and the owner's rules on the host. The owner's own devices are
-never judged. Judged, each before anything of it reaches the page:
+Every caller's browser commands pass the host's gatekeeper, which asks
+whether the owner asked for them: for an agent, in the owner's Plow chat
+with that agent and the owner's rules on the host; for the owner's own
+devices, on the owner's own request within the host's rules. Judged,
+each before anything of it reaches the page:
 
 - opening a site this session has not been judged for: `open URL`, or
   `goto URL` or `tab new URL` on another site;
