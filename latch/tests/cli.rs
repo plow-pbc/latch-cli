@@ -553,13 +553,21 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
         shown.contains(&format!("{opens}{link}\x1b]8;;\x1b\\")),
         "{shown}"
     );
-    // Then one line to read, and one when it is done: no JSON.
+    // Then what to do, that it is waiting, and one line when it is done:
+    // no JSON.
     let said: Vec<&str> = rows
         .iter()
         .filter(|row| !row.contains(&opens))
         .copied()
         .collect();
-    assert_eq!(said, ["Text TRY12 to +1 415-555-0100", "Logged in as mac."]);
+    assert_eq!(
+        said,
+        [
+            "Text TRY12 to +1 415-555-0100",
+            "Waiting for your text…",
+            "Logged in as mac."
+        ]
+    );
     assert_eq!(server.join().unwrap().len(), 3);
 }
 

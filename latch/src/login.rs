@@ -21,7 +21,7 @@ use crate::state::{Config, StateDir};
 use crate::term;
 
 /// How often a login by text asks Plow whether the code has been texted.
-const POLL: Duration = Duration::from_secs(3);
+const POLL: Duration = Duration::from_secs(1);
 
 #[derive(Serialize)]
 pub struct LoginOutput {
@@ -206,6 +206,7 @@ async fn by_text(
         }
         eprintln!("{}", term::link(&link, &link));
         eprintln!("Text {code} to {}", for_people(&activation.send_to));
+        eprintln!("Waiting for your text…");
     }
 
     let mut failures = 0;
