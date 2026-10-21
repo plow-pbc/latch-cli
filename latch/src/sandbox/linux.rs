@@ -301,10 +301,12 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
     for area in policy.areas.iter().filter(|area| *area != Path::new("/")) {
         mount(command, area, false)?;
     }
-    // A worker could otherwise rename a folder above the state folder or the
-    // running latch, inside an area, and put its own in their place for the
-    // host's next start. Binding each such folder onto itself makes it a
-    // mount point, which cannot be renamed or removed; it stays writable.
+    // A worker could otherwise rename a folder above the state folder, the
+    // running latch or a hidden path, inside an area: to put its own in
+    // their place for the host's next start, or to move a hidden path where
+    // the next call's sandbox does not look for it. Binding each such folder
+    // onto itself makes it a mount point, which cannot be renamed or
+    // removed; it stays writable.
     for dir in folders_above(policy, program)? {
         mount(command, &dir, false)?;
     }
@@ -316,8 +318,9 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
     Ok(())
 }
 
-/// The folders inside an area that hold the state folder or the running
-/// latch, shallowest first. The areas themselves are already mount points.
+/// The folders inside an area that hold the state folder, the running
+/// latch or a hidden path, shallowest first. The areas themselves are
+/// already mount points, as are the hidden paths (see `launch`).
 fn folders_above(policy: &Policy, program: &Path) -> Result<Vec<PathBuf>, Error> {
     let areas: Vec<PathBuf> = policy
         .areas
@@ -325,7 +328,12 @@ fn folders_above(policy: &Policy, program: &Path) -> Result<Vec<PathBuf>, Error>
         .map(|area| area.canonicalize())
         .collect::<Result<_, _>>()?;
     let mut dirs = Vec::new();
-    for protected in [policy.state_dir.canonicalize()?, program.to_path_buf()] {
+    let hidden = policy
+        .hidden
+        .iter()
+        .filter_map(|path| path.canonicalize().ok());
+    let protected = [policy.state_dir.canonicalize()?, program.to_path_buf()];
+    for protected in protected.into_iter().chain(hidden) {
         for dir in protected.ancestors().skip(1) {
             if areas
                 .iter()

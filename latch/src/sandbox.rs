@@ -16,6 +16,13 @@
 //! link into a hidden path is refused by Seatbelt and reports `not_found`
 //! in Linux's filesystem view.
 //!
+//! A hard link is a second name for the same file, and both systems check
+//! names. A worker cannot make one to a hidden file (Seatbelt refuses it;
+//! Linux shows the file empty or not at all, on a mount of its own), nor
+//! rename a folder above a hidden path to move it out of the rules' way.
+//! A hard link made outside latch, from a readable place to a hidden file,
+//! stays readable through that name: an accepted limit.
+//!
 //! Linux hides the state directory with an empty, read-only mount, even when
 //! an area contains it. Other systems refuse to run a worker at all.
 

@@ -818,3 +818,37 @@ fn credentials_stay_hidden_inside_an_opt_in_and_inside_the_area() {
         b"PRIVATE KEY"
     );
 }
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn a_hidden_path_can_be_neither_hard_linked_nor_moved_out_of_reach() {
+    let dir = setup();
+    let real = dir.path().canonicalize().unwrap();
+    // A hidden folder and a hidden file, each below a folder of the area.
+    fs::create_dir_all(real.join("area/nest/peer")).unwrap();
+    fs::write(real.join("area/nest/peer/key"), "PRIVATE KEY").unwrap();
+    fs::create_dir_all(real.join("area/conf")).unwrap();
+    fs::write(real.join("area/conf/.netrc"), "password hunter2").unwrap();
+    let flags = ["--hidden", "nest/peer", "--hidden", "conf/.netrc"];
+    let script = r#"
+        ln nest/peer/key stolen-key 2>/dev/null && echo "LINKED-KEY"
+        ln conf/.netrc stolen-netrc 2>/dev/null && echo "LINKED-NETRC"
+        cat stolen-key stolen-netrc 2>/dev/null
+        mv nest moved 2>/dev/null && echo "MOVED-NEST"
+        mv conf moved-conf 2>/dev/null && echo "MOVED-CONF"
+        true
+    "#;
+    let output = exec_script(dir.path(), &flags, script);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout, "", "{output:?}");
+    for (path, data) in [
+        ("area/nest/peer/key", "PRIVATE KEY"),
+        ("area/conf/.netrc", "password hunter2"),
+    ] {
+        assert_eq!(fs::read_to_string(real.join(path)).unwrap(), data);
+    }
+    for path in ["stolen-key", "stolen-netrc", "moved", "moved-conf"] {
+        assert!(!real.join("area").join(path).exists(), "{path}");
+    }
+}
