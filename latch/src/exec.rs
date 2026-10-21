@@ -160,7 +160,8 @@ pub fn sweep_tmpdirs() {
     let Ok(entries) = std::fs::read_dir(&temp) else {
         return;
     };
-    // SAFETY: getuid only reads our own id.
+    // SAFETY: std has no UID API. getuid takes no arguments, accesses no Rust
+    // memory, and returns our real UID for the ownership check below.
     let me = unsafe { libc::getuid() };
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -193,7 +194,8 @@ pub fn sweep_tmpdirs() {
 
 /// Whether a process `pid` runs (one of another user counts too).
 fn running(pid: libc::pid_t) -> bool {
-    // SAFETY: signal 0 only checks that the process exists.
+    // SAFETY: std cannot probe an arbitrary PID. Signal 0 checks existence
+    // without delivering a signal; this scalar-only call accesses no Rust memory.
     let found = unsafe { libc::kill(pid, 0) } == 0;
     found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
@@ -317,7 +319,8 @@ async fn wait_or_kill(
     if let Some(pid) = child.id() {
         // The worker started the program as the leader of a new process
         // group whose id is its pid, so this reaches every process in it.
-        // SAFETY: killpg only sends a signal; it touches no memory of ours.
+        // SAFETY: std's child kill cannot reach descendants. This live child's
+        // PID names the group we created for it; killpg takes only scalar arguments.
         unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
     }
     let status = child
@@ -518,6 +521,9 @@ mod tests {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let workers = WorkerSetup {
             areas: vec![dir.path().to_path_buf()],
+            reads: vec![],
+            hidden: vec![],
+            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: dir.path().join("state"),
             program,
         };

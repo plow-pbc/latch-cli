@@ -7,7 +7,7 @@ Modified for latch's explicit mounts, private state and offline file workers.
 
 The macOS exec sandbox rules in src/sandbox/codex/ are copied unchanged
 from OpenAI Codex, commit 221e4e7c05386d06aa7b91da2a9b04f7f2bd921f:
-codex-rs/sandboxing/src/seatbelt_{base,network,preferences}_policy.sbpl.
+codex-rs/sandboxing/src/seatbelt_{base,network}_policy.sbpl.
 src/sandbox.rs combines them with latch's own rules (areas, the per-call
 temp folder, outbound-only network, and the state, latch and ancestor
 protections), following codex-rs/sandboxing/src/seatbelt.rs at that commit.

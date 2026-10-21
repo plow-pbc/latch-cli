@@ -18,8 +18,11 @@ pub enum Woke {
 /// Whether stdin is a pipe or socket, so its closing means the parent went
 /// away. A terminal or `/dev/null` is not watched.
 pub fn stdin_is_a_pipe() -> bool {
-    // SAFETY: fstat only writes into `stat`.
+    // SAFETY: fstat needs output storage. stat contains only integer fields,
+    // integer arrays and timespecs, for which all-zero bytes are valid.
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: std cannot inspect stdin's file type directly. `stat` is writable
+    // for one stat value; the OS checks fd 0, and fields are used only on success.
     if unsafe { libc::fstat(0, &mut stat) } != 0 {
         return false;
     }
@@ -38,7 +41,9 @@ fn check(result: libc::c_int) -> io::Result<libc::c_int> {
 /// Reads and drops what stdin has; true once it is closed.
 fn stdin_closed() -> bool {
     let mut buffer = [0u8; 512];
-    // SAFETY: reads into `buffer`, at most its length.
+    // SAFETY: use the same unbuffered fd watched by kqueue/poll, rather than
+    // std's buffered stdin. `buffer` is writable for the supplied length, and
+    // the OS checks fd 0; no pointer escapes this call.
     let read = unsafe { libc::read(0, buffer.as_mut_ptr().cast(), buffer.len()) };
     read == 0 || (read < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted)
 }
@@ -71,7 +76,8 @@ mod macos {
 
     impl Watch {
         pub fn new(dir: &Path, files: &[PathBuf], stdin: bool) -> io::Result<Watch> {
-            // SAFETY: no arguments; the result is checked.
+            // SAFETY: std has no kqueue API. This no-argument call accesses no
+            // Rust memory; check rejects errors before we store the descriptor.
             let queue = check(unsafe { libc::kqueue() })?;
             let watch = Watch {
                 queue,
@@ -111,9 +117,12 @@ mod macos {
                 return Ok(Woke::Changed);
             }
             loop {
-                // SAFETY: an all-zero kevent is a valid value to overwrite.
+                // SAFETY: kevent needs output storage. Its integer fields may
+                // be zero and its raw udata pointer may be null; neither is a reference.
                 let mut event: libc::kevent = unsafe { std::mem::zeroed() };
-                // SAFETY: room for one event; no timeout, so it blocks.
+                // SAFETY: std has no kqueue wait API. Our queue stays open,
+                // `event` holds one writable output entry, and null input has
+                // count 0; the null timeout blocks without dereferencing a pointer.
                 let got = unsafe {
                     libc::kevent(
                         self.queue,
@@ -148,7 +157,9 @@ mod macos {
         /// created or replaced since the last wait is watched too.
         pub fn arm(&mut self) -> io::Result<()> {
             for fd in self.open.drain(..) {
-                // SAFETY: a descriptor this watch opened.
+                // SAFETY: closing the raw event descriptor removes its watch.
+                // We opened it and drained it from `open`, so it is closed only
+                // once and no longer used by this watch.
                 unsafe { libc::close(fd) };
             }
             let vnode = libc::NOTE_WRITE
@@ -161,7 +172,9 @@ mod macos {
                 .collect();
             for (index, path) in paths.iter().enumerate() {
                 let name = CString::new(path.as_os_str().as_bytes())?;
-                // SAFETY: a NUL-terminated path; the result is checked.
+                // SAFETY: std has no O_EVTONLY open API. `name` is a live
+                // NUL-terminated path; O_CREAT is absent, so no mode argument is
+                // required, and errors are checked before storing the descriptor.
                 let fd = unsafe { libc::open(name.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) };
                 if fd < 0 {
                     // A file that does not exist yet: the folder's event says when it does.
@@ -190,7 +203,8 @@ mod macos {
                 data: 0,
                 udata: std::ptr::null_mut(),
             };
-            // SAFETY: one change in, no events out.
+            // SAFETY: std has no kqueue registration API. Our queue stays open,
+            // `change` is live for its one input entry, and null output has count 0.
             check(unsafe {
                 libc::kevent(
                     self.queue,
@@ -208,7 +222,9 @@ mod macos {
     impl Drop for Watch {
         fn drop(&mut self) {
             for fd in self.open.drain(..).chain([self.queue]) {
-                // SAFETY: descriptors this watch opened.
+                // SAFETY: release this watch's raw kernel descriptors. Each was
+                // opened by us, is removed from `open` or is the queue itself,
+                // and is closed exactly once with no subsequent use.
                 unsafe { libc::close(fd) };
             }
         }
@@ -234,7 +250,8 @@ mod linux {
     impl Watch {
         /// `files` live in `dir`, so the folder's watch covers them.
         pub fn new(dir: &Path, _files: &[PathBuf], stdin: bool) -> io::Result<Watch> {
-            // SAFETY: the result is checked.
+            // SAFETY: std has no inotify API. The documented CLOEXEC flag is
+            // scalar, no Rust memory is accessed, and check rejects errors.
             let inotify = check(unsafe { libc::inotify_init1(libc::IN_CLOEXEC) })?;
             let name = CString::new(dir.as_os_str().as_bytes())?;
             let mask = libc::IN_MODIFY
@@ -243,7 +260,9 @@ mod linux {
                 | libc::IN_MOVED_TO
                 | libc::IN_MOVED_FROM
                 | libc::IN_CLOSE_WRITE;
-            // SAFETY: a NUL-terminated path; the result is checked.
+            // SAFETY: std has no inotify registration API. `inotify` is open,
+            // `name` is a live NUL-terminated path, mask contains documented flags,
+            // and check rejects errors before the watch is returned.
             check(unsafe { libc::inotify_add_watch(inotify, name.as_ptr(), mask) })?;
             Ok(Watch {
                 inotify,
@@ -260,11 +279,15 @@ mod linux {
             }
             self.process = pid;
             if let Some(fd) = self.pidfd.take() {
-                // SAFETY: a descriptor this watch opened.
+                // SAFETY: changing the watched process requires closing the old
+                // raw pidfd. take removes our owned descriptor, so it is closed
+                // once and is not polled or closed again.
                 unsafe { libc::close(fd) };
             }
             if let Some(pid) = pid {
-                // SAFETY: pidfd_open takes a pid and flags; the result is checked.
+                // SAFETY: std has no arbitrary-process pidfd API. This syscall
+                // takes only a PID and zero flags, accesses no Rust memory, and
+                // its error result is checked before storing the descriptor.
                 let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
                 if fd < 0 {
                     self.pending = true;
@@ -303,7 +326,9 @@ mod linux {
                         revents: 0,
                     });
                 }
-                // SAFETY: `fds` holds `fds.len()` entries; -1 blocks.
+                // SAFETY: std cannot wait on this set of raw event descriptors.
+                // `fds` contains at most three initialized pollfd entries, is
+                // writable for their count, and is not resized during the call.
                 let got = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
                 if got < 0 {
                     let err = io::Error::last_os_error();
@@ -319,12 +344,16 @@ mod linux {
                 let mut changed = false;
                 if ready(self.inotify) {
                     let mut buffer = [0u8; 4096];
-                    // SAFETY: reads into `buffer`; the events are only drained.
+                    // SAFETY: drain the ready raw inotify descriptor before the
+                    // next wait. It is open, `buffer` is writable for the given
+                    // length, and the raw bytes are discarded without typed reads.
                     unsafe { libc::read(self.inotify, buffer.as_mut_ptr().cast(), buffer.len()) };
                     changed = true;
                 }
                 if let Some(fd) = self.pidfd.filter(|&fd| ready(fd)) {
-                    // SAFETY: a descriptor this watch opened.
+                    // SAFETY: release the exited process's raw pidfd. It is
+                    // still owned by this watch and is removed immediately below,
+                    // so no future poll or drop uses the closed descriptor.
                     unsafe { libc::close(fd) };
                     self.pidfd = None;
                     self.process = None;
@@ -340,7 +369,9 @@ mod linux {
     impl Drop for Watch {
         fn drop(&mut self) {
             for fd in self.pidfd.take().into_iter().chain([self.inotify]) {
-                // SAFETY: descriptors this watch opened.
+                // SAFETY: release this watch's raw kernel descriptors. take
+                // removes its owned pidfd, the other descriptor is its inotify
+                // instance, and neither is used or closed again after drop.
                 unsafe { libc::close(fd) };
             }
         }

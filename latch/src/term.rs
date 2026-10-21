@@ -48,20 +48,25 @@ pub fn ask(question: &str) -> String {
 pub fn ask_secret(question: &str) -> String {
     eprint!("{question}");
     let fd = libc::STDIN_FILENO;
-    // SAFETY: termios is a plain C struct that tcgetattr fills in.
+    // SAFETY: tcgetattr needs output storage; termios contains only integers
+    // and integer arrays, so zero is valid even if querying the terminal fails.
     let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: std has no terminal-attribute API. `saved` is writable termios
+    // storage; the OS validates stdin's descriptor, and only success is used.
     let terminal =
         std::io::stdin().is_terminal() && unsafe { libc::tcgetattr(fd, &mut saved) } == 0;
     if terminal {
         let mut quiet = saved;
         quiet.c_lflag &= !libc::ECHO;
-        // SAFETY: sets the attributes just read, with echo off.
+        // SAFETY: disabling echo needs tcsetattr. `quiet` is the termios just
+        // read from this descriptor, with only its ECHO bit cleared, and stays live.
         unsafe { libc::tcsetattr(fd, libc::TCSANOW, &quiet) };
     }
     let mut answer = String::new();
     let _ = std::io::stdin().read_line(&mut answer);
     if terminal {
-        // SAFETY: restores what tcgetattr read.
+        // SAFETY: restoring echo needs tcsetattr. `saved` still holds the
+        // successfully read attributes of this descriptor and outlives the call.
         unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
         eprintln!();
     }
@@ -116,7 +121,8 @@ pub fn size() -> (usize, usize) {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    // SAFETY: TIOCGWINSZ only writes into `size`, which outlives the call.
+    // SAFETY: std has no terminal-size API. TIOCGWINSZ expects writable winsize
+    // storage; `size` has that type and outlives the call, and errors are checked.
     let status = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) };
     if status != 0 || size.ws_col == 0 || size.ws_row == 0 {
         return (80, 24);
