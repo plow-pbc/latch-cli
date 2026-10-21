@@ -106,6 +106,7 @@ async fn start_with(
         name: "test-host".into(),
         gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
         deny_exec,
+        binary: Binary::at(&latch_binary()).unwrap(),
     });
     let serving = host.clone();
     tokio::spawn(async move {

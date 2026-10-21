@@ -15,8 +15,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -59,6 +60,7 @@ struct Host {
     deny_exec: DenyExec,
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
+    binary: Binary,
 }
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
@@ -201,6 +203,7 @@ async fn run_host(
     rules: RuleFiles,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
+    let binary = Binary::at(&workers.program)?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
     let gatekeeper = Gatekeeper::new(
         plow.clone(),
@@ -290,6 +293,7 @@ async fn run_host(
         name,
         deny_exec,
         gatekeeper,
+        binary,
     });
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
@@ -341,6 +345,69 @@ async fn go_offline(plow: &Plow, key: &str) {
             failure.message
         )),
         Err(_) => log("could not tell Plow we are offline: no answer within 2 seconds"),
+    }
+}
+
+/// The latch binary this host started from, as it was on disk then. A host
+/// starts its workers from this path, so once the file there changes (an
+/// upgrade renames a new one over it, or rewrites it) the host refuses new
+/// work and says to restart it. It does not restart itself: a restart would
+/// drop open browser sessions and in-flight calls, and the new latch may
+/// refuse this state folder, leaving the host silently gone.
+struct Binary {
+    path: PathBuf,
+    on_disk: OnDisk,
+    told: AtomicBool,
+}
+
+/// What tells one file at a path from another, or from itself rewritten.
+#[derive(PartialEq)]
+struct OnDisk {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+}
+
+impl OnDisk {
+    /// Follows a symlink, so one pointed at another latch counts as replaced.
+    fn of(path: &Path) -> Option<OnDisk> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(OnDisk {
+            device: meta.dev(),
+            inode: meta.ino(),
+            size: meta.size(),
+            modified: (meta.mtime(), meta.mtime_nsec()),
+        })
+    }
+}
+
+impl Binary {
+    /// `path`, the latch the workers run, as it is on disk now.
+    fn at(path: &Path) -> Result<Binary, Failure> {
+        let on_disk = OnDisk::of(path).ok_or_else(|| {
+            let message = format!("latch cannot find its own binary {}", path.display());
+            Failure::failed("no_binary", message)
+        })?;
+        Ok(Binary {
+            path: path.to_path_buf(),
+            on_disk,
+            told: AtomicBool::new(false),
+        })
+    }
+
+    /// Whether the file is no longer the one this host started from (gone
+    /// counts too). The host's log says so once.
+    fn replaced(&self) -> bool {
+        let replaced = OnDisk::of(&self.path).as_ref() != Some(&self.on_disk);
+        if replaced && !self.told.swap(true, Ordering::Relaxed) {
+            log(&format!(
+                "{} was replaced since this host started: refusing every operation; \
+                 restart `latch serve` to run the new latch",
+                self.path.display()
+            ));
+        }
+        replaced
     }
 }
 
@@ -505,8 +572,11 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             let gate = host.gate(&identity, request.chat.as_deref());
             // An exec this host's owner denies is refused without asking.
             let denied_exec = op == "exec" && host.deny_exec.refuses(&identity);
-            let gated =
-                gate::gated(op, &request.args, &host.workers.areas[0]).filter(|_| !denied_exec);
+            // A worker started now would run the new latch under this old
+            // host: nothing runs, and nothing is judged.
+            let upgraded = host.binary.replaced();
+            let gated = gate::gated(op, &request.args, &host.workers.areas[0])
+                .filter(|_| !denied_exec && !upgraded);
             let judgment = match (&gate, &gated) {
                 (Ok(Some(gate)), Some(gated)) => Some(gate.judge(&gated.action).await),
                 _ => None,
@@ -521,7 +591,15 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                 audit_args: gated.audit.clone(),
                 outcome: failure.code.clone(),
             });
-            let done = if let Some(refused) = refused {
+            let done = if upgraded {
+                Done::failed(
+                    "host_upgraded",
+                    "latch on this host was replaced since `latch serve` started; nothing ran. \
+                     Restart `latch serve` on the host to run the new latch, then try again"
+                        .to_string(),
+                    Value::Null,
+                )
+            } else if let Some(refused) = refused {
                 refused
             } else {
                 match op {
@@ -709,7 +787,9 @@ pub(crate) fn decision(response: &Response) -> &'static str {
             ..
         } => "deny",
         Response::Error { code, .. }
-            if code == "sandbox_failed" || code == "gatekeeper_unavailable" =>
+            if code == "sandbox_failed"
+                || code == "gatekeeper_unavailable"
+                || code == "host_upgraded" =>
         {
             "deny"
         }
@@ -918,6 +998,31 @@ mod tests {
             "the sandbox could not be applied".to_string(),
         );
         assert_eq!(decision(&unconfined), "deny");
+        let upgraded = failed("host_upgraded", "restart the host".to_string());
+        assert_eq!(decision(&upgraded), "deny");
+    }
+
+    #[test]
+    fn a_binary_renamed_over_rewritten_or_removed_counts_as_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("latch");
+        let binary = |path: &Path| Binary::at(path).unwrap();
+        std::fs::write(&path, b"old latch").unwrap();
+        let running = binary(&path);
+        assert!(!running.replaced());
+
+        // How install.sh upgrades: a new file renamed over the old one.
+        std::fs::write(dir.path().join("latch.tmp"), b"new latch").unwrap();
+        std::fs::rename(dir.path().join("latch.tmp"), &path).unwrap();
+        assert!(running.replaced());
+
+        let running = binary(&path);
+        std::fs::write(&path, b"new latch, again").unwrap();
+        assert!(running.replaced());
+
+        let running = binary(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert!(running.replaced());
     }
 
     #[test]
