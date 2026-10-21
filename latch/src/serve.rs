@@ -65,6 +65,9 @@ struct Host {
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
     binary: Binary,
+    /// The owner's home folder, whose Messages and address book
+    /// `messages` and `contacts` read.
+    home: PathBuf,
     /// How far the host is into stopping.
     stopping: watch::Sender<Stopping>,
 }
@@ -356,6 +359,7 @@ async fn run_host(
         deny_exec,
         gatekeeper,
         binary,
+        home: std::env::home_dir().unwrap_or_default(),
         stopping: watch::Sender::new(Stopping::No),
     });
     lifecycle::record(&state.path, Phase::Serving, None)?;
@@ -903,6 +907,10 @@ async fn serve_operation(
                             &request.args,
                         )
                         .await
+                    }
+                    "messages" | "contacts" => {
+                        crate::messages::host::run(&host.workers, &host.home, op, &request.args)
+                            .await
                     }
                     "google" => {
                         crate::google::host::run(

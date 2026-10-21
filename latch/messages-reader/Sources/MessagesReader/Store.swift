@@ -40,13 +40,18 @@ final class Store {
             && sqlite3_step(probe) == SQLITE_ROW
         sqlite3_finalize(probe)
         guard readable, let handle else {
-            let errno = sqlite3_system_errno(handle)
             sqlite3_close(handle)
+            // SQLite does not always keep the system's reason; opening the
+            // file plainly gets it.
+            let fd = open(path, O_RDONLY)
+            let errno = fd >= 0 ? 0 : Foundation.errno
+            if fd >= 0 { close(fd) }
             switch errno {
             case EPERM, EACCES:
                 throw ReaderError.store(
                     "messages_not_granted",
-                    "the Messages database at \(path) cannot be read: the host needs Full Disk Access")
+                    "the Messages database at \(path) cannot be read (permission refused); "
+                        + "on a Mac this usually means the host lacks Full Disk Access")
             case ENOENT, ENOTDIR:
                 throw ReaderError.store("messages_missing", "there is no Messages database at \(path)")
             default:

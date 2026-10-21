@@ -14,6 +14,10 @@
 # version gets its own folder, so a new pin never overwrites the old gog.
 # That download needs curl and tar.
 #
+# On macOS it installs the Messages reader that came with this latch, if it
+# did, into <state-dir>/plugins/messages/<latch version>/latch-messages; latch
+# runs only the reader it was built with.
+#
 # On Linux it also installs bubblewrap, which `latch serve` uses to sandbox
 # its workers, and on Ubuntu 24.04 and later the AppArmor profile that lets
 # bubblewrap create user namespaces there. Those need root, so it asks for
@@ -127,7 +131,21 @@ else
   say "installed gog $gog_version to $gog (sha256 $(sha256 "$gog"))"
 fi
 
-# 3. Linux: work out what needs root, then run it all under one sudo.
+# 3. macOS: the Messages reader packaged beside this latch, if there is one,
+# in a folder named for this latch's version (the one that runs it).
+reader="$(dirname "$src")/latch-messages"
+if [ "$(uname -s)" = Darwin ] && [ -f "$reader" ]; then
+  latch_version=$("$dest" --version | awk '{print $2}')
+  [ -n "$latch_version" ] || die "could not read $dest's version"
+  reader_dir="$state_dir/plugins/messages/$latch_version"
+  mkdir -p "$reader_dir"
+  cp "$reader" "$reader_dir/latch-messages.tmp"
+  chmod 755 "$reader_dir/latch-messages.tmp"
+  mv "$reader_dir/latch-messages.tmp" "$reader_dir/latch-messages"
+  say "installed the Messages reader to $reader_dir/latch-messages"
+fi
+
+# 4. Linux: work out what needs root, then run it all under one sudo.
 if [ "$(uname -s)" = Linux ]; then
   packages=""
   want() { packages="${packages:+$packages }$1"; }

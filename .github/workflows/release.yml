@@ -75,6 +75,9 @@ jobs:
           unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
           export LATCH_BUILD_COMMIT="$GITHUB_SHA"
           cd latch
+          # The Messages reader first: this latch runs only the one built here.
+          LATCH_MESSAGES_READER_SHA256=$(messages-reader/build.sh | tail -n 1)
+          export LATCH_MESSAGES_READER_SHA256
           rustup toolchain install
           cargo build --release --locked --target '${{ matrix.target }}'
           codesign --force --sign - 'target/${{ matrix.target }}/release/latch'

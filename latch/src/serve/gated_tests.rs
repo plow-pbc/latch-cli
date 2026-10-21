@@ -49,6 +49,8 @@ struct TestHost {
     plow: FakePlow,
     area: PathBuf,
     state: PathBuf,
+    /// The owner's home folder, as `messages` and `contacts` read it.
+    home: PathBuf,
     /// What the host watches as its own binary: a stand-in, so a test can
     /// replace it without touching the workers' real one.
     binary: PathBuf,
@@ -83,9 +85,10 @@ async fn start_with(
     std::fs::create_dir_all(&parent).unwrap();
     let dir = tempfile::tempdir_in(parent).unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (area, state) = (root.join("area"), root.join("state"));
+    let (area, state, home) = (root.join("area"), root.join("state"), root.join("home"));
     std::fs::create_dir(&area).unwrap();
     std::fs::create_dir(&state).unwrap();
+    std::fs::create_dir(&home).unwrap();
     std::fs::write(area.join("notes.txt"), "the notes' own words").unwrap();
     let binary = root.join("latch");
     std::fs::write(&binary, "the latch this host started from").unwrap();
@@ -106,7 +109,7 @@ async fn start_with(
         workers: WorkerSetup {
             areas: vec![area.clone()],
             reads: vec![],
-            hidden: vec![],
+            hidden: crate::sandbox::never_readable(&home),
             state_folders: crate::state_folders::StateFolders::none(),
             state_dir: state.clone(),
             program: latch_binary(),
@@ -117,6 +120,7 @@ async fn start_with(
         gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
         deny_exec,
         binary: Binary::at(&binary).unwrap(),
+        home: home.clone(),
         stopping: tokio::sync::watch::Sender::new(Stopping::No),
     });
     let serving = host.clone();
@@ -130,6 +134,7 @@ async fn start_with(
         plow,
         area,
         state,
+        home,
         binary,
         _dir: dir,
     }
@@ -850,4 +855,245 @@ async fn a_stalled_audit_write_holds_up_no_other_caller() {
     assert!(appending.await.unwrap().is_ok());
     stall.join().unwrap();
     assert_eq!(t.audit()[0]["op"], "exec");
+}
+
+/// The Messages reader, built from `messages-reader/` once per test run.
+#[cfg(target_os = "macos")]
+fn messages_reader() -> PathBuf {
+    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("messages-reader");
+            let swift = |extra: &[&str]| {
+                let output = std::process::Command::new("swift")
+                    .args([
+                        "build",
+                        "--package-path",
+                        package.to_str().unwrap(),
+                        "--product",
+                        "latch-messages",
+                    ])
+                    .args(extra)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8(output.stdout).unwrap()
+            };
+            swift(&[]);
+            PathBuf::from(swift(&["--show-bin-path"]).trim()).join("latch-messages")
+        })
+        .clone()
+}
+
+impl TestHost {
+    /// The owner's Messages and address book, from the synthetic fixtures,
+    /// and the reader installed where a host looks for it.
+    #[cfg(target_os = "macos")]
+    fn with_messages(&self) {
+        let sqlite = |sql: &str, db: &Path| {
+            std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+            let mut child = std::process::Command::new("/usr/bin/sqlite3")
+                .arg(db)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            std::io::Write::write_all(child.stdin.as_mut().unwrap(), sql.as_bytes()).unwrap();
+            drop(child.stdin.take());
+            assert!(child.wait().unwrap().success());
+        };
+        let [messages, book] = crate::messages::host::folders(&self.home);
+        sqlite(
+            include_str!("../../tests/messages/chat.sql"),
+            &messages.join("chat.db"),
+        );
+        sqlite(
+            include_str!("../../tests/messages/addressbook.sql"),
+            &book.join("AddressBook-v22.abcddb"),
+        );
+        let reader = crate::messages::host::reader(&self.state);
+        std::fs::create_dir_all(reader.parent().unwrap()).unwrap();
+        std::fs::copy(messages_reader(), &reader).unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
+    // The log destination is process-wide, so give this test its own process.
+    let Ok(path) = std::env::var("LATCH_MESSAGES_TEST_LOG") else {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let name =
+            "serve::gated_tests::messages_and_contacts_reads_are_judged_and_audited_without_a_row";
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env("LATCH_MESSAGES_TEST_LOG", dir.path().join("serve.log"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    crate::log::to_file(Path::new(&path)).unwrap();
+    let t = start(a_chat(always_covered)).await;
+    t.with_messages();
+    let agent = t.caller("agent").await;
+
+    let search = json!({"action": "search", "args": ["--", "code"]});
+    let (answer, _) = t.call(&agent, "messages", search).await;
+    let Response::Ok(found) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(found["count"], 1);
+    assert_eq!(found["messages"][0]["text"], "Your code is 482913");
+    assert_eq!(
+        found["messages"][0]["from"]["name"], "Ann Example",
+        "{found}"
+    );
+    assert!(
+        found["warning"]
+            .as_str()
+            .unwrap()
+            .contains("untrusted historical data")
+    );
+
+    let (answer, _) = t
+        .call(
+            &agent,
+            "contacts",
+            json!({"action": "search", "args": ["--", "sample"]}),
+        )
+        .await;
+    let Response::Ok(people) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(people["people"][0]["name"], "Bo");
+    assert_eq!(people["people"][0]["emails"][0]["handle"], "bo@example.com");
+
+    let (answer, _) = t
+        .call(
+            &agent,
+            "messages",
+            json!({"action": "thread", "args": ["--with", "(555) 000-0001"]}),
+        )
+        .await;
+    let Response::Ok(thread) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(thread["count"], 3);
+
+    // Each call was judged, on the reader's own words.
+    assert_eq!(t.judged(), 3);
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    assert_eq!(
+        asked[0]["proposed_action"],
+        json!({"operation": "messages.search", "arguments": ["--", "code"]})
+    );
+    assert_eq!(asked[1]["proposed_action"]["operation"], "contacts.search");
+
+    // The audit keeps the action, its words and the counts; no row.
+    let records = t.audit();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["op"], "messages");
+    assert_eq!(records[0]["decision"], "allow");
+    assert_eq!(records[0]["args"]["action"], "messages.search");
+    assert_eq!(records[0]["args"]["result"]["count"], 1);
+    assert_eq!(records[2]["args"]["result"]["count"], 3);
+    let audit = std::fs::read_to_string(t.state.join("audit.ndjson")).unwrap();
+    let log = std::fs::read_to_string(&path).unwrap();
+    assert!(log.contains("messages:"), "{log}");
+    for record in &records {
+        let (target, result) = dashboard::describe(
+            record["op"].as_str().unwrap(),
+            &record["args"],
+            record["outcome"].as_str().unwrap(),
+            Duration::ZERO,
+        );
+        assert!(result.contains("rows"), "{result}");
+        assert!(!target.contains("482913") && !result.contains("482913"));
+    }
+    // Nothing the reader returned: no body, no code, no name, no handle it found.
+    for returned in [
+        "482913",
+        "Your code",
+        "Super Duper",
+        "lunch?",
+        "Ann Example",
+        "Sample & Co",
+        "Dinner",
+    ] {
+        assert!(!audit.contains(returned), "{returned} in the audit");
+        assert!(!log.contains(returned), "{returned} in serve.log");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_refused_messages_read_runs_no_reader() {
+    let t = start(a_chat(covered_after_a_yes)).await;
+    // No reader installed: one that ran would say so.
+    let agent = t.caller("agent").await;
+    let (answer, _) = t
+        .call(&agent, "messages", json!({"action": "search", "args": []}))
+        .await;
+    assert_eq!(refusal(&answer).1, "gatekeeper_denied");
+    let (answer, _) = t
+        .call(
+            &agent,
+            "contacts",
+            json!({"action": "lookup", "args": ["--", "+15550000001"]}),
+        )
+        .await;
+    assert_eq!(refusal(&answer).1, "gatekeeper_denied");
+    assert_eq!(t.judged(), 2);
+    let records = t.audit();
+    assert!(
+        records
+            .iter()
+            .all(|record| record["decision"] == "deny" && record["args"].get("result").is_none())
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn an_exec_cannot_read_the_messages_or_address_book_its_host_reads() {
+    let t = start(a_chat(always_covered)).await;
+    t.with_messages();
+    let agent = t.caller("agent").await;
+    let [messages, book] = crate::messages::host::folders(&t.home);
+    for path in [
+        messages.join("chat.db"),
+        book.join("AddressBook-v22.abcddb"),
+    ] {
+        let (answer, _) = t
+            .call(&agent, "exec", exec(&format!("cat '{}'", path.display())))
+            .await;
+        let Response::Ok(result) = answer else {
+            panic!("{answer:?}")
+        };
+        assert_ne!(result["exit_code"], 0, "{}", path.display());
+        assert!(
+            result["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("Operation not permitted"),
+            "{result}"
+        );
+    }
+    // The messages worker, beside it, reads them.
+    let (answer, _) = t
+        .call(&agent, "messages", json!({"action": "chats", "args": []}))
+        .await;
+    let Response::Ok(chats) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(chats["count"], 3);
 }

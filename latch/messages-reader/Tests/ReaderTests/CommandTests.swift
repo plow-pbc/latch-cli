@@ -318,3 +318,19 @@ func theDatabaseIsOpenedReadOnly() throws {
     }
     #expect(read(f, ["search"], now: now).rows.count == 7)
 }
+
+@Test
+func wordsAfterADoubleDashMayStartWithADash() {
+    let f = everyday()
+    f.message(105, chat: 1, handle: 10, at: date(50, now: now), text: "-x marks it")
+    #expect(read(f, ["search", "--", "-x"], now: now).ids == [105])
+    #expect(read(f, ["search", "-x"], now: now).exit == 2)
+}
+
+@Test
+func aDatabaseThePermissionsRefuseIsNotGranted() throws {
+    let f = everyday()
+    try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: f.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: f.path) }
+    #expect(read(f, ["chats"], now: now).error?["code"] as? String == "messages_not_granted")
+}

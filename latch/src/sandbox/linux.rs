@@ -541,6 +541,7 @@ mod tests {
                 kill_after: None,
                 program: (mode == "google")
                     .then(|| PathBuf::from(std::env::var_os("LATCH_VIEW_PROGRAM").unwrap())),
+                network: mode == "google",
                 break_for_test: false,
             })
             .unwrap();

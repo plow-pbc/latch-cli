@@ -49,6 +49,8 @@ struct Action<'a> {
     command: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     accounts: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arguments: Option<&'a Value>,
 }
 
 /// `op` with `args` as the judge sees it, if the gatekeeper judges `op`.
@@ -64,8 +66,13 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
         }),
         _ => None,
     };
+    // A connector's action is judged by its stable id: `messages.search`.
+    let operation = match op {
+        "messages" | "contacts" => format!("{op}.{}", args["action"].as_str().unwrap_or("unknown")),
+        _ => op.to_string(),
+    };
     let none = Action {
-        operation: op,
+        operation: &operation,
         argv: None,
         stdin: None,
         working_folder: None,
@@ -74,6 +81,7 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
         file_name: None,
         command: None,
         accounts: None,
+        arguments: None,
     };
     let first_area = first_area.to_string_lossy();
     let mut once = false;
@@ -125,6 +133,15 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
             let command = crate::google::policy::command_prefix(&words);
             once = crate::google::policy::parse(&words).map_or(true, |plan| !plan.read_only());
             (action, json!({"command": command}))
+        }
+        // Reads, judged on the reader's own words; the audit keeps them, and
+        // the host adds the answer's counts, never its rows.
+        "messages" | "contacts" => {
+            let action = Action {
+                arguments: Some(&args["args"]),
+                ..none
+            };
+            (action, json!({"action": operation, "args": args["args"]}))
         }
         _ => return None,
     };

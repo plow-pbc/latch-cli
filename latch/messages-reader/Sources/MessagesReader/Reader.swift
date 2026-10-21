@@ -47,7 +47,9 @@ public let usage = """
 struct Call {
     var store = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Messages/chat.db")
     var addressBook = AddressBook.defaultDirectory()
-    var region = Locale.current.region?.identifier ?? "US"
+    /// For phone numbers written without a country code. A host passes the
+    /// owner's; the sandboxed reader cannot always ask macOS itself.
+    var region = Locale.current.region.map(\.identifier).flatMap { $0.count == 2 ? $0 : nil } ?? "US"
     var command = ""
     var limit = defaultLimit
     var cursor: Cursor?
@@ -184,6 +186,10 @@ func parse(_ arguments: [String], now: Date) throws -> Call? {
             call.cursor = try Cursor(token: try value(), command: command)
         case "--help", "-h":
             return nil
+        case "--":
+            // Everything after is a word: a phrase or handle may start with `-`.
+            words += args
+            args = []
         default:
             // An unknown flag ignored would quietly widen the answer.
             guard !arg.hasPrefix("-") else { throw ReaderError.usage("unknown option \(arg) (try --help)") }
