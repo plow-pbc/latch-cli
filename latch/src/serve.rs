@@ -1,6 +1,7 @@
 //! `latch serve`: the host. It runs in the foreground (as launchd and other
 //! service managers expect) until it is stopped.
 //!
+//! One `latch serve` runs per state folder; a second one refuses to start.
 //! On start it checks its audit log, starts its iroh endpoint, and keeps
 //! itself registered with Plow (see `heartbeat.rs`). It stops cleanly on
 //! Ctrl-C (SIGINT) or SIGTERM, which launchd sends, telling Plow it is
@@ -11,7 +12,11 @@
 //! "yes" (unknown key, another account's key, a revoked credential, Plow
 //! unreachable) denies. Every allow and every deny goes into the audit log.
 
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -149,6 +154,8 @@ pub async fn run(
     };
     let program = std::env::current_exe()
         .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
+    // Held until this process ends, however it ends.
+    let _lock = lock_state(&state_dir)?;
     let workers = WorkerSetup {
         areas: shared_folders(folders)?,
         state_dir,
@@ -335,6 +342,48 @@ async fn go_offline(plow: &Plow, key: &str) {
         )),
         Err(_) => log("could not tell Plow we are offline: no answer within 2 seconds"),
     }
+}
+
+/// Makes this the one `latch serve` on `state_dir`: two hosts on one state
+/// would share one key and one audit log. The lock is an exclusive `flock` on
+/// `serve.lock`, which the system releases when its holder exits, so one
+/// left behind by a crash never blocks. The file says who holds it, for the
+/// refusal a second serve prints.
+fn lock_state(state_dir: &Path) -> Result<File, Failure> {
+    let path = state_dir.join("serve.lock");
+    let io =
+        |err: std::io::Error| Failure::failed("state_io", format!("{}: {err}", path.display()));
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(io)?;
+    // SAFETY: flock only reads the descriptor, which `file` keeps open.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let mut holder = String::new();
+        let _ = file.read_to_string(&mut holder);
+        let holder = holder.trim();
+        let holder = if holder.is_empty() {
+            "another process"
+        } else {
+            holder
+        };
+        let message = format!(
+            "{} is already served by {holder}; stop that `latch serve` first",
+            state_dir.display()
+        );
+        return Err(Failure::failed("already_serving", message));
+    }
+    let exe =
+        std::env::current_exe().map_or_else(|_| "latch".into(), |exe| exe.display().to_string());
+    let holder = format!("latch serve (pid {}, {exe})\n", std::process::id());
+    file.set_len(0)
+        .and_then(|()| file.write_all(holder.as_bytes()))
+        .map_err(io)?;
+    Ok(file)
 }
 
 /// The folders `latch serve` was given, which its workers may use: each
@@ -869,6 +918,27 @@ mod tests {
             "the sandbox could not be applied".to_string(),
         );
         assert_eq!(decision(&unconfined), "deny");
+    }
+
+    #[test]
+    fn one_serve_holds_a_state_folder_until_it_lets_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = lock_state(dir.path()).unwrap();
+
+        let refused = lock_state(dir.path()).unwrap_err();
+        assert_eq!(refused.code, "already_serving");
+        let pid = format!("pid {}", std::process::id());
+        assert!(refused.message.contains(&pid), "{}", refused.message);
+
+        drop(first);
+
+        // What a crashed serve leaves: the file, naming it, but no lock.
+        let crashed = tempfile::tempdir().unwrap();
+        let stale = "latch serve (pid 999999, /old/latch)\n";
+        std::fs::write(crashed.path().join("serve.lock"), stale).unwrap();
+        let _held = lock_state(crashed.path()).unwrap();
+        let now = std::fs::read_to_string(crashed.path().join("serve.lock")).unwrap();
+        assert!(now.contains(&pid), "{now}");
     }
 
     #[test]
