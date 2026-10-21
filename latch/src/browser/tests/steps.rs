@@ -720,15 +720,14 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         assert_eq!(refused(&failure), (Exit::Failed, "model_unavailable"));
         assert!(failure.details["trail"].as_array().unwrap().is_empty());
         // Why the model failed, in the audit and the journal as well.
-        assert_eq!(failure.details["stop"]["reason"], "unreachable");
         let audit = h.audits.last().unwrap();
         assert_eq!(audit["model_calls"][0]["outcome"], "failed");
         assert_eq!(audit["model_calls"][0]["reason"], "unreachable");
-        assert_eq!(audit["stop"]["reason"], "unreachable");
+        assert_eq!(audit["stop"]["model_failed"], "unreachable");
         let read = h.history(audit["request"].as_str().unwrap());
         assert_eq!(read["stop"]["code"], "model_unavailable");
-        assert_eq!(read["stop"]["reason"], "unreachable");
-        assert_eq!(read["steps"][0]["reason"], "unreachable");
+        assert_eq!(read["stop"]["model_failed"], "unreachable");
+        assert_eq!(read["steps"][0]["model_failed"], "unreachable");
     }
     assert!(
         h.text().await.contains("$10.00"),
@@ -770,10 +769,10 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         failure.message
     );
     let audit = bare.audits.last().unwrap();
-    assert_eq!(audit["stop"]["reason"], "no_model");
+    assert_eq!(audit["stop"]["model_failed"], "no_model");
     assert!(audit.get("model_calls").is_none(), "no call was made");
     let read = bare.history(audit["request"].as_str().unwrap());
-    assert_eq!(read["stop"]["reason"], "no_model");
+    assert_eq!(read["stop"]["model_failed"], "no_model");
     bare.close().await;
 }
 

@@ -223,17 +223,13 @@ fn request_id(args: &Value) -> Result<String, Failure> {
 }
 
 fn model_unavailable(model: &Model, what: &str) -> Failure {
-    let mut failure = Failure::failed(
+    Failure::failed(
         "model_unavailable",
         format!(
             "{what} needs the decision model, and {}; nothing was sent",
             model.why_off()
         ),
-    );
-    if let Some(reason) = model.reason() {
-        failure.details = json!({"reason": reason});
-    }
-    failure
+    )
 }
 
 /// Refuses sentence checks before anything runs: all of them when there is
@@ -262,17 +258,25 @@ async fn check_sentences(sentences: &[(usize, String)], model: &mut Model) -> Re
     Ok(())
 }
 
-/// The model's calls so far, for the audit: never their content.
 /// Where a run stopped, for the journal and the audit: the step, the code,
-/// and the failure's reason when it gives one.
-fn stopped_at(step: usize, failure: &Failure) -> Value {
+/// and, when it stopped for want of the model, the model's coded reason.
+/// Never a failure's details, which can hold sentences.
+fn stopped_at(step: usize, failure: &Failure, model: &Model) -> Value {
     let mut stop = json!({"step": step, "code": failure.code});
-    if let Some(reason) = failure.details.get("reason") {
-        stop["reason"] = reason.clone();
+    if let Some(reason) = model_failed(failure, model) {
+        stop["model_failed"] = json!(reason);
     }
     stop
 }
 
+/// Why the model was unavailable, if that is why `failure` stopped.
+fn model_failed<'m>(failure: &Failure, model: &'m Model) -> Option<&'m str> {
+    (failure.code == "model_unavailable")
+        .then(|| model.reason())
+        .flatten()
+}
+
+/// The model's calls so far, for the audit: never their content.
 fn record_model(model: &Model, audit: &mut Map<String, Value>) {
     if !model.calls.is_empty() {
         audit.insert("model_calls".into(), json!(model.calls));
@@ -473,8 +477,8 @@ pub async fn run(
             Err(failure) => {
                 shown["outcome"] = json!("stopped");
                 shown["code"] = json!(failure.code);
-                if let Some(reason) = failure.details.get("reason") {
-                    shown["reason"] = reason.clone();
+                if let Some(reason) = model_failed(&failure, &run.model) {
+                    shown["model_failed"] = json!(reason);
                 }
                 if let Some(evidence) = failure.details.get("evidence") {
                     shown["evidence"] = evidence.clone();
@@ -506,7 +510,7 @@ pub async fn run(
     };
     let mut end = json!({"t": "end", "status": status});
     if let Some((step, failure)) = &stop {
-        end["stop"] = stopped_at(*step, failure);
+        end["stop"] = stopped_at(*step, failure, &run.model);
     }
     let journaled = run.journal.write(end);
     browsers.running(&running, false);
@@ -573,7 +577,7 @@ pub async fn run(
         return Ok(out);
     };
     rebase(&mut failure.details, &page);
-    audit.insert("stop".into(), stopped_at(step, &failure));
+    audit.insert("stop".into(), stopped_at(step, &failure, &model));
     let mut shown = json!({"step": step, "code": failure.code, "message": failure.message});
     for (key, value) in failure.details.as_object().into_iter().flatten() {
         shown[key] = value.clone();

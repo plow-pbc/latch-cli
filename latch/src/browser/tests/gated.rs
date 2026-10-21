@@ -954,6 +954,12 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
         (Exit::Denied, "gatekeeper_denied", &json!("not_covered")),
         "{failure:?}"
     );
+    // The audit keeps where it stopped and why by code, never the
+    // failure's details: only a model failure's coded reason is kept.
+    assert_eq!(
+        audit["stop"],
+        json!({"step": 1, "code": "gatekeeper_denied"})
+    );
     assert_eq!(judge.last_action()["kind"], "vault_fill");
     let fill = audit["step_records"]
         .as_array()
