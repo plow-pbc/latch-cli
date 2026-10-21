@@ -98,7 +98,9 @@ async fn start_with(
     let rules = RuleFiles::new(&state, std::slice::from_ref(&area)).unwrap();
     let host = Arc::new(Host {
         plow: plow.client(),
-        audit: Mutex::new(AuditLog::open(state.join("audit.ndjson")).unwrap()),
+        audit: Arc::new(Mutex::new(
+            AuditLog::open(state.join("audit.ndjson")).unwrap(),
+        )),
         dashboard: None,
         workers: WorkerSetup {
             areas: vec![area.clone()],
@@ -766,4 +768,35 @@ async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_link
         .map(|record| (record["decision"].as_str(), record["outcome"].as_str()))
         .collect();
     assert_eq!(refused, [(Some("deny"), Some("host_upgraded")); 3]);
+}
+
+#[tokio::test]
+async fn a_stalled_audit_write_holds_up_no_other_caller() {
+    let t = start(a_chat(down)).await;
+    // A slow disk, as the next append sees it: the log stays busy for a while.
+    let (busy, now_busy) = std::sync::mpsc::channel();
+    let holder = t.host.clone();
+    let stall = std::thread::spawn(move || {
+        let _held = holder.audit.lock().unwrap();
+        busy.send(()).unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+    });
+    now_busy.recv().unwrap();
+
+    let host = t.host.clone();
+    let record = audit::record("k1", None, "exec", "allow", "ok");
+    let appending = tokio::spawn(async move { host.append(record).await });
+    // Meanwhile this runtime's other work goes on.
+    let started = Instant::now();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+
+    // The record is still written, once the log is free.
+    assert!(appending.await.unwrap().is_ok());
+    stall.join().unwrap();
+    assert_eq!(t.audit()[0]["op"], "exec");
 }

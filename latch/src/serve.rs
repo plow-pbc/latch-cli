@@ -47,7 +47,8 @@ use crate::worker::WorkerSetup;
 /// same `Host`; the `Mutex` lets one task at a time append to the log.
 struct Host {
     plow: Plow,
-    audit: Mutex<AuditLog>,
+    /// Also held by the blocking thread that appends (see `Host::append`).
+    audit: Arc<Mutex<AuditLog>>,
     /// The live view, when `serve` shows one (see `dashboard.rs`).
     dashboard: Option<Dashboard>,
     workers: WorkerSetup,
@@ -301,7 +302,7 @@ async fn run_host(
     let vault = crate::vault::host::Vault::new(workers.state_dir.clone());
     let host = Arc::new(Host {
         plow,
-        audit: Mutex::new(audit),
+        audit: Arc::new(Mutex::new(audit)),
         workers,
         dashboard,
         vault,
@@ -545,7 +546,7 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
             let who = format!("{} ({})", identity.name, identity.kind);
             let record =
                 audit::record(&caller, identity.agent_uid, "connect", "allow", "connected");
-            match host.append(record) {
+            match host.append(record).await {
                 Ok(_) => {
                     log(&format!("connect: {who} {caller}: allowed"));
                     None
@@ -556,7 +557,7 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
         Err(denial) => {
             // Already refusing, so a failed audit write changes nothing here.
             let record = audit::record(&caller, None, "connect", "deny", &denial.code);
-            let _ = host.append(record);
+            let _ = host.append(record).await;
             host.show_refusal(&caller, "connect", &denial.code);
             Some(denial.message)
         }
@@ -592,7 +593,9 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
     // since it connected.
     let response = match host.check(caller).await {
         Err(denial) => {
-            let _ = host.append(audit::record(caller, None, op, "deny", &denial.code));
+            let _ = host
+                .append(audit::record(caller, None, op, "deny", &denial.code))
+                .await;
             log(&format!("{op}: {caller}: denied: {}", denial.message));
             host.show_refusal(caller, op, &denial.code);
             Response::Error {
@@ -732,7 +735,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             let mut record = audit::record(caller, identity.agent_uid, op, decision, &done.outcome);
             record.args = done.audit_args;
             record.gate = judgment.map(|judgment| judgment.gate);
-            match host.append(record) {
+            match host.append(record).await {
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed("audit_failed", message),
             }
@@ -797,7 +800,7 @@ async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
         }
         let mut record = audit::record(caller, None, "vault_link", decision, &done.outcome);
         record.args = done.audit_args;
-        let response = match host.append(record) {
+        let response = match host.append(record).await {
             Ok(audit_id) => with_audit_id(done.response, audit_id),
             Err(message) => failed("audit_failed", message),
         };
@@ -942,10 +945,21 @@ impl Host {
         }
     }
 
-    /// Appends to the audit log and returns the record's hash. On failure,
-    /// returns what the caller is told.
-    fn append(&self, record: Record) -> Result<String, String> {
-        let result = self.audit.lock().expect("audit log lock").append(record);
+    /// Appends to the audit log and returns the record's hash, once the
+    /// record is on disk. On failure, returns what the caller is told. The
+    /// lock, write and sync run on a blocking thread, so a slow disk holds
+    /// up only the callers waiting on the log.
+    async fn append(&self, record: Record) -> Result<String, String> {
+        let audit = self.audit.clone();
+        let appending = tokio::task::spawn_blocking(move || {
+            audit.lock().expect("audit log lock").append(record)
+        });
+        let result = appending.await.unwrap_or_else(|stopped| {
+            Err(Failure::failed(
+                "audit_failed",
+                format!("the append stopped: {stopped}"),
+            ))
+        });
         result.map_err(|failure| {
             log(&format!("audit: {}", failure.message));
             "the host could not write its audit log".to_string()
