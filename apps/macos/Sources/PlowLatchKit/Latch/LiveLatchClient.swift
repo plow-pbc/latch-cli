@@ -51,7 +51,7 @@ public struct LiveLatchClient: LatchClient {
         return AsyncThrowingStream { continuation in
             let reader = Task {
                 do {
-                    for try await line in try process.lines() {
+                    for await line in try process.lines() {
                         continuation.yield(try decode(type, from: Data(line.utf8)))
                     }
                     continuation.finish(throwing: await process.failure())
@@ -125,10 +125,30 @@ public final class LatchProcess: @unchecked Sendable {
         return data
     }
 
-    /// Starts latch and yields stdout line by line as it prints.
-    func lines() throws -> AsyncLineSequence<FileHandle.AsyncBytes> {
+    /// Starts latch and yields stdout line by line as it prints. Read with a
+    /// readability handler, not `FileHandle.bytes`: those reads share one
+    /// serial queue, so one quiet latch stream would hold up every other.
+    func lines() throws -> AsyncStream<String> {
         try start()
-        return stdout.fileHandleForReading.bytes.lines
+        let (lines, continuation) = AsyncStream<String>.makeStream()
+        final class Pending: @unchecked Sendable { var data = Data() }
+        let pending = Pending()
+        stdout.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                if !pending.data.isEmpty { continuation.yield(String(decoding: pending.data, as: UTF8.self)) }
+                continuation.finish()
+                return
+            }
+            pending.data.append(chunk)
+            while let newline = pending.data.firstIndex(of: UInt8(ascii: "\n")) {
+                let line = pending.data[pending.data.startIndex..<newline]
+                if !line.isEmpty { continuation.yield(String(decoding: line, as: UTF8.self)) }
+                pending.data.removeSubrange(pending.data.startIndex...newline)
+            }
+        }
+        return lines
     }
 
     /// After stdout ends: latch's error if it exited non-zero, else nil.
@@ -159,7 +179,7 @@ public final class LatchProcess: @unchecked Sendable {
     }
 
     private static func readAll(_ pipe: Pipe) async -> Data {
-        await Task.detached { pipe.fileHandleForReading.readDataToEndOfFile() }.value
+        await pipe.fileHandleForReading.readUntilEnd()
     }
 
     private struct ErrorLine: Decodable { var error: LatchFailure }
@@ -172,5 +192,26 @@ public final class LatchProcess: @unchecked Sendable {
         }
         let text = String(decoding: stderr.suffix(300), as: UTF8.self)
         return .unreachable("latch exited with status \(status): \(text)")
+    }
+}
+
+extension FileHandle {
+    /// Everything up to end of file, read as it arrives. Never blocks a
+    /// thread: blocked reads would starve Swift's few concurrency threads,
+    /// which the app's other latch processes need.
+    func readUntilEnd() async -> Data {
+        final class Buffer: @unchecked Sendable { var data = Data() }
+        let buffer = Buffer()
+        return await withCheckedContinuation { continuation in
+            readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    continuation.resume(returning: buffer.data)
+                } else {
+                    buffer.data.append(chunk)
+                }
+            }
+        }
     }
 }

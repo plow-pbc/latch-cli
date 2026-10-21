@@ -133,6 +133,12 @@ public final class FakeLatchClient: LatchClient, SharingService {
         return Shares(shares: folders)
     }
 
+    public var stateDir: String? { nil }
+
+    public func agentProcess() async -> Int? {
+        scenario == .outside ? nil : state.withLock { $0.serving } ? 4242 : nil
+    }
+
     public func agent() -> SharingAgent {
         switch scenario {
         case .outside: .off

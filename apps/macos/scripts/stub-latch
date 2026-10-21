@@ -8,7 +8,8 @@
 # `login --events` prints a code, then verifies after STUB_LOGIN_SECONDS (3).
 # `serve` (no folders) holds D/serve.lock as latch does, naming itself in it,
 # reports starting then serving, and stopped when it ends; a second serve on
-# D refuses as latch does: `already_serving`, exit 1.
+# D refuses as latch does: `already_serving`, exit 1. With D/stub-serve-fails
+# present, serve fails at startup instead (a bad saved config, say).
 # appends an event to D/stub-events.ndjson; `events --follow` prints a
 # snapshot, then follows that file (tail -f, blocked on kqueue when idle).
 set -eu
@@ -23,7 +24,16 @@ serve_pid() {
     local p
     p=$(sed -n 's/^latch serve (pid \([0-9]*\),.*/\1/p' "$state/serve.lock" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo "$p"
 }
-emit_host() { jq -cn --arg s "$1" --arg c "$(($(lines) + 1))" '{type:"host",cursor:$c,state:$s}' >> "$events"; }
+# Host events go to the events file and, for --lifecycle-only, to a file of
+# their own, so following them is one process the app can stop.
+hosts="$state/stub-host-events.ndjson"
+touch "$hosts"
+emit_host() {
+    local line
+    line=$(jq -cn --arg s "$1" --arg c "$(($(lines) + 1))" '{type:"host",cursor:$c,state:$s}')
+    echo "$line" >> "$events"
+    echo "$line" >> "$hosts"
+}
 host_state() { grep '"type":"host"' "$events" | tail -n 1 | jq -r '.state // "stopped"' || true; }
 
 case "$1 ${2:-}" in
@@ -36,12 +46,20 @@ case "$1 ${2:-}" in
             '{error:{code:"already_serving",message:($d + " is already served by " + $h + "; stop that `latch serve` first")}}' >&2
         exit 1
     fi
+    if [ -e "$state/stub-serve-fails" ]; then
+        emit_host starting
+        jq -cn '{error:{code:"folder_missing",message:"/tmp/plow-latch-share: no such folder"}}' >&2
+        emit_host stopped
+        exit 1
+    fi
     echo "latch serve (pid $$, $0)" > "$state/serve.lock"
-    trap 'kill $nap 2>/dev/null; emit_host stopped; : > "$state/serve.lock"; exit 0' TERM INT
+    # bash runs the trap once the current foreground command ends, so the
+    # loop sleeps in short foreground steps: a stop always reports stopped.
+    trap 'emit_host stopped; : > "$state/serve.lock"; exit 0' TERM INT
     emit_host starting
     sleep 1
     emit_host serving
-    while :; do sleep 3600 & nap=$!; wait $nap; done
+    while :; do sleep 1; done
     ;;
 "emit activity")
     n=$(($(lines) + 1))
@@ -88,17 +106,17 @@ case "$1 ${2:-}" in
         esac
         shift
     done
+    # The snapshot and the follow start from the same line, so nothing in
+    # between is lost or repeated.
     n=$(lines)
-    h=$(host_state); [ -n "$h" ] || h=stopped
+    hn=$(wc -l < "$hosts" | tr -d ' ')
+    h=$(sed -n "${hn}p" "$hosts" | jq -r '.state // empty'); [ -n "$h" ] || h=stopped
     if $lifecycle; then activity='[]'; else
         activity=$(tail -n +"$((after + 1))" "$events" | grep '"type":"activity"' | jq -cs 'map(.entry)' || echo '[]')
     fi
     jq -cn --arg c "$n" --arg h "$h" --argjson a "${activity:-[]}" '{type:"snapshot",cursor:$c,host:{state:$h},activity:$a}'
     if $lifecycle; then
-        # Two processes: stop both when the app stops this one.
-        tail -n +"$((n + 1))" -f "$events" | grep --line-buffered '"type":"host"' &
-        trap 'pkill -P $$; exit 0' TERM INT
-        wait
+        exec tail -n +"$((hn + 1))" -f "$hosts"
     else
         exec tail -n +"$((n + 1))" -f "$events"
     fi

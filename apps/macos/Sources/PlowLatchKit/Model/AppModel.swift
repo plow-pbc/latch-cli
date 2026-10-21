@@ -30,6 +30,8 @@ public final class AppModel {
     public private(set) var rules: Loadable<RulesShow> = .loading
     /// Whether the app's background-sharing agent is registered.
     public private(set) var agent: SharingAgent = .off
+    /// The process launchd runs the agent as, while it runs.
+    public private(set) var agentProcess: Int?
     /// Start or Stop Sharing is in progress.
     public private(set) var changingSharing = false
     /// Why the last Start or Stop Sharing failed.
@@ -37,7 +39,7 @@ public final class AppModel {
 
     let client: any LatchClient
     let sharing: any SharingService
-    private static let log = Logger(subsystem: "co.plow.latch", category: "host")
+    private nonisolated static let log = Logger(subsystem: "co.plow.latch", category: "host")
 
     public init(client: any LatchClient, sharing: any SharingService = UnavailableSharing()) {
         self.client = client
@@ -63,84 +65,138 @@ public final class AppModel {
         }
         // A host the app didn't start (a `latch serve` in a terminal) is
         // shown, never taken over.
-        if agent != .on, lifecycle == .serving || lifecycle == .starting { return .outside }
+        if lifecycle == .serving || lifecycle == .starting, !ownsHost { return .outside }
         return lifecycle
     }
 
-    /// Whether Start Sharing makes sense now.
+    /// Whether the serving host is the app's: latch's serve is the very
+    /// process launchd runs the agent as. Registration alone doesn't say.
+    public var ownsHost: Bool {
+        guard let pid = status.value?.serve.pid else { return false }
+        return pid == agentProcess
+    }
+
+    /// Whether Start Sharing makes sense now. A registered agent whose host
+    /// stopped or failed is started afresh.
     public var canStartSharing: Bool {
-        guard !changingSharing, agent == .off else { return false }
+        guard !changingSharing, agent == .off || agent == .on else { return false }
         return switch menuState {
         case .stopped, .error: true
         default: false
         }
     }
 
-    /// Whether Stop Sharing makes sense now: only for the host the app runs.
+    /// Whether Stop Sharing makes sense now: there is a registration to remove.
     public var canStopSharing: Bool {
         !changingSharing && (agent == .on || agent == .needsApproval)
     }
 
-    /// Reads whether the agent is registered; cheap, and the person can
-    /// change it in System Settings at any time.
-    public func refreshAgent() {
+    /// Reads whether the agent is registered and which process it runs as;
+    /// the person can change Login Items in System Settings at any time.
+    public func refreshAgent() async {
         agent = sharing.agent()
+        agentProcess = await sharing.agentProcess()
     }
 
-    /// Starts the background host and waits until latch says it serves.
+    /// Registers the background host and waits, on latch's lifecycle stream,
+    /// until it serves. Anything short of serving unregisters it again, so a
+    /// failed start leaves nothing behind.
     public func startSharing() async {
-        refreshAgent()
+        await refreshAgent()
         guard canStartSharing else {
             if menuState == .outside {
                 sharingError = "A latch serve started outside Plow Latch is already sharing this Mac."
             }
             return
         }
+        guard Self.sameFolder(client.stateDir, sharing.stateDir) else {
+            sharingError = "Background sharing would serve \(sharing.stateDir ?? "latch's default state folder"), not this app's \(client.stateDir ?? "default state folder")."
+            return
+        }
         changingSharing = true
         defer { changingSharing = false }
         do {
+            if agent == .on { try await sharing.stopSharing() }
             try await sharing.startSharing()
-            refreshAgent()
-            if agent == .needsApproval { throw LatchError.unreachable("Allow Plow Latch in Login Items to share in the background.") }
-            try await waitForServe(running: true)
+            agent = sharing.agent()
+            if agent == .needsApproval {
+                throw LatchError.unreachable("Allow Plow Latch in Login Items to share in the background.")
+            }
+            host = try await waitForHost(starting: true)
             sharingError = nil
         } catch {
-            refreshAgent()
+            try? await sharing.stopSharing()
             sharingError = Self.latchError(error).message
         }
+        await refreshStatus()
+        await refreshAgent()
     }
 
-    /// Stops the background host and waits until latch says it stopped.
+    /// Unregisters the background host and waits, on latch's lifecycle
+    /// stream, until it stopped.
     public func stopSharing() async {
-        refreshAgent()
+        await refreshAgent()
         guard canStopSharing else { return }
         changingSharing = true
         defer { changingSharing = false }
         do {
             try await sharing.stopSharing()
-            refreshAgent()
-            try await waitForServe(running: false)
+            host = try await waitForHost(starting: false)
             sharingError = nil
         } catch {
-            refreshAgent()
             sharingError = Self.latchError(error).message
+        }
+        await refreshStatus()
+        await refreshAgent()
+    }
+
+    /// How long Start or Stop waits for latch to report the host's new state.
+    nonisolated static let sharingTimeout = Duration.seconds(30)
+
+    /// Follows latch's lifecycle stream until the host serves (or, stopping,
+    /// stops), for at most `sharingTimeout`.
+    private func waitForHost(starting: Bool) async throws -> HostLifecycle {
+        let events = client.events(after: nil, lifecycleOnly: true)
+        return try await withThrowingTaskGroup(of: HostLifecycle.self) { group in
+            group.addTask {
+                var began = false
+                for try await event in events {
+                    let host: HostLifecycle
+                    switch event {
+                    case let .snapshot(_, now, _), let .host(_, now): host = now
+                    case .activity, .reset: continue
+                    }
+                    Self.log.info("sharing: host \(String(describing: host), privacy: .public)")
+                    switch (starting, host) {
+                    case (true, .serving), (false, .stopped): return host
+                    case (true, .starting): began = true
+                    case let (_, .error(message)): throw LatchError.unreachable(message)
+                    case (true, .stopped) where began: throw LatchError.unreachable("latch stopped while starting.")
+                    default: break
+                    }
+                }
+                throw LatchError.unreachable("latch's lifecycle stream ended.")
+            }
+            group.addTask {
+                try await Task.sleep(for: Self.sharingTimeout)
+                throw LatchError.unreachable(starting ? "latch didn't start serving in time." : "latch didn't stop serving in time.")
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
         }
     }
 
-    /// Asks latch for its status every half second, for at most 30 s, until
-    /// its host is serving (or stopped). Only while Start or Stop runs.
-    private func waitForServe(running: Bool) async throws {
-        for _ in 0..<60 {
-            await refreshStatus()
-            if let serve = status.value?.serve {
-                if running ? serve.ready : !serve.running { return }
-            }
-            try await Task.sleep(for: .milliseconds(500))
+    private nonisolated static func resolved(_ path: String) -> String {
+        URL(filePath: path).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// Whether two state folders, as given (nil being latch's default), are one.
+    nonisolated static func sameFolder(_ a: String?, _ b: String?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): true
+        case let (a?, b?): resolved(a) == resolved(b)
+        default: false
         }
-        let detail = status.value?.lastError?.message
-        throw LatchError.unreachable(running
-            ? "latch didn't start serving\(detail.map { ": \($0)" } ?? ".")"
-            : "latch didn't stop serving.")
     }
 
     public func refreshStatus() async {
@@ -170,6 +226,7 @@ public final class AppModel {
                     if self.host != host { Self.log.info("host \(String(describing: host), privacy: .public)") }
                     self.host = host
                     await self.refreshStatus()
+                    await self.refreshAgent()
                 case .activity, .reset:
                     break
                 }

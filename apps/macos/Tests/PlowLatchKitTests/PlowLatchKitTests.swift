@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import PlowLatchKit
 
@@ -158,4 +159,40 @@ private func emit(_ state: String, _ args: String...) throws {
     let line = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     #expect(line.contains(#""code":"already_serving""#))
     #expect(line.contains("is already served by latch serve (pid \(first.processIdentifier),"))
+}
+
+@Test func lifecycleStreamSeesAServeStartAndStop() async throws {
+    let state = try stubState()
+    let client = LiveLatchClient(executable: stub, stateDir: state)
+    var events = client.events(after: nil, lifecycleOnly: true).makeAsyncIterator()
+    guard case .snapshot(_, .stopped, _) = try await events.next() else { Issue.record("not stopped"); return }
+    let serve = try Process.run(stub, arguments: ["--state-dir", state, "serve"])
+    #expect(try await events.next() == .host(cursor: "1", .starting))
+    #expect(try await events.next() == .host(cursor: "2", .serving))
+    serve.terminate()
+    #expect(try await events.next() == .host(cursor: "3", .stopped))
+}
+
+@Test func aQuietStreamDoesNotHoldUpAnother() async throws {
+    let quiet = LiveLatchClient(executable: stub, stateDir: try stubState())
+    let busy = LiveLatchClient(executable: stub, stateDir: try stubState())
+    var idle = quiet.events(after: nil, lifecycleOnly: true).makeAsyncIterator()
+    _ = try await idle.next()  // its snapshot; after this it waits, reading nothing
+    let events = busy.events(after: nil, lifecycleOnly: true)
+    // Whichever comes first: the busy stream's snapshot, or five seconds. A
+    // stalled read can't be cancelled, so the loser is left to run out.
+    let first = Mutex<CheckedContinuation<Bool, Never>?>(nil)
+    let arrived = await withCheckedContinuation { continuation in
+        first.withLock { $0 = continuation }
+        Task {
+            for try await _ in events { break }
+            first.withLock { $0?.resume(returning: true); $0 = nil }
+        }
+        Task {
+            try await Task.sleep(for: .seconds(5))
+            first.withLock { $0?.resume(returning: false); $0 = nil }
+        }
+    }
+    #expect(arrived, "the second stream stalled behind the first")
+    _ = idle
 }

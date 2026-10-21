@@ -72,6 +72,9 @@ say "== before the run"
 say "$(agent_line)"
 "$cli" --state-dir "$state" shares set /tmp/plow-latch-share > /dev/null
 
+say "== the agent's plist: runs once per load, never restarted by launchd"
+say "$(plutil -p "$bundle/Contents/Library/LaunchAgents/$label.plist")"
+
 say "== 1. launch: sharing stopped, agent off"
 launch; say "$(report)"; say "$(serve_line)"
 
@@ -111,3 +114,25 @@ say "$(agent_line)"
 kill -0 "$terminal_serve" 2>/dev/null && say "terminal serve pid $terminal_serve untouched: PASS" || say "terminal serve gone: FAIL"
 kill "$terminal_serve"; terminal_serve=""
 quit_app
+
+say "== 7. a serve that fails to start: Start reports it, unregisters, and launchd doesn't retry"
+touch "$state/stub-serve-fails"
+launch
+post start-sharing; sleep 4
+say "$(report)"
+say "$(agent_line)"; say "$(serve_line)"
+sleep 12
+say "12 s later: $(agent_line); spawns of serve: $(grep -c '"starting"' "$state/stub-events.ndjson") starting events in all"
+rm "$state/stub-serve-fails"
+quit_app
+
+say "== 8. an app on a different state folder from its agent: Start refuses, registers nothing"
+args=(-LatchStateDir "$state-other" -ApplePersistenceIgnoreState YES -Onboarded YES)
+mkdir -p "$state-other"
+launch
+post start-sharing; sleep 2
+say "$(report)"
+say "$(agent_line)"
+quit_app
+args=(-LatchStateDir "$state" -ApplePersistenceIgnoreState YES -Onboarded YES)
+rm -rf "$state-other"

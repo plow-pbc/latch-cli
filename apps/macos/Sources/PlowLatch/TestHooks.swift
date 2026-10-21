@@ -22,6 +22,25 @@ enum TestHooks {
         }
     }
 
+    private static func report(to path: String) async {
+        await model?.refreshAgent()
+        let report: [String: Any] = [
+            "bundle": Bundle.main.bundleIdentifier ?? NSNull(),
+            "menu": model?.menuState.symbol ?? NSNull(),
+            "state": model?.menuState.title ?? NSNull(),
+            "agent": model?.agent.rawValue ?? NSNull(),
+            "agentProcess": model?.agentProcess ?? NSNull(),
+            "servePid": model?.status.value?.serve.pid ?? NSNull(),
+            "sharingError": model?.sharingError ?? NSNull(),
+            "policy": NSApp.activationPolicy() == .regular ? "regular" : "accessory",
+            "active": NSApp.isActive,
+            "key": NSApp.keyWindow?.identifier?.rawValue ?? NSNull(),
+            "visible": WindowRouter.visibleWindows().map { $0.identifier?.rawValue ?? $0.title },
+        ]
+        let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+        FileManager.default.createFile(atPath: path, contents: data)
+    }
+
     private static func run(_ command: String, path: String?) {
         switch command {
         case "show-main": WindowRouter.shared.showMain()
@@ -32,20 +51,7 @@ enum TestHooks {
         case "stop-sharing": Task { await model?.stopSharing() }
         case "report":
             guard let path else { return }
-            model?.refreshAgent()
-            let report: [String: Any] = [
-                "bundle": Bundle.main.bundleIdentifier ?? NSNull(),
-                "policy": NSApp.activationPolicy() == .regular ? "regular" : "accessory",
-                "active": NSApp.isActive,
-                "key": NSApp.keyWindow?.identifier?.rawValue ?? NSNull(),
-                "menu": model?.menuState.symbol ?? NSNull(),
-                "state": model?.menuState.title ?? NSNull(),
-                "agent": model?.agent.rawValue ?? NSNull(),
-                "sharingError": model?.sharingError ?? NSNull(),
-                "visible": WindowRouter.visibleWindows().map { $0.identifier?.rawValue ?? $0.title },
-            ]
-            let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
-            FileManager.default.createFile(atPath: path, contents: data)
+            Task { await report(to: path) }
         default: break
         }
     }

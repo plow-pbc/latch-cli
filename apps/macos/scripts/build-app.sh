@@ -9,7 +9,9 @@
 # --serve-state-dir DIR  the background `latch serve` uses this state folder
 #               (tests: an isolated one under .dev/) instead of latch's default
 # The background-sharing launch agent is labelled after the bundle id:
-# co.plow.latch.serve, or co.plow.latch.test.serve in the test app.
+# co.plow.latch.serve, or co.plow.latch.test.serve in the test app. It runs
+# latch serve once per load (at registration and at login) and launchd does
+# not restart it: a serve that fails stays stopped, and the app shows why.
 set -eu
 cd "$(dirname "$0")/.."
 hooks=""
@@ -51,7 +53,6 @@ plist="$app/Contents/Library/LaunchAgents/$agent.plist"
     -c "Add :BundleProgram string Contents/Helpers/latch" \
     -c "Add :ProgramArguments array" -c "Add :ProgramArguments: string latch" \
     -c "Add :RunAtLoad bool true" \
-    -c "Add :KeepAlive dict" -c "Add :KeepAlive:SuccessfulExit bool false" \
     -c "Add :AssociatedBundleIdentifiers array" -c "Add :AssociatedBundleIdentifiers: string $id" "$plist" > /dev/null
 if [ -n "$serve_state" ]; then
     /usr/libexec/PlistBuddy -c "Add :ProgramArguments: string --state-dir" \

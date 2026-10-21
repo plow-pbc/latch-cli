@@ -128,3 +128,34 @@ private func runFlow(startSharing: Bool) async throws -> (Onboarding, AppModel, 
     flow.resumeIfLoggedIn()
     #expect(flow.step == .welcome)
 }
+
+@Test @MainActor func notNowLeavesNothingRegistered() async {
+    let fake = FakeLatchClient(.stopped)
+    let app = AppModel(client: fake, sharing: fake)
+    await app.refreshStatus()
+    await app.startSharing()
+    #expect(app.agent == .on && app.ownsHost && app.menuState == .serving)
+    let flow = Onboarding(app: app) { _ in }
+    flow.stage(.keepRunning, folders: [URL(filePath: "/tmp/work")])
+    await flow.keepRunning(startSharing: false)
+    #expect(flow.step == .done && app.agent == .off && app.menuState == .stopped)
+}
+
+@Test @MainActor func aHostTheAppDidNotStartIsNeverTakenOver() async {
+    let fake = FakeLatchClient(.outside)
+    let app = AppModel(client: fake, sharing: fake)
+    await app.refreshStatus()
+    await app.refreshAgent()
+    #expect(app.menuState == .outside && !app.ownsHost)
+    await app.startSharing()
+    #expect(app.agent == .off && app.sharingError != nil && app.menuState == .outside)
+    #expect(!app.canStopSharing)
+}
+
+@Test func stateFoldersCompareAsFolders() {
+    #expect(AppModel.sameFolder(nil, nil))
+    #expect(AppModel.sameFolder("/tmp/a/", "/tmp/a"))
+    #expect(AppModel.sameFolder("/tmp/a/../a", "/tmp/a"))
+    #expect(!AppModel.sameFolder("/tmp/a", nil))
+    #expect(!AppModel.sameFolder("/tmp/a", "/tmp/b"))
+}

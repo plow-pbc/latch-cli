@@ -127,10 +127,9 @@ public final class Onboarding {
         defer { saving = false }
         do {
             _ = try await app.client.setShares(folders.map(\.path))
-            if startSharing {
-                await app.startSharing()
-                if let error = app.sharingError { throw LatchError.unreachable(error) }
-            }
+            // Not now leaves nothing registered, even from an earlier try.
+            if startSharing { await app.startSharing() } else { await app.stopSharing() }
+            if let error = app.sharingError { throw LatchError.unreachable(error) }
             sharing = startSharing
             keepRunningError = nil
             await app.refreshStatus()

@@ -3,6 +3,8 @@ import Foundation
 /// Everything the app asks of latch. The only type that knows a CLI exists;
 /// views and the model see typed values.
 public protocol LatchClient: Sendable {
+    /// The state folder latch is run with; nil is latch's own default.
+    var stateDir: String? { get }
     func localStatus() async throws -> LocalStatus
     func rules() async throws -> RulesShow
     /// `latch events --follow`: a snapshot, then changes as they happen.
@@ -20,6 +22,12 @@ public protocol LatchClient: Sendable {
 public protocol SharingService: Sendable {
     /// Whether the agent is registered with the system, right now.
     func agent() -> SharingAgent
+    /// The process launchd runs the agent as, if it is running: the host is
+    /// the app's only when latch's serve is this process.
+    func agentProcess() async -> Int?
+    /// The state folder the agent serves; nil is latch's own default. It
+    /// must be the app's own, or the app would show one host and run another.
+    var stateDir: String? { get }
     /// Registers the agent, which starts `latch serve`. Registered is not
     /// serving: latch's own status says when it is.
     func startSharing() async throws
@@ -42,6 +50,8 @@ public struct UnavailableSharing: SharingService {
     public init() {}
 
     public func agent() -> SharingAgent { .missing }
+    public func agentProcess() async -> Int? { nil }
+    public var stateDir: String? { nil }
     public func startSharing() async throws { throw Self.error }
     public func stopSharing() async throws { throw Self.error }
 

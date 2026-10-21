@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // After launch, so no CLI call delays the first frame.
         hostWatch = Task {
             await model.refreshStatus()
+            await model.refreshAgent()
             if case let .loaded(status, _) = model.status {
                 WindowRouter.shared.launched(loggedIn: status.peer != nil)
             }
@@ -24,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [model] _ in
-            MainActor.assumeIsolated { model.refreshAgent() }
+            Task { await model.refreshAgent() }
         }
         #if LATCH_TEST_HOOKS
         TestHooks.install(model: model)
