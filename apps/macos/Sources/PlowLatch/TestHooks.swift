@@ -31,6 +31,7 @@ enum TestHooks {
         case "report":
             guard let path else { return }
             let report: [String: Any] = [
+                "bundle": Bundle.main.bundleIdentifier ?? NSNull(),
                 "policy": NSApp.activationPolicy() == .regular ? "regular" : "accessory",
                 "active": NSApp.isActive,
                 "key": NSApp.keyWindow?.identifier?.rawValue ?? NSNull(),

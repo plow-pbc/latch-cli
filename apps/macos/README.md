@@ -26,7 +26,8 @@ scripts/build-app.sh --latch PATH   # ... with another latch
 "build/Plow Latch.app/Contents/MacOS/PlowLatch" -LatchStateDir "$PWD/../../.dev/mac-app/dev"
 "build/Plow Latch.app/Contents/MacOS/PlowLatch" -LatchFake serving   # sample data, no CLI
 swift run Snapshots ../../.dev/mac-app/snapshots
-scripts/measure.sh                  # launch, idle, menu-bar and window checks against the budget
+scripts/measure.sh                  # launch, idle, menu-bar and window checks against the budget,
+                                    # on build/Plow Latch Test.app (bundle id co.plow.latch.test)
 ```
 
 Launch arguments set these defaults for one run:

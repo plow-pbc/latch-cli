@@ -1,6 +1,8 @@
 #!/bin/bash
 # Measures the app against its budget and checks the menu-bar paths, on an
-# isolated state folder under the repo's .dev/. Builds the app with test hooks.
+# isolated state folder under the repo's .dev/. Builds the test app (test hooks,
+# bundle id co.plow.latch.test), so nothing here reads or removes the real
+# app's preferences or saved windows.
 #   scripts/measure.sh [--latch PATH] [OUT_DIR]
 # --latch PATH  the latch the app runs (default: scripts/stub-latch, until the
 #               CLI has `status --local` and `events --follow`)
@@ -17,14 +19,16 @@ out="$(cd "$out" && pwd)"
 state="$(cd ../.. && pwd)/.dev/mac-app/measure-state"
 rm -rf "$state" && mkdir -p "$state"
 
-./scripts/build-app.sh --test-hooks --latch "$latch" > /dev/null
-app="$PWD/build/Plow Latch.app/Contents/MacOS/PlowLatch"
+bundle="$PWD/$(./scripts/build-app.sh --test-hooks --latch "$latch" | tail -n 1)"
+test_id="co.plow.latch.test"
+[ "$(defaults read "$bundle/Contents/Info" CFBundleIdentifier)" = "$test_id" ] || { echo "not the test app: $bundle" >&2; exit 1; }
+app="$bundle/Contents/MacOS/PlowLatch"
 tool="$(swift build --show-bin-path)/../measure-tool"
 mkdir -p "$(dirname "$tool")"
 swiftc -O -o "$tool" scripts/measure.swift
 
 emit() { "$latch" --state-dir "$state" emit "$@"; }
-args=(-LatchExecutable "$PWD/build/Plow Latch.app/Contents/Helpers/latch" -LatchStateDir "$state"
+args=(-LatchExecutable "$bundle/Contents/Helpers/latch" -LatchStateDir "$state"
       -ApplePersistenceIgnoreState YES)
 pid=""
 post() { "$tool" post "$@"; }
@@ -45,12 +49,12 @@ footprint_mb() {
 }
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
 sum() { awk '{ s += $1 } END { print s + 0 }'; }
-# The app's own preferences and saved windows: none may outlive a run.
+# The test app's preferences and saved windows: none may outlive a run.
 cleanup() {
     quit_app
-    defaults delete co.plow.latch 2>/dev/null || true
-    rm -f "$HOME/Library/Preferences/co.plow.latch.plist"
-    rm -rf "$HOME/Library/Saved Application State/co.plow.latch.savedState"
+    defaults delete "$test_id" 2>/dev/null || true
+    rm -f "$HOME/Library/Preferences/$test_id.plist"
+    rm -rf "$HOME/Library/Saved Application State/$test_id.savedState"
 }
 trap cleanup EXIT
 
