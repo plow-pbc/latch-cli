@@ -28,6 +28,11 @@ on a machine its owner trusts, over Plow's directory.
 - `latch serve ~/work --deny-exec` refuses `exec` to every agent;
   `--deny-exec=AGENT_UID` (repeatable) to one agent, by its Plow uid. Your
   own machines are unaffected.
+- A connection problem (`host_unreachable`, a slow call): set
+  `LATCH_TRACE=iroh=debug,latch=info` on the client, the host or both, to
+  see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
+  to stderr, or to `serve.log` under the dashboard, never to stdout. On a
+  host, each event names the connection's caller key and the operation.
 - `latch shares set ~/work` saves the folders a `latch serve` named none
   shares. `latch status --local`, `latch events --follow` and
   `latch login --events` are for an app: see [latch/APP.md](latch/APP.md).

@@ -36,7 +36,11 @@ sha2 = "0.11.1"
 # iroh and reqwest are async, so latch runs on tokio. `io-util` reads and
 # writes the wire frames; `signal` lets `serve` stop cleanly on SIGINT/SIGTERM;
 # `process` runs the sandboxed file workers; `fs` writes the client's files.
-tokio = { version = "1.53.3", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.53.3", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+# `LATCH_TRACE` (src/trace.rs): iroh's own events, filtered, to the
+# host's log, inside a span per connection and operation. No colours.
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt", "std"] }
 
 # Per-call folders for Google and throwaway test state.
 tempfile = "3.27.0"
@@ -49,7 +53,7 @@ csv = "1.4.0"
 psl = "2.1.239"
 totp-rs = { version = "6.0.0", default-features = false, features = ["std"] }
 url = "2.5.8"
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # `latch vault link`'s QR code, drawn in the terminal (no image backends).
 qrcode = { version = "0.14.1", default-features = false }
 

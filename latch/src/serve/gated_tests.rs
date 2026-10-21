@@ -98,7 +98,9 @@ async fn start_with(
     let rules = RuleFiles::new(&state, std::slice::from_ref(&area)).unwrap();
     let host = Arc::new(Host {
         plow: plow.client(),
-        audit: Mutex::new(AuditLog::open(state.join("audit.ndjson")).unwrap()),
+        audit: Arc::new(Mutex::new(
+            AuditLog::open(state.join("audit.ndjson")).unwrap(),
+        )),
         dashboard: None,
         workers: WorkerSetup {
             areas: vec![area.clone()],
@@ -357,6 +359,37 @@ async fn a_google_change_is_already_done_the_next_time_and_a_read_is_not() {
     let done = &asked[3]["already_done_by_agent"]["since this host started"];
     assert_eq!(done.as_array().unwrap().len(), 1, "{done}");
     assert_eq!(done[0]["what"]["command"], send["gog_args"]);
+}
+
+/// Covered until the agent has already done something since the host started.
+fn covered_once(state: &Value) -> Option<[f64; 3]> {
+    Some(if state["already_done_by_agent"].is_string() {
+        [0.9, 0.08, 0.02]
+    } else {
+        [0.1, 0.85, 0.05]
+    })
+}
+
+#[tokio::test]
+async fn the_same_google_change_sent_twice_at_once_runs_once() {
+    let t = start(a_chat(covered_once)).await;
+    let agent = t.caller("agent").await;
+    let send = json!({"gog_args": ["gmail", "send", "--to", "a@example.com", "--body", "the body"],
+                      "account": [], "confirm_conflict": false, "inputs": []});
+    let (first, second) = tokio::join!(
+        t.call(&agent, "google", send.clone()),
+        t.call(&agent, "google", send.clone()),
+    );
+    // The second is judged after the first ran, and sees it already done.
+    // (The one that runs stops at the missing gog: it ran all the same.)
+    let refused = [&first.0, &second.0]
+        .into_iter()
+        .filter(
+            |answer| matches!(answer, Response::Error { code, .. } if code == "gatekeeper_denied"),
+        )
+        .count();
+    assert_eq!(refused, 1, "{first:?} {second:?}");
+    assert_eq!(t.judged(), 2);
 }
 
 #[tokio::test]
@@ -736,4 +769,35 @@ async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_link
         .map(|record| (record["decision"].as_str(), record["outcome"].as_str()))
         .collect();
     assert_eq!(refused, [(Some("deny"), Some("host_upgraded")); 3]);
+}
+
+#[tokio::test]
+async fn a_stalled_audit_write_holds_up_no_other_caller() {
+    let t = start(a_chat(down)).await;
+    // A slow disk, as the next append sees it: the log stays busy for a while.
+    let (busy, now_busy) = std::sync::mpsc::channel();
+    let holder = t.host.clone();
+    let stall = std::thread::spawn(move || {
+        let _held = holder.audit.lock().unwrap();
+        busy.send(()).unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+    });
+    now_busy.recv().unwrap();
+
+    let host = t.host.clone();
+    let record = audit::record("k1", None, "exec", "allow", "ok");
+    let appending = tokio::spawn(async move { host.append(record).await });
+    // Meanwhile this runtime's other work goes on.
+    let started = Instant::now();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+
+    // The record is still written, once the log is free.
+    assert!(appending.await.unwrap().is_ok());
+    stall.join().unwrap();
+    assert_eq!(t.audit()[0]["op"], "exec");
 }

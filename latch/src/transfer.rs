@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use iroh::endpoint::Connection;
+use iroh::endpoint::{Connection, RecvStream};
 use serde_json::{Value, json};
 use tokio::fs::File;
 
@@ -140,9 +140,48 @@ pub async fn upload(
     Ok((done, sha256))
 }
 
+/// A download's bytes on their way to `local`: a hidden file beside it,
+/// readable only by its owner, which takes `local`'s name only when placed.
+/// Dropped unplaced (a failure, or a call cut off), it is removed, and any
+/// file already under `local`'s name is left as it was.
+pub struct Staged(tempfile::NamedTempFile);
+
+impl Staged {
+    pub fn beside(local: &Path) -> Result<Staged, Failure> {
+        let dir = match local.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        let name = local.file_name().unwrap_or_default().to_string_lossy();
+        tempfile::Builder::new()
+            .prefix(&format!(".{name}.latch-"))
+            .suffix(".part")
+            .tempfile_in(dir)
+            .map(Staged)
+            .map_err(|err| local_failure(local, err))
+    }
+
+    /// The file to write the bytes into.
+    pub fn file(&self) -> Result<File, Failure> {
+        let file = self.0.as_file().try_clone();
+        file.map(File::from_std)
+            .map_err(|err| local_failure(self.0.path(), err))
+    }
+
+    /// Gives the bytes `local`'s name, replacing what was there.
+    pub fn place(self, local: &Path) -> Result<(), Failure> {
+        self.0
+            .persist(local)
+            .map(|_| ())
+            .map_err(|err| local_failure(local, err.error))
+    }
+}
+
 /// Sends `request`, then reads the host's first answer with the size,
-/// exactly that many bytes into `local`, and the host's last answer, whose
-/// sha256 must match. A file that broke off or does not match is removed.
+/// exactly that many bytes, and the host's last answer, whose sha256 must
+/// match. The bytes are staged beside `local` and take its place only once
+/// they match: a download that broke off, does not match, or whose process
+/// was killed never leaves a file (or half of one) under `local`'s name.
 /// Returns both answers and the sha256.
 pub async fn download(
     connection: &Connection,
@@ -153,20 +192,26 @@ pub async fn download(
     send.finish().map_err(|_| dial::lost(connection, true))?;
     let start = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     let size = size_of(&start)?;
-    let mut file = File::create(local)
-        .await
-        .map_err(|err| local_failure(local, err))?;
-    let Ok(sha256) = wire::copy(&mut recv, &mut file, size).await else {
-        // Don't leave half a file behind.
-        let _ = tokio::fs::remove_file(local).await;
-        return Err(dial::lost(connection, true));
-    };
-    let done = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    if let Err(failure) = check_same(&done, &sha256) {
-        let _ = tokio::fs::remove_file(local).await;
-        return Err(failure);
-    }
+    let staged = Staged::beside(local)?;
+    let (done, sha256) = receive_into(connection, &mut recv, &mut staged.file()?, size).await?;
+    staged.place(local)?;
     Ok((start, done, sha256))
+}
+
+/// `size` bytes into `file`, and the host's last answer, which must carry
+/// the same sha256.
+async fn receive_into(
+    connection: &Connection,
+    recv: &mut RecvStream,
+    file: &mut File,
+    size: u64,
+) -> Result<(Value, String), Failure> {
+    let sha256 = wire::copy(recv, file, size)
+        .await
+        .map_err(|_| dial::lost(connection, true))?;
+    let done = dial::answer(connection, recv, ANSWER_WITHIN).await?;
+    check_same(&done, &sha256)?;
+    Ok((done, sha256))
 }
 
 /// The byte count in the host's first answer to a download.
@@ -193,18 +238,13 @@ fn local_failure(path: &Path, err: std::io::Error) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iroh::endpoint::SendStream;
     use iroh::endpoint::presets;
     use iroh::{Endpoint, RelayMode};
     use wire::Response;
 
-    /// A download from a host that sends `bytes` of the `size` it promised,
-    /// then `sha256` as the one it saw.
-    async fn download_from(
-        size: u64,
-        bytes: &[u8],
-        sha256: &str,
-        local: &Path,
-    ) -> Result<(), Failure> {
+    /// A host and a client endpoint, and both ends of a connection between them.
+    async fn connected() -> (Endpoint, Endpoint, Connection, Connection) {
         let bind = |alpns: Vec<Vec<u8>>| {
             Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
@@ -218,16 +258,41 @@ mod tests {
             tokio::join!(async { accepting.await.unwrap().await.unwrap() }, async {
                 client.connect(host.addr(), wire::ALPN).await.unwrap()
             });
+        (host, client, accepted, connection)
+    }
+
+    /// Answers a download with the `size` it promises, then `bytes`.
+    async fn start_sending(accepted: &Connection, size: u64, bytes: &[u8]) -> SendStream {
+        let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
+        wire::read_frame(&mut recv).await.unwrap();
+        let frame = serde_json::to_vec(&Response::Ok(json!({"size": size}))).unwrap();
+        wire::write_frame(&mut send, &frame).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut send, bytes)
+            .await
+            .unwrap();
+        send
+    }
+
+    fn file_get() -> Request {
+        Request {
+            op: "file_get".into(),
+            args: json!({}),
+            chat: None,
+        }
+    }
+
+    /// A download from a host that sends `bytes` of the `size` it promised,
+    /// then `sha256` as the one it saw.
+    async fn download_from(
+        size: u64,
+        bytes: &[u8],
+        sha256: &str,
+        local: &Path,
+    ) -> Result<(), Failure> {
+        let (host, client, accepted, connection) = connected().await;
         let serving = async {
-            let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
-            wire::read_frame(&mut recv).await.unwrap();
+            let mut send = start_sending(&accepted, size, bytes).await;
             let frame = |value| serde_json::to_vec(&Response::Ok(value)).unwrap();
-            wire::write_frame(&mut send, &frame(json!({"size": size})))
-                .await
-                .unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut send, bytes)
-                .await
-                .unwrap();
             if bytes.len() as u64 == size {
                 wire::write_frame(&mut send, &frame(json!({"sha256": sha256})))
                     .await
@@ -236,11 +301,7 @@ mod tests {
             send.finish().unwrap();
             let _ = send.stopped().await;
         };
-        let request = Request {
-            op: "file_get".into(),
-            args: json!({}),
-            chat: None,
-        };
+        let request = file_get();
         let ((), result) = tokio::join!(serving, download(&connection, &request, local));
         client.close().await;
         host.close().await;
@@ -256,12 +317,57 @@ mod tests {
         download_from(5, b"hello", &sha256, &local).await.unwrap();
         assert_eq!(std::fs::read(&local).unwrap(), b"hello");
 
-        let wrong = download_from(5, b"hello", "00", &local).await.unwrap_err();
-        assert_eq!(wrong.code, "checksum_mismatch");
-        assert!(!local.exists(), "a file that does not match is removed");
+        // Neither leaves a file, and an earlier one under the name stays as it was.
+        let fresh = dir.path().join("fresh");
+        for target in [&local, &fresh] {
+            let wrong = download_from(5, b"hellO", &sha256, target)
+                .await
+                .unwrap_err();
+            assert_eq!(wrong.code, "checksum_mismatch");
+            let short = download_from(5, b"hel", &sha256, target).await.unwrap_err();
+            assert_eq!(short.code, "outcome_unknown");
+        }
+        assert_eq!(std::fs::read(&local).unwrap(), b"hello");
+        assert!(!fresh.exists());
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "no temporary file is left: {names:?}");
+    }
 
-        let short = download_from(5, b"hel", &sha256, &local).await.unwrap_err();
-        assert_eq!(short.code, "outcome_unknown");
-        assert!(!local.exists(), "a file that broke off is removed");
+    #[tokio::test]
+    async fn a_download_over_a_private_file_leaves_it_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("got");
+        std::fs::write(&local, "the old file").unwrap();
+        std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let sha256 = crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(b"hello"));
+        download_from(5, b"hello", &sha256, &local).await.unwrap();
+        assert_eq!(std::fs::read(&local).unwrap(), b"hello");
+        let mode = std::fs::metadata(&local).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+    }
+
+    #[tokio::test]
+    async fn a_download_killed_halfway_leaves_nothing_under_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("got");
+        std::fs::write(&local, "the old file").unwrap();
+        let (host, client, accepted, connection) = connected().await;
+        // Dropped halfway, as a killed client is: no cleanup of its own runs.
+        let request = file_get();
+        let download = download(&connection, &request, &local);
+        let (_send, cut) = tokio::join!(
+            start_sending(&accepted, 1_000_000, &[7; 100_000]),
+            tokio::time::timeout(std::time::Duration::from_millis(500), download)
+        );
+        assert!(cut.is_err(), "the download was still waiting for bytes");
+        let left = std::fs::read(&local).unwrap();
+        assert!(
+            left == b"the old file",
+            "{} bytes there instead",
+            left.len()
+        );
+        client.close().await;
+        host.close().await;
     }
 }

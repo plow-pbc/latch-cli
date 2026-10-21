@@ -1,30 +1,107 @@
 name: latch
 
-# Only runs when the Rust workspace (or this file) changes.
 on:
   push:
-    branches: [main]
-    paths: ["latch/**", ".github/workflows/latch.yml"]
+    branches: [main, ci-speed]
   pull_request:
-    branches: [main]
-    paths: ["latch/**", ".github/workflows/latch.yml"]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'PR checks, main checks, or runner access probe'
+        type: choice
+        options: [pr, main, probe]
+        default: pr
+      source-ref:
+        description: 'Optional source commit for a baseline comparison'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: latch-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.mode || github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Format, lint and test on Linux and on both kinds of Mac (Apple silicon, Intel).
-  check:
+  # The staging branch only probes runner access on push; benchmarks are dispatched.
+  runner-access:
+    if: github.ref == 'refs/heads/ci-speed' && (github.event_name == 'push' || inputs.mode == 'probe')
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-15-intel]
-    runs-on: ${{ matrix.os }}
+        runner: [macos-15-xlarge, macos-15-large]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    steps:
+      - run: uname -sm && getconf _NPROCESSORS_ONLN
+
+  mac:
+    if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON((github.event_name == 'push' || inputs.mode == 'main') && '[{"runner":"macos-15-large","shard":1,"count":4},{"runner":"macos-15-large","shard":2,"count":4},{"runner":"macos-15-large","shard":3,"count":4},{"runner":"macos-15-large","shard":4,"count":4}]' || '[{"runner":"macos-15-xlarge","shard":1,"count":3},{"runner":"macos-15-xlarge","shard":2,"count":3},{"runner":"macos-15-xlarge","shard":3,"count":3}]') }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     defaults:
       run:
         working-directory: latch
     steps:
       - uses: actions/checkout@v4
-      # Installs the toolchain pinned in latch/rust-toolchain.toml.
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-tools
+          sparse-checkout: latch/scripts
       - run: rustup toolchain install
+      - if: matrix.shard == 1
+        run: python3 ../.ci-tools/latch/scripts/test-test-shard.py
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+          shared-key: mac-${{ matrix.runner }}
+          save-if: ${{ matrix.shard == 1 }}
+      - if: matrix.shard == 1
+        run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings
+      - uses: actions/cache@v4
+        if: hashFiles('latch/src/browser/cft.json') != ''
+        with:
+          path: .dev/cft-state/plugins/cft
+          key: cft-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - uses: actions/cache@v4
+        if: hashFiles('latch/src/browser/camoufox.json') != ''
+        with:
+          path: .dev/cft-state/plugins/camoufox
+          key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
+      - run: cargo build --locked
+      - if: hashFiles('latch/src/browser/cft.json') != ''
+        run: HOME="$RUNNER_TEMP/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox target/debug/latch
+      - run: python3 ../.ci-tools/latch/scripts/test-shard.py ${{ matrix.shard }} ${{ matrix.count }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-${{ runner.arch }}-${{ matrix.shard }}
+          path: .dev/ci/*.json
+          if-no-files-found: error
+
+  linux:
+    if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: latch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       # The browser tests drive the pinned engines, Chrome for Testing and
@@ -45,8 +122,8 @@ jobs:
         run: cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox target/debug/latch
       - run: cargo test --locked
 
-  # Static Linux client binaries, built natively on each architecture.
   linux-static:
+    if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
     strategy:
       fail-fast: false
       matrix:
@@ -60,9 +137,38 @@ jobs:
         working-directory: latch
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            latch/target/cargo-home
+            latch/target/musl-${{ matrix.arch }}
+          key: musl-${{ matrix.arch }}-${{ hashFiles('latch/build-musl.sh', 'latch/rust-toolchain.toml') }}-${{ hashFiles('latch/Cargo.lock') }}
+          restore-keys: musl-${{ matrix.arch }}-${{ hashFiles('latch/build-musl.sh', 'latch/rust-toolchain.toml') }}-
       - run: ./build-musl.sh ${{ matrix.arch }}
+      - name: Make container build cache readable by the runner
+        run: sudo chown -R "$(id -u):$(id -g)" target/cargo-home target/musl-${{ matrix.arch }}
       - run: file target/musl-${{ matrix.arch }}/release/latch | tee /dev/stderr | grep -Eq "statically linked|static-pie linked"
+      - run: target/musl-${{ matrix.arch }}/release/latch --version
       - uses: actions/upload-artifact@v4
         with:
           name: latch-linux-${{ matrix.arch }}
           path: latch/target/musl-${{ matrix.arch }}/release/latch
+
+  ci-required:
+    name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
+    if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
+    needs: [mac, linux, linux-static]
+    runs-on: ubuntu-24.04
+    env:
+      RESULTS: ${{ toJSON(needs) }}
+    steps:
+      - name: Require every platform and shard
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          print(json.dumps(results, indent=2))
+          assert all(job['result'] == 'success' for job in results.values())
+          PY
