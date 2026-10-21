@@ -31,6 +31,7 @@ mod logo;
 mod model;
 mod paint;
 mod plow;
+mod redact;
 mod sandbox;
 mod secrets;
 mod serve;
@@ -196,6 +197,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Shares(args) => to_json(shares::run(&state, args.action)?),
+        Command::Audit(args) => to_json(audit::run(&state, args.action)?),
         // Its lines, printed as they come, are its whole output.
         Command::Events(args) => {
             events::run(&state, args)?;

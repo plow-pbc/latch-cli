@@ -155,9 +155,13 @@ impl Board {
         if self.rows.is_empty() {
             lines.push(paint::fg(" waiting for calls…", DIM));
         }
-        while lines.len() < height.saturating_sub(1) {
+        while lines.len() < height.saturating_sub(2) {
             lines.push(String::new());
         }
+        lines.push(paint::fg(
+            " Commands hide credential-looking values, best effort: some can slip through",
+            DIM,
+        ));
         lines.push(paint::fg(
             " Ctrl-C stops the host · logs: serve.log in the state directory",
             DIM,
@@ -179,9 +183,10 @@ pub fn describe(op: &str, args: &Value, outcome: &str, took: Duration) -> (Strin
     let took = human_duration(took);
     match op {
         "exec" => {
-            let argv = args["argv"]
+            let shown = crate::redact::shown("exec", args);
+            let argv = shown["argv"]
                 .as_array()
-                .or_else(|| args["argv"]["kept"].as_array());
+                .or_else(|| shown["argv"]["kept"].as_array());
             let words: Vec<&str> = argv
                 .into_iter()
                 .flatten()

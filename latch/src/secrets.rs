@@ -34,10 +34,17 @@ pub enum Secret {
     PlowToken,
     /// The vault's custody key, as hex.
     VaultKey,
+    /// The audit log's keys, by id (see `audit.rs`).
+    AuditKeys,
 }
 
 impl Secret {
-    const ALL: [Secret; 3] = [Secret::Key, Secret::PlowToken, Secret::VaultKey];
+    const ALL: [Secret; 4] = [
+        Secret::Key,
+        Secret::PlowToken,
+        Secret::VaultKey,
+        Secret::AuditKeys,
+    ];
 
     /// The temporary files a write of it may have left behind: today's
     /// writer's, and for the vault key the one before it used.
@@ -55,6 +62,7 @@ impl Secret {
             Secret::Key => "key",
             Secret::PlowToken => "plow-token",
             Secret::VaultKey => "vault.key",
+            Secret::AuditKeys => "audit.keys",
         }
     }
 }
@@ -714,7 +722,9 @@ mod tests {
         let other = files(dir.path());
         for secret in Secret::ALL {
             let path = dir.path().join(secret.file());
-            let bytes = fs::read(&path).unwrap();
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
             memory.set(&other.account(secret), &bytes).unwrap();
             fs::remove_file(path).unwrap();
         }

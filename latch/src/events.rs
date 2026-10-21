@@ -260,14 +260,23 @@ impl Follower {
             .rposition(|&b| b == b'\n')
             .map_or(0, |at| at + 1);
         let mut records = Vec::new();
+        if complete == 0 {
+            return Ok(Some(records));
+        }
+        // Read on each look, so a key rotated meanwhile is there too.
+        let Some(keys) = audit::Keys::existing(&self.dir)? else {
+            let message = format!("{}: there is no key to read it with", path.display());
+            return Err(Failure::failed("audit_key", message));
+        };
         for line in bytes[..complete]
             .split(|&b| b == b'\n')
             .filter(|l| !l.is_empty())
         {
-            // The same checks as the host's: each record's own hash, and
-            // that it follows the last one read (or opens the log).
+            // The same checks as the host's: each line's own hash, and that
+            // it follows the last one read (or opens the log); then its
+            // record, opened with the key.
             let prev = self.log.last.as_deref().unwrap_or(audit::GENESIS);
-            let Ok(record) = audit::verify_next(prev, line, self.log.count + 1) else {
+            let Ok(record) = audit::read_next(&keys, prev, line, self.log.count + 1) else {
                 return Ok(None);
             };
             self.log.last = Some(record.hash.clone());
@@ -361,7 +370,11 @@ mod tests {
         let path = dir.path().join("audit.ndjson");
 
         // A record that chains on but was edited after it was hashed.
-        let edited = fs_line(dir.path(), "exec").replace("\"allow\"", "\"deny\"");
+        let mut edited: Value = serde_json::from_str(&fs_line(dir.path(), "exec")).unwrap();
+        let body = edited["body"].as_str().unwrap().to_string();
+        let flipped = if body.starts_with('0') { "1" } else { "0" };
+        edited["body"] = json!(format!("{flipped}{}", &body[1..]));
+        let edited = format!("{edited}\n");
         std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -385,6 +398,27 @@ mod tests {
             Follower::new(dir.path(), true).fresh().unwrap_err().code,
             "audit_broken"
         );
+    }
+
+    #[test]
+    fn an_entry_is_the_same_shape_as_before_and_carries_no_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = "synthetic-events-credential-2b9c";
+        let mut log = AuditLog::open(dir.path().join("audit.ndjson")).unwrap();
+        let mut exec = audit::record("k1", Some("agent-uid".into()), "exec", "allow", "ok");
+        exec.args = json!({"argv": ["curl", "-H", format!("Authorization: Bearer {secret}")]});
+        let id = log.append(exec).unwrap();
+
+        let mut follower = Follower::new(dir.path(), true);
+        let entries = follower.fresh().unwrap();
+        let line = follower.snapshot(entries);
+        let entry = &line["activity"][0];
+        assert_eq!(
+            entry,
+            &json!({"id": id, "time": entry["time"], "caller": "k1", "caller_name": null,
+                    "agent": "agent-uid", "op": "exec", "decision": "allow", "outcome": "ok"})
+        );
+        assert!(!line.to_string().contains(secret), "{line}");
     }
 
     /// The line `append` would write next, without writing it.

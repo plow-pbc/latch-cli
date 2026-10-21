@@ -12,7 +12,9 @@
 //! that dies without stopping takes the program with it (see
 //! `WorkerSetup::start_exec`).
 //! The audit record holds the argv (up to 4 KiB, as run), the workdir and
-//! how it ended, never the output.
+//! how it ended, never the output. The audit log is encrypted; whatever
+//! shows the argv to people hides credential-looking values first
+//! (`redact.rs`).
 //!
 //! Each run gets a fresh, empty temp folder of its own as its `TMPDIR`,
 //! made in the host's OS temp folder and readable and writable by that

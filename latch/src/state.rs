@@ -1,6 +1,6 @@
 //! The state directory of one latch instance (`--state-dir`, default
 //! `~/.latch`). Everything in it is readable by this user only. A latch
-//! signed for the Keychain keeps the three secrets marked * there instead of
+//! signed for the Keychain keeps the secrets marked * there instead of
 //! in files (see `secrets.rs`):
 //!
 //! - `key`*: this peer's ed25519 secret key, as hex. It never leaves the machine.
@@ -8,7 +8,8 @@
 //!   host's owner token). An agent's own credential is not copied here; see
 //!   `credential.rs`.
 //! - `config.json`: the Plow API URL and this peer's record as Plow returned it.
-//! - `audit.ndjson`, on a host: its audit log (see `audit.rs`).
+//! - `audit.ndjson`, on a host: its audit log, each record sealed (see
+//!   `audit.rs`); `audit.keys`*: the keys that seal it.
 //! - `serve.log`, on a host: what `latch serve` logs while its dashboard
 //!   has the terminal.
 //! - `vault.json` and `vault.key`*, on a host: the vault and its custody key
@@ -52,10 +53,14 @@ pub struct Config {
 
 /// The layout of the files in a state folder. A latch reads only a folder
 /// of exactly its own format: an older latch would misread a newer folder (or
-/// silently drop what it does not know when it saves), and no newer latch
-/// converts older folders yet. Raise it only with a change an older latch
-/// would misread, together with the explicit upgrade for that change.
-const FORMAT: u32 = 1;
+/// silently drop what it does not know when it saves). Raise it only with a
+/// change an older latch would misread, together with the explicit upgrade
+/// for that change.
+///
+/// Format 2 seals the audit log. A folder of format 1 (a plaintext log) is
+/// upgraded on first use by `audit::upgrade`, and marked 2 only once that is
+/// done, so an upgrade cut short is picked up next time.
+const FORMAT: u32 = 2;
 
 /// What `latch serve` shares when it is named no folders, and what it lets
 /// callers read besides (`--allow-read`).
@@ -121,9 +126,10 @@ impl StateDir {
         self.check_format()
     }
 
-    /// Refuses a folder of another format than this latch's. A folder
-    /// without a marker was made before there was one, in format 1, and is
-    /// marked now; a folder that does not exist yet is marked by `create`.
+    /// Refuses a folder of another format than this latch's, and upgrades
+    /// one of format 1 (see `FORMAT`). A folder without a marker was made
+    /// before there was one, in format 1; a folder that does not exist yet
+    /// is marked by `create`.
     pub fn check_format(&self) -> Result<(), Failure> {
         let path = self.path.join("latch.json");
         let text = match fs::read_to_string(&path) {
@@ -132,13 +138,8 @@ impl StateDir {
                 if !self.path.is_dir() {
                     return Ok(());
                 }
-                let marker = Marker {
-                    format: FORMAT,
-                    written_by: crate::cli::version().to_string(),
-                };
-                let text = serde_json::to_string_pretty(&marker).expect("marker serializes") + "\n";
-                return write_private(&path, text.as_bytes())
-                    .map_err(|err| self.io_failure(&path, err));
+                // A folder from before there was a marker is format 1.
+                return self.upgraded();
             }
             Err(err) => return Err(self.io_failure(&path, err)),
         };
@@ -146,6 +147,9 @@ impl StateDir {
             let message = format!("{} is not valid: {err}", path.display());
             Failure::failed("bad_state", message)
         })?;
+        if marker.format == 1 {
+            return self.upgraded();
+        }
         let fix = match marker.format.cmp(&FORMAT) {
             std::cmp::Ordering::Equal => return Ok(()),
             std::cmp::Ordering::Greater => "update this latch",
@@ -165,6 +169,18 @@ impl StateDir {
     /// Where this folder keeps its secrets (see `secrets.rs`).
     pub fn secrets(&self) -> Result<Secrets, Failure> {
         Secrets::open(&self.path)
+    }
+
+    /// Upgrades a format-1 folder (see `FORMAT`) and marks it this format.
+    fn upgraded(&self) -> Result<(), Failure> {
+        crate::audit::upgrade(&self.path)?;
+        let path = self.path.join("latch.json");
+        let marker = Marker {
+            format: FORMAT,
+            written_by: crate::cli::version().to_string(),
+        };
+        let text = serde_json::to_string_pretty(&marker).expect("marker serializes") + "\n";
+        write_private(&path, text.as_bytes()).map_err(|err| self.io_failure(&path, err))
     }
 
     /// Loads this peer's key, generating and saving it on first use.
@@ -379,14 +395,14 @@ mod tests {
         assert!(!state.path.exists());
         state.create().unwrap();
         let written = fs::read_to_string(&marker).unwrap();
-        assert!(written.contains("\"format\": 1"), "{written}");
+        assert!(written.contains("\"format\": 2"), "{written}");
 
-        // A folder from before the marker is format 1, and is marked.
+        // A folder from before the marker is format 1, upgraded and marked.
         fs::remove_file(&marker).unwrap();
         state.check_format().unwrap();
         assert_eq!(fs::read_to_string(&marker).unwrap(), written);
 
-        for (format, fix) in [(2, "update this latch"), (0, "use the latch that wrote it")] {
+        for (format, fix) in [(3, "update this latch"), (0, "use the latch that wrote it")] {
             let other = format!(r#"{{"format": {format}, "written_by": "9.9.9"}}"#);
             fs::write(&marker, &other).unwrap();
             let refused = state.check_format().unwrap_err();
@@ -395,6 +411,40 @@ mod tests {
             assert!(refused.message.contains("9.9.9"), "{}", refused.message);
             assert_eq!(fs::read_to_string(&marker).unwrap(), other);
         }
+    }
+
+    #[test]
+    fn a_format_1_folder_is_marked_2_only_once_its_audit_is_sealed() {
+        let dir = test_dir();
+        let state = StateDir::new(Some(dir.path().join("state"))).unwrap();
+        fs::create_dir(&state.path).unwrap();
+        let marker = state.path.join("latch.json");
+        let last = crate::audit::write_plaintext_log(&state.path, &["connect", "exec"]);
+        let audit = state.path.join("audit.ndjson");
+
+        // A tampered old log is not converted, and the folder stays 1.
+        let good = fs::read_to_string(&audit).unwrap();
+        fs::write(&audit, good.replacen("connect", "oops", 1)).unwrap();
+        fs::write(&marker, r#"{"format": 1, "written_by": "0.1.0"}"#).unwrap();
+        assert_eq!(state.check_format().unwrap_err().code, "audit_broken");
+        assert!(
+            fs::read_to_string(&marker)
+                .unwrap()
+                .contains("\"format\": 1")
+        );
+
+        fs::write(&audit, &good).unwrap();
+        state.check_format().unwrap();
+        assert!(
+            fs::read_to_string(&marker)
+                .unwrap()
+                .contains("\"format\": 2")
+        );
+        let sealed = fs::read_to_string(&audit).unwrap();
+        assert!(!sealed.contains("old-caller"), "{sealed}");
+        let records = crate::audit::read_all(&audit).unwrap();
+        assert_eq!(records[0].args["last_hash"], last);
+        assert_eq!(records.len(), 3);
     }
 
     #[test]
