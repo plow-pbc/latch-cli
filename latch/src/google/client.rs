@@ -116,26 +116,14 @@ async fn exchange(
                 .await
                 .map_err(|err| Failure::failed("local_file", err.to_string()))?;
         }
-        // As `file get` does: the bytes go to a temporary file beside the
-        // destination, which takes its place only once they match.
-        let local_file = |err: std::io::Error| Failure::failed("local_file", err.to_string());
-        let temp = crate::worker::temp_path(&path).map_err(local_file)?;
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .await
-            .map_err(local_file)?;
-        let copied = wire::copy(&mut recv, &mut file, moved.size).await;
-        let placed = if copied.as_ref().ok() == Some(&moved.sha256) {
-            tokio::fs::rename(&temp, &path).await.map_err(local_file)
-        } else {
-            Err(problem(Exit::Failed, "checksum_mismatch", json!({})))
-        };
-        if let Err(failure) = placed {
-            let _ = tokio::fs::remove_file(&temp).await;
-            return Err(failure);
+        // As `file get` does: the bytes take the destination's place only
+        // once they match.
+        let staged = crate::transfer::Staged::beside(&path)?;
+        let copied = wire::copy(&mut recv, &mut staged.file()?, moved.size).await;
+        if copied.as_ref().ok() != Some(&moved.sha256) {
+            return Err(problem(Exit::Failed, "checksum_mismatch", json!({})));
         }
+        staged.place(&path)?;
         local_files.push(json!({"path":path,"size":moved.size,"sha256":moved.sha256}));
     }
     let mut value = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
@@ -237,5 +225,19 @@ mod tests {
         assert!(!fresh.exists());
         let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(names.len(), 1, "no temporary file is left: {names:?}");
+    }
+
+    #[tokio::test]
+    async fn a_file_over_a_private_one_leaves_it_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("got");
+        std::fs::write(&local, "the old file").unwrap();
+        std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let sha256 = crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(b"hello"));
+        attachment_from(5, b"hello", &sha256, &local).await.unwrap();
+        assert_eq!(std::fs::read(&local).unwrap(), b"hello");
+        let mode = std::fs::metadata(&local).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
     }
 }
