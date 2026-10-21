@@ -104,9 +104,10 @@ async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
     }
 }
 
-/// What a command prints on stdout (JSON, or `status --pretty`'s card),
-/// and the exit code that goes with it. That code is 0, except for an
-/// `exec` whose time ran out: its result is still printed, but latch exits 1.
+/// What a command prints on stdout (JSON, `status --pretty`'s card, or
+/// `login`'s one line at a terminal), and the exit code that goes with it.
+/// That code is 0, except for an `exec` whose time ran out: its result is
+/// still printed, but latch exits 1.
 struct Printed {
     text: String,
     exit: ExitCode,
@@ -116,7 +117,17 @@ struct Printed {
 async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Failure> {
     let state = StateDir::new(state_dir)?;
     match command {
-        Command::Login(args) => to_json(login::run(&state, args).await?),
+        Command::Login(args) => {
+            let output = login::run(&state, args).await?;
+            // A person at a terminal reads one line; a pipe gets the JSON.
+            if !term::stdout_is_terminal() {
+                return to_json(output);
+            }
+            Ok(Printed {
+                text: format!("Logged in as {}.", output.peer.name),
+                exit: ExitCode::SUCCESS,
+            })
+        }
         Command::Devices(args) => match args.action {
             None => to_json(devices::list(&state).await?),
             Some(DevicesAction::Remove { name, yes }) => {

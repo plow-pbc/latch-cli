@@ -86,6 +86,12 @@ pub fn qr(url: &str) -> String {
     lines.join("\n")
 }
 
+/// `text` as a link to `url` (OSC 8). A terminal that shows links makes
+/// it clickable; one that does not ignores the escape and shows the text.
+pub fn link(url: &str, text: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
+}
+
 /// <https://no-color.org>: `NO_COLOR` set and not empty means no color.
 pub fn no_color() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())

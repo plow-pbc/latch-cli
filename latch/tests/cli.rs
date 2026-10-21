@@ -99,9 +99,15 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
 }
 
 /// Runs latch with its stdin and stderr on a terminal (a pty) with `typed`
-/// already typed, as a person would. Returns the exit code and everything
-/// the terminal showed.
-fn latch_at_a_terminal(state: &Path, args: &[&str], typed: &str) -> (Option<i32>, String) {
+/// already typed, as a person would, and its stdout there too or piped.
+/// Returns the exit code, everything the terminal showed, and what the
+/// pipe got.
+fn latch_at_a_terminal(
+    state: &Path,
+    args: &[&str],
+    typed: &str,
+    stdout_at_the_terminal: bool,
+) -> (Option<i32>, String, String) {
     use std::os::fd::FromRawFd;
     let (mut main, mut side) = (0, 0);
     let (name, settings, size) = (
@@ -117,8 +123,13 @@ fn latch_at_a_terminal(state: &Path, args: &[&str], typed: &str) -> (Option<i32>
     command
         .stdin(side.try_clone().unwrap())
         .stderr(side.try_clone().unwrap())
-        .stdout(std::process::Stdio::null());
+        .stdout(if stdout_at_the_terminal {
+            side.try_clone().unwrap().into()
+        } else {
+            std::process::Stdio::piped()
+        });
     let mut child = command.spawn().unwrap();
+    let mut piped = child.stdout.take();
     drop(command);
     drop(side);
     main.write_all(typed.as_bytes()).unwrap();
@@ -129,9 +140,13 @@ fn latch_at_a_terminal(state: &Path, args: &[&str], typed: &str) -> (Option<i32>
         let _ = reading.read_to_end(&mut shown);
         String::from_utf8_lossy(&shown).to_string()
     });
+    let mut stdout = String::new();
+    if let Some(piped) = &mut piped {
+        piped.read_to_string(&mut stdout).unwrap();
+    }
     let code = child.wait().unwrap().code();
     drop(main);
-    (code, shown.join().unwrap())
+    (code, shown.join().unwrap(), stdout)
 }
 
 /// Plow's answer to `GET /v1/agents/me`.
@@ -492,13 +507,75 @@ fn a_name_clash_stops_a_login_at_a_terminal_too() {
     ];
 
     // Even a person ready to say yes is not asked to replace the machine.
-    let (code, shown) = latch_at_a_terminal(&state, &args, "y\n");
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false);
     assert_eq!(code, Some(2), "{shown}");
     assert!(shown.contains("\"conflict\""), "{shown}");
     assert!(shown.contains("latch devices remove mac"), "{shown}");
     assert!(!shown.contains("Replace it?"), "{shown}");
     assert!(!state.join("config.json").exists());
     assert_eq!(server.join().unwrap().len(), 2);
+}
+
+/// A login by text: Plow gives a code, the phone texts it at once, and
+/// Plow registers the machine.
+fn plow_texted_at_once() -> (String, thread::JoinHandle<Vec<String>>) {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ])
+}
+
+#[test]
+fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
+    let (api_url, server) = plow_texted_at_once();
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let args = ["login", "--api-url", &api_url, "--name", "mac"];
+
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "", true);
+    assert_eq!(code, Some(0), "{shown}");
+    // Every row of the QR code, and the link under it, open Messages.
+    let link = "sms:+14155550100?&body=TRY12";
+    let opens = format!("\x1b]8;;{link}\x1b\\");
+    let rows: Vec<&str> = shown.lines().collect();
+    let drawn = rows
+        .iter()
+        .filter(|row| row.contains("\x1b[30;107m"))
+        .count();
+    assert!(drawn > 10, "{shown}");
+    let clickable = rows.iter().filter(|row| row.starts_with(&opens)).count();
+    assert_eq!(clickable, drawn + 1, "{shown}");
+    assert!(
+        shown.contains(&format!("{opens}{link}\x1b]8;;\x1b\\")),
+        "{shown}"
+    );
+    // Then one line to read, and one when it is done: no JSON.
+    let said: Vec<&str> = rows
+        .iter()
+        .filter(|row| !row.contains(&opens))
+        .copied()
+        .collect();
+    assert_eq!(said, ["Text TRY12 to +1 415-555-0100", "Logged in as mac."]);
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+#[test]
+fn a_login_by_text_piped_still_prints_its_json() {
+    let (api_url, server) = plow_texted_at_once();
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let args = ["login", "--api-url", &api_url, "--name", "mac"];
+
+    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", false);
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(shown.contains("Text TRY12 to +1 415-555-0100"), "{shown}");
+    assert!(!shown.contains("Logged in as"), "{shown}");
+    let output: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(output["peer"]["name"], "mac");
+    assert_eq!(server.join().unwrap().len(), 3);
 }
 
 #[test]

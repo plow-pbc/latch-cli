@@ -6,7 +6,6 @@
 //! token); the owner token saved here by an earlier login; the agent's own
 //! credential; and, only with a person at the terminal, a login by text.
 
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -181,15 +180,15 @@ pub async fn register_again(state: &StateDir) -> Result<(), Failure> {
 async fn by_text(state: &StateDir, api_url: &str, name: &str) -> Result<String, Failure> {
     let plow = Plow::anonymous(api_url);
     let activation = plow.activate(name).await?;
-    // No colon in the text: some Android scanners cut an SMSTO body at one.
-    let text = format!("Plow Activate {}", activation.display_code);
-    eprintln!("{}", term::qr(&smsto(&activation.send_to, &text)));
-    eprintln!(
-        "Scan this with your phone's camera, or text {text} to {} from the number your Plow account uses.",
-        activation.send_to
-    );
-    eprintln!("Whoever texts this code first gets the login. Waiting for your text...");
-    open_messages(&sms_link(&activation.send_to, &text));
+    let code = &activation.display_code;
+    // Clicking the QR code or the link under it opens Messages on a Mac, in a
+    // terminal that shows links; elsewhere they are just drawn.
+    let link = sms_link(&activation.send_to, code);
+    for line in term::qr(&smsto(&activation.send_to, code)).lines() {
+        eprintln!("{}", term::link(&link, line));
+    }
+    eprintln!("{}", term::link(&link, &link));
+    eprintln!("Text {code} to {}", for_people(&activation.send_to));
 
     let mut failures = 0;
     loop {
@@ -202,7 +201,10 @@ async fn by_text(state: &StateDir, api_url: &str, name: &str) -> Result<String, 
                 };
                 state.create()?;
                 state.save_token(&token)?;
-                eprintln!("Logged in.");
+                // At a terminal, the result says it, with the name.
+                if !term::stdout_is_terminal() {
+                    eprintln!("Logged in.");
+                }
                 return Ok(token);
             }
             Ok(_) => {
@@ -228,7 +230,7 @@ async fn by_text(state: &StateDir, api_url: &str, name: &str) -> Result<String, 
 }
 
 /// What the QR code holds: a phone's camera opens its messaging app with
-/// `text` ready to send to `send_to`. SMSTO takes the text as it is,
+/// `text` (the code) ready to send to `send_to`. SMSTO takes the text as it is,
 /// unencoded.
 fn smsto(send_to: &str, text: &str) -> String {
     format!("SMSTO:{send_to}:{text}")
@@ -239,16 +241,14 @@ fn sms_link(send_to: &str, text: &str) -> String {
     format!("sms:{send_to}?&body={}", escape(text))
 }
 
-/// On macOS, opens Messages with the text filled in, ready to send. Best
-/// effort: the printed instruction is enough without it.
-fn open_messages(link: &str) {
-    if cfg!(target_os = "macos") {
-        let _ = Command::new("open")
-            .arg(link)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+/// A North American number as people write it, `+1 415-555-0100`; any
+/// other number as Plow gave it.
+fn for_people(number: &str) -> String {
+    match number.strip_prefix("+1") {
+        Some(digits) if digits.len() == 10 && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            format!("+1 {}-{}-{}", &digits[..3], &digits[3..6], &digits[6..])
+        }
+        _ => number.to_string(),
     }
 }
 
@@ -316,20 +316,24 @@ mod tests {
 
     #[test]
     fn the_qr_code_and_the_link_carry_the_number_and_the_text() {
+        assert_eq!(smsto("+14155550100", "AB12C"), "SMSTO:+14155550100:AB12C");
         assert_eq!(
-            smsto("+14155550100", "Plow Activate AB12C"),
-            "SMSTO:+14155550100:Plow Activate AB12C"
+            sms_link("+14155550100", "AB12C"),
+            "sms:+14155550100?&body=AB12C"
         );
-        assert_eq!(
-            sms_link("+14155550100", "Plow Activate AB12C"),
-            "sms:+14155550100?&body=Plow%20Activate%20AB12C"
-        );
+    }
+
+    #[test]
+    fn a_north_american_number_is_written_as_people_write_it() {
+        assert_eq!(for_people("+14155550100"), "+1 415-555-0100");
+        assert_eq!(for_people("+442071838750"), "+442071838750");
+        assert_eq!(for_people("+1415555010"), "+1415555010");
     }
 
     #[test]
     fn escape_leaves_only_unreserved_characters() {
         assert_eq!(escape("mac-studio_2.local~"), "mac-studio_2.local~");
-        assert_eq!(escape("Plow Activate: AB12C"), "Plow%20Activate%3A%20AB12C");
+        assert_eq!(escape("a b: c"), "a%20b%3A%20c");
         assert_eq!(escape("a/b?é"), "a%2Fb%3F%C3%A9");
     }
 }
