@@ -865,7 +865,17 @@ async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;
     let secret = "synthetic-exec-credential-7f3a";
-    let argv = json!(["/bin/sh", "-c", "printf %s \"$2\"", "sh", "--token", secret]);
+    // Longer than the 4 KiB the audit once kept: it is kept whole now.
+    let long = "x".repeat(6000);
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        "printf %s \"$2\"",
+        "sh",
+        "--token",
+        secret,
+        long
+    ]);
     let (answer, _) = t
         .call(&agent, "exec", json!({"argv": argv, "timeout": 10}))
         .await;

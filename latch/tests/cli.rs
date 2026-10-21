@@ -984,6 +984,47 @@ fn an_agent_gets_owner_only_for_rules_on_its_own_state() {
 }
 
 #[test]
+fn an_old_audit_log_that_cannot_be_converted_refuses_only_what_writes_it() {
+    let (_dir, state, _key) = owner_host();
+    // A folder from before the sealed audit, its plaintext log damaged.
+    fs::write(
+        state.join("latch.json"),
+        r#"{"format": 1, "written_by": "0.1.0"}"#,
+    )
+    .unwrap();
+    fs::write(state.join("audit.ndjson"), "not a record\n").unwrap();
+
+    let shares = latch(&state, &["shares"], &[]);
+    assert_eq!(shares.status.code(), Some(0), "{shares:?}");
+    let warned = String::from_utf8_lossy(&shares.stderr);
+    assert!(
+        warned.contains("warning: the audit log was not converted"),
+        "{warned}"
+    );
+    let local = latch(&state, &["status", "--local"], &[]);
+    assert_eq!(local.status.code(), Some(0), "{local:?}");
+
+    let rules = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(rules.status.code(), Some(1), "{rules:?}");
+    let error: Value = serde_json::from_slice(
+        rules
+            .stderr
+            .split(|&b| b == b'\n')
+            .rev()
+            .find(|line| line.starts_with(b"{"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(error["error"]["code"], "audit_broken");
+    assert!(!state.join("rules/host.txt").exists());
+    assert!(
+        fs::read_to_string(state.join("latch.json"))
+            .unwrap()
+            .contains("\"format\": 1")
+    );
+}
+
+#[test]
 fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
     let (_dir, state, _key) = owner_host();
     fs::write(state.join("audit.ndjson"), "not a record\n").unwrap();

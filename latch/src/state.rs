@@ -172,8 +172,19 @@ impl StateDir {
     }
 
     /// Upgrades a format-1 folder (see `FORMAT`) and marks it this format.
+    /// An audit log that can't be converted (it fails its checks, say)
+    /// leaves the folder at format 1, says so, and lets the command go on:
+    /// only what writes the audit (a host, a local `rules` command) refuses
+    /// it, when it opens the log. The next command tries again.
     fn upgraded(&self) -> Result<(), Failure> {
-        crate::audit::upgrade(&self.path)?;
+        if let Err(failure) = crate::audit::upgrade(&self.path) {
+            eprintln!(
+                "latch: warning: the audit log was not converted to this latch's sealed \
+                 format, so commands that write it are refused until it is fixed: {}",
+                failure.message
+            );
+            return Ok(());
+        }
         let path = self.path.join("latch.json");
         let marker = Marker {
             format: FORMAT,
@@ -422,16 +433,19 @@ mod tests {
         let last = crate::audit::write_plaintext_log(&state.path, &["connect", "exec"]);
         let audit = state.path.join("audit.ndjson");
 
-        // A tampered old log is not converted, and the folder stays 1.
+        // A tampered old log is not converted: the folder stays 1, the
+        // command goes on, and opening the log to write it is refused.
         let good = fs::read_to_string(&audit).unwrap();
         fs::write(&audit, good.replacen("connect", "oops", 1)).unwrap();
         fs::write(&marker, r#"{"format": 1, "written_by": "0.1.0"}"#).unwrap();
-        assert_eq!(state.check_format().unwrap_err().code, "audit_broken");
+        state.check_format().unwrap();
         assert!(
             fs::read_to_string(&marker)
                 .unwrap()
                 .contains("\"format\": 1")
         );
+        let refused = crate::audit::AuditLog::open(audit.clone()).err().unwrap();
+        assert_eq!(refused.code, "audit_broken");
 
         fs::write(&audit, &good).unwrap();
         state.check_format().unwrap();
