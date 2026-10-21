@@ -612,9 +612,9 @@ async fn fill_resolved(
     super::fill::run(browsers, entry, args, audit).await
 }
 
-/// One command for `caller`, as `answer` runs it, each page in its answer
-/// bounded to what the agent is shown (`shown`), unless it asked for every
-/// element: `observe --all`, or `--scope`.
+/// One command for `caller`, as `answer` runs it, the page in its answer
+/// (or under its `page`) bounded to what the agent is shown (`shown`),
+/// unless it asked for every element: `observe --all`, or `--scope`.
 pub(super) async fn call(
     browsers: &Browsers,
     caller: Caller<'_>,

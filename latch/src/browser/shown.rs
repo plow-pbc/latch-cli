@@ -16,21 +16,27 @@ pub const SHOWN: usize = 60;
 /// The longest frame address shown, in characters.
 const URL_CHARS: usize = 80;
 
-/// Bounds every page in `value`, an answer or an error's details: each
-/// object holding a snapshot's `elements`.
+/// Bounds the pages in `value`, an answer or an error's details, at the
+/// two places latch puts one: the answer itself (`open`, `observe`,
+/// `goto`, `tab`, a stale ref's error) and its `page` (a plan, a wait, a
+/// handoff, a fill's error). Nothing else is touched: an `eval`'s value is
+/// the page's own, whatever its keys.
 pub fn bound(value: &mut Value) {
-    match value {
-        Value::Object(object) => {
-            if object.get("snapshot").is_some_and(Value::is_string)
-                && object.get("elements").is_some_and(Value::is_array)
-            {
-                page(object);
-            }
-            object.values_mut().for_each(bound);
+    if let Some(answer) = value.as_object_mut() {
+        if is_page(answer) {
+            page(answer);
         }
-        Value::Array(items) => items.iter_mut().for_each(bound),
-        _ => {}
+        if let Some(inner) = answer.get_mut("page").and_then(Value::as_object_mut)
+            && is_page(inner)
+        {
+            page(inner);
+        }
     }
+}
+
+fn is_page(object: &Map<String, Value>) -> bool {
+    object.get("snapshot").is_some_and(Value::is_string)
+        && object.get("elements").is_some_and(Value::is_array)
 }
 
 fn page(page: &mut Map<String, Value>) {
@@ -188,6 +194,26 @@ mod tests {
             whole,
             json!({"snapshot": "o1", "elements": [{"ref": "e1"}]})
         );
+    }
+
+    #[test]
+    fn only_latchs_own_page_places_are_bounded() {
+        let offscreen = json!([{"ref": "e1", "offscreen": true}]);
+        // An eval's value, or anything else an answer carries, is left as
+        // it is, whatever its keys.
+        let mut answer = json!({
+            "value": {"snapshot": "mine", "elements": offscreen},
+            "stop": {"page": {"snapshot": "o1", "elements": offscreen}},
+        });
+        let before = answer.clone();
+        bound(&mut answer);
+        assert_eq!(answer, before);
+        // The answer itself, and its `page`.
+        let mut answer = json!({"snapshot": "o1", "elements": offscreen,
+                                "page": {"snapshot": "o2", "elements": offscreen}});
+        bound(&mut answer);
+        assert_eq!(answer["elements"], json!([]));
+        assert_eq!(answer["page"]["elements"], json!([]));
     }
 
     #[test]

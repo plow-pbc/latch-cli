@@ -2320,5 +2320,13 @@ async fn an_answer_shows_the_screen_and_observe_all_every_element(engine: &str) 
     println!("after the click: {:?}", names(&now));
     assert!(names(&now).contains(&"Bottom".to_string()));
     assert!(!names(&now).contains(&"Top".to_string()));
+
+    // A page's own value, however it looks, is not latch's page.
+    let mine = json!({"snapshot": "o9", "elements": [{"ref": "e1", "offscreen": true}]});
+    let evaluated = h
+        .call(CALLER, "eval", &id, json!({"script": format!("({mine})")}))
+        .await
+        .unwrap();
+    assert_eq!(evaluated["value"], mine);
     h.call(CALLER, "close", &id, json!({})).await.unwrap();
 }
