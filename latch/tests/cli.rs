@@ -2003,6 +2003,105 @@ fn a_login_with_events_whose_code_expires_says_so_and_fails() {
     server.join().unwrap();
 }
 
+/// A host stopped (SIGTERM) while an exec runs: one that finishes within
+/// the host's wait is answered as usual; one that outlasts it is killed,
+/// with every process it started, and answered and audited `interrupted`.
+#[test]
+fn shutdown_exec_cases() {
+    // (what, script, the client's exit, the audited outcome)
+    let cases = [
+        (
+            "finishes in time",
+            "touch started; sleep 1; echo finished",
+            0,
+            "ok",
+        ),
+        (
+            "outlasts the host",
+            "sleep 600 & echo $! > child; touch started; wait",
+            5,
+            "interrupted",
+        ),
+    ];
+    for (what, script, exit, outcome) in cases {
+        let plow = LivePlow::start();
+        let (_relay, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let share = dir.path().join("share");
+        fs::create_dir(&share).unwrap();
+        // The owner's other machine.
+        let client = dir.path().join("client");
+        let token = dir.path().join("owner.token");
+        let args = [
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            token.to_str().unwrap(),
+            "--name",
+            "laptop",
+        ];
+        assert_eq!(latch(&client, &args, &[]).status.code(), Some(0));
+
+        let mut serve = serving(&host, &share, &relay);
+        let running = thread::spawn(move || {
+            let args = ["exec", "--host", "host", "--", "sh", "-c", script];
+            latch(&client, &args, &[])
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !share.join("started").exists() {
+            if running.is_finished() {
+                panic!(
+                    "{what}: the exec ended before it started: {:?}",
+                    running.join()
+                );
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: never started"
+            );
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // SAFETY: signals our own child.
+        unsafe { libc::kill(serve.0.id() as i32, libc::SIGTERM) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+        while serve.0.try_wait().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: serve did not stop"
+            );
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        let output = running.join().unwrap();
+        assert_eq!(output.status.code(), Some(exit), "{what}: {output:?}");
+        if exit == 0 {
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["stdout"], "finished\n", "{what}");
+        } else {
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], outcome, "{what}: {error}");
+        }
+        if let Ok(child) = fs::read_to_string(share.join("child")) {
+            let child: i32 = child.trim().parse().unwrap();
+            // SAFETY: signal 0 only asks whether the process exists.
+            assert_ne!(
+                unsafe { libc::kill(child, 0) },
+                0,
+                "{what}: its child lives on"
+            );
+        }
+        let audit = fs::read_to_string(host.join("audit.ndjson")).unwrap();
+        let exec = audit
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|record| record["op"] == "exec")
+            .expect("the exec is audited");
+        assert_eq!(exec["outcome"], outcome, "{what}: {exec}");
+    }
+}
+
 #[test]
 fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapshot() {
     let plow = LivePlow::start();
