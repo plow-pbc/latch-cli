@@ -1,0 +1,58 @@
+# cargo-deny's policy for latch's dependencies: `cargo deny --locked check`,
+# run by .github/workflows/deny.yml. See DEPENDENCIES.md for why each direct
+# dependency is here.
+
+# Only the platforms latch is built for: macOS and Linux (glibc and the
+# static musl build), on Intel and ARM.
+[graph]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+]
+
+# A published vulnerability in any locked crate fails the check, as does an
+# unsound or yanked one. An unmaintained notice fails only for a crate latch
+# depends on directly: one deeper down is its dependent's to replace.
+[advisories]
+unmaintained = "workspace"
+unsound = "all"
+yanked = "deny"
+ignore = []
+
+# The licenses found in the graph, all permissive except MPL-2.0 (a file-level
+# copyleft, from attohttpc under iroh's port mapping), which latch ships
+# unmodified.
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+# latch itself is not published and has no license field.
+private = { ignore = true }
+
+# Duplicate versions come from upstream crates and are allowed; a `*`
+# version requirement is not.
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+# crates.io only: no other registry, no git dependencies.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -475,7 +475,7 @@ fn fill(file: &mut File, path: &Path, size: u64) -> io::Result<()> {
 }
 
 /// `dir/name` becomes `dir/.name.latch-<process id>.part`.
-pub fn temp_path(path: &Path) -> io::Result<PathBuf> {
+fn temp_path(path: &Path) -> io::Result<PathBuf> {
     let Some(name) = path.file_name() else {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name"));
     };
