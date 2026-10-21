@@ -1527,3 +1527,26 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         "{log}"
     );
 }
+
+#[test]
+fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let marker = r#"{"format": 2, "written_by": "0.2.0"}"#;
+    fs::write(state.join("latch.json"), marker).unwrap();
+    // Not valid for this latch either way: a newer layout it would misread.
+    fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
+
+    let status = latch(&state, &["status"], &[]);
+
+    assert_eq!(status.status.code(), Some(1), "{status:?}");
+    let error: Value = serde_json::from_slice(&status.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "state_format", "{error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("update this latch"), "{message}");
+    assert_eq!(
+        fs::read_to_string(state.join("latch.json")).unwrap(),
+        marker
+    );
+}

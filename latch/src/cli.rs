@@ -3,6 +3,7 @@
 //! generates the parser for us.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use clap::{Args, Parser, Subcommand};
 
@@ -13,18 +14,20 @@ pub const BUILD_STATE_DIR: Option<&str> = option_env!("LATCH_BUILD_STATE_DIR");
 pub const BUILD_API_URL: Option<&str> = option_env!("LATCH_BUILD_API_URL");
 
 /// What `--version` prints. A build with baked-in defaults names them, so it
-/// is obvious which build this is. clap wants a `&'static str`; leaking the
-/// one string, once per run, gives it that.
-fn version() -> &'static str {
-    let version = env!("CARGO_PKG_VERSION");
-    match (BUILD_STATE_DIR, BUILD_API_URL) {
-        (None, None) => version,
-        (dir, url) => {
-            let dir = dir.unwrap_or("~/.latch");
-            let url = url.unwrap_or("none");
-            Box::leak(format!("{version} (local build: state {dir}, Plow {url})").into_boxed_str())
+/// is obvious which build this is.
+pub fn version() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        let version = env!("CARGO_PKG_VERSION");
+        match (BUILD_STATE_DIR, BUILD_API_URL) {
+            (None, None) => version.to_string(),
+            (dir, url) => {
+                let dir = dir.unwrap_or("~/.latch");
+                let url = url.unwrap_or("none");
+                format!("{version} (local build: state {dir}, Plow {url})")
+            }
         }
-    }
+    })
 }
 
 /// What `latch --help` adds after the commands: how an agent uses latch.

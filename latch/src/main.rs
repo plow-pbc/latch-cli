@@ -116,6 +116,7 @@ struct Printed {
 /// Runs one command and returns its JSON output.
 async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Failure> {
     let state = StateDir::new(state_dir)?;
+    state.check_format()?;
     match command {
         Command::Login(args) => {
             let output = login::run(&state, args).await?;

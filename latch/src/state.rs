@@ -16,6 +16,8 @@
 //! - `browser/`, on a host: profiles, the model's settings and each
 //!   session's journal.
 //! - `plugins/`, on a host: the pinned engines and the Google CLI.
+//! - `latch.json`: the folder's format (see `FORMAT`), which every command
+//!   checks before it reads or writes anything else.
 //!
 //! A host has no config file: what it shares is named on `latch serve`'s
 //! command line.
@@ -36,6 +38,20 @@ use crate::plow::Peer;
 pub struct Config {
     pub api_url: String,
     pub peer: Peer,
+}
+
+/// The layout of the files in a state folder. A latch reads only a folder
+/// of exactly its own format: an older latch would misread a newer folder (or
+/// silently drop what it does not know when it saves), and no newer latch
+/// converts older folders yet. Raise it only with a change an older latch
+/// would misread, together with the explicit upgrade for that change.
+const FORMAT: u32 = 1;
+
+/// `latch.json`: the folder's format, and which latch first marked it.
+#[derive(Serialize, Deserialize)]
+struct Marker {
+    format: u32,
+    written_by: String,
 }
 
 pub struct StateDir {
@@ -62,7 +78,50 @@ impl StateDir {
     pub fn create(&self) -> Result<(), Failure> {
         fs::create_dir_all(&self.path).map_err(|err| self.io_failure(&self.path, err))?;
         let owner_only = fs::Permissions::from_mode(0o700);
-        fs::set_permissions(&self.path, owner_only).map_err(|err| self.io_failure(&self.path, err))
+        fs::set_permissions(&self.path, owner_only)
+            .map_err(|err| self.io_failure(&self.path, err))?;
+        self.check_format()
+    }
+
+    /// Refuses a folder of another format than this latch's. A folder
+    /// without a marker was made before there was one, in format 1, and is
+    /// marked now; a folder that does not exist yet is marked by `create`.
+    pub fn check_format(&self) -> Result<(), Failure> {
+        let path = self.path.join("latch.json");
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                if !self.path.is_dir() {
+                    return Ok(());
+                }
+                let marker = Marker {
+                    format: FORMAT,
+                    written_by: crate::cli::version().to_string(),
+                };
+                let text = serde_json::to_string_pretty(&marker).expect("marker serializes") + "\n";
+                return write_private(&path, text.as_bytes())
+                    .map_err(|err| self.io_failure(&path, err));
+            }
+            Err(err) => return Err(self.io_failure(&path, err)),
+        };
+        let marker: Marker = serde_json::from_str(&text).map_err(|err| {
+            let message = format!("{} is not valid: {err}", path.display());
+            Failure::failed("bad_state", message)
+        })?;
+        let fix = match marker.format.cmp(&FORMAT) {
+            std::cmp::Ordering::Equal => return Ok(()),
+            std::cmp::Ordering::Greater => "update this latch",
+            std::cmp::Ordering::Less => "use the latch that wrote it",
+        };
+        let message = format!(
+            "{} is in state format {}, set up by latch {}; this latch ({}) reads only format {FORMAT}: \
+             {fix}, or pass another --state-dir. Nothing was read or changed",
+            self.path.display(),
+            marker.format,
+            marker.written_by,
+            crate::cli::version(),
+        );
+        Err(Failure::failed("state_format", message))
     }
 
     /// Loads this peer's key, generating and saving it on first use.
@@ -196,6 +255,34 @@ mod tests {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         fs::create_dir_all(&parent).unwrap();
         tempfile::tempdir_in(parent).unwrap()
+    }
+
+    #[test]
+    fn a_folder_is_marked_once_and_one_of_another_format_is_refused() {
+        let dir = test_dir();
+        let state = StateDir::new(Some(dir.path().join("state"))).unwrap();
+        let marker = state.path.join("latch.json");
+        // Nothing to read yet, and nothing made: `create` marks the folder.
+        state.check_format().unwrap();
+        assert!(!state.path.exists());
+        state.create().unwrap();
+        let written = fs::read_to_string(&marker).unwrap();
+        assert!(written.contains("\"format\": 1"), "{written}");
+
+        // A folder from before the marker is format 1, and is marked.
+        fs::remove_file(&marker).unwrap();
+        state.check_format().unwrap();
+        assert_eq!(fs::read_to_string(&marker).unwrap(), written);
+
+        for (format, fix) in [(2, "update this latch"), (0, "use the latch that wrote it")] {
+            let other = format!(r#"{{"format": {format}, "written_by": "9.9.9"}}"#);
+            fs::write(&marker, &other).unwrap();
+            let refused = state.check_format().unwrap_err();
+            assert_eq!(refused.code, "state_format");
+            assert!(refused.message.contains(fix), "{}", refused.message);
+            assert!(refused.message.contains("9.9.9"), "{}", refused.message);
+            assert_eq!(fs::read_to_string(&marker).unwrap(), other);
+        }
     }
 
     #[test]
