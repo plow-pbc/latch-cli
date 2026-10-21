@@ -98,4 +98,10 @@ Cursors:
   - the audit log no longer matches it;
   - it is more than 1000 records behind.
 
+A follower that stays connected while the host restarts gets the same
+`reset` and a fresh snapshot. Every record is checked the way the host
+checks its log (each record's own hash, and the chain from the first). A
+record that fails those checks is never sent: the stream starts over if the
+log was replaced by a sound one, and otherwise stops with `audit_broken`.
+
 `--lifecycle-only` leaves the activity out. That is the menu bar's subscription.

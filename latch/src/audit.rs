@@ -24,7 +24,7 @@ use crate::failure::Failure;
 use crate::state::to_hex;
 
 /// The `prev` of the very first record.
-const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// One audit record, in the order its fields appear on the line.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -144,23 +144,30 @@ pub fn verify(text: &str) -> Result<(usize, String), String> {
     let mut expected_prev = GENESIS.to_string();
     let mut count = 0;
     for (index, line) in text.lines().enumerate() {
-        let number = index + 1;
-        let record: Record = serde_json::from_str(line)
-            .map_err(|_| format!("line {number} is not an audit record"))?;
-        if hash_of(&record) != record.hash {
-            return Err(format!(
-                "line {number} was changed: its hash does not match"
-            ));
-        }
-        if record.prev != expected_prev {
-            return Err(format!(
-                "chain broken at line {number}: it does not follow line {index}"
-            ));
-        }
+        let record = verify_next(&expected_prev, line.as_bytes(), index + 1)?;
         expected_prev = record.hash;
         count += 1;
     }
     Ok((count, expected_prev))
+}
+
+/// Checks one line, number `number`, as the record after the one whose
+/// hash is `prev` (`GENESIS` for the first): its own hash, and its `prev`.
+pub fn verify_next(prev: &str, line: &[u8], number: usize) -> Result<Record, String> {
+    let record: Record = serde_json::from_slice(line)
+        .map_err(|_| format!("line {number} is not an audit record"))?;
+    if hash_of(&record) != record.hash {
+        return Err(format!(
+            "line {number} was changed: its hash does not match"
+        ));
+    }
+    if record.prev != prev {
+        let index = number - 1;
+        return Err(format!(
+            "chain broken at line {number}: it does not follow line {index}"
+        ));
+    }
+    Ok(record)
 }
 
 /// The sha256 of `record` serialized with its `hash` field empty.

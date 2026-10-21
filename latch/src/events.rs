@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::audit::Record;
+use crate::audit::{self, Record};
 use crate::cli::EventsArgs;
 use crate::failure::Failure;
 use crate::lifecycle::{self, Host};
@@ -142,10 +142,16 @@ impl Follower {
         format!("{run}:{}:{hash}", self.log.count)
     }
 
-    /// The whole log read, keeping its last `REPLAY` records.
+    /// The whole log read, keeping its last `REPLAY` records. A log that
+    /// fails its own checks from the first record on is refused, as the
+    /// host refuses it.
     fn fresh(&mut self) -> Result<Vec<Record>, Failure> {
         self.log = Tail::default();
-        let mut records = self.read_new()?.unwrap_or_default();
+        let Some(mut records) = self.read_new()? else {
+            let path = self.dir.join("audit.ndjson");
+            let message = format!("{}: the audit log fails its checks", path.display());
+            return Err(Failure::failed("audit_broken", message));
+        };
         let keep = records.len().saturating_sub(REPLAY);
         Ok(records.split_off(keep))
     }
@@ -179,9 +185,20 @@ impl Follower {
     }
 
     /// Everything that changed since the last look, in order: new records,
-    /// then the host's step. A log that no longer continues what was sent
-    /// starts over with `reset` and a snapshot.
+    /// then the host's step. A host that restarted, or a log that no longer
+    /// continues what was sent, starts over with `reset` and a snapshot.
     fn changes(&mut self) -> Result<Vec<Value>, Failure> {
+        let now = lifecycle::now(&self.dir);
+        if self.host.run.is_some() && now.run != self.host.run {
+            // Another run: once it has written its first step, start over.
+            // Until then (an instant), nothing is sent; its step wakes us.
+            if now.run.is_some() {
+                return self.restart(now);
+            }
+            if now.running {
+                return Ok(Vec::new());
+            }
+        }
         let mut lines = Vec::new();
         match self.read_new()? {
             Some(records) => {
@@ -195,13 +212,8 @@ impl Follower {
                     }
                 }
             }
-            None => {
-                self.host = lifecycle::now(&self.dir);
-                let entries = self.fresh()?;
-                return Ok(vec![json!({"type": "reset"}), self.snapshot(entries)]);
-            }
+            None => return self.restart(lifecycle::now(&self.dir)),
         }
-        let now = lifecycle::now(&self.dir);
         let reported = |host: &Host| (host.state, host.error.clone(), host.run.clone());
         if reported(&now) != reported(&self.host) {
             self.host = now;
@@ -215,9 +227,16 @@ impl Follower {
         Ok(lines)
     }
 
+    /// `reset`, then a fresh snapshot of `now` and the log.
+    fn restart(&mut self, now: Host) -> Result<Vec<Value>, Failure> {
+        self.host = now;
+        let entries = self.fresh()?;
+        Ok(vec![json!({"type": "reset"}), self.snapshot(entries)])
+    }
+
     /// The complete records written since the last read, or `None` when
     /// the log no longer continues what was read (shorter, or a record
-    /// that does not chain on).
+    /// that was changed or does not chain on).
     fn read_new(&mut self) -> Result<Option<Vec<Record>>, Failure> {
         let path = self.dir.join("audit.ndjson");
         let mut file = match File::open(&path) {
@@ -245,16 +264,12 @@ impl Follower {
             .split(|&b| b == b'\n')
             .filter(|l| !l.is_empty())
         {
-            let Ok(record) = serde_json::from_slice::<Record>(line) else {
+            // The same checks as the host's: each record's own hash, and
+            // that it follows the last one read (or opens the log).
+            let prev = self.log.last.as_deref().unwrap_or(audit::GENESIS);
+            let Ok(record) = audit::verify_next(prev, line, self.log.count + 1) else {
                 return Ok(None);
             };
-            let chains = match &self.log.last {
-                Some(last) => record.prev == *last,
-                None => self.log.count == 0,
-            };
-            if !chains {
-                return Ok(None);
-            }
             self.log.last = Some(record.hash.clone());
             self.log.count += 1;
             records.push(record);
@@ -335,6 +350,41 @@ mod tests {
         assert_eq!(lines[0], json!({"type": "reset"}));
         assert_eq!(lines[1]["activity"][0]["op"], "vault");
         assert!(follower.resume(&cursor).is_none());
+    }
+
+    #[test]
+    fn a_changed_record_is_never_sent_and_a_log_that_fails_its_checks_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        append(dir.path(), "exec");
+        let mut follower = Follower::new(dir.path(), true);
+        follower.fresh().unwrap();
+        let path = dir.path().join("audit.ndjson");
+
+        // A record that chains on but was edited after it was hashed.
+        let edited = fs_line(dir.path(), "exec").replace("\"allow\"", "\"deny\"");
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(edited.as_bytes())
+            .unwrap();
+        assert_eq!(follower.changes().unwrap_err().code, "audit_broken");
+
+        // A first record that does not open the log.
+        let mut record: Value = serde_json::from_str(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        record["prev"] = json!("ab".repeat(32));
+        std::fs::write(&path, format!("{record}\n")).unwrap();
+        assert_eq!(
+            Follower::new(dir.path(), true).fresh().unwrap_err().code,
+            "audit_broken"
+        );
     }
 
     /// The line `append` would write next, without writing it.

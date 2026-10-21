@@ -47,7 +47,8 @@ struct Written {
     error: Option<Problem>,
 }
 
-/// The host now: its step, and, while one runs or last ran, its process and run.
+/// The host now: its step, and, while one runs or last ran, its process and
+/// run. A serve that has just locked the folder has no run yet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Host {
     /// A `latch serve` holds the state folder.
@@ -101,6 +102,10 @@ pub fn now(state_dir: &Path) -> Host {
     let written = fs::read(state_dir.join("serve.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Written>(&bytes).ok());
+    let holder = lock_holder(state_dir);
+    // Locked by a serve that has not written its first step yet: what is
+    // there is an earlier run's, and this run's id is not known yet.
+    let written = written.filter(|written| !running || holder == Some(written.pid));
     let Some(written) = written else {
         let state = if running {
             Phase::Starting
@@ -110,15 +115,12 @@ pub fn now(state_dir: &Path) -> Host {
         return Host {
             running,
             state,
-            pid: None,
+            pid: if running { holder } else { None },
             run: None,
             error: None,
         };
     };
     let state = match (running, written.state) {
-        // Locked by a serve that has not written its first step yet: what
-        // is there is an earlier run's.
-        (true, _) if lock_holder(state_dir) != Some(written.pid) => Phase::Starting,
         (true, phase) => phase,
         (false, Phase::Starting | Phase::Serving) => Phase::Error,
         (false, phase) => phase,
@@ -187,12 +189,17 @@ mod tests {
         assert_eq!(serving.state, Phase::Serving);
         assert_eq!(serving.pid, Some(std::process::id()));
 
-        // Let go without a last step: as if killed.
+        // A serve that wrote `serving` but holds no lock: killed. (Another
+        // folder: a test's own lock may outlive its drop for an instant in a
+        // worker another test is starting.)
         drop(lock);
-        let ended = now(dir.path());
+        let killed = tempfile::tempdir().unwrap();
+        record(killed.path(), Phase::Serving, None).unwrap();
+        let ended = now(killed.path());
         assert_eq!(ended.state, Phase::Error);
         assert_eq!(ended.error.unwrap().code, "serve_ended");
         assert_eq!(ended.run, serving.run);
+        let dir = killed;
 
         let failure = Failure::failed("relay_unreachable", "no relay".to_string());
         record(dir.path(), Phase::Error, Some(&failure)).unwrap();

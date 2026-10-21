@@ -1906,3 +1906,50 @@ fn a_login_with_events_whose_code_expires_says_so_and_fails() {
     assert_eq!(error["error"]["code"], "code_expired");
     server.join().unwrap();
 }
+
+#[test]
+fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapshot() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+
+    let serve = serving(&host, &share, &relay);
+    let events = Events::start(&host, &["--follow"]);
+    let first = events.next();
+    assert_eq!(first["host"]["state"], "serving", "{first}");
+    let run = |cursor: &Value| {
+        cursor
+            .as_str()
+            .unwrap()
+            .split(':')
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    let old_run = run(&first["cursor"]);
+
+    drop(serve);
+    let stopped = events.next();
+    assert_eq!(
+        (stopped["type"].clone(), stopped["state"].clone()),
+        (json!("host"), json!("stopped"))
+    );
+    let _serve = serving(&host, &share, &relay);
+    assert_eq!(events.next(), json!({"type": "reset"}));
+    let fresh = events.next();
+    assert_eq!(fresh["type"], "snapshot", "{fresh}");
+    assert_ne!(run(&fresh["cursor"]), old_run);
+    // Nothing from the new run arrives as a mere host step before the reset,
+    // and the stream goes on: serving, if the snapshot caught it starting.
+    if fresh["host"]["state"] != "serving" {
+        let step = events.next();
+        assert_eq!(
+            (step["type"].clone(), step["state"].clone()),
+            (json!("host"), json!("serving"))
+        );
+    }
+    assert!(events.close().success());
+}
