@@ -49,6 +49,9 @@ struct TestHost {
     plow: FakePlow,
     area: PathBuf,
     state: PathBuf,
+    /// What the host watches as its own binary: a stand-in, so a test can
+    /// replace it without touching the workers' real one.
+    binary: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -83,9 +86,11 @@ async fn start_with(
     std::fs::create_dir(&area).unwrap();
     std::fs::create_dir(&state).unwrap();
     std::fs::write(area.join("notes.txt"), "the notes' own words").unwrap();
+    let binary = root.join("latch");
+    std::fs::write(&binary, "the latch this host started from").unwrap();
     let endpoint = Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
-        .alpns(vec![wire::ALPN.to_vec()])
+        .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
         .bind()
         .await
         .unwrap();
@@ -106,7 +111,7 @@ async fn start_with(
         name: "test-host".into(),
         gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
         deny_exec,
-        binary: Binary::at(&latch_binary()).unwrap(),
+        binary: Binary::at(&binary).unwrap(),
     });
     let serving = host.clone();
     tokio::spawn(async move {
@@ -119,6 +124,7 @@ async fn start_with(
         plow,
         area,
         state,
+        binary,
         _dir: dir,
     }
 }
@@ -600,4 +606,62 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
         allowed("curl")
     );
     assert_eq!((allowed("pytest"), allowed("curl")), (5, 0));
+}
+
+/// One request over a phone link's connection, as the phone page sends it.
+async fn phone_call(host: &TestHost, op: &str, args: Value) -> Response {
+    let phone = Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Disabled)
+        .bind()
+        .await
+        .unwrap();
+    let connection = phone
+        .connect(host.host.endpoint.addr(), link::ALPN)
+        .await
+        .unwrap();
+    let (mut send, mut recv) = connection.open_bi().await.unwrap();
+    let request = Request {
+        op: op.into(),
+        args,
+        chat: None,
+    };
+    wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
+        .await
+        .unwrap();
+    let answer = wire::read_frame(&mut recv).await.unwrap();
+    connection.close(VarInt::from_u32(0), b"done");
+    serde_json::from_slice(&answer).unwrap()
+}
+
+#[tokio::test]
+async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_links() {
+    let host = start(a_chat(covered_after_a_yes)).await;
+    let device = host.caller("device").await;
+    let link = json!({"code": "not-a-real-code", "values": {"password": "made-up-pass-4417"}});
+    let before = phone_call(&host, "submit", link.clone()).await;
+    assert_ne!(refusal(&before).1, "host_upgraded");
+
+    // How install.sh upgrades: a new file renamed over the old one.
+    let new = host.binary.with_extension("tmp");
+    std::fs::write(&new, "a newer latch").unwrap();
+    std::fs::rename(&new, &host.binary).unwrap();
+
+    for (op, args) in [
+        ("page", json!({"code": "not-a-real-code"})),
+        ("submit", link),
+    ] {
+        let response = phone_call(&host, op, args).await;
+        assert_eq!(refusal(&response).1, "host_upgraded", "{op}");
+    }
+    let (response, _) = host.call(&device, "exec", exec("echo ran")).await;
+    assert_eq!(refusal(&response).1, "host_upgraded");
+    assert_eq!(host.judged(), 0);
+    let audit = host.audit();
+    let refused: Vec<_> = audit
+        .iter()
+        .rev()
+        .take(3)
+        .map(|record| (record["decision"].as_str(), record["outcome"].as_str()))
+        .collect();
+    assert_eq!(refused, [(Some("deny"), Some("host_upgraded")); 3]);
 }

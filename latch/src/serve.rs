@@ -411,6 +411,13 @@ impl Binary {
     }
 }
 
+/// What every operation gets once the host's binary was replaced.
+fn host_upgraded() -> Failure {
+    let message = "latch on this host was replaced since `latch serve` started; nothing ran. \
+                   Restart `latch serve` on the host to run the new latch, then try again";
+    Failure::failed("host_upgraded", message.to_string())
+}
+
 /// Makes this the one `latch serve` on `state_dir`: two hosts on one state
 /// would share one key and one audit log. The lock is an exclusive `flock` on
 /// `serve.lock`, which the system releases when its holder exits, so one
@@ -592,13 +599,8 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                 outcome: failure.code.clone(),
             });
             let done = if upgraded {
-                Done::failed(
-                    "host_upgraded",
-                    "latch on this host was replaced since `latch serve` started; nothing ran. \
-                     Restart `latch serve` on the host to run the new latch, then try again"
-                        .to_string(),
-                    Value::Null,
-                )
+                let failure = host_upgraded();
+                Done::failed(&failure.code, failure.message, Value::Null)
             } else if let Some(refused) = refused {
                 refused
             } else {
@@ -734,6 +736,8 @@ async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
         let mut audit_args = serde_json::Map::new();
         audit_args.insert("command".into(), Value::String(request.op.clone()));
         let result = match request.op.as_str() {
+            // The link's item would be saved by this old host's code.
+            _ if host.binary.replaced() => Err(host_upgraded()),
             "page" => link::page(&host.vault, &host.here(), &request.args, &mut audit_args),
             "submit" => link::submit(&host.vault, &request.args, &mut audit_args),
             op => Err(Failure::new(
