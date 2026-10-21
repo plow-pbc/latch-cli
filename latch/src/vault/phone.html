@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Add to latch</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dcd8cf;
+    --field: #ffffff; --accent: #2f5d50; --accent-fg: #ffffff; --bad: #a33a2b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --fg: #ecebe6; --muted: #a29e95; --line: #3a3833;
+      --field: #201f1c; --accent: #7fb8a6; --accent-fg: #10201b; --bad: #e58a7c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 16px 32px; background: var(--bg); color: var(--fg);
+    font: 17px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  .for { color: var(--muted); font-size: 15px; margin: 0; }
+  .site { font-size: 30px; font-weight: 700; margin: 2px 0 4px; word-break: break-all; }
+  .title { color: var(--muted); margin: 0 0 20px; }
+  label { display: block; font-size: 14px; color: var(--muted); margin: 14px 0 6px; }
+  input, textarea {
+    width: 100%; padding: 12px; font-size: 17px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--field); color: var(--fg);
+  }
+  textarea { min-height: 8em; font: inherit; }
+  button {
+    width: 100%; margin-top: 22px; padding: 14px; font-size: 17px; font-weight: 600;
+    border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-fg);
+  }
+  button:disabled { opacity: .5; }
+  .machine { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+  .machine pre { font-size: 11px; line-height: 1.15; margin: 8px 0 0; color: var(--fg); }
+  .note { font-size: 14px; color: var(--muted); margin-top: 14px; }
+  .result { font-size: 20px; font-weight: 600; margin-top: 18px; }
+  .result.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<p class="for" id="for"></p>
+<p class="site" id="site"></p>
+<p class="title" id="title"></p>
+<form id="form" autocomplete="on"></form>
+<p class="result" id="result" hidden></p>
+<p class="note">Goes straight to <b class="host"></b> over latch's encrypted connection. Plow can't read it. This link works once and expires in <span id="left"></span>.</p>
+<div class="machine">Saving to <b class="host"></b>, the machine with this key picture (compare with <code>latch status --pretty</code> there):<pre id="art"></pre></div>
+<script>
+  // Runs in a sandboxed frame: the shim page around it owns the connection
+  // to the host, and passes messages both ways.
+  const $ = (id) => document.getElementById(id);
+  const form = $("form");
+  let left = 0;
+
+  function show(request) {
+    $("for").textContent = (/^[aeiou]/.test(request.kind) ? "Add an " : "Add a ") + request.kind + " for";
+    $("site").textContent = request.sites.join(", ") || "any site";
+    $("title").textContent = request.title;
+    for (const el of document.querySelectorAll(".host")) el.textContent = request.host;
+    $("art").textContent = (request.art || []).join("\n");
+    for (const field of request.fields) {
+      const label = document.createElement("label");
+      label.textContent = field.label;
+      // A note's text gets a box of lines; any other field is one line,
+      // masked when it is secret.
+      const input = document.createElement(field.label === "notes" ? "textarea" : "input");
+      input.name = field.label;
+      if (field.label !== "notes") input.type = field.secret ? "password" : "text";
+      input.autocapitalize = "off";
+      input.spellcheck = false;
+      if (field.label === "username") input.autocomplete = "username";
+      if (field.label === "password") input.autocomplete = "current-password";
+      if (field.value) input.value = field.value;
+      // The host refuses a save without these; say so before sending.
+      input.required = field.required;
+      label.append(input);
+      form.append(label);
+    }
+    const button = document.createElement("button");
+    button.textContent = "Save to " + request.host;
+    form.append(button);
+    left = request.expires_in;
+    tick();
+    setInterval(tick, 1000);
+  }
+
+  function tick() {
+    left = Math.max(0, left - 1);
+    $("left").textContent = Math.floor(left / 60) + " min " + String(left % 60).padStart(2, "0") + " s";
+  }
+
+  function result(text, bad) {
+    const el = $("result");
+    el.textContent = text;
+    el.className = bad ? "result bad" : "result";
+    el.hidden = false;
+  }
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const values = {};
+    for (const input of form.querySelectorAll("input, textarea")) {
+      if (input.value) values[input.name] = input.value;
+    }
+    form.querySelector("button").disabled = true;
+    parent.postMessage({ type: "submit", values }, "*");
+  });
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== parent) return;
+    const message = event.data;
+    if (message.type === "request") show(message.request);
+    if (message.type === "result") {
+      for (const input of form.querySelectorAll("input[type=password]")) input.value = "";
+      if (message.ok) {
+        form.hidden = true;
+        result("Saved on " + message.host + ".", false);
+      } else {
+        form.querySelector("button").disabled = message.code === "link_used" || message.code === "link_expired";
+        result(message.message, true);
+      }
+    }
+  });
+  parent.postMessage({ type: "ready" }, "*");
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# The Rust CLI's checks; live Google evidence uses the documented test identities.
+test:
+    cargo fmt --check
+    cargo clippy --locked --all-targets -- -D warnings
+    cargo test --locked
+
+# A headless host judging exec on rules alone, on jev 1.14 (synthetic
+# chats only).
+gatekeeper-live key:
+    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model serve::gated_tests::live -- --nocapture
+
+# The gatekeeper's judge on jev 1.14 over the v0 held-out corpus, twice per
+# probe, its decisions written to `out` (synthetic chats only).
+gatekeeper-replay key out:
+    LATCH_TEST_JEV_KEY="{{key}}" LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live -- --nocapture
+
+# The phone page (phone/): iroh for the browser plus the shim, into phone/dist.
+phone:
+    phone/build.sh
+
+# Serves phone/dist on this machine, for `latch vault link --page
+# http://localhost:PORT/` (an emulator here, or a phone on the network with
+# --bind 0.0.0.0). Never publish it from here.
+phone-serve port="8731" bind="127.0.0.1":
+    python3 -m http.server {{port}} --bind {{bind}} --directory phone/dist
+

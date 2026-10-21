@@ -1,0 +1,4 @@
+name,url,username,password,note
+quotes.toscrape.com,https://quotes.toscrape.com/login,made-up-user,made-up-pass-chrome-1,practice site
+example login,https://login.example.com/,ada@example.com,made-up-pass-chrome-2,
+no site,,someone,made-up-pass-chrome-3,
