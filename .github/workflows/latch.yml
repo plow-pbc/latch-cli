@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15-xlarge, macos-15-large, ubuntu-latest-8-cores, latch-linux-arm64-8core]
+        runner: [macos-15-xlarge, macos-15-large]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 5
     steps:
@@ -86,7 +86,7 @@ jobs:
 
   linux:
     if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
@@ -109,9 +109,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: amd64, runner: ubuntu-latest-8-cores }
-          # Organization-managed Linux ARM64, 8 vCPU pool.
-          - { arch: arm64, runner: latch-linux-arm64-8core }
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     defaults:

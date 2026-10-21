@@ -1,3 +1,0 @@
-self-hosted-runner:
-  labels:
-    - latch-linux-arm64-8core
