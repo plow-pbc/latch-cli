@@ -7,8 +7,8 @@
 //! kept up to 256 KiB (the rest is read and dropped, and `truncated` is
 //! set), so a runaway command cannot flood the agent. At the time limit the
 //! whole process group (the program and everything it started) is killed.
-//! The audit record holds the argv (up to 4 KiB, credential-looking values
-//! redacted), the workdir and how it ended, never the output.
+//! The audit record holds the argv (up to 4 KiB, as run), the workdir and
+//! how it ended, never the output.
 //!
 //! Each run gets a fresh, empty temp folder of its own as its `TMPDIR`,
 //! made in the host's OS temp folder and readable and writable by that
@@ -27,8 +27,6 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 use tokio::task::JoinHandle;
-
-mod redact;
 
 use crate::log::log;
 use crate::serve::Done;
@@ -256,12 +254,12 @@ async fn collected(capture: Capture, grace: Duration) -> (Vec<u8>, bool) {
     (kept, captured.cut || !finished)
 }
 
-/// Redacted argv, at most 4 KiB: whole arguments while they fit,
+/// argv as run, but at most 4 KiB of it: whole arguments while they fit,
 /// then the start of the one that does not, marked as cut.
 pub fn capped_argv(argv: &[String]) -> Value {
     let mut kept = Vec::new();
     let mut room = ARGV_AUDIT_CAP;
-    for arg in &redact::redact(argv) {
+    for arg in argv {
         if arg.len() <= room {
             room -= arg.len();
             kept.push(arg.clone());
@@ -338,7 +336,7 @@ mod tests {
         let short = vec!["echo".to_string(), "hi".to_string()];
         assert_eq!(capped_argv(&short), json!(["echo", "hi"]));
 
-        let long = vec!["echo".to_string(), "x ".repeat(2500)];
+        let long = vec!["echo".to_string(), "x".repeat(5000)];
         let capped = capped_argv(&long);
         assert_eq!(capped["truncated"], true);
         let kept: usize = capped["kept"]
@@ -348,16 +346,6 @@ mod tests {
             .map(|arg| arg.as_str().unwrap().trim_end_matches('…').len())
             .sum();
         assert_eq!(kept, ARGV_AUDIT_CAP);
-    }
-
-    #[test]
-    fn credential_redaction_precedes_the_audit_cap() {
-        let argv = vec![
-            "tool".into(),
-            format!("--token={}", "short-secret".repeat(500)),
-        ];
-        assert_eq!(capped_argv(&argv), json!(["tool", "--token=[redacted]"]));
-        assert!(argv[1].contains("short-secret"));
     }
 
     #[tokio::test]
