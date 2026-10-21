@@ -213,6 +213,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/test-install-release.py
+      - run: python3 scripts/test-install.py
       - uses: actions/download-artifact@v4
         with:
           pattern: latch-*
@@ -235,6 +236,7 @@ jobs:
       matrix: *release-matrix
     runs-on: ${{ matrix.runner }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: release-downloads
@@ -248,6 +250,8 @@ jobs:
           tar -xzf "$archive"
           binary=$(find . -type f -name latch)
           uname -sm
+          test -x "$(dirname "$binary")/install.sh"
+          "$(dirname "$binary")/install.sh" --help
           "$binary" --version
   publish:
     needs: [version, verify-artifacts]

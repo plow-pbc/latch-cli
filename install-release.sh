@@ -1,7 +1,7 @@
 #!/bin/sh
 # Download a private GitHub release and run its pinned plugin installer.
 set -eu
-[ "$#" -ge 1 ] || { echo 'usage: install-release.sh TAG|latest [--state-dir DIR]' >&2; exit 1; }
+[ "$#" -ge 1 ] || { echo 'usage: install-release.sh TAG|latest [--bin-dir DIR] [--state-dir DIR]' >&2; exit 1; }
 version=$1
 shift
 command -v gh >/dev/null || { echo 'install GitHub CLI and run gh auth login first' >&2; exit 1; }
@@ -33,7 +33,7 @@ fi
 tar -xzf "$archive"
 setup="$tmp/latch-$version-$target"
 cd "$caller"
-echo 'Installing into ~/.local/bin; gog uses ~/.latch/plugins unless --state-dir is supplied.'
+echo 'Binary defaults to ~/.local/bin (override with --bin-dir); gog uses ~/.latch/plugins (override with --state-dir).'
 echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
 sh "$setup/install.sh" "$@" "$setup/latch"
 "$setup/latch" --version

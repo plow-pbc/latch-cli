@@ -12,7 +12,8 @@ INSTALLER = Path(__file__).resolve().parents[1] / "install-release.sh"
 
 
 class ReleaseInstall(unittest.TestCase):
-    def run_install(self, system, machine, target, corrupt=False, relative_state=False, release="v0.1.0"):
+    def run_install(self, system, machine, target, corrupt=False, relative_state=False,
+                    relative_bin=False, release="v0.1.0"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             caller = root / "caller"
@@ -29,6 +30,10 @@ class ReleaseInstall(unittest.TestCase):
 printf '%s\\n' "$@" > "$RESULT"
 mkdir -p "$2"
 touch "$2/setup-marker"
+if [ "$3" = --bin-dir ]; then
+  mkdir -p "$4"
+  touch "$4/bin-marker"
+fi
 ''',
                     "latch": '#!/bin/sh\necho "latch 0.1.0 fixture"\n',
                 }.items():
@@ -52,8 +57,11 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
             for tool in tools.iterdir():
                 tool.chmod(0o755)
             result_file = root / "result"
+            options = ["--state-dir", state_arg]
+            if relative_bin:
+                options += ["--bin-dir", "apps/team tools"]
             result = subprocess.run(
-                ["sh", str(INSTALLER), release, "--state-dir", state_arg],
+                ["sh", str(INSTALLER), release, *options],
                 cwd=caller,
                 env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
                      "FIXTURE": str(root), "RESULT": str(result_file)},
@@ -65,11 +73,13 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
             else:
                 self.assertEqual(result.returncode, 0, result.stderr)
                 arguments = result_file.read_text().splitlines()
-                self.assertEqual(arguments[:2], ["--state-dir", state_arg])
-                self.assertEqual(Path(arguments[2]).name, "latch")
+                self.assertEqual(arguments[:-1], options)
+                self.assertEqual(Path(arguments[-1]).name, "latch")
                 self.assertTrue((expected_state / "setup-marker").exists(),
                                 "setup must use the caller's state directory, surviving cleanup")
                 self.assertIn("latch 0.1.0 fixture", result.stdout)
+                if relative_bin:
+                    self.assertTrue((caller / "apps/team tools/bin-marker").exists())
 
     def test_all_targets_and_setup_arguments(self):
         for system, machine, target in [
@@ -86,6 +96,9 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
 
     def test_latest_installs_the_newest_published_release(self):
         self.run_install("Darwin", "arm64", "aarch64-apple-darwin", release="latest")
+
+    def test_relative_bin_directory_survives_download_cleanup(self):
+        self.run_install("Darwin", "arm64", "aarch64-apple-darwin", relative_bin=True)
 
     def test_bad_checksum_never_runs_setup(self):
         self.run_install("Darwin", "arm64", "aarch64-apple-darwin", corrupt=True)

@@ -199,7 +199,9 @@ impl WorkerSetup {
 
     /// Starts `latch worker exec [--workdir DIR] -- ARGV…`. The program runs
     /// in a process group of its own, so a timeout can stop it together with
-    /// every process it started.
+    /// every process it started. It dies with this host, however the host
+    /// ends, and the worker kills it `kill_after` seconds in whatever the
+    /// host does (see `sandbox::supervise`).
     /// `tmpdir` becomes the program's `TMPDIR`.
     pub fn start_exec(
         &self,
@@ -207,12 +209,20 @@ impl WorkerSetup {
         tmpdir: &Path,
         argv: &[String],
         with_stdin: bool,
+        kill_after: u64,
     ) -> Result<Child, WorkerError> {
         let Some(first_area) = self.areas.first() else {
             return Err(error("no_areas", "this host shares no folders"));
         };
         let mut command = self.command(first_area)?;
-        command.arg("--tmpdir").arg(tmpdir).arg("exec");
+        command
+            .arg("--tmpdir")
+            .arg(tmpdir)
+            .arg("--kill-after")
+            .arg(kill_after.to_string())
+            .arg("exec");
+        #[cfg(target_os = "linux")]
+        die_with_host(&mut command);
         if let Some(workdir) = workdir {
             command.arg("--workdir").arg(workdir);
         }
@@ -249,6 +259,29 @@ impl WorkerSetup {
             .env("HOME", first_area)
             .current_dir(first_area);
         Ok(command)
+    }
+}
+
+/// On Linux, the kernel kills the worker the moment this host's thread that
+/// started it ends: tokio's worker threads, which start workers, end only
+/// with the host. bubblewrap (`--die-with-parent`) then kills the sandbox
+/// and the program in it.
+#[cfg(target_os = "linux")]
+fn die_with_host(command: &mut Command) {
+    let host = std::process::id() as libc::pid_t;
+    // SAFETY: between fork and exec the child makes only async-signal-safe
+    // calls, and allocates nothing.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // The host died before that took hold: we were handed on.
+            if libc::getppid() != host {
+                return Err(io::Error::from_raw_os_error(libc::ESRCH));
+            }
+            Ok(())
+        });
     }
 }
 
@@ -302,19 +335,30 @@ fn error(code: &str, message: &str) -> WorkerError {
     }
 }
 
-/// The worker process itself (`latch worker …`). Confines itself first.
+/// The worker process itself (`latch worker …`). Only the workload is confined;
+/// its supervisor stays outside the sandbox.
 pub fn run(args: WorkerArgs) -> ExitCode {
     let policy = Policy {
         areas: args.areas,
         state_dir: args.denied,
         exec: matches!(args.action, WorkerAction::Exec { .. }),
         tmpdir: args.tmpdir,
+        kill_after: args.kill_after,
         program: match &args.action {
             WorkerAction::Google { program } => Some(program.clone()),
             _ => None,
         },
         break_for_test: args.break_sandbox_for_test,
     };
+    if policy.exec {
+        let host = match sandbox::watch_host() {
+            Ok(host) => host,
+            Err(message) => return fail("host_gone", &message),
+        };
+        if let Err(message) = sandbox::supervise(host, policy.kill_after) {
+            return fail("sandbox_failed", &message);
+        }
+    }
     if let Err(message) = sandbox::confine(&policy) {
         return fail("sandbox_failed", &message);
     }

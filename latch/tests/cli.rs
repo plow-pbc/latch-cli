@@ -510,11 +510,30 @@ fn a_name_clash_stops_a_login_at_a_terminal_too() {
     // Even a person ready to say yes is not asked to replace the machine.
     let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false);
     assert_eq!(code, Some(2), "{shown}");
-    assert!(shown.contains("\"conflict\""), "{shown}");
+    // A person reads the sentence, not the JSON.
+    assert!(!shown.contains("\"conflict\""), "{shown}");
     assert!(shown.contains("latch devices remove mac"), "{shown}");
     assert!(!shown.contains("Replace it?"), "{shown}");
     assert!(!state.join("config.json").exists());
     assert_eq!(server.join().unwrap().len(), 2);
+}
+
+#[test]
+fn a_login_that_knows_no_plow_says_so_in_a_sentence_at_a_terminal_and_json_piped() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+
+    let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", false);
+    assert_eq!(code, Some(2), "{shown}");
+    let sentence = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co";
+    assert!(shown.contains(sentence), "{shown}");
+    assert!(!shown.contains("\"error\""), "{shown}");
+
+    let piped = latch(&state, &["login"], &[]);
+    assert_eq!(piped.status.code(), Some(2), "{piped:?}");
+    let error: Value = serde_json::from_slice(&piped.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "not_configured");
+    assert!(!state.join("config.json").exists());
 }
 
 /// A login by text: Plow gives a code, the phone texts it at once, and
@@ -1268,7 +1287,7 @@ impl Drop for Serving {
     fn drop(&mut self) {
         // SAFETY: signals our own child.
         unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
         while matches!(self.0.try_wait(), Ok(None)) {
             if std::time::Instant::now() > deadline {
                 let _ = self.0.kill();
@@ -1283,14 +1302,20 @@ impl Drop for Serving {
 /// `latch serve` on `host`'s state, sharing `share`, through the local
 /// relay, once it has registered that relay with Plow.
 fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
-    serving_folders(host, &[share], relay).0
+    serving_folders(host, &[share], relay, &[]).0
 }
 
-/// `serving`, sharing `shares` (none: the saved ones), once it says it
-/// serves (it registers with Plow a moment before). Also returns the log
-/// lines up to its registration.
-fn serving_folders(host: &Path, shares: &[&Path], relay: &str) -> (Serving, Vec<String>) {
-    let (serve, mut log, lines) = serving_with(serve_command(host, shares, relay));
+/// `serving`, sharing `shares` (none: the saved ones), with `env` added to
+/// its environment. Also returns the log lines up to its registration.
+fn serving_folders(
+    host: &Path,
+    shares: &[&Path],
+    relay: &str,
+    env: &[(&str, &Path)],
+) -> (Serving, Vec<String>) {
+    let mut command = serve_command(host, shares, relay);
+    command.envs(env.iter().copied());
+    let (serve, mut log, lines) = serving_with(command);
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
     until_serving(host, &serve);
     (serve, lines)
@@ -1417,10 +1442,10 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
             })
             .unwrap()
     };
-    let (serve, lines) = serving_folders(&host, &[], &relay);
+    let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
     drop(serve);
     assert_eq!(sharing(&lines), real.display().to_string());
-    let (serve, lines) = serving_folders(&host, &[&named], &relay);
+    let (serve, lines) = serving_folders(&host, &[&named], &relay, &[]);
     drop(serve);
     assert_eq!(
         sharing(&lines),
@@ -2147,4 +2172,204 @@ fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapsho
         );
     }
     assert!(events.close().success());
+}
+
+/// A host sharing `share`, with its exec temp folders made in `tmp`, and
+/// an owner's machine to call it from.
+struct Bench {
+    _plow: LivePlow,
+    _relay: tokio::runtime::Runtime,
+    relay: String,
+    _dir: tempfile::TempDir,
+    host: PathBuf,
+    owner: PathBuf,
+    share: PathBuf,
+    tmp: PathBuf,
+}
+
+/// Counts up in `tick` ten times a second, for a minute at most: longer
+/// than a connection takes to time out.
+const TICKING: &str = "i=0; while [ $i -lt 600 ]; do i=$((i+1)); echo $i > tick; sleep 0.1; done";
+
+impl Bench {
+    fn new() -> Bench {
+        let plow = LivePlow::start();
+        let (runtime, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let owner = dir.path().join("owner");
+        let token = dir.path().join("owner.token");
+        let args = [
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            token.to_str().unwrap(),
+            "--name",
+            "owner-mac",
+        ];
+        let login = latch(&owner, &args, &[]);
+        assert_eq!(login.status.code(), Some(0), "{login:?}");
+        let (share, tmp) = (dir.path().join("share"), dir.path().join("tmp"));
+        fs::create_dir(&share).unwrap();
+        fs::create_dir(&tmp).unwrap();
+        Bench {
+            _plow: plow,
+            _relay: runtime,
+            relay,
+            _dir: dir,
+            host,
+            owner,
+            share,
+            tmp,
+        }
+    }
+
+    fn serve(&self) -> Serving {
+        let env = [("TMPDIR", self.tmp.as_path())];
+        serving_folders(&self.host, &[&self.share], &self.relay, &env).0
+    }
+
+    /// The owner's `latch exec --timeout TIMEOUT -- sh -c SCRIPT`, running.
+    fn exec(&self, timeout: &str, script: &str) -> std::process::Child {
+        let args = [
+            "exec",
+            "--host",
+            "host",
+            "--timeout",
+            timeout,
+            "--",
+            "sh",
+            "-c",
+            script,
+        ];
+        latch_command(&self.owner, &args, &[])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Waits until a `TICKING` program has started.
+    fn started(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !self.share.join("tick").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the program never ran"
+            );
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Whether a `TICKING` program has stopped: its count holds for a second.
+    fn stopped_ticking(&self) -> bool {
+        let count = || fs::read_to_string(self.share.join("tick")).unwrap_or_default();
+        let before = count();
+        thread::sleep(std::time::Duration::from_secs(1));
+        before == count()
+    }
+
+    /// The exec temp folders left in the host's temp folder.
+    fn exec_folders(&self) -> Vec<String> {
+        fs::read_dir(&self.tmp)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("latch-exec-"))
+            .collect()
+    }
+
+    /// The host's audit records of `exec`.
+    fn exec_records(&self) -> Vec<Value> {
+        fs::read_to_string(self.host.join("audit.ndjson"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|record| record["op"] == "exec")
+            .collect()
+    }
+}
+
+#[test]
+fn a_host_killed_mid_exec_takes_its_program_along_and_its_next_start_sweeps_the_leftovers() {
+    let bench = Bench::new();
+    let mut serve = bench.serve();
+    let mut client = bench.exec("60", TICKING);
+    bench.started();
+    serve.0.kill().unwrap();
+    serve.0.wait().unwrap();
+    let stopped = bench.stopped_ticking();
+    let _ = client.kill();
+    let _ = client.wait();
+    assert!(stopped, "the program outlived its host");
+    assert_eq!(bench.exec_folders().len(), 1, "{:?}", bench.exec_folders());
+
+    drop(bench.serve());
+    assert_eq!(bench.exec_folders(), Vec::<String>::new());
+}
+
+#[test]
+fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
+    let bench = Bench::new();
+    let serve = bench.serve();
+    let pid = serve.0.id() as libc::pid_t;
+    let client = bench.exec("2", TICKING);
+    bench.started();
+    // SAFETY: signals our own child.
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    thread::sleep(std::time::Duration::from_secs(8));
+    let stopped = bench.stopped_ticking();
+    // SAFETY: as above.
+    unsafe { libc::kill(pid, libc::SIGCONT) };
+    let output = client.wait_with_output().unwrap();
+    drop(serve);
+    assert!(stopped, "the program ran on past its time limit");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["timed_out"], true, "{result}");
+    let records = bench.exec_records();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["outcome"], "timed_out", "{records:?}");
+}
+
+#[test]
+fn an_exec_cut_off_by_a_host_stop_is_audited_and_leaves_no_temp_folder() {
+    let bench = Bench::new();
+    let serve = bench.serve();
+    let client = bench.exec("60", TICKING);
+    bench.started();
+    // Stops the host with SIGTERM, as a service manager does.
+    drop(serve);
+    assert!(bench.stopped_ticking(), "the program outlived its host");
+    let output = client.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
+    let records = bench.exec_records();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["outcome"], "interrupted", "{records:?}");
+    assert_eq!(records[0]["decision"], "allow");
+    assert!(records[0]["args"]["duration_ms"].as_u64().unwrap() > 0);
+    assert_eq!(bench.exec_folders(), Vec::<String>::new());
+}
+
+#[test]
+fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
+    let bench = Bench::new();
+    let serve = bench.serve();
+    let mut client = bench.exec("120", TICKING);
+    bench.started();
+    client.kill().unwrap();
+    client.wait().unwrap();
+    // The host learns of it when the connection times out.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    while bench.exec_records().is_empty() && std::time::Instant::now() < deadline {
+        thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let records = bench.exec_records();
+    let stopped = bench.stopped_ticking();
+    let folders = bench.exec_folders();
+    drop(serve);
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["outcome"], "caller_gone", "{records:?}");
+    assert!(stopped, "the program ran on without its caller");
+    assert_eq!(folders, Vec::<String>::new());
 }
