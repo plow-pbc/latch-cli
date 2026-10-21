@@ -94,28 +94,43 @@ pub(super) fn fill_to_confirm(entry: &Entry, id: &str) -> Option<Value> {
         })
 }
 
-/// A risk the pass that chose a click or Enter answered, and what the pass
-/// saw it act on: the element clicked (role, name and row), or what Enter
-/// submits (its form's submit control, else the form).
+/// A risk the pass that chose a click or Enter answered, and the context
+/// the pass saw it in, as a review reads it: `target`, the element clicked
+/// (role, name and row) or what Enter submits (its form's submit control,
+/// else the form); `lines_sha256`, the lines around it; and the page's
+/// `title`.
 pub(super) struct Passed {
     pub(super) p: f64,
     pub(super) seen: Value,
 }
 
 impl Passed {
-    /// Whether a fresh review still finds what the pass saw.
+    /// Whether a fresh review finds the very context the pass saw.
     fn holds(&self, reviewed: &Value, enter: bool) -> bool {
         let now = if enter {
             &reviewed["acts_on"]
         } else {
             &reviewed["element"]
         };
-        !self.seen.is_null()
-            && !now.is_null()
+        let then = &self.seen["target"];
+        let known = |v: &Value| !v.is_null();
+        known(then)
+            && known(now)
             && ["role", "name", "row"]
                 .iter()
-                .all(|key| now[*key] == self.seen[*key])
+                .all(|key| now[*key] == then[*key])
+            && self.seen["lines_sha256"] == json!(lines_sha256(reviewed))
+            && known(&self.seen["title"])
+            && reviewed["title"] == self.seen["title"]
     }
+}
+
+/// The SHA-256 of the lines a review read, one per line of text, as the
+/// page's reader hashes them for a pass.
+fn lines_sha256(reviewed: &Value) -> String {
+    to_hex(&Sha256::digest(
+        strings(&reviewed["lines"]).join("\n").as_bytes(),
+    ))
 }
 
 /// Waits until `deadline` for `condition`, checking it a few times a
@@ -1683,6 +1698,36 @@ pub async fn wait(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_passs_risk_holds_only_on_the_very_context_it_judged() {
+        let reviewed = json!({"element": {"role": "button", "name": "Continue"},
+                              "acts_on": null, "title": "Review your order",
+                              "lines": ["Nothing is charged yet.", "Continue"]});
+        let passed = Passed {
+            p: 0.03,
+            seen: json!({"target": {"role": "button", "name": "Continue", "row": null},
+                         "lines_sha256": lines_sha256(&reviewed),
+                         "title": "Review your order"}),
+        };
+        assert!(passed.holds(&reviewed, false));
+        let changed = |key: &str, value: Value| {
+            let mut now = reviewed.clone();
+            now[key] = value;
+            passed.holds(&now, false)
+        };
+        assert!(!changed(
+            "element",
+            json!({"role": "button", "name": "Place order"})
+        ));
+        assert!(!changed(
+            "lines",
+            json!(["Continuing places your order.", "Continue"])
+        ));
+        assert!(!changed("title", json!("Confirm and pay")));
+        // An Enter is judged on what it submits, which this review lacks.
+        assert!(!passed.holds(&reviewed, true));
+    }
 
     #[test]
     fn request_ids_are_the_clients_own() {

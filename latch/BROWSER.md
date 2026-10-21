@@ -364,8 +364,10 @@ chose, the pass that chose it also answers the risk question of "the
 click this pass would make" (or the Enter): below 0.3, for a click whose
 target the pass was at least 0.9 sure of, that answer stands for the
 decision and no call of its own is made, while the review before dispatch
-still finds the element (role, name, row) or what the Enter submits as the
-pass read them; otherwise (a button renamed while the model answered, say)
+still finds the whole context the pass read: the element (role, name, row)
+or what the Enter submits, the lines around it and the page title;
+otherwise (a button renamed, or the lines beside it changed, while the
+model answered)
 the element gets its own call, which alone can stop for a confirmation. The action is then made only if the
 worker, at dispatch, still finds that element and those lines unchanged;
 a page that changed while the model answered stops with `stale_snapshot`,

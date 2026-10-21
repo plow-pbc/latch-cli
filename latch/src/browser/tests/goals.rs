@@ -222,7 +222,11 @@ impl Provider for Told {
                 let yes = match question.id.as_str() {
                     "risky" => {
                         let action = state["action"].as_str().unwrap_or_default();
-                        if action.contains("Place order") || action.contains("Delete my account") {
+                        let near = state["lines_near"].to_string();
+                        if action.contains("Place order")
+                            || action.contains("Delete my account")
+                            || near.contains("places your order")
+                        {
                             0.95
                         } else {
                             0.03
@@ -1417,19 +1421,33 @@ impl Provider for Renaming {
     }
 }
 
-/// A checkout form whose submit button reads "Continue" until the test
-/// renames it "Place order"; anything sent goes to /sent.
+/// What the test page changes while a pass answers.
+#[derive(Clone, Copy, PartialEq)]
+enum Change {
+    /// The submit button "Continue" becomes "Place order".
+    Label,
+    /// The button stays "Continue"; the line beside it comes to say that
+    /// continuing places the order.
+    Lines,
+}
+
+/// A checkout form whose submit button reads "Continue", beside a line
+/// saying nothing is charged yet, until the test makes `change`; anything
+/// sent goes to /sent.
 fn serve_renaming(
     renamed: Arc<std::sync::atomic::AtomicBool>,
+    change: Change,
 ) -> (String, Arc<Mutex<Vec<String>>>) {
     use std::io::{Read, Write};
     let page = br#"<!doctype html><title>Review your order</title>
 <h1>Review your order</h1><p>Greek Salad, $11.99</p>
 <form action="sent"><p><label>Note <input name="note"></label></p>
+<p id="warn">Nothing is charged yet.</p>
 <p><button id="go" type="submit">Continue</button></p></form>
 <script>setInterval(async () => {
-  const name = await (await fetch('label')).text();
+  const [name, warn] = (await (await fetch('now')).text()).split('|');
   if (document.getElementById('go').textContent !== name) document.getElementById('go').textContent = name;
+  if (document.getElementById('warn').textContent !== warn) document.getElementById('warn').textContent = warn;
 }, 50);</script>"#;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1442,13 +1460,15 @@ fn serve_renaming(
             let n = socket.read(&mut request).unwrap_or(0);
             let line = String::from_utf8_lossy(&request[..n]).to_string();
             let path = line.split(' ').nth(1).unwrap_or("/").to_string();
-            let body: Vec<u8> = if path.starts_with("/label") {
-                let name = if renamed.load(std::sync::atomic::Ordering::SeqCst) {
-                    "Place order"
-                } else {
-                    "Continue"
+            let body: Vec<u8> = if path.starts_with("/now") {
+                let now = match (renamed.load(std::sync::atomic::Ordering::SeqCst), change) {
+                    (false, _) => "Continue|Nothing is charged yet.",
+                    (true, Change::Label) => "Place order|Nothing is charged yet.",
+                    (true, Change::Lines) => {
+                        "Continue|Continuing places your order and charges your card."
+                    }
                 };
-                name.as_bytes().to_vec()
+                now.as_bytes().to_vec()
             } else if path.starts_with("/sent") {
                 log.lock().unwrap().push(path.clone());
                 b"<!doctype html><title>Order placed</title><h1>Order placed</h1>".to_vec()
@@ -1471,20 +1491,34 @@ fn serve_renaming(
 /// never judged, so it gets its own risk call, and a confirmation.
 #[tokio::test]
 async fn a_button_renamed_during_its_pass_gets_its_own_risk_call() {
-    renamed_during_the_pass(false).await;
+    renamed_during_the_pass(false, Change::Label).await;
+}
+
+/// The button stays "Continue", but the line beside it changes as the pass
+/// answers: the context the pass judged is gone, so the click gets its own
+/// risk call, which sees that it places the order.
+#[tokio::test]
+async fn a_button_whose_lines_change_during_its_pass_gets_its_own_risk_call() {
+    renamed_during_the_pass(false, Change::Lines).await;
 }
 
 /// The same for an Enter in the form's field: the pass judged an Enter that
 /// submits "Continue"; the review finds it submits "Place order".
 #[tokio::test]
 async fn an_enter_whose_submit_is_renamed_during_its_pass_gets_its_own_risk_call() {
-    renamed_during_the_pass(true).await;
+    renamed_during_the_pass(true, Change::Label).await;
 }
 
-async fn renamed_during_the_pass(enter: bool) {
+/// And for an Enter whose form's lines change as its pass answers.
+#[tokio::test]
+async fn an_enter_whose_forms_lines_change_during_its_pass_gets_its_own_risk_call() {
+    renamed_during_the_pass(true, Change::Lines).await;
+}
+
+async fn renamed_during_the_pass(enter: bool, change: Change) {
     let (_dir, state, _area) = test_state("cft", &["default"]);
     let renamed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (site, sent) = serve_renaming(renamed.clone());
+    let (site, sent) = serve_renaming(renamed.clone(), change);
     let told = Arc::new(Told::default());
     let provider = Arc::new(Renaming {
         told: told.clone(),
@@ -1531,7 +1565,14 @@ async fn renamed_during_the_pass(enter: bool) {
     } else {
         &details["stop"]["confirmation"]["target"]["name"]
     };
-    assert_eq!(name, "Place order");
+    let lines = details["stop"]["confirmation"]["lines"].to_string();
+    match change {
+        Change::Label => assert_eq!(name, "Place order"),
+        Change::Lines => {
+            assert_eq!(name, "Continue");
+            assert!(lines.contains("places your order"), "{lines}");
+        }
+    }
     assert!(sent.lock().unwrap().is_empty(), "the form was sent");
     let audit = h.audits.last().unwrap();
     let refused = audit["step_records"]

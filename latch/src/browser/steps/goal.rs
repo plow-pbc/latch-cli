@@ -838,7 +838,8 @@ impl Run<'_> {
                 let seen = match (op.as_str(), chosen, &typed_into) {
                     ("click", Some(t), _) => {
                         let e = element(view, &t.at);
-                        json!({"role": e["role"], "name": e["name"], "row": e["row"]})
+                        json!({"target": {"role": e["role"], "name": e["name"], "row": e["row"]},
+                               "lines_sha256": e["lines_sha256"], "title": view["title"]})
                     }
                     ("press_enter", _, Some(typed)) => view["elements"]
                         .as_array()
@@ -849,7 +850,10 @@ impl Run<'_> {
                                 && form_key(view, e["ref"].as_str().unwrap_or_default())
                                     == typed.form
                         })
-                        .map(|e| e["enter"].clone())
+                        .map(|e| {
+                            json!({"target": e["enter"], "lines_sha256": e["enter_lines_sha256"],
+                                   "title": view["title"]})
+                        })
                         .unwrap_or_default(),
                     _ => Value::Null,
                 };
