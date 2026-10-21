@@ -16,8 +16,10 @@
 
 mod action;
 mod chat;
+pub mod client;
 #[cfg(test)]
 pub mod fake;
+pub(crate) mod owner;
 pub mod rules;
 #[cfg(test)]
 mod tests;

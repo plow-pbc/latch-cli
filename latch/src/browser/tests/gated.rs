@@ -35,6 +35,7 @@ conformance!(
     an_owner_stop_refuses_the_next_plan,
     a_fill_inside_a_plan_is_judged_as_a_fill,
     only_plans_and_fills_are_already_done,
+    a_one_step_do_plan_is_judged_and_act_is_not,
 );
 
 /// The owner's chat, oldest message first; a test may add to it between
@@ -724,6 +725,57 @@ async fn only_plans_and_fills_are_already_done(engine: &str) {
         .map(|d| &d["what"]["kind"])
         .collect();
     assert_eq!(kinds, [&json!("browser_plan")], "{done}");
+    host.look("close", &id, json!({})).await;
+}
+
+async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (site, hits) = serve_site();
+    let chat = vec![message("m1", true, "have a look at my test site", 10)];
+    // The site may open; no plan is covered.
+    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
+        Some("open_site") => COVERED,
+        _ => NOT_COVERED,
+    });
+    let host = Host::start(&state, &site, &judge, chat.clone());
+    let (page, _) = host
+        .agent(
+            "open",
+            "default",
+            json!({"url": format!("{site}/files.html")}),
+            None,
+        )
+        .await;
+    let page = page.unwrap();
+    let id = page["session"].as_str().unwrap().to_string();
+    let link = find(&page, "link", "Download the report");
+    let loaded = fetched(&hits).len();
+
+    // `do click eN`: a plan of one step, judged, and refused.
+    let mut one_step = act(&format!("click {link}"));
+    one_step.as_object_mut().unwrap().remove("act");
+    let refusal = host.agent("do", &id, one_step, None).await;
+    refused(&refusal, "not_covered", &chat);
+    assert_eq!(judge.last_action()["kind"], "browser_plan");
+    assert_eq!(fetched(&hits).len(), loaded, "the link was never clicked");
+
+    // Saying `act` exempts only one action: two steps are still a plan.
+    let mut two = two_clicks(&link);
+    two["act"] = json!(true);
+    refused(
+        &host.agent("do", &id, two, None).await,
+        "not_covered",
+        &chat,
+    );
+
+    // `act click eN` is left to the risk decision.
+    let asked = judge.calls();
+    let (clicked, audit) = host
+        .agent("do", &id, act(&format!("click {link}")), None)
+        .await;
+    clicked.unwrap();
+    assert!(!audit.contains_key("gate"));
+    assert_eq!(judge.calls(), asked);
     host.look("close", &id, json!({})).await;
 }
 

@@ -154,6 +154,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Google(args) => to_json(google::client::run(&state, args).await?),
         Command::Browser(args) => to_json(browser::client::run(&state, args).await?),
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
+        Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Exec(args) => {
             let mut request =
                 json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout });

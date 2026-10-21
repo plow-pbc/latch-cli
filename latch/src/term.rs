@@ -70,6 +70,22 @@ pub fn confirm(question: &str) -> bool {
         .starts_with('y')
 }
 
+/// A link as a QR code, two rows to a line of text. Always black on white:
+/// drawn in the terminal's own colors it comes out inverted on a dark
+/// background, which not every phone reads.
+pub fn qr(url: &str) -> String {
+    let code = qrcode::QrCode::new(url.as_bytes()).expect("a link fits in a QR code");
+    let drawn = code
+        .render::<qrcode::render::unicode::Dense1x2>()
+        .quiet_zone(true)
+        .build();
+    let lines: Vec<String> = drawn
+        .lines()
+        .map(|line| format!("\x1b[30;107m{line}\x1b[0m"))
+        .collect();
+    lines.join("\n")
+}
+
 /// <https://no-color.org>: `NO_COLOR` set and not empty means no color.
 pub fn no_color() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())

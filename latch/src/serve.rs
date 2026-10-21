@@ -504,6 +504,16 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                         )
                         .await
                     }
+                    "rules" => {
+                        crate::gate::owner::run(
+                            &host.workers.state_dir,
+                            &host.plow,
+                            &host.name,
+                            &identity.kind,
+                            &request.args,
+                        )
+                        .await
+                    }
                     "browser" => match &gate {
                         Ok(gate) => {
                             crate::browser::host::run(
@@ -643,7 +653,7 @@ async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
 /// A worker that could not apply its sandbox is a "deny" too: the host
 /// refused to run the operation unconfined, so it never ran. So is an
 /// operation the gatekeeper could not judge.
-fn decision(response: &Response) -> &'static str {
+pub(crate) fn decision(response: &Response) -> &'static str {
     match response {
         Response::Error {
             exit: crate::failure::Exit::Denied | crate::failure::Exit::Usage,
@@ -660,7 +670,7 @@ fn decision(response: &Response) -> &'static str {
 
 /// Adds the audit record's hash to a successful result as `audit_id`, so
 /// the agent can point at exactly what the host recorded.
-fn with_audit_id(response: Response, audit_id: String) -> Response {
+pub(crate) fn with_audit_id(response: Response, audit_id: String) -> Response {
     match response {
         Response::Ok(Value::Object(mut result)) => {
             result.insert("audit_id".to_string(), Value::String(audit_id));

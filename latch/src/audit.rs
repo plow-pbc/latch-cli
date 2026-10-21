@@ -11,8 +11,8 @@
 //! Records hold who called, what they asked, the decision and the outcome;
 //! never file contents, bodies, command output or tokens.
 
-use std::fs;
-use std::io::Write;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -51,29 +51,34 @@ pub struct Record {
 
 pub struct AuditLog {
     path: PathBuf,
-    /// The last record's `hash`, for the next record's `prev`.
-    last_hash: String,
     records: usize,
 }
 
 impl AuditLog {
     /// Opens (or starts) the log and checks the whole chain first. A broken
-    /// chain is an error: the host refuses to run on a tampered log.
+    /// chain is an error: the host refuses to run on a tampered log. It is
+    /// opened for appending, so a log that can't be written to is an error
+    /// now, before anything that needs it runs, and read under its lock,
+    /// shared, so a record another process is appending is read whole or
+    /// not at all.
     pub fn open(path: PathBuf) -> Result<AuditLog, Failure> {
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(err) => return Err(io_failure(&path, err)),
-        };
-        let (records, last_hash) = verify(&text).map_err(|problem| {
+        let mut text = String::new();
+        fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut file| {
+                file.lock_shared()?;
+                file.read_to_string(&mut text)
+            })
+            .map_err(|err| io_failure(&path, err))?;
+        let (records, _) = verify(&text).map_err(|problem| {
             let message = format!("{}: {problem}", path.display());
             Failure::failed("audit_broken", message)
         })?;
-        Ok(AuditLog {
-            path,
-            last_hash,
-            records,
-        })
+        Ok(AuditLog { path, records })
     }
 
     pub fn len(&self) -> usize {
@@ -82,23 +87,53 @@ impl AuditLog {
 
     /// Appends one record: fills in `prev` and `hash`, writes the line, and
     /// flushes it to disk before returning, so a record is never lost to a
-    /// crash. Returns the record's hash.
+    /// crash. Returns the record's hash. Another process may append to the
+    /// same log (the owner's local `latch rules`), so the record chains onto
+    /// the file's own last record, read under the file's lock.
     pub fn append(&mut self, mut record: Record) -> Result<String, Failure> {
-        record.prev = self.last_hash.clone();
-        record.hash = hash_of(&record);
-        let line = serde_json::to_string(&record).expect("a record serializes");
         let mut file = fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .mode(0o600)
             .open(&self.path)
             .map_err(|err| io_failure(&self.path, err))?;
+        file.lock().map_err(|err| io_failure(&self.path, err))?;
+        record.prev = last_hash(&mut file).map_err(|err| io_failure(&self.path, err))?;
+        record.hash = hash_of(&record);
+        let line = serde_json::to_string(&record).expect("a record serializes");
         file.write_all(format!("{line}\n").as_bytes())
             .and_then(|()| file.sync_data())
             .map_err(|err| io_failure(&self.path, err))?;
-        self.last_hash = record.hash.clone();
         self.records += 1;
         Ok(record.hash)
+    }
+}
+
+/// The `hash` of the log's last record, read from the end of the file.
+fn last_hash(file: &mut File) -> std::io::Result<String> {
+    let size = file.metadata()?.len();
+    let mut window = 4096;
+    loop {
+        let start = size.saturating_sub(window);
+        file.seek(SeekFrom::Start(start))?;
+        let mut tail = Vec::new();
+        file.read_to_end(&mut tail)?;
+        let lines = tail.strip_suffix(b"\n").unwrap_or(&tail);
+        let last = match lines.iter().rposition(|&b| b == b'\n') {
+            Some(at) => &lines[at + 1..],
+            None if start == 0 => lines,
+            None => {
+                window *= 2;
+                continue;
+            }
+        };
+        if last.is_empty() {
+            return Ok(GENESIS.to_string());
+        }
+        let record: Record = serde_json::from_slice(last)
+            .map_err(|_| std::io::Error::other("its last line is not an audit record"))?;
+        return Ok(record.hash);
     }
 }
 
@@ -210,6 +245,52 @@ mod tests {
             assert_eq!(failure.code, "audit_broken");
             assert!(failure.message.ends_with(problem), "{}", failure.message);
         }
+    }
+
+    #[test]
+    fn two_writers_on_one_log_keep_one_chain() {
+        // A running host and a local `latch rules` command both append.
+        let (_dir, path) = log_with_three_records();
+        let mut host = AuditLog::open(path.clone()).unwrap();
+        let mut command = AuditLog::open(path.clone()).unwrap();
+        host.append(record("abc", None, "exec", "allow", "ok"))
+            .unwrap();
+        command
+            .append(record("def", None, "rules", "allow", "ok"))
+            .unwrap();
+        host.append(record("abc", None, "exec", "allow", "ok"))
+            .unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(verify(&text), Ok((6, last_line_hash(&text))));
+    }
+
+    #[test]
+    fn opening_during_an_append_waits_for_the_whole_record() {
+        let (_dir, path) = log_with_three_records();
+        let mut appended = record("def", None, "rules", "allow", "ok");
+        appended.prev = last_line_hash(&fs::read_to_string(&path).unwrap());
+        appended.hash = hash_of(&appended);
+        let line = format!("{}\n", serde_json::to_string(&appended).unwrap());
+        let (first, rest) = line.split_at(line.len() / 2);
+
+        // Another writer holds the lock, halfway through its line.
+        let mut writer = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writer.lock().unwrap();
+        writer.write_all(first.as_bytes()).unwrap();
+        let opening = std::thread::spawn({
+            let path = path.clone();
+            move || AuditLog::open(path).map(|log| log.len())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!opening.is_finished(), "open waits for the lock");
+        writer.write_all(rest.as_bytes()).unwrap();
+        writer.unlock().unwrap();
+        assert_eq!(opening.join().unwrap().unwrap(), 4);
+    }
+
+    fn last_line_hash(text: &str) -> String {
+        let last: Record = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        last.hash
     }
 
     #[test]
