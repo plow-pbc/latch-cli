@@ -19,7 +19,7 @@
 //! on the same Mac, or a copy of this one, never shares its identity.
 
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -67,7 +67,8 @@ impl Secret {
     }
 }
 
-/// The file a move into the Keychain holds locked, in the state folder.
+/// The file a move into the Keychain, and a first save of a secret file,
+/// hold locked, in the state folder.
 const MOVE_LOCK: &str = "secrets.lock";
 
 /// A Keychain-like store of named items: the real Keychain, or the tests'.
@@ -137,21 +138,17 @@ impl Secrets {
     /// is kept. An identity is never overwritten, even if two logins race.
     pub fn create(&self, secret: Secret, bytes: &[u8]) -> Result<bool, Failure> {
         let Some(store) = &self.keychain else {
+            // Under the lock, so two first saves never race; written whole
+            // (temporary file, renamed), so one cut short leaves no part
+            // of a secret where the next start would read it.
+            let _lock = self.lock()?;
             let path = self.dir.join(secret.file());
-            let file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path);
-            return match file {
-                Ok(mut file) => file
-                    .write_all(bytes)
-                    .and_then(|()| file.sync_all())
-                    .map(|()| true)
-                    .map_err(|err| io_failure(&path, err)),
-                Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(false),
-                Err(err) => Err(io_failure(&path, err)),
-            };
+            if path.exists() {
+                return Ok(false);
+            }
+            return write_private(&path, bytes)
+                .map(|()| true)
+                .map_err(|err| io_failure(&path, err));
         };
         store
             .add(&self.account(secret), bytes)
@@ -179,15 +176,7 @@ impl Secrets {
         // One move at a time per folder. A mover that waited reads the
         // files only now, so it never puts back a secret another one has
         // already moved, and maybe a login has since replaced.
-        let lock_path = self.dir.join(MOVE_LOCK);
-        let lock = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&lock_path)
-            .map_err(|err| io_failure(&lock_path, err))?;
-        lock.lock().map_err(|err| io_failure(&lock_path, err))?;
+        let _lock = self.lock()?;
         let mut confirmed = Vec::new();
         let mut moved = 0;
         for secret in Secret::ALL {
@@ -245,6 +234,20 @@ impl Secrets {
             fs::remove_file(&path).map_err(|err| io_failure(&path, err))?;
         }
         Ok(())
+    }
+
+    /// Takes the folder's secrets lock until the returned file is dropped.
+    fn lock(&self) -> Result<fs::File, Failure> {
+        let path = self.dir.join(MOVE_LOCK);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|err| io_failure(&path, err))?;
+        file.lock().map_err(|err| io_failure(&path, err))?;
+        Ok(file)
     }
 
     /// The item's account: the state folder's real path and the file name.

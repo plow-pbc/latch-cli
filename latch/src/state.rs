@@ -180,7 +180,7 @@ impl StateDir {
         if let Err(failure) = crate::audit::upgrade(&self.path) {
             eprintln!(
                 "latch: warning: the audit log was not converted to this latch's sealed \
-                 format, so commands that write it are refused until it is fixed: {}",
+                 format yet, and until it is, commands that write it are refused: {}",
                 failure.message
             );
             return Ok(());

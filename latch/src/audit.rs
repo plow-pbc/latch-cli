@@ -111,18 +111,26 @@ struct Ring {
 }
 
 impl Keys {
-    /// The state folder's audit keys, made on first use.
-    pub fn load_or_create(dir: &Path) -> Result<Keys, Failure> {
+    /// The state folder's audit keys, made on first use. Only with the
+    /// audit lock held (`lock`), so no two processes make them at once.
+    ///
+    /// Keys that don't read (a write cut short by a latch before keys were
+    /// written atomically, say) are made afresh only while no sealed line
+    /// could need them: the log holds none. Otherwise it is an error.
+    fn ready(dir: &Path) -> Result<Keys, Failure> {
         let secrets = Secrets::open(dir)?;
-        if let Some(keys) = Keys::read(&secrets)? {
-            return Ok(keys);
+        match Keys::read(&secrets) {
+            Ok(Some(keys)) => return Ok(keys),
+            Ok(None) => {}
+            Err(damaged) if has_sealed_lines(&dir.join("audit.ndjson"))? => return Err(damaged),
+            Err(_) => {}
         }
         let first = Ring {
             current: "k1".into(),
             keys: BTreeMap::from([("k1".into(), to_hex(&rand::random::<[u8; 32]>()))]),
         };
-        // Another process may have made them first: then theirs are kept.
-        secrets.create(
+        // Written whole or not at all (see `state::write_private`).
+        secrets.write(
             Secret::AuditKeys,
             &serde_json::to_vec(&first).expect("keys serialize"),
         )?;
@@ -137,6 +145,7 @@ impl Keys {
     /// Starts a new key for new records and keeps every old one. Returns
     /// the ids, newest last.
     pub fn rotate(dir: &Path) -> Result<Vec<String>, Failure> {
+        let _lock = lock(dir)?;
         let secrets = Secrets::open(dir)?;
         let Some(bytes) = secrets.read(Secret::AuditKeys)? else {
             return Err(failed("this state folder has no audit keys yet".into()));
@@ -250,9 +259,11 @@ impl AuditLog {
     /// the key. A broken chain is an error: the host refuses to run on a
     /// tampered log. It is opened for appending, so a log that can't be
     /// written to is an error now, before anything that needs it runs, and
-    /// read under its lock, shared, so a record another process is
-    /// appending is read whole or not at all.
+    /// read under the audit lock (`lock`), so a record another process is
+    /// appending, or a conversion, is read whole or not at all.
     pub fn open(path: PathBuf) -> Result<AuditLog, Failure> {
+        let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let _lock = lock(&dir)?;
         let mut text = String::new();
         fs::OpenOptions::new()
             .create(true)
@@ -260,13 +271,10 @@ impl AuditLog {
             .append(true)
             .mode(0o600)
             .open(&path)
-            .and_then(|mut file| {
-                file.lock_shared()?;
-                file.read_to_string(&mut text)
-            })
+            .and_then(|mut file| file.read_to_string(&mut text))
             .map_err(|err| io_failure(&path, err))?;
         let (records, _) = verify(&text).map_err(|problem| broken(&path, &problem))?;
-        let keys = Keys::load_or_create(path.parent().unwrap_or(Path::new(".")))?;
+        let keys = Keys::ready(&dir)?;
         Ok(AuditLog {
             path,
             records,
@@ -282,8 +290,11 @@ impl AuditLog {
     /// and flushes it to disk before returning, so a record is never lost
     /// to a crash. Returns its hash. Another process may append to the same
     /// log (the owner's local `latch rules`), so the record chains onto the
-    /// file's own last line, read under the file's lock.
+    /// file's own last line, read under the audit lock. The log is opened
+    /// only once the lock is held, so it is never a file a conversion has
+    /// since replaced.
     pub fn append(&mut self, record: Record) -> Result<String, Failure> {
+        let _lock = lock(self.path.parent().unwrap_or(Path::new(".")))?;
         let mut file = fs::OpenOptions::new()
             .create(true)
             .read(true)
@@ -291,7 +302,6 @@ impl AuditLog {
             .mode(0o600)
             .open(&self.path)
             .map_err(|err| io_failure(&self.path, err))?;
-        file.lock().map_err(|err| io_failure(&self.path, err))?;
         let prev = last_hash(&mut file).map_err(|err| io_failure(&self.path, err))?;
         let line = self.keys.seal(&record, &prev, false);
         let text = serde_json::to_string(&line).expect("a line serializes");
@@ -504,7 +514,26 @@ pub fn record(
 /// rebuilt), and only then put in its place, so no plaintext copy is left.
 /// A conversion cut short is picked up by the next one: the old log is
 /// still there, or the new one already is.
+///
+/// Nothing else touches the log meanwhile. A running `latch serve`, of
+/// this latch or an older one, would go on appending to the old log, so a
+/// conversion is refused while one holds the folder's `serve.lock`, and
+/// holds it itself so none starts. This latch's writers and other
+/// conversions wait on the audit lock, which outlives the swap; an older
+/// latch's local `rules` waits on the old log's own lock.
 pub fn upgrade(dir: &Path) -> Result<(), Failure> {
+    let path = dir.join("audit.ndjson");
+    let temp = dir.join("audit.ndjson.upgrade");
+    if !path.exists() {
+        return remove_temp(&temp);
+    }
+    let _host = no_host_running(dir)?;
+    let _lock = lock(dir)?;
+    upgrade_locked(dir)
+}
+
+/// `upgrade`'s work, with the audit lock held and no host running.
+fn upgrade_locked(dir: &Path) -> Result<(), Failure> {
     let path = dir.join("audit.ndjson");
     let temp = dir.join("audit.ndjson.upgrade");
     let mut file = match fs::OpenOptions::new().read(true).append(true).open(&path) {
@@ -512,7 +541,7 @@ pub fn upgrade(dir: &Path) -> Result<(), Failure> {
         Err(err) if err.kind() == ErrorKind::NotFound => return remove_temp(&temp),
         Err(err) => return Err(io_failure(&path, err)),
     };
-    // No one appends while it is converted.
+    // An older latch's writer locks the old log itself.
     file.lock().map_err(|err| io_failure(&path, err))?;
     let mut text = String::new();
     file.read_to_string(&mut text)
@@ -530,7 +559,7 @@ pub fn upgrade(dir: &Path) -> Result<(), Failure> {
 fn write_converted(dir: &Path, text: &str, temp: &Path) -> Result<(), Failure> {
     let path = dir.join("audit.ndjson");
     let (old, last) = plain::read(text).map_err(|problem| broken(&path, &problem))?;
-    let keys = Keys::load_or_create(dir)?;
+    let keys = Keys::ready(dir)?;
     let mut anchor = record("latch", None, UPGRADE_OP, "allow", "ok");
     anchor.args = json!({"records": old.len(), "last_hash": last});
     let mut lines = vec![keys.seal(&anchor, &last, true)];
@@ -565,6 +594,65 @@ fn write_converted(dir: &Path, text: &str, temp: &Path) -> Result<(), Failure> {
         return Err(broken(temp, "the converted log lost records"));
     }
     Ok(())
+}
+
+/// The file every reader that writes the log, and every conversion, holds
+/// locked: `audit.lock` beside it. Unlike the log, it is never replaced, so
+/// a lock on it still means something across a conversion's swap.
+const LOCK: &str = "audit.lock";
+
+/// Takes the audit lock, exclusive, until the returned file is dropped.
+fn lock(dir: &Path) -> Result<File, Failure> {
+    let path = dir.join(LOCK);
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|err| io_failure(&path, err))?;
+    file.lock().map_err(|err| io_failure(&path, err))?;
+    Ok(file)
+}
+
+/// Holds the folder's `serve.lock`, so no host runs while the log is
+/// converted. A probe holds it, shared, for an instant
+/// (`lifecycle::holds_lock`), so a busy lock is asked again for a second
+/// before it means a host is running.
+fn no_host_running(dir: &Path) -> Result<File, Failure> {
+    let path = dir.join("serve.lock");
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|err| io_failure(&path, err))?;
+    for _ in 0..20 {
+        if file.try_lock().is_ok() {
+            return Ok(file);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let message = format!(
+        "{}: a latch serve is running on this folder, so its audit log can't be converted \
+         now; it is, the first time latch runs after that host stops",
+        dir.display()
+    );
+    Err(Failure::failed("host_running", message))
+}
+
+/// Whether the log at `path` holds any sealed line, which needs its key.
+fn has_sealed_lines(path: &Path) -> Result<bool, Failure> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(io_failure(path, err)),
+    };
+    Ok(text
+        .lines()
+        .any(|line| serde_json::from_str::<Line>(line).is_ok()))
 }
 
 fn remove_temp(temp: &Path) -> Result<(), Failure> {
@@ -930,5 +1018,93 @@ mod tests {
         let refused = upgrade(dir.path()).unwrap_err();
         assert_eq!(refused.code, "audit_broken");
         assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    }
+}
+
+#[cfg(test)]
+mod race_tests {
+    use super::*;
+
+    fn test_dir() -> tempfile::TempDir {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        fs::create_dir_all(&parent).unwrap();
+        tempfile::tempdir_in(parent).unwrap()
+    }
+
+    #[test]
+    fn a_second_conversion_waits_and_keeps_what_was_appended_after_the_first() {
+        let dir = test_dir();
+        write_plaintext_log(dir.path(), &["connect", "exec"]);
+        // A first conversion is under way: it holds the audit lock.
+        let held = lock(dir.path()).unwrap();
+        let second = std::thread::spawn({
+            let dir = dir.path().to_path_buf();
+            move || upgrade(&dir)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !second.is_finished(),
+            "a conversion waits for the audit lock"
+        );
+
+        // The first finishes, and a writer appends to the sealed log.
+        upgrade_locked(dir.path()).unwrap();
+        let path = dir.path().join("audit.ndjson");
+        let keys = Keys::ready(dir.path()).unwrap();
+        let prev = verify(&fs::read_to_string(&path).unwrap()).unwrap().1;
+        let line = keys.seal(&record("after", None, "exec", "allow", "ok"), &prev, false);
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&line).unwrap()).unwrap();
+        drop(held);
+
+        second.join().unwrap().unwrap();
+        let callers: Vec<String> = read_all(&path)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.caller)
+            .collect();
+        assert_eq!(callers, ["latch", "old-caller", "old-caller", "after"]);
+    }
+
+    #[test]
+    fn a_conversion_is_refused_while_a_host_runs() {
+        let dir = test_dir();
+        write_plaintext_log(dir.path(), &["connect"]);
+        let before = fs::read_to_string(dir.path().join("audit.ndjson")).unwrap();
+        // A running `latch serve`, of any version, holds `serve.lock`.
+        let host = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.path().join("serve.lock"))
+            .unwrap();
+        host.lock().unwrap();
+        let refused = upgrade(dir.path()).unwrap_err();
+        assert_eq!(refused.code, "host_running");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("audit.ndjson")).unwrap(),
+            before
+        );
+        drop(host);
+        upgrade(dir.path()).unwrap();
+        assert_eq!(read_all(&dir.path().join("audit.ndjson")).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn keys_cut_short_before_anything_was_sealed_are_made_afresh() {
+        let dir = test_dir();
+        write_plaintext_log(dir.path(), &["connect", "exec"]);
+        // A first save of the keys cut short, by a latch that wrote them in
+        // place: a part of a key ring, and nothing sealed with it.
+        fs::write(dir.path().join("audit.keys"), r#"{"current":"k1","ke"#).unwrap();
+        upgrade(dir.path()).unwrap();
+        let path = dir.path().join("audit.ndjson");
+        assert_eq!(read_all(&path).unwrap().len(), 3);
+
+        // Once a line is sealed, keys that don't read are an error, never
+        // replaced: that would lose the records.
+        fs::write(dir.path().join("audit.keys"), r#"{"current":"k1","ke"#).unwrap();
+        let refused = AuditLog::open(path).err().unwrap();
+        assert_eq!(refused.code, "audit_key");
     }
 }
