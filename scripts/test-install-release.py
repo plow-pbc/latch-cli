@@ -12,16 +12,24 @@ INSTALLER = Path(__file__).resolve().parents[1] / "install-release.sh"
 
 
 class ReleaseInstall(unittest.TestCase):
-    def run_install(self, system, machine, target, corrupt=False):
+    def run_install(self, system, machine, target, corrupt=False, relative_state=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            caller = root / "caller"
+            caller.mkdir()
+            state_arg = "profiles/team state" if relative_state else str(root / "state")
+            expected_state = caller / state_arg
             tools = root / "bin"
             tools.mkdir()
             archive = root / f"latch-v0.1.0-{target}.tar.gz"
             folder = f"latch-v0.1.0-{target}"
             with tarfile.open(archive, "w:gz") as tar:
                 for name, body in {
-                    "install.sh": '#!/bin/sh\nprintf "%s\\n" "$@" > "$RESULT"\n',
+                    "install.sh": '''#!/bin/sh
+printf '%s\\n' "$@" > "$RESULT"
+mkdir -p "$2"
+touch "$2/setup-marker"
+''',
                     "latch": '#!/bin/sh\necho "latch 0.1.0 fixture"\n',
                 }.items():
                     info = tarfile.TarInfo(f"{folder}/{name}")
@@ -44,7 +52,8 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
                 tool.chmod(0o755)
             result_file = root / "result"
             result = subprocess.run(
-                ["sh", str(INSTALLER), "v0.1.0", "--state-dir", str(root / "state")],
+                ["sh", str(INSTALLER), "v0.1.0", "--state-dir", state_arg],
+                cwd=caller,
                 env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
                      "FIXTURE": str(root), "RESULT": str(result_file)},
                 capture_output=True, text=True,
@@ -54,8 +63,11 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
                 self.assertFalse(result_file.exists(), "setup ran before checksum verification")
             else:
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result_file.read_text().splitlines(),
-                                 ["--state-dir", str(root / "state"), "./latch"])
+                arguments = result_file.read_text().splitlines()
+                self.assertEqual(arguments[:2], ["--state-dir", state_arg])
+                self.assertEqual(Path(arguments[2]).name, "latch")
+                self.assertTrue((expected_state / "setup-marker").exists(),
+                                "setup must use the caller's state directory, surviving cleanup")
                 self.assertIn("latch 0.1.0 fixture", result.stdout)
 
     def test_all_targets_and_setup_arguments(self):
@@ -67,6 +79,9 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
         ]:
             with self.subTest(target=target):
                 self.run_install(system, machine, target)
+
+    def test_relative_state_directory_survives_download_cleanup(self):
+        self.run_install("Darwin", "arm64", "aarch64-apple-darwin", relative_state=True)
 
     def test_bad_checksum_never_runs_setup(self):
         self.run_install("Darwin", "arm64", "aarch64-apple-darwin", corrupt=True)
