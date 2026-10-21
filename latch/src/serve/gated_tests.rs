@@ -788,8 +788,22 @@ async fn exec_credentials_reach_the_judge_and_worker_but_not_logs_or_audit() {
     };
     crate::log::to_file(Path::new(&path)).unwrap();
     let secret = "synthetic-exec-credential-7f3a";
-    let args = json!({"argv": ["/bin/sh", "-c", "printf %s \"$@\"", "test", "--token", secret], "timeout": 10});
-    for mode in ["refused", "denied", "allowed"] {
+    let printed = json!({"argv": ["/bin/sh", "-c", "printf %s \"$@\"", "test", "--token", secret], "timeout": 10});
+    // Never run: it would reach the network.
+    let curl = json!({"argv": ["curl", "--user", "alice:short-secret", "https://example.com"], "timeout": 10});
+    let runs = [
+        ("refused", &printed),
+        ("denied", &printed),
+        ("allowed", &printed),
+        ("refused", &curl),
+        ("denied", &curl),
+    ];
+    for (mode, args) in runs {
+        let secret = if args == &curl {
+            "short-secret"
+        } else {
+            secret
+        };
         let deny = if mode == "denied" {
             DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()])
         } else {
@@ -825,7 +839,7 @@ async fn exec_credentials_reach_the_judge_and_worker_but_not_logs_or_audit() {
             );
         }
         let records = t.audit();
-        assert_eq!(records[0]["args"]["argv"][0], "/bin/sh");
+        assert_eq!(records[0]["args"]["argv"][0], args["argv"][0]);
         let (target, _) = dashboard::describe(
             "exec",
             &records[0]["args"],
