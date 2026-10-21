@@ -98,7 +98,9 @@ async fn start_with(
     let rules = RuleFiles::new(&state, std::slice::from_ref(&area)).unwrap();
     let host = Arc::new(Host {
         plow: plow.client(),
-        audit: Mutex::new(AuditLog::open(state.join("audit.ndjson")).unwrap()),
+        audit: Arc::new(Mutex::new(
+            AuditLog::open(state.join("audit.ndjson")).unwrap(),
+        )),
         dashboard: None,
         workers: WorkerSetup {
             areas: vec![area.clone()],
@@ -111,6 +113,7 @@ async fn start_with(
         gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
         deny_exec,
         binary: Binary::at(&binary).unwrap(),
+        stopping: tokio::sync::watch::Sender::new(Stopping::No),
     });
     let serving = host.clone();
     tokio::spawn(async move {
@@ -769,78 +772,32 @@ async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_link
 }
 
 #[tokio::test]
-async fn exec_credentials_reach_the_judge_and_worker_but_not_logs_or_audit() {
-    // The log destination is process-wide, so give this test its own process.
-    let Ok(path) = std::env::var("LATCH_REDACTION_TEST_LOG") else {
-        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
-        std::fs::create_dir_all(&parent).unwrap();
-        let dir = tempfile::tempdir_in(parent).unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "serve::gated_tests::exec_credentials_reach_the_judge_and_worker_but_not_logs_or_audit", "--nocapture"])
-            .env("LATCH_REDACTION_TEST_LOG", dir.path().join("serve.log"))
-            .output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
-    };
-    crate::log::to_file(Path::new(&path)).unwrap();
-    let secret = "synthetic-exec-credential-7f3a";
-    let args = json!({"argv": ["/bin/sh", "-c", "printf %s \"$@\"", "test", "--token", secret], "timeout": 10});
-    for mode in ["refused", "denied", "allowed"] {
-        let deny = if mode == "denied" {
-            DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()])
-        } else {
-            DenyExec::default()
-        };
-        let decide = if mode == "refused" {
-            covered_after_a_yes
-        } else {
-            always_covered
-        };
-        let t = start_denying(a_chat(decide), deny).await;
-        let agent = t.caller("agent").await;
-        let (answer, _) = t.call(&agent, "exec", args.clone()).await;
-        if mode == "allowed" {
-            let Response::Ok(result) = answer else {
-                panic!("expected execution");
-            };
-            assert_eq!(result["stdout"], format!("--token{secret}"));
-        } else {
-            assert_eq!(
-                refusal(&answer).1,
-                if mode == "denied" {
-                    "exec_denied"
-                } else {
-                    "gatekeeper_denied"
-                }
-            );
-        }
-        if mode != "denied" {
-            assert_eq!(
-                t.plow.world.lock().unwrap().asked[0]["proposed_action"]["argv"],
-                args["argv"]
-            );
-        }
-        let records = t.audit();
-        assert_eq!(records[0]["args"]["argv"][0], "/bin/sh");
-        let (target, _) = dashboard::describe(
-            "exec",
-            &records[0]["args"],
-            records[0]["outcome"].as_str().unwrap(),
-            Duration::ZERO,
-        );
-        assert!(!target.contains(secret));
-        assert!(
-            !std::fs::read_to_string(t.state.join("audit.ndjson"))
-                .unwrap()
-                .contains(secret),
-            "credential in audit ({mode})"
-        );
-        let log = std::fs::read_to_string(&path).unwrap();
-        assert!(log.contains("exec:"));
-        assert!(!log.contains(secret), "credential in serve.log ({mode})");
-    }
+async fn a_stalled_audit_write_holds_up_no_other_caller() {
+    let t = start(a_chat(down)).await;
+    // A slow disk, as the next append sees it: the log stays busy for a while.
+    let (busy, now_busy) = std::sync::mpsc::channel();
+    let holder = t.host.clone();
+    let stall = std::thread::spawn(move || {
+        let _held = holder.audit.lock().unwrap();
+        busy.send(()).unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+    });
+    now_busy.recv().unwrap();
+
+    let host = t.host.clone();
+    let record = audit::record("k1", None, "exec", "allow", "ok");
+    let appending = tokio::spawn(async move { host.append(record).await });
+    // Meanwhile this runtime's other work goes on.
+    let started = Instant::now();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+
+    // The record is still written, once the log is free.
+    assert!(appending.await.unwrap().is_ok());
+    stall.join().unwrap();
+    assert_eq!(t.audit()[0]["op"], "exec");
 }

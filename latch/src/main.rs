@@ -36,6 +36,7 @@ mod shares;
 mod state;
 mod status;
 mod term;
+mod trace;
 mod transfer;
 mod vault;
 mod watch;
@@ -104,6 +105,7 @@ struct Printed {
 
 /// Runs one command and returns its JSON output.
 async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Failure> {
+    trace::init()?;
     let state = StateDir::new(state_dir)?;
     state.check_format()?;
     match command {

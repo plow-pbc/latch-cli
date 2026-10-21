@@ -97,6 +97,7 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         .env_remove("PLOW_API_BASE")
         .env_remove("PLOW_AGENT_TOKEN")
         .env_remove("LATCH_HOST")
+        .env_remove("LATCH_TRACE")
         .arg("--state-dir")
         .arg(state)
         .args(args);
@@ -1293,20 +1294,57 @@ fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
     serving_folders(host, &[share], relay).0
 }
 
-/// `serving`, sharing `shares` (none: the saved ones). Also returns the
-/// log lines up to its registration.
+/// `serving`, sharing `shares` (none: the saved ones), once it says it
+/// serves (it registers with Plow a moment before). Also returns the log
+/// lines up to its registration.
 fn serving_folders(host: &Path, shares: &[&Path], relay: &str) -> (Serving, Vec<String>) {
+    let (serve, mut log, lines) = serving_with(serve_command(host, shares, relay));
+    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    until_serving(host, &serve);
+    (serve, lines)
+}
+
+/// Waits until `serve`, on `host`'s state, says in serve.json that it serves.
+fn until_serving(host: &Path, serve: &Serving) {
+    let says_serving = || {
+        let written = fs::read(host.join("serve.json")).unwrap_or_default();
+        let written: Value = serde_json::from_slice(&written).unwrap_or_default();
+        written["state"] == "serving" && written["pid"] == serve.0.id()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !says_serving() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "serve never said it serves"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
+    let mut command = Command::new(latch_bin());
+    command
+        .args([
+            "--state-dir",
+            host.to_str().unwrap(),
+            "serve",
+            "--no-dashboard",
+        ])
+        .args(shares)
+        .env("LATCH_TEST_RELAY_URL", relay)
+        .env_remove("LATCH_HOST")
+        .env_remove("LATCH_TRACE");
+    command
+}
+
+/// Starts `command`, a `latch serve`, and reads its log up to its
+/// registration. Returns the rest of the log still to read, and the lines
+/// read so far.
+fn serving_with(
+    mut command: Command,
+) -> (Serving, BufReader<std::process::ChildStderr>, Vec<String>) {
     let mut serve = Serving(
-        Command::new(latch_bin())
-            .args([
-                "--state-dir",
-                host.to_str().unwrap(),
-                "serve",
-                "--no-dashboard",
-            ])
-            .args(shares)
-            .env("LATCH_TEST_RELAY_URL", relay)
-            .env_remove("LATCH_HOST")
+        command
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap(),
@@ -1325,8 +1363,7 @@ fn serving_folders(host: &Path, shares: &[&Path], relay: &str) -> (Serving, Vec<
             break;
         }
     }
-    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
-    (serve, lines)
+    (serve, log, lines)
 }
 
 /// An owner's host state logged in to `plow` as `host`.
@@ -1454,6 +1491,65 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
         again.is_some(),
         "no registration with the new credential: {seen:?}"
     );
+}
+
+#[test]
+fn latch_trace_shows_iroh_on_stderr_inside_each_host_operation() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let filter = "iroh=debug,latch=info";
+
+    let mut traced = serve_command(&host, &[&share], &relay);
+    traced.env("LATCH_TRACE", filter);
+    let (serve, mut log, _) = serving_with(traced);
+    until_serving(&host, &serve);
+    let exec = latch_command(
+        &agent,
+        &["exec", "--host", "host", "--", "echo", "hi"],
+        &agent_env,
+    )
+    .env("LATCH_TRACE", filter)
+    .output()
+    .unwrap();
+    drop(serve);
+    let mut host_log = String::new();
+    log.read_to_string(&mut host_log).unwrap();
+
+    // The client's stdout is still only its JSON; iroh's events are on stderr.
+    assert_eq!(exec.status.code(), Some(0), "{exec:?}");
+    let result: Value = serde_json::from_slice(&exec.stdout).unwrap();
+    assert_eq!(result["stdout"], "hi\n");
+    let stderr = String::from_utf8_lossy(&exec.stderr);
+    assert!(stderr.contains(" iroh::"), "{stderr}");
+    // On the host, the operation's span closes inside its connection's.
+    let closed = host_log
+        .lines()
+        .find(|line| line.contains("}:operation{op=exec}: ") && line.contains(" close "));
+    let closed = closed.unwrap_or_else(|| panic!("no closed operation span: {host_log}"));
+    assert!(closed.contains("connection{caller="), "{closed}");
+}
+
+#[test]
+fn a_latch_trace_that_is_not_a_filter_is_a_usage_error() {
+    let dir = test_dir();
+    let out = latch_command(dir.path(), &["status"], &[])
+        .env("LATCH_TRACE", "iroh=loud")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "bad_trace");
+    assert!(out.stdout.is_empty());
 }
 
 #[test]
@@ -1913,6 +2009,105 @@ fn a_login_with_events_whose_code_expires_says_so_and_fails() {
     let error: Value = serde_json::from_slice(&login.stderr).unwrap();
     assert_eq!(error["error"]["code"], "code_expired");
     server.join().unwrap();
+}
+
+/// A host stopped (SIGTERM) while an exec runs: one that finishes within
+/// the host's wait is answered as usual; one that outlasts it is killed,
+/// with every process it started, and answered and audited `interrupted`.
+#[test]
+fn shutdown_exec_cases() {
+    // (what, script, the client's exit, the audited outcome)
+    let cases = [
+        (
+            "finishes in time",
+            "touch started; sleep 1; echo finished",
+            0,
+            "ok",
+        ),
+        (
+            "outlasts the host",
+            "sleep 600 & echo $! > child; touch started; wait",
+            5,
+            "interrupted",
+        ),
+    ];
+    for (what, script, exit, outcome) in cases {
+        let plow = LivePlow::start();
+        let (_relay, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let share = dir.path().join("share");
+        fs::create_dir(&share).unwrap();
+        // The owner's other machine.
+        let client = dir.path().join("client");
+        let token = dir.path().join("owner.token");
+        let args = [
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            token.to_str().unwrap(),
+            "--name",
+            "laptop",
+        ];
+        assert_eq!(latch(&client, &args, &[]).status.code(), Some(0));
+
+        let mut serve = serving(&host, &share, &relay);
+        let running = thread::spawn(move || {
+            let args = ["exec", "--host", "host", "--", "sh", "-c", script];
+            latch(&client, &args, &[])
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !share.join("started").exists() {
+            if running.is_finished() {
+                panic!(
+                    "{what}: the exec ended before it started: {:?}",
+                    running.join()
+                );
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: never started"
+            );
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // SAFETY: signals our own child.
+        unsafe { libc::kill(serve.0.id() as i32, libc::SIGTERM) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+        while serve.0.try_wait().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: serve did not stop"
+            );
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        let output = running.join().unwrap();
+        assert_eq!(output.status.code(), Some(exit), "{what}: {output:?}");
+        if exit == 0 {
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["stdout"], "finished\n", "{what}");
+        } else {
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], outcome, "{what}: {error}");
+        }
+        if let Ok(child) = fs::read_to_string(share.join("child")) {
+            let child: i32 = child.trim().parse().unwrap();
+            // SAFETY: signal 0 only asks whether the process exists.
+            assert_ne!(
+                unsafe { libc::kill(child, 0) },
+                0,
+                "{what}: its child lives on"
+            );
+        }
+        let audit = fs::read_to_string(host.join("audit.ndjson")).unwrap();
+        let exec = audit
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|record| record["op"] == "exec")
+            .expect("the exec is audited");
+        assert_eq!(exec["outcome"], outcome, "{what}: {exec}");
+    }
 }
 
 #[test]

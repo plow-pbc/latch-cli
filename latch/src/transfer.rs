@@ -140,12 +140,49 @@ pub async fn upload(
     Ok((done, sha256))
 }
 
+/// A download's bytes on their way to `local`: a hidden file beside it,
+/// readable only by its owner, which takes `local`'s name only when placed.
+/// Dropped unplaced (a failure, or a call cut off), it is removed, and any
+/// file already under `local`'s name is left as it was.
+pub struct Staged(tempfile::NamedTempFile);
+
+impl Staged {
+    pub fn beside(local: &Path) -> Result<Staged, Failure> {
+        let dir = match local.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        let name = local.file_name().unwrap_or_default().to_string_lossy();
+        tempfile::Builder::new()
+            .prefix(&format!(".{name}.latch-"))
+            .suffix(".part")
+            .tempfile_in(dir)
+            .map(Staged)
+            .map_err(|err| local_failure(local, err))
+    }
+
+    /// The file to write the bytes into.
+    pub fn file(&self) -> Result<File, Failure> {
+        let file = self.0.as_file().try_clone();
+        file.map(File::from_std)
+            .map_err(|err| local_failure(self.0.path(), err))
+    }
+
+    /// Gives the bytes `local`'s name, replacing what was there.
+    pub fn place(self, local: &Path) -> Result<(), Failure> {
+        self.0
+            .persist(local)
+            .map(|_| ())
+            .map_err(|err| local_failure(local, err.error))
+    }
+}
+
 /// Sends `request`, then reads the host's first answer with the size,
 /// exactly that many bytes, and the host's last answer, whose sha256 must
-/// match. The bytes go into a temporary file beside `local`, which takes
-/// `local`'s place only once they match: a download that broke off, does
-/// not match, or whose process was killed never leaves a file (or half of
-/// one) under `local`'s name. Returns both answers and the sha256.
+/// match. The bytes are staged beside `local` and take its place only once
+/// they match: a download that broke off, does not match, or whose process
+/// was killed never leaves a file (or half of one) under `local`'s name.
+/// Returns both answers and the sha256.
 pub async fn download(
     connection: &Connection,
     request: &Request,
@@ -155,25 +192,10 @@ pub async fn download(
     send.finish().map_err(|_| dial::lost(connection, true))?;
     let start = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     let size = size_of(&start)?;
-    let temp = crate::worker::temp_path(local).map_err(|err| local_failure(local, err))?;
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .await
-        .map_err(|err| local_failure(local, err))?;
-    let result = receive_into(connection, &mut recv, &mut file, size).await;
-    let result = match result {
-        Ok((done, sha256)) => tokio::fs::rename(&temp, local)
-            .await
-            .map(|()| (start, done, sha256))
-            .map_err(|err| local_failure(local, err)),
-        Err(failure) => Err(failure),
-    };
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&temp).await;
-    }
-    result
+    let staged = Staged::beside(local)?;
+    let (done, sha256) = receive_into(connection, &mut recv, &mut staged.file()?, size).await?;
+    staged.place(local)?;
+    Ok((start, done, sha256))
 }
 
 /// `size` bytes into `file`, and the host's last answer, which must carry
@@ -309,6 +331,20 @@ mod tests {
         assert!(!fresh.exists());
         let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(names.len(), 1, "no temporary file is left: {names:?}");
+    }
+
+    #[tokio::test]
+    async fn a_download_over_a_private_file_leaves_it_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("got");
+        std::fs::write(&local, "the old file").unwrap();
+        std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let sha256 = crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(b"hello"));
+        download_from(5, b"hello", &sha256, &local).await.unwrap();
+        assert_eq!(std::fs::read(&local).unwrap(), b"hello");
+        let mode = std::fs::metadata(&local).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
     }
 
     #[tokio::test]
