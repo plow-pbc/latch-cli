@@ -28,3 +28,6 @@ on a machine its owner trusts, over Plow's directory.
 - `latch serve ~/work --deny-exec` refuses `exec` to every agent;
   `--deny-exec=AGENT_UID` (repeatable) to one agent, by its Plow uid. Your
   own machines are unaffected.
+- `latch shares set ~/work` saves the folders a `latch serve` named none
+  shares. `latch status --local`, `latch events --follow` and
+  `latch login --events` are for an app: see [latch/APP.md](latch/APP.md).
