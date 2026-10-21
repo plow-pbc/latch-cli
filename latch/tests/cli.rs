@@ -2038,6 +2038,78 @@ fn a_stopping_host_finishes_the_operation_it_is_running() {
 }
 
 #[test]
+fn a_stopping_host_kills_an_exec_that_outlasts_it_with_all_it_started() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let client = dir.path().join("client");
+    let token = dir.path().join("owner.token");
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        token.to_str().unwrap(),
+        "--name",
+        "laptop",
+    ];
+    assert_eq!(latch(&client, &args, &[]).status.code(), Some(0));
+
+    let mut serve = serving(&host, &share, &relay);
+    // The program starts another process and waits for it: both would
+    // outlast the host's wait for running operations.
+    let script = "sleep 600 & echo $! > child; touch started; wait";
+    let running = thread::spawn(move || {
+        let args = ["exec", "--host", "host", "--", "sh", "-c", script];
+        latch(&client, &args, &[])
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !share.join("started").exists() {
+        if running.is_finished() {
+            panic!("the exec ended before it started: {:?}", running.join());
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the exec never started"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // SAFETY: signals our own child.
+    unsafe { libc::kill(serve.0.id() as i32, libc::SIGTERM) };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    while serve.0.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "serve did not stop");
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let output = running.join().unwrap();
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "interrupted", "{error}");
+    let child: i32 = fs::read_to_string(share.join("child"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: signal 0 only asks whether the process exists.
+    assert_ne!(
+        unsafe { libc::kill(child, 0) },
+        0,
+        "the program's child lives on"
+    );
+    let audit = fs::read_to_string(host.join("audit.ndjson")).unwrap();
+    let exec = audit
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|record| record["op"] == "exec")
+        .expect("the exec is audited");
+    assert_eq!(exec["outcome"], "interrupted", "{exec}");
+}
+
+#[test]
 fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapshot() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();

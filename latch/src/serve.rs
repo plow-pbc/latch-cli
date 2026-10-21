@@ -65,9 +65,19 @@ struct Host {
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
     binary: Binary,
-    /// Set once the host is stopping: each connection finishes the
-    /// operation it is on and takes no other.
-    stopping: watch::Sender<bool>,
+    /// How far the host is into stopping.
+    stopping: watch::Sender<Stopping>,
+}
+
+/// How far a host is into stopping.
+#[derive(Clone, Copy, PartialEq)]
+enum Stopping {
+    No,
+    /// Each connection finishes the operation it is on and takes no other.
+    Draining,
+    /// Running execs are killed, with all they started, and audited as
+    /// `interrupted`.
+    CuttingOff,
 }
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
@@ -318,7 +328,7 @@ async fn run_host(
         deny_exec,
         gatekeeper,
         binary,
-        stopping: watch::Sender::new(false),
+        stopping: watch::Sender::new(Stopping::No),
     });
     lifecycle::record(&state.path, Phase::Serving, None)?;
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
@@ -360,13 +370,17 @@ async fn run_host(
     moved.map_or(Ok(()), Err)
 }
 
-/// Longest a stopping host waits for the operations it is running.
+/// Longest a stopping host waits for the operations it is running, and
+/// then for the execs it cut off to be killed and audited.
 const DRAIN_WITHIN: Duration = Duration::from_secs(10);
+const CUT_OFF_WITHIN: Duration = Duration::from_secs(10);
 
 /// What a host does once it stops serving, however it stopped: no new
 /// connections (the accept loop is over), no heartbeat that could list it
-/// online again, and every connection's operation finished, or cut off once
-/// `DRAIN_WITHIN` has passed.
+/// online again, and every connection's operation finished. Once
+/// `DRAIN_WITHIN` has passed, running execs are killed with everything they
+/// started and audited as `interrupted`; anything still left after
+/// `CUT_OFF_WITHIN` is dropped.
 async fn shut_down(
     host: &Host,
     heartbeat: Option<JoinHandle<Failure>>,
@@ -376,16 +390,26 @@ async fn shut_down(
         heartbeat.abort();
         let _ = heartbeat.await;
     }
-    host.stopping.send_replace(true);
-    let finished = async { while connections.join_next().await.is_some() {} };
-    if tokio::time::timeout(DRAIN_WITHIN, finished).await.is_err() {
-        log(&format!(
-            "stopping: cutting off {} connection(s) still running after {} seconds",
-            connections.len(),
-            DRAIN_WITHIN.as_secs()
-        ));
+    host.stopping.send_replace(Stopping::Draining);
+    if within(DRAIN_WITHIN, &mut connections).await {
+        return;
+    }
+    log(&format!(
+        "stopping: cutting off {} connection(s) still running after {} seconds",
+        connections.len(),
+        DRAIN_WITHIN.as_secs()
+    ));
+    host.stopping.send_replace(Stopping::CuttingOff);
+    if !within(CUT_OFF_WITHIN, &mut connections).await {
+        log("stopping: a cut-off operation did not end; dropping it");
         connections.shutdown().await;
     }
+}
+
+/// Whether every connection task ended within `limit`.
+async fn within(limit: Duration, connections: &mut JoinSet<()>) -> bool {
+    let ended = async { while connections.join_next().await.is_some() {} };
+    tokio::time::timeout(limit, ended).await.is_ok()
 }
 
 /// Longest a stopping host waits for Plow: stopping never hangs on Plow.
@@ -583,7 +607,7 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
     }
     // A stopping host gives the client a moment to close: dropping the
     // connection at once could cut off the answer it was just sent.
-    if *host.stopping.borrow() {
+    if *host.stopping.borrow() != Stopping::No {
         let _ = tokio::time::timeout(LINGER, connection.closed()).await;
     }
 }
@@ -644,7 +668,7 @@ async fn next_stream(host: &Host, connection: &Connection) -> Option<(SendStream
     // starts once the host is stopping.
     tokio::select! {
         biased;
-        _ = stopping.wait_for(|stopping| *stopping) => None,
+        _ = stopping.wait_for(|stopping| *stopping != Stopping::No) => None,
         stream = connection.accept_bi() => stream.ok(),
     }
 }
@@ -741,7 +765,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
-                    "exec" => exec::run(&host.workers, &request.args).await,
+                    "exec" => exec::run(&host.workers, &request.args, host.cut_off()).await,
                     "vault" => {
                         crate::vault::host::run(
                             &host.vault,
@@ -940,6 +964,14 @@ struct Denial {
 }
 
 impl Host {
+    /// Finishes when the host cuts off the operations still running.
+    async fn cut_off(&self) {
+        let mut stopping = self.stopping.subscribe();
+        let _ = stopping
+            .wait_for(|stopping| *stopping == Stopping::CuttingOff)
+            .await;
+    }
+
     /// Where a phone link points: our key, name and current relay.
     fn here(&self) -> link::Here {
         link::Here {
