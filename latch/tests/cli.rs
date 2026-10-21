@@ -1984,6 +1984,52 @@ fn a_login_with_events_whose_code_expires_says_so_and_fails() {
 }
 
 #[test]
+fn a_stopping_host_finishes_the_operation_it_is_running() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    // The owner's other machine.
+    let client = dir.path().join("client");
+    let token = dir.path().join("owner.token");
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        token.to_str().unwrap(),
+        "--name",
+        "laptop",
+    ];
+    assert_eq!(latch(&client, &args, &[]).status.code(), Some(0));
+
+    let serve = serving(&host, &share, &relay);
+    let script = "touch started; sleep 1; echo finished";
+    let running = thread::spawn(move || {
+        let args = ["exec", "--host", "host", "--", "sh", "-c", script];
+        latch(&client, &args, &[])
+    });
+    while !share.join("started").exists() {
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Stopped (SIGTERM) while the exec runs: it finishes, and is answered.
+    drop(serve);
+    let output = running.join().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["stdout"], "finished\n");
+    let audit = fs::read_to_string(host.join("audit.ndjson")).unwrap();
+    let exec = audit
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|record| record["op"] == "exec")
+        .expect("the exec is audited");
+    assert_eq!(exec["decision"], "allow", "{exec}");
+}
+
+#[test]
 fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapshot() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();

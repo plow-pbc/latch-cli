@@ -25,6 +25,8 @@ use iroh::endpoint::{Connection, Incoming, RecvStream, SendStream, VarInt, prese
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
 use tokio::signal::unix::{Signal, SignalKind, signal};
+use tokio::sync::watch;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::Instrument;
 use tracing::field::{Empty, display};
 
@@ -63,6 +65,9 @@ struct Host {
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
     binary: Binary,
+    /// Set once the host is stopping: each connection finishes the
+    /// operation it is on and takes no other.
+    stopping: watch::Sender<bool>,
 }
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
@@ -313,42 +318,74 @@ async fn run_host(
         deny_exec,
         gatekeeper,
         binary,
+        stopping: watch::Sender::new(false),
     });
     lifecycle::record(&state.path, Phase::Serving, None)?;
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
     let mut stop = Box::pin(stop_requested(terminate));
-    loop {
+    let mut connections = JoinSet::new();
+    let moved = loop {
         tokio::select! {
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => {
                     let connection = tracing::info_span!("connection", caller = Empty);
-                    tokio::spawn(serve_connection(host.clone(), incoming).instrument(connection));
+                    connections.spawn(serve_connection(host.clone(), incoming).instrument(connection));
                 }
-                None => break,
+                None => break None,
             },
+            // Connections that ended are let go of as they end.
+            Some(_) = connections.join_next() => {}
             () = &mut stop => {
                 log("stopping: signal received");
-                break;
+                break None;
             }
             // The heartbeat only ends when Plow gave our name to another
-            // key. That key is not ours any more, so there is nothing to
-            // take offline.
+            // key.
             ended = &mut heartbeat => {
-                endpoint.close().await;
-                log("stopped");
-                return Err(ended.unwrap_or_else(|err| {
+                break Some(ended.unwrap_or_else(|err| {
                     Failure::failed("heartbeat", format!("the heartbeat stopped: {err}"))
                 }));
             }
         }
+    };
+    shut_down(&host, moved.is_none().then_some(heartbeat), connections).await;
+    // A name that moved is not ours any more: there is nothing of ours to
+    // take offline.
+    if moved.is_none() {
+        go_offline(&host.plow, &endpoint.id().to_string()).await;
     }
-    // Stop heartbeating first, so no late heartbeat lists us online again.
-    heartbeat.abort();
-    go_offline(&host.plow, &endpoint.id().to_string()).await;
     endpoint.close().await;
     log("stopped");
-    Ok(())
+    moved.map_or(Ok(()), Err)
+}
+
+/// Longest a stopping host waits for the operations it is running.
+const DRAIN_WITHIN: Duration = Duration::from_secs(10);
+
+/// What a host does once it stops serving, however it stopped: no new
+/// connections (the accept loop is over), no heartbeat that could list it
+/// online again, and every connection's operation finished, or cut off once
+/// `DRAIN_WITHIN` has passed.
+async fn shut_down(
+    host: &Host,
+    heartbeat: Option<JoinHandle<Failure>>,
+    mut connections: JoinSet<()>,
+) {
+    if let Some(heartbeat) = heartbeat {
+        heartbeat.abort();
+        let _ = heartbeat.await;
+    }
+    host.stopping.send_replace(true);
+    let finished = async { while connections.join_next().await.is_some() {} };
+    if tokio::time::timeout(DRAIN_WITHIN, finished).await.is_err() {
+        log(&format!(
+            "stopping: cutting off {} connection(s) still running after {} seconds",
+            connections.len(),
+            DRAIN_WITHIN.as_secs()
+        ));
+        connections.shutdown().await;
+    }
 }
 
 /// Longest a stopping host waits for Plow: stopping never hangs on Plow.
@@ -572,8 +609,9 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
         return;
     }
 
-    // One stream per operation, until the client closes the connection.
-    while let Ok((send, recv)) = connection.accept_bi().await {
+    // One stream per operation, until the client closes the connection or
+    // the host stops.
+    while let Some((send, recv)) = next_stream(&host, &connection).await {
         let operation = tracing::info_span!("operation", op = Empty);
         serve_operation(&host, &caller, send, recv)
             .instrument(operation)
@@ -582,6 +620,24 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
             "paths to {caller}: {}",
             describe_paths(&connection)
         ));
+    }
+    // A stopping host gives the client a moment to close: dropping the
+    // connection at once could cut off the answer it was just sent.
+    if *host.stopping.borrow() {
+        let _ = tokio::time::timeout(LINGER, connection.closed()).await;
+    }
+}
+
+/// How long a stopping host waits for a client to close its connection.
+const LINGER: Duration = Duration::from_secs(1);
+
+/// The connection's next operation, until the client closes it or the host
+/// is stopping.
+async fn next_stream(host: &Host, connection: &Connection) -> Option<(SendStream, RecvStream)> {
+    let mut stopping = host.stopping.subscribe();
+    tokio::select! {
+        stream = connection.accept_bi() => stream.ok(),
+        _ = stopping.wait_for(|stopping| *stopping) => None,
     }
 }
 
@@ -761,7 +817,7 @@ async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
         "phone {caller}: connected over {}",
         describe_paths(&connection)
     ));
-    while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+    while let Some((mut send, mut recv)) = next_stream(host, &connection).await {
         let Ok(json) = wire::read_frame(&mut recv).await else {
             return;
         };
