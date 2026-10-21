@@ -1,5 +1,6 @@
 """Check partition coverage and invocation against an actual libtest executable."""
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -20,18 +21,32 @@ class PartitionTests(unittest.TestCase):
             self.assertEqual(len(set(assigned)), len(names))
             self.assertEqual(shard.partition("latch", names[::-1], 1, count)[::-1], buckets[0])
 
-    def test_exact_filters_run_only_selected_tests(self):
+    def test_real_cargo_binaries_are_partitioned_without_losing_ignored_tests(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "tests.rs"
-            source.write_text("#[test] fn a() {}\n#[test] fn aa() {}\n#[test] #[ignore] fn ignored() { panic!(); }\n")
-            executable = root / "tests"
-            subprocess.run(["rustc", "--test", str(source), "-o", str(executable)], check=True)
-            names = shard.inventory(str(executable))
-            self.assertCountEqual(names, ["a", "aa", "ignored"])
-            result = subprocess.check_output([str(executable), "--exact", "a", "ignored"], text=True)
-            self.assertIn("1 passed; 0 failed; 1 ignored", result)
-            self.assertIn("1 filtered out", result)
+            crate = root / "fixture"
+            (crate / "src").mkdir(parents=True)
+            (crate / "tests").mkdir()
+            (crate / "Cargo.toml").write_text('[package]\nname = "shard-fixture"\nversion = "0.1.0"\nedition = "2024"\n')
+            (crate / "src/main.rs").write_text(
+                "fn main() {}\n#[test] fn a() {}\n#[test] fn aa() {}\n#[test] #[ignore] fn ignored() { panic!(); }\n")
+            (crate / "tests/integration.rs").write_text("#[test] fn integration() {}\n")
+            subprocess.run(["cargo", "generate-lockfile"], cwd=crate, check=True)
+            assignments = {}
+            for index in range(1, 4):
+                result = subprocess.run(["python3", str(Path(shard.__file__).resolve()), str(index), "3"],
+                                        cwd=crate, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                report = json.loads((root / f".dev/ci/shard-{index}.json").read_text())
+                for binary in report["binaries"]:
+                    assigned = assignments.setdefault(binary["name"], [])
+                    assigned.extend(binary["selected"])
+                    self.assertEqual(binary["exit"], 0)
+                    for name in binary["selected"]:
+                        outcome = "ignored" if name == "ignored" else "ok"
+                        self.assertIn(f"test {name} ... {outcome}", result.stdout)
+            self.assertCountEqual(assignments["shard-fixture"], ["a", "aa", "ignored"])
+            self.assertEqual(assignments["integration"], ["integration"])
 
 
 if __name__ == "__main__":
