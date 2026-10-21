@@ -57,6 +57,9 @@ These show or replace the folders `latch serve` shares when it is started
 with no folders, so a service starts the host the way a person set it up.
 
 - Folders named on the command line still win over the saved ones.
+- With none named and none saved, serve still starts, sharing no folders:
+  the browser and Google work, and `exec` and `file` refuse with
+  `no_folders` (exit 4).
 - A running serve keeps its folders until it is restarted.
 - Each folder must exist. Each is saved as its real, absolute path.
 

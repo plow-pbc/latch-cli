@@ -43,6 +43,8 @@ pub struct Row {
 /// which adds to it, and the task that redraws it every second.
 struct Board {
     host: String,
+    /// A line under the title, such as that the host shares no folders.
+    note: Option<&'static str>,
     last_heartbeat: Option<Timestamp>,
     rows: VecDeque<Row>,
 }
@@ -54,10 +56,11 @@ pub struct Dashboard {
 
 impl Dashboard {
     /// Takes over the terminal: the alternate screen, cursor hidden.
-    pub fn start(host: &str) -> Dashboard {
+    pub fn start(host: &str, note: Option<&'static str>) -> Dashboard {
         print!("{}{}", term::ALTERNATE_SCREEN, term::HIDE_CURSOR);
         let board = Board {
             host: host.to_string(),
+            note,
             last_heartbeat: None,
             rows: VecDeque::new(),
         };
@@ -125,6 +128,9 @@ impl Board {
             paint::fg(&status, DIM)
         ));
         lines.push(paint::fg(&"─".repeat(width), FAINT));
+        if let Some(note) = self.note {
+            lines.push(paint::fg(&format!(" {note}"), DIM));
+        }
 
         // Fixed columns for time, agent, operation and result; the target
         // takes what is left.
@@ -250,6 +256,7 @@ mod tests {
         );
         let board = Board {
             host: "host".to_string(),
+            note: None,
             last_heartbeat: None,
             rows: VecDeque::from([Row {
                 at: Timestamp::now(),
@@ -268,6 +275,23 @@ mod tests {
         );
         let row = screen.lines().nth(3).unwrap();
         assert!(row.contains("sh -c echo a⏎echo b [2J"), "{row}");
+    }
+
+    #[test]
+    fn a_host_sharing_no_folders_says_so_under_its_title() {
+        let board = Board {
+            host: "host".to_string(),
+            note: Some(crate::serve::SHARING_NONE),
+            last_heartbeat: None,
+            rows: VecDeque::new(),
+        };
+        let screen = board.screen(100, 10);
+        let note = screen.lines().nth(2).unwrap();
+        assert!(
+            note.contains("Sharing no folders — browser and Google only")
+                && note.contains("latch shares set ~/code"),
+            "{screen}"
+        );
     }
 
     #[test]

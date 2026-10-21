@@ -29,5 +29,6 @@ accounts on a machine its owner trusts, over Plow's directory.
   `--deny-exec=AGENT_UID` (repeatable) to one agent, by its Plow uid. Your
   own machines are unaffected.
 - `latch shares set ~/work` saves the folders a `latch serve` named none
-  shares. `latch status --local`, `latch events --follow` and
+  shares. With none named and none saved, it serves the browser and Google
+  only, and `exec` and `file` refuse with `no_folders`. `latch status --local`, `latch events --follow` and
   `latch login --events` are for an app: see [latch/APP.md](latch/APP.md).

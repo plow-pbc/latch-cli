@@ -212,7 +212,8 @@ async fn run_locked(
         let path = state.path.join("serve.log");
         log::to_file(&path)
             .map_err(|err| Failure::failed("log_file", format!("{}: {err}", path.display())))?;
-        Some(Dashboard::start(&config.peer.name))
+        let note = workers.areas.is_empty().then_some(SHARING_NONE);
+        Some(Dashboard::start(&config.peer.name, note))
     } else {
         None
     };
@@ -246,7 +247,11 @@ async fn run_host(
         .iter()
         .map(|area| area.display().to_string())
         .collect();
-    log(&format!("sharing: {}", names.join(", ")));
+    if names.is_empty() {
+        log(SHARING_NONE);
+    } else {
+        log(&format!("sharing: {}", names.join(", ")));
+    }
     if let Some(refused) = deny_exec.describe() {
         log(&refused);
     }
@@ -487,18 +492,17 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
     Ok(file)
 }
 
+/// What a host sharing no folders says in its log and on its dashboard.
+pub const SHARING_NONE: &str = "Sharing no folders — browser and Google only. \
+    Add some with `latch shares set ~/code`, then restart `latch serve`.";
+
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
 /// checked now, so a typo is a plain error rather than refused files later.
 /// Any folder may be shared, the home folder and `/` included: the sandbox
-/// always hides the state folder, even inside a shared one.
+/// always hides the state folder, even inside a shared one. None at all is
+/// a host for the browser and Google only: its `exec` and `file` refuse.
 pub fn shared_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
-    if folders.is_empty() {
-        let message = "name the folders to share, e.g. `latch serve ~/code`, or save them \
-                       with `latch shares set ~/code`"
-            .to_string();
-        return Err(Failure::usage("no_folders", message));
-    }
     let mut areas = Vec::new();
     for folder in folders {
         let refuse = |why: &str| {
@@ -611,8 +615,12 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
             // A worker started now would run the new latch under this old
             // host: nothing runs, and nothing is judged.
             let upgraded = host.binary.replaced();
-            let gated = gate::gated(op, &request.args, &host.workers.areas[0])
-                .filter(|_| !denied_exec && !upgraded);
+            // With no shared folder, exec and file refuse: nothing to judge.
+            let unshared =
+                host.workers.areas.is_empty() && matches!(op, "exec" | "file_get" | "file_put");
+            let first_area = host.workers.areas.first().map(PathBuf::as_path);
+            let gated = gate::gated(op, &request.args, first_area)
+                .filter(|_| !denied_exec && !upgraded && !unshared);
             let unjudgeable = match (&gate, &gated) {
                 (Ok(Some(_)), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
@@ -662,7 +670,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                                 .to_string(),
                         },
                         // As a refused judgment keeps it: no stdin.
-                        audit_args: gate::gated(op, &request.args, &host.workers.areas[0])
+                        audit_args: gate::gated(op, &request.args, first_area)
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
@@ -1097,7 +1105,7 @@ mod tests {
             shared_folders(&[home.clone(), PathBuf::from("/")]).unwrap(),
             [home.clone(), PathBuf::from("/")]
         );
-        assert_eq!(shared_folders(&[]).unwrap_err().code, "no_folders");
+        assert_eq!(shared_folders(&[]).unwrap(), Vec::<PathBuf>::new());
         for (folder, why) in [
             (home.join("missing"), "does not exist"),
             (home.join("notes.txt"), "not a folder"),
