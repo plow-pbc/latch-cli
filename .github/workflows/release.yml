@@ -1,7 +1,7 @@
 name: release
-# A release is a manual run: it mints v<version>-build.<UTC minute> on main,
-# with a -dev.<ref> suffix from any other ref, signs, and leaves a draft
-# release for a person to publish. Pull requests build and verify unsigned
+# A release is a manual run from main: it mints v<version>-build.<UTC minute>,
+# signs, and leaves a draft release for a person to publish.
+# Pull requests build and verify unsigned
 # archives and release nothing.
 on:
   pull_request:
@@ -19,22 +19,25 @@ jobs:
     outputs:
       tag: ${{ steps.mint.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-      - id: mint
+      - name: Require main for release dispatch
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           REF: ${{ github.ref }}
-          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF" != refs/heads/main ]]; then
+            echo 'Release dispatch is restricted to main; use PR artifacts for unsigned builds.' >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - id: mint
+        shell: bash
         run: |
           package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
           case '${{ github.event_name }}' in
             pull_request) tag="v$package-pr.${{ github.event.number }}" ;;
             workflow_dispatch)
               tag="v$package-build.$(date -u +%Y%m%d%H%M)"
-              if [[ "$REF" != refs/heads/main ]]; then
-                ref=$(printf '%s' "$REF_NAME" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
-                tag="$tag-dev.${ref:-ref}"
-              fi
               if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
                 echo "tag $tag already exists" >&2
                 exit 1
