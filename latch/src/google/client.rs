@@ -116,13 +116,25 @@ async fn exchange(
                 .await
                 .map_err(|err| Failure::failed("local_file", err.to_string()))?;
         }
-        let mut file = File::create(&path)
+        // As `file get` does: the bytes go to a temporary file beside the
+        // destination, which takes its place only once they match.
+        let local_file = |err: std::io::Error| Failure::failed("local_file", err.to_string());
+        let temp = crate::worker::temp_path(&path).map_err(local_file)?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
             .await
-            .map_err(|err| Failure::failed("local_file", err.to_string()))?;
+            .map_err(local_file)?;
         let copied = wire::copy(&mut recv, &mut file, moved.size).await;
-        if copied.as_ref().ok() != Some(&moved.sha256) {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(problem(Exit::Failed, "checksum_mismatch", json!({})));
+        let placed = if copied.as_ref().ok() == Some(&moved.sha256) {
+            tokio::fs::rename(&temp, &path).await.map_err(local_file)
+        } else {
+            Err(problem(Exit::Failed, "checksum_mismatch", json!({})))
+        };
+        if let Err(failure) = placed {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err(failure);
         }
         local_files.push(json!({"path":path,"size":moved.size,"sha256":moved.sha256}));
     }
@@ -131,4 +143,99 @@ async fn exchange(
         value["files"] = json!(local_files);
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh::endpoint::presets;
+    use iroh::{Endpoint, RelayMode};
+    use wire::Response;
+
+    /// `gmail attachment` saving to `local`, from a host whose gog wrote a
+    /// file of `size` bytes with `sha256`, of which it sends `bytes`.
+    async fn attachment_from(
+        size: u64,
+        bytes: &[u8],
+        sha256: &str,
+        local: &Path,
+    ) -> Result<Value, Failure> {
+        let bind = |alpns: Vec<Vec<u8>>| {
+            Endpoint::builder(presets::Minimal)
+                .relay_mode(RelayMode::Disabled)
+                .alpns(alpns)
+                .bind()
+        };
+        let host = bind(vec![wire::ALPN.to_vec()]).await.unwrap();
+        let client = bind(vec![]).await.unwrap();
+        let accepting = host.accept();
+        let (accepted, connection) =
+            tokio::join!(async { accepting.await.unwrap().await.unwrap() }, async {
+                client.connect(host.addr(), wire::ALPN).await.unwrap()
+            });
+        let serving = async {
+            let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
+            wire::read_frame(&mut recv).await.unwrap();
+            let frame = |value| serde_json::to_vec(&Response::Ok(value)).unwrap();
+            wire::write_frame(&mut send, &frame(json!({"ready": true})))
+                .await
+                .unwrap();
+            let files = json!([{"path": "0/attachment", "size": size, "sha256": sha256}]);
+            wire::write_frame(&mut send, &frame(json!({"files": files})))
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut send, bytes)
+                .await
+                .unwrap();
+            if bytes.len() as u64 == size {
+                wire::write_frame(&mut send, &frame(json!({"files": files})))
+                    .await
+                    .unwrap();
+            }
+            send.finish().unwrap();
+            let _ = send.stopped().await;
+        };
+        let words = [
+            "gmail",
+            "attachment",
+            "m1",
+            "a1",
+            "--out",
+            local.to_str().unwrap(),
+        ];
+        let words: Vec<String> = words.iter().map(|word| word.to_string()).collect();
+        let plan = policy::parse(&words).unwrap();
+        let request = Request {
+            gog_args: words,
+            account: vec![],
+            confirm_conflict: false,
+            inputs: vec![],
+        };
+        let exchanging = exchange(&connection, None, request, vec![], Some(&plan));
+        let ((), result) = tokio::join!(serving, exchanging);
+        client.close().await;
+        host.close().await;
+        result
+    }
+
+    #[tokio::test]
+    async fn a_file_that_breaks_off_or_does_not_match_leaves_the_old_one_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("got");
+        let fresh = dir.path().join("fresh");
+        let sha256 = crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(b"hello"));
+        attachment_from(5, b"hello", &sha256, &local).await.unwrap();
+        assert_eq!(std::fs::read(&local).unwrap(), b"hello");
+
+        for target in [&local, &fresh] {
+            let wrong = attachment_from(5, b"hellO", &sha256, target).await;
+            assert_eq!(wrong.unwrap_err().code, "checksum_mismatch");
+            let short = attachment_from(5, b"hel", &sha256, target).await;
+            assert_eq!(short.unwrap_err().code, "checksum_mismatch");
+        }
+        assert_eq!(std::fs::read(&local).unwrap(), b"hello");
+        assert!(!fresh.exists());
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "no temporary file is left: {names:?}");
+    }
 }
