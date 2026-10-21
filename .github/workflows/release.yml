@@ -84,8 +84,112 @@ jobs:
           name: latch-${{ matrix.target }}
           path: dist/*.tar.gz
           if-no-files-found: error
-  assemble:
+  # Releases only: pull requests never reach the release environment or its
+  # credentials, and keep their ad-hoc signed builds.
+  sign-macos:
     needs: build
+    if: github.event_name != 'pull_request'
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      IDENTITY: 'Developer ID Application: The Plow Collective, Inc (3559PD337Z)'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: latch-${{ matrix.target }}
+          path: dist
+      - name: Load signing credentials
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APPLE_CERTIFICATE_P12_BASE64: op://terraform/GitHub Actions Release Secrets/APPLE_CERTIFICATE_P12_BASE64
+          APPLE_CERTIFICATE_PASSWORD: op://terraform/GitHub Actions Release Secrets/APPLE_CERTIFICATE_PASSWORD  # pragma: allowlist secret
+          APPLE_NOTARY_APPLE_ID: op://terraform/GitHub Actions Release Secrets/APPLE_NOTARY_APPLE_ID
+          APPLE_NOTARY_TEAM_ID: op://terraform/GitHub Actions Release Secrets/APPLE_NOTARY_TEAM_ID
+          APPLE_NOTARY_PASSWORD: op://terraform/GitHub Actions Release Secrets/APPLE_NOTARY_PASSWORD  # pragma: allowlist secret
+      - name: Import signing identity
+        shell: bash
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          keychain_password=$(openssl rand -base64 32)
+          security create-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
+          cert="$RUNNER_TEMP/cert.p12"
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$cert"
+          security import "$cert" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm "$cert"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$IDENTITY\""
+          xcrun notarytool store-credentials latch-notary --keychain "$KEYCHAIN_PATH" \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" --team-id "$APPLE_NOTARY_TEAM_ID" --password "$APPLE_NOTARY_PASSWORD"
+      - name: Sign
+        shell: bash
+        run: |
+          archive=$(find dist -name 'latch-*-${{ matrix.target }}.tar.gz')
+          name=$(basename "$archive" .tar.gz)
+          mkdir unpacked
+          tar -xzf "$archive" -C unpacked
+          binary="unpacked/$name/latch"
+          codesign --force --options runtime --timestamp --identifier co.plow.latch.cli \
+            --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY" "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
+          "$binary" --version
+          echo "NAME=$name" >> "$GITHUB_ENV"
+      # A bare binary takes no stapled ticket: Gatekeeper looks the ticket up
+      # online the first time a quarantined copy runs.
+      - name: Notarize
+        shell: bash
+        run: |
+          binary="unpacked/$NAME/latch"
+          ditto -c -k --keepParent "$binary" "$RUNNER_TEMP/latch.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/latch.zip" --keychain-profile latch-notary \
+            --keychain "$KEYCHAIN_PATH" --wait --timeout 30m --output-format json | tee "$RUNNER_TEMP/notary.json"
+          id=$(jq -r .id "$RUNNER_TEMP/notary.json")
+          if [[ "$(jq -r .status "$RUNNER_TEMP/notary.json")" != Accepted ]]; then
+            xcrun notarytool log "$id" --keychain-profile latch-notary --keychain "$KEYCHAIN_PATH"
+            exit 1
+          fi
+      - name: Verify and repackage
+        shell: bash
+        run: |
+          binary="unpacked/$NAME/latch"
+          details=$(codesign -dvvv "$binary" 2>&1)
+          echo "$details"
+          grep -Fx 'Identifier=co.plow.latch.cli' <<< "$details"
+          grep -Fx 'TeamIdentifier=3559PD337Z' <<< "$details"
+          grep -Fx "Authority=$IDENTITY" <<< "$details"
+          grep -E '^CodeDirectory .*flags=0x10000\(runtime\)' <<< "$details"
+          grep -E '^Timestamp=' <<< "$details"
+          assessment=$(spctl --assess -vvv --type open --context context:primary-signature "$binary" 2>&1)
+          echo "$assessment"
+          grep -Fx 'source=Notarized Developer ID' <<< "$assessment"
+          tar -czf "dist/$NAME.tar.gz" -C unpacked "$NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: latch-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          overwrite: true
+      - name: Remove signing keychain
+        if: always()
+        shell: bash
+        run: if [[ -n "${KEYCHAIN_PATH:-}" ]]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi
+  assemble:
+    needs: [build, sign-macos]
+    # Pull requests skip signing and assemble their ad-hoc builds.
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.sign-macos.result == 'success' || (github.event_name == 'pull_request' && needs.sign-macos.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -105,6 +209,8 @@ jobs:
           path: dist/*
   verify-artifacts:
     needs: assemble
+    # A skipped sign-macos would otherwise skip this too on pull requests.
+    if: ${{ !cancelled() && needs.assemble.result == 'success' }}
     strategy:
       fail-fast: false
       matrix: *release-matrix
