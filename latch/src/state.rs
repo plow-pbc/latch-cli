@@ -9,7 +9,9 @@
 //!   `credential.rs`.
 //! - `config.json`: the Plow API URL and this peer's record as Plow returned it.
 //! - `audit.ndjson`, on a host: its audit log, each record sealed (see
-//!   `audit.rs`); `audit.keys`*: the keys that seal it.
+//!   `audit.rs`); `audit.keys`*: the keys that seal it; `audit.lock`: held
+//!   by what writes it; `audit.ndjson.plain`: a converted plaintext log,
+//!   for one run after its conversion (see `audit::absorb_old`).
 //! - `serve.log`, on a host: what `latch serve` logs while its dashboard
 //!   has the terminal.
 //! - `vault.json` and `vault.key`*, on a host: the vault and its custody key
@@ -151,7 +153,17 @@ impl StateDir {
             return self.upgraded();
         }
         let fix = match marker.format.cmp(&FORMAT) {
-            std::cmp::Ordering::Equal => return Ok(()),
+            std::cmp::Ordering::Equal => {
+                // What an older latch's writer added to the plaintext log
+                // after it was converted (see `audit::absorb_old`).
+                if let Err(failure) = crate::audit::absorb_old(&self.path) {
+                    eprintln!(
+                        "latch: warning: the audit log's old plaintext copy was kept: {}",
+                        failure.message
+                    );
+                }
+                return Ok(());
+            }
             std::cmp::Ordering::Greater => "update this latch",
             std::cmp::Ordering::Less => "use the latch that wrote it",
         };
@@ -459,6 +471,15 @@ mod tests {
         let records = crate::audit::read_all(&audit).unwrap();
         assert_eq!(records[0].args["last_hash"], last);
         assert_eq!(records.len(), 3);
+        // The old log, kept for a writer that still had it open, goes on
+        // the next run, and no plaintext copy is left.
+        assert!(state.path.join("audit.ndjson.plain").exists());
+        state.check_format().unwrap();
+        assert!(!state.path.join("audit.ndjson.plain").exists());
+        for entry in fs::read_dir(&state.path).unwrap() {
+            let body = fs::read(entry.unwrap().path()).unwrap_or_default();
+            assert!(!String::from_utf8_lossy(&body).contains("old-caller"));
+        }
     }
 
     #[test]

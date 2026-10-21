@@ -453,21 +453,24 @@ fn old_chain(records: &[Record]) -> Result<(), String> {
     let Some(anchor) = records.first().filter(|first| first.op == UPGRADE_OP) else {
         return Ok(());
     };
+    // The converted records, and any an older writer added after the
+    // conversion (see `absorb_old`), in order: one unbroken old chain that
+    // passes through the anchor's hash.
     let mut prev = GENESIS.to_string();
-    for record in records
-        .iter()
-        .skip(1)
-        .take_while(|record| record.was.is_some())
-    {
-        let was = record.was.as_ref().expect("taken while some");
+    let mut reached = anchor.prev == GENESIS;
+    for record in records.iter().skip(1) {
+        let Some(was) = &record.was else {
+            continue;
+        };
         let mut old = plain::Old::from(record);
         old.prev = was.prev.clone();
         if was.prev != prev || plain::hash_of(&old) != was.hash {
             return Err("the converted records do not form the old log's chain".into());
         }
         prev = was.hash.clone();
+        reached |= prev == anchor.prev;
     }
-    if anchor.prev != prev {
+    if !reached {
         return Err("the anchor does not follow the old log's last record".into());
     }
     Ok(())
@@ -552,7 +555,102 @@ fn upgrade_locked(dir: &Path) -> Result<(), Failure> {
         return remove_temp(&temp);
     }
     write_converted(dir, &text, &temp)?;
+    // The old log stays, under another name, for an older latch's writer
+    // still holding it open; `absorb_old` seals what such a writer added
+    // and removes it. A name left from an attempt cut short before the
+    // swap is replaced: the log itself holds all of it then.
+    let old = dir.join(OLD_LOG);
+    remove_temp(&old)?;
+    fs::hard_link(&path, &old).map_err(|err| io_failure(&old, err))?;
     fs::rename(&temp, &path).map_err(|err| io_failure(&path, err))
+}
+
+/// Where a converted plaintext log is kept until `absorb_old` is done
+/// with it.
+const OLD_LOG: &str = "audit.ndjson.plain";
+
+/// After a conversion, on a later run: seals any records an older latch's
+/// writer appended to the old plaintext log after it was converted (it
+/// held the old file open), at the end of the sealed log, each with the
+/// hashes it had, and then removes the old log. Records already sealed
+/// (a run cut short) are not sealed twice. An old log that fails its
+/// checks, or does not go on from the conversion's anchor, is kept, and
+/// it is an error.
+pub fn absorb_old(dir: &Path) -> Result<(), Failure> {
+    let old_path = dir.join(OLD_LOG);
+    if !old_path.exists() {
+        return Ok(());
+    }
+    let _lock = lock(dir)?;
+    let mut old_file = match fs::File::open(&old_path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(io_failure(&old_path, err)),
+    };
+    // A writer appending to it now finishes first.
+    old_file.lock().map_err(|err| io_failure(&old_path, err))?;
+    let mut text = String::new();
+    old_file
+        .read_to_string(&mut text)
+        .map_err(|err| io_failure(&old_path, err))?;
+    let (old, _) = plain::read(&text).map_err(|problem| broken(&old_path, &problem))?;
+
+    let path = dir.join("audit.ndjson");
+    let sealed = read_all(&path)?;
+    let Some(anchor) = sealed.first().filter(|first| first.op == UPGRADE_OP) else {
+        return Err(broken(
+            &old_path,
+            "the audit log has no conversion anchor to go on from",
+        ));
+    };
+    let anchored = anchor.args["last_hash"].as_str().unwrap_or_default();
+    let from = if anchored == GENESIS {
+        0
+    } else {
+        match old.iter().position(|record| record.hash == anchored) {
+            Some(at) => at + 1,
+            None => {
+                return Err(broken(
+                    &old_path,
+                    "it does not go on from the conversion's anchor",
+                ));
+            }
+        }
+    };
+    let known: std::collections::HashSet<&str> = sealed
+        .iter()
+        .filter_map(|record| record.was.as_ref().map(|was| was.hash.as_str()))
+        .collect();
+    let late: Vec<&plain::Old> = old[from..]
+        .iter()
+        .filter(|record| !known.contains(record.hash.as_str()))
+        .collect();
+    if !late.is_empty() {
+        let keys = Keys::ready(dir)?;
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(|err| io_failure(&path, err))?;
+        let mut prev = sealed.last().expect("the anchor").hash.clone();
+        let mut out = String::new();
+        for old in late {
+            let converted = Record {
+                was: Some(Was {
+                    prev: old.prev.clone(),
+                    hash: old.hash.clone(),
+                }),
+                ..old.clone().into()
+            };
+            let line = keys.seal(&converted, &prev, false);
+            prev = line.hash.clone();
+            out.push_str(&serde_json::to_string(&line).expect("a line serializes"));
+            out.push('\n');
+        }
+        file.write_all(out.as_bytes())
+            .and_then(|()| file.sync_data())
+            .map_err(|err| io_failure(&path, err))?;
+    }
+    fs::remove_file(&old_path).map_err(|err| io_failure(&old_path, err))
 }
 
 /// Writes the converted log to `temp` and checks it as `read_all` does.
@@ -1106,5 +1204,99 @@ mod race_tests {
         fs::write(dir.path().join("audit.keys"), r#"{"current":"k1","ke"#).unwrap();
         let refused = AuditLog::open(path).err().unwrap();
         assert_eq!(refused.code, "audit_key");
+    }
+}
+
+#[cfg(test)]
+mod old_log_tests {
+    use super::*;
+
+    fn test_dir() -> tempfile::TempDir {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        fs::create_dir_all(&parent).unwrap();
+        tempfile::tempdir_in(parent).unwrap()
+    }
+
+    /// Appends one format-1 record after `prev` through `file`, as an older
+    /// latch's writer does. Returns its hash.
+    fn old_append(file: &mut File, prev: &str, caller: &str) -> String {
+        let mut old = plain::Old::from(&record(caller, None, "rules", "allow", "ok"));
+        old.prev = prev.to_string();
+        old.hash = plain::hash_of(&old);
+        writeln!(file, "{}", serde_json::to_string(&old).unwrap()).unwrap();
+        old.hash
+    }
+
+    /// Every file in `dir` that holds `text`.
+    fn holding(dir: &Path, text: &str) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| fs::read_to_string(path).is_ok_and(|body| body.contains(text)))
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn what_an_older_writer_appends_to_the_converted_log_is_sealed_on_the_next_run() {
+        let dir = test_dir();
+        let last = write_plaintext_log(dir.path(), &["connect", "exec"]);
+        let path = dir.path().join("audit.ndjson");
+        // An older latch's `rules` has the plaintext log open, waiting.
+        let mut older = fs::OpenOptions::new().append(true).open(&path).unwrap();
+
+        upgrade(dir.path()).unwrap();
+        // It appends after the swap, to the file it opened.
+        let late = old_append(&mut older, &last, "late-writer");
+        drop(older);
+        assert_eq!(holding(dir.path(), "late-writer"), [OLD_LOG]);
+
+        absorb_old(dir.path()).unwrap();
+        let records = read_all(&path).unwrap();
+        let last_record = records.last().unwrap();
+        assert_eq!(last_record.caller, "late-writer");
+        assert_eq!(last_record.was.as_ref().unwrap().hash, late);
+        assert_eq!(records.len(), 4);
+        // No plaintext copy of anything is left.
+        assert!(!dir.path().join(OLD_LOG).exists());
+        assert_eq!(holding(dir.path(), "late-writer"), Vec::<String>::new());
+        assert_eq!(holding(dir.path(), "old-caller"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_absorb_cut_short_before_removing_the_old_log_seals_nothing_twice() {
+        let dir = test_dir();
+        let last = write_plaintext_log(dir.path(), &["connect"]);
+        let path = dir.path().join("audit.ndjson");
+        let mut older = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        upgrade(dir.path()).unwrap();
+        old_append(&mut older, &last, "late-writer");
+        let kept = fs::read_to_string(dir.path().join(OLD_LOG)).unwrap();
+
+        absorb_old(dir.path()).unwrap();
+        // Cut short just before the removal: the old log is still there.
+        fs::write(dir.path().join(OLD_LOG), &kept).unwrap();
+        absorb_old(dir.path()).unwrap();
+        let callers: Vec<String> = read_all(&path)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.caller)
+            .collect();
+        assert_eq!(callers, ["latch", "old-caller", "late-writer"]);
+        assert!(!dir.path().join(OLD_LOG).exists());
+    }
+
+    #[test]
+    fn an_old_log_that_fails_its_checks_is_kept_and_reported() {
+        let dir = test_dir();
+        write_plaintext_log(dir.path(), &["connect"]);
+        upgrade(dir.path()).unwrap();
+        let old = dir.path().join(OLD_LOG);
+        let tampered = fs::read_to_string(&old)
+            .unwrap()
+            .replacen("connect", "oops", 1);
+        fs::write(&old, &tampered).unwrap();
+        assert_eq!(absorb_old(dir.path()).unwrap_err().code, "audit_broken");
+        assert_eq!(fs::read_to_string(&old).unwrap(), tampered);
     }
 }
