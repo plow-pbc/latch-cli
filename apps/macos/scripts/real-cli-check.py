@@ -3,7 +3,7 @@ isolated state under the repo's .dev/: both onboarding runs, the main window
 on a live host, the menu bar following a terminal serve, the stdin lifeline,
 then sharing-check.sh and measure.sh on the same latch.
 
-    python3 -I scripts/real-cli-check.py --latch PATH [--api URL] [--twin URL] [OUT_DIR]
+    python3 -I scripts/real-cli-check.py --latch PATH --api URL --twin URL [OUT_DIR]
 
 PATH is a latch built with LATCH_BUILD_API_URL set to the stack's API, so the
 app's `latch login --events` signs in there. Drives the test app through its
@@ -29,8 +29,10 @@ LABEL = TEST_ID + ".serve"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--latch", required=True)
-parser.add_argument("--api", default="http://127.0.0.1:19244")
-parser.add_argument("--twin", default="http://127.0.0.1:19245")
+# No defaults: every local Plow stack belongs to some worktree, and signing
+# test accounts up on another cook's stack is not this script's call.
+parser.add_argument("--api", required=True, help="the stack's API, e.g. http://127.0.0.1:19034")
+parser.add_argument("--twin", required=True, help="the stack's LinQ twin, e.g. http://127.0.0.1:19035")
 parser.add_argument("out", nargs="?", default=os.path.join(REPO, ".dev/evidence/mac-app/real-cli"))
 args = parser.parse_args()
 os.makedirs(args.out, exist_ok=True)

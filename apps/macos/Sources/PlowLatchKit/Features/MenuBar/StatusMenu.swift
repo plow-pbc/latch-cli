@@ -19,7 +19,7 @@ public struct StatusMenu: View {
                 .disabled(!model.canStartSharing)
         }
         Divider()
-        Button("Open Plow Latch…") { WindowRouter.shared.showMain() }
+        Button("Open Plow Latch…") { WindowRouter.shared.showHome(onboarding: model.needsOnboarding) }
         Button("Settings…") { WindowRouter.shared.showSettings() }
             .keyboardShortcut(",")
         Divider()

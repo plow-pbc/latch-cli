@@ -26,6 +26,9 @@ public final class FakeLatchClient: LatchClient, SharingService {
     /// How Start Sharing goes on the fake.
     public enum StartOutcome: Sendable {
         case serves
+        /// Registered at once; the host reports starting, then serving after
+        /// a while, as a real serve does.
+        case servesAfter(Duration)
         /// Registering fails outright.
         case fails(LatchFailure)
         /// Registered, but turned off in Login Items until the person allows it.
@@ -171,7 +174,13 @@ public final class FakeLatchClient: LatchClient, SharingService {
     public func startSharing() async throws {
         switch startOutcome {
         case .serves:
-            change { $0.registered = true; $0.serving = true }
+            change { $0.registered = true; $0.serving = true; $0.lastError = nil }
+        case let .servesAfter(delay):
+            change { $0.registered = true }
+            Task {
+                try? await Task.sleep(for: delay)
+                change { $0.serving = true; $0.lastError = nil }
+            }
         case let .fails(failure):
             throw LatchError.failed(failure)
         case .needsApproval:

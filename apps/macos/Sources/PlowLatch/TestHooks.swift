@@ -89,7 +89,8 @@ enum TestHooks {
 
     private static func run(_ command: String, path: String?) {
         switch command {
-        case "show-main": WindowRouter.shared.showMain()
+        // What the menu's Open Plow Latch… does.
+        case "show-main": WindowRouter.shared.showHome(onboarding: model?.needsOnboarding ?? false)
         case "show-settings": WindowRouter.shared.showSettings()
         case "close-windows": WindowRouter.visibleWindows().forEach { $0.performClose(nil) }
         case "quit": NSApp.terminate(nil)

@@ -139,6 +139,12 @@ say "$(agent_line)"; say "$(serve_line)"
 sleep 12
 say "12 s later: $(agent_line); $(serve_line)"
 "$cli" --state-dir "$state" shares set "$share" > /dev/null
+say "-- 7b. with the folder back, Start Sharing again serves (latch still reports the failed run until then)"
+say "latch status before: $(serve_line)"
+post start-sharing
+wait_for "Sharing" && say "$(report)" || say "FAIL: not serving after a failed start: $(report)"
+post stop-sharing
+wait_for "Sharing stopped" > /dev/null || say "FAIL: not stopped: $(report)"
 quit_app
 
 say "== 8. an app on a different state folder from its agent: Start refuses, registers nothing"

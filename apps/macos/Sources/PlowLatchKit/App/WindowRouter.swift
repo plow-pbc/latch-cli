@@ -25,6 +25,12 @@ public final class WindowRouter {
         self.openSettings = openSettings
     }
 
+    /// Open Plow Latch: the main window, or onboarding while this Mac still
+    /// needs it (logged out, or partway through).
+    public func showHome(onboarding: Bool) {
+        if onboarding { showOnboarding() } else { showMain() }
+    }
+
     public func showMain() {
         activate()
         if let window = window(Self.mainWindowID) {

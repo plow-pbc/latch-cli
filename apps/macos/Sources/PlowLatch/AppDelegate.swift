@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A Dock click with no window open brings the main window back.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if !hasVisibleWindows { WindowRouter.shared.showMain() }
+        if !hasVisibleWindows { WindowRouter.shared.showHome(onboarding: model.needsOnboarding) }
         return false
     }
 

@@ -52,6 +52,11 @@ public final class AppModel {
         agent = sharing.agent()
     }
 
+    /// Whether Open Plow Latch means onboarding: logged out, or partway through.
+    public var needsOnboarding: Bool {
+        menuState == .loggedOut || onboarding != nil
+    }
+
     /// The onboarding under way, or a new one. `open` is how it hands a link
     /// to the system, only ever on a click.
     public func beginOnboarding(open: @escaping @MainActor (URL) -> Void) -> Onboarding {
@@ -188,19 +193,23 @@ public final class AppModel {
         let events = client.events(after: nil, lifecycleOnly: true)
         return try await withThrowingTaskGroup(of: HostLifecycle.self) { group in
             group.addTask {
-                var began = false
                 for try await event in events {
+                    // The snapshot is the host as it was: when starting, an
+                    // error or stop in it is the last run's, not this one's.
                     let host: HostLifecycle
+                    let fresh: Bool
                     switch event {
-                    case let .snapshot(_, now, _), let .host(_, now): host = now
+                    case let .snapshot(_, now, _): (host, fresh) = (now, false)
+                    case let .host(_, now): (host, fresh) = (now, true)
                     case .activity, .reset: continue
                     }
                     Self.log.info("sharing: host \(String(describing: host), privacy: .public)")
                     switch (starting, host) {
-                    case (true, .serving), (false, .stopped): return host
-                    case (true, .starting): began = true
-                    case let (_, .error(message)): throw LatchError.unreachable(message)
-                    case (true, .stopped) where began: throw LatchError.unreachable("latch stopped while starting.")
+                    case (true, .serving): return host
+                    case let (true, .error(message)) where fresh: throw LatchError.unreachable(message)
+                    case (true, .stopped) where fresh: throw LatchError.unreachable("latch stopped while starting.")
+                    // Stopping is done once nothing serves, cleanly or not.
+                    case (false, .stopped), (false, .error): return host
                     default: break
                     }
                 }

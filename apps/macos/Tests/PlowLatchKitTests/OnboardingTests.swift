@@ -184,3 +184,13 @@ private func runFlow(startSharing: Bool) async throws -> (Onboarding, AppModel, 
     await app.startSharing()
     #expect(app.sharingError != nil && fake.unregistrations == 0)
 }
+
+@Test @MainActor func startAfterAServeDiedUncleanlyServes() async {
+    // The last serve was killed: latch reports its error until a new one runs.
+    let fake = FakeLatchClient(.hostError, start: .servesAfter(.milliseconds(200)))
+    let app = AppModel(client: fake, sharing: fake)
+    await app.refreshStatus()
+    #expect(app.canStartSharing)
+    await app.startSharing()
+    #expect(app.sharingError == nil && app.agent == .on && app.menuState == .serving)
+}
