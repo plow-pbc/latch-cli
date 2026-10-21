@@ -14,6 +14,7 @@ use super::{CALLER, Host, act, find, serve, test_state};
 
 conformance!(
     no_file_or_other_schemes_page_is_ever_shown,
+    a_data_or_blob_page_is_never_read,
     local_addresses_are_refused_by_number_and_by_name,
 );
 
@@ -265,4 +266,60 @@ async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
         );
     }
     assert!(!format!("{shown:?}").contains(&secret), "{shown:?}");
+}
+
+/// A page a script sends to a `data:` or `blob:` address of its own making
+/// (a blob page is one the engines load themselves) is never read: no
+/// engine hook stops those loads before they start, so the tab is blanked
+/// when latch next reads it. A `data:` image still loads.
+async fn a_data_or_blob_page_is_never_read(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["made-pages"]);
+    let secret = sentinel("SENTINEL");
+    let pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    let page = format!(
+        "<!doctype html><title>pictures</title><p>pictures</p>\
+         <img id=pixel alt=pixel src=\"data:image/png;base64,{pixel}\">"
+    );
+    let start = format!(
+        "http://127.0.0.1:{}/",
+        serve(vec![("/".into(), page.into())])
+    );
+    let mut h = Host::new(&state);
+    let (s, _) = h.open(CALLER, "made-pages", json!({"url": start})).await;
+    let width = h
+        .call(
+            CALLER,
+            "eval",
+            &s,
+            json!({"script": "document.getElementById('pixel').naturalWidth"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(width["value"], json!(1), "{width:#}");
+    for target in [
+        format!("URL.createObjectURL(new Blob(['<h1>{secret}</h1>'], {{type: 'text/html'}}))"),
+        format!("'data:text/html,<h1>{secret}</h1>'"),
+    ] {
+        let script = format!("location.href = {target}; 1");
+        h.call(CALLER, "eval", &s, json!({"script": script}))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let read = h.call(CALLER, "text", &s, json!({})).await;
+        let after = h.call(CALLER, "observe", &s, json!({})).await.unwrap();
+        println!(
+            "{}: {} then on {}",
+            &target[..24],
+            read.as_ref()
+                .map_or_else(|f| f.message.clone(), |_| "read".into()),
+            after["url"]
+        );
+        assert!(!format!("{read:?} {after}").contains(&secret));
+        let url = after["url"].as_str().unwrap();
+        assert!(url == "about:blank" || url.starts_with(&start), "{url}");
+        h.call(CALLER, "goto", &s, json!({"url": start}))
+            .await
+            .unwrap();
+    }
+    h.call(CALLER, "close", &s, json!({})).await.unwrap();
 }

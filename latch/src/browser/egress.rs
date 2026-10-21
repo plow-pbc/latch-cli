@@ -4,7 +4,8 @@
 //!   `tab new`, a step's navigation, `requested`); `file:`, `chrome:`,
 //!   `view-source:`, `data:` and every other scheme are refused with
 //!   `url_refused` before anything is sent. A tab that ends up on one
-//!   anyway (a page's own link, redirect or script) is never read: `shown`.
+//!   anyway (a page's own link, redirect or script, to a file or a page
+//!   it made itself, `data:` or `blob:`) is never read: `shown`.
 //! - The network: the engine reaches it only through `Proxy`, on 127.0.0.1
 //!   in the worker, which resolves every name itself and connects only to
 //!   the addresses it checked, so a name that resolves (or re-resolves) to
@@ -101,11 +102,11 @@ pub fn web(url: &str) -> Result<Option<url::Url>, Failure> {
     Ok(Some(parsed))
 }
 
-/// Whether a tab on `url` may be read: a web page, a blank one, a page's
-/// own `blob:` object, or the engine's page for a load that failed.
+/// Whether a tab on `url` may be read: a web page, a blank one, or the
+/// engine's page for a load that failed.
 pub fn shown(url: &str) -> bool {
     let scheme = url.split(':').next().unwrap_or_default();
-    matches!(scheme, "http" | "https" | "blob" | "chrome-error")
+    matches!(scheme, "http" | "https" | "chrome-error")
         || url == "about:blank"
         || ["about:neterror", "about:certerror"]
             .iter()
@@ -514,7 +515,6 @@ mod tests {
             "https://example.com/",
             "http://127.0.0.1:8/x",
             "about:blank",
-            "blob:https://example.com/0f6e",
             "chrome-error://chromewebdata/",
             "about:neterror?e=connectionFailure",
         ] {
@@ -523,6 +523,7 @@ mod tests {
         for url in [
             "file:///Users/someone/state/config.json",
             "data:text/html,hi",
+            "blob:https://example.com/0f6e",
             "chrome://version/",
             "view-source:https://example.com/",
             "about:config",

@@ -543,8 +543,12 @@ own sandbox on for every renderer, GPU and utility process
   and however it came about, is stopped before it starts
   (`ERR_BLOCKED_BY_CLIENT`). Camoufox has no such hook: there, a page's
   own link, redirect or script to a file is stopped only by Firefox's own
-  rules. In both, a tab that ends up off the web anyway is blanked, never
-  read. Both engines reach the network only through a proxy in the
+  rules. Neither engine lets latch stop a `data:` or `blob:` page before
+  it loads (Chrome loads them past its interception); both engines refuse
+  a page's own top-level `data:` navigation, and a `blob:` page a script
+  makes does load. In both, a tab that ends up off the web anyway,
+  `data:` and `blob:` pages included, is blanked, never read; `data:`
+  images in a web page still load. Both engines reach the network only through a proxy in the
   worker that resolves each name itself and connects only to the address
   it checked, so the host's loopback, link-local and private addresses
   (Tailscale's included) are refused, by number or by a name that resolves
