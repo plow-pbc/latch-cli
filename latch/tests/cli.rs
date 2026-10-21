@@ -977,6 +977,26 @@ fn local_relay() -> (tokio::runtime::Runtime, String) {
     (runtime, url)
 }
 
+/// A running `latch serve`, stopped when dropped: when the test ends,
+/// passing or not.
+struct Serving(std::process::Child);
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        // SAFETY: signals our own child.
+        unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while matches!(self.0.try_wait(), Ok(None)) {
+            if std::time::Instant::now() > deadline {
+                let _ = self.0.kill();
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     let plow = LivePlow::start();
@@ -1005,20 +1025,22 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
     // The host, until it has registered its relay.
-    let mut serve = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .args([
-            "--state-dir",
-            host.to_str().unwrap(),
-            "serve",
-            "--no-dashboard",
-        ])
-        .arg(&share)
-        .env("LATCH_TEST_RELAY_URL", &relay)
-        .env_remove("LATCH_HOST")
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut log = BufReader::new(serve.stderr.take().unwrap());
+    let mut serve = Serving(
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args([
+                "--state-dir",
+                host.to_str().unwrap(),
+                "serve",
+                "--no-dashboard",
+            ])
+            .arg(&share)
+            .env("LATCH_TEST_RELAY_URL", &relay)
+            .env_remove("LATCH_HOST")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut log = BufReader::new(serve.0.stderr.take().unwrap());
     loop {
         let mut line = String::new();
         assert_ne!(log.read_line(&mut line).unwrap(), 0, "serve stopped");
@@ -1042,10 +1064,7 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     plow.rotate("agent-rotated");
     fs::write(&agent_token, "agent-rotated\n").unwrap();
     let after = exec("after");
-
-    // SAFETY: signals our own child.
-    unsafe { libc::kill(serve.id() as i32, libc::SIGTERM) };
-    serve.wait().unwrap();
+    drop(serve);
     assert_eq!(after.status.code(), Some(0), "{after:?}");
     let result: Value = serde_json::from_slice(&after.stdout).unwrap();
     assert_eq!(result["stdout"], "after\n");
