@@ -213,15 +213,24 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             let dashboard = !args.no_dashboard && term::stdout_is_terminal() && !term::no_color();
             paint::set_color(dashboard);
             let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
-            serve::run(&state, &args.folders, dashboard, deny_exec).await?;
-            // The dashboard's terminal may take no output: print nothing
-            // more to it, so stopping never waits on it.
-            if dashboard {
+            let served = serve::run(&state, &args.folders, dashboard, deny_exec).await;
+            // Once the dashboard has had the terminal, it may take no
+            // output: how the host ended goes to serve.log, and the exit
+            // code says it, so stopping never waits on the terminal.
+            if log::in_file() {
+                let exit = match served {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(failure) => {
+                        log::log(&format!("serve ended: {}", failure.to_json()));
+                        failure.exit.into()
+                    }
+                };
                 return Ok(Printed {
                     text: String::new(),
-                    exit: ExitCode::SUCCESS,
+                    exit,
                 });
             }
+            served?;
             to_json(json!({}))
         }
         Command::Worker(_) => unreachable!("handled in main"),

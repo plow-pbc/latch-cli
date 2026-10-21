@@ -108,6 +108,7 @@ fn latch_at_a_terminal(
     args: &[&str],
     typed: &str,
     stdout_at_the_terminal: bool,
+    env: &[(&str, &Path)],
 ) -> (Option<i32>, String, String) {
     use std::os::fd::FromRawFd;
     let (mut main, mut side) = (0, 0);
@@ -120,7 +121,7 @@ fn latch_at_a_terminal(
     let opened = unsafe { libc::openpty(&mut main, &mut side, name, settings, size) };
     assert_eq!(opened, 0);
     let (mut main, side) = unsafe { (fs::File::from_raw_fd(main), fs::File::from_raw_fd(side)) };
-    let mut command = latch_command(state, args, &[]);
+    let mut command = latch_command(state, args, env);
     command
         .stdin(side.try_clone().unwrap())
         .stderr(side.try_clone().unwrap())
@@ -508,7 +509,7 @@ fn a_name_clash_stops_a_login_at_a_terminal_too() {
     ];
 
     // Even a person ready to say yes is not asked to replace the machine.
-    let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false);
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
     assert!(shown.contains("\"conflict\""), "{shown}");
     assert!(shown.contains("latch devices remove mac"), "{shown}");
@@ -569,7 +570,7 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
     let state = dir.path().join("state");
     let args = ["login", "--api-url", &api_url, "--name", "mac"];
 
-    let (code, shown, _) = latch_at_a_terminal(&state, &args, "", true);
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "", true, &[]);
     assert_eq!(code, Some(0), "{shown}");
     // Every row of the QR code, and the link under it, open Messages.
     let link = "sms:+14155550100?&body=TRY12";
@@ -611,7 +612,7 @@ fn a_login_by_text_piped_still_prints_its_json() {
     let state = dir.path().join("state");
     let args = ["login", "--api-url", &api_url, "--name", "mac"];
 
-    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", false);
+    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", false, &[]);
     assert_eq!(code, Some(0), "{shown}");
     assert!(shown.contains("Text TRY12 to +1 415-555-0100"), "{shown}");
     assert!(!shown.contains("Logged in as"), "{shown}");
@@ -2022,6 +2023,28 @@ fn a_login_with_events_whose_code_expires_says_so_and_fails() {
     let error: Value = serde_json::from_slice(&login.stderr).unwrap();
     assert_eq!(error["error"]["code"], "code_expired");
     server.join().unwrap();
+}
+
+#[test]
+fn a_dashboard_host_that_fails_says_why_in_its_log_not_on_its_terminal() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    // No relay answers there: the host gives up after its dashboard has
+    // taken the terminal.
+    let relay = [("LATCH_TEST_RELAY_URL", Path::new("http://127.0.0.1:9/"))];
+    let args = ["serve", share.to_str().unwrap()];
+    let (code, shown, _) = latch_at_a_terminal(&host, &args, "", true, &relay);
+    assert!(
+        shown.contains("\x1b[?1049h"),
+        "the dashboard was shown: {shown}"
+    );
+    assert_eq!(code, Some(1), "{shown}");
+    assert!(!shown.contains("relay_unreachable"), "{shown}");
+    let log = fs::read_to_string(host.join("serve.log")).unwrap();
+    assert!(log.contains("relay_unreachable"), "{log}");
 }
 
 #[test]
