@@ -3,7 +3,7 @@
 Every crate `latch` depends on directly, and why. The usage numbers are from
 the library audit (crates.io and GitHub APIs, pulled 2026-10-14). `rand` is not in
 the audit; its row was pulled from the same APIs on 2026-10-15, and the vault's six
-(`aes-gcm` to `zip`) on 2026-10-19, and `qrcode` on 2026-10-19. Downloads
+(`aes-gcm` to `zip`, named in the browser spec) on 2026-10-19, and `qrcode` on 2026-10-19. Downloads
 are all-time / last 90 days. The bar for a new crate: widely used, actively
 maintained, from a known owner. Add a row here in the same change that adds a
 crate to `Cargo.toml`.
@@ -21,7 +21,7 @@ crate to `Cargo.toml`.
 | `serde` | Plain structs to and from JSON | 1,531M | 10.9k | serde-rs org | 1.0.229 (2026-07-18) | MIT/Apache-2.0 |
 | `serde_json` | The JSON format for serde | 1,434M | 5.7k | serde-rs org | 1.0.154 (2026-10-11) | MIT/Apache-2.0 |
 | `sha2` | sha256 for the audit log's hash chain | 1,062M / 302M | 2.3k | RustCrypto org | 0.11.1 (2026-10-12) | MIT/Apache-2.0 |
-| `tempfile` | Per-call Google folders and throwaway test state | 890M / 208M | 1.5k | Stebalien | 3.27.0 (2026-03-11) | MIT/Apache-2.0 |
+| `tempfile` | Per-call Google folders, each browser session's scratch folder, and throwaway test state | 890M / 208M | 1.5k | Stebalien | 3.27.0 (2026-03-11) | MIT/Apache-2.0 |
 | `aes-gcm` | The vault: items and its data key sealed with AES-256-GCM | 182M / 57M | 968 (AEADs monorepo) | RustCrypto org | 0.11.1 (2026-08-21) | Apache-2.0/MIT |
 | `csv` | The vault: reading password managers' CSV exports | 269M / 57M | 2.0k | BurntSushi | 1.4.0 (2025-10-17) | Unlicense/MIT |
 | `psl` | The vault: registrable domains (the public-suffix list, private suffixes included) | 36M / 7.9M | 38 | addr-rs org | 2.1.239 (2026-10-03); pinned in Cargo.lock, since each release is a new list | MIT/Apache-2.0 |
