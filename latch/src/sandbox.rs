@@ -31,6 +31,10 @@ pub struct Policy {
     /// readable and writable on macOS. On Linux the worker's private `/tmp`
     /// takes its place, and the folder only holds bubblewrap's status file.
     pub tmpdir: Option<PathBuf>,
+    /// An `exec` worker kills its program this many seconds after it
+    /// started, even if the host that should have stopped it by then cannot
+    /// (it hangs, or is stopped).
+    pub kill_after: Option<u64>,
     /// A Google worker may run only this pinned program.
     pub program: Option<PathBuf>,
     /// Test only: make the OS refuse the sandbox, to show that a sandbox
@@ -43,6 +47,60 @@ pub struct Policy {
 /// An error means the process is not confined and must not go on.
 pub fn confine(policy: &Policy) -> Result<(), String> {
     platform::confine(policy)
+}
+
+/// An `exec` worker's watch on the host that started it, taken before the
+/// worker confines itself (see `supervise`).
+pub use platform::HostWatch;
+
+/// Starts watching the host that started this worker. Call before `confine`.
+/// Fails if the host is already gone.
+pub fn watch_host() -> Result<HostWatch, String> {
+    platform::watch_host()
+}
+
+/// Before an `exec` worker is confined, makes sure
+/// the program ends when the host does, however the host ends (SIGKILL
+/// included), and at `kill_after` seconds at the latest, even if the host
+/// that should stop it by then cannot. On macOS the worker forks; the child
+/// returns to confine itself and become the program while the parent stays
+/// outside its sandbox to watch, and ends as the program did. On Linux the
+/// launcher outside bubblewrap does this, so this returns at once.
+pub fn supervise(watch: HostWatch, kill_after: Option<u64>) -> Result<(), String> {
+    platform::supervise(watch, kill_after)
+}
+
+/// Waits for our child, retrying a wait interrupted by a signal.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn reap(pid: libc::pid_t) -> std::io::Result<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt;
+    let mut status = 0;
+    loop {
+        // SAFETY: pid is our child and status is writable.
+        if unsafe { libc::waitpid(pid, &mut status, 0) } >= 0 {
+            return Ok(std::process::ExitStatus::from_raw(status));
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+/// Ends this process as `status` says another ended: with the same exit
+/// code, or killed by the same signal.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn exit_with_status(status: std::process::ExitStatus) -> ! {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(signal) = status.signal() {
+        // SAFETY: restore the signal's default action and deliver it to self.
+        unsafe {
+            libc::signal(signal, libc::SIG_DFL);
+            libc::raise(signal);
+        }
+        std::process::exit(128 + signal);
+    }
+    std::process::exit(status.code().unwrap_or(125));
 }
 
 /// What a Linux browser worker sees: the system files its engine and
@@ -106,9 +164,10 @@ pub fn startup_error(stderr: &str) -> String {
 #[cfg(target_os = "macos")]
 mod platform {
     use std::ffi::{CStr, CString, c_char, c_int};
+    use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
 
-    use super::Policy;
+    use super::{Policy, exit_with_status, reap};
 
     // `sandbox_init` is part of macOS's system library. Apple marks it
     // deprecated but it is what `sandbox-exec` and other tools still use.
@@ -120,6 +179,107 @@ mod platform {
     /// Seatbelt is part of every macOS, so there is nothing to probe.
     pub fn check() -> Result<(), String> {
         Ok(())
+    }
+
+    /// A kqueue that reports the host's exit.
+    pub struct HostWatch(c_int);
+
+    pub fn watch_host() -> Result<HostWatch, String> {
+        // SAFETY: plain system calls on a descriptor we own.
+        let queue = unsafe { libc::kqueue() };
+        if queue < 0 {
+            return Err(format!("kqueue: {}", std::io::Error::last_os_error()));
+        }
+        // SAFETY: as above.
+        let host = unsafe { libc::getppid() };
+        // A worker whose host is gone already belongs to launchd.
+        if host == 1 {
+            return Err("the host that started this worker is gone".to_string());
+        }
+        watch_exit(queue, host)
+            .map_err(|err| format!("cannot watch the host: {err}"))
+            .map(|()| HostWatch(queue))
+    }
+
+    /// Adds `pid`'s exit to the events `queue` reports.
+    fn watch_exit(queue: c_int, pid: libc::pid_t) -> std::io::Result<()> {
+        let change = libc::kevent {
+            ident: pid as usize,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        // SAFETY: one valid change in, no events out.
+        let added =
+            unsafe { libc::kevent(queue, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
+        if added < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub fn supervise(watch: HostWatch, kill_after: Option<u64>) -> Result<(), String> {
+        // SAFETY: the worker has no other threads, so only the child goes
+        // on to confine itself. The supervisor stays outside its sandbox. A
+        // kqueue is not inherited across `fork`: the child holds no watch.
+        let program = unsafe { libc::fork() };
+        if program < 0 {
+            return Err(format!("fork: {}", std::io::Error::last_os_error()));
+        }
+        if program == 0 {
+            return Ok(());
+        }
+        let HostWatch(queue) = watch;
+        let deadline = kill_after
+            .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds));
+        // A program that is already gone is reaped below all the same.
+        if watch_exit(queue, program).is_ok() {
+            loop {
+                let left = deadline.map(|deadline| {
+                    let left = deadline.saturating_duration_since(std::time::Instant::now());
+                    libc::timespec {
+                        tv_sec: left.as_secs() as libc::time_t,
+                        tv_nsec: libc::c_long::from(left.subsec_nanos()),
+                    }
+                });
+                // SAFETY: zeroed is a valid `kevent` to receive into.
+                let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+                let timeout = left
+                    .as_ref()
+                    .map_or(std::ptr::null(), |left| left as *const _);
+                // SAFETY: no changes in, room for one event out.
+                let got =
+                    unsafe { libc::kevent(queue, std::ptr::null(), 0, &mut event, 1, timeout) };
+                let interrupted =
+                    std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+                if got < 0 && interrupted {
+                    continue;
+                }
+                if got != 1 || event.ident != program as usize {
+                    // The host exited, the time is up, or the watch broke.
+                    kill_all(program);
+                }
+                break;
+            }
+        }
+        exit_with_status(
+            reap(program).unwrap_or_else(|_| std::process::ExitStatus::from_raw(libc::SIGKILL)),
+        )
+    }
+
+    /// Kills the worker's process group: the program, everything it
+    /// started, and this process. The host makes each worker the leader of
+    /// a group of its own; a worker run any other way kills its program alone.
+    fn kill_all(program: libc::pid_t) {
+        // SAFETY: plain signal calls.
+        unsafe {
+            if libc::getpgrp() == libc::getpid() {
+                libc::killpg(libc::getpgrp(), libc::SIGKILL);
+            }
+            libc::kill(program, libc::SIGKILL);
+        }
     }
 
     pub fn confine(policy: &Policy) -> Result<(), String> {
@@ -369,6 +529,16 @@ mod platform {
     pub fn confine(_policy: &Policy) -> Result<(), String> {
         Err("no worker sandbox on this operating system yet".to_string())
     }
+
+    pub struct HostWatch;
+
+    pub fn watch_host() -> Result<HostWatch, String> {
+        Err("no worker sandbox on this operating system yet".to_string())
+    }
+
+    pub fn supervise(_watch: HostWatch, _kill_after: Option<u64>) -> Result<(), String> {
+        Err("no worker sandbox on this operating system yet".to_string())
+    }
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
@@ -386,6 +556,7 @@ mod google_tests {
                 state_dir: root.join("state"),
                 exec: false,
                 tmpdir: None,
+                kill_after: None,
                 program: Some(PathBuf::from(
                     std::env::var_os("LATCH_PRIVATE_PROGRAM").unwrap(),
                 )),
@@ -463,6 +634,7 @@ mod google_tests {
                 state_dir: root.join("state"),
                 exec: mode == "exec",
                 tmpdir: (mode == "exec").then(|| root.join("private/call")),
+                kill_after: None,
                 program: (mode == "google").then(|| gog.clone()),
                 break_for_test: false,
             })
