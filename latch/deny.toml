@@ -19,6 +19,7 @@ targets = [
 # depends on directly: one deeper down is its dependent's to replace.
 [advisories]
 unmaintained = "workspace"
+unsound = "all"
 yanked = "deny"
 ignore = []
 
