@@ -4,6 +4,11 @@
 set -eu
 [ "$#" -eq 3 ] || { echo 'usage: package-release.sh VERSION TARGET BINARY' >&2; exit 1; }
 version=$1 target=$2 binary=$3
+# The test-only gog stand-in never ships: its marker is in no binary.
+if grep -aqF latch-fake-gog-test-only "$binary"; then
+  echo "$binary was built with the fake-gog test feature" >&2
+  exit 1
+fi
 cd "$(dirname "$0")/.."
 out="dist/latch-$version-$target"
 mkdir -p "$out/src/google"

@@ -662,8 +662,8 @@ A separate macOS user for engines is the later hardening.
 
 A Linux browser worker confines itself in bubblewrap before it starts
 Xvfb or the engine, and Chrome's own sandbox runs inside that, in user,
-PID and network namespaces of its own with its seccomp filters on (no
-`--no-sandbox`, ever). The runtime sees:
+PID and network namespaces of its own with its seccomp filters on. The
+one exception is Ubuntu 23.10 and later (below). The runtime sees:
 
 - the system files the engine and display need, read-only (`/usr`, the
   loader cache, fonts, name resolution, certificates, the time zone and
@@ -679,6 +679,20 @@ PID and network namespaces of its own with its seccomp filters on (no
 
 It sees no areas. The worker's environment is still only `PATH`, and the
 engine's the four variables above (and `DISPLAY`).
+
+### Ubuntu 23.10 and later: page isolation off
+
+Where AppArmor restricts unprivileged user namespaces
+(`kernel.apparmor_restrict_unprivileged_userns` is 1) and Ubuntu's
+`bwrap-userns-restrict` profile is in force, which `install.sh` loads
+there, every program bwrap starts runs under that profile's `unpriv_bwrap`,
+which denies the capabilities Chrome's sandbox needs: Chrome would stop
+with "No usable sandbox". On such a host, and only there, latch starts
+Chrome with `--no-sandbox` inside its own bubblewrap and seccomp: web
+pages are no longer isolated from one another or from the browser
+process, but latch's sandbox still confines them all, as above. The
+`open` answer and `latch status --local` say so as `"page_isolation":
+"page isolation off on this host"`. Camoufox runs as everywhere else.
 
 ## Tests
 

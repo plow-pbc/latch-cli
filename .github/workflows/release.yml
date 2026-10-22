@@ -100,11 +100,6 @@ jobs:
         shell: bash
         run: |
           binary='latch/target/${{ matrix.target }}/release/latch'
-          # The test-only gog stand-in never ships: its marker is in no binary.
-          if grep -aqF latch-fake-gog-test-only "$binary"; then
-            echo "$binary was built with the fake-gog test feature" >&2
-            exit 1
-          fi
           sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
       - name: Load signing credentials
         uses: 1password/load-secrets-action@v2

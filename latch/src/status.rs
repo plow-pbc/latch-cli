@@ -54,6 +54,10 @@ pub struct LocalStatus {
     pub last_error: Option<Problem>,
     /// Whether a newer build is available, as the host last looked.
     pub update: crate::update::Status,
+    /// Said only where Chrome runs without its own sandbox
+    /// (`sandbox::page_isolation_off`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_isolation: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -117,5 +121,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         },
         last_error: host.error,
         update: crate::update::status(&dir),
+        page_isolation: crate::sandbox::page_isolation_off()
+            .then_some(crate::sandbox::PAGE_ISOLATION_OFF),
     })
 }
