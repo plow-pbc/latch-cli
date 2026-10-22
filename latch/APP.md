@@ -48,7 +48,9 @@ Field by field:
 - `peer` is `null` before login.
 - `serve.running` means a `latch serve` holds the state folder's lock.
 - `serve.ready` means that serve is online and accepting callers.
-- `serve.managed` means it runs as this user's service, as `latch serve` and `serve -d` start it, not `serve --foreground`. An upgrade stops a managed host and starts it again with `latch serve -d --again`.
+- `serve.managed` means it runs as this user's service, as `latch serve` and `serve -d` start it, not `serve --foreground`. An upgrade stops a host `serve -d` started and starts it again with `latch serve -d --again`.
+- `serve.attached` means a managed host is held by the `latch serve` in a terminal that started it. An upgrade stops it, and a host run with `serve --foreground`, and says to run `latch serve` there again.
+- `serve.blocked`, when set, says why a running host cannot be used: `other_version`, a host from another latch version, with its pid and how to stop it. `serve.ready` is then false.
 - `serve.state` is one of `starting`, `serving`, `stopped` or `error`.
 - `last_error` says why the host last stopped, when it stopped because of a failure. A host that was killed or crashed shows `serve_ended`.
 

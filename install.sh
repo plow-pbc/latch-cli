@@ -2,12 +2,12 @@
 # Installs latch from a private GitHub release: the newest published one, or
 # the tag given first. Options go on to the release's install-binary.sh.
 #
-#   sh install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser]
+#   sh install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive]
 set -eu
 version=latest
 case "${1:-}" in
   -h | --help)
-    echo 'usage: install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser]'
+    echo 'usage: install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive]'
     exit 0
     ;;
   "" | -*) ;;
@@ -52,4 +52,3 @@ fi
 echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
 sh "$setup/install-binary.sh" "$@" "$setup/latch"
 "$setup/latch" --version
-echo 'A host run with latch serve --foreground keeps its old binary until it is restarted.'

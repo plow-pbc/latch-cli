@@ -46,6 +46,8 @@ pub struct Board {
     pub connectors: Vec<(String, String)>,
     /// Pending browser handoffs, each a line of its own.
     pub handoffs: Vec<String>,
+    /// That latch was updated since the host started, and to which build.
+    pub update: Option<String>,
     /// Newest first.
     pub tasks: VecDeque<Task>,
     /// Older tasks were dropped.
@@ -221,6 +223,11 @@ impl Dashboard {
     /// Shows what the host is doing now, while it starts or stops.
     pub fn step(&self, step: &str) {
         self.change(|board| board.step = Some(step.to_string()));
+    }
+
+    /// Says latch was updated since the host started (`update`).
+    pub fn updated(&self, update: String) {
+        self.change(|board| board.update = Some(update));
     }
 
     /// Replaces the pending handoffs.

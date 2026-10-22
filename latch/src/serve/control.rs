@@ -23,7 +23,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Notify;
 
 use super::{Host, Stopping, answer, failed};
-use crate::lifecycle;
+use crate::lifecycle::{self, Phase};
 use crate::log::log;
 use crate::wire::{self, Request, Response};
 
@@ -49,7 +49,7 @@ const HOLD_WITHIN: Duration = Duration::from_secs(30);
 
 pub struct Lifetime {
     /// Held by the `latch serve` that started it, until that one detaches.
-    attached: AtomicBool,
+    pub attached: AtomicBool,
     held: AtomicBool,
     /// Ends the host's serving loop.
     pub stop: Notify,
@@ -115,8 +115,14 @@ pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, rec
         }
         _ => match watch(host, hello, send, recv).await {
             Watched::Detached => {
-                // From now on this host is as if started with -d.
+                // From now on this host is as if started with -d, as
+                // other latch processes (an upgrade) see it too.
                 host.lifetime.attached.store(false, Ordering::SeqCst);
+                if let Err(failure) =
+                    lifecycle::record(&host.workers.state_dir, Phase::Serving, false, None)
+                {
+                    log(&format!("could not record the detach: {}", failure.message));
+                }
                 log("the `latch serve` that held this host detached; it runs until `latch stop`");
             }
             Watched::Gone => host

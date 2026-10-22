@@ -891,7 +891,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "audit.rotate-key",
-        output: "The `current` key and every key kept; a running `latch serve` uses the new one once restarted.",
+        output: "The `current` key and every key kept; a running `latch serve` seals its next record with the new one.",
         effect: Once("makes a new audit key for new records; old records keep theirs"),
         owner_only: true,
         connector: None,
@@ -958,6 +958,19 @@ const ENTRIES: &[Entry] = &[
             ),
             ex("Every command, for a program", &["help", "--json"]),
         ],
+    },
+    Entry {
+        id: "setup",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so.",
+        effect: Repeatable(
+            "logs in, enables connectors and starts the host, as the owner answers; done steps are skipped",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Set up this machine, or finish setting it up",
+            &["setup"],
+        )],
     },
     Entry {
         id: "skill",

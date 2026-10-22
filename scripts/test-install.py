@@ -1,4 +1,5 @@
 """Run the packaged installer with local, hash-verified plugin fixtures."""
+import fcntl
 import hashlib
 import json
 import os
@@ -6,6 +7,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import termios
+import threading
 import unittest
 import zipfile
 
@@ -43,6 +46,15 @@ def fixture(root, state, binary_script, system="FixtureOS", machine="x86_64"):
     uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system};; -m) echo {machine};; esac\n')
     uname.chmod(0o755)
     return setup, binary, tools
+
+
+def drain(terminal):
+    """Reads a terminal's main side until its other side is closed."""
+    try:
+        while os.read(terminal, 4096):
+            pass
+    except OSError:
+        pass
 
 
 class BinaryInstall(unittest.TestCase):
@@ -97,6 +109,46 @@ class BinaryInstall(unittest.TestCase):
 
     def test_options_on_both_sides_of_the_binary(self):
         self.install(custom=True, source="middle")
+
+    def test_setup_runs_only_at_a_terminal_and_not_when_told_not_to(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        # An upgrade (a login there already) never runs it, even at a terminal.
+        for at_terminal, extra, upgrade, runs in [
+                (False, [], False, False), (True, [], False, True),
+                (True, ["--non-interactive"], False, False), (True, [], True, False)]:
+            with tempfile.TemporaryDirectory(dir=parent) as directory:
+                root = Path(directory)
+                state = root / "state"
+                called = root / "called"
+                setup, binary, tools = fixture(root, state,
+                                               f'#!/bin/sh\necho "$@" >> "{called}"\n')
+                if upgrade:
+                    (state / "config.json").write_text("{}")
+                env = {**os.environ, "HOME": str(root / "home"),
+                       "PATH": f"{tools}:{os.environ['PATH']}"}
+                args = ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                        "--no-browser", *extra, str(binary)]
+                if at_terminal:
+                    # A terminal of its own, as a person's: what /dev/tty opens.
+                    main, side = os.openpty()
+                    # Read what it shows, so it never waits on a full terminal.
+                    shown = threading.Thread(target=drain, args=(main,))
+                    shown.start()
+                    result = subprocess.run(
+                        args, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=side,
+                        stderr=side, start_new_session=True, timeout=60,
+                        preexec_fn=lambda: fcntl.ioctl(1, termios.TIOCSCTTY, 0))
+                    os.close(side)
+                    shown.join()
+                    os.close(main)
+                else:
+                    result = subprocess.run(args, cwd=root, env=env, capture_output=True,
+                                            stdin=subprocess.DEVNULL)
+                self.assertEqual(result.returncode, 0)
+                ran = called.read_text() if called.exists() else ""
+                self.assertEqual(ran, f"--state-dir {state} setup\n" if runs else "",
+                                 (at_terminal, extra, upgrade))
 
     def test_macos_release_installs_the_app_and_updates_it_in_place(self):
         parent = ROOT / ".dev/tests"
@@ -180,10 +232,15 @@ class BinaryInstall(unittest.TestCase):
             self.assertIn(option, result.stdout)
 
 
-def fake_latch(version, log, managed=True, stop_ok=True, start_ok=True):
-    """A latch that says `version`, reports a host (managed or not) on
-    `status --local`, and writes each stop and start it does to `log`."""
-    serve = '{"serve":{"running":true,"ready":true,"managed":%s}}' % str(managed).lower()
+def fake_latch(version, log, managed=True, stop_ok=True, start_ok=True, running=True,
+               attached=False, other_version=False):
+    """A latch that says `version`, reports a host (managed or not, attached
+    or not, another version's or not) on `status --local`, and writes each
+    stop and start it does to `log`."""
+    blocked = '{"code":"other_version","message":"a host from another latch version"}'
+    serve = '{"serve":{"running":%s,"ready":%s,"managed":%s,"attached":%s,"blocked":%s}}' % (
+        str(running).lower(), str(running and not other_version).lower(), str(managed).lower(),
+        str(attached).lower(), blocked if other_version else "null")
     stop = """echo '{"stopped":true}'""" if stop_ok else "exit 1"
     start = "echo '{}'" if start_ok else "exit 1"
     return f"""#!/bin/sh
@@ -264,10 +321,29 @@ class HostUpgrade(unittest.TestCase):
         self.assertIn(f"is stopped; start once with: {self.recovery}", result.stderr)
         self.assertEqual(calls, ["0.1.0 (1) stop"])
 
-    def test_no_managed_host_or_the_same_version_stops_nothing(self):
-        for old_version, managed in [("0.1.0 (1)", False), ("0.1.0 (2)", True)]:
+    def test_a_host_in_a_terminal_is_stopped_and_the_owner_told_to_serve_again(self):
+        # `serve --foreground`, then an attached `latch serve`.
+        for managed, attached in [(False, False), (True, True)]:
             log = self.log()
-            old = fake_latch(old_version, log, managed=managed)
+            old = fake_latch("0.1.0 (1)", log, managed=managed, attached=attached)
+            result, calls, _ = self.upgrade(old, fake_latch("0.1.0 (2)", log), log)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(calls, ["0.1.0 (1) stop"], "never started again in the background")
+            self.assertIn("ran in a terminal and was stopped: run `latch serve` there again",
+                          result.stdout)
+
+    def test_a_host_of_yet_another_version_is_left_to_its_owner_with_how_to_stop_it(self):
+        log = self.log()
+        old = fake_latch("0.1.0 (2)", log, managed=False, other_version=True)
+        result, calls, _ = self.upgrade(old, fake_latch("0.1.0 (2)", log), log)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [])
+        self.assertIn("install-binary.sh: a host from another latch version\n", result.stdout)
+
+    def test_no_host_or_the_same_version_stops_nothing(self):
+        for old_version, running in [("0.1.0 (1)", False), ("0.1.0 (2)", True)]:
+            log = self.log()
+            old = fake_latch(old_version, log, running=running)
             result, calls, _ = self.upgrade(old, fake_latch("0.1.0 (2)", log), log)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(calls, [])

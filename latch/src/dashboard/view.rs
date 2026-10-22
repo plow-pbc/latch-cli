@@ -357,6 +357,9 @@ impl View {
         if let Some(notice) = &self.notice {
             shown.push((notice.clone(), &alert));
         }
+        if let Some(update) = &board.update {
+            shown.push((update.clone(), &alert));
+        }
         for handoff in &board.handoffs {
             shown.push((handoff.clone(), &alert));
         }

@@ -195,6 +195,10 @@ pub enum Command {
     Help(HelpArgs),
     /// Print SKILL.md, which teaches an agent how to use latch
     Skill,
+    /// Set this machine up, at a terminal: log in, connect Google, on a Mac
+    /// turn on Messages and Contacts, and start latch. Each step runs a latch
+    /// command and is skipped once done, so it can be run again any time
+    Setup,
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),
@@ -852,7 +856,7 @@ pub enum AuditAction {
     },
     /// Check every record's place in the chain, without the key
     Verify,
-    /// Seal new records under a new key and keep every old one; a running `latch serve` uses it once restarted
+    /// Seal new records under a new key and keep every old one; a running `latch serve` uses it from its next record
     RotateKey,
 }
 

@@ -185,13 +185,13 @@ pub async fn run(
     // Held until this process ends, however it ends.
     let _lock = lock_state(&state_dir)?;
     // From here on, other processes see this host's steps (`lifecycle.rs`).
-    lifecycle::record(&state.path, Phase::Starting, None)?;
+    lifecycle::record(&state.path, Phase::Starting, attached, None)?;
     let result = run_locked(state, headless_browsers, deny_exec, attached, state_dir).await;
     let (phase, error) = match &result {
         Ok(()) => (Phase::Stopped, None),
         Err(failure) => (Phase::Error, Some(failure)),
     };
-    if let Err(failure) = lifecycle::record(&state.path, phase, error) {
+    if let Err(failure) = lifecycle::record(&state.path, phase, attached, error) {
         log(&format!(
             "could not record the host's last step: {}",
             failure.message
@@ -342,8 +342,14 @@ async fn run_host(
         home,
         stopping: watch::Sender::new(Stopping::No),
     });
+    watch_binary(&host, BINARY_CHECK_EVERY);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
-    lifecycle::record(&state.path, Phase::Serving, None)?;
+    lifecycle::record(
+        &state.path,
+        Phase::Serving,
+        host.lifetime.attached.load(Ordering::SeqCst),
+        None,
+    )?;
     host.dashboard.socket(true);
     host.dashboard.connectors(host.plugins.enabled());
     host.dashboard.serving();
@@ -534,6 +540,49 @@ impl Binary {
             ));
         }
         replaced
+    }
+}
+
+/// How often a host looks whether its binary was replaced, for its
+/// dashboard (an operation looks for itself).
+const BINARY_CHECK_EVERY: Duration = Duration::from_secs(10);
+
+/// Shows on `host`'s dashboard once its binary was replaced, looking each
+/// `every`, and which build is there now. Stops with the host.
+fn watch_binary(host: &Arc<Host>, every: Duration) {
+    let host = Arc::downgrade(host);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            if !host.binary.replaced() {
+                continue;
+            }
+            let version = tokio::process::Command::new(&host.binary.path)
+                .arg("--version")
+                .output()
+                .await
+                .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+                .unwrap_or_default();
+            host.dashboard.updated(updated_to(&version));
+            return;
+        }
+    });
+}
+
+/// `latch was updated; restart to use build 1327`, from what the new
+/// latch's `--version` said (`latch 0.1.0 (1327): commit …`).
+fn updated_to(version: &str) -> String {
+    let number = version
+        .split_once(" (")
+        .and_then(|(_, rest)| rest.split_once("):"))
+        .map(|(number, _)| number)
+        .filter(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()));
+    match number {
+        Some(number) => format!("latch was updated; restart to use build {number}"),
+        None => "latch was updated; restart to use the new build".to_string(),
     }
 }
 
@@ -1402,6 +1451,22 @@ mod plugins_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_names_its_build_when_it_has_one() {
+        let release = "latch 0.1.0 (1327): commit 1a2b3c4d5, built 2026-10-22, standalone";
+        assert_eq!(
+            updated_to(release),
+            "latch was updated; restart to use build 1327"
+        );
+        let local = "latch 0.1.0 (commit 1a2b3c4d5, built 2026-10-22 03:45 UTC, local build)";
+        for said in [local, ""] {
+            assert_eq!(
+                updated_to(said),
+                "latch was updated; restart to use the new build"
+            );
+        }
+    }
 
     fn caller(kind: &str, name: &str, uid: Option<&str>) -> Identity {
         serde_json::from_value(serde_json::json!({

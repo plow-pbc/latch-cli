@@ -15,7 +15,7 @@
 //!
 //! The keys are the state folder's secret (see `secrets.rs`), and rotate:
 //! `latch audit rotate-key` starts a new key and keeps the old ones, so every
-//! record still reads. A running host picks up a new key when it restarts.
+//! record still reads. A running host seals its next record with the new key.
 //!
 //! The log is `audit.sealed.ndjson`. A plaintext `audit.ndjson` an older
 //! latch left is neither read nor changed: a fresh sealed log starts beside
@@ -208,7 +208,6 @@ fn aad(kid: &str, prev: &str) -> Vec<u8> {
 pub struct AuditLog {
     path: PathBuf,
     records: usize,
-    keys: Keys,
 }
 
 impl AuditLog {
@@ -241,11 +240,7 @@ impl AuditLog {
             }
         };
         let records = open_all(&keys, &text, &path)?.len();
-        Ok(AuditLog {
-            path,
-            records,
-            keys,
-        })
+        Ok(AuditLog { path, records })
     }
 
     pub fn len(&self) -> usize {
@@ -256,11 +251,14 @@ impl AuditLog {
     /// and flushes it to disk before returning, so a record is never lost
     /// to a crash. Returns its hash. Another process may append to the same
     /// log (the owner's local `latch rules`), so the record chains onto the
-    /// file's own last line, read under the audit lock. The log is opened
-    /// only once the lock is held, so it is never a file a conversion has
-    /// since replaced.
+    /// file's own last line, read under the audit lock, and is sealed with
+    /// the keys as they are now, so a `latch audit rotate-key` since takes
+    /// effect at once. The log is opened only once the lock is held, so it
+    /// is never a file a conversion has since replaced.
     pub fn append(&mut self, record: Record) -> Result<String, Failure> {
-        let _lock = lock(self.path.parent().unwrap_or(Path::new(".")))?;
+        let dir = self.path.parent().unwrap_or(Path::new("."));
+        let _lock = lock(dir)?;
+        let keys = Keys::existing(dir)?.ok_or_else(|| no_key(&self.path))?;
         let mut file = fs::OpenOptions::new()
             .create(true)
             .read(true)
@@ -269,7 +267,7 @@ impl AuditLog {
             .open(&self.path)
             .map_err(|err| io_failure(&self.path, err))?;
         let prev = last_hash(&mut file).map_err(|err| io_failure(&self.path, err))?;
-        let line = self.keys.seal(&record, &prev);
+        let line = keys.seal(&record, &prev);
         let text = serde_json::to_string(&line).expect("a line serializes");
         file.write_all(format!("{text}\n").as_bytes())
             .and_then(|()| file.sync_data())
@@ -302,7 +300,7 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
         AuditAction::RotateKey => {
             let keys = Keys::rotate(&state.path)?;
             Ok(json!({"current": keys.last(), "keys": keys,
-                      "note": "new records use the new key; a running latch serve does once it restarts"}))
+                      "note": "new records use the new key, a running latch serve's included"}))
         }
     }
 }
@@ -694,5 +692,17 @@ mod tests {
         assert_eq!(records[3].caller, "caller-three");
         assert_eq!(records[1].caller, "caller-one");
         assert!(verify(&fs::read_to_string(&path).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn a_log_already_open_seals_with_the_new_key_after_a_rotation() {
+        let (dir, path) = log_with_three_records();
+        let mut host = AuditLog::open(path.clone()).unwrap();
+        Keys::rotate(dir.path()).unwrap();
+        host.append(exec_record("caller-three")).unwrap();
+        let last = fs::read_to_string(&path).unwrap();
+        let last = serde_json::from_str::<Line>(last.lines().last().unwrap()).unwrap();
+        assert_eq!(last.kid, "k2");
+        assert_eq!(read_all(&path).unwrap()[3].caller, "caller-three");
     }
 }

@@ -1,16 +1,24 @@
 #!/bin/sh
 # Installs a latch binary you already have into ~/.local/bin, or --bin-dir.
 #
-#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [path/to/latch]
+#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive] [path/to/latch]
+#
+# A first install (no login in the state directory yet) at a terminal ends
+# by running `latch setup` (log in, connect Google, and so on);
+# --non-interactive, or no terminal, leaves that for later. An upgrade
+# never runs it: setup could start a host the upgrade did not mean to.
 #
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
 #
-# A managed host on the state directory (one `latch serve` or `serve -d`
-# started) runs the latch being replaced: when the version changes, it is
-# stopped with `latch stop` first and started again with the new latch,
-# with what it was last given (`serve -d --again`), once everything is in
-# place. A host run with `serve --foreground` is left alone.
+# A host on the state directory runs the latch being replaced: when the
+# version changes, it is stopped with `latch stop` first. One `serve -d` started is started
+# again with the new latch, with what it was last given (`serve -d
+# --again`), once everything is in place. One that runs in a terminal (an
+# attached `latch serve`, or `serve --foreground`) cannot be started again
+# in that terminal: the install says to run `latch serve` there again. A
+# host from yet another version, which no latch here can reach, is left
+# for its owner to stop, and the install says how.
 #
 # On macOS a release's latch is inside Plow Latch.app (the `latch` beside
 # this script leads into it). Then the whole app goes to ~/Applications,
@@ -50,11 +58,13 @@ die() { say "$*" >&2; exit 1; }
 # One word for the shell, whatever it holds.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [path/to/latch]"
+usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive] [path/to/latch]"
 bin_dir="$HOME/.local/bin"
 state_dir="$HOME/.latch"
 browsers=""
 no_browser=""
+non_interactive=""
+state_given=""
 src="$(dirname "$0")/latch"
 given_src=""
 while [ $# -gt 0 ]; do
@@ -76,6 +86,7 @@ while [ $# -gt 0 ]; do
     --state-dir)
       [ $# -ge 2 ] && [ -n "$2" ] || die "$usage"
       state_dir=$2
+      state_given=1
       shift 2
       ;;
     --browser)
@@ -87,6 +98,10 @@ while [ $# -gt 0 ]; do
       ;;
     --no-browser)
       no_browser=1
+      shift
+      ;;
+    --non-interactive)
+      non_interactive=1
       shift
       ;;
     -*) die "$usage" ;;
@@ -106,11 +121,16 @@ fi
 [ -f "$src" ] && [ -x "$src" ] || die "$src is not an executable file"
 
 dest="$bin_dir/latch"
+# A first install: no login in the state directory yet.
+first_install=""
+[ -f "$state_dir/config.json" ] || first_install=1
 
-# 0. A managed host running the latch being replaced is stopped first; only
-# a stop it confirms counts, and a failed one changes nothing. If anything
-# fails before it runs again, show the command for one explicit start.
+# 0. A host running the latch being replaced is stopped first; only a stop
+# it confirms counts, and a failed one changes nothing. If anything fails
+# before one `serve -d` started runs again, show the command for one
+# explicit start.
 restart_host=""
+terminal_host=""
 tmp=""
 on_exit() {
   ended=$?
@@ -120,19 +140,39 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
-if [ -x "$dest" ] && [ "$("$dest" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ]; then
-  case "$("$dest" --state-dir "$state_dir" status --local 2>/dev/null)" in
-    *'"managed":true'*)
-      stopped=$("$dest" --state-dir "$state_dir" stop) || die "could not stop the host on $state_dir (see above); nothing was changed"
-      case "$stopped" in
-        *'"stopped":true'*)
-          restart_host="$(quote "$dest") --state-dir $(quote "$state_dir") serve -d"
-          say "stopped the host on $state_dir; it starts again with the new latch once the install is done"
-          ;;
-      esac
+host=""
+if [ -x "$dest" ]; then
+  host=$("$dest" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
+  case "$host" in
+    # A host from yet another latch version: no latch here can reach it,
+    # so its owner is told how to stop it.
+    *'"other_version"'*)
+      say "$(printf '%s\n' "$host" | sed -n 's/.*"blocked":{"code":"other_version","message":"\([^"]*\)"}.*/\1/p')"
+      host=""
       ;;
   esac
+  # Only a host of the latch being replaced is stopped.
+  [ "$("$dest" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ] || host=""
 fi
+case "$host" in
+  *'"running":true'*)
+    stopped=$("$dest" --state-dir "$state_dir" stop) || die "could not stop the host on $state_dir (see above); nothing was changed"
+    case "$stopped" in
+      *'"stopped":true'*)
+        case "$host" in
+          *'"attached":true'*) terminal_host=1 ;;
+          *'"managed":true'*) restart_host="$(quote "$dest") --state-dir $(quote "$state_dir") serve -d" ;;
+          *) terminal_host=1 ;;
+        esac
+        if [ -n "$terminal_host" ]; then
+          say "stopped the host on $state_dir, which ran in a terminal; run \`latch serve\` again to start it with the new latch"
+        else
+          say "stopped the host on $state_dir; it starts again with the new latch once the install is done"
+        fi
+        ;;
+    esac
+    ;;
+esac
 
 # 1. The binary. Copy next to the target, then rename, so a running latch is
 # never overwritten in place. cksum, unlike cmp, is on every system.
@@ -311,5 +351,24 @@ if [ -n "$restart_host" ]; then
   restart_host=""
   say "started the host on $state_dir again with the new latch"
 fi
+if [ -n "$terminal_host" ]; then
+  say "the host on $state_dir ran in a terminal and was stopped: run \`latch serve\` there again to start it with the new latch"
+fi
 
+# On a first install at a terminal, `latch setup` takes it from here,
+# reading the terminal itself (this script's own stdin may be the download
+# it came from). Whatever happens in setup, the install is done.
+if [ -n "$first_install" ]; then
+  if [ -z "$non_interactive" ] && [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
+    say "running latch setup"
+    if [ -n "$state_given" ]; then
+      set -- --state-dir "$state_dir" setup
+    else
+      set -- setup
+    fi
+    "$dest" "$@" </dev/tty || say "setup did not finish; run \`latch setup\` any time"
+  else
+    say "next: run \`latch setup\` to log in and set up the rest"
+  fi
+fi
 say "done"

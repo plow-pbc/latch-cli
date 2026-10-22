@@ -53,7 +53,7 @@ const STOP_WITHIN: Duration = Duration::from_secs(40);
 /// How long a host that is up has to answer one question on its socket.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
 /// The flags the last start gave the host, for `serve -d --again`.
-const ARGS_FILE: &str = "serve-args.json";
+pub(crate) const ARGS_FILE: &str = "serve-args.json";
 
 #[cfg(test)]
 mod saved_flags_tests {
@@ -151,9 +151,13 @@ pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
     }
     // The write side stays open while the view does: the host takes its
     // end as the viewer gone.
-    let (hello, boards, _watching) = watch(&state.path, "host_watch")
-        .await
-        .map_err(not_serving)?;
+    let (hello, boards, _watching) =
+        watch(&state.path, "host_watch").await.map_err(
+            |failure| match lifecycle::other_version(&state.path) {
+                Some(pid) => lifecycle::other_version_running(pid),
+                None => not_serving(failure),
+            },
+        )?;
     show(&hello, boards, false).await;
     Ok(())
 }
@@ -185,7 +189,10 @@ async fn launch(
         return Err(Failure::failed("launch_busy", message));
     };
     if lifecycle::holds_lock(&dir) {
-        return Err(already_serving(&dir).await);
+        return Err(match lifecycle::other_version(&dir) {
+            Some(pid) => lifecycle::other_version_running(pid),
+            None => already_serving(&dir).await,
+        });
     }
     let given = if args.again {
         given_before(&dir)?
@@ -341,11 +348,23 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
         if !asked && let Some(pid) = target {
             asked = ask(dir, "host_stop", json!({"pid": pid})).await.is_ok();
         }
+        // A host of another latch never answers on this one's socket: its
+        // service manager stops it if it has one; otherwise its owner does.
+        if !asked
+            && !removed
+            && !service.registered()
+            && let Some(pid) = lifecycle::other_version(dir)
+        {
+            return Err(lifecycle::other_version_running(pid));
+        }
         if !asked && !removed {
             service.remove()?;
             removed = true;
         }
         if started.elapsed() > STOP_WITHIN {
+            if let Some(pid) = lifecycle::other_version(dir) {
+                return Err(lifecycle::other_version_running(pid));
+            }
             let pid = target.map_or("?".to_string(), |pid| pid.to_string());
             let message = format!(
                 "the host (pid {pid}) did not stop within {} seconds",

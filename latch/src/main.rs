@@ -41,6 +41,7 @@ mod sandbox;
 mod seal;
 mod secrets;
 mod serve;
+mod setup;
 mod state;
 mod status;
 mod term;
@@ -86,6 +87,8 @@ fn main() -> ExitCode {
     // Workers confine the initial thread before any runtime threads exist.
     let command = match cli.command {
         Command::Worker(args) => return worker::run(args),
+        // At a terminal, running other latch commands; no runtime of its own.
+        Command::Setup => return setup::run(cli.state_dir),
         // A browser worker drives its engine on plain threads, no runtime.
         Command::BrowserWorker(args) => {
             return match StateDir::new(cli.state_dir) {
@@ -338,7 +341,11 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 exit: ExitCode::SUCCESS,
             })
         }
-        Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
+        Command::Worker(_)
+        | Command::BrowserWorker(_)
+        | Command::Help(_)
+        | Command::Skill
+        | Command::Setup => {
             unreachable!("handled in main")
         }
     }

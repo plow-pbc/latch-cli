@@ -549,6 +549,20 @@ fn a_host_that_went_away_is_never_shown_as_live() {
 }
 
 #[test]
+fn an_update_stands_under_the_host_line() {
+    let dashboard = busy();
+    dashboard.updated("latch was updated; restart to use build 133".into());
+    for width in [120, 80] {
+        let lines = screen(&view_of(&dashboard, true), width, 24);
+        let at = lines
+            .iter()
+            .position(|line| line == "latch was updated; restart to use build 133")
+            .unwrap_or_else(|| panic!("{lines:#?}"));
+        assert!(at <= 3, "{lines:#?}");
+    }
+}
+
+#[test]
 fn keys_arrive_as_the_terminal_sends_them() {
     assert_eq!(
         parse(b"\x1b[A\x1b[B\x1b[C\x1b[D\x1b[F\r\tq/\x7f"),
