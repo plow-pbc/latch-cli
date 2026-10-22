@@ -31,6 +31,8 @@ pub enum Secret {
     PlowToken,
     /// The vault's custody key, as hex.
     VaultKey,
+    /// The audit log's keys, by id (see `audit.rs`).
+    AuditKeys,
 }
 
 impl Secret {
@@ -40,6 +42,7 @@ impl Secret {
             Secret::Key => "key",
             Secret::PlowToken => "plow-token",
             Secret::VaultKey => "vault.key",
+            Secret::AuditKeys => "audit.keys",
         }
     }
 }

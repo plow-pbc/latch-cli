@@ -251,7 +251,8 @@ async fn run_locked(
         let path = state.path.join("serve.log");
         log::to_file(&path)
             .map_err(|err| Failure::failed("log_file", format!("{}: {err}", path.display())))?;
-        Some(Dashboard::start(&config.peer.name))
+        let note = workers.areas.is_empty().then_some(SHARING_NONE);
+        Some(Dashboard::start(&config.peer.name, note))
     } else {
         None
     };
@@ -288,14 +289,19 @@ async fn run_host(
             .map_err(|why| Failure::failed("not_logged_in", why))?,
         Box::new(rules),
     );
-    let audit = AuditLog::open(state.path.join("audit.ndjson"))?;
+    let audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
     log(&format!("audit log verified: {} records", audit.len()));
+    log(&format!("commands in this log: {}", crate::redact::NOTE));
     let names: Vec<String> = workers
         .areas
         .iter()
         .map(|area| area.display().to_string())
         .collect();
-    log(&format!("sharing: {}", names.join(", ")));
+    if names.is_empty() {
+        log(SHARING_NONE);
+    } else {
+        log(&format!("sharing: {}", names.join(", ")));
+    }
     if !workers.reads.is_empty() {
         let reads: Vec<String> = workers
             .reads
@@ -622,20 +628,19 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
     Ok(file)
 }
 
+/// What a host sharing no folders says in its log and on its dashboard.
+pub const SHARING_NONE: &str = "Sharing no folders — browser and Google only. \
+    Add some with `latch shares set ~/code`, then restart `latch serve`.";
+
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
 /// checked now, so a typo is a plain error rather than refused files later.
 /// Any folder may be shared but `home` (the home folder) and the folders
 /// that hold its `Library`, where macOS keeps mail, messages and the like:
 /// share the projects in it instead. The sandbox hides the state folder and
-/// the never-readable places even inside a shared folder.
+/// the never-readable places even inside a shared folder. None at all is a
+/// host for the browser and Google only: its `exec` and `file` refuse.
 pub fn shared_folders(folders: &[PathBuf], home: Option<&Path>) -> Result<Vec<PathBuf>, Failure> {
-    if folders.is_empty() {
-        let message = "name the folders to share, e.g. `latch serve ~/code`, or save them \
-                       with `latch shares set ~/code`"
-            .to_string();
-        return Err(Failure::usage("no_folders", message));
-    }
     let mut areas = Vec::new();
     for folder in folders {
         let refuse = |why: &str| {
@@ -868,8 +873,12 @@ async fn serve_operation(
             // A worker started now would run the new latch under this old
             // host: nothing runs, and nothing is judged.
             let upgraded = host.binary.replaced();
-            let gated = gate::gated(op, &request.args, &host.workers.areas[0])
-                .filter(|_| !denied_exec && !upgraded);
+            // With no shared folder, exec and file refuse: nothing to judge.
+            let unshared =
+                host.workers.areas.is_empty() && matches!(op, "exec" | "file_get" | "file_put");
+            let first_area = host.workers.areas.first().map(PathBuf::as_path);
+            let gated = gate::gated(op, &request.args, first_area)
+                .filter(|_| !denied_exec && !upgraded && !unshared);
             let unjudgeable = match (&gate, &gated) {
                 (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
@@ -919,7 +928,7 @@ async fn serve_operation(
                                 .to_string(),
                         },
                         // As a refused judgment keeps it: no stdin.
-                        audit_args: gate::gated(op, &request.args, &host.workers.areas[0])
+                        audit_args: gate::gated(op, &request.args, first_area)
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
@@ -993,7 +1002,8 @@ async fn serve_operation(
             let decision = decision(&done.response);
             log(&format!(
                 "{op}: {caller}: {decision}: {} {}",
-                done.outcome, done.audit_args
+                done.outcome,
+                crate::redact::shown(op, &done.audit_args)
             ));
             let dashboard = host.dashboard.as_ref().map(|dashboard| {
                 (
@@ -1418,7 +1428,7 @@ mod tests {
             shared(&[home.join("Library/Developer")]).unwrap(),
             [home.join("Library/Developer")]
         );
-        assert_eq!(shared(&[]).unwrap_err().code, "no_folders");
+        assert_eq!(shared(&[]).unwrap(), Vec::<PathBuf>::new());
         for (folder, why) in [
             (home.join("missing"), "does not exist"),
             (home.join("notes.txt"), "not a folder"),

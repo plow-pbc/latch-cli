@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""The plan command's metrics, read from a host's audit log.
+"""The plan command's metrics, read from a host's audit records, one JSON
+record per line, as `latch audit show` opens them:
 
-    scripts/plan-metrics.py STATE_DIR/audit.ndjson [--since ISO-TIME]
+    latch --state-dir STATE audit show | jq -c '.records[]' \
+      | python3 scripts/plan-metrics.py /dev/stdin [--since ISO-TIME]
 
 Prints one JSON object: each plan request (actions, model-chosen actions,
 model calls, the model's total time and the cost, confirmations, the stop),
@@ -146,7 +148,7 @@ def metrics(records):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("audit", help="the host's audit.ndjson")
+    parser.add_argument("audit", help="audit records, one JSON record per line")
     parser.add_argument("--since", help="only records from this ISO time on")
     args = parser.parse_args()
     json.dump(metrics(browser_records(args.audit, args.since)), sys.stdout, indent=2)

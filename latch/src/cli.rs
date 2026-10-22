@@ -76,7 +76,10 @@ Agents:
   what fixes it: often a retry later, but a host out of Plow credits fails
   until the host's account owner adds them. A browser step's
   model_unavailable (exit 1) is the same decision model, for a click's risk,
-  a goal or a sentence check; nothing was sent, and nothing gets around it.";
+  a goal or a sentence check; nothing was sent, and nothing gets around it.
+
+  `latch skill` prints the guide for agents; `latch help --json` describes
+  every command; `latch help COMMAND --examples` shows how to call one.";
 
 /// What `latch browser do --help` adds after its options: the short form
 /// by example. BROWSER.md shows the same examples.
@@ -108,7 +111,8 @@ read `do --history R` first, and never resend it.";
     name = "latch",
     version = version(),
     about = "Reach your other machines over iroh, with Plow as the directory.",
-    after_help = AGENT_HELP
+    after_help = AGENT_HELP,
+    disable_help_subcommand = true
 )]
 pub struct Cli {
     /// Directory of this latch instance: its key, Plow credential and config (~/.latch unless this build has another default)
@@ -144,17 +148,37 @@ pub enum Command {
     Rules(RulesArgs),
     /// The folders `latch serve` shares when it is named none, and its --allow-read paths: show them, or set them
     Shares(SharesArgs),
+    /// This machine's host audit log: its records in full, its chain checked without the key, or a new key
+    Audit(AuditArgs),
     /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
     Events(EventsArgs),
     /// Run this machine as a host, in the foreground, until stopped
     #[command(after_help = SERVE_HELP)]
     Serve(ServeArgs),
+    /// Help for a command, its examples, or every command as JSON
+    Help(HelpArgs),
+    /// Print SKILL.md, which teaches an agent how to use latch
+    Skill,
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),
     /// Internal: the process a host starts for each browser session
     #[command(hide = true)]
     BrowserWorker(BrowserWorkerArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HelpArgs {
+    /// The command, e.g. `browser` or `browser open` [default: every command]
+    #[arg(value_name = "COMMAND")]
+    pub path: Vec<String>,
+    /// Examples of each command, ready to adapt
+    #[arg(long, conflicts_with = "json")]
+    pub examples: bool,
+    /// Each command's inputs, output, action id, side effects and retry
+    /// rule, and latch's exit codes, as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -725,6 +749,22 @@ pub struct EventsArgs {
     /// Only the host's state changes, no activity
     #[arg(long)]
     pub lifecycle_only: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct AuditArgs {
+    #[command(subcommand)]
+    pub action: AuditAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuditAction {
+    /// Every record, opened with the key: each command in full, as it ran
+    Show,
+    /// Check every record's place in the chain, without the key
+    Verify,
+    /// Seal new records under a new key and keep every old one; a running `latch serve` uses it once restarted
+    RotateKey,
 }
 
 #[derive(Args, Debug)]
