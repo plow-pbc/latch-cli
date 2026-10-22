@@ -86,6 +86,14 @@ async fn a_disabled_connector_is_refused_before_it_is_judged_or_given_a_credenti
     assert!(rest.is_empty());
     let owners = t.local_call("google", accounts()).await;
     assert_eq!(refusal(&owners).1, "not_enabled");
+    // Messages too, before its reader is asked to plan the call.
+    #[cfg(target_os = "macos")]
+    {
+        ok(plugins(&t, "disable", "messages").await);
+        let read = json!({"action": "search", "args": ["--since", "1h"]});
+        let (answer, _) = t.call(&agent, "messages", read).await;
+        assert_eq!(refusal(&answer).1, "not_enabled");
+    }
 
     assert_eq!(t.judged(), 0, "nothing was judged");
     assert_eq!(

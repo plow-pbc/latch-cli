@@ -25,6 +25,10 @@ if [ -d latch/src/browser ]; then
   cp latch/camoufox/package.json latch/camoufox/package-lock.json "$out/camoufox/"
   cp -R latch/camoufox/sqlite "$out/camoufox/"
 fi
+# The Messages reader, built and pinned with a macOS latch (release.yml).
+if [ -f latch/messages-reader/dist/latch-messages ]; then
+  cp latch/messages-reader/dist/latch-messages "$out/"
+fi
 cp latch/DOCKER.md "$out/"
 mkdir -p "$out/docker"
 cp latch/docker/seccomp.json latch/docker/latch-bwrap.apparmor "$out/docker/"

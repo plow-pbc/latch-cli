@@ -48,3 +48,15 @@ builds only; `cargo tree -e normal` shows neither in latch.
 Not used, although the audit lists them: `anyhow` and `thiserror`. A failure
 is one plain struct (`src/failure.rs`) with an exit kind, a code and a
 message, which is all the error contract needs.
+
+## The Messages reader (messages-reader/, Swift)
+
+`latch-messages`, the reader a macOS host runs for `latch messages` and
+`latch contacts`, depends on one package beyond Apple's SDK (Foundation and
+the system SQLite), pinned exactly in `messages-reader/Package.swift` and
+`Package.resolved`. Its metadata is linked into the binary, so no resource
+bundle ships with it.
+
+| Package | Used for | Stars | Owner | Version (released) | License |
+|---|---|---|---|---|---|
+| `PhoneNumberKit` | Phone numbers as one canonical handle each, region-aware | 63 (5.4k at its old home, `marmelroy/PhoneNumberKit`, which points here) | PhoneNumberKit org (its original authors) | 5.0.12 (2026-10-08) | MIT |

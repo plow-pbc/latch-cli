@@ -87,11 +87,9 @@ pub struct Item {
     /// A login's site, and any more it also signs in on; for a card or an
     /// identity, the optional "only on these sites" list. Each is a
     /// registrable domain (`example.com`), from what was given.
-    #[serde(default)]
     pub sites: Vec<String>,
     /// A login's other top-level sites it may be filled under (a sign-in
     /// page embedded by another site).
-    #[serde(default)]
     pub other_top_sites: Vec<String>,
     pub raw: Raw,
 }

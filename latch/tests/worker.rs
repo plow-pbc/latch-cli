@@ -432,11 +432,12 @@ fn serve_with_denied(rules: Option<(i64, Vec<seccompiler::SeccompRule>)>) -> Out
     use std::os::unix::process::CommandExt;
 
     let dir = setup();
+    let state = tempfile::tempdir_in(dir.path()).unwrap();
     let area = dir.path().join("area").canonicalize().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
         .args(["serve", "--no-dashboard", "--state-dir"])
-        .arg(dir.path().join("state"))
+        .arg(state.path())
         .arg(area)
         .env_clear();
     if let Some((syscall, conditions)) = rules {
@@ -904,8 +905,12 @@ fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
 fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
     use std::os::unix::net::UnixListener;
 
-    let dir = setup();
+    // macOS Unix socket addresses must fit even when the checkout path is long.
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
     let root = dir.path().canonicalize().unwrap();
+    for folder in ["area", "state", "tmp"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
     for (state, alias) in [
         ("state", "area/state-link"),
         ("area/peer", "area/peer-link"),

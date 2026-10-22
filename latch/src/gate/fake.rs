@@ -91,7 +91,10 @@ impl World {
             let accounts: Vec<Value> = self
                 .google_accounts
                 .iter()
-                .map(|account| json!({"account": account, "access_token": "made-up-token"}))
+                .map(|account| {
+                    json!({"account": account, "access_token": "made-up-token",
+                           "capabilities": {"mail_read": true, "calendar_read": true}})
+                })
                 .collect();
             return (200, json!({"data": {"accounts": accounts}}));
         }

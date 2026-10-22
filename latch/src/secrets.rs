@@ -1,7 +1,7 @@
 //! Where a state folder keeps its secrets: this peer's key, the Plow token
 //! and the vault's custody key.
 //!
-//! A latch signed with Plow's keychain group (the release's helper bundle,
+//! A latch signed with Plow's keychain group (the release's Plow Latch.app,
 //! `latch/macos`) keeps them in the macOS data-protection Keychain, under
 //! that group, readable after the first unlock and never synced. Every
 //! other build (a dev build, Linux) keeps them as owner-only files in the
@@ -31,6 +31,8 @@ pub enum Secret {
     PlowToken,
     /// The vault's custody key, as hex.
     VaultKey,
+    /// The audit log's keys, by id (see `audit.rs`).
+    AuditKeys,
 }
 
 impl Secret {
@@ -40,6 +42,7 @@ impl Secret {
             Secret::Key => "key",
             Secret::PlowToken => "plow-token",
             Secret::VaultKey => "vault.key",
+            Secret::AuditKeys => "audit.keys",
         }
     }
 }
