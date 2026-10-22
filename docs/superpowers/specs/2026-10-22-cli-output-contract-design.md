@@ -98,9 +98,9 @@ Interfaces: consumes existing failure codes and exit classes · produces the err
 Done when: a test triggers one failure per regular command (from `help --json`; human commands excluded) with stderr both a terminal (pty) and piped, and each gives exactly one JSON error line whose `exit` equals the process exit code; bad arguments exit 2 for every command; with `LATCH_TRACE` set or an update available, stderr is still exactly one line and the trace lands in the state folder; `help --json` lists every code with its exit.
 
 ### Chunk 1b: JSON results, no text mode
-Implements: §2.1 (results), §2.3
+Implements: §2.1 (results, and a regular command writes nothing to stderr when it succeeds: warnings and previews go in the JSON result, installer/download progress goes to `trace.log`, the legacy plaintext-audit notice becomes a result or error field), §2.3
 Interfaces: consumes 1a's error shape · produces JSON-only results for every regular command and the global `--pretty`
-Done when: a test runs every non-interactive command (from `help --json`) with stdout both a terminal (pty) and piped and gets JSON of identical shape; `--pretty` gives indented JSON of the same content for every command; `--version` and `browser text` return JSON and `--raw` is gone; a grep shows the per-command text renderers (including `status --pretty`'s card) are deleted; an `exec` whose child exits 1 returns a result, and an `exec` timeout returns an error carrying the partial output.
+Done when: a test runs every non-interactive command (from `help --json`) with stdout both a terminal (pty) and piped and gets JSON of identical shape; `--pretty` gives indented JSON of the same content for every command; `--version` and `browser text` return JSON and `--raw` is gone; a grep shows the per-command text renderers (including `status --pretty`'s card) are deleted; an `exec` whose child exits 1 returns a result, and an `exec` timeout returns an error carrying the partial output. A successful run of every regular command leaves stderr empty, at a terminal and piped.
 
 ### Chunk 1c: Typed streams
 Implements: §2.2
