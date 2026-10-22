@@ -8,6 +8,8 @@
 //!   host's owner token). An agent's own credential is not copied here; see
 //!   `credential.rs`.
 //! - `config.json`: the Plow API URL and this peer's record as Plow returned it.
+//! - `plow-url`: the Plow a saved token belongs to, written with it, so a
+//!   login that fails after the token arrived is retried against that Plow.
 //! - `audit.sealed.ndjson`, on a host: its audit log, each record sealed
 //!   (see `audit.rs`); `audit.keys`*: the keys that seal it; `audit.lock`:
 //!   held by what writes it. A plaintext `audit.ndjson` from an older latch
@@ -258,8 +260,21 @@ impl StateDir {
         Ok(Some(text.trim().to_string()))
     }
 
-    pub fn save_token(&self, token: &str) -> Result<(), Failure> {
-        self.secrets()?.write(Secret::PlowToken, token.as_bytes())
+    /// Saves a Plow token and the Plow it belongs to.
+    pub fn save_token(&self, token: &str, api_url: &str) -> Result<(), Failure> {
+        self.secrets()?.write(Secret::PlowToken, token.as_bytes())?;
+        let path = self.path.join("plow-url");
+        write_private(&path, format!("{api_url}\n").as_bytes())
+            .map_err(|err| self.io_failure(&path, err))
+    }
+
+    /// The Plow the saved token belongs to, if one was recorded with it.
+    pub fn load_plow_url(&self) -> Result<Option<String>, Failure> {
+        let path = self.path.join("plow-url");
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(self.read(&path)?.trim().to_string()))
     }
 
     /// The saved config, or `None` before the first successful `login`.

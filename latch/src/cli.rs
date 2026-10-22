@@ -238,7 +238,8 @@ pub enum BrowserCommand {
     },
     /// A PNG of the page, written to a file on this machine
     Screenshot {
-        #[arg(long, short)]
+        /// Where the PNG goes on this machine
+        #[arg(value_name = "PATH")]
         output: PathBuf,
     },
     /// The plan command: up to 10 steps in order, each `click|type|select|press
@@ -987,6 +988,19 @@ mod tests {
             Command::Serve(serve) => serve,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_screenshot_takes_its_path_as_an_argument() {
+        let parsed = Cli::try_parse_from(["latch", "browser", "screenshot", "page.png"]).unwrap();
+        let Command::Browser(args) = parsed.command else {
+            panic!("not a browser command");
+        };
+        let BrowserCommand::Screenshot { output } = args.command else {
+            panic!("not a screenshot");
+        };
+        assert_eq!(output, PathBuf::from("page.png"));
+        assert!(Cli::try_parse_from(["latch", "browser", "screenshot"]).is_err());
     }
 
     #[test]
