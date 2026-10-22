@@ -556,8 +556,12 @@ fn several_accounts_on_a_one_account_command_are_refused_at_run_time() {
     assert_eq!(request.account, ["a@example.com", "b@example.com"]);
     let tokens: super::Tokens = serde_json::from_value(json!({
         "accounts": [
-            {"account": "a@example.com", "access_token": "test-placeholder"},
-            {"account": "b@example.com", "access_token": "test-placeholder"},
+            {"account": "a@example.com", "access_token": "test-placeholder", "is_default": true,
+             "capabilities": {"mail_read": true, "mail_write": true,
+                              "calendar_read": true, "calendar_write": true}},
+            {"account": "b@example.com", "access_token": "test-placeholder", "is_default": false,
+             "capabilities": {"mail_read": true, "mail_write": true,
+                              "calendar_read": true, "calendar_write": true}},
         ],
     }))
     .unwrap();
