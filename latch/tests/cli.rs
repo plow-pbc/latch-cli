@@ -2455,7 +2455,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
         remote(&["vault", "list", "--host", "host"])["items"],
         json!([])
     );
-    // Separate CLI processes contend for the same vault, already cached by serve.
+    // Separate CLI processes contend for the same vault while serve also uses it.
     thread::scope(|scope| {
         for _ in 0..6 {
             let host = &host;
@@ -2732,111 +2732,78 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
 }
 
 #[test]
-fn local_socket_full_plow_outage_refuses_gated_work_but_config_still_works() {
-    let plow = LivePlow::start();
-    let (_runtime, relay) = local_relay();
-    let dir = test_dir();
-    let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
-    google_enabled(&host);
-    let _serve = serving(&host, &share, &relay);
-    plow.stop();
-    for args in [
-        vec!["exec", "--", "touch", "must-not-exist"],
-        vec!["google", "--host", "host", "--", "accounts"],
-        vec![
-            "browser",
-            "--host",
-            "host",
-            "open",
-            "https://example.invalid/",
-        ],
-    ] {
-        let output = latch(&host, &args, &[]);
-        assert_eq!(output.status.code(), Some(3), "{output:?}");
-        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
-        println!("Plow unreachable, local {}: {error}", args[0]);
-    }
-    assert!(!share.join("must-not-exist").exists());
-    for args in [
-        vec!["rules", "set", "Config stays available."],
-        vec!["vault", "list"],
-        vec!["shares"],
-    ] {
-        let output = latch(&host, &args, &[]);
-        assert!(output.status.success(), "{output:?}");
-        println!(
-            "Plow unreachable, config {}: {}",
-            args[0],
-            String::from_utf8_lossy(&output.stdout)
+fn local_socket_outages_refuse_gated_work_but_config_still_works() {
+    for (case, plow_down) in [("Plow unreachable", true), ("Plow up, model down", false)] {
+        let plow = LivePlow::start();
+        let (_runtime, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let share = dir.path().join("share");
+        fs::create_dir(&share).unwrap();
+        google_enabled(&host);
+        let _serve = serving(&host, &share, &relay);
+        if plow_down {
+            plow.stop();
+        } else {
+            plow.state.lock().unwrap().model_down = true;
+        }
+        for args in [
+            vec!["exec", "--", "touch", "must-not-exist"],
+            vec!["google", "--host", "host", "--", "accounts"],
+            vec![
+                "browser",
+                "--host",
+                "host",
+                "open",
+                "https://example.invalid/",
+            ],
+        ] {
+            let output = latch(&host, &args, &[]);
+            assert_eq!(output.status.code(), Some(3), "{case}: {output:?}");
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+            println!("{case}, local {}: {error}", args[0]);
+        }
+        assert!(!share.join("must-not-exist").exists());
+        let judged = plow.state.lock().unwrap().decisions.len();
+        assert_eq!(judged, if plow_down { 0 } else { 3 });
+        for args in [
+            vec!["rules", "set", "Config stays available."],
+            vec!["vault", "list"],
+            vec!["shares"],
+            vec!["shares", "set", share.to_str().unwrap()],
+        ] {
+            let output = latch(&host, &args, &[]);
+            assert!(output.status.success(), "{case}: {output:?}");
+            println!(
+                "{case}, config {}: {}",
+                args[0],
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        for (op, args) in [
+            ("vault", json!({"command":"list"})),
+            ("rules", json!({"command":"show"})),
+        ] {
+            let result = local_operation(&host, op, args);
+            assert!(result.get("ok").is_some(), "{case}: {result}");
+        }
+        assert_eq!(
+            plow.state.lock().unwrap().decisions.len(),
+            judged,
+            "owner config was judged"
         );
+        let record: Value = serde_json::from_str(
+            fs::read_to_string(host.join("audit.ndjson"))
+                .unwrap()
+                .lines()
+                .find(|line| line.contains("\"op\":\"exec\""))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record["gate"]["caller"], "owner_on_host");
+        assert_eq!(record["decision"], "deny");
     }
-    assert!(
-        local_operation(&host, "vault", json!({"command":"list"}))
-            .get("ok")
-            .is_some()
-    );
-    let record: Value = serde_json::from_str(
-        fs::read_to_string(host.join("audit.ndjson"))
-            .unwrap()
-            .lines()
-            .find(|line| line.contains("\"op\":\"exec\""))
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(record["gate"]["caller"], "owner_on_host");
-    assert_eq!(record["decision"], "deny");
-}
-
-#[test]
-fn local_socket_model_only_outage_refuses_with_plow_still_available() {
-    let plow = LivePlow::start();
-    let (_runtime, relay) = local_relay();
-    let dir = test_dir();
-    let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
-    google_enabled(&host);
-    let _serve = serving(&host, &share, &relay);
-    plow.state.lock().unwrap().model_down = true;
-    for args in [
-        vec!["exec", "--host", "host", "--", "touch", "must-not-exist"],
-        vec![
-            "browser",
-            "--host",
-            "host",
-            "open",
-            "https://example.invalid/",
-        ],
-        vec!["google", "--host", "host", "--", "accounts"],
-    ] {
-        let output = latch(&host, &args, &[]);
-        assert_eq!(output.status.code(), Some(3), "{output:?}");
-        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
-        println!("Plow up, model down, local {}: {error}", args[0]);
-    }
-    assert!(!share.join("must-not-exist").exists());
-    assert_eq!(plow.state.lock().unwrap().decisions.len(), 3);
-    assert!(
-        local_operation(&host, "rules", json!({"command":"show"}))
-            .get("ok")
-            .is_some()
-    );
-    for args in [
-        vec!["vault", "list"],
-        vec!["shares", "set", share.to_str().unwrap()],
-    ] {
-        let output = latch(&host, &args, &[]);
-        assert!(output.status.success(), "{output:?}");
-    }
-    assert_eq!(
-        plow.state.lock().unwrap().decisions.len(),
-        3,
-        "owner config was judged"
-    );
 }
 
 #[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
@@ -3335,4 +3302,31 @@ fn a_local_socket_exec_finishes_and_is_audited_before_the_host_stops() {
     assert_eq!(records[0]["gate"]["caller"], "owner_on_host");
     assert_eq!(records[0]["outcome"], "ok", "{records:?}");
     assert_eq!(bench.exec_folders(), Vec::<String>::new());
+}
+
+#[test]
+fn a_local_socket_exec_stops_when_its_caller_disconnects() {
+    let bench = Bench::new();
+    let serve = bench.serve();
+    let mut client = latch_command(&bench.host, &["exec", "--", "sh", "-c", TICKING], &[])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    bench.started();
+    client.kill().unwrap();
+    client.wait().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while bench.exec_records().is_empty() && std::time::Instant::now() < deadline {
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let records = bench.exec_records();
+    let stopped = bench.stopped_ticking();
+    let folders = bench.exec_folders();
+    drop(serve);
+    assert!(stopped, "the local program ran on without its caller");
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["outcome"], "caller_gone", "{records:?}");
+    assert_eq!(records[0]["gate"]["caller"], "owner_on_host");
+    assert_eq!(folders, Vec::<String>::new());
 }
