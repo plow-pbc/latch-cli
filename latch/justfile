@@ -9,6 +9,15 @@ test-linux:
     docker build --platform linux/arm64 -t latch-linux-gates:local -f docker/Dockerfile.gates docker
     docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL --security-opt=no-new-privileges=true --security-opt=systempaths=unconfined --security-opt seccomp=$PWD/docker/seccomp.json -v "$PWD/..:/repo" -w /repo/latch -e HOME=/tmp -e RUSTUP_HOME=/usr/local/rustup -e CARGO_HOME=/repo/latch/target/cargo-home -e CARGO_TARGET_DIR=/repo/latch/target/linux-check latch-linux-gates:local sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
 
+# The Messages reader (macOS): its tests, with a longer fuzz run of the body
+# parser than the default, against synthetic databases only.
+messages-reader-test iterations="200000":
+    cd messages-reader && LATCH_FUZZ_ITERATIONS={{iterations}} swift test
+
+# The Messages reader, built and signed into messages-reader/dist/; prints its sha256.
+messages-reader:
+    messages-reader/build.sh
+
 # The real-engine browser tests again, headed: each session a real window,
 # behind the owner's. Their focus checks (the engine never becomes the
 # front app) mean something only here. Not part of the gate: windows appear.
@@ -23,20 +32,20 @@ test-headed: cft
 conformance engine: cft
     cargo test --locked -- --test-threads=1 "::{{engine}}::"
 
-# On Linux, the engine is the one install.sh put in LATCH_CFT_STATE.
+# On Linux, the engine is the one install-binary.sh put in LATCH_CFT_STATE.
 [linux]
 conformance engine:
     cargo test --locked --features linux-browser-tests -- --test-threads=1 "::{{engine}}::"
 
 # The pinned engines, Chrome for Testing and Camoufox, where the browser
-# tests look for them. HOME keeps install.sh's copy of latch out of the real
+# tests look for them. HOME keeps install-binary.sh's copy of latch out of the real
 # ~/.local/bin.
 [macos]
 cft:
     cargo build --locked
-    HOME="$PWD/../.dev/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
+    HOME="$PWD/../.dev/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
 
-# On Linux, install.sh puts a host's engine in place; the real-engine tests
+# On Linux, install-binary.sh puts a host's engine in place; the real-engine tests
 # (`just conformance cft`) find it through LATCH_CFT_STATE.
 [linux]
 cft:

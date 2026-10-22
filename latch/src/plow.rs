@@ -25,7 +25,7 @@ pub struct Peer {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub online: Option<bool>,
     /// Set by latch, never by Plow: this is the machine running the
-    /// command, which cannot call itself.
+    /// command; its operations use the local socket.
     #[serde(rename = "self", default, skip_serializing_if = "is_false")]
     pub this_machine: bool,
 }

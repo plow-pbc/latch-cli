@@ -37,9 +37,9 @@ works offline and before login. Not being logged in, or not serving, is a
 normal answer, not an error.
 
 ```
-{"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/1)","protocol":1,
+{"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/2)","protocol":2,
  "peer":{"name":"studio","key":"d9438ef1…","kind":"device"},
- "serve":{"running":true,"ready":true,"state":"serving","pid":63632},
+ "serve":{"running":true,"ready":true,"managed":true,"state":"serving","pid":63632},
  "shares":["/Users/me/work"],"allow_read":["/Users/me/.rustup"],"last_error":null}
 ```
 
@@ -48,32 +48,30 @@ Field by field:
 - `peer` is `null` before login.
 - `serve.running` means a `latch serve` holds the state folder's lock.
 - `serve.ready` means that serve is online and accepting callers.
+- `serve.managed` means it runs as this user's service, as `latch serve` and `serve -d` start it, not `serve --foreground`. An upgrade stops a managed host and starts it again with `latch serve -d --again`.
 - `serve.state` is one of `starting`, `serving`, `stopped` or `error`.
 - `allow_read` lists the paths saved with `latch shares set --allow-read`, which callers may read but not write.
 - `last_error` says why the host last stopped, when it stopped because of a failure. A host that was killed or crashed shows `serve_ended`.
 
-## `latch shares` and `latch shares set FOLDER… [--allow-read PATH]…`
+## Exec and file permissions
 
-These show or replace the folders `latch serve` shares when it is started
-with no folders, and the paths outside them it lets callers read
-(`--allow-read`), so a service starts the host the way a person set it up.
+Starting `latch serve` needs no folder configuration for exec or file.
+They read home and system files, except `~/.latch`, this host's state directory,
+and on macOS `~/Library` except `~/Library/Caches`. Other home content, including
+credential dotfiles, is readable; each use is judged.
 
-- Folders named on the command line still win over the saved ones, and
-  bring only their own `--allow-read` paths.
-- With none named and none saved, serve still starts, sharing no folders:
-  the browser and Google work, and `exec` and `file` refuse with
-  `no_folders` (exit 4).
-- A running serve keeps its folders until it is restarted.
-- Each folder and path must exist. Each is saved as its real, absolute path.
-- The home folder, its `Library` and the folders above them are refused,
-  shared or named with `--allow-read` (`bad_folder`, exit 2).
-- An `--allow-read` inside a place that holds credentials (`~/.ssh`,
-  `~/.aws`, …, listed in `latch serve --help`) or inside latch's state is
-  refused with `never_readable` (exit 2).
+Exec declares repeated `--write PATH` grants and opts into IP networking with
+`--network` (off by default). Its private temp and existing plain tool-cache
+folders are writable; missing or symlinked caches are skipped, never created.
+Workdir defaults to the first write folder, otherwise home. Writes outside
+home, to home itself or to hidden places are refused. Host Unix sockets remain
+blocked even with network; macOS permits its system DNS resolver.
 
-```
-{"shares":["/Users/me/work"],"allow_read":["/Users/me/.rustup"]}
-```
+File get reads a readable path; file put writes only its judged destination.
+Quote leading `~` to expand it on the host. Program argv stays literal. The
+remote judge and sealed audit see argv, workdir, writes and network; keep
+credentials out of argv. Saved folder fields in status do not grant exec
+permissions.
 
 ## `latch events [--follow] [--after CURSOR] [--lifecycle-only]`
 
@@ -117,3 +115,23 @@ record that fails those checks is never sent: the stream starts over if the
 log was replaced by a sound one, and otherwise stops with `audit_broken`.
 
 `--lifecycle-only` leaves the activity out. That is the menu bar's subscription.
+
+## Calling this machine's receiver
+
+Run ordinary `latch exec`, `latch file`, `latch browser` and `latch google` commands on the
+host's state folder. A saved host resolves locally, even while Plow is
+unreachable; explicitly naming this machine with `--host` also resolves
+locally. The CLI connects to `<state-dir>/serve.sock`, inside the private
+state folder, mode 0600. It never dials its own iroh key.
+
+The socket accepts the same length-prefixed `Request` and `Response`
+frames as the network, including file-transfer bytes, one operation per
+connection. The receiver establishes the caller as `owner_on_host`; a
+request cannot choose its caller identity. Owner-only vault and rules
+operations also work over the socket, without asking the model. The app
+can use the CLI rather than implement this protocol itself.
+
+A stopped receiver gives exit 3 `serve_required`, with instructions to
+start `latch serve`. Plow or model outages give exit 3
+`gatekeeper_unavailable` for gated work. Local configuration commands
+continue to edit state directly, with the same file locks as `serve`.

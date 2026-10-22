@@ -14,8 +14,10 @@
 //!   (see `audit.rs`); `audit.keys`*: the keys that seal it; `audit.lock`:
 //!   held by what writes it. A plaintext `audit.ndjson` from an older latch
 //!   is never read, and every command says it can be deleted.
-//! - `serve.log`, on a host: what `latch serve` logs while its dashboard
-//!   has the terminal.
+//! - `serve.log`, on a host: what a managed host logs (`latch logs`).
+//! - `serve.plist` (macOS) and `launch.lock`, on a host: the managed host's
+//!   service, and the lock that starts and stops it one at a time (see
+//!   `managed.rs`).
 //! - `vault.json` and `vault.key`*, on a host: the vault and its custody key
 //!   (see `vault/store.rs`).
 //! - `jev.key`, on a dev host only: the key for the jev model provider

@@ -79,7 +79,7 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
 /// each file's bytes (written to its client path and checked by sha256), and
 /// the final answer.
 async fn exchange(
-    connection: &iroh::endpoint::Connection,
+    connection: &crate::transport::Connection,
     chat: Option<String>,
     request: Request,
     mut inputs: Vec<File>,
@@ -199,6 +199,7 @@ mod tests {
             confirm_conflict: false,
             inputs: vec![],
         };
+        let connection = connection.into();
         let exchanging = exchange(&connection, None, request, vec![], Some(&plan));
         let ((), result) = tokio::join!(serving, exchanging);
         client.close().await;

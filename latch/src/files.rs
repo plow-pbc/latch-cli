@@ -3,7 +3,8 @@
 //! between the worker and the stream, hashing them on the way, so the audit
 //! log can record each file's path, size and sha256 (never its contents).
 
-use iroh::endpoint::{RecvStream, SendStream, VarInt};
+use crate::transport::{RecvStream, SendStream};
+use iroh::endpoint::VarInt;
 use serde_json::{Value, json};
 
 use crate::serve::Done;

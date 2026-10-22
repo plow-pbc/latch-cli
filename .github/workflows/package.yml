@@ -1,0 +1,159 @@
+name: package
+# latch's archives for each platform: built, packaged and checked (each one's
+# SHA256SUMS, install files and latch --version, on its own runner). A pull
+# request runs it all, unsigned. The release workflow calls it twice: `build`
+# for the archives it then signs, and `check` to assemble and verify the
+# signed ones.
+run-name: "Package check: ${{ github.event.pull_request.title }}"
+on:
+  pull_request:
+    paths: ['latch/**', 'scripts/**', 'install.sh', '.github/workflows/package.yml']
+  workflow_call:
+    inputs:
+      tag:
+        description: The release's tag, v<version>-<run number>
+        required: true
+        type: string
+      stage:
+        description: "`build` the archives, or `check` the ones this run already has"
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  version:
+    if: inputs.stage != 'check'
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ -z "$TAG" ]]; then
+            package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
+            TAG="v$package-pr.${{ github.event.number }}"
+          fi
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Version: $TAG"
+  build:
+    needs: version
+    if: inputs.stage != 'check'
+    strategy:
+      fail-fast: false
+      matrix: &matrix
+        include:
+          - { runner: macos-15, target: aarch64-apple-darwin, arch: arm64 }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin, arch: x86_64 }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.version.outputs.tag }}
+      LATCH_BUILD_CHANNEL: standalone tag ${{ needs.version.outputs.tag }}
+      LATCH_BUILD_NUMBER: ${{ github.run_number }}
+      LATCH_BUILD_STATE_DIR: ''
+      LATCH_BUILD_API_URL: ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          test "$(uname -m)" = '${{ matrix.arch }}'
+          unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
+          export LATCH_BUILD_COMMIT="$GITHUB_SHA"
+          cd latch
+          # The Messages reader first: this latch runs only the one built here.
+          LATCH_MESSAGES_READER_SHA256=$(messages-reader/build.sh | tail -n 1)
+          export LATCH_MESSAGES_READER_SHA256
+          rustup toolchain install
+          cargo build --release --locked --target '${{ matrix.target }}'
+          codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
+          'target/${{ matrix.target }}/release/latch' --version
+      - name: Build Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
+          cd latch
+          ./build-musl.sh '${{ matrix.arch }}'
+          file 'target/musl-${{ matrix.arch }}/release/latch' | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
+          'target/musl-${{ matrix.arch }}/release/latch' --version
+      - name: Package
+        shell: bash
+        run: |
+          if [[ '${{ runner.os }}' == macOS ]]; then
+            binary='latch/target/${{ matrix.target }}/release/latch'
+          else
+            binary='latch/target/musl-${{ matrix.arch }}/release/latch'
+          fi
+          sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
+          tar -xzf "dist/latch-$VERSION-${{ matrix.target }}.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/latch" --version
+          if [[ '${{ runner.os }}' == macOS ]]; then
+            codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/Plow Latch.app"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: latch-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+  assemble:
+    needs: build
+    # A `check` run assembles the archives its caller already built and signed.
+    if: ${{ !cancelled() && inputs.stage != 'build' && (needs.build.result == 'success' || inputs.stage == 'check') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/test-install-release.py
+      - run: python3 scripts/test-install.py
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: latch-*
+          merge-multiple: true
+          path: dist
+      - run: |
+          cp install.sh dist/
+          cd dist
+          sha256sum *.tar.gz install.sh > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-downloads
+          path: dist/*
+  verify-artifacts:
+    needs: assemble
+    # A skipped build (a `check` run) would otherwise skip this too.
+    if: ${{ !cancelled() && needs.assemble.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix: *matrix
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-downloads
+          path: downloads
+      - name: Run downloaded archive
+        shell: bash
+        run: |
+          cd downloads
+          if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
+          archive=$(find . -name 'latch-*-${{ matrix.target }}.tar.gz')
+          tar -xzf "$archive"
+          folder=$(basename "$archive" .tar.gz)
+          uname -sm
+          test -x "$folder/install-binary.sh"
+          test -x "$folder/browser-engines.sh"
+          test -f "$folder/install-packages.sh"
+          "$folder/install-binary.sh" --help
+          "$folder/latch" --version
+          if [[ '${{ runner.os }}' == macOS ]]; then
+            codesign --verify --deep --strict --verbose=2 "$folder/Plow Latch.app"
+          fi

@@ -20,6 +20,7 @@ pub mod host;
 pub mod import;
 pub mod item;
 pub mod link;
+pub(crate) mod local;
 pub mod sites;
 pub mod store;
 pub mod totp;

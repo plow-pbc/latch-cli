@@ -36,6 +36,16 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
         super::profile::open(&state.path, name, engine)?;
         return Ok(json!({"profile": name, "engine": engine}));
     }
+    // An engine is installed on the host itself too, by its owner.
+    if let BrowserCommand::Setup { engine } = &args.command {
+        if args.host.is_some() {
+            return Err(Failure::usage(
+                "bad_arguments",
+                "`browser setup` runs on the host itself, without --host".into(),
+            ));
+        }
+        return super::setup::run(state, *engine);
+    }
     // `handoff done` runs on the host, on its own state directory: no call.
     if let BrowserCommand::Handoff {
         action: Some(HandoffAction::Done),
@@ -261,7 +271,7 @@ fn read_script(path: &Path) -> Result<String, Failure> {
 
 /// An upload: the bytes, then the host's answer, given this side's sha256.
 async fn send(
-    connection: &iroh::endpoint::Connection,
+    connection: &crate::transport::Connection,
     request: &Request,
     upload: &mut Upload,
 ) -> Result<Value, Failure> {
@@ -453,7 +463,9 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
         }
         BrowserCommand::Sessions => "sessions",
         BrowserCommand::Close => "close",
-        BrowserCommand::Profile { .. } => unreachable!("made here, never sent"),
+        BrowserCommand::Profile { .. } | BrowserCommand::Setup { .. } => {
+            unreachable!("made here, never sent")
+        }
     };
     if !matches!(name, "open" | "sessions") && request["session"].is_null() {
         return Err(Failure::usage(
@@ -626,7 +638,7 @@ pub(super) fn act_literal(
 /// A screenshot or download: its details, then exactly that many bytes
 /// into `path`, then the host's sha256, which must match.
 async fn receive(
-    connection: &iroh::endpoint::Connection,
+    connection: &crate::transport::Connection,
     request: &Request,
     path: &Path,
 ) -> Result<Value, Failure> {
