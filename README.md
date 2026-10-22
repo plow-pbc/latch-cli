@@ -55,6 +55,11 @@ No Homebrew tap or Mac app is included.
 
 ## For hosts
 
+- `latch setup`, at a terminal, walks a machine through logging in,
+  connecting Google, on a Mac turning on Messages and Contacts, and
+  starting latch. Each step runs a latch command and says which, and is
+  skipped once done; run it again any time. The installer runs it at the
+  end when it has a terminal (`--non-interactive` skips it).
 - `latch login` names a machine after its hostname; `--name` picks another.
   If another of your machines holds the name, the login stops and says so.
 - `latch serve ~/work` lets callers' programs and file copies read and

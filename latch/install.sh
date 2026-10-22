@@ -1,7 +1,10 @@
 #!/bin/sh
 # Installs a latch binary you already have into ~/.local/bin, or --bin-dir.
 #
-#   sh install.sh [--bin-dir DIR] [--state-dir DIR] [--with-camoufox] [path/to/latch]
+#   sh install.sh [--bin-dir DIR] [--state-dir DIR] [--with-camoufox] [--non-interactive] [path/to/latch]
+#
+# At a terminal it ends by running `latch setup` (log in, connect Google,
+# and so on); --non-interactive, or no terminal, leaves that for later.
 #
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
@@ -38,10 +41,12 @@ set -eu
 say() { printf 'install.sh: %s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 
-usage="usage: sh install.sh [--bin-dir DIR] [--state-dir DIR] [--with-camoufox] [path/to/latch]"
+usage="usage: sh install.sh [--bin-dir DIR] [--state-dir DIR] [--with-camoufox] [--non-interactive] [path/to/latch]"
 bin_dir="$HOME/.local/bin"
 state_dir="$HOME/.latch"
 with_camoufox=""
+non_interactive=""
+state_given=""
 src="$(dirname "$0")/latch"
 given_src=""
 while [ $# -gt 0 ]; do
@@ -61,7 +66,12 @@ while [ $# -gt 0 ]; do
     --state-dir)
       [ $# -ge 2 ] && [ -n "$2" ] || die "$usage"
       state_dir=$2
+      state_given=1
       shift 2
+      ;;
+    --non-interactive)
+      non_interactive=1
+      shift
       ;;
     --with-camoufox)
       with_camoufox=1
@@ -328,4 +338,16 @@ if [ -n "$with_camoufox" ]; then
   fi
 fi
 
+# 6. At a terminal, `latch setup` takes it from here. Whatever happens in
+# it, the install itself is done.
+if [ -z "$non_interactive" ] && [ -t 0 ] && [ -t 1 ]; then
+  say "running latch setup"
+  if [ -n "$state_given" ]; then
+    "$dest" --state-dir "$state_dir" setup || say "setup did not finish; run \`latch setup\` any time"
+  else
+    "$dest" setup || say "setup did not finish; run \`latch setup\` any time"
+  fi
+else
+  say "next: run \`latch setup\` to log in and set up the rest"
+fi
 say "done"

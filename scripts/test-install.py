@@ -80,6 +80,48 @@ class BinaryInstall(unittest.TestCase):
     def test_options_on_both_sides_of_the_binary(self):
         self.install(custom=True, source="middle")
 
+    def test_setup_runs_only_at_a_terminal_and_not_when_told_not_to(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        for at_terminal, extra, runs in [(False, [], False), (True, [], True),
+                                         (True, ["--non-interactive"], False)]:
+            with tempfile.TemporaryDirectory(dir=parent) as directory:
+                root = Path(directory)
+                setup = root / "setup"
+                (setup / "src/google").mkdir(parents=True)
+                shutil.copyfile(ROOT / "latch/install.sh", setup / "install.sh")
+                called = root / "called"
+                binary = setup / "latch"
+                binary.write_text(f'#!/bin/sh\necho "$@" >> "{called}"\n')
+                binary.chmod(0o755)
+                state = root / "state"
+                gog = state / "plugins/gog/1.0/gog"
+                gog.parent.mkdir(parents=True)
+                gog.write_bytes(b"local-gog-fixture")
+                (setup / "src/google/pin.json").write_text(json.dumps({
+                    "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest(),
+                }, indent=2))
+                tools = root / "tools"
+                tools.mkdir()
+                uname = tools / "uname"
+                uname.write_text('#!/bin/sh\ncase "$1" in -s) echo FixtureOS;; -m) echo x86_64;; esac\n')
+                uname.chmod(0o755)
+                env = {**os.environ, "HOME": str(root / "home"), "PATH": f"{tools}:{os.environ['PATH']}"}
+                args = ["sh", str(setup / "install.sh"), "--state-dir", str(state), *extra, str(binary)]
+                if at_terminal:
+                    main, side = os.openpty()
+                    result = subprocess.run(args, cwd=root, env=env, stdin=side, stdout=side,
+                                            stderr=side)
+                    os.close(side)
+                    os.close(main)
+                else:
+                    result = subprocess.run(args, cwd=root, env=env, capture_output=True,
+                                            stdin=subprocess.DEVNULL)
+                self.assertEqual(result.returncode, 0)
+                ran = called.read_text() if called.exists() else ""
+                self.assertEqual(ran, f"--state-dir {state} setup\n" if runs else "",
+                                 (at_terminal, extra))
+
     def test_help_needs_no_binary_or_setup(self):
         result = subprocess.run([str(ROOT / "latch/install.sh"), "--help"],
                                 capture_output=True, text=True)

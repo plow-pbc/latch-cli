@@ -140,6 +140,10 @@ pub enum Command {
     /// Run this machine as a host, in the foreground, until stopped
     #[command(after_help = SERVE_HELP)]
     Serve(ServeArgs),
+    /// Set this machine up, at a terminal: log in, connect Google, on a Mac
+    /// turn on Messages and Contacts, and start latch. Each step runs a latch
+    /// command and is skipped once done, so it can be run again any time
+    Setup,
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),
