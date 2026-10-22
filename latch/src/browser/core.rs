@@ -22,7 +22,7 @@ use super::driver::{Driver, Event, Frame};
 
 mod fill;
 mod look;
-use crate::failure::{Exit, Failure};
+use crate::failure::Failure;
 pub use look::{Condition, fingerprint};
 
 /// The most elements one snapshot lists, across all frames.
@@ -322,7 +322,6 @@ struct Located {
     x: f64,
     y: f64,
     kind: String,
-    secret: bool,
     options: Vec<String>,
 }
 
@@ -899,13 +898,6 @@ impl<D: Driver> Core<D> {
             Action::Type => {
                 let text = required(text, "type needs the text to type")?;
                 let at = self.locate(snapshot, position)?;
-                if at.secret {
-                    return Err(Failure::new(
-                        Exit::Denied,
-                        "secret_field",
-                        "that is a password or secret field; latch never types into one".into(),
-                    ));
-                }
                 if at.kind != "text" {
                     return Err(Failure::usage(
                         "wrong_target",
@@ -1028,7 +1020,6 @@ impl<D: Driver> Core<D> {
             x,
             y,
             kind: second["kind"].as_str().unwrap_or_default().to_string(),
-            secret: second["secret"] == true,
             options: second["options"]
                 .as_array()
                 .into_iter()
@@ -1358,6 +1349,7 @@ fn stale() -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
 
     #[test]
     fn the_audit_keeps_origin_and_path_but_never_the_query() {
