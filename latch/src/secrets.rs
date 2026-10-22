@@ -15,8 +15,9 @@
 //! An item is filed under the state folder's real path, so another folder
 //! on the same Mac, or a copy of this one, never shares its identity.
 
-use std::fs;
+use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -42,6 +43,8 @@ impl Secret {
         Secret::VaultKey,
         Secret::AuditKeys,
     ];
+    /// This peer's identity and login, without which it is logged out.
+    pub const LOGIN: [Secret; 2] = [Secret::Key, Secret::PlowToken];
 
     /// The file it is kept in by a build without the Keychain.
     pub fn file(self) -> &'static str {
@@ -68,6 +71,11 @@ trait Store: Send + Sync {
 /// One state folder's secrets.
 pub struct Secrets {
     dir: PathBuf,
+    /// The folder's real path, resolved once: its items' accounts.
+    real: PathBuf,
+    /// The folder itself, held open: secret files are deleted in it, not
+    /// through whatever its path names by then.
+    held: Option<File>,
     /// `None`: files.
     keychain: Option<Box<dyn Store>>,
 }
@@ -77,6 +85,19 @@ impl Secrets {
     pub fn open(dir: &Path) -> Result<Secrets, Failure> {
         Ok(Secrets {
             dir: dir.to_path_buf(),
+            real: fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()),
+            held: None,
+            keychain: platform::keychain()?,
+        })
+    }
+
+    /// The secrets of the state folder `held`, open, whose real path was
+    /// `real` when it was opened. Nothing is resolved again.
+    pub fn open_held(real: &Path, held: File) -> Result<Secrets, Failure> {
+        Ok(Secrets {
+            dir: real.to_path_buf(),
+            real: real.to_path_buf(),
+            held: Some(held),
             keychain: platform::keychain()?,
         })
     }
@@ -135,7 +156,11 @@ impl Secrets {
     pub fn remove(&self, secret: Secret) -> Result<bool, Failure> {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
-            return match fs::remove_file(&path) {
+            let removed = match &self.held {
+                Some(dir) => unlink_at(dir, secret.file()),
+                None => fs::remove_file(&path),
+            };
+            return match removed {
                 Ok(()) => Ok(true),
                 Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
                 Err(err) => Err(io_failure(&path, err)),
@@ -146,11 +171,11 @@ impl Secrets {
             .map_err(|why| self.refused("delete", secret, &why))
     }
 
-    /// Deletes every secret this folder has, where this build keeps them.
-    /// Returns the files they are named by, of those there were.
-    pub fn remove_all(&self) -> Result<Vec<&'static str>, Failure> {
+    /// Deletes each of `secrets` this folder has, where this build keeps
+    /// them. Returns the files they are named by, of those there were.
+    pub fn remove_each(&self, secrets: &[Secret]) -> Result<Vec<&'static str>, Failure> {
         let mut removed = Vec::new();
-        for secret in Secret::ALL {
+        for &secret in secrets {
             if self.remove(secret)? {
                 removed.push(secret.file());
             }
@@ -165,8 +190,7 @@ impl Secrets {
 
     /// The item's account: the state folder's real path and the file name.
     fn account(&self, secret: Secret) -> String {
-        let dir = fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
-        format!("{}/{}", dir.display(), secret.file())
+        format!("{}/{}", self.real.display(), secret.file())
     }
 
     fn refused(&self, what: &str, secret: Secret, why: &str) -> Failure {
@@ -177,6 +201,17 @@ impl Secrets {
             self.account(secret)
         );
         Failure::failed("keychain_failed", message)
+    }
+}
+
+/// Deletes the file `name` in the open folder `dir`.
+pub(crate) fn unlink_at(dir: &File, name: &str) -> std::io::Result<()> {
+    let name = std::ffi::CString::new(name).map_err(std::io::Error::other)?;
+    // SAFETY: a folder this process holds open and a NUL-terminated name.
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -495,8 +530,8 @@ mod tests {
 
     fn in_memory(dir: &Path, memory: &Memory) -> Result<Secrets, Failure> {
         Ok(Secrets {
-            dir: dir.to_path_buf(),
             keychain: Some(Box::new(memory.clone())),
+            ..Secrets::open(dir)?
         })
     }
 
@@ -554,10 +589,15 @@ mod tests {
         theirs.create(Secret::Key, b"their-key").unwrap();
 
         assert_eq!(
-            secrets.remove_all().unwrap(),
-            ["key", "plow-token", "audit.keys"]
+            secrets.remove_each(&Secret::LOGIN).unwrap(),
+            ["key", "plow-token"]
         );
-        assert_eq!(secrets.remove_all().unwrap(), Vec::<&str>::new());
+        assert_eq!(secrets.read(Secret::AuditKeys).unwrap().unwrap(), b"audit");
+        assert_eq!(secrets.remove_each(&Secret::ALL).unwrap(), ["audit.keys"]);
+        assert_eq!(
+            secrets.remove_each(&Secret::ALL).unwrap(),
+            Vec::<&str>::new()
+        );
         for secret in Secret::ALL {
             assert_eq!(secrets.read(secret).unwrap(), None, "{secret:?}");
         }
@@ -569,13 +609,50 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_replaced_after_its_secrets_opened_never_redirects_them() {
+        let (dir, other) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (selected, moved) = (dir.path().join("selected"), dir.path().join("moved"));
+        fs::create_dir(&selected).unwrap();
+        let memory = Memory::default();
+        in_memory(&selected, &memory)
+            .unwrap()
+            .write(Secret::PlowToken, b"selected")
+            .unwrap();
+        let theirs = in_memory(other.path(), &memory).unwrap();
+        theirs.write(Secret::PlowToken, b"other").unwrap();
+
+        let secrets = in_memory(&selected, &memory).unwrap();
+        fs::rename(&selected, &moved).unwrap();
+        std::os::unix::fs::symlink(other.path(), &selected).unwrap();
+        assert_eq!(secrets.remove_each(&Secret::LOGIN).unwrap(), ["plow-token"]);
+        assert_eq!(theirs.read(Secret::PlowToken).unwrap().unwrap(), b"other");
+
+        // A held folder's files go from the folder it held.
+        fs::write(moved.join("key"), b"key").unwrap();
+        fs::write(other.path().join("key"), b"their-key").unwrap();
+        let held = Secrets {
+            keychain: None,
+            ..Secrets::open_held(&moved, File::open(&moved).unwrap()).unwrap()
+        };
+        let moved_again = dir.path().join("moved-again");
+        fs::rename(&moved, &moved_again).unwrap();
+        std::os::unix::fs::symlink(other.path(), &moved).unwrap();
+        assert_eq!(held.remove_each(&Secret::LOGIN).unwrap(), ["key"]);
+        assert!(!moved_again.join("key").exists());
+        assert_eq!(fs::read(other.path().join("key")).unwrap(), b"their-key");
+    }
+
+    #[test]
     fn a_dev_build_removes_its_secret_files_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         let secrets = Secrets::open(dir.path()).unwrap();
         secrets.create(Secret::Key, b"key").unwrap();
         secrets.write(Secret::VaultKey, b"vault").unwrap();
         fs::write(dir.path().join("config.json"), b"{}").unwrap();
-        assert_eq!(secrets.remove_all().unwrap(), ["key", "vault.key"]);
+        assert_eq!(
+            secrets.remove_each(&Secret::ALL).unwrap(),
+            ["key", "vault.key"]
+        );
         let left: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())

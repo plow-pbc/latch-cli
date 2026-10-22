@@ -1732,20 +1732,6 @@ fn local_relay() -> (tokio::runtime::Runtime, String) {
 /// passing or not.
 struct Serving(std::process::Child);
 
-impl Serving {
-    /// Whether the host exits on its own within `limit`.
-    fn stopped_within(&mut self, limit: std::time::Duration) -> bool {
-        let deadline = std::time::Instant::now() + limit;
-        while std::time::Instant::now() < deadline {
-            if matches!(self.0.try_wait(), Ok(Some(_))) {
-                return true;
-            }
-            thread::sleep(std::time::Duration::from_millis(50));
-        }
-        false
-    }
-}
-
 impl Drop for Serving {
     fn drop(&mut self) {
         // SAFETY: signals our own child.
@@ -3459,38 +3445,39 @@ fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
     let mut serve = serving(&host, &relay);
     assert_eq!(vault_titles(&owner), ["Shop"]);
 
-    // Logging out stops the host and leaves nothing in the Keychain.
-    let host_removed = log_out(&host, "keychain");
-    assert!(
-        host_removed.contains(&"vault.key".to_string()),
-        "{host_removed:?}"
+    // Logging out stops the host and deletes each login from the Keychain:
+    // a second logout finds nothing there.
+    for state in [&host, &owner] {
+        let out = logout(state, &[]);
+        assert_eq!(out["from"], "keychain", "{out}");
+        assert_eq!(
+            out["removed"],
+            json!(["key", "plow-token", "config.json"]),
+            "{out}"
+        );
+        assert_eq!(logout(state, &[])["removed"], json!([]));
+    }
+    assert!(eventually(10, || serve.0.try_wait().unwrap().is_some()));
+    // --purge takes the vault and audit keys too, and the folders.
+    let purged = logout(&host, &["--purge"]);
+    assert_eq!(
+        purged["removed"],
+        json!(["vault.key", "audit.keys"]),
+        "{purged}"
     );
-    assert!(serve.stopped_within(std::time::Duration::from_secs(10)));
-    log_out(&owner, "keychain");
+    logout(&owner, &["--purge"]);
+    assert!(!host.exists() && !owner.exists());
 }
 
-/// `latch logout` on `state`: it deletes the key and Plow token, at least,
-/// from `from`, and a second finds nothing left. Returns what it deleted.
-fn log_out(state: &Path, from: &str) -> Vec<String> {
-    let run = || {
-        let output = latch(state, &["logout"], &[]);
-        assert_eq!(output.status.code(), Some(0), "{output:?}");
-        serde_json::from_slice::<Value>(&output.stdout).unwrap()
-    };
-    let first = run();
-    assert_eq!(first["from"], from, "{first}");
-    let removed: Vec<String> = serde_json::from_value(first["removed"].clone()).unwrap();
-    for secret in ["key", "plow-token"] {
-        assert!(removed.contains(&secret.to_string()), "{first}");
-    }
-    let again = run();
-    assert_eq!(again["removed"], json!([]), "{again}");
-    assert_eq!(again["stopped"], false, "{again}");
-    removed
+/// `latch logout ARGS` on `state`, which must work: what it printed.
+fn logout(state: &Path, args: &[&str]) -> Value {
+    let output = latch(state, &[&["logout"], args].concat(), &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
 }
 
 #[test]
-fn logout_stops_the_host_and_deletes_every_secret_but_no_other_file() {
+fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still_read() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -3501,18 +3488,178 @@ fn logout_stops_the_host_and_deletes_every_secret_but_no_other_file() {
     let listed = local_operation(&host, "vault", json!({"command": "list"}));
     assert!(listed.get("ok").is_some(), "{listed}");
 
-    let removed = log_out(&host, "files");
-    assert_eq!(removed, SECRET_FILES);
-    assert!(serve.stopped_within(std::time::Duration::from_secs(10)));
-    assert_eq!(secret_files_in(&host), Vec::<&str>::new());
-    for kept in ["config.json", "vault.json", "audit.sealed.ndjson"] {
-        assert!(host.join(kept).exists(), "{kept}");
-    }
+    let out = logout(&host, &[]);
+    assert_eq!(out["from"], "files", "{out}");
+    assert_eq!(
+        out["removed"],
+        json!(["key", "plow-token", "config.json"]),
+        "{out}"
+    );
+    assert_eq!(out["stopped"], true, "{out}");
+    assert!(eventually(10, || serve.0.try_wait().unwrap().is_some()));
+    assert_eq!(secret_files_in(&host), ["vault.key", "audit.keys"]);
+    // Logged out as far as setup and an app can tell: no peer, and
+    // anything needing the login says to log in.
+    let local = latch(&host, &["status", "--local"], &[]);
+    let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(local["peer"], Value::Null, "{local}");
     let shown = latch(&host, &["rules", "show"], &[]);
-    assert!(!shown.status.success(), "{shown:?}");
+    assert_eq!(shown.status.code(), Some(2), "{shown:?}");
     let error: Value = serde_json::from_slice(&shown.stderr).unwrap();
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(message.contains("run `latch login` first"), "{error}");
+    assert_eq!(error["error"]["code"], "not_logged_in", "{error}");
+    let again = logout(&host, &[]);
+    assert_eq!(
+        (&again["removed"], &again["stopped"]),
+        (&json!([]), &json!(false))
+    );
+
+    // Logged in again, the vault and the audit log read as before.
+    let token = dir.path().join("owner.token");
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        token.to_str().unwrap(),
+        "--name",
+        "host",
+    ];
+    let login = latch(&host, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let list = latch(&host, &["vault", "list"], &[]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let ops: Vec<Value> = audit_records(&host)
+        .iter()
+        .map(|r| r["op"].clone())
+        .collect();
+    assert_eq!(&ops[..2], ["rules", "vault"], "{ops:?}");
+    // A host serves again, on the audit log it kept.
+    let _serve = serving(&host, &relay);
+
+    // --purge stops it and deletes every secret and the folder.
+    let purged = logout(&host, &["--purge"]);
+    assert_eq!(purged["removed"], json!(SECRET_FILES), "{purged}");
+    assert_eq!(
+        (&purged["purged"], &purged["stopped"]),
+        (&json!(true), &json!(true))
+    );
+    assert!(!host.exists());
+}
+
+#[test]
+fn logout_refuses_a_state_folder_replaced_while_it_waits_and_deletes_nothing() {
+    let dir = test_dir();
+    let (selected, other) = (dir.path().join("selected"), dir.path().join("other"));
+    for state in [&selected, &other] {
+        fs::create_dir(state).unwrap();
+        fs::write(
+            state.join("latch.json"),
+            r#"{"format": 2, "written_by": "test"}"#,
+        )
+        .unwrap();
+        for file in SECRET_FILES {
+            fs::write(state.join(file), "synthetic").unwrap();
+        }
+    }
+    // Logout's stop waits for this lock while the folder is swapped.
+    let launch = fs::File::create(selected.join("launch.lock")).unwrap();
+    launch.lock().unwrap();
+    for args in [vec!["logout"], vec!["logout", "--purge"]] {
+        let logout = latch_command(&selected, &args, &[])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        thread::sleep(std::time::Duration::from_millis(800));
+        let moved = dir.path().join("moved");
+        fs::rename(&selected, &moved).unwrap();
+        std::os::unix::fs::symlink(&other, &selected).unwrap();
+        launch.unlock().unwrap();
+        let output = logout.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "state_changed", "{error}");
+        assert_eq!(secret_files_in(&moved), SECRET_FILES, "{args:?}");
+        assert_eq!(secret_files_in(&other), SECRET_FILES, "{args:?}");
+        // Put the folder back for the next run, its lock held again.
+        fs::remove_file(&selected).unwrap();
+        fs::rename(&moved, &selected).unwrap();
+        launch.lock().unwrap();
+    }
+}
+
+#[test]
+fn no_host_starts_while_logout_holds_the_state_folder() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let held = dir.path().join("held");
+    let logout = latch_command(
+        &host,
+        &["logout"],
+        &[("LATCH_TEST_LOGOUT_HELD", held.as_path())],
+    )
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !held.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "logout never held the folder"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut serve = Serving(
+        serve_command(&host, &relay)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(
+        eventually(10, || serve.0.try_wait().unwrap().is_some()),
+        "a host started while logout held the folder"
+    );
+    let mut log = String::new();
+    serve
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut log)
+        .unwrap();
+    assert!(
+        log.contains("state_busy") && log.contains("latch logout"),
+        "{log}"
+    );
+    assert!(!log.contains("serving as"), "{log}");
+    fs::remove_file(&held).unwrap();
+    let output = logout.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        out["removed"],
+        json!(["key", "plow-token", "config.json"]),
+        "{out}"
+    );
+}
+
+#[test]
+fn logout_purge_deletes_no_folder_that_is_not_latch_state() {
+    let dir = test_dir();
+    let other = dir.path().join("photos");
+    fs::create_dir(&other).unwrap();
+    fs::write(other.join("key"), "not latch's").unwrap();
+    let output = latch(&other, &["logout", "--purge"], &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "state_format", "{error}");
+    assert_eq!(
+        fs::read_to_string(other.join("key")).unwrap(),
+        "not latch's"
+    );
 }
 
 /// A host sharing `share`, with its exec temp folders made in `tmp`, and

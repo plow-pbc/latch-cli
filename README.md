@@ -93,9 +93,11 @@ No Homebrew tap is included.
   If another of your machines holds the name, the login asks at a terminal
   whether to replace it or which name to use instead; elsewhere it stops and
   says what to run. `latch logout` stops this state folder's host and deletes
-  its secrets (key, Plow token, vault and audit keys) from the Keychain or
-  its files; its vault and audit log no longer open after that. The machine
-  stays listed in Plow until `latch devices remove` from another machine.
+  its key and Plow token from the Keychain or its files; the vault and audit
+  log read as before after the next `latch login`. `latch logout --purge`
+  also deletes the vault and audit keys and the state folder itself. The
+  machine stays listed in Plow until `latch devices remove` from another
+  machine.
 - Exec and file calls need no shared-folder setup. They read home and the
   system's files (programs, libraries, developer tools and certificates),
   except `~/.latch`, this host's state directory, and on macOS `~/Library`

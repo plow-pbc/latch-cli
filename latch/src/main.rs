@@ -187,7 +187,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 exit: ExitCode::SUCCESS,
             })
         }
-        Command::Logout => to_json(logout::run(&state).await?),
+        Command::Logout(args) => to_json(logout::run(&state, args.purge).await?),
         Command::Devices(args) => match args.action {
             None => to_json(devices::list(&state).await?),
             Some(DevicesAction::Remove { name, yes }) => {

@@ -91,13 +91,19 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "logout",
-        output: "`removed` (the secrets deleted, by file name), `from` (`keychain` or `files`), `stopped` (whether a host was running) and `state_dir`.",
+        output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged` and `state_dir`.",
         effect: Repeatable(
-            "stops this state folder's host and deletes its secrets; its vault and audit log no longer open",
+            "stops this state folder's host and deletes its key and Plow token; with --purge also its vault and audit keys and the folder itself",
         ),
         owner_only: false,
         connector: None,
-        examples: &[ex("Log this state folder out", &["logout"])],
+        examples: &[
+            ex("Log this state folder out", &["logout"]),
+            ex(
+                "Delete this state folder and every secret it has",
+                &["logout", "--purge"],
+            ),
+        ],
     },
     Entry {
         id: "devices",
