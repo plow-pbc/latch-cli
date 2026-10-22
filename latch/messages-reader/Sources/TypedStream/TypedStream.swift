@@ -116,6 +116,9 @@ private struct Archive {
     var objects: Int64 = 0
     /// Objects open now.
     var depth = 0
+    /// Arrays and structs being read now, inside one another: they nest
+    /// like objects and count toward the same limit.
+    var nesting = 0
     var found: String?
 
     init(bytes: [UInt8], maxDepth: Int, budget: Budget) {
@@ -219,7 +222,15 @@ private struct Archive {
     /// One value of the type at `position` in `group`.
     mutating func value(_ group: [UInt8], _ position: inout Int) throws {
         try budget.check()
+        guard position < group.count else { throw BodyError.badStructure }
         let type = group[position]
+        if type == UInt8(ascii: "[") || type == UInt8(ascii: "{") {
+            nesting += 1
+            guard depth + nesting <= maxDepth else { throw BodyError.tooDeep }
+        }
+        defer {
+            if type == UInt8(ascii: "[") || type == UInt8(ascii: "{") { nesting -= 1 }
+        }
         position += 1
         switch type {
         case UInt8(ascii: "@"), UInt8(ascii: "#"):
@@ -331,7 +342,7 @@ private struct Archive {
         index += 1
         objects += 1
         depth += 1
-        guard depth <= maxDepth else { throw BodyError.tooDeep }
+        guard depth + nesting <= maxDepth else { throw BodyError.tooDeep }
         // The class, then each superclass, to nil or a class read before.
         for _ in 0...maxDepth {
             try budget.check()

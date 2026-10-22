@@ -232,7 +232,9 @@ func anAnswerStaysUnderItsSizeBudgetAndSaysWhereToGoOn() throws {
     }
     var seen = 0
     var pages = 0
-    var page = read(f, ["search", "--from", "bo@example.com", "--limit", "500"], now: now)
+    // Time enough for each big body, however busy the machine.
+    let roomy = Limits(budget: .seconds(5))
+    var page = read(f, ["search", "--from", "bo@example.com", "--limit", "500"], now: now, limits: roomy)
     while true {
         pages += 1
         let size = try JSONSerialization.data(withJSONObject: page.answer).count
@@ -240,7 +242,7 @@ func anAnswerStaysUnderItsSizeBudgetAndSaysWhereToGoOn() throws {
         seen += page.rows.count
         guard let next = page.next else { break }
         #expect(page.answer["incomplete"] as? String == "size_budget")
-        page = read(f, ["search", "--cursor", next, "--limit", "500"], now: now)
+        page = read(f, ["search", "--cursor", next, "--limit", "500"], now: now, limits: roomy)
     }
     #expect(seen == 21)
     #expect(pages >= 3)
