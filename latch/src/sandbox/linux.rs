@@ -6,7 +6,10 @@
 //! See ../../NOTICE for attribution and the pinned source.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::{Read, Seek};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -111,7 +114,8 @@ fn launch(policy: &Policy) -> Result<(), Error> {
     for read in &policy.reads {
         mount(&mut command, read, true)?;
     }
-    mounts(&mut command, policy, &program)?;
+    let mut writable = Vec::new();
+    mounts(&mut command, policy, &program, &mut writable)?;
     // Credentials stay out of view even inside an area or an opt-in, or
     // above one: an empty, read-only folder or an empty file in their place.
     for hidden in &policy.hidden {
@@ -161,6 +165,19 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         } else {
             command.arg(arg);
         }
+    }
+    let descriptors: Vec<_> = writable.iter().map(AsRawFd::as_raw_fd).collect();
+    // SAFETY: these descriptors are owned by writable until launch finishes.
+    // fcntl is async-signal-safe and the closure only changes scalar FD flags.
+    unsafe {
+        command.pre_exec(move || {
+            for fd in &descriptors {
+                if libc::fcntl(*fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
     }
     match status {
         Some(file) => launch_exec(&mut command, file, policy.kill_after),
@@ -261,7 +278,12 @@ fn browser_command(view: &BrowserView, program: &Path) -> Result<Command, Error>
     Ok(command)
 }
 
-fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), Error> {
+fn mounts(
+    command: &mut Command,
+    policy: &Policy,
+    program: &Path,
+    writable: &mut Vec<File>,
+) -> Result<(), Error> {
     let mut runtime = if policy.exec {
         // The system's files, /tmp and /run are already there (see `launch`).
         command.args(["--proc", "/proc", "--remount-ro", "/proc"]);
@@ -302,7 +324,12 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
         }
     }
     for area in &policy.areas {
-        mount(command, area, false)?;
+        let real = if policy.home.is_some() {
+            area.clone()
+        } else {
+            area.canonicalize()?
+        };
+        mount_writable(command, &real, writable)?;
     }
     // A worker could otherwise rename a folder above the state folder, the
     // running latch or a hidden path, inside an area: to put its own in
@@ -311,7 +338,7 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
     // onto itself makes it a mount point, which cannot be renamed or
     // removed; it stays writable.
     for dir in folders_above(policy, program)? {
-        mount(command, &dir, false)?;
+        mount_writable(command, &dir, writable)?;
     }
     // After the areas, so the running latch stays read-only even inside one.
     mount(command, program, true)?;
@@ -328,7 +355,13 @@ fn folders_above(policy: &Policy, program: &Path) -> Result<Vec<PathBuf>, Error>
     let areas: Vec<PathBuf> = policy
         .areas
         .iter()
-        .map(|area| area.canonicalize())
+        .map(|area| {
+            if policy.home.is_some() {
+                Ok(area.clone())
+            } else {
+                area.canonicalize()
+            }
+        })
         .collect::<Result<_, _>>()?;
     let mut dirs = Vec::new();
     let hidden = policy
@@ -425,6 +458,22 @@ fn mount(command: &mut Command, path: &Path, readonly: bool) -> Result<(), Error
         .arg(if readonly { "--ro-bind" } else { "--bind" })
         .arg(&real)
         .arg(if path.is_absolute() { path } else { &real });
+    Ok(())
+}
+
+fn mount_writable(command: &mut Command, path: &Path, files: &mut Vec<File>) -> Result<(), Error> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open(path)?;
+    if super::opened_path(&file)? != path {
+        return Err("a writable path changed after judgment".into());
+    }
+    command
+        .arg("--bind-fd")
+        .arg(file.as_raw_fd().to_string())
+        .arg(path);
+    files.push(file);
     Ok(())
 }
 

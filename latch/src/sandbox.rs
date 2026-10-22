@@ -42,8 +42,7 @@ pub struct Policy {
     pub state_dir: PathBuf,
     /// An `exec` worker: may start programs and has its own process view.
     pub exec: bool,
-    /// An exec worker's readable home and its Library/Caches exception.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    /// Home-readable exec profile; its write paths have already been resolved.
     pub home: Option<PathBuf>,
     /// Outbound IP access; host Unix sockets are never granted.
     pub network: bool,
@@ -70,6 +69,28 @@ pub fn never_readable(home: &Path) -> Vec<PathBuf> {
     std::iter::once(home.join(".latch"))
         .chain(cfg!(target_os = "macos").then(|| home.join("Library")))
         .collect()
+}
+
+/// The kernel's path for an already open object, rather than another lookup
+/// through a name that a concurrent command can replace with a symlink.
+pub(crate) fn opened_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
+    use std::os::fd::AsRawFd;
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut buffer = [0u8; libc::PATH_MAX as usize];
+        // SAFETY: F_GETPATH writes at most PATH_MAX bytes to this live buffer;
+        // file owns a valid descriptor and neither argument accesses Rust objects.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let name = std::ffi::CStr::from_bytes_until_nul(&buffer).map_err(std::io::Error::other)?;
+        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes())))
+    }
 }
 
 /// Confines the calling thread and any threads or processes it creates.
@@ -456,7 +477,11 @@ mod platform {
         for root in policy.areas.iter().chain(&policy.tmpdir) {
             rules.push(format!(
                 "(allow file-read* file-write* (subpath {}))",
-                quoted(root)?
+                if policy.home.is_some() {
+                    quoted_literal(root)?
+                } else {
+                    quoted(root)?
+                }
             ));
         }
         if policy.network {
@@ -569,7 +594,11 @@ mod platform {
         let latch = real(&std::env::current_exe().map_err(|err| err.to_string())?)?;
         let mut writable = Vec::new();
         for root in policy.areas.iter().chain(&policy.tmpdir) {
-            writable.push(real(root)?);
+            writable.push(if policy.home.is_some() {
+                root.clone()
+            } else {
+                real(root)?
+            });
         }
         let mut rules = vec![
             // Not even run: a plugin there is its own worker's alone.
@@ -624,7 +653,11 @@ mod platform {
         for dir in anchors {
             rules.push(format!(
                 "(deny file-write-unlink (require-all (vnode-type DIRECTORY) (literal {})))",
-                quoted(dir)?
+                if policy.home.is_some() {
+                    quoted_literal(dir)?
+                } else {
+                    quoted(dir)?
+                }
             ));
         }
         Ok(rules)
@@ -636,9 +669,15 @@ mod platform {
         let real = path
             .canonicalize()
             .map_err(|err| format!("{}: {err}", path.display()))?;
-        let text = real
+        quoted_literal(&real)
+    }
+
+    /// Keep judged grants literal: resolving them again could grant a new
+    /// symlink target. The kernel resolves access paths when enforcing them.
+    fn quoted_literal(path: &Path) -> Result<String, String> {
+        let text = path
             .to_str()
-            .ok_or_else(|| format!("{} is not valid UTF-8", real.display()))?;
+            .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
         // The profile language quotes like JSON: escape `\` and `"`.
         Ok(format!(
             "\"{}\"",
