@@ -132,6 +132,41 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
     command
 }
 
+#[test]
+fn local_commands_refuse_a_host_before_touching_local_state() {
+    for args in [
+        &[
+            "browser", "profile", "create", "fox", "--engine", "camoufox",
+        ][..],
+        &["browser", "handoff", "done"],
+        &["browser", "do", "click e1", "--dry-run"],
+        &["browser", "setup", "--engine", "camoufox"],
+        &["google", "--", "help"],
+        &["google", "--", "--help"],
+        &["google", "--", "-h"],
+    ] {
+        for from_env in [false, true] {
+            let dir = test_dir();
+            let state = dir.path().join("state");
+            let mut argv = args.to_vec();
+            if !from_env {
+                argv.splice(1..1, ["--host", "rpi5ld"]);
+            }
+            let mut command = latch_command(&state, &argv, &[]);
+            if from_env {
+                command.env("LATCH_HOST", "rpi5ld");
+            }
+            let output = command.output().unwrap();
+            println!("{args:?}, host from env={from_env}: {output:?}");
+            assert_eq!(output.status.code(), Some(2), "{output:?}");
+            assert!(output.stdout.is_empty(), "{output:?}");
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "host_not_supported");
+            assert!(!state.exists(), "{args:?} touched local state");
+        }
+    }
+}
+
 /// Runs latch with its stdin and stderr on a terminal (a pty) with `typed`
 /// already typed, as a person would, and its stdout there too or piped.
 /// Returns the exit code, everything the terminal showed, and what the
