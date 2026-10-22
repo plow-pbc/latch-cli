@@ -18,6 +18,8 @@ use crate::log::log;
 use crate::state;
 
 pub struct StateFolders {
+    roots: Vec<PathBuf>,
+    hidden: Vec<PathBuf>,
     /// The host's own state folder, which workers are denied anyway.
     own: PathBuf,
     seen: Mutex<Seen>,
@@ -32,8 +34,10 @@ struct Seen {
 
 impl StateFolders {
     /// Searches `roots` in full, now.
-    pub fn new(roots: &[PathBuf], own: &Path) -> StateFolders {
+    pub fn new(roots: &[PathBuf], own: &Path, hidden: &[PathBuf]) -> StateFolders {
         let folders = StateFolders {
+            roots: roots.to_vec(),
+            hidden: hidden.to_vec(),
             own: own.to_path_buf(),
             seen: Mutex::new(Seen::default()),
         };
@@ -48,13 +52,18 @@ impl StateFolders {
 
     /// None, for a worker that sees no shares.
     pub fn none() -> StateFolders {
-        StateFolders::new(&[], Path::new("/"))
+        StateFolders::new(&[], Path::new("/"), &[])
     }
 
     /// The state folders there are now: the ones found before, less those
     /// gone, plus any in the directories that changed since.
     pub fn now(&self) -> Vec<PathBuf> {
         let mut seen = self.seen.lock().expect("state folders lock");
+        for root in &self.roots {
+            if !seen.dirs.contains_key(root) {
+                self.search(&mut seen, root.clone());
+            }
+        }
         let mut changed = Vec::new();
         for (dir, time) in seen.dirs.iter_mut() {
             match std::fs::symlink_metadata(dir).and_then(|meta| meta.modified()) {
@@ -79,6 +88,9 @@ impl StateFolders {
     fn search(&self, seen: &mut Seen, dir: PathBuf) {
         let mut pending = vec![dir];
         while let Some(dir) = pending.pop() {
+            if self.hidden.contains(&dir) {
+                continue;
+            }
             let Ok(time) = std::fs::symlink_metadata(&dir).and_then(|meta| meta.modified()) else {
                 continue;
             };
@@ -137,7 +149,7 @@ mod tests {
         fs::write(root.join("own/latch.json"), MARKER).unwrap();
 
         let roots = [root.join("share"), root.join("refs"), root.join("own")];
-        let folders = StateFolders::new(&roots, &root.join("own"));
+        let folders = StateFolders::new(&roots, &root.join("own"), &[]);
         assert_eq!(
             folders.now(),
             [root.join("share/a/peer"), root.join("share/d/old")]

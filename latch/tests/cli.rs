@@ -92,6 +92,7 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
     let mut command = Command::new(latch_bin());
     command
+        .env("HOME", state.parent().unwrap())
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
         .env_remove("PLOW_API_BASE")
@@ -545,6 +546,53 @@ fn a_login_that_knows_no_plow_says_so_in_a_sentence_at_a_terminal_and_json_piped
     assert!(!state.join("config.json").exists());
 }
 
+#[test]
+fn any_command_fails_in_a_sentence_at_a_terminal_and_in_json_piped() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    for args in [&["status"][..], &["exec", "--host", "h", "ls"][..]] {
+        let (code, shown, _) = latch_at_a_terminal(&state, args, "", false, &[]);
+        assert!(matches!(code, Some(1..=4)), "{args:?}: {shown}");
+        assert!(!shown.contains("\"error\""), "{args:?}: {shown}");
+        assert!(!shown.trim().is_empty(), "{args:?}");
+
+        let piped = latch(&state, args, &[]);
+        assert_eq!(piped.status.code(), code, "{args:?}");
+        let error: Value = serde_json::from_slice(&piped.stderr).unwrap();
+        assert!(error["error"]["code"].is_string(), "{args:?}: {error}");
+    }
+}
+
+#[test]
+fn a_failure_with_details_shows_them_at_a_terminal_too() {
+    let (dir, state, _) = owner_host();
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    // An editor during whose edit the rules change: the save is refused,
+    // with the revision it found in the failure's details.
+    let editor = dir.path().join("editor");
+    fs::write(
+        &editor,
+        format!(
+            "#!/bin/sh\n'{}' --state-dir '{}' rules set 'Changed meanwhile.' >/dev/null\n\
+             echo 'Mine.' > \"$1\"\n",
+            latch_bin().display(),
+            state.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let env = [("EDITOR", editor.as_path())];
+    let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &env);
+    assert_eq!(code, Some(4), "{shown}");
+    assert!(
+        shown.contains("the rules changed since they were read"),
+        "{shown}"
+    );
+    assert!(shown.contains("\"revision\""), "{shown}");
+    assert!(!shown.contains("\"error\""), "{shown}");
+}
+
 /// A login by text: Plow gives a code, the phone texts it at once, and
 /// Plow registers the machine.
 fn plow_texted_at_once() -> (String, thread::JoinHandle<Vec<String>>) {
@@ -555,6 +603,36 @@ fn plow_texted_at_once() -> (String, thread::JoinHandle<Vec<String>>) {
         (200, json!({"status": "verified", "token": "texted-login"})),
         (200, peer(Value::Null, "mac", "device", Value::Null)),
     ])
+}
+
+#[test]
+fn a_login_that_fails_after_the_text_is_retried_against_the_same_plow() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let holder = peer(json!("c".repeat(64)), "mac", "device", Value::Null);
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        // Another machine holds the name, so this login stops there...
+        (409, json!({})),
+        (200, json!({"data": [holder]})),
+        // ...and the retry, under another name, registers.
+        (200, peer(Value::Null, "mac-2", "device", Value::Null)),
+    ]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let first = ["login", "--api-url", &api_url, "--name", "mac"];
+    let (code, shown, _) = latch_at_a_terminal(&state, &first, "", true, &[]);
+    assert_eq!(code, Some(2), "{shown}");
+    assert!(!state.join("config.json").exists());
+
+    // No --api-url: the saved token's Plow is used.
+    let retry = latch(&state, &["login", "--name", "mac-2"], &[]);
+    assert_eq!(retry.status.code(), Some(0), "{retry:?}");
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["api_url"], api_url);
+    assert_eq!(server.join().unwrap().len(), 5);
 }
 
 #[test]
@@ -1493,6 +1571,7 @@ fn until_serving(host: &Path, serve: &Serving) {
 fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
     let mut command = Command::new(latch_bin());
     command
+        .env("HOME", host.parent().unwrap())
         .args([
             "--state-dir",
             host.to_str().unwrap(),
@@ -1535,6 +1614,29 @@ fn serving_with(
     (serve, log, lines)
 }
 
+#[test]
+fn a_plain_serve_stopped_cleanly_prints_nothing_on_stdout() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    let mut command = serve_command(&host, &[&share], &relay);
+    command.stdout(std::process::Stdio::piped());
+    let (mut serve, mut log, _) = serving_with(command);
+    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    until_serving(&host, &serve);
+    let mut stdout = serve.0.stdout.take().unwrap();
+    // SAFETY: signals our own child.
+    unsafe { libc::kill(serve.0.id() as i32, libc::SIGTERM) };
+    let mut printed = String::new();
+    stdout.read_to_string(&mut printed).unwrap();
+    let status = serve.0.wait().unwrap();
+    assert!(status.success(), "{status:?}");
+    assert_eq!(printed, "");
+}
+
 /// An owner's host state logged in to `plow` as `host`.
 fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
     let owner_token = dir.join("owner.token");
@@ -1553,6 +1655,15 @@ fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
     let login = latch(&host, &args, &[]);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     host
+}
+
+#[test]
+fn first_login_accepts_the_installers_plugin_directory() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    fs::create_dir_all(dir.path().join("host/plugins/gog/1.0")).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    assert!(host.join("latch.json").is_file());
 }
 
 #[test]
@@ -1644,9 +1755,9 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
     // Library, can never be opted in to; another folder can.
     let home = dir.path().join("home");
     let refs = dir.path().join("refs");
-    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::create_dir_all(home.join(".latch")).unwrap();
     fs::create_dir_all(&refs).unwrap();
-    fs::write(home.join(".ssh/config"), "Host *").unwrap();
+    fs::write(home.join(".latch/private"), "Host *").unwrap();
     let opt_in = |path: &Path| {
         let args = ["shares", "set", saved.to_str().unwrap(), "--allow-read"];
         latch(
@@ -1655,7 +1766,7 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
             &[("HOME", &home)],
         )
     };
-    let refused = opt_in(&home.join(".ssh/config"));
+    let refused = opt_in(&home.join(".latch/private"));
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
     assert!(String::from_utf8_lossy(&refused.stderr).contains("never_readable"));
     let refused = opt_in(&home);
@@ -1749,7 +1860,17 @@ fn another_latch_state_folder_inside_a_share_stays_hidden() {
     let exec = |script: &str| {
         let exec = latch(
             &agent,
-            &["exec", "--host", "host", "--", "/bin/sh", "-c", script],
+            &[
+                "exec",
+                "--host",
+                "host",
+                "--write",
+                share.to_str().unwrap(),
+                "--",
+                "/bin/sh",
+                "-c",
+                script,
+            ],
             &agent_env,
         );
         assert_eq!(exec.status.code(), Some(0), "{exec:?}");
@@ -1803,7 +1924,7 @@ fn another_latch_state_folder_inside_a_share_stays_hidden() {
 }
 
 #[test]
-fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
+fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -1830,9 +1951,8 @@ fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
     // No folders named and none saved: it serves anyway, and says so.
     let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
     assert!(
-        lines.iter().any(|line| line.contains(
-            "Sharing no folders — browser and Google only. Add some with `latch shares set ~/code`"
-        )),
+        lines.iter().any(|line| line
+            .contains("Sharing no folders — exec reads home. Files: `latch shares set ~/code`")),
         "{lines:?}"
     );
     let local = latch(&host, &["status", "--local"], &[]);
@@ -1855,7 +1975,10 @@ fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
     };
     let into = dir.path().join("hosts");
     let into = into.to_str().unwrap();
-    refused(&owner, &["exec", "--host", "host", "--", "true"], &[]);
+    let executed = latch(&owner, &["exec", "--host", "host", "--", "true"], &[]);
+    assert_eq!(executed.status.code(), Some(0), "{executed:?}");
+    let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0);
     refused(
         &owner,
         &["file", "get", "--host", "host", "/etc/hosts", into],
@@ -1869,12 +1992,13 @@ fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
         &["file", "put", "--host", "host", local_file, "note.txt"],
         &[],
     );
-    // An agent's exec is refused the same way, before anything is judged.
-    refused(
+    // Agent exec still needs the gatekeeper, despite having no saved shares.
+    let refused_exec = latch(
         &agent,
         &["exec", "--host", "host", "--", "true"],
         &agent_env,
     );
+    assert_eq!(refused_exec.status.code(), Some(0), "{refused_exec:?}");
     // What needs no folder still works: here, the owner's rules.
     let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
@@ -1884,7 +2008,7 @@ fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
         .seen()
         .iter()
         .any(|(line, _)| line.contains("/v1/decisions"));
-    assert!(!asked_judge, "{:?}", plow.seen());
+    assert!(asked_judge, "{:?}", plow.seen());
 }
 
 #[test]
@@ -2487,7 +2611,9 @@ fn shutdown_exec_cases() {
 
         let mut serve = serving(&host, &share, &relay);
         let running = thread::spawn(move || {
-            let args = ["exec", "--host", "host", "--", "sh", "-c", script];
+            let args = [
+                "exec", "--host", "host", "--write", "share", "--", "sh", "-c", script,
+            ];
             latch(&client, &args, &[])
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -2780,6 +2906,8 @@ impl Bench {
             "host",
             "--timeout",
             timeout,
+            "--write",
+            self.share.to_str().unwrap(),
             "--",
             "sh",
             "-c",

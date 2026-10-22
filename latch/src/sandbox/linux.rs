@@ -6,7 +6,10 @@
 //! See ../../NOTICE for attribution and the pinned source.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::{Read, Seek};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -46,7 +49,12 @@ pub fn supervise(_watch: HostWatch, _kill_after: Option<u64>) -> Result<(), Stri
 
 pub fn confine(policy: &Policy) -> Result<(), String> {
     let result = if std::env::var_os(INNER).is_some() {
-        filter(!policy.exec && policy.program.is_none(), false).and_then(|()| {
+        filter(
+            !policy.network && policy.program.is_none(),
+            false,
+            policy.exec,
+        )
+        .and_then(|()| {
             if policy.exec {
                 supervise_exec()?;
             }
@@ -106,7 +114,8 @@ fn launch(policy: &Policy) -> Result<(), Error> {
     for read in &policy.reads {
         mount(&mut command, read, true)?;
     }
-    mounts(&mut command, policy, &program)?;
+    let mut writable = Vec::new();
+    mounts(&mut command, policy, &program, &mut writable)?;
     // Credentials stay out of view even inside an area or an opt-in, or
     // above one: an empty, read-only folder or an empty file in their place.
     for hidden in &policy.hidden {
@@ -144,6 +153,19 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         .args(["--setenv", INNER, "1", "--"])
         .arg(program)
         .args(std::env::args_os().skip(1));
+    let descriptors: Vec<_> = writable.iter().map(AsRawFd::as_raw_fd).collect();
+    // SAFETY: these descriptors are owned by writable until launch finishes.
+    // fcntl is async-signal-safe and the closure only changes scalar FD flags.
+    unsafe {
+        command.pre_exec(move || {
+            for fd in &descriptors {
+                if libc::fcntl(*fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
     match status {
         Some(file) => launch_exec(&mut command, file, policy.kill_after),
         None => Err(command.exec().into()),
@@ -159,7 +181,7 @@ const SYSTEM: &[&str] = &[
 
 pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
     let result = if std::env::var_os(INNER).is_some() {
-        filter(false, true)
+        filter(false, true, false)
     } else {
         std::env::current_exe()
             .and_then(|program| program.canonicalize())
@@ -243,10 +265,15 @@ fn browser_command(view: &BrowserView, program: &Path) -> Result<Command, Error>
     Ok(command)
 }
 
-fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), Error> {
+fn mounts(
+    command: &mut Command,
+    policy: &Policy,
+    program: &Path,
+    writable: &mut Vec<File>,
+) -> Result<(), Error> {
     let mut runtime = if policy.exec {
         // The system's files, /tmp and /run are already there (see `launch`).
-        command.args(["--ro-bind", "/proc", "/proc"]);
+        command.args(["--proc", "/proc", "--remount-ro", "/proc"]);
         vec![]
     } else if policy.program.is_none() {
         // A file worker sees the system's files too, but no processes.
@@ -262,9 +289,8 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
             "/etc/ld.so.cache",
         ]
     };
-    // Exec reuses Docker's masked procfs read-only (container PID metadata).
-    // File and Google workers do not need procfs and get none (a file
-    // worker's has an empty /proc).
+    // Exec has procfs for only its own PID namespace. File and Google
+    // workers need no process metadata.
     if !policy.exec && policy.program.is_some() {
         runtime.extend([
             "/etc/resolv.conf",
@@ -276,7 +302,7 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
             "/etc/localtime",
         ]);
     }
-    if !policy.exec && policy.program.is_none() {
+    if !policy.network && policy.program.is_none() {
         command.arg("--unshare-net");
     }
     for path in runtime {
@@ -285,7 +311,12 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
         }
     }
     for area in &policy.areas {
-        mount(command, area, false)?;
+        let real = if policy.home.is_some() {
+            area.clone()
+        } else {
+            area.canonicalize()?
+        };
+        mount_writable(command, &real, writable)?;
     }
     // A file worker's temp folder is where an upload is staged. (An exec
     // worker's is a private one of its own, above.)
@@ -301,7 +332,7 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
     // onto itself makes it a mount point, which cannot be renamed or
     // removed; it stays writable.
     for dir in folders_above(policy, program)? {
-        mount(command, &dir, false)?;
+        mount_writable(command, &dir, writable)?;
     }
     // After the areas, so the running latch stays read-only even inside one.
     mount(command, program, true)?;
@@ -318,7 +349,13 @@ fn folders_above(policy: &Policy, program: &Path) -> Result<Vec<PathBuf>, Error>
     let areas: Vec<PathBuf> = policy
         .areas
         .iter()
-        .map(|area| area.canonicalize())
+        .map(|area| {
+            if policy.home.is_some() {
+                Ok(area.clone())
+            } else {
+                area.canonicalize()
+            }
+        })
         .collect::<Result<_, _>>()?;
     let mut dirs = Vec::new();
     let hidden = policy
@@ -412,10 +449,26 @@ fn mount(command: &mut Command, path: &Path, readonly: bool) -> Result<(), Error
     Ok(())
 }
 
+fn mount_writable(command: &mut Command, path: &Path, files: &mut Vec<File>) -> Result<(), Error> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open(path)?;
+    if super::opened_path(&file)? != path {
+        return Err("a writable path changed after judgment".into());
+    }
+    command
+        .arg("--bind-fd")
+        .arg(file.as_raw_fd().to_string())
+        .arg(path);
+    files.push(file);
+    Ok(())
+}
+
 /// The seccomp filter; `offline` also refuses every socket (file workers).
 /// `namespaces` lets the browser's engine make the namespaces its own
 /// sandbox runs in; no other worker may.
-fn filter(offline: bool, namespaces: bool) -> Result<(), Error> {
+fn filter(offline: bool, namespaces: bool, block_unix: bool) -> Result<(), Error> {
     let mut rules = BTreeMap::new();
     if !namespaces {
         rules.insert(libc::SYS_unshare, vec![]);
@@ -453,7 +506,17 @@ fn filter(offline: bool, namespaces: bool) -> Result<(), Error> {
             SeccompCmpOp::Eq,
             libc::AF_VSOCK as u64,
         )?])?;
-        rules.insert(libc::SYS_socket, vec![deny_vsock.clone()]);
+        let mut sockets = vec![deny_vsock.clone()];
+        if block_unix {
+            // Read-only bind mounts still expose host daemon sockets.
+            sockets.push(SeccompRule::new(vec![SeccompCondition::new(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Eq,
+                libc::AF_UNIX as u64,
+            )?])?);
+        }
+        rules.insert(libc::SYS_socket, sockets);
         rules.insert(libc::SYS_socketpair, vec![deny_vsock]);
     }
     let filter: BpfProgram = SeccompFilter::new(
@@ -541,6 +604,8 @@ mod tests {
                 hidden: vec![],
                 state_dir: root.join("state"),
                 exec: mode == "exec",
+                home: None,
+                network: mode == "exec",
                 tmpdir: (mode == "exec").then(|| root.join("outside")),
                 kill_after: None,
                 program: (mode == "google")

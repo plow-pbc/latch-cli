@@ -3,14 +3,13 @@
 //! A worker process calls `confine` before starting any runtime or threads.
 //! From then on the operating system itself enforces the policy, and it
 //! cannot be lifted, not even by programs the worker starts: writes only
-//! inside the host's areas (and an `exec` call's own temp folder), never the
-//! host's state directory or the running latch. File and `exec` workers read
-//! only the areas, an `exec` call's temp folder, the system's own files
-//! programs need, and the paths the owner opted in to with `--allow-read`
-//! (read-only); Google workers read only their call's folder and the system
-//! locations programs need. Credentials (`never_readable`) stay out of reach
-//! of every worker, even inside an area or an opt-in. A file worker gets no
-//! network; `exec` and Google workers may reach out to the network. Google
+//! inside the writable paths and temp folder, never the host's state
+//! directory or the running latch. Exec reads home and the system's files;
+//! its write paths and IP access are granted per call. Host Unix sockets
+//! remain inaccessible. File workers use the shared areas and read-only
+//! opt-ins; Google workers read only their call folder and runtime files.
+//! Hidden paths stay out of reach, with Library/Caches an exec exception.
+//! A file worker gets no network; Google workers may reach out. Google
 //! can execute only its pinned binary; neither can send Apple Events. The
 //! kernel resolves every path (symlinks included) before checking it, so a
 //! link into a hidden path is refused by Seatbelt and reports `not_found`
@@ -41,8 +40,12 @@ pub struct Policy {
     pub hidden: Vec<PathBuf>,
     /// The host's state directory: denied on macOS, hidden on Linux, even in an area.
     pub state_dir: PathBuf,
-    /// An `exec` worker: may start programs and use the outbound network.
+    /// An `exec` worker: may start programs and has its own process view.
     pub exec: bool,
+    /// Home-readable exec profile; its write paths have already been resolved.
+    pub home: Option<PathBuf>,
+    /// Outbound IP access; host Unix sockets are never granted.
+    pub network: bool,
     /// An `exec` worker's own temp folder, made by the host for this call:
     /// readable and writable on macOS. On Linux a private TMPDIR of the
     /// worker's own takes its place, and the folder only holds bubblewrap's
@@ -59,52 +62,35 @@ pub struct Policy {
     pub break_for_test: bool,
 }
 
-/// Where a user keeps credentials and private data: ssh and gpg keys,
-/// keychains, browser profiles, mail, messages, calendars and contacts,
-/// macOS's privacy permissions (TCC), latch's own state, and cloud and
-/// developer tools' logins. No worker may read them, even when the owner
-/// shares or opts in to a folder that holds them (the sandbox denies them
-/// after everything it allows), and `--allow-read` of a path inside one is
-/// refused.
+/// Latch's private state and, on macOS, Library. Exec profiles make a
+/// narrow exception for Library/Caches; other state folders are discovered
+/// separately and remain hidden even inside a writable cache.
 pub fn never_readable(home: &Path) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = [
-        ".ssh",
-        ".gnupg",
-        "Library/Keychains",
-        "Library/Messages",
-        "Library/Mail",
-        "Library/Calendars",
-        "Library/Application Support/AddressBook",
-        "Library/Application Support/com.apple.TCC",
-        "Library/Application Support/Google/Chrome",
-        "Library/Application Support/Chromium",
-        "Library/Application Support/Firefox",
-        "Library/Application Support/BraveSoftware",
-        "Library/Application Support/Microsoft Edge",
-        "Library/Application Support/Arc",
-        "Library/Safari",
-        "Library/Cookies",
-        ".mozilla",
-        ".config/google-chrome",
-        ".config/chromium",
-        ".config/BraveSoftware",
-        ".config/microsoft-edge",
-        ".latch",
-        ".aws",
-        ".config/gcloud",
-        ".azure",
-        ".kube",
-        ".docker/config.json",
-        ".netrc",
-        ".npmrc",
-        ".git-credentials",
-        ".config/gh",
-    ]
-    .into_iter()
-    .map(|path| home.join(path))
-    .collect();
-    paths.push(PathBuf::from("/Library/Application Support/com.apple.TCC"));
-    paths
+    std::iter::once(home.join(".latch"))
+        .chain(cfg!(target_os = "macos").then(|| home.join("Library")))
+        .collect()
+}
+
+/// The kernel's path for an already open object, rather than another lookup
+/// through a name that a concurrent command can replace with a symlink.
+pub(crate) fn opened_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
+    use std::os::fd::AsRawFd;
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut buffer = [0u8; libc::PATH_MAX as usize];
+        // SAFETY: F_GETPATH writes at most PATH_MAX bytes to this live buffer;
+        // file owns a valid descriptor and neither argument accesses Rust objects.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let name = std::ffi::CStr::from_bytes_until_nul(&buffer).map_err(std::io::Error::other)?;
+        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes())))
+    }
 }
 
 /// Confines the calling thread and any threads or processes it creates.
@@ -492,13 +478,25 @@ mod platform {
         for root in policy.areas.iter().chain(&policy.tmpdir) {
             rules.push(format!(
                 "(allow file-read* file-write* (subpath {}))",
-                quoted(root)?
+                if policy.home.is_some() {
+                    quoted_literal(root)?
+                } else {
+                    quoted(root)?
+                }
+            ));
+        }
+        if policy.network {
+            rules.push("(allow network-outbound (remote ip))".to_string());
+            rules.push(CODEX_NETWORK.to_string());
+        }
+        if let Some(tmpdir) = &policy.tmpdir {
+            rules.push("(allow system-socket (socket-domain AF_UNIX))".to_string());
+            rules.push(format!(
+                "(allow network-outbound (remote unix-socket (subpath {})))",
+                quoted(tmpdir)?
             ));
         }
         rules.extend([
-            "(allow network-outbound)".to_string(),
-            "(allow system-socket (socket-domain AF_UNIX))".to_string(),
-            CODEX_NETWORK.to_string(),
             // As Codex: no embedded XPC services, except the speech
             // synthesizer `say` uses, and no fcntls that change a file
             // through a read-only descriptor (F_MAKECOMPRESSED,
@@ -597,7 +595,11 @@ mod platform {
         let latch = real(&std::env::current_exe().map_err(|err| err.to_string())?)?;
         let mut writable = Vec::new();
         for root in policy.areas.iter().chain(&policy.tmpdir) {
-            writable.push(real(root)?);
+            writable.push(if policy.home.is_some() {
+                root.clone()
+            } else {
+                real(root)?
+            });
         }
         let mut rules = vec![
             // Not even run: a plugin there is its own worker's alone.
@@ -610,10 +612,21 @@ mod platform {
         let mut hidden = Vec::new();
         for path in policy.hidden.iter().filter(|path| path.exists()) {
             let path = real(path)?;
-            rules.push(format!(
-                "(deny file-read* file-write* (subpath {}))",
-                quoted(&path)?
-            ));
+            let filter = if policy.exec
+                && policy
+                    .home
+                    .as_ref()
+                    .is_some_and(|home| path == home.join("Library"))
+            {
+                format!(
+                    "(require-all (subpath {}) (require-not (subpath {})))",
+                    quoted(&path)?,
+                    quoted(&path.join("Caches"))?
+                )
+            } else {
+                format!("(subpath {})", quoted(&path)?)
+            };
+            rules.push(format!("(deny file-read* file-write* {filter})"));
             hidden.push(path);
         }
         // The one part of the state folder a worker may see: a Google
@@ -641,7 +654,11 @@ mod platform {
         for dir in anchors {
             rules.push(format!(
                 "(deny file-write-unlink (require-all (vnode-type DIRECTORY) (literal {})))",
-                quoted(dir)?
+                if policy.home.is_some() {
+                    quoted_literal(dir)?
+                } else {
+                    quoted(dir)?
+                }
             ));
         }
         Ok(rules)
@@ -653,9 +670,15 @@ mod platform {
         let real = path
             .canonicalize()
             .map_err(|err| format!("{}: {err}", path.display()))?;
-        let text = real
+        quoted_literal(&real)
+    }
+
+    /// Keep judged grants literal: resolving them again could grant a new
+    /// symlink target. The kernel resolves access paths when enforcing them.
+    fn quoted_literal(path: &Path) -> Result<String, String> {
+        let text = path
             .to_str()
-            .ok_or_else(|| format!("{} is not valid UTF-8", real.display()))?;
+            .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
         // The profile language quotes like JSON: escape `\` and `"`.
         Ok(format!(
             "\"{}\"",
@@ -707,6 +730,8 @@ mod google_tests {
                 hidden: vec![],
                 state_dir: root.join("state"),
                 exec: false,
+                home: None,
+                network: false,
                 tmpdir: None,
                 kill_after: None,
                 program: Some(PathBuf::from(
@@ -787,6 +812,8 @@ mod google_tests {
                 hidden: vec![],
                 state_dir: root.join("state"),
                 exec: mode == "exec",
+                home: None,
+                network: mode == "exec",
                 tmpdir: (mode == "exec").then(|| root.join("private/call")),
                 kill_after: None,
                 program: (mode == "google").then(|| gog.clone()),

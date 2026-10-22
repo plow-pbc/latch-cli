@@ -65,7 +65,8 @@ const AGENT_HELP: &str = "\
 Agents:
   Log in with your own Plow agent credential (`latch login` finds it). Never
   use a device login copied from one of the owner's machines: that is the
-  owner acting, and hosts never check it against what the owner asked for.
+  owner acting, and hosts judge it as the owner's own request, not against
+  what the owner asked you for.
 
   Exit 4 means denied. A host's gatekeeper refusal, gatekeeper_denied with
   reason not_covered, is the one to retry: ask the owner in your Plow chat,
@@ -238,7 +239,8 @@ pub enum BrowserCommand {
     },
     /// A PNG of the page, written to a file on this machine
     Screenshot {
-        #[arg(long, short)]
+        /// Where the PNG goes on this machine
+        #[arg(value_name = "PATH")]
         output: PathBuf,
     },
     /// The plan command: up to 10 steps in order, each `click|type|select|press
@@ -679,6 +681,12 @@ pub struct WorkerArgs {
     /// The host's state directory, which the worker may never touch
     #[arg(long)]
     pub denied: PathBuf,
+    /// The home folder readable by an exec worker
+    #[arg(long)]
+    pub home: Option<PathBuf>,
+    /// Permit outbound IP networking
+    #[arg(long)]
+    pub network: bool,
     /// An exec worker's own temp folder (its `TMPDIR`), which it may read and write
     #[arg(long)]
     pub tmpdir: Option<PathBuf>,
@@ -943,9 +951,17 @@ pub struct ExecArgs {
     #[command(flatten)]
     pub host: HostArg,
 
-    /// Directory to run in, inside one of the host's areas [default: the first area]
+    /// Directory inside the host's home [default: first write folder, otherwise home]
     #[arg(long, value_name = "DIR")]
     pub workdir: Option<String>,
+
+    /// File or folder the command may write (repeatable); otherwise only temp and caches are writable
+    #[arg(long = "write", value_name = "PATH")]
+    pub writes: Vec<String>,
+
+    /// Allow outbound IP networking; host Unix sockets stay blocked
+    #[arg(long)]
+    pub network: bool,
 
     /// Seconds before the program and everything it started are killed (1 to 600)
     #[arg(long, default_value_t = 60, value_name = "SECS",
@@ -984,6 +1000,19 @@ mod tests {
             Command::Serve(serve) => serve,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_screenshot_takes_its_path_as_an_argument() {
+        let parsed = Cli::try_parse_from(["latch", "browser", "screenshot", "page.png"]).unwrap();
+        let Command::Browser(args) = parsed.command else {
+            panic!("not a browser command");
+        };
+        let BrowserCommand::Screenshot { output } = args.command else {
+            panic!("not a screenshot");
+        };
+        assert_eq!(output, PathBuf::from("page.png"));
+        assert!(Cli::try_parse_from(["latch", "browser", "screenshot"]).is_err());
     }
 
     #[test]

@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use iroh::endpoint::{Connection, Incoming, RecvStream, SendStream, VarInt, presets};
 use iroh::{Endpoint, RelayMode};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
@@ -36,7 +36,7 @@ use crate::exec;
 use crate::failure::Failure;
 use crate::files;
 use crate::gate::rules::RuleFiles;
-use crate::gate::{self, Gate, Gatekeeper};
+use crate::gate::{self, Caller, Gate, Gatekeeper};
 use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
 use crate::log::{self, log};
@@ -232,9 +232,24 @@ async fn run_locked(
         &hidden,
         &state_dir,
     )?;
-    let roots: Vec<PathBuf> = areas.iter().chain(&reads).cloned().collect();
+    let home = std::env::home_dir()
+        .and_then(|home| home.canonicalize().ok())
+        .ok_or_else(|| {
+            Failure::failed(
+                "bad_home",
+                "the host's home folder cannot be resolved".into(),
+            )
+        })?;
+    let cache = home.join("Library/Caches");
+    let roots: Vec<PathBuf> = std::iter::once(&home)
+        .chain(cfg!(target_os = "macos").then_some(&cache))
+        .chain(&areas)
+        .chain(&reads)
+        .cloned()
+        .collect();
     let workers = WorkerSetup {
-        state_folders: StateFolders::new(&roots, &state_dir),
+        state_folders: StateFolders::new(&roots, &state_dir, &hidden),
+        home,
         areas,
         reads,
         hidden,
@@ -632,8 +647,8 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
 }
 
 /// What a host sharing no folders says in its log and on its dashboard.
-pub const SHARING_NONE: &str = "Sharing no folders — browser and Google only. \
-    Add some with `latch shares set ~/code`, then restart `latch serve`.";
+pub const SHARING_NONE: &str =
+    "Sharing no folders — exec reads home. Files: `latch shares set ~/code`; restart serve.";
 
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
@@ -642,7 +657,7 @@ pub const SHARING_NONE: &str = "Sharing no folders — browser and Google only. 
 /// that hold its `Library`, where macOS keeps mail, messages and the like:
 /// share the projects in it instead. The sandbox hides the state folder and
 /// the never-readable places even inside a shared folder. None at all is a
-/// host for the browser and Google only: its `exec` and `file` refuse.
+/// host whose file copies refuse; exec uses per-command permissions.
 pub fn shared_folders(folders: &[PathBuf], home: Option<&Path>) -> Result<Vec<PathBuf>, Failure> {
     let mut areas = Vec::new();
     for folder in folders {
@@ -854,12 +869,18 @@ async fn serve_operation(
         None
     };
     let op = request.op.as_str();
+    let exec_permissions = (op == "exec").then(|| {
+        json!({
+            "writes": request.args.get("writes").cloned().unwrap_or_else(|| json!([])),
+            "network": request.args.get("network").cloned().unwrap_or(json!(false)),
+        })
+    });
     tracing::Span::current().record("op", display(op));
     let started = Instant::now();
 
     // Second check: before the operation, in case the caller was revoked
     // since it connected.
-    let response = match host.check(caller).await {
+    let mut response = match host.check(caller).await {
         Err(denial) => {
             let _ = host
                 .append(audit::record(caller, None, op, "deny", &denial.code))
@@ -874,7 +895,7 @@ async fn serve_operation(
             }
         }
         Ok(identity) => {
-            // An agent's exec, file or Google operation runs only if the
+            // Any caller's exec, file or Google operation runs only if the
             // gatekeeper allows it.
             let gate = host.gate(&identity, request.chat.as_deref());
             // An exec this host's owner denies is refused without asking.
@@ -882,25 +903,42 @@ async fn serve_operation(
             // A worker started now would run the new latch under this old
             // host: nothing runs, and nothing is judged.
             let upgraded = host.binary.replaced();
-            // With no shared folder, exec and file refuse: nothing to judge.
-            let unshared =
-                host.workers.areas.is_empty() && matches!(op, "exec" | "file_get" | "file_put");
+            let (prepared_exec, exec_failure) = if op == "exec" && !denied_exec && !upgraded {
+                match exec::normalize(&host.workers, &request.args) {
+                    Ok(args) => {
+                        request.args =
+                            serde_json::to_value(&args).expect("prepared exec serializes");
+                        (Some(args), None)
+                    }
+                    Err(failure) => (None, Some(failure)),
+                }
+            } else {
+                (None, None)
+            };
+            // File copies still need a shared folder; exec uses per-call permissions.
+            let unshared = host.workers.areas.is_empty() && matches!(op, "file_get" | "file_put");
             let first_area = host.workers.areas.first().map(PathBuf::as_path);
             let gated = gate::gated(op, &request.args, first_area)
-                .filter(|_| !denied_exec && !upgraded && !unshared && unplaced.is_none());
+                .filter(|_| {
+                    !denied_exec
+                        && !upgraded
+                        && !unshared
+                        && exec_failure.is_none()
+                        && unplaced.is_none()
+                });
             let unjudgeable = match (&gate, &gated) {
-                (Ok(Some(_)), Some(gated)) => gated.unjudgeable.as_ref(),
+                (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
             };
             // A one-time action (send one email) is judged, run and
-            // recorded before the same agent's next one is judged, so two
+            // recorded before the same caller's next one is judged, so two
             // sent at once do not both run.
             let turn = match (&gate, &gated) {
-                (Ok(Some(gate)), Some(gated)) if gated.once => Some(gate.one_at_a_time().await),
+                (Ok(gate), Some(gated)) if gated.once => Some(gate.one_at_a_time().await),
                 _ => None,
             };
             let judgment = match (&gate, &gated) {
-                (Ok(Some(gate)), Some(gated)) if unjudgeable.is_none() => {
+                (Ok(gate), Some(gated)) if unjudgeable.is_none() => {
                     Some(gate.judge(&gated.action).await)
                 }
                 _ => None,
@@ -919,6 +957,12 @@ async fn serve_operation(
             let done = if upgraded {
                 let failure = host_upgraded();
                 Done::failed(&failure.code, failure.message, Value::Null)
+            } else if let Some(failure) = exec_failure {
+                Done {
+                    response: Response::error(&failure),
+                    audit_args: Value::Null,
+                    outcome: failure.code,
+                }
             } else if let Some(refused) = refused {
                 refused
             } else if let Some(unplaced) = unplaced {
@@ -948,7 +992,12 @@ async fn serve_operation(
                         outcome: "exec_denied".to_string(),
                     },
                     "exec" => {
-                        exec::run(&host.workers, &request.args, cut_off(host, connection)).await
+                        exec::run(
+                            &host.workers,
+                            prepared_exec.expect("exec was validated"),
+                            cut_off(host, connection),
+                        )
+                        .await
                     }
                     "vault" => {
                         crate::vault::host::run(
@@ -977,7 +1026,7 @@ async fn serve_operation(
                                 &host.browsers,
                                 caller,
                                 &identity.kind,
-                                *gate,
+                                Some(*gate),
                                 request.args,
                                 &mut send,
                                 &mut recv,
@@ -1007,7 +1056,7 @@ async fn serve_operation(
                     ),
                 }
             };
-            if let (Ok(Some(gate)), Some(gated), Some(judgment)) = (&gate, &gated, &judgment)
+            if let (Ok(gate), Some(gated), Some(judgment)) = (&gate, &gated, &judgment)
                 && judgment.verdict.is_ok()
                 && gated.once
             {
@@ -1052,6 +1101,14 @@ async fn serve_operation(
             response
         }
     };
+    if let (Some(permissions), Response::Error { details, .. }) = (exec_permissions, &mut response)
+    {
+        if details.is_null() {
+            *details = json!({});
+        }
+        details["writes"] = permissions["writes"].clone();
+        details["network"] = permissions["network"].clone();
+    }
     answer(&mut send, &response).await;
 }
 
@@ -1207,23 +1264,25 @@ impl Host {
     /// Asks Plow who `caller` is. Returns the caller's identity if it may
     /// call, or why not. Nothing is cached: every check asks Plow again, so
     /// a revoked key stops working at once.
-    /// The gate an agent's operations pass, in the chat it named; none for
-    /// the owner's own devices, which are never judged. An agent Plow
-    /// gives no uid can't be judged, so nothing of it runs.
+    /// The gate a caller's operations pass: the owner's own devices as
+    /// the owner, an agent in the chat it named. An agent Plow gives no uid
+    /// can't be judged, so nothing of it runs.
     fn gate<'a>(
         &'a self,
         identity: &'a Identity,
         chat: Option<&'a str>,
-    ) -> Result<Option<Gate<'a>>, Failure> {
+    ) -> Result<Gate<'a>, Failure> {
         if identity.kind == "device" {
-            return Ok(None);
+            return Ok(Gate {
+                keeper: &self.gatekeeper,
+                caller: Caller::Owner,
+            });
         }
         match identity.agent_uid.as_deref() {
-            Some(agent) => Ok(Some(Gate {
+            Some(uid) => Ok(Gate {
                 keeper: &self.gatekeeper,
-                agent,
-                chat,
-            })),
+                caller: Caller::Agent { uid, chat },
+            }),
             None => Err(Failure::new(
                 crate::failure::Exit::Unreachable,
                 "gatekeeper_unavailable",
@@ -1461,20 +1520,20 @@ mod tests {
     }
 
     #[test]
-    fn an_opt_in_inside_credentials_or_state_is_refused() {
+    fn an_opt_in_inside_hidden_state_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().canonicalize().unwrap();
         let state = home.join("state");
-        for path in [".ssh", ".config/gh", "code", "state/keys"] {
+        for path in [".latch", "code", "state/keys"] {
             std::fs::create_dir_all(home.join(path)).unwrap();
         }
-        std::fs::write(home.join(".ssh/id_ed25519"), b"").unwrap();
+        std::fs::write(home.join(".latch/private"), b"").unwrap();
         let hidden = crate::sandbox::never_readable(&home);
         let allowed = |path: &str| allowed_reads(&[home.join(path)], Some(&home), &hidden, &state);
 
         // A folder that holds them is allowed (the sandbox hides them in
         // it), unless it holds the Library: the home folder, or above it.
-        std::fs::create_dir_all(home.join("code/.ssh")).unwrap();
+        std::fs::create_dir_all(home.join("code/.latch")).unwrap();
         std::fs::create_dir_all(home.join("Library")).unwrap();
         let in_code = crate::sandbox::never_readable(&home.join("code"));
         let reads = allowed_reads(&[home.join("code")], None, &in_code, &state);
@@ -1485,7 +1544,7 @@ mod tests {
             assert_eq!(failure.code, "bad_folder", "{path}");
             assert!(failure.message.contains("Library"), "{path}");
         }
-        for path in [".ssh", ".ssh/id_ed25519", ".config/gh", "state/keys"] {
+        for path in [".latch", ".latch/private", "state/keys"] {
             let failure = allowed(path).unwrap_err();
             assert_eq!(failure.code, "never_readable", "{path}");
         }
@@ -1517,21 +1576,15 @@ mod tests {
     }
 
     #[test]
-    fn a_linked_credential_keeps_its_target_hidden_once_the_link_is_gone() {
+    fn linked_state_keeps_its_target_hidden_once_the_link_is_gone() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().canonicalize().unwrap();
-        std::fs::create_dir_all(home.join(".docker")).unwrap();
         std::fs::create_dir_all(home.join("private")).unwrap();
-        std::fs::write(home.join("private/login.json"), "{}").unwrap();
-        std::os::unix::fs::symlink(
-            home.join("private/login.json"),
-            home.join(".docker/config.json"),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(home.join("private"), home.join(".latch")).unwrap();
         let hidden = with_targets(crate::sandbox::never_readable(&home));
-        std::fs::remove_file(home.join(".docker/config.json")).unwrap();
-        assert!(hidden.contains(&home.join(".docker/config.json")));
-        assert!(hidden.contains(&home.join("private/login.json")));
+        std::fs::remove_file(home.join(".latch")).unwrap();
+        assert!(hidden.contains(&home.join(".latch")));
+        assert!(hidden.contains(&home.join("private")));
     }
 
     #[test]
