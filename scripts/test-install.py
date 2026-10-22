@@ -180,6 +180,84 @@ class BinaryInstall(unittest.TestCase):
             self.assertIn(option, result.stdout)
 
 
+def fake_latch(version, log, managed=True, stop_ok=True, start_ok=True):
+    """A latch that says `version`, reports a host (managed or not) on
+    `status --local`, and writes each stop and start it does to `log`."""
+    serve = '{"serve":{"running":true,"ready":true,"managed":%s}}' % str(managed).lower()
+    stop = """echo '{"stopped":true}'""" if stop_ok else "exit 1"
+    start = "echo '{}'" if start_ok else "exit 1"
+    return f"""#!/bin/sh
+case "$*" in
+  --version) echo "latch {version}" ;;
+  *"status --local") echo '{serve}' ;;
+  *" stop") echo "{version} stop" >> "{log}"; {stop} ;;
+  *"serve -d --again") echo "{version} serve -d --again" >> "{log}"; {start} ;;
+  *) exit 2 ;;
+esac
+"""
+
+
+class HostUpgrade(unittest.TestCase):
+    """A managed host running the latch being replaced is stopped first and
+    started again with the new one."""
+
+    def upgrade(self, old, new, log):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        directory = tempfile.TemporaryDirectory(dir=parent)
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        state = root / "state"
+        setup, binary, tools = fixture(root, state, new)
+        dest = root / "home/.local/bin/latch"
+        dest.parent.mkdir(parents=True)
+        dest.write_text(old)
+        dest.chmod(0o755)
+        env = {**os.environ, "HOME": str(root / "home"), "PATH": f"{tools}:{os.environ['PATH']}"}
+        result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                                 str(binary)], cwd=root, env=env, capture_output=True, text=True)
+        calls = log.read_text().splitlines() if log.exists() else []
+        return result, calls, dest
+
+    def log(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name) / "calls"
+
+    def test_a_managed_host_is_stopped_then_started_again_by_the_new_latch(self):
+        log = self.log()
+        result, calls, dest = self.upgrade(fake_latch("0.1.0 (1)", log), fake_latch("0.1.0 (2)", log), log)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ["0.1.0 (1) stop", "0.1.0 (2) serve -d --again"])
+        self.assertIn("started the host", result.stdout)
+        self.assertIn("latch 0.1.0 (2)", subprocess.check_output([str(dest), "--version"], text=True))
+
+    def test_a_failed_stop_changes_nothing(self):
+        log = self.log()
+        old = fake_latch("0.1.0 (1)", log, stop_ok=False)
+        result, calls, dest = self.upgrade(old, fake_latch("0.1.0 (2)", log), log)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("nothing was changed", result.stderr)
+        self.assertEqual(dest.read_text(), old)
+        self.assertEqual(calls, ["0.1.0 (1) stop"], "tried, and nothing started")
+
+    def test_a_host_that_does_not_start_again_says_how_to_start_it(self):
+        log = self.log()
+        new = fake_latch("0.1.0 (2)", log, start_ok=False)
+        result, calls, _ = self.upgrade(fake_latch("0.1.0 (1)", log), new, log)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("latch serve -d --again", result.stderr)
+        self.assertEqual(calls, ["0.1.0 (1) stop", "0.1.0 (2) serve -d --again"])
+
+    def test_no_managed_host_or_the_same_version_stops_nothing(self):
+        for old_version, managed in [("0.1.0 (1)", False), ("0.1.0 (2)", True)]:
+            log = self.log()
+            old = fake_latch(old_version, log, managed=managed)
+            result, calls, _ = self.upgrade(old, fake_latch("0.1.0 (2)", log), log)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(calls, [])
+
+
 class MessagesReaderInstall(unittest.TestCase):
     def test_a_mac_install_puts_the_reader_in_this_latchs_plugin_folder(self):
         parent = ROOT / ".dev/tests"

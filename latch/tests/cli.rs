@@ -3982,6 +3982,7 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     assert_eq!(adopt["error"]["code"], "not_attached", "{adopt}");
     // Nobody else asks the host on the network what its socket answers.
     assert_eq!(local_serve(&host)["state"], "serving");
+    assert_eq!(local_serve(&host)["managed"], true);
 
     let stopped = latch(&host, &["stop"], &[]);
     assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
@@ -3996,6 +3997,21 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     // Stopping again stops nothing, and says so.
     let twice: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
     assert_eq!(twice["stopped"], false);
+    assert_eq!(local_serve(&host)["managed"], false);
+
+    // Started again with what it was given, as an upgrade restarts it: the
+    // same share, though `--again` names none.
+    let restarted = latch(&host, &["serve", "-d", "--again"], &env);
+    assert_eq!(restarted.status.code(), Some(0), "{restarted:?}");
+    let read = local_operation(
+        &host,
+        "exec",
+        json!({"argv": ["cat", "note.txt"], "timeout": 10}),
+    );
+    assert_eq!(read["ok"]["stdout"], "hi", "{read}");
+    let stopped: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
+    assert_eq!(stopped["stopped"], true);
+    assert!(!registered(&host));
 
     let log = fs::read_to_string(host.join("serve.log")).unwrap();
     assert!(log.contains("stopping: asked to by `latch stop`"), "{log}");
@@ -4010,6 +4026,19 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
         .find(|record| record["op"] == "exec")
         .unwrap();
     assert_eq!(exec["args"]["argv"], json!(["cat", "note.txt"]), "{exec}");
+}
+
+#[test]
+fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
+    let (_dir, state, _key) = owner_host();
+    let again = latch(&state, &["serve", "-d", "--again"], &[]);
+    assert_eq!(again.status.code(), Some(2), "{again:?}");
+    let error: Value = serde_json::from_slice(&again.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "nothing_to_start_again");
+    assert_eq!(local_serve(&state)["running"], false);
+    // --again takes nothing else: what it starts with is what was given.
+    let named = latch(&state, &["serve", "-d", "--again", "/tmp"], &[]);
+    assert_eq!(named.status.code(), Some(2), "{named:?}");
 }
 
 /// `latch ARGS` on a terminal of its own, as its controlling terminal, the
