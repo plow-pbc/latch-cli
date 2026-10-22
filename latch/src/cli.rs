@@ -165,9 +165,16 @@ pub enum Command {
     Audit(AuditArgs),
     /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
     Events(EventsArgs),
-    /// Run this machine as a host, in the foreground, until stopped
+    /// Run this machine as a host, as a service of this user's: with its
+    /// dashboard (Ctrl-C stops the host), or detached with -d
     #[command(after_help = SERVE_HELP)]
     Serve(ServeArgs),
+    /// Stop the host on this state folder; its state is kept
+    Stop,
+    /// View the running host; Ctrl-C closes only the view
+    Dashboard,
+    /// The host's diagnostics (serve.log)
+    Logs(FollowArgs),
     /// Help for a command, its examples, or every command as JSON
     Help(HelpArgs),
     /// Print SKILL.md, which teaches an agent how to use latch
@@ -790,7 +797,11 @@ pub struct AuditArgs {
 #[derive(Subcommand, Debug)]
 pub enum AuditAction {
     /// Every record, opened with the key: each command in full, as it ran
-    Show,
+    Show {
+        /// One record per line, then each new one as it is written, until stopped
+        #[arg(long, short)]
+        follow: bool,
+    },
     /// Check every record's place in the chain, without the key
     Verify,
     /// Seal new records under a new key and keep every old one; a running `latch serve` uses it once restarted
@@ -816,6 +827,13 @@ pub enum SharesAction {
 }
 
 #[derive(Args, Debug)]
+pub struct FollowArgs {
+    /// Keep printing what is added, until stopped
+    #[arg(long, short)]
+    pub follow: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct StatusArgs {
     /// Show a card for a person, with key art to compare between machines, instead of JSON
     #[arg(long)]
@@ -836,9 +854,20 @@ pub struct ServeArgs {
     #[arg(long, value_name = "PATH", requires = "folders")]
     pub allow_read: Vec<PathBuf>,
 
-    /// Log plainly even on a terminal, instead of showing the live dashboard
+    /// Start the host and return once it answers, printing it as JSON; it
+    /// runs until `latch stop`
+    #[arg(short = 'd', long, conflicts_with = "foreground")]
+    pub detach: bool,
+
+    /// Run the host in this process, with no service manager and no
+    /// dashboard, logging to stderr: for CI, tests and containers
     #[arg(long)]
-    pub no_dashboard: bool,
+    pub foreground: bool,
+
+    /// Internal: the host an attached `latch serve` started, which stops
+    /// when that `latch serve` goes away
+    #[arg(long, hide = true, requires = "foreground")]
+    pub attached: bool,
 
     /// Run every browser session with no window, in Chrome's headless mode:
     /// for a test host nobody watches. Sites block headless browsers far
