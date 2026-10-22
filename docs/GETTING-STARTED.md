@@ -24,7 +24,7 @@ gh release download --repo plow-pbc/latch-cli --pattern install.sh && sh install
 ```
 
 `sh install.sh TAG` installs that release instead (tags look like
-`v0.1.0-build.202610220005`). The installer picks the archive for your
+`v0.1.0-1327`). The installer picks the archive for your
 machine (Apple silicon or Intel Mac, Linux x86_64 or arm64, including a
 Raspberry Pi), checks it against the release's `SHA256SUMS`, and installs
 it. Options after the tag (or alone) go to the installer: `--bin-dir DIR`,
@@ -57,7 +57,7 @@ Check it:
 
 ```sh
 latch --version
-# latch 0.1.0 (commit …, built …, standalone tag v0.1.0-build.…, protocol plow/latch/1)
+# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/1
 ```
 
 **Linux:** a host sandboxes what it runs with bubblewrap. The installer

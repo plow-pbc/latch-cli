@@ -14,8 +14,9 @@ export PATH="$HOME/.local/bin:$PATH"
 latch --version
 ```
 
-Releases are tagged `v<version>-build.<UTC yyyymmddHHMM>`, e.g.
-`v0.1.0-build.202610211830`; `sh install.sh TAG` installs that one instead.
+Releases are tagged `v<version>-<build>`, e.g. `v0.1.0-1327`, where the build
+number counts release runs; `latch --version` shows it as `0.1.0 (1327)`.
+`sh install.sh TAG` installs that release instead.
 
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.

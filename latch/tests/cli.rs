@@ -69,6 +69,14 @@ fn fake_plow(answers: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<Stri
 }
 
 /// Test state lives under the repo's gitignored `.dev/`, like every dev run.
+/// The latch under test: this build's, or the one `LATCH_TEST_BIN` names
+/// (the signed Keychain build, for the `--ignored` tests at the end).
+fn latch_bin() -> PathBuf {
+    std::env::var_os("LATCH_TEST_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_latch")))
+}
+
 fn test_dir() -> tempfile::TempDir {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
@@ -82,7 +90,7 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 }
 
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    let mut command = Command::new(latch_bin());
     command
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
@@ -791,7 +799,7 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
     let dir = test_dir();
     let state = dir.path().join("none");
     let run = |timeout: &str| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+        let mut command = Command::new(latch_bin());
         command
             .env_remove("PLOW_TOKEN_FILE")
             .arg("--state-dir")
@@ -1396,7 +1404,7 @@ fn until_serving(host: &Path, serve: &Serving) {
 }
 
 fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    let mut command = Command::new(latch_bin());
     command
         .args([
             "--state-dir",
@@ -1766,29 +1774,11 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let dir = test_dir();
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
-    let owner_token = dir.path().join("owner.token");
-    fs::write(&owner_token, "owner-login\n").unwrap();
+    let (host, owner) = host_and_owner(&plow, dir.path());
     let agent_token = dir.path().join("agent.token");
     fs::write(&agent_token, "agent-credential\n").unwrap();
-    let (host, owner, agent) = (
-        dir.path().join("host"),
-        dir.path().join("owner"),
-        dir.path().join("agent"),
-    );
+    let agent = dir.path().join("agent");
     let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
-    for (state, name) in [(&host, "host"), (&owner, "owner-mac")] {
-        let token = owner_token.to_str().unwrap();
-        let args = [
-            "login",
-            "--api-url",
-            &plow.url,
-            "--token-file",
-            token,
-            "--name",
-            name,
-        ];
-        assert_eq!(latch(state, &args, &[]).status.code(), Some(0), "{name}");
-    }
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     let serve = serving(&host, &share, &relay);
@@ -2385,6 +2375,112 @@ fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapsho
         );
     }
     assert!(events.close().success());
+}
+
+/// The state files a latch keeps its secrets in when it has no Keychain.
+const SECRET_FILES: [&str; 3] = ["key", "plow-token", "vault.key"];
+
+fn secret_files_in(state: &Path) -> Vec<&'static str> {
+    SECRET_FILES
+        .into_iter()
+        .filter(|file| state.join(file).exists())
+        .collect()
+}
+
+/// `latch vault add` a login titled `title`, its password typed in.
+fn vault_add(owner: &Path, title: &str) {
+    let mut add = latch_command(
+        owner,
+        &[
+            "vault",
+            "add",
+            "--host",
+            "host",
+            "--kind",
+            "login",
+            "--title",
+            title,
+            "--site",
+            "shop.example",
+            "--field",
+            "username=ada",
+        ],
+        &[],
+    )
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+    add.stdin
+        .take()
+        .unwrap()
+        .write_all(b"made-up-pass-5521\n")
+        .unwrap();
+    let added = add.wait_with_output().unwrap();
+    assert_eq!(added.status.code(), Some(0), "{added:?}");
+}
+
+/// The titles `latch vault list` shows on the host.
+fn vault_titles(owner: &Path) -> Vec<String> {
+    let list = latch(owner, &["vault", "list", "--host", "host"], &[]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let listed: Value = serde_json::from_slice(&list.stdout).unwrap();
+    let items = listed["items"].as_array().cloned().unwrap_or_default();
+    items
+        .iter()
+        .map(|item| item["title"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A host and an owner device, logged in to `plow` by the latch `bin`.
+fn host_and_owner(plow: &LivePlow, dir: &Path) -> (PathBuf, PathBuf) {
+    let owner_token = dir.join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let (host, owner) = (dir.join("host"), dir.join("owner"));
+    for (state, name) in [(&host, "host"), (&owner, "owner-mac")] {
+        let args = [
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            owner_token.to_str().unwrap(),
+            "--name",
+            name,
+        ];
+        let login = latch(state, &args, &[]);
+        assert_eq!(login.status.code(), Some(0), "{name}: {login:?}");
+    }
+    (host, owner)
+}
+
+#[test]
+#[ignore = "needs a latch signed for the Keychain in LATCH_TEST_BIN; the keychain workflow runs it"]
+fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let (host, owner) = host_and_owner(&plow, dir.path());
+    let serve = serving(&host, &share, &relay);
+    vault_add(&owner, "Shop");
+    assert_eq!(vault_titles(&owner), ["Shop"]);
+    drop(serve);
+
+    for state in [&host, &owner] {
+        assert_eq!(
+            secret_files_in(state),
+            Vec::<&str>::new(),
+            "{}",
+            state.display()
+        );
+    }
+    assert!(host.join("vault.json").exists());
+    // The same identity, login and vault on the next start.
+    let serve = serving(&host, &share, &relay);
+    assert_eq!(vault_titles(&owner), ["Shop"]);
+    drop(serve);
 }
 
 /// A host sharing `share`, with its exec temp folders made in `tmp`, and

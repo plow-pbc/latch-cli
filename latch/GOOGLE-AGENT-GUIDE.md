@@ -117,6 +117,14 @@ per mailbox: a read or write on an id from a merged answer passes `--account
 <that item's account>`. When replying, use the account that received the
 thread.
 
+**Forward with `forward`, never by retyping.** Asked to forward a message
+(or save a forward as a draft), run `gmail forward <message id> --to ...`
+(sends) or `gmail drafts forward <message id> --to ...` (a draft for
+review), with an optional `--note` above the original. gog copies the
+original and its attachments. Never compose a new message dressed as a
+forward: the attachments are lost and the text is no longer the original.
+A forward sends mail, so it is judged like a send.
+
 ## Timed creates are conflict-checked
 
 A `calendar create` with timed `--from`/`--to` is first checked against the
@@ -215,6 +223,7 @@ Useful starting points:
     latch google -- gmail search 'from:someone newer_than:30d' --max 10
     latch google -- gmail thread get <the row's id> --sanitize-content --account <the row's account>
     latch google -- gmail drafts reply <a message id from thread get> --body '...' --account <account>
+    latch google -- gmail drafts forward <a message id from thread get> --to a@b.com --note '...' --account <account>
     latch google -- gmail send --to a@b.com --subject '...' --body-file ./body.txt --attach ./receipt.pdf --account <account>
     latch google -- calendar calendars
     latch google -- calendar events --calendars <the shown ids> --from 2026-09-01T00:00:00-07:00 --to 2026-09-08T00:00:00-07:00 --account <account>
