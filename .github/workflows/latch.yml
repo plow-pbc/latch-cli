@@ -158,6 +158,10 @@ jobs:
         with:
           path: .dev/cft-state/plugins/cft
           key: cft-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/camoufox
+          key: camoufox-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
       # Chrome with its own sandbox, as on most Linux hosts: with Ubuntu's
       # user namespace restriction on, install-binary.sh loads Ubuntu's bwrap
       # profile and latch runs Chrome without it (browser-restricted below),
@@ -166,7 +170,7 @@ jobs:
       # Into target/, where the tests were built, so the paths compiled into
       # them hold.
       - run: cargo nextest list --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite > /dev/null
-      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome target/debug/latch
+      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
       - run: cargo nextest run --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --partition hash:${{ matrix.part }}/4 --test-threads 6 --no-fail-fast
 
   # The runner as Ubuntu ships it: the restriction on, Ubuntu's bwrap

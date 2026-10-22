@@ -18,10 +18,10 @@
 # needs root, so it asks for sudo once. On another platform it says so and
 # installs nothing.
 #
-# camoufox (macOS): the Camoufox build, the Node it runs its helper on, and
+# camoufox: the Camoufox build, the Node it runs its helper on, and
 # the helper's runtime (Playwright and camoufox-js, from camoufox/'s
 # lockfile, with `npm ci`), into <state-dir>/plugins/camoufox/<version>/.
-# About 1 GB on disk.
+# About 1 GB on macOS and 1.5 GB on Linux.
 #
 # Running it again changes nothing that is already in place.
 set -eu
@@ -72,13 +72,6 @@ chrome() {
       return 0
       ;;
   esac
-  # Chrome needs these even when its build is already in place.
-  if [ "$(uname -s)" = Linux ]; then
-    missing=""
-    command -v unzip >/dev/null 2>&1 || missing="unzip"
-    command -v Xvfb >/dev/null 2>&1 || missing="${missing:+$missing }xvfb"
-    [ -z "$missing" ] || as_root_install $missing
-  fi
   cft_pin="$here/src/browser/cft.json"
   [ -f "$cft_pin" ] || die "$cft_pin not found; run install.sh from the latch workspace"
   cft() {
@@ -122,17 +115,24 @@ chrome() {
 # hashes each unpacked part before every launch. No package's install
 # script runs. The manifest goes in last.
 camoufox() {
-  [ "$(uname -s)" = Darwin ] || die "Camoufox is pinned for macOS hosts only"
   fox_pin="$here/src/browser/camoufox.json"
   fox_package="$here/camoufox"
   [ -f "$fox_pin" ] && [ -f "$fox_package/package-lock.json" ] || die "$fox_pin or $fox_package not found; run install.sh from the latch workspace"
-  fox() { plutil -extract "$1" raw -o - "$fox_pin" 2>/dev/null || die "$fox_pin has no $1"; }
-  case "$(uname -m)" in
-    arm64) fox_build=builds.mac_arm64 ;;
-    x86_64) fox_build=builds.mac_x64 ;;
-    *) die "no Camoufox build for $(uname -m)" ;;
+  case "$(uname -s)/$(uname -m)" in
+    Darwin/arm64) fox_build=mac_arm64 ;;
+    Darwin/x86_64) fox_build=mac_x64 ;;
+    Linux/aarch64 | Linux/arm64) fox_build=linux_arm64 ;;
+    Linux/x86_64) fox_build=linux_x64 ;;
+    *) die "no Camoufox build for $(uname -s) $(uname -m)" ;;
   esac
-  fox_version=$(fox version)
+  fox() { # Part and field, within this platform's build.
+    value=$(sed -n "/^    \"$fox_build\": {/,/^    }/p" "$fox_pin" |
+      sed -n "/^      \"$1\": {/,/^      }/s/^ *\"$2\": *\"\([^\"]*\)\".*/\1/p")
+    [ -n "$value" ] || die "$fox_pin has no builds.$fox_build.$1.$2"
+    printf '%s\n' "$value"
+  }
+  fox_version=$(sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$fox_pin")
+  [ -n "$fox_version" ] || die "$fox_pin has no version"
   fox_dir="$state_dir/plugins/camoufox/$fox_version"
   if [ -f "$fox_dir/manifest.json" ] && [ "$(cksum < "$fox_pin")" = "$(cksum < "$fox_dir/manifest.json")" ]; then
     say "Camoufox $fox_version already installed in $fox_dir"
@@ -148,16 +148,20 @@ camoufox() {
     got=$(sha256 "$3")
     [ "$got" = "$2" ] || die "$1 has sha256 $got, not the pinned $2; nothing installed"
   }
-  say "downloading Camoufox $fox_version (about 300 MB) and Node"
-  fetch "$(fox "$fox_build.camoufox.url")" "$(fox "$fox_build.camoufox.sha256")" "$fox_tmp/camoufox.zip"
-  fetch "$(fox "$fox_build.node.url")" "$(fox "$fox_build.node.sha256")" "$fox_tmp/node.tar.gz"
+  say "downloading Camoufox $fox_version and Node"
+  fetch "$(fox camoufox url)" "$(fox camoufox sha256)" "$fox_tmp/camoufox.zip"
+  fetch "$(fox node url)" "$(fox node sha256)" "$fox_tmp/node.tar.gz"
   mkdir "$fox_tmp/camoufox"
-  ditto -x -k "$fox_tmp/camoufox.zip" "$fox_tmp/camoufox" || die "could not unpack Camoufox"
+  if [ "$(uname -s)" = Darwin ]; then
+    ditto -x -k "$fox_tmp/camoufox.zip" "$fox_tmp/camoufox" || die "could not unpack Camoufox"
+  else
+    unzip -q "$fox_tmp/camoufox.zip" -d "$fox_tmp/camoufox" || die "could not unpack Camoufox"
+  fi
   # What camoufox-js reads to know the build; scripts/camoufox-pin.py
   # writes the same bytes.
   printf '{"version":"%s","build":"%s"}' "${fox_version%%-*}" "${fox_version#*-}" > "$fox_tmp/camoufox/version.json"
   tar -xzf "$fox_tmp/node.tar.gz" -C "$fox_tmp" || die "could not unpack Node"
-  mv "$fox_tmp/$(fox "$fox_build.node.folder")" "$fox_tmp/node"
+  mv "$fox_tmp/$(fox node folder)" "$fox_tmp/node"
   mkdir "$fox_tmp/runtime"
   cp -R "$fox_package/package.json" "$fox_package/package-lock.json" "$fox_package/sqlite" "$fox_tmp/runtime/"
   (cd "$fox_tmp/runtime" && env -i PATH="$fox_tmp/node/bin:/usr/bin:/bin" HOME="$fox_tmp" \
@@ -171,6 +175,29 @@ camoufox() {
   cp "$fox_pin" "$fox_dir/manifest.json"
   say "installed Camoufox $fox_version to $fox_dir"
 }
+
+# Collect both engines' missing Linux packages into one root step, even
+# when their pinned builds are already installed.
+if [ "$(uname -s)" = Linux ]; then
+  missing=""
+  libraries=$(PATH="$PATH:/sbin:/usr/sbin" ldconfig -p 2>/dev/null || true)
+  for engine in $engines; do
+    case "$engine/$(uname -m)" in
+      chrome/aarch64 | chrome/arm64 | camoufox/*) ;;
+      *) continue ;;
+    esac
+    command -v unzip >/dev/null 2>&1 || missing="${missing:+$missing }unzip"
+    command -v Xvfb >/dev/null 2>&1 || missing="${missing:+$missing }xvfb"
+    if [ "$engine" = camoufox ]; then
+      for pair in libgtk-3.so.0:libgtk-3-0 libasound.so.2:libasound2 libX11-xcb.so.1:libx11-xcb1 libdbus-1.so.3:libdbus-1-3; do
+        library=${pair%%:*}
+        package=${pair#*:}
+        printf '%s\n' "$libraries" | grep -Fq "$library " || missing="${missing:+$missing }$package"
+      done
+    fi
+  done
+  [ -z "$missing" ] || as_root_install $missing
+fi
 
 for engine in $engines; do
   "$engine"

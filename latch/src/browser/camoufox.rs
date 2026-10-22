@@ -108,7 +108,12 @@ impl Camoufox {
             // downloads a build or an add-on itself.
             .env("CAMOUFOX_INSTALL_DIR", &engine.install)
             .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
-            .current_dir(scratch)
+            // Linux fontconfig resolves the bundled fonts relative to cwd.
+            .current_dir(if cfg!(target_os = "linux") {
+                engine.install.as_path()
+            } else {
+                scratch
+            })
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(log)
@@ -141,6 +146,17 @@ impl Camoufox {
             "TMPDIR": scratch.join("tmp"),
             "MOZ_CRASHREPORTER_DISABLE": "1",
         });
+        #[cfg(target_os = "linux")]
+        {
+            // camoufox-js names the fingerprint "mac", but the pinned
+            // build's fontconfig folder is named "macos".
+            env["FONTCONFIG_PATH"] = json!(
+                engine
+                    .install
+                    .join("fontconfig")
+                    .join(&CAMOUFOX.fingerprint_os)
+            );
+        }
         if let Some(display) = display {
             env["DISPLAY"] = json!(display);
         }
@@ -152,7 +168,7 @@ impl Camoufox {
                 "downloads": scratch.join("downloads"),
                 "executable": engine.executable,
                 "headless": headless,
-                "os": CAMOUFOX.os,
+                "os": CAMOUFOX.fingerprint_os,
                 "reader": READER,
                 "env": env,
                 "proxy": proxy,
