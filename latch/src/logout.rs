@@ -1,12 +1,15 @@
-//! `latch logout`: once any host on this state folder has stopped, its
-//! identity and login are deleted (its key and Plow token), from the
+//! `latch logout`: once any host on this state folder has stopped, an
+//! owner's machine is taken out of the Plow account and its login revoked
+//! there; then its identity and login are deleted (its key and Plow
+//! token), from the
 //! Keychain on a signed macOS latch and as files on any other, and with
 //! them `config.json`, the record that this folder is logged in. The vault
 //! and audit keys stay, so after `latch login` the vault and audit log
 //! read as before. `--purge` deletes those two keys as well, and then the
-//! state folder itself: the flag is the consent. This machine stays in
-//! Plow's directory: `latch devices remove` from another of the owner's
-//! machines takes it out.
+//! state folder itself: the flag is the consent. If Plow cannot be reached
+//! or refuses, the local delete goes ahead and the output says the machine
+//! is still in the account, for `latch devices remove` from another of the
+//! owner's machines.
 //!
 //! The folder is resolved once, and must be a latch state folder, not a
 //! link to one. From the stop on, logout holds `serve.lock` as a host
@@ -19,9 +22,12 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::credential;
 use crate::failure::Failure;
 use crate::lifecycle;
+use crate::login::shell_quoted;
 use crate::managed;
+use crate::plow::Plow;
 use crate::secrets::{Secret, Secrets};
 use crate::state::StateDir;
 
@@ -74,6 +80,7 @@ pub async fn run(state: &StateDir, purge: bool) -> Result<Value, Failure> {
         }
     };
     held_for_tests();
+    let device = unregister(&StateDir { path: path.clone() }).await;
     let secrets = Secrets::open(&path)?;
     let mut removed = secrets.remove_each(if purge { &Secret::ALL } else { &Secret::LOGIN })?;
     if purge {
@@ -91,8 +98,36 @@ pub async fn run(state: &StateDir, purge: bool) -> Result<Value, Failure> {
         "from": if secrets.in_keychain() { "keychain" } else { "files" },
         "stopped": stopped["stopped"],
         "purged": purge,
+        "device": device,
         "state_dir": path,
     }))
+}
+
+/// Takes this machine out of the Plow account and revokes its login there.
+/// Null when there is nothing to take out: no login, or an agent's, whose
+/// peer goes with its agent. A failure is reported, not returned, so the
+/// local delete still happens.
+async fn unregister(state: &StateDir) -> Value {
+    let Ok(Some(config)) = state.load_config() else {
+        return Value::Null;
+    };
+    if config.peer.kind != "device" {
+        return Value::Null;
+    }
+    let name = config.peer.name;
+    let removed = match credential::token(state) {
+        Ok(token) => Plow::new(&config.api_url, &token).remove_self().await,
+        Err(failure) => Err(failure),
+    };
+    match removed {
+        Ok(_) => json!({"name": name, "removed": true}),
+        Err(failure) => json!({
+            "name": name,
+            "removed": false,
+            "error": {"code": failure.code, "message": failure.message},
+            "next": format!("`latch devices remove {}` on another of your machines", shell_quoted(&name)),
+        }),
+    }
 }
 
 /// With `LATCH_TEST_LOGOUT_HELD` naming a file, a test build writes it
