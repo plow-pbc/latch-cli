@@ -2,10 +2,9 @@
 //! a list, or answers yes or no with a probability; it never writes text.
 //! The gatekeeper and the browser both ask it, always from the host.
 //!
-//! A [`Provider`] is one way of reaching a model: [`Plow`], the host's
-//! own Plow login asking Plow's decision route (which calls Jev on
-//! OpenRouter), or, only when a host is set up for development, [`Jev`]
-//! called directly with a key in a 0600 file. Nothing here bakes a key in. Every provider's answers pass the same checks before use
+//! A [`Provider`] is one way of reaching a model; a host has one,
+//! [`Plow`]: its own Plow login asking Plow's decision route, which calls
+//! Jev on OpenRouter. The host holds no model key. Every provider's answers pass the same checks before use
 //! ([`Model::ask`]): a choice must be an offered option, and probabilities
 //! must be finite, cover exactly the options and sum to 1. A choice below
 //! its top probability gives way to the top option, and the audit keeps
@@ -16,7 +15,6 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -151,7 +149,7 @@ impl Model {
 
     /// The host's model: see [`host_provider`].
     pub fn for_host(state_dir: &Path) -> Model {
-        match host_provider(state_dir, PLOW_MODEL, JEV_MODEL) {
+        match host_provider(state_dir, PLOW_MODEL) {
             Ok(provider) => Model::new(provider),
             Err(why) => Model::off(&why),
         }
@@ -321,98 +319,19 @@ fn check(
 }
 
 /// A host's provider: Plow's decision route on the host's own login,
-/// asking `plow_model`; jev with the dev key file, asking `jev_model`, only
-/// when `browser/model.json` says `{"provider": "jev"}`.
-pub fn host_provider(
-    state_dir: &Path,
-    plow_model: &str,
-    jev_model: &str,
-) -> Result<Box<dyn Provider>, String> {
-    let set = std::fs::read_to_string(state_dir.join(MODEL_FILE))
-        .ok()
-        .map(|text| serde_json::from_str::<Value>(&text));
-    match set {
-        None => Ok(Box::new(Plow::for_host(state_dir)?.with_model(plow_model))),
-        Some(Ok(set)) if set["provider"] == "jev" => match Jev::from_state(state_dir)? {
-            Some(jev) => Ok(Box::new(jev.with_model(jev_model))),
-            None => Err(format!(
-                "{MODEL_FILE} asks for jev, and there is no {JEV_KEY_FILE}"
-            )),
-        },
-        Some(Ok(set)) if set["provider"] == "plow" => {
-            Ok(Box::new(Plow::for_host(state_dir)?.with_model(plow_model)))
-        }
-        Some(_) => Err(format!(
-            "{MODEL_FILE} must say {{\"provider\": \"plow\"}} or {{\"provider\": \"jev\"}}"
-        )),
-    }
+/// asking `model`.
+pub fn host_provider(state_dir: &Path, model: &str) -> Result<Box<dyn Provider>, String> {
+    Ok(Box::new(Plow::for_host(state_dir)?.with_model(model)))
 }
 
-/// Which decision model a host uses, in its state directory: Plow's route
-/// without one.
-pub const MODEL_FILE: &str = "browser/model.json";
-/// The dev-only key file for jev, in the host's state directory.
-pub const JEV_KEY_FILE: &str = "jev.key";
-
-/// Sets `state` up as a host that asks jev itself, with the key file
-/// `$LATCH_TEST_JEV_KEY` names: a key file is used only on a host set up
-/// for it. For the tests that call the decision model for real.
+/// The state folder `$LATCH_GATEKEEPER_STATE` names, logged in to Plow
+/// (`just gatekeeper` checks it is): the tests that ask the decision model
+/// for real ask Plow on its login, as a host does.
 #[cfg(all(test, feature = "live-model"))]
-pub fn ask_jev_for_tests(state: &Path) {
-    let key = std::env::var_os("LATCH_TEST_JEV_KEY")
-        .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
-    let path = state.join(JEV_KEY_FILE);
-    std::fs::copy(key, &path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    std::fs::create_dir_all(state.join("browser")).unwrap();
-    std::fs::write(state.join(MODEL_FILE), r#"{"provider": "jev"}"#).unwrap();
-}
-const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
-const JEV_MODEL: &str = "jev-1.13.0";
-
-/// TypeSafe jev, pinned to one model version. Dev only: its key is a file
-/// the host's owner puts in the state directory, never part of latch.
-// No `Debug`: it holds the key.
-pub struct Jev {
-    http: reqwest::Client,
-    key: String,
-    model: String,
-}
-
-impl Jev {
-    /// Jev, if its key file is present. A key file anyone else can read
-    /// is refused.
-    pub fn from_state(state_dir: &Path) -> Result<Option<Jev>, String> {
-        let path = state_dir.join(JEV_KEY_FILE);
-        let Ok(metadata) = std::fs::metadata(&path) else {
-            return Ok(None);
-        };
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(format!(
-                "the decision model's key file {JEV_KEY_FILE} must be readable by its owner only (0600)"
-            ));
-        }
-        let key = std::fs::read_to_string(&path)
-            .map_err(|_| format!("the decision model's key file {JEV_KEY_FILE} is unreadable"))?
-            .trim()
-            .to_string();
-        if key.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(Jev {
-            http: http(),
-            key,
-            model: JEV_MODEL.to_string(),
-        }))
-    }
-
-    /// The same key, asking another jev version.
-    pub fn with_model(self, model: &str) -> Jev {
-        Jev {
-            model: model.to_string(),
-            ..self
-        }
-    }
+pub fn logged_in_for_tests() -> std::path::PathBuf {
+    std::env::var_os("LATCH_GATEKEEPER_STATE")
+        .expect("LATCH_GATEKEEPER_STATE names a state folder logged in to Plow")
+        .into()
 }
 
 /// A request body: the model, the state as written, and the questions.
@@ -486,63 +405,6 @@ fn http() -> reqwest::Client {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("HTTP client settings are valid")
-}
-
-impl Provider for Jev {
-    fn name(&self) -> &'static str {
-        "typesafe"
-    }
-
-    fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
-        Box::pin(async move {
-            let state = serde_json::value::to_raw_value(state)
-                .map_err(|e| CallFailed::new("bad_state", e.to_string()))?;
-            self.ask_as_written(&state, questions).await
-        })
-    }
-
-    fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
-        Box::pin(async move {
-            let body = Body::new(&self.model, state, questions);
-            let started = Instant::now();
-            let response = self
-                .http
-                .post(JEV_URL)
-                .bearer_auth(&self.key)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|_| CallFailed::new("unreachable", "jev could not be reached"))?;
-            let latency_ms = started.elapsed().as_millis() as u64;
-            let status = response.status();
-            let request_id = response
-                .headers()
-                .get("x-typesafe-request-id")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            if !status.is_success() {
-                // Jev's own error text is not passed on: it could echo the request.
-                let code = status.as_u16();
-                return Err(CallFailed::new(
-                    &format!("http_{code}"),
-                    format!("jev answered HTTP {code}"),
-                ));
-            }
-            let reply: Value = response
-                .json()
-                .await
-                .map_err(|_| CallFailed::new("not_json", "jev's answer was not JSON"))?;
-            let answers = system_one_answers(&reply, questions);
-            let meta = CallMeta {
-                provider: "typesafe",
-                model: reply["model"].as_str().unwrap_or(&self.model).to_string(),
-                request_id,
-                latency_ms,
-                cost: reply["usage"]["cost"].as_f64(),
-            };
-            Ok((answers, meta))
-        })
-    }
 }
 
 /// Jev as Plow's decision route asks it on OpenRouter.
@@ -681,32 +543,6 @@ pub mod tests {
             kind: Kind::YesNo,
         };
         m.ask("test", &[], json!({}), vec![question]).await
-    }
-
-    #[test]
-    fn the_jev_key_file_is_used_only_when_the_host_is_set_up_for_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(JEV_KEY_FILE);
-        std::fs::write(&path, "made-up-key").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        // A key file alone changes nothing: the model is Plow's, on the
-        // host's login, and this host has none.
-        let m = Model::for_host(dir.path());
-        assert!(!m.is_on());
-        assert!(
-            m.why_off().contains("not logged in to Plow"),
-            "{}",
-            m.why_off()
-        );
-        std::fs::create_dir_all(dir.path().join("browser")).unwrap();
-        std::fs::write(dir.path().join(MODEL_FILE), r#"{"provider": "jev"}"#).unwrap();
-        assert!(Model::for_host(dir.path()).is_on());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let m = Model::for_host(dir.path());
-        assert!(!m.is_on());
-        assert!(m.why_off().contains("0600"));
-        std::fs::write(dir.path().join(MODEL_FILE), r#"{"provider": "gpt"}"#).unwrap();
-        assert!(!Model::for_host(dir.path()).is_on());
     }
 
     /// A stand-in for Plow's decision route: answers `reply` with `status`

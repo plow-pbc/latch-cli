@@ -1239,16 +1239,14 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
     );
 }
 
-/// Rules alone, judged by jev itself: an agent with neither chat nor rules
-/// has no intent; with rules allowing only tests, `pytest` is allowed every
-/// time, repeats included, and `curl` never. `just gatekeeper-live KEY`
-/// runs it.
+/// Rules alone, judged by the real judge: an agent with neither chat nor
+/// rules has no intent; with rules allowing only tests, `pytest` is allowed
+/// every time, repeats included, and `curl` never. `just gatekeeper` runs
+/// it.
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_rules_alone_allow_tests_and_nothing_else() {
-    let setup = tempfile::tempdir().unwrap();
-    model::ask_jev_for_tests(setup.path());
-    let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
+    let provider = Gatekeeper::provider_for_host(&model::logged_in_for_tests()).unwrap();
 
     let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let agent = t.caller("agent").await;
@@ -1306,16 +1304,14 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
     assert_eq!((allowed("pytest"), allowed("curl")), (5, 0));
 }
 
-/// The owner on jev itself: their own ordinary requests are allowed, and
-/// a host rule still holds against them. The removal is only ever judged,
-/// never sent to the host, so it cannot run even if allowed.
-/// `just gatekeeper-live KEY` runs it.
+/// The owner on the real judge: their own ordinary requests are allowed,
+/// and a host rule still holds against them. The removal is only ever
+/// judged, never sent to the host, so it cannot run even if allowed.
+/// `just gatekeeper` runs it.
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
-    let setup = tempfile::tempdir().unwrap();
-    model::ask_jev_for_tests(setup.path());
-    let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
+    let provider = Gatekeeper::provider_for_host(&model::logged_in_for_tests()).unwrap();
     let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let device = t.caller("device").await;
     let run = |argv: &[&str]| json!({"argv": argv, "workdir": null, "timeout": 30});

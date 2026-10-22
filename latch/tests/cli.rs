@@ -1445,6 +1445,9 @@ struct LiveState {
     seen: Vec<(String, Option<String>)>,
     /// The token minted for the one connected Google account, if any.
     google: Option<String>,
+    /// The real Plow decision route and the login to ask it with: its
+    /// decisions go there instead (`real_judge`).
+    judge: Option<(String, String)>,
 }
 
 impl LivePlow {
@@ -1462,6 +1465,7 @@ impl LivePlow {
                 peers: Vec::new(),
                 seen: Vec::new(),
                 google: None,
+                judge: None,
             })),
         };
         let serving = plow.clone();
@@ -1536,6 +1540,10 @@ impl LivePlow {
                 .push(serde_json::from_slice(&request.body).unwrap());
             if state.model_down {
                 return (503, json!({}));
+            }
+            if let Some((url, token)) = state.judge.clone() {
+                drop(state);
+                return ask_real_judge(&url, &token, &request.body);
             }
         }
         match (method, path) {
@@ -1655,6 +1663,47 @@ impl LivePlow {
             _ => (404, json!({})),
         }
     }
+}
+
+/// Plow's decision route, and the login to ask it with, of the state
+/// folder `$LATCH_GATEKEEPER_STATE` names (`just gatekeeper` logs it in).
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "linux-browser-tests")
+))]
+fn real_judge() -> (String, String) {
+    let state = PathBuf::from(
+        std::env::var_os("LATCH_GATEKEEPER_STATE")
+            .expect("LATCH_GATEKEEPER_STATE names a state folder logged in to Plow"),
+    );
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+    let token = fs::read_to_string(state.join("plow-token")).unwrap();
+    let url = format!(
+        "{}/v1/decisions",
+        config["api_url"].as_str().unwrap().trim_end_matches('/')
+    );
+    (url, token.trim().to_string())
+}
+
+/// Asks the real decision route `body`, with `token`: its answer.
+fn ask_real_judge(url: &str, token: &str, body: &[u8]) -> (u16, Value) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let response = reqwest::Client::new()
+            .post(url)
+            .bearer_auth(token)
+            .header("content-type", "application/json")
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        (status, response.json().await.unwrap_or_default())
+    })
 }
 
 /// A stand-in for exe.dev's proxy: every request it forwards to `upstream`
@@ -5420,11 +5469,7 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
     )
     .unwrap();
     if live {
-        let key = std::env::var_os("LATCH_TEST_JEV_KEY")
-            .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
-        fs::copy(key, host.join("jev.key")).unwrap();
-        fs::create_dir_all(host.join("browser")).unwrap();
-        fs::write(host.join("browser/model.json"), r#"{"provider": "jev"}"#).unwrap();
+        plow.state.lock().unwrap().judge = Some(real_judge());
     }
     let mut command = serve_command(&host, &relay);
     command.arg("--headless-browsers");

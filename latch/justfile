@@ -50,30 +50,39 @@ cft:
 [linux]
 cft:
 
-# The browser tests that call the decision model (jev) for real; the key
-# file is copied into each test's own state directory, never printed.
-test-model key:
-    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model browser::tests::steps::live
-
 # The return scenario, headless, with its transcript: an order found in a
-# made-up mailbox, returned item by item on the test shop. With `key`, the
-# host's judge is the real decision model (jev).
-scenario-return key="": cft
-    if [ -n "{{key}}" ]; then LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features fake-gog,live-model --test cli the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture; else cargo test --locked --features fake-gog --test cli the_owner_returns_items_from_an_emailed_order -- --exact --nocapture; fi
+# made-up mailbox, returned item by item on the test shop, its judge a
+# stand-in (`just gatekeeper scenario` runs it on the real one).
+scenario-return: cft
+    cargo test --locked --features fake-gog --test cli the_owner_returns_items_from_an_emailed_order -- --exact --nocapture
 
-# A headless host judging exec on rules alone, on jev 1.14 (synthetic
-# chats only).
-gatekeeper-live key:
-    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model serve::gated_tests::live -- --nocapture
-
-# The gatekeeper's judge on jev 1.14 over the v0 held-out corpus, twice per
-# probe, its decisions written to `out` (synthetic chats only).
-gatekeeper-replay key out:
-    LATCH_TEST_JEV_KEY="{{key}}" LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live_held_out_replay -- --nocapture
-
-# The owner's own calls on jev itself, judged against the host's rules alone.
-gatekeeper-owner key:
-    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model gate::tests::live_owner -- --nocapture
+# Asks the real decision model as a host does, through Plow on the login of
+# this checkout's ../.dev/state (`latch --state-dir ../.dev/state login`
+# first), synthetic chats only: `checks` (the gatekeeper's and the
+# browser's), `replay OUT` (the held-out corpus, twice per probe, its
+# decisions written to OUT) or `scenario` (the return on the test shop).
+gatekeeper what="checks" out="":
+    #!/bin/sh
+    set -eu
+    state="$(cd .. && pwd)/.dev/state"
+    if ! cargo run --quiet --locked -- --state-dir "$state" status >/dev/null; then
+        echo "just gatekeeper asks Plow on the login of $state: run \`latch --state-dir $state login\` first" >&2
+        exit 2
+    fi
+    export LATCH_GATEKEEPER_STATE="$state"
+    case "{{what}}" in
+    checks)
+        cargo test --locked --features live-model -- gate::tests::live_owner serve::gated_tests::live browser::tests::steps::live --nocapture ;;
+    replay)
+        [ -n "{{out}}" ] || { echo "usage: just gatekeeper replay OUT" >&2; exit 2; }
+        LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live_held_out_replay -- --nocapture ;;
+    scenario)
+        just cft
+        cargo test --locked --features fake-gog,live-model --test cli the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture ;;
+    *)
+        echo "usage: just gatekeeper [checks | replay OUT | scenario]" >&2
+        exit 2 ;;
+    esac
 
 # The plan suite (tests/browser-shop) on the decision model, through the dev
 # Plow stack the host in `host_state` is logged in to; each run, with its
