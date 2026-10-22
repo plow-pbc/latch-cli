@@ -44,6 +44,8 @@ pub struct Row {
 struct Board {
     host: String,
     last_heartbeat: Option<Timestamp>,
+    /// Standing notices under the title: pending browser handoffs.
+    notices: Vec<String>,
     rows: VecDeque<Row>,
 }
 
@@ -59,6 +61,7 @@ impl Dashboard {
         let board = Board {
             host: host.to_string(),
             last_heartbeat: None,
+            notices: Vec::new(),
             rows: VecDeque::new(),
         };
         let dashboard = Dashboard {
@@ -82,6 +85,12 @@ impl Dashboard {
 
     pub fn heartbeat(&self) {
         self.board.lock().expect("board lock").last_heartbeat = Some(Timestamp::now());
+        self.draw();
+    }
+
+    /// Replaces the standing notices.
+    pub fn notices(&self, lines: Vec<String>) {
+        self.board.lock().expect("board lock").notices = lines;
         self.draw();
     }
 
@@ -125,6 +134,15 @@ impl Board {
             paint::fg(&status, DIM)
         ));
         lines.push(paint::fg(&"─".repeat(width), FAINT));
+        for notice in &self.notices {
+            lines.push(paint::bold(
+                &format!(" {}", term::fit(notice, width - 1)),
+                RED,
+            ));
+        }
+        if !self.notices.is_empty() {
+            lines.push(paint::fg(&"─".repeat(width), FAINT));
+        }
 
         // Fixed columns for time, agent, operation and result; the target
         // takes what is left.
@@ -212,6 +230,30 @@ pub fn describe(op: &str, args: &Value, outcome: &str, took: Duration) -> (Strin
                 _ => (path, outcome.to_string()),
             }
         }
+        "browser" => {
+            let command = args["command"].as_str().unwrap_or_default();
+            let action = args["action"]
+                .as_str()
+                .map(|a| format!(" {a}"))
+                .unwrap_or_default();
+            let page = format!(
+                "{}{}",
+                args["origin"].as_str().unwrap_or_default(),
+                args["path"].as_str().unwrap_or_default()
+            );
+            // The session's id hash first, so a narrow screen keeps it: an
+            // owner device closes a session by it.
+            let session = args["session"]
+                .as_str()
+                .map(|hash| format!("{hash} "))
+                .unwrap_or_default();
+            (
+                format!("{session}{command}{action} {page}")
+                    .trim()
+                    .to_string(),
+                format!("{outcome} · {took}"),
+            )
+        }
         _ => (String::new(), outcome.to_string()),
     }
 }
@@ -248,9 +290,10 @@ mod tests {
             target, "sh -c echo a\necho b\u{1b}[2J",
             "describe keeps the argv as run"
         );
-        let board = Board {
+        let mut board = Board {
             host: "host".to_string(),
             last_heartbeat: None,
+            notices: Vec::new(),
             rows: VecDeque::from([Row {
                 at: Timestamp::now(),
                 caller: "agent".to_string(),
@@ -268,6 +311,18 @@ mod tests {
         );
         let row = screen.lines().nth(3).unwrap();
         assert!(row.contains("sh -c echo a⏎echo b [2J"), "{row}");
+
+        // A pending handoff stands under the title, above the calls.
+        board.notices = vec!["handoff pending: session dkcfhoeamlpb (captcha) for 5f1e…".into()];
+        let screen = board.screen(100, 10);
+        assert!(
+            screen
+                .lines()
+                .nth(2)
+                .unwrap()
+                .contains("handoff pending: session dkcfhoeamlpb")
+        );
+        assert!(screen.contains("sh -c echo a"));
     }
 
     #[test]
@@ -294,6 +349,11 @@ mod tests {
         assert_eq!(
             describe("file_get", &refused, "sandbox_denied", took).1,
             "sandbox_denied"
+        );
+        let browser = json!({"command": "act", "session": "dkcfhoeamlpb", "origin": "https://shop.example", "path": "/cart"});
+        assert_eq!(
+            describe("browser", &browser, "ok", took).0,
+            "dkcfhoeamlpb act https://shop.example/cart"
         );
     }
 }

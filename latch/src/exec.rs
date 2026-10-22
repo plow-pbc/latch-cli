@@ -7,28 +7,34 @@
 //! kept up to 256 KiB (the rest is read and dropped, and `truncated` is
 //! set), so a runaway command cannot flood the agent. At the time limit the
 //! whole process group (the program and everything it started) is killed.
-//! The audit record holds the argv (up to 4 KiB, credential-looking values
-//! redacted), the workdir and how it ended, never the output.
+//! So is it, cut off, when the host stops (`interrupted`) or the caller's
+//! connection closes (`caller_gone`): nobody would get its result. A host
+//! that dies without stopping takes the program with it (see
+//! `WorkerSetup::start_exec`).
+//! The audit record holds the argv (up to 4 KiB, as run), the workdir and
+//! how it ended, never the output.
 //!
 //! Each run gets a fresh, empty temp folder of its own as its `TMPDIR`,
 //! made in the host's OS temp folder and readable and writable by that
 //! worker only (on Linux the worker's private `/tmp` plays that part), and
 //! the folder is deleted when the run ends. It never lands in a shared
-//! folder, which may not be writable (a shared `/`, say).
+//! folder, which may not be writable (a shared `/`, say). A host that was
+//! killed leaves its folders behind; the next host to start removes them.
 
+use std::future::Future;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 use tokio::task::JoinHandle;
-
-mod redact;
 
 use crate::log::log;
 use crate::serve::Done;
@@ -47,31 +53,57 @@ pub const MAX_STDIN: usize = 256 * 1024;
 /// After the program ends, how long to wait for its output pipes to close
 /// (a process that left the group could otherwise hold them open).
 const DRAIN_GRACE: Duration = Duration::from_secs(5);
+/// How long after its timeout the worker kills a program itself, if the
+/// host has not by then.
+const WORKER_GRACE: u64 = 5;
 
-/// `exec`: runs `args.argv` and returns its result.
-pub async fn run(workers: &WorkerSetup, args: &Value) -> Done {
-    let argv = match serde_json::from_value::<Vec<String>>(args["argv"].clone()) {
-        Ok(argv) if argv_is_usable(&argv) => argv,
-        _ => return bad_request("argv must be a non-empty list of strings"),
+#[derive(Deserialize)]
+struct ExecArgs {
+    argv: Vec<String>,
+    #[serde(default = "default_timeout")]
+    timeout: u64,
+    workdir: Option<String>,
+    stdin: Option<Vec<u8>>,
+}
+
+fn default_timeout() -> u64 {
+    60
+}
+
+/// `exec`: runs `args.argv` and returns its result. If `cut_off` finishes
+/// first, the program is killed, and its outcome is the one `cut_off` gives.
+pub async fn run(
+    workers: &WorkerSetup,
+    args: &Value,
+    cut_off: impl Future<Output = &'static str>,
+) -> Done {
+    if !args.is_object() {
+        return bad_request("exec arguments must be an object");
+    }
+    let args: ExecArgs = match serde_json::from_value(args.clone()) {
+        Ok(args) => args,
+        // A deserialization error may quote stdin, which must not be returned.
+        Err(_) => return bad_request("exec arguments have invalid types"),
     };
-    let timeout = args["timeout"].as_u64().unwrap_or(60);
+    let argv = args.argv;
+    if !argv_is_usable(&argv) {
+        return bad_request("argv must be a non-empty list of strings");
+    }
+    let timeout = args.timeout;
     if !(1..=MAX_TIMEOUT_SECS).contains(&timeout) {
         return bad_request("timeout must be 1 to 600 seconds");
     }
-    let workdir = args["workdir"].as_str();
+    let workdir = args.workdir.as_deref();
     // The workdir as asked, or the first area, where a worker starts.
     let shown_workdir = match workdir {
         Some(dir) => Some(dir.to_string()),
         None => workers.areas.first().map(|area| area.display().to_string()),
     };
     // What the program reads on stdin: the bytes the client sent, or none.
-    let input = match &args["stdin"] {
-        Value::Null => None,
-        bytes => match serde_json::from_value::<Vec<u8>>(bytes.clone()) {
-            Ok(bytes) if bytes.len() <= MAX_STDIN => Some(bytes),
-            _ => return bad_request("stdin must be at most 256 KiB of bytes"),
-        },
-    };
+    let input = args.stdin;
+    if input.as_ref().is_some_and(|bytes| bytes.len() > MAX_STDIN) {
+        return bad_request("stdin must be at most 256 KiB of bytes");
+    }
     let mut audit = json!({ "argv": capped_argv(&argv), "workdir": shown_workdir });
     if let Some(bytes) = &input {
         audit["stdin"] = stdin_audit(bytes);
@@ -84,7 +116,8 @@ pub async fn run(workers: &WorkerSetup, args: &Value) -> Done {
             return Done::failed("tmpdir_failed", message, audit);
         }
     };
-    let done = run_program(workers, workdir, &tmpdir, &argv, input, timeout, audit).await;
+    let limits = Limits { timeout, cut_off };
+    let done = run_program(workers, workdir, &tmpdir, &argv, input, limits, audit).await;
     // `remove_dir_all` deletes links the program left there, never what
     // they point to.
     if let Err(err) = std::fs::remove_dir_all(&tmpdir) {
@@ -102,30 +135,100 @@ pub fn stdin_audit(bytes: &[u8]) -> Value {
     json!({ "size": bytes.len(), "sha256": to_hex(&Sha256::digest(bytes)) })
 }
 
-/// A new, empty folder `latch-exec-<random>` in the OS temp folder, for
-/// this user only. Its real path, since the sandbox matches real paths
-/// (macOS's temp folder is behind the `/var` link).
+/// A new, empty folder `latch-exec-<host pid>-<random>` in the OS temp
+/// folder, for this user only. Its real path, since the sandbox matches
+/// real paths (macOS's temp folder is behind the `/var` link).
 fn make_tmpdir() -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
-    let name = format!("latch-exec-{:016x}", rand::random::<u64>());
+    let name = format!(
+        "latch-exec-{}-{:016x}",
+        std::process::id(),
+        rand::random::<u64>()
+    );
     let path = std::env::temp_dir().join(name);
     // `create` (not `recursive`) fails if the name already exists.
     std::fs::DirBuilder::new().mode(0o700).create(&path)?;
     path.canonicalize()
 }
 
-/// Starts the program and waits for it (up to `timeout` seconds).
+/// Removes the temp folders that killed hosts left: this user's
+/// `latch-exec-<pid>-…` folders in the OS temp folder whose host no longer
+/// runs. Those of hosts still running (this one, or another on another
+/// state folder) stay.
+pub fn sweep_tmpdirs() {
+    let temp = std::env::temp_dir();
+    let Ok(entries) = std::fs::read_dir(&temp) else {
+        return;
+    };
+    // SAFETY: std has no UID API. getuid takes no arguments, accesses no Rust
+    // memory, and returns our real UID for the ownership check below.
+    let me = unsafe { libc::getuid() };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let host = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("latch-exec-"))
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<libc::pid_t>().ok());
+        let Some(host) = host.filter(|pid| *pid > 0) else {
+            continue;
+        };
+        let Ok(meta) = entry.path().symlink_metadata() else {
+            continue;
+        };
+        if !meta.is_dir() || meta.uid() != me || running(host) {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => log(&format!(
+                "exec: removed {}, left by a host that was killed",
+                entry.path().display()
+            )),
+            Err(err) => log(&format!(
+                "exec: could not remove {}: {err}",
+                entry.path().display()
+            )),
+        }
+    }
+}
+
+/// Whether a process `pid` runs (one of another user counts too).
+fn running(pid: libc::pid_t) -> bool {
+    // SAFETY: std cannot probe an arbitrary PID. Signal 0 checks existence
+    // without delivering a signal; this scalar-only call accesses no Rust memory.
+    let found = unsafe { libc::kill(pid, 0) } == 0;
+    found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// When a program must stop: at `timeout` seconds, or when `cut_off`
+/// finishes, with the outcome it gives.
+struct Limits<F> {
+    timeout: u64,
+    cut_off: F,
+}
+
+/// How the wait for a program ended.
+enum End {
+    Exited,
+    TimedOut,
+    /// Cut off, with this outcome.
+    Cut(&'static str),
+}
+
+/// Starts the program and waits for it, within `limits`.
 async fn run_program(
     workers: &WorkerSetup,
     workdir: Option<&str>,
     tmpdir: &Path,
     argv: &[String],
     input: Option<Vec<u8>>,
-    timeout: u64,
+    limits: Limits<impl Future<Output = &'static str>>,
     mut audit: Value,
 ) -> Done {
     let started = Instant::now();
-    let mut child = match workers.start_exec(workdir, tmpdir, argv, input.is_some()) {
+    let kill_after = limits.timeout + WORKER_GRACE;
+    let started_exec = workers.start_exec(workdir, tmpdir, argv, input.is_some(), kill_after);
+    let mut child = match started_exec {
         Ok(child) => child,
         Err(error) => return refused(error, audit),
     };
@@ -139,7 +242,8 @@ async fn run_program(
             let _ = pipe.write_all(&bytes).await;
         });
     }
-    let (status, timed_out) = wait_or_kill(&mut child, Duration::from_secs(timeout)).await;
+    let (status, end) = wait_or_kill(&mut child, limits).await;
+    let timed_out = matches!(end, End::TimedOut);
     // Both streams get the same grace, side by side.
     let ((stdout, stdout_cut), (stderr, stderr_cut)) = tokio::join!(
         collected(stdout, DRAIN_GRACE),
@@ -162,6 +266,22 @@ async fn run_program(
     audit["duration_ms"] = json!(duration_ms);
     // How much it wrote to stderr (never what), so the host's view can mark it.
     audit["stderr_bytes"] = json!(stderr.len());
+    if let End::Cut(outcome) = end {
+        let message = match outcome {
+            "interrupted" => "the host stopped while the program ran, and killed it",
+            _ => "the caller went away while the program ran, so the host killed it",
+        };
+        return Done {
+            response: Response::Error {
+                exit: crate::failure::Exit::Unknown,
+                details: Value::Null,
+                code: outcome.to_string(),
+                message: format!("{message} after {duration_ms} ms"),
+            },
+            audit_args: audit,
+            outcome: outcome.to_string(),
+        };
+    }
     let result = json!({
         "exit_code": exit_code,
         "signal": signal,
@@ -181,23 +301,33 @@ fn argv_is_usable(argv: &[String]) -> bool {
     !argv.is_empty() && !argv[0].is_empty()
 }
 
-/// Waits for the program, up to `limit`. Past it, kills the program's
-/// whole process group and returns its (killed) status with `true`.
-async fn wait_or_kill(child: &mut Child, limit: Duration) -> (ExitStatus, bool) {
-    if let Ok(Ok(status)) = tokio::time::timeout(limit, child.wait()).await {
-        return (status, false);
-    }
+/// Waits for the program, within `limits`. Past them, kills the program's
+/// whole process group and returns its (killed) status, and why.
+async fn wait_or_kill(
+    child: &mut Child,
+    limits: Limits<impl Future<Output = &'static str>>,
+) -> (ExitStatus, End) {
+    let end = tokio::select! {
+        biased;
+        () = tokio::time::sleep(Duration::from_secs(limits.timeout)) => End::TimedOut,
+        status = child.wait() => match status {
+            Ok(status) => return (status, End::Exited),
+            Err(_) => End::TimedOut,
+        },
+        outcome = limits.cut_off => End::Cut(outcome),
+    };
     if let Some(pid) = child.id() {
         // The worker started the program as the leader of a new process
         // group whose id is its pid, so this reaches every process in it.
-        // SAFETY: killpg only sends a signal; it touches no memory of ours.
+        // SAFETY: std's child kill cannot reach descendants. This live child's
+        // PID names the group we created for it; killpg takes only scalar arguments.
         unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
     }
     let status = child
         .wait()
         .await
         .unwrap_or_else(|_| ExitStatus::from_raw(libc::SIGKILL));
-    (status, true)
+    (status, end)
 }
 
 /// What has been read from one output stream so far. A reader task fills
@@ -256,12 +386,12 @@ async fn collected(capture: Capture, grace: Duration) -> (Vec<u8>, bool) {
     (kept, captured.cut || !finished)
 }
 
-/// Redacted argv, at most 4 KiB: whole arguments while they fit,
+/// argv as run, but at most 4 KiB of it: whole arguments while they fit,
 /// then the start of the one that does not, marked as cut.
 pub fn capped_argv(argv: &[String]) -> Value {
     let mut kept = Vec::new();
     let mut room = ARGV_AUDIT_CAP;
-    for arg in &redact::redact(argv) {
+    for arg in argv {
         if arg.len() <= room {
             room -= arg.len();
             kept.push(arg.clone());
@@ -331,14 +461,170 @@ fn bad_request(message: &str) -> Done {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
+    use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn an_elapsed_timeout_wins_over_a_ready_exit() {
+        let mut children = Vec::new();
+        let mut inputs = Vec::new();
+        for _ in 0..32 {
+            let mut child = tokio::process::Command::new("/bin/sh")
+                .args(["-c", "read line"])
+                .stdin(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            inputs.push(child.stdin.take().unwrap());
+            children.push(child);
+        }
+        let mut waits: Vec<_> = children
+            .iter_mut()
+            .map(|child| {
+                Box::pin(wait_or_kill(
+                    child,
+                    Limits {
+                        timeout: 1,
+                        cut_off: std::future::pending(),
+                    },
+                ))
+            })
+            .collect();
+        std::future::poll_fn(|cx| {
+            for wait in &mut waits {
+                assert!(wait.as_mut().poll(cx).is_pending());
+            }
+            std::task::Poll::Ready(())
+        })
+        .await;
+        // Like a frozen host: both the exits and the timers become ready
+        // before it is able to poll the waits again.
+        drop(inputs);
+        std::thread::sleep(Duration::from_millis(1100));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        for wait in waits {
+            let (_, end) = wait.await;
+            assert!(
+                matches!(end, End::TimedOut),
+                "reported completion after timeout"
+            );
+        }
+    }
+
+    fn worker_setup() -> (tempfile::TempDir, WorkerSetup) {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let program = dir.path().join("worker");
+        std::fs::write(&program, "#!/bin/sh\necho started > worker-started\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let workers = WorkerSetup {
+            areas: vec![dir.path().to_path_buf()],
+            reads: vec![],
+            hidden: vec![],
+            state_folders: crate::state_folders::StateFolders::none(),
+            state_dir: dir.path().join("state"),
+            program,
+        };
+        (dir, workers)
+    }
+
+    #[tokio::test]
+    async fn malformed_exec_args_never_start_a_worker() {
+        let (dir, workers) = worker_setup();
+        for (field, values) in [
+            (
+                "timeout",
+                vec![
+                    json!(null),
+                    json!("1"),
+                    json!(true),
+                    json!(1.5),
+                    json!(-1),
+                    json!(0),
+                    json!(601),
+                ],
+            ),
+            (
+                "workdir",
+                vec![json!(1), json!(false), json!([]), json!({})],
+            ),
+            (
+                "argv",
+                vec![
+                    json!(null),
+                    json!("true"),
+                    json!([1]),
+                    json!([]),
+                    json!([""]),
+                ],
+            ),
+            (
+                "stdin",
+                vec![
+                    json!("text"),
+                    json!(true),
+                    json!([-1]),
+                    json!([256]),
+                    json!(vec![0; MAX_STDIN + 1]),
+                ],
+            ),
+        ] {
+            for (case, value) in values.into_iter().enumerate() {
+                let mut args = json!({"argv": ["unused"]});
+                args[field] = value;
+                let done = run(&workers, &args, std::future::pending()).await;
+                assert!(
+                    !dir.path().join("worker-started").exists(),
+                    "{field} case {case} started a worker"
+                );
+                let Response::Error { exit, code, .. } = done.response else {
+                    panic!("{field} case {case} was accepted");
+                };
+                assert_eq!((exit, code.as_str()), (Exit::Failed, "bad_request"));
+                assert_eq!(done.audit_args, Value::Null);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn positional_exec_args_never_start_a_worker() {
+        let (dir, workers) = worker_setup();
+        let done = run(
+            &workers,
+            &json!([["unused"], 60, null, null]),
+            std::future::pending(),
+        )
+        .await;
+        assert!(!dir.path().join("worker-started").exists());
+        assert!(matches!(
+            done.response,
+            Response::Error { code, .. } if code == "bad_request"
+        ));
+        assert_eq!(done.audit_args, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn omitted_and_null_optional_exec_args_still_run() {
+        let (dir, workers) = worker_setup();
+        for args in [
+            json!({"argv": ["unused"]}),
+            json!({"argv": ["unused"], "workdir": null, "stdin": null}),
+        ] {
+            let done = run(&workers, &args, std::future::pending()).await;
+            assert!(matches!(done.response, Response::Ok(_)));
+            assert!(dir.path().join("worker-started").exists());
+            assert_eq!(done.audit_args["workdir"], json!(dir.path()));
+        }
+    }
 
     #[test]
     fn argv_is_audited_up_to_four_kib() {
         let short = vec!["echo".to_string(), "hi".to_string()];
         assert_eq!(capped_argv(&short), json!(["echo", "hi"]));
 
-        let long = vec!["echo".to_string(), "x ".repeat(2500)];
+        let long = vec!["echo".to_string(), "x".repeat(5000)];
         let capped = capped_argv(&long);
         assert_eq!(capped["truncated"], true);
         let kept: usize = capped["kept"]
@@ -348,16 +634,6 @@ mod tests {
             .map(|arg| arg.as_str().unwrap().trim_end_matches('…').len())
             .sum();
         assert_eq!(kept, ARGV_AUDIT_CAP);
-    }
-
-    #[test]
-    fn credential_redaction_precedes_the_audit_cap() {
-        let argv = vec![
-            "tool".into(),
-            format!("--token={}", "short-secret".repeat(500)),
-        ];
-        assert_eq!(capped_argv(&argv), json!(["tool", "--token=[redacted]"]));
-        assert!(argv[1].contains("short-secret"));
     }
 
     #[tokio::test]

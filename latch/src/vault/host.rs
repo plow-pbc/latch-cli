@@ -55,7 +55,6 @@ impl Vault {
     }
 
     /// Every item's metadata, without creating a vault where none exists.
-    #[allow(dead_code)] // the browser's fills call it
     pub fn list_if_present(&self) -> Vec<super::item::Meta> {
         let present = self.store.lock().expect("vault lock").is_some()
             || self.dir.join("vault.json").exists();

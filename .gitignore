@@ -1,9 +1,10 @@
-# Dev and test state (--state-dir), test folders
+# Dev and test state (--state-dir), the pinned Chrome for Testing, test folders
 /.dev/
 
 # Cargo build output, and the phone page's build (latch/phone/build.sh)
 target/
 /latch/phone/dist/
+/latch/phone/e2e/node_modules/
 
 # Local agent tooling
 .claude/
@@ -16,3 +17,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Release staging output
+/dist/

@@ -26,6 +26,25 @@ pub fn log(message: &str) {
     }
 }
 
+/// Where the log goes, as a writer, for the tracing events (`trace.rs`).
+pub struct Sink;
+
+impl Write for Sink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match FILE.get() {
+            Some(file) => file.lock().expect("log file lock").write(bytes),
+            None => std::io::stderr().write(bytes),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match FILE.get() {
+            Some(file) => file.lock().expect("log file lock").flush(),
+            None => std::io::stderr().flush(),
+        }
+    }
+}
+
 /// Sends every later log line to `path` (appending), not to stderr.
 pub fn to_file(path: &Path) -> std::io::Result<()> {
     let file = std::fs::OpenOptions::new()

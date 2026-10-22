@@ -14,7 +14,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +24,10 @@ use iroh::endpoint::{Connection, Incoming, RecvStream, SendStream, VarInt, prese
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
 use tokio::signal::unix::{Signal, SignalKind, signal};
+use tokio::sync::watch;
+use tokio::task::{JoinHandle, JoinSet};
+use tracing::Instrument;
+use tracing::field::{Empty, display};
 
 use crate::audit::{self, AuditLog, Record};
 use crate::credential;
@@ -38,7 +41,8 @@ use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
-use crate::state::{Config, StateDir};
+use crate::state::{self, Config, StateDir};
+use crate::state_folders::StateFolders;
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
@@ -47,10 +51,13 @@ use crate::worker::WorkerSetup;
 /// same `Host`; the `Mutex` lets one task at a time append to the log.
 struct Host {
     plow: Plow,
-    audit: Mutex<AuditLog>,
+    /// Also held by the blocking thread that appends (see `Host::append`).
+    audit: Arc<Mutex<AuditLog>>,
     /// The live view, when `serve` shows one (see `dashboard.rs`).
     dashboard: Option<Dashboard>,
     workers: WorkerSetup,
+    /// Open browser sessions, one per profile.
+    browsers: crate::browser::host::Browsers,
     /// The host's vault, shared by every engine and profile.
     vault: std::sync::Arc<crate::vault::host::Vault>,
     /// Our own endpoint and name, which a phone link points at.
@@ -60,6 +67,19 @@ struct Host {
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
     binary: Binary,
+    /// How far the host is into stopping.
+    stopping: watch::Sender<Stopping>,
+}
+
+/// How far a host is into stopping.
+#[derive(Clone, Copy, PartialEq)]
+enum Stopping {
+    No,
+    /// Each connection finishes the operation it is on and takes no other.
+    Draining,
+    /// Running execs are killed, with all they started, and audited as
+    /// `interrupted`.
+    CuttingOff,
 }
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
@@ -130,10 +150,13 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Runs the host until it is asked to stop. With `show_dashboard`, a live
 /// view takes the terminal and the log goes to `serve.log` in the state
 /// directory; the terminal is given back however the host stops.
+/// With `headless_browsers`, every browser session runs with no window.
 pub async fn run(
     state: &StateDir,
     folders: &[PathBuf],
+    allow_read: &[PathBuf],
     show_dashboard: bool,
+    headless_browsers: bool,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
     // A host that could not sandbox its workers would refuse every call;
@@ -151,8 +174,6 @@ pub async fn run(
             state.path.clone()
         }
     };
-    let program = std::env::current_exe()
-        .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
     // Held until this process ends, however it ends.
     let _lock = lock_state(&state_dir)?;
     // From here on, other processes see this host's steps (`lifecycle.rs`).
@@ -160,10 +181,11 @@ pub async fn run(
     let result = run_locked(
         state,
         folders,
+        allow_read,
         show_dashboard,
+        headless_browsers,
         deny_exec,
         state_dir,
-        program,
     )
     .await;
     let (phase, error) = match &result {
@@ -183,21 +205,37 @@ pub async fn run(
 async fn run_locked(
     state: &StateDir,
     folders: &[PathBuf],
+    allow_read: &[PathBuf],
     show_dashboard: bool,
+    headless_browsers: bool,
     deny_exec: DenyExec,
     state_dir: PathBuf,
-    program: PathBuf,
 ) -> Result<(), Failure> {
-    // Named folders win; with none, the ones `latch shares set` saved.
+    let program = std::env::current_exe()
+        .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
+    // Named folders (with their `--allow-read`) win; with none, what
+    // `latch shares set` saved.
     let saved;
-    let folders = if folders.is_empty() {
+    let (folders, allow_read) = if folders.is_empty() {
         saved = state.load_shares()?;
-        &saved[..]
+        (&saved.folders[..], &saved.allow_read[..])
     } else {
-        folders
+        (folders, allow_read)
     };
+    let hidden = hidden_paths();
+    let areas = shared_folders(folders, std::env::home_dir().as_deref())?;
+    let reads = allowed_reads(
+        allow_read,
+        std::env::home_dir().as_deref(),
+        &hidden,
+        &state_dir,
+    )?;
+    let roots: Vec<PathBuf> = areas.iter().chain(&reads).cloned().collect();
     let workers = WorkerSetup {
-        areas: shared_folders(folders)?,
+        state_folders: StateFolders::new(&roots, &state_dir),
+        areas,
+        reads,
+        hidden,
         state_dir,
         program,
     };
@@ -207,6 +245,7 @@ async fn run_locked(
         Failure::failed("sandbox_unavailable", message)
     })?;
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
+    exec::sweep_tmpdirs();
     let config = state.require_login()?;
     let dashboard = if show_dashboard {
         let path = state.path.join("serve.log");
@@ -216,7 +255,16 @@ async fn run_locked(
     } else {
         None
     };
-    let result = run_host(state, config, workers, dashboard.clone(), rules, deny_exec).await;
+    let result = run_host(
+        state,
+        config,
+        workers,
+        dashboard.clone(),
+        headless_browsers,
+        rules,
+        deny_exec,
+    )
+    .await;
     if let Some(dashboard) = &dashboard {
         dashboard.stop();
     }
@@ -228,6 +276,7 @@ async fn run_host(
     config: Config,
     workers: WorkerSetup,
     dashboard: Option<Dashboard>,
+    headless_browsers: bool,
     rules: RuleFiles,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
@@ -247,6 +296,17 @@ async fn run_host(
         .map(|area| area.display().to_string())
         .collect();
     log(&format!("sharing: {}", names.join(", ")));
+    if !workers.reads.is_empty() {
+        let reads: Vec<String> = workers
+            .reads
+            .iter()
+            .map(|read| read.display().to_string())
+            .collect();
+        log(&format!(
+            "also readable, never written: {}",
+            reads.join(", ")
+        ));
+    }
     if let Some(refused) = deny_exec.describe() {
         log(&refused);
     }
@@ -292,17 +352,30 @@ async fn run_host(
     };
 
     let vault = crate::vault::host::Vault::new(workers.state_dir.clone());
+    if headless_browsers {
+        log("browsers: headless, with no window");
+    }
+    let browsers = crate::browser::host::Browsers::new(
+        workers.state_dir.clone(),
+        vault.clone(),
+        headless_browsers,
+    );
+    if let Some(dashboard) = &dashboard {
+        browsers.show_on(dashboard.clone());
+    }
     let host = Arc::new(Host {
         plow,
-        audit: Mutex::new(audit),
+        audit: Arc::new(Mutex::new(audit)),
         workers,
         dashboard,
+        browsers,
         vault,
         endpoint: endpoint.clone(),
         name,
         deny_exec,
         gatekeeper,
         binary,
+        stopping: watch::Sender::new(Stopping::No),
     });
     let local_links = crate::vault::local::LinkSocket::bind(&state.path)?;
     lifecycle::record(&state.path, Phase::Serving, None)?;
@@ -316,40 +389,96 @@ async fn run_host(
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
     let mut stop = Box::pin(stop_requested(terminate));
-    loop {
+    let mut connections = JoinSet::new();
+    let mut failed = None;
+    let moved = loop {
         tokio::select! {
-            accepted = local_links.listener.accept() => {
-                let (socket, _) = accepted.map_err(|err| Failure::failed("local_socket", err.to_string()))?;
-                tokio::spawn(serve_local_link(host.clone(), socket));
-            }
+            accepted = local_links.listener.accept() => match accepted {
+                Ok((socket, _)) => {
+                    connections.spawn(serve_local_link(host.clone(), socket));
+                }
+                // The host stops as on a signal, and says why.
+                Err(err) => {
+                    log(&format!("stopping: the local link socket failed: {err}"));
+                    failed = Some(Failure::failed("local_socket", err.to_string()));
+                    break None;
+                }
+            },
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => {
-                    tokio::spawn(serve_connection(host.clone(), incoming));
+                    let connection = tracing::info_span!("connection", caller = Empty);
+                    connections.spawn(serve_connection(host.clone(), incoming).instrument(connection));
                 }
-                None => break,
+                None => break None,
             },
+            // Connections that ended are let go of as they end.
+            Some(_) = connections.join_next() => {}
             () = &mut stop => {
                 log("stopping: signal received");
-                break;
+                break None;
             }
             // The heartbeat only ends when Plow gave our name to another
-            // key. That key is not ours any more, so there is nothing to
-            // take offline.
+            // key.
             ended = &mut heartbeat => {
-                endpoint.close().await;
-                log("stopped");
-                return Err(ended.unwrap_or_else(|err| {
+                break Some(ended.unwrap_or_else(|err| {
                     Failure::failed("heartbeat", format!("the heartbeat stopped: {err}"))
                 }));
             }
         }
+    };
+    shut_down(&host, moved.is_none().then_some(heartbeat), connections).await;
+    // Every browser closes, however the host stopped.
+    host.browsers.close_all().await;
+    // A name that moved is not ours any more: there is nothing of ours to
+    // take offline.
+    if moved.is_none() {
+        go_offline(&host.plow, &endpoint.id().to_string()).await;
     }
-    // Stop heartbeating first, so no late heartbeat lists us online again.
-    heartbeat.abort();
-    go_offline(&host.plow, &endpoint.id().to_string()).await;
     endpoint.close().await;
     log("stopped");
-    Ok(())
+    moved.or(failed).map_or(Ok(()), Err)
+}
+
+/// Longest a stopping host waits for the operations it is running, and
+/// then for the execs it cut off to be killed and audited.
+const DRAIN_WITHIN: Duration = Duration::from_secs(10);
+const CUT_OFF_WITHIN: Duration = Duration::from_secs(10);
+
+/// What a host does once it stops serving, however it stopped: no new
+/// connections (the accept loop is over), no heartbeat that could list it
+/// online again, and every connection's operation finished. Once
+/// `DRAIN_WITHIN` has passed, running execs are killed with everything they
+/// started and audited as `interrupted`; anything still left after
+/// `CUT_OFF_WITHIN` is dropped.
+async fn shut_down(
+    host: &Host,
+    heartbeat: Option<JoinHandle<Failure>>,
+    mut connections: JoinSet<()>,
+) {
+    if let Some(heartbeat) = heartbeat {
+        heartbeat.abort();
+        let _ = heartbeat.await;
+    }
+    host.stopping.send_replace(Stopping::Draining);
+    if within(DRAIN_WITHIN, &mut connections).await {
+        return;
+    }
+    log(&format!(
+        "stopping: cutting off {} connection(s) still running after {} seconds",
+        connections.len(),
+        DRAIN_WITHIN.as_secs()
+    ));
+    host.stopping.send_replace(Stopping::CuttingOff);
+    if !within(CUT_OFF_WITHIN, &mut connections).await {
+        log("stopping: a cut-off operation did not end; dropping it");
+        connections.shutdown().await;
+    }
+}
+
+/// Whether every connection task ended within `limit`.
+async fn within(limit: Duration, connections: &mut JoinSet<()>) -> bool {
+    let ended = async { while connections.join_next().await.is_some() {} };
+    tokio::time::timeout(limit, ended).await.is_ok()
 }
 
 /// Longest a stopping host waits for Plow: stopping never hangs on Plow.
@@ -458,8 +587,7 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
         .mode(0o600)
         .open(&path)
         .map_err(io)?;
-    // SAFETY: flock only reads the descriptor, which `file` keeps open.
-    let try_lock = || unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    let try_lock = || file.try_lock().is_ok();
     let mut locked = try_lock();
     for _ in 0..20 {
         if locked {
@@ -495,9 +623,11 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
 /// checked now, so a typo is a plain error rather than refused files later.
-/// Any folder may be shared, the home folder and `/` included: the sandbox
-/// always hides the state folder, even inside a shared one.
-pub fn shared_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
+/// Any folder may be shared but `home` (the home folder) and the folders
+/// that hold its `Library`, where macOS keeps mail, messages and the like:
+/// share the projects in it instead. The sandbox hides the state folder and
+/// the never-readable places even inside a shared folder.
+pub fn shared_folders(folders: &[PathBuf], home: Option<&Path>) -> Result<Vec<PathBuf>, Failure> {
     if folders.is_empty() {
         let message = "name the folders to share, e.g. `latch serve ~/code`, or save them \
                        with `latch shares set ~/code`"
@@ -516,9 +646,89 @@ pub fn shared_folders(folders: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
         if !area.is_dir() {
             return Err(refuse("it is not a folder"));
         }
+        if holds_library(&area, home) {
+            return Err(refuse(HOLDS_LIBRARY));
+        }
         areas.push(area);
     }
     Ok(areas)
+}
+
+/// Whether the real path `path` is the home folder's `Library`, where macOS
+/// keeps mail, messages and the like, or a folder that holds it (the home
+/// folder, `/Users`, `/`). Such a folder is neither shared nor opted in to.
+fn holds_library(path: &Path, home: Option<&Path>) -> bool {
+    home.is_some_and(|home| {
+        let home = home.canonicalize().unwrap_or(home.to_path_buf());
+        home.join("Library").starts_with(path)
+    })
+}
+
+const HOLDS_LIBRARY: &str = "it holds the home folder's Library (mail, messages, keychains); name the folders in it you need";
+
+/// The places no worker may read or write, even inside a shared folder:
+/// the credentials in the home folder (`sandbox::never_readable`). The
+/// state folder is hidden as well, on its own terms (see `sandbox.rs`).
+pub fn hidden_paths() -> Vec<PathBuf> {
+    let paths = std::env::home_dir()
+        .map(|home| crate::sandbox::never_readable(&home))
+        .unwrap_or_default();
+    with_targets(paths)
+}
+
+/// `paths`, each followed by where it really is when a link leads
+/// elsewhere (`~/.docker/config.json` to `~/private/login.json`, say).
+/// Resolved once, when the host starts, and kept: a worker that removes
+/// the link must not uncover its target to the next.
+fn with_targets(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut all = Vec::new();
+    for path in paths {
+        let target = path.canonicalize().ok().filter(|real| *real != path);
+        all.push(path);
+        all.extend(target);
+    }
+    all
+}
+
+/// The paths `--allow-read` names, which workers may read but not write:
+/// each made absolute and checked now, as shared folders are. One inside a
+/// hidden path or the state folder is refused, since no worker could read
+/// it anyway; one that holds them is allowed, and they stay hidden in it,
+/// but not one that holds the home folder's `Library`, as with shares.
+pub fn allowed_reads(
+    paths: &[PathBuf],
+    home: Option<&Path>,
+    hidden: &[PathBuf],
+    state_dir: &Path,
+) -> Result<Vec<PathBuf>, Failure> {
+    let mut reads = Vec::new();
+    for path in paths {
+        let refuse = |code: &str, why: String| {
+            let message = format!("cannot allow reads of {}: {why}", path.display());
+            Failure::usage(code, message)
+        };
+        let real = path
+            .canonicalize()
+            .map_err(|_| refuse("bad_folder", "it does not exist".to_string()))?;
+        if holds_library(&real, home) {
+            return Err(refuse("bad_folder", HOLDS_LIBRARY.to_string()));
+        }
+        let in_state = real.ancestors().find(|dir| state::is_state_folder(dir));
+        let hidden = hidden.iter().map(PathBuf::as_path).chain([state_dir]);
+        let never = hidden
+            .map(|never| never.canonicalize().unwrap_or(never.to_path_buf()))
+            .find(|never| real.starts_with(never))
+            .or(in_state.map(Path::to_path_buf));
+        if let Some(never) = never {
+            let why = format!(
+                "{} holds credentials or latch's own state, which no caller may ever read",
+                never.display()
+            );
+            return Err(refuse("never_readable", why));
+        }
+        reads.push(real);
+    }
+    Ok(reads)
 }
 
 /// Finishes when the host is asked to stop: Ctrl-C (SIGINT) in a terminal,
@@ -539,18 +749,32 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
     };
     // The caller's key, proven by the connection's own handshake.
     let caller = connection.remote_id().to_string();
+    tracing::Span::current().record("caller", display(&caller));
     if connection.alpn() == link::ALPN {
-        return serve_phone(&host, &caller, connection).await;
+        serve_phone(&host, &caller, &connection).await;
+    } else {
+        serve_caller(&host, &caller, &connection).await;
     }
+    // A stopping host gives the client a moment to close: dropping the
+    // connection at once could cut off the answer it was just sent.
+    if *host.stopping.borrow() != Stopping::No {
+        let _ = tokio::time::timeout(LINGER, connection.closed()).await;
+    }
+}
 
+/// How long a stopping host waits for a client to close its connection.
+const LINGER: Duration = Duration::from_secs(1);
+
+/// A latch client's connection: checked once on connect, then one
+/// operation per stream.
+async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     // First check: on connect. A refused caller's connection is closed with
     // the "denied" code, which its client reports as exit 4.
-    let refusal = match host.check(&caller).await {
+    let refusal = match host.check(caller).await {
         Ok(identity) => {
             let who = format!("{} ({})", identity.name, identity.kind);
-            let record =
-                audit::record(&caller, identity.agent_uid, "connect", "allow", "connected");
-            match host.append(record) {
+            let record = audit::record(caller, identity.agent_uid, "connect", "allow", "connected");
+            match host.append(record).await {
                 Ok(_) => {
                     log(&format!("connect: {who} {caller}: allowed"));
                     None
@@ -560,9 +784,9 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
         }
         Err(denial) => {
             // Already refusing, so a failed audit write changes nothing here.
-            let record = audit::record(&caller, None, "connect", "deny", &denial.code);
-            let _ = host.append(record);
-            host.show_refusal(&caller, "connect", &denial.code);
+            let record = audit::record(caller, None, "connect", "deny", &denial.code);
+            let _ = host.append(record).await;
+            host.show_refusal(caller, "connect", &denial.code);
             Some(denial.message)
         }
     };
@@ -572,17 +796,40 @@ async fn serve_connection(host: Arc<Host>, incoming: Incoming) {
         return;
     }
 
-    // One stream per operation, until the client closes the connection.
-    while let Ok((send, recv)) = connection.accept_bi().await {
-        serve_operation(&host, &caller, send, recv).await;
+    // One stream per operation, until the client closes the connection or
+    // the host stops.
+    while let Some((send, recv)) = next_stream(host, connection).await {
+        let operation = tracing::info_span!("operation", op = Empty);
+        serve_operation(host, caller, connection, send, recv)
+            .instrument(operation)
+            .await;
         log(&format!(
             "paths to {caller}: {}",
-            describe_paths(&connection)
+            describe_paths(connection)
         ));
     }
 }
 
-async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut recv: RecvStream) {
+/// The connection's next operation, until the client closes it or the host
+/// is stopping.
+async fn next_stream(host: &Host, connection: &Connection) -> Option<(SendStream, RecvStream)> {
+    let mut stopping = host.stopping.subscribe();
+    // Stopping wins over a stream that is also ready: no new operation
+    // starts once the host is stopping.
+    tokio::select! {
+        biased;
+        _ = stopping.wait_for(|stopping| *stopping != Stopping::No) => None,
+        stream = connection.accept_bi() => stream.ok(),
+    }
+}
+
+async fn serve_operation(
+    host: &Host,
+    caller: &str,
+    connection: &Connection,
+    mut send: SendStream,
+    mut recv: RecvStream,
+) {
     let Ok(json) = wire::read_frame(&mut recv).await else {
         return;
     };
@@ -591,13 +838,16 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
         return answer(&mut send, &response).await;
     };
     let op = request.op.as_str();
+    tracing::Span::current().record("op", display(op));
     let started = Instant::now();
 
     // Second check: before the operation, in case the caller was revoked
     // since it connected.
     let response = match host.check(caller).await {
         Err(denial) => {
-            let _ = host.append(audit::record(caller, None, op, "deny", &denial.code));
+            let _ = host
+                .append(audit::record(caller, None, op, "deny", &denial.code))
+                .await;
             log(&format!("{op}: {caller}: denied: {}", denial.message));
             host.show_refusal(caller, op, &denial.code);
             Response::Error {
@@ -671,7 +921,9 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
-                    "exec" => exec::run(&host.workers, &request.args).await,
+                    "exec" => {
+                        exec::run(&host.workers, &request.args, cut_off(host, connection)).await
+                    }
                     "vault" => {
                         crate::vault::host::run(
                             &host.vault,
@@ -693,6 +945,25 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                         )
                         .await
                     }
+                    "browser" => match &gate {
+                        Ok(gate) => {
+                            crate::browser::host::run(
+                                &host.browsers,
+                                caller,
+                                &identity.kind,
+                                *gate,
+                                request.args,
+                                &mut send,
+                                &mut recv,
+                            )
+                            .await
+                        }
+                        Err(failure) => Done {
+                            response: Response::error(failure),
+                            audit_args: Value::Null,
+                            outcome: failure.code.clone(),
+                        },
+                    },
                     "google" => {
                         crate::google::host::run(
                             &host.workers,
@@ -722,9 +993,26 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                 "{op}: {caller}: {decision}: {} {}",
                 done.outcome, done.audit_args
             ));
-            if let Some(dashboard) = &host.dashboard {
-                let (target, result) =
-                    dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed());
+            let dashboard = host.dashboard.as_ref().map(|dashboard| {
+                (
+                    dashboard,
+                    dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed()),
+                )
+            });
+            let mut record = audit::record(
+                caller,
+                identity.agent_uid.clone(),
+                op,
+                decision,
+                &done.outcome,
+            );
+            record.args = done.audit_args;
+            record.gate = judgment.map(|judgment| judgment.gate);
+            let response = match host.append(record).await {
+                Ok(audit_id) => with_audit_id(done.response, audit_id),
+                Err(message) => failed("audit_failed", message),
+            };
+            if let Some((dashboard, (target, result))) = dashboard {
                 dashboard.call(Row {
                     at: jiff::Timestamp::now(),
                     caller: host.shown_name(&identity).await,
@@ -734,13 +1022,7 @@ async fn serve_operation(host: &Host, caller: &str, mut send: SendStream, mut re
                     refused: decision == "deny",
                 });
             }
-            let mut record = audit::record(caller, identity.agent_uid, op, decision, &done.outcome);
-            record.args = done.audit_args;
-            record.gate = judgment.map(|judgment| judgment.gate);
-            match host.append(record) {
-                Ok(audit_id) => with_audit_id(done.response, audit_id),
-                Err(message) => failed("audit_failed", message),
-            }
+            response
         }
     };
     answer(&mut send, &response).await;
@@ -777,7 +1059,7 @@ async fn serve_local_link(host: Arc<Host>, mut socket: tokio::net::UnixStream) {
         &done.outcome,
     );
     record.args = done.audit_args;
-    let response = match host.append(record) {
+    let response = match host.append(record).await {
         Ok(id) => with_audit_id(done.response, id),
         Err(message) => failed("audit_failed", message),
     };
@@ -786,16 +1068,24 @@ async fn serve_local_link(host: Arc<Host>, mut socket: tokio::net::UnixStream) {
     }
 }
 
+/// Finishes when an exec is cut off by the host or loses its caller.
+async fn cut_off(host: &Host, connection: &Connection) -> &'static str {
+    tokio::select! {
+        () = host.cut_off() => "interrupted",
+        _ = connection.closed() => "caller_gone",
+    }
+}
+
 /// A phone page's connection (see `vault/link.rs`). Its key is a
 /// throwaway one Plow has never heard of: the link's code in each request
 /// is what lets it in, so Plow is not asked. It can fetch its link's form
 /// and save its link's item, nothing else.
-async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
+async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
     log(&format!(
         "phone {caller}: connected over {}",
-        describe_paths(&connection)
+        describe_paths(connection)
     ));
-    while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+    while let Some((mut send, mut recv)) = next_stream(host, connection).await {
         let Ok(json) = wire::read_frame(&mut recv).await else {
             return;
         };
@@ -842,7 +1132,7 @@ async fn serve_phone(host: &Host, caller: &str, connection: Connection) {
         }
         let mut record = audit::record(caller, None, "vault_link", decision, &done.outcome);
         record.args = done.audit_args;
-        let response = match host.append(record) {
+        let response = match host.append(record).await {
             Ok(audit_id) => with_audit_id(done.response, audit_id),
             Err(message) => failed("audit_failed", message),
         };
@@ -910,6 +1200,14 @@ struct Denial {
 }
 
 impl Host {
+    /// Finishes when the host cuts off the operations still running.
+    async fn cut_off(&self) {
+        let mut stopping = self.stopping.subscribe();
+        let _ = stopping
+            .wait_for(|stopping| *stopping == Stopping::CuttingOff)
+            .await;
+    }
+
     /// Where a phone link points: our key, name and current relay.
     fn here(&self) -> link::Here {
         link::Here {
@@ -987,10 +1285,21 @@ impl Host {
         }
     }
 
-    /// Appends to the audit log and returns the record's hash. On failure,
-    /// returns what the caller is told.
-    fn append(&self, record: Record) -> Result<String, String> {
-        let result = self.audit.lock().expect("audit log lock").append(record);
+    /// Appends to the audit log and returns the record's hash, once the
+    /// record is on disk. On failure, returns what the caller is told. The
+    /// lock, write and sync run on a blocking thread, so a slow disk holds
+    /// up only the callers waiting on the log.
+    async fn append(&self, record: Record) -> Result<String, String> {
+        let audit = self.audit.clone();
+        let appending = tokio::task::spawn_blocking(move || {
+            audit.lock().expect("audit log lock").append(record)
+        });
+        let result = appending.await.unwrap_or_else(|stopped| {
+            Err(Failure::failed(
+                "audit_failed",
+                format!("the append stopped: {stopped}"),
+            ))
+        });
         result.map_err(|failure| {
             log(&format!("audit: {}", failure.message));
             "the host could not write its audit log".to_string()
@@ -1133,21 +1442,28 @@ mod tests {
         }
         std::fs::write(home.join("notes.txt"), b"").unwrap();
 
+        std::fs::create_dir_all(home.join("Library/Developer")).unwrap();
+        let shared = |folders: &[PathBuf]| shared_folders(folders, Some(&home));
+
         assert_eq!(
-            shared_folders(&[code.join("../docs"), code.clone()]).unwrap(),
+            shared(&[code.join("../docs"), code.clone()]).unwrap(),
             [docs, code]
         );
-        // The home folder and `/` too: the state folder inside is hidden by the sandbox.
+        // Inside the Library, but not what holds it.
         assert_eq!(
-            shared_folders(&[home.clone(), PathBuf::from("/")]).unwrap(),
-            [home.clone(), PathBuf::from("/")]
+            shared(&[home.join("Library/Developer")]).unwrap(),
+            [home.join("Library/Developer")]
         );
-        assert_eq!(shared_folders(&[]).unwrap_err().code, "no_folders");
+        assert_eq!(shared(&[]).unwrap_err().code, "no_folders");
         for (folder, why) in [
             (home.join("missing"), "does not exist"),
             (home.join("notes.txt"), "not a folder"),
+            (home.clone(), "Library"),
+            (home.join("Library"), "Library"),
+            (home.join(".."), "Library"),
+            (PathBuf::from("/"), "Library"),
         ] {
-            let failure = shared_folders(std::slice::from_ref(&folder)).unwrap_err();
+            let failure = shared(std::slice::from_ref(&folder)).unwrap_err();
             assert_eq!(failure.code, "bad_folder", "{folder:?}");
             assert!(
                 failure.message.contains(why),
@@ -1155,6 +1471,80 @@ mod tests {
                 failure.message
             );
         }
+    }
+
+    #[test]
+    fn an_opt_in_inside_credentials_or_state_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let state = home.join("state");
+        for path in [".ssh", ".config/gh", "code", "state/keys"] {
+            std::fs::create_dir_all(home.join(path)).unwrap();
+        }
+        std::fs::write(home.join(".ssh/id_ed25519"), b"").unwrap();
+        let hidden = crate::sandbox::never_readable(&home);
+        let allowed = |path: &str| allowed_reads(&[home.join(path)], Some(&home), &hidden, &state);
+
+        // A folder that holds them is allowed (the sandbox hides them in
+        // it), unless it holds the Library: the home folder, or above it.
+        std::fs::create_dir_all(home.join("code/.ssh")).unwrap();
+        std::fs::create_dir_all(home.join("Library")).unwrap();
+        let in_code = crate::sandbox::never_readable(&home.join("code"));
+        let reads = allowed_reads(&[home.join("code")], None, &in_code, &state);
+        assert_eq!(reads.unwrap(), [home.join("code")]);
+        assert_eq!(allowed("code/../code").unwrap(), [home.join("code")]);
+        for path in [".", "..", "Library"] {
+            let failure = allowed(path).unwrap_err();
+            assert_eq!(failure.code, "bad_folder", "{path}");
+            assert!(failure.message.contains("Library"), "{path}");
+        }
+        for path in [".ssh", ".ssh/id_ed25519", ".config/gh", "state/keys"] {
+            let failure = allowed(path).unwrap_err();
+            assert_eq!(failure.code, "never_readable", "{path}");
+        }
+        assert_eq!(allowed("missing").unwrap_err().code, "bad_folder");
+    }
+
+    #[test]
+    fn an_opt_in_inside_another_state_folder_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for path in ["share/a/peer/sub", "share/b", "share/d/old"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+        }
+        let marker = r#"{"format": 1, "written_by": "test"}"#;
+        std::fs::write(root.join("share/a/peer/latch.json"), marker).unwrap();
+        // Made before the marker: a key and a Plow login, no latch.json.
+        std::fs::write(root.join("share/d/old/key"), "k").unwrap();
+        std::fs::write(root.join("share/d/old/plow-token"), "t").unwrap();
+        // A key alone is anyone's.
+        std::fs::write(root.join("share/b/key"), "k").unwrap();
+
+        let state = root.join("own-state");
+        for path in ["share/a/peer/sub", "share/d/old"] {
+            let inside = allowed_reads(&[root.join(path)], None, &[], &state);
+            assert_eq!(inside.unwrap_err().code, "never_readable", "{path}");
+        }
+        let beside = allowed_reads(&[root.join("share/b")], None, &[], &state);
+        assert_eq!(beside.unwrap(), [root.join("share/b")]);
+    }
+
+    #[test]
+    fn a_linked_credential_keeps_its_target_hidden_once_the_link_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(home.join(".docker")).unwrap();
+        std::fs::create_dir_all(home.join("private")).unwrap();
+        std::fs::write(home.join("private/login.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(
+            home.join("private/login.json"),
+            home.join(".docker/config.json"),
+        )
+        .unwrap();
+        let hidden = with_targets(crate::sandbox::never_readable(&home));
+        std::fs::remove_file(home.join(".docker/config.json")).unwrap();
+        assert!(hidden.contains(&home.join(".docker/config.json")));
+        assert!(hidden.contains(&home.join("private/login.json")));
     }
 
     #[test]

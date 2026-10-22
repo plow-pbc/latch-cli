@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- latch's multi-frame test page. Serve this folder on two origins and
+     open frames.html?cross=PORT: the second origin, http://localhost:PORT,
+     fills the cross-site frame. -->
+<title>latch frames test</title>
+<h1>Orders</h1>
+<table>
+  <tr><td>Order 1001</td><td>Blue mug</td><td><button id="edit1">Edit</button></td></tr>
+  <tr><td>Order 1002</td><td>Red lamp</td><td><button id="edit2">Edit</button></td></tr>
+</table>
+<p><label>Name <input id="name" name="name"></label></p>
+<p><label for="pw">Password</label> <input id="pw" type="password" value="made-up-secret"></p>
+<p><label for="color">Colour</label>
+  <select id="color"><option>Red</option><option>Green</option><option>Blue</option></select></p>
+<p><input type="checkbox" id="agree"> <label for="agree">I agree</label></p>
+<p><a href="next.html">Next page</a> · <a href="alert.html">Dialogs and tabs</a></p>
+<p id="out">nothing yet</p>
+<iframe id="same" src="same.html" width="300" height="80"></iframe>
+<iframe id="cross" width="300" height="80"></iframe>
+<iframe id="sandboxed" sandbox="allow-scripts" width="220" height="60"
+  srcdoc="<button onclick=&quot;this.textContent='sandboxed pressed '+event.isTrusted&quot;>Sandboxed button</button>"></iframe>
+<script>
+  const out = document.getElementById('out');
+  const show = (text) => { out.textContent = text; };
+  document.getElementById('edit1').addEventListener('click', (e) => show('edited 1001, trusted ' + e.isTrusted));
+  document.getElementById('edit2').addEventListener('click', (e) => show('edited 1002, trusted ' + e.isTrusted));
+  document.getElementById('name').addEventListener('input', (e) => show('typed, trusted ' + e.isTrusted));
+  document.getElementById('color').addEventListener('change', (e) => show('colour ' + e.target.value + ', trusted ' + e.isTrusted));
+  document.getElementById('agree').addEventListener('change', (e) => show('agree ' + e.target.checked + ', trusted ' + e.isTrusted));
+  const cross = new URLSearchParams(location.search).get('cross');
+  if (cross) document.getElementById('cross').src = 'http://localhost:' + cross + '/cross.html';
+</script>

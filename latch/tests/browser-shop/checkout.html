@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Checkout — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+// The CAPTCHA stand-in: with `captcha` set, checkout sends you to a
+// challenge page first.
+if (store.get("captcha", false)) location.replace("recaptcha/check.html");
+else if (requireUser("checkout.html")) {
+const items = cart(); const total = items.reduce((t, i) => t + byId(i.id).price * i.qty, 0);
+// The repricing fixture: a `surcharge` set while the page is open (as a
+// shop's server might) changes the total in place.
+const totalText = () => money(total + 3.99 + Number(store.get("surcharge", 0)));
+main.innerHTML = `<h1>Checkout</h1><p>${items.length} item(s), total <span id="total">${totalText()}</span> including $3.99 delivery.</p>
+<form id="co" onsubmit="return false">
+<label>Delivery address <input id="addr" value="221 Example Street, Springfield"></label>
+<label>Delivery time <select id="slot"><option>As soon as possible</option><option>6–7 pm</option><option>7–8 pm</option></select></label>
+<label>Note for the driver <textarea id="note" rows="2"></textarea></label>
+<p><button type="submit" id="place">Place order</button> <a href="cart.html">Back to cart</a></p></form>`;
+document.getElementById("place").onclick = () => { store.set("order", {items: cart(), note: document.getElementById("note").value, slot: document.getElementById("slot").value}); store.set("cart", []); location.href = "confirmed.html"; };
+setInterval(() => { document.getElementById("total").textContent = totalText(); }, 250);
+}
+</script></body></html>

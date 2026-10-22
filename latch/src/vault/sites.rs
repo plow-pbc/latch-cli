@@ -33,7 +33,6 @@ pub fn registrable(site: &str) -> Result<String, String> {
 /// The site a page is on, for telling apart what sessions on one profile
 /// do: its registrable domain, or for a host without one (an IP address, a
 /// local host) the host itself. None for a page with no host.
-#[allow(dead_code)] // the browser's fills call it
 pub fn site_of(url: &str) -> Option<String> {
     let url = Url::parse(url).ok()?;
     let host = url.host_str()?;
@@ -62,14 +61,12 @@ fn domain_of(host: &str) -> Result<String, String> {
 
 /// An origin a fill was asked into, checked: its host and registrable
 /// domain, or why no value goes there.
-#[allow(dead_code)] // the browser's fills use it
 #[derive(Debug, Clone, PartialEq)]
 pub struct Checked {
     pub host: String,
     pub domain: String,
 }
 
-#[allow(dead_code)] // the browser's fills call it
 pub fn check(origin: &str) -> Result<Checked, String> {
     if origin.is_empty() {
         return Err("the page has no address".into());
@@ -101,7 +98,6 @@ pub fn check(origin: &str) -> Result<Checked, String> {
 ///
 /// In every case both origins must pass `check`. The error is the reason,
 /// for the audit and the agent; it never holds a value.
-#[allow(dead_code)] // the browser's fills call it
 pub fn allows(item: &Meta, frame: &str, top: &str) -> Result<(Checked, Checked), String> {
     let frame = check(frame).map_err(|why| format!("field frame: {why}"))?;
     let top = check(top).map_err(|why| format!("top-level page: {why}"))?;

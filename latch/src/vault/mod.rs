@@ -15,7 +15,6 @@
 
 pub mod classify;
 pub mod client;
-#[allow(dead_code)] // the browser's fills reshape dates with the rest of it
 pub mod dates;
 pub mod host;
 pub mod import;

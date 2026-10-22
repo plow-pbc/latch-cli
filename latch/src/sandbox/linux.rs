@@ -16,7 +16,7 @@ use seccompiler::{
     SeccompRule,
 };
 
-use super::{BrowserView, Policy};
+use super::{BrowserView, Policy, exit_with_status, reap};
 
 type Error = Box<dyn std::error::Error>;
 const INNER: &str = "LATCH_BWRAP_INNER";
@@ -31,6 +31,17 @@ fn bubblewrap() -> Result<PathBuf, String> {
 
 pub fn check() -> Result<(), String> {
     bubblewrap().map(|_| ())
+}
+
+/// Nothing to hold: the launcher outside bubblewrap watches the host.
+pub struct HostWatch;
+
+pub fn watch_host() -> Result<HostWatch, String> {
+    Ok(HostWatch)
+}
+
+pub fn supervise(_watch: HostWatch, _kill_after: Option<u64>) -> Result<(), String> {
+    Ok(())
 }
 
 pub fn confine(policy: &Policy) -> Result<(), String> {
@@ -52,18 +63,14 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         return Err("forced sandbox-apply failure".into());
     }
     let program = std::env::current_exe()?.canonicalize()?;
-    // A shared `/` is the whole view, writable; `exec` and file workers
-    // read the whole filesystem, as Codex CLI's do (Google workers do not).
-    // Either binds `/` first, so the mounts below (a minimal /dev, a private
-    // /tmp, the areas) go on top.
-    let root_shared = policy.areas.iter().any(|area| area == Path::new("/"));
-    let reads_everything = policy.program.is_none();
-    let root_bound = root_shared || reads_everything;
+    // `exec` and file workers see the system's own files, read-only
+    // (Google workers get less, in `mounts`). They come first, so the mounts
+    // below (a minimal /dev, a private /tmp, the areas) go on top.
     let mut command = Command::new(bubblewrap()?);
-    if root_shared {
-        command.args(["--bind", "/", "/"]);
-    } else if reads_everything {
-        command.args(["--ro-bind", "/", "/"]);
+    if policy.program.is_none() {
+        for path in SYSTEM.iter().map(Path::new).filter(|path| path.exists()) {
+            mount(&mut command, path, true)?;
+        }
     }
     command.args([
         "--unshare-user",
@@ -76,24 +83,46 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         "--dev",
         "/dev",
     ]);
-    mounts(&mut command, policy, &program)?;
     let status = if policy.exec {
         let folder = policy
             .tmpdir
             .as_ref()
             .ok_or("exec worker needs a temp folder")?;
         let file = tempfile::NamedTempFile::new_in(folder)?;
-        // The program's TMPDIR is the private /tmp; the host's folder is
-        // not in its view.
-        command.args(["--setenv", "TMPDIR", "/tmp"]);
-        // With `/` bound, /run is the host's, where bwrap cannot create the
-        // status file; a private /run gives it somewhere to go.
-        command.args(["--tmpfs", "/run"]);
+        // A private /tmp and /run, and the program's TMPDIR a private
+        // folder of its own outside them, writable even when an opt-in
+        // covers /tmp. The host's temp folder is not in its view. The
+        // status file sits at the top of the sandbox's own `/`, where no
+        // opt-in or area can cover it.
+        command.args(["--setenv", "TMPDIR", PRIVATE_TMPDIR]);
+        command.args(["--perms", "1777", "--tmpfs", PRIVATE_TMPDIR]);
+        command.args(["--perms", "1777", "--tmpfs", "/tmp", "--tmpfs", "/run"]);
         command.arg("--bind").arg(file.path()).arg(STATUS);
         Some(file)
     } else {
         None
     };
+    // After the private /tmp and /run, so an opt-in inside either shows.
+    for read in &policy.reads {
+        mount(&mut command, read, true)?;
+    }
+    mounts(&mut command, policy, &program)?;
+    // Credentials stay out of view even inside an area or an opt-in, or
+    // above one: an empty, read-only folder or an empty file in their place.
+    for hidden in &policy.hidden {
+        let Ok(real) = hidden.canonicalize() else {
+            continue;
+        };
+        if real.is_dir() {
+            command
+                .arg("--tmpfs")
+                .arg(&real)
+                .arg("--remount-ro")
+                .arg(&real);
+        } else {
+            command.arg("--ro-bind").arg("/dev/null").arg(&real);
+        }
+    }
     // Hide state last, including any area or runtime mount that contains it.
     // A Google worker gets its own plugin's folder back, read-only: the one
     // part of the state folder a worker may see.
@@ -107,10 +136,8 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         }
     }
     command.arg("--remount-ro").arg(&state);
-    // Otherwise `/` is only the empty frame the mounts sit in: read-only.
-    if !root_bound {
-        command.args(["--remount-ro", "/"]);
-    }
+    // `/` is only the empty frame the mounts sit in: read-only.
+    command.args(["--remount-ro", "/"]);
     command
         .arg("--chdir")
         .arg(std::env::current_dir()?)
@@ -118,12 +145,18 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         .arg(program)
         .args(std::env::args_os().skip(1));
     match status {
-        Some(file) => launch_exec(&mut command, file),
+        Some(file) => launch_exec(&mut command, file, policy.kill_after),
         None => Err(command.exec().into()),
     }
 }
 
-#[allow(dead_code)] // the browser worker confines itself with it
+/// What `exec` and file workers read of the system, read-only: programs,
+/// libraries, configuration (name resolution, certificates, the password
+/// database) and what package managers install.
+const SYSTEM: &[&str] = &[
+    "/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc", "/opt", "/var/lib",
+];
+
 pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
     let result = if std::env::var_os(INNER).is_some() {
         filter(false, true)
@@ -140,7 +173,6 @@ pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
 /// What the engine and its display read: libraries and programs (Xvfb and
 /// the xkbcomp it runs), fonts, name resolution, certificates, the time
 /// zone, and the CPU list Chrome sizes itself by.
-#[allow(dead_code)] // the browser worker confines itself with it
 const BROWSER_SYSTEM: &[&str] = &[
     "/usr",
     "/lib",
@@ -164,7 +196,6 @@ const BROWSER_SYSTEM: &[&str] = &[
 /// connections. Its own `/proc` shows only the sandbox's processes, which
 /// Chrome's sandbox needs. A private `/tmp` holds the display's socket,
 /// so nothing outside reaches the display.
-#[allow(dead_code)] // the browser worker confines itself with it
 fn browser_command(view: &BrowserView, program: &Path) -> Result<Command, Error> {
     let mut command = Command::new(bubblewrap()?);
     for path in BROWSER_SYSTEM {
@@ -214,19 +245,11 @@ fn browser_command(view: &BrowserView, program: &Path) -> Result<Command, Error>
 
 fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), Error> {
     let mut runtime = if policy.exec {
-        // The whole filesystem is already there, read-only (see `launch`).
-        command.args([
-            "--ro-bind",
-            "/proc",
-            "/proc",
-            "--perms",
-            "1777",
-            "--tmpfs",
-            "/tmp",
-        ]);
+        // The system's files, /tmp and /run are already there (see `launch`).
+        command.args(["--ro-bind", "/proc", "/proc"]);
         vec![]
     } else if policy.program.is_none() {
-        // A file worker sees the whole filesystem too, but no processes.
+        // A file worker sees the system's files too, but no processes.
         command.args(["--tmpfs", "/proc"]);
         vec![]
     } else {
@@ -241,7 +264,7 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
     };
     // Exec reuses Docker's masked procfs read-only (container PID metadata).
     // File and Google workers do not need procfs and get none (a file
-    // worker's whole-filesystem view has an empty /proc).
+    // worker's has an empty /proc).
     if !policy.exec && policy.program.is_some() {
         runtime.extend([
             "/etc/resolv.conf",
@@ -261,13 +284,15 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
             mount(command, Path::new(path), true)?;
         }
     }
-    for area in policy.areas.iter().filter(|area| *area != Path::new("/")) {
+    for area in &policy.areas {
         mount(command, area, false)?;
     }
-    // A worker could otherwise rename a folder above the state folder or the
-    // running latch, inside an area, and put its own in their place for the
-    // host's next start. Binding each such folder onto itself makes it a
-    // mount point, which cannot be renamed or removed; it stays writable.
+    // A worker could otherwise rename a folder above the state folder, the
+    // running latch or a hidden path, inside an area: to put its own in
+    // their place for the host's next start, or to move a hidden path where
+    // the next call's sandbox does not look for it. Binding each such folder
+    // onto itself makes it a mount point, which cannot be renamed or
+    // removed; it stays writable.
     for dir in folders_above(policy, program)? {
         mount(command, &dir, false)?;
     }
@@ -279,8 +304,9 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
     Ok(())
 }
 
-/// The folders inside an area that hold the state folder or the running
-/// latch, shallowest first. The areas themselves are already mount points.
+/// The folders inside an area that hold the state folder, the running
+/// latch or a hidden path, shallowest first. The areas themselves are
+/// already mount points, as are the hidden paths (see `launch`).
 fn folders_above(policy: &Policy, program: &Path) -> Result<Vec<PathBuf>, Error> {
     let areas: Vec<PathBuf> = policy
         .areas
@@ -288,7 +314,12 @@ fn folders_above(policy: &Policy, program: &Path) -> Result<Vec<PathBuf>, Error>
         .map(|area| area.canonicalize())
         .collect::<Result<_, _>>()?;
     let mut dirs = Vec::new();
-    for protected in [policy.state_dir.canonicalize()?, program.to_path_buf()] {
+    let hidden = policy
+        .hidden
+        .iter()
+        .filter_map(|path| path.canonicalize().ok());
+    let protected = [policy.state_dir.canonicalize()?, program.to_path_buf()];
+    for protected in protected.into_iter().chain(hidden) {
         for dir in protected.ancestors().skip(1) {
             if areas
                 .iter()
@@ -304,7 +335,26 @@ fn folders_above(policy: &Policy, program: &Path) -> Result<Vec<PathBuf>, Error>
     Ok(dirs)
 }
 
-fn launch_exec(command: &mut Command, mut file: tempfile::NamedTempFile) -> Result<(), Error> {
+fn launch_exec(
+    command: &mut Command,
+    mut file: tempfile::NamedTempFile,
+    kill_after: Option<u64>,
+) -> Result<(), Error> {
+    // This copy's own time limit, past which SIGALRM ends it. bubblewrap
+    // (`--die-with-parent`) then kills the sandbox and everything in it.
+    // The host kills this copy's process group at the call's timeout,
+    // before this. When the host itself dies, the kernel kills this copy
+    // (the host sets that up as it starts it, see `worker.rs`), with the
+    // same effect.
+    if let Some(seconds) = kill_after {
+        // SAFETY: std has no process alarm API. SIGALRM and SIG_DFL are valid
+        // signal arguments, and alarm takes a bounded scalar number of seconds;
+        // neither call accesses Rust memory or installs a Rust signal handler.
+        unsafe {
+            libc::signal(libc::SIGALRM, libc::SIG_DFL);
+            libc::alarm(u32::try_from(seconds).unwrap_or(u32::MAX));
+        }
+    }
     // Bubblewrap reports both SIGSEGV and a normal exit 139 as 139. The inner
     // supervisor writes the actual wait status here, so this outer copy can
     // reproduce the child's exit code or signal without guessing. The host
@@ -321,11 +371,17 @@ fn launch_exec(command: &mut Command, mut file: tempfile::NamedTempFile) -> Resu
     std::process::exit(exit.code().unwrap_or(125));
 }
 
-const STATUS: &str = "/run/latch-exit-status";
+const STATUS: &str = "/.latch-exit-status";
+
+/// An exec program's TMPDIR, at the top of the sandbox's own `/` as
+/// `STATUS` is, where no opt-in or area can cover it.
+const PRIVATE_TMPDIR: &str = "/.latch-tmp";
 
 fn supervise_exec() -> Result<(), Error> {
-    // SAFETY: the inner worker is still single-threaded. Only the child
-    // continues to the workload; the parent waits and writes its status.
+    // SAFETY: fork preserves the workload's raw wait status outside it. This
+    // inner worker has not started other threads, so no other thread can leave
+    // a Rust lock held in the child. Only the child returns to run the workload;
+    // the parent waits and writes its status.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -333,31 +389,9 @@ fn supervise_exec() -> Result<(), Error> {
     if pid == 0 {
         return Ok(());
     }
-    let mut status = 0;
-    loop {
-        // SAFETY: status is writable and pid is the child just created.
-        if unsafe { libc::waitpid(pid, &mut status, 0) } >= 0 {
-            break;
-        }
-        let err = std::io::Error::last_os_error();
-        if err.kind() != std::io::ErrorKind::Interrupted {
-            return Err(err.into());
-        }
-    }
-    std::fs::write(STATUS, status.to_ne_bytes())?;
+    let status = reap(pid)?;
+    std::fs::write(STATUS, status.into_raw().to_ne_bytes())?;
     std::process::exit(0);
-}
-
-fn exit_with_status(status: std::process::ExitStatus) -> ! {
-    if let Some(signal) = status.signal() {
-        // SAFETY: restore the signal's default action and deliver it to self.
-        unsafe {
-            libc::signal(signal, libc::SIG_DFL);
-            libc::raise(signal);
-        }
-        std::process::exit(128 + signal);
-    }
-    std::process::exit(status.code().unwrap_or(125));
 }
 
 fn mount(command: &mut Command, path: &Path, readonly: bool) -> Result<(), Error> {
@@ -422,8 +456,9 @@ fn filter(offline: bool, namespaces: bool) -> Result<(), Error> {
         std::env::consts::ARCH.try_into()?,
     )?
     .try_into()?;
-    // SAFETY: prctl takes integer arguments; this is the single-threaded
-    // inner worker. Future threads and executed programs inherit the filter.
+    // SAFETY: std cannot set no_new_privs before seccomp. This documented prctl
+    // operation takes only integer arguments, touches no Rust memory, and
+    // restricts the current worker; its threads and executed programs inherit it.
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
@@ -495,9 +530,12 @@ mod tests {
             let mode = std::env::var("LATCH_VIEW_MODE").unwrap();
             confine(&Policy {
                 areas: vec![root.join("area")],
+                reads: vec![],
+                hidden: vec![],
                 state_dir: root.join("state"),
                 exec: mode == "exec",
                 tmpdir: (mode == "exec").then(|| root.join("outside")),
+                kill_after: None,
                 program: (mode == "google")
                     .then(|| PathBuf::from(std::env::var_os("LATCH_VIEW_PROGRAM").unwrap())),
                 break_for_test: false,
@@ -506,11 +544,8 @@ mod tests {
             std::thread::spawn(move || {
                 assert_eq!(fs::read(root.join("area/inside")).unwrap(), b"inside");
                 assert!(fs::read(root.join("state/secret")).is_err());
-                // File and exec workers read the whole filesystem; Google's do not.
-                assert_eq!(
-                    fs::read(root.join("outside/other")).is_ok(),
-                    mode != "google"
-                );
+                // Nothing outside the area, for any kind of worker.
+                assert!(fs::read(root.join("outside/other")).is_err());
                 let connection = TcpStream::connect(std::env::var("LATCH_VIEW_ADDR").unwrap());
                 if mode == "file" {
                     assert_eq!(
