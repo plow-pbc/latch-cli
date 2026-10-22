@@ -3,16 +3,10 @@ name: release
 # v0.1.0-1327, titled `latch 0.1.0 (1327)`, builds the archives (the package
 # workflow), signs and notarizes the macOS ones, checks them all and leaves a
 # draft release for a person to publish. The run number is the build number
-# latch --version shows. The version is typed at dispatch, so the run's name
-# can show it, and must be latch/Cargo.toml's.
-run-name: Release latch ${{ inputs.version }} (${{ github.run_number }})
+# latch --version shows.
+run-name: Release (build ${{ github.run_number }})
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: latch's version, as latch/Cargo.toml has it (e.g. 0.1.0)
-        required: true
-        type: string
 permissions:
   contents: read
 # Releases run one at a time, so two can never mint the same tag.
@@ -38,14 +32,8 @@ jobs:
       - uses: actions/checkout@v4
       - id: mint
         shell: bash
-        env:
-          TYPED: ${{ inputs.version }}
         run: |
           package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
-          if [[ "$TYPED" != "$package" ]]; then
-            echo "latch/Cargo.toml is version $package, not $TYPED" >&2
-            exit 1
-          fi
           tag="v$package-${{ github.run_number }}"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
             echo "tag $tag already exists" >&2
