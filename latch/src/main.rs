@@ -33,6 +33,7 @@ mod model;
 mod paint;
 mod plow;
 mod sandbox;
+mod secrets;
 mod serve;
 mod shares;
 mod state;
