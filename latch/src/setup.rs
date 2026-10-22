@@ -8,7 +8,10 @@
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver};
+#[cfg(target_os = "macos")]
+use std::sync::mpsc::RecvTimeoutError;
+#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -17,7 +20,9 @@ use crate::state::StateDir;
 use crate::term;
 
 /// How often, and how long, the Full Disk Access step asks the host again.
+#[cfg(target_os = "macos")]
 const RECHECK_EVERY: Duration = Duration::from_secs(2);
+#[cfg(target_os = "macos")]
 const RECHECK_FOR: Duration = Duration::from_secs(180);
 
 pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
@@ -308,6 +313,7 @@ impl Input {
     }
 
     /// Waits `wait`, or less if `s` is typed: then true.
+    #[cfg(target_os = "macos")]
     fn skip_within(&self, wait: Duration) -> bool {
         let until = Instant::now() + wait;
         loop {

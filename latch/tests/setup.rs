@@ -79,6 +79,7 @@ impl Stub {
 
     /// `name` enabled, as the stand-in's host lists it and as the host
     /// saves it in the state folder.
+    #[cfg(target_os = "macos")]
     fn enable(&self, name: &str) {
         self.file(&format!("enabled-{name}"), "");
         let state = self.root.join("state");
@@ -145,6 +146,9 @@ impl Stub {
             });
         }
         let mut child = command.spawn().unwrap();
+        // Every copy of the terminal's side must close, the command's too,
+        // or reading the other side never ends once setup does.
+        drop(command);
         drop(side);
         main.write_all(typed.as_bytes()).unwrap();
         let mut reading = main.try_clone().unwrap();
@@ -162,7 +166,9 @@ impl Stub {
             if std::time::Instant::now() > deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
-                panic!("setup still waiting after 60 s");
+                drop(main);
+                let shown = shown.join().unwrap();
+                panic!("setup still waiting after 60 s; it showed: {shown}");
             }
             thread::sleep(std::time::Duration::from_millis(50));
         };
