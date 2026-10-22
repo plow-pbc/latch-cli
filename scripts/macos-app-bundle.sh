@@ -4,7 +4,7 @@
 # Full Disk Access and the Developer ID signature name, and the Developer ID
 # provisioning profile that lets a signature claim latch's keychain group.
 # Signing is the caller's: ad hoc for a build that keeps files, Developer ID
-# with latch/macos/helper.entitlements for one that keeps the Keychain.
+# with latch/macos/latch.entitlements for one that keeps the Keychain.
 #   macos-app-bundle.sh VERSION BINARY BUNDLE
 set -eu
 [ "$#" -eq 3 ] || { echo 'usage: macos-app-bundle.sh VERSION BINARY BUNDLE' >&2; exit 1; }

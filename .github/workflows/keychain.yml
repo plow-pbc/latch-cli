@@ -67,7 +67,7 @@ jobs:
           sh scripts/macos-app-bundle.sh "$version" latch/target/release/latch "$app"
           test -f "$app/Contents/embedded.provisionprofile"
           codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
-            --entitlements latch/macos/helper.entitlements --sign "$IDENTITY" "$app"
+            --entitlements latch/macos/latch.entitlements --sign "$IDENTITY" "$app"
           codesign --verify --strict --verbose=2 "$app"
           codesign -dvvv --entitlements - "$app" 2>&1
           mkdir -p "$RUNNER_TEMP/bin"
