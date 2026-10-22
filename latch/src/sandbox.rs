@@ -43,6 +43,10 @@ pub struct Policy {
     pub state_dir: PathBuf,
     /// An `exec` worker: may start programs and use the outbound network.
     pub exec: bool,
+    /// An exec worker's readable home and its Library/Caches exception.
+    pub home: Option<PathBuf>,
+    /// Outbound IP access; host Unix sockets are never granted.
+    pub network: bool,
     /// An `exec` worker's own temp folder, made by the host for this call:
     /// readable and writable on macOS. On Linux a private TMPDIR of the
     /// worker's own takes its place, and the folder only holds bubblewrap's
@@ -67,43 +71,10 @@ pub struct Policy {
 /// after everything it allows), and `--allow-read` of a path inside one is
 /// refused.
 pub fn never_readable(home: &Path) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = [
-        ".ssh",
-        ".gnupg",
-        "Library/Keychains",
-        "Library/Messages",
-        "Library/Mail",
-        "Library/Calendars",
-        "Library/Application Support/AddressBook",
-        "Library/Application Support/com.apple.TCC",
-        "Library/Application Support/Google/Chrome",
-        "Library/Application Support/Chromium",
-        "Library/Application Support/Firefox",
-        "Library/Application Support/BraveSoftware",
-        "Library/Application Support/Microsoft Edge",
-        "Library/Application Support/Arc",
-        "Library/Safari",
-        "Library/Cookies",
-        ".mozilla",
-        ".config/google-chrome",
-        ".config/chromium",
-        ".config/BraveSoftware",
-        ".config/microsoft-edge",
-        ".latch",
-        ".aws",
-        ".config/gcloud",
-        ".azure",
-        ".kube",
-        ".docker/config.json",
-        ".netrc",
-        ".npmrc",
-        ".git-credentials",
-        ".config/gh",
-    ]
-    .into_iter()
-    .map(|path| home.join(path))
-    .collect();
-    paths.push(PathBuf::from("/Library/Application Support/com.apple.TCC"));
+    #[allow(unused_mut)]
+    let mut paths = vec![home.join(".latch")];
+    #[cfg(target_os = "macos")]
+    paths.push(home.join("Library"));
     paths
 }
 

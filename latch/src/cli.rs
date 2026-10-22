@@ -679,6 +679,12 @@ pub struct WorkerArgs {
     /// The host's state directory, which the worker may never touch
     #[arg(long)]
     pub denied: PathBuf,
+    /// The home folder readable by an exec worker
+    #[arg(long)]
+    pub home: Option<PathBuf>,
+    /// Permit outbound IP networking
+    #[arg(long)]
+    pub network: bool,
     /// An exec worker's own temp folder (its `TMPDIR`), which it may read and write
     #[arg(long)]
     pub tmpdir: Option<PathBuf>,
@@ -949,6 +955,14 @@ pub struct ExecArgs {
     /// Directory to run in, inside one of the host's areas [default: the first area]
     #[arg(long, value_name = "DIR")]
     pub workdir: Option<String>,
+
+    /// File or folder the command may write (repeatable); otherwise only temp and caches are writable
+    #[arg(long = "write", value_name = "PATH")]
+    pub writes: Vec<String>,
+
+    /// Allow outbound IP networking; host Unix sockets stay blocked
+    #[arg(long)]
+    pub network: bool,
 
     /// Seconds before the program and everything it started are killed (1 to 600)
     #[arg(long, default_value_t = 60, value_name = "SECS",
