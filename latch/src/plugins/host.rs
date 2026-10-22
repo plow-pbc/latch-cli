@@ -67,7 +67,7 @@ pub(super) async fn enable(
     workers: &WorkerSetup,
     plow: &Plow,
     connector: Connector,
-    no_host: bool,
+    #[cfg_attr(not(target_os = "macos"), expect(unused_variables))] no_host: bool,
 ) -> Result<Value, Failure> {
     let revision = plugins.revision(connector);
     let setup = match connector {
