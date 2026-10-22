@@ -190,7 +190,6 @@
       x, y, width: rect.width, height: rect.height,
       covered: !reaches,
       disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
-      secret: secret(el),
       kind: el.localName === 'select' ? 'select'
         : (el.localName === 'input' && el.type === 'file') ? 'file'
         : (role(el) === 'textbox' || role(el) === 'searchbox' || role(el) === 'spinbutton') ? 'text' : 'other',

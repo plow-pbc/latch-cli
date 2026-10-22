@@ -5,7 +5,7 @@ licensed), the release pinned in `src/google/pin.json`. latch downloads it,
 it does not ship it: `install.sh` fetches the release for the machine's OS and
 architecture, checks the binary's sha256 against the pin, and puts it in the
 state directory's plugins folder, `<state-dir>/plugins/gog/<version>/gog`
-(`~/.latch/plugins/…` by default; `sh install.sh --state-dir DIR latch` for
+(`~/.latch/plugins/…` by default; `sh install-binary.sh --state-dir DIR latch` for
 another state directory). The host looks for it there and nowhere else. Run
 `install.sh` again after a latch upgrade that changes the pin; the new gog
 goes into its own version folder beside the old one.

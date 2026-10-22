@@ -15,7 +15,7 @@ docker run --rm --name latch-host \
   --security-opt=systempaths=unconfined \
   --security-opt="seccomp=$PWD/latch/docker/seccomp.json" \
   -v "$PWD/host-state:/state" -v "$PWD/shared:/shared" \
-  latch-image latch --state-dir /state serve --no-dashboard /shared
+  latch-image latch --state-dir /state serve --foreground /shared
 ```
 
 The folders after `serve` are the ones its file workers share. Exec reads the
@@ -71,7 +71,7 @@ services:
     volumes:
       - ./host-state:/state
       - ./shared:/shared
-    command: [latch, --state-dir, /state, serve, --no-dashboard, /shared]
+    command: [latch, --state-dir, /state, serve, --foreground, /shared]
 ```
 
 ## AppArmor hosts: unverified

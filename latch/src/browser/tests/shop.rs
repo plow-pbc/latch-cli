@@ -18,8 +18,6 @@
 //! next to it, and the fixtures behave as their cases need.
 
 use std::collections::{BTreeMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -27,8 +25,12 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{HEADLESS, latch, test_state};
+
+#[path = "../../../tests/support/shop_server.rs"]
+mod shop_server;
 use crate::browser::plan::{self, Plan};
 use crate::browser::session::Session;
+pub(super) use shop_server::serve_shop;
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -140,48 +142,6 @@ pub(super) fn plan_of(case: &Case, site: &str) -> Result<Plan, String> {
     let mut plan = plan;
     plan.resolve_facts();
     Ok(plan)
-}
-
-/// Serves the shop on 127.0.0.1 for as long as the test runs; returns its
-/// origin.
-pub(super) fn serve_shop() -> String {
-    let root = folder();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    std::thread::spawn(move || {
-        for socket in listener.incoming() {
-            let Ok(mut socket) = socket else { continue };
-            let mut line = String::new();
-            BufReader::new(&socket).read_line(&mut line).unwrap_or(0);
-            let path = line.split(' ').nth(1).unwrap_or("/");
-            let path = path
-                .split('?')
-                .next()
-                .unwrap_or("/")
-                .trim_start_matches('/');
-            let file = root.join(path);
-            let found = (!path.split('/').any(|part| part == ".."))
-                .then(|| std::fs::read(&file).ok())
-                .flatten();
-            let kind = match file.extension().and_then(|e| e.to_str()) {
-                Some("js") => "text/javascript",
-                Some("css") => "text/css",
-                Some("json") => "application/json",
-                _ => "text/html; charset=utf-8",
-            };
-            let (status, body) = match &found {
-                Some(body) => ("200 OK", body.as_slice()),
-                None => ("404 Not Found", &b""[..]),
-            };
-            let head = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = socket.write_all(head.as_bytes());
-            let _ = socket.write_all(body);
-        }
-    });
-    format!("http://127.0.0.1:{port}")
 }
 
 /// The made-up vault items a case may list.

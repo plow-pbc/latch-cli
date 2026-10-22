@@ -185,6 +185,48 @@ impl WorkerSetup {
 }
 
 impl WorkerSetup {
+    /// Starts the Messages reader `program` with `args`, confined to read
+    /// only `reads` (the Messages and address book folders), lifted out of
+    /// the folders no worker may read; with no network and nowhere to write.
+    pub fn messages(
+        &self,
+        program: &Path,
+        reads: &[PathBuf],
+        args: &[String],
+    ) -> Result<Child, WorkerError> {
+        // Compared where they really are: the hidden list holds a link's
+        // target as well as the link.
+        let real = |path: &PathBuf| path.canonicalize().unwrap_or_else(|_| path.clone());
+        let lifted: Vec<PathBuf> = reads.iter().map(real).collect();
+        let restricted = WorkerSetup {
+            areas: vec![],
+            reads: reads.to_vec(),
+            hidden: self
+                .hidden
+                .iter()
+                .filter(|hidden| !lifted.iter().any(|read| read.starts_with(real(hidden))))
+                .cloned()
+                .collect(),
+            home: self.home.clone(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
+        };
+        let mut command = restricted.command(Path::new("/"))?;
+        command
+            .arg("messages")
+            .arg(program)
+            .arg("--")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true);
+        command
+            .spawn()
+            .map_err(|err| error("worker_failed", &err.to_string()))
+    }
+
     /// Runs a throwaway worker that only confines itself, with the policy a
     /// file worker gets (areas, the state directory denied, no network), and
     /// exits. `Ok` if the sandbox could be installed.
@@ -377,11 +419,13 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         state_dir: args.denied,
         exec: matches!(args.action, WorkerAction::Exec { .. }),
         home: args.home,
-        network: args.network,
+        network: args.network || matches!(args.action, WorkerAction::Google { .. }),
         tmpdir: args.tmpdir,
         kill_after: args.kill_after,
         program: match &args.action {
-            WorkerAction::Google { program } => Some(program.clone()),
+            WorkerAction::Google { program } | WorkerAction::Messages { program, .. } => {
+                Some(program.clone())
+            }
             _ => None,
         },
         break_for_test: args.break_sandbox_for_test,
@@ -407,6 +451,11 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         }
         // Confined, which is all a probe has to show.
         WorkerAction::Probe => return ExitCode::SUCCESS,
+        WorkerAction::Messages { program, args } => {
+            // The reader replaces this process and keeps its sandbox.
+            let err = std::process::Command::new(program).args(args).exec();
+            return fail(io_code(&err), &format!("{}: {err}", program.display()));
+        }
         WorkerAction::Read { path } => read(path),
         WorkerAction::Write { size, name, path } => write(path, name.as_deref(), *size),
         WorkerAction::Exec { workdir, argv } => {

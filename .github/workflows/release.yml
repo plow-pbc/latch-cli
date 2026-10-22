@@ -1,19 +1,17 @@
 name: release
 # A release is a manual run from main: it mints v<version>-<run number>, e.g.
-# v0.1.0-1327, titled `latch 0.1.0 (1327)`, signs, and leaves a draft release
-# for a person to publish. The run number is the build number latch
-# --version shows.
-# Pull requests build and verify unsigned
-# archives and release nothing.
+# v0.1.0-1327, titled `latch 0.1.0 (1327)`, builds the archives (the package
+# workflow), signs and notarizes the macOS ones, checks them all and leaves a
+# draft release for a person to publish. The run number is the build number
+# latch --version shows.
+run-name: Release (build ${{ github.run_number }})
 on:
-  pull_request:
-    paths: ['latch/**', 'scripts/**', 'install-release.sh', '.github/workflows/release.yml']
   workflow_dispatch:
 permissions:
   contents: read
 # Releases run one at a time, so two can never mint the same tag.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('release-pr-{0}', github.event.number) || 'release' }}
+  group: release
   cancel-in-progress: false
 jobs:
   version:
@@ -23,7 +21,6 @@ jobs:
       title: ${{ steps.mint.outputs.title }}
     steps:
       - name: Require main for release dispatch
-        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           REF: ${{ github.ref }}
@@ -37,86 +34,25 @@ jobs:
         shell: bash
         run: |
           package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
-          case '${{ github.event_name }}' in
-            pull_request) tag="v$package-pr.${{ github.event.number }}" ;;
-            workflow_dispatch)
-              tag="v$package-${{ github.run_number }}"
-              if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-                echo "tag $tag already exists" >&2
-                exit 1
-              fi
-              ;;
-          esac
+          tag="v$package-${{ github.run_number }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "tag $tag already exists" >&2
+            exit 1
+          fi
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
-          [[ "${tag#v}" == "$package"-* ]]
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "title=latch $package (${{ github.run_number }})" >> "$GITHUB_OUTPUT"
           echo "Version: $tag"
   build:
     needs: version
-    strategy:
-      fail-fast: false
-      matrix: &release-matrix
-        include:
-          - { runner: macos-15, target: aarch64-apple-darwin, arch: arm64 }
-          - { runner: macos-15-intel, target: x86_64-apple-darwin, arch: x86_64 }
-          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, arch: amd64 }
-          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, arch: arm64 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    env:
-      VERSION: ${{ needs.version.outputs.tag }}
-      LATCH_BUILD_CHANNEL: standalone tag ${{ needs.version.outputs.tag }}
-      LATCH_BUILD_NUMBER: ${{ github.run_number }}
-      LATCH_BUILD_STATE_DIR: ''
-      LATCH_BUILD_API_URL: ''
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          test "$(uname -m)" = '${{ matrix.arch }}'
-          unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
-          export LATCH_BUILD_COMMIT="$GITHUB_SHA"
-          cd latch
-          rustup toolchain install
-          cargo build --release --locked --target '${{ matrix.target }}'
-          codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
-          'target/${{ matrix.target }}/release/latch' --version
-      - name: Build Linux
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
-          cd latch
-          ./build-musl.sh '${{ matrix.arch }}'
-          file 'target/musl-${{ matrix.arch }}/release/latch' | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
-          'target/musl-${{ matrix.arch }}/release/latch' --version
-      - name: Package
-        shell: bash
-        run: |
-          if [[ '${{ runner.os }}' == macOS ]]; then
-            binary='latch/target/${{ matrix.target }}/release/latch'
-          else
-            binary='latch/target/musl-${{ matrix.arch }}/release/latch'
-          fi
-          sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
-          tar -xzf "dist/latch-$VERSION-${{ matrix.target }}.tar.gz" -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/latch" --version
-          if [[ '${{ runner.os }}' == macOS ]]; then
-            codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/Plow Latch.app"
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: latch-${{ matrix.target }}
-          path: dist/*.tar.gz
-          if-no-files-found: error
-  # Releases only: pull requests never reach the release environment or its
+    uses: ./.github/workflows/package.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+      stage: build
+  # Only here: pull requests never reach the release environment or its
   # credentials, and keep their ad-hoc signed builds.
   sign-macos:
     needs: build
-    if: github.event_name != 'pull_request'
     environment: release
     strategy:
       fail-fast: false
@@ -225,60 +161,14 @@ jobs:
         if: always()
         shell: bash
         run: if [[ -n "${KEYCHAIN_PATH:-}" ]]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi
-  assemble:
-    needs: [build, sign-macos]
-    # Pull requests skip signing and assemble their ad-hoc builds.
-    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.sign-macos.result == 'success' || (github.event_name == 'pull_request' && needs.sign-macos.result == 'skipped')) }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - run: python3 scripts/test-install-release.py
-      - run: python3 scripts/test-install.py
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: latch-*
-          merge-multiple: true
-          path: dist
-      - run: |
-          cp install-release.sh dist/
-          cd dist
-          sha256sum *.tar.gz install-release.sh > SHA256SUMS
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-downloads
-          path: dist/*
-  verify-artifacts:
-    needs: assemble
-    # A skipped sign-macos would otherwise skip this too on pull requests.
-    if: ${{ !cancelled() && needs.assemble.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix: *release-matrix
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-downloads
-          path: downloads
-      - name: Run downloaded archive
-        shell: bash
-        run: |
-          cd downloads
-          if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
-          archive=$(find . -name 'latch-*-${{ matrix.target }}.tar.gz')
-          tar -xzf "$archive"
-          folder=$(basename "$archive" .tar.gz)
-          uname -sm
-          test -x "$folder/install.sh"
-          "$folder/install.sh" --help
-          "$folder/latch" --version
-          if [[ '${{ runner.os }}' == macOS ]]; then
-            codesign --verify --deep --strict --verbose=2 "$folder/Plow Latch.app"
-          fi
+  check:
+    needs: [version, sign-macos]
+    uses: ./.github/workflows/package.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+      stage: check
   publish:
-    needs: [version, verify-artifacts]
-    if: github.event_name != 'pull_request'
+    needs: [version, check]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -297,9 +187,7 @@ jobs:
       # publishes the draft after checking the signed builds.
       - name: Create draft release
         run: |
-          if [[ '${{ github.event_name }}' == workflow_dispatch ]]; then
-            git tag "$VERSION" "$GITHUB_SHA"
-            git push origin "refs/tags/$VERSION"
-          fi
+          git tag "$VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/$VERSION"
           gh release create "$VERSION" dist/* --draft --verify-tag --title "$TITLE" \
             --notes "Built from \`$REF_NAME\` @ \`$GITHUB_SHA\`."

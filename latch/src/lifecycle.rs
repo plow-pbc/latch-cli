@@ -60,6 +60,11 @@ pub struct Host {
 /// This process's run, set when it starts serving.
 static RUN: OnceLock<String> = OnceLock::new();
 
+/// This process's run, once it has recorded its first step.
+pub fn this_run() -> Option<&'static str> {
+    RUN.get().map(String::as_str)
+}
+
 /// Records `phase` for this serve; `error` with `Phase::Error`. Written
 /// atomically (renamed into place) so a reader sees one step or the next.
 pub fn record(state_dir: &Path, phase: Phase, error: Option<&Failure>) -> Result<(), Failure> {

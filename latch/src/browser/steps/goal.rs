@@ -305,16 +305,14 @@ impl Run<'_> {
                             .any(|f| f["id"] == "password")
                 });
             if suggest::code_stage(&offers) || (suggest::passkey_stage(&offers) && !password_path) {
-                let what = if suggest::code_stage(&offers) {
-                    "a one-time code"
+                let recovery = if suggest::code_stage(&offers) {
+                    "a one-time code; nothing was sent. If it is the saved login's authenticator code, send `fill --item vN --field otp=eN --press eN`. If the site texted it to the owner, find it with `latch messages search --since 10m code` and enter it as a literal step, `do 'type eN \"CODE\"'`, then submit as the page asks. If neither works, hand off to the owner (`handoff --reason 2fa`)"
                 } else {
-                    "a passkey"
+                    "a passkey; nothing was sent. Hand off to the owner (`handoff --reason passkey`)"
                 };
                 let mut failure = stopped(
                     "needs_fields",
-                    format!(
-                        "step {n} reached a page asking for {what}; nothing was sent. If it is the saved login's authenticator code, send `fill --item vN --field otp=eN --press eN`; otherwise hand off to the owner"
-                    ),
+                    format!("step {n} reached a page asking for {recovery}"),
                 );
                 failure.details = fields_stop(&seen);
                 return Err(failure);

@@ -666,7 +666,7 @@ mod tests {
                 state_dir: root.join("state"),
                 exec: mode == "exec",
                 home: None,
-                network: mode == "exec",
+                network: mode == "exec" || mode == "google",
                 tmpdir: (mode == "exec").then(|| root.join("outside")),
                 kill_after: None,
                 program: (mode == "google")

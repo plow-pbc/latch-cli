@@ -30,6 +30,8 @@ mod lifecycle;
 mod log;
 mod login;
 mod logo;
+mod managed;
+mod messages;
 mod model;
 mod paint;
 mod plow;
@@ -44,6 +46,7 @@ mod status;
 mod term;
 mod trace;
 mod transfer;
+mod transport;
 mod vault;
 mod watch;
 mod wire;
@@ -229,6 +232,16 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Shares(args) => to_json(shares::run(&state, args.action)?),
+        // Its lines, printed as they come, are its whole output.
+        Command::Audit(cli::AuditArgs {
+            action: cli::AuditAction::Show { follow: true },
+        }) => {
+            audit::follow(&state)?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
         Command::Audit(args) => to_json(audit::run(&state, args.action)?),
         // Its lines, printed as they come, are its whole output.
         Command::Events(args) => {
@@ -237,6 +250,32 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 text: String::new(),
                 exit: ExitCode::SUCCESS,
             })
+        }
+        Command::Messages(command) => {
+            let request = messages::messages_request(&command);
+            to_json(
+                call_host(
+                    &state,
+                    command.host(),
+                    "messages",
+                    request,
+                    dial::ANSWER_WITHIN,
+                )
+                .await?,
+            )
+        }
+        Command::Contacts(command) => {
+            let request = messages::contacts_request(&command);
+            to_json(
+                call_host(
+                    &state,
+                    command.host(),
+                    "contacts",
+                    request,
+                    dial::ANSWER_WITHIN,
+                )
+                .await?,
+            )
         }
         Command::Exec(args) => {
             let mut request = json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout,
@@ -254,39 +293,40 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             }
             Ok(printed)
         }
-        Command::Serve(args) => {
-            // The dashboard is for a person at a terminal who has not asked
-            // for plain output (`--no-dashboard`, `NO_COLOR`).
-            let dashboard = !args.no_dashboard && term::stdout_is_terminal() && !term::no_color();
-            paint::set_color(dashboard);
+        Command::Serve(args) if args.foreground => {
             let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
-            let served = serve::run(
+            serve::run(
                 &state,
                 &args.folders,
                 &args.allow_read,
-                dashboard,
                 args.headless_browsers,
                 deny_exec,
+                args.attached,
             )
-            .await;
-            // Once the dashboard has had the terminal, it may take no
-            // output: how the host ended goes to serve.log, and the exit
-            // code says it, so stopping never waits on the terminal.
-            if log::in_file() {
-                let exit = match served {
-                    Ok(()) => ExitCode::SUCCESS,
-                    Err(failure) => {
-                        log::log(&format!("serve ended: {}", failure.to_json()));
-                        failure.exit.into()
-                    }
-                };
-                return Ok(Printed {
-                    text: String::new(),
-                    exit,
-                });
-            }
+            .await?;
             // A clean stop prints nothing: the host's output was its log.
-            served?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        Command::Serve(args) if args.detach => to_json(managed::start(&state, &args).await?),
+        Command::Serve(args) => {
+            paint::set_color(!term::no_color());
+            to_json(managed::attach(&state, &args).await?)
+        }
+        Command::Stop => to_json(managed::stop(&state).await?),
+        Command::Dashboard => {
+            paint::set_color(!term::no_color());
+            managed::dashboard(&state).await?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        // Its lines, printed as they come, are its whole output.
+        Command::Logs(args) => {
+            events::logs(&state, args.follow)?;
             Ok(Printed {
                 text: String::new(),
                 exit: ExitCode::SUCCESS,

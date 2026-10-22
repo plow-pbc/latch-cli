@@ -3,7 +3,9 @@
 //! state directory's plugins folder, `<state-dir>/plugins/cft/<version>/`,
 //! beside older versions, with that pin copied in as `manifest.json`; and
 //! Camoufox, pinned in `camoufox.json` with the Node and Playwright runtime
-//! its helper runs on, which install.sh adds only with `--with-camoufox`.
+//! its helper runs on, which install.sh adds only with `--browser camoufox`.
+//! `latch browser setup` installs either later; an agent's call never
+//! downloads one.
 //!
 //! The pin is compiled into latch and is what counts: before every launch
 //! latch hashes the installed build's whole folder (`tree_hash`) and refuses
@@ -41,7 +43,7 @@ pub struct Pin {
 
 #[derive(Deserialize)]
 pub struct Build {
-    /// Checked by install.sh, which downloads the zip.
+    /// Checked by browser-engines.sh, which downloads the zip.
     #[allow(dead_code)]
     pub url: String,
     #[allow(dead_code)]
@@ -140,15 +142,7 @@ impl CamoufoxPin {
             executable: root.join("camoufox/Camoufox.app/Contents/MacOS/camoufox"),
         };
         if !root.join("manifest.json").is_file() {
-            return Err(Failure::failed(
-                "engine_not_installed",
-                format!(
-                    "{} {} is not installed in {}; run install.sh --with-camoufox",
-                    self.engine,
-                    self.version,
-                    root.display()
-                ),
-            ));
+            return Err(not_installed(&self.engine, &self.version, &root));
         }
         for (part, pinned) in [
             ("camoufox", &build.camoufox.tree_sha256),
@@ -244,15 +238,7 @@ impl Pin {
         let root = self.folder(state_dir).join(&build.folder);
         let executable = root.join(&build.executable);
         if !executable.is_file() {
-            return Err(Failure::failed(
-                "engine_not_installed",
-                format!(
-                    "{} {} is not installed at {}; run install.sh",
-                    self.engine,
-                    self.version,
-                    executable.display()
-                ),
-            ));
+            return Err(not_installed(&self.engine, &self.version, &executable));
         }
         let unverified = |detail: String| {
             Failure::new(
@@ -270,6 +256,23 @@ impl Pin {
         }
         Ok(Engine { executable, recipe })
     }
+}
+
+/// No engine where `at` should be: the owner installs it on the host with
+/// `latch browser setup`, which the error names, in its details too.
+fn not_installed(engine: &str, version: &str, at: &Path) -> Failure {
+    let named = if engine == "cft" { "chrome" } else { engine };
+    let setup = format!("latch browser setup --engine {named}");
+    let mut failure = Failure::failed(
+        "engine_not_installed",
+        format!(
+            "{engine} {version} is not installed at {}; the host's owner installs it with \
+             `{setup}` on the host",
+            at.display()
+        ),
+    );
+    failure.details = serde_json::json!({"engine": named, "setup": setup});
+    failure
 }
 
 fn forbidden(arg: &str) -> bool {
@@ -406,6 +409,10 @@ mod tests {
         }
         let missing = CAMOUFOX.verified(state.path()).err().unwrap();
         assert_eq!(missing.code, "engine_not_installed");
+        assert_eq!(
+            missing.details["setup"],
+            "latch browser setup --engine camoufox"
+        );
         let root = CAMOUFOX.folder(state.path());
         for part in ["camoufox", "node", "runtime"] {
             fs::create_dir_all(root.join(part)).unwrap();
@@ -433,6 +440,10 @@ mod tests {
         let root = CFT.folder(state.path()).join(&build.folder);
         let missing = CFT.verified(state.path()).err().unwrap();
         assert_eq!(missing.code, "engine_not_installed");
+        assert_eq!(
+            missing.details["setup"],
+            "latch browser setup --engine chrome"
+        );
         let exe = root.join(&build.executable);
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
         fs::write(&exe, b"not chrome").unwrap();
