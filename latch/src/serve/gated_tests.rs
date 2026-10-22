@@ -723,6 +723,63 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
 }
 
 #[tokio::test]
+async fn secret_names_that_control_execution_are_allowed_and_explained_to_the_judge() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let marker = "hidden-execution-value-742e";
+    let names = [
+        "GIT_SSH_COMMAND",
+        "NODE_OPTIONS",
+        "BASH_ENV",
+        "PYTHONSTARTUP",
+        "GIT_CONFIG_PARAMETERS",
+    ];
+    let secrets: serde_json::Map<String, Value> = names
+        .into_iter()
+        .map(|name| (name.to_string(), json!(marker)))
+        .collect();
+    // true does not interpret these values. This checks judgment, not a payload.
+    let (answer, _) = t
+        .call(
+            &agent,
+            "exec",
+            json!({
+                "argv": ["true"], "secret_env": secrets
+            }),
+        )
+        .await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let state = &asked[0];
+    assert!(!serde_json::to_string(state).unwrap().contains(marker));
+    for name in names {
+        assert!(
+            state["proposed_action"]["secret_env"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|secret| secret["name"] == name && secret["secret"] == true)
+        );
+    }
+    let rules = state["rules_of_judgment"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for name in [
+        "*_COMMAND",
+        "NODE_OPTIONS",
+        "BASH_ENV",
+        "PYTHONSTARTUP",
+        "GIT_CONFIG_*",
+    ] {
+        assert!(rules.contains(name), "judge was not warned about {name}");
+    }
+}
+
+#[tokio::test]
 async fn invalid_or_reserved_secret_names_never_reach_the_judge() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;

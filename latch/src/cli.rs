@@ -954,6 +954,10 @@ Secrets:
   Use --secret-env NAME=VALUE for credentials, rather than program arguments.
   Values reach only the final program's environment after confinement. The
   remote judge and audit see names and lengths; program output is returned as-is.
+  Quoting protects shell syntax, but a program can interpret environment
+  values as code. *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and
+  GIT_CONFIG_* can run hidden instructions; the judge sees their names and
+  weighs that behavior against the owner's request. These are not extra denied names.
   Native environment support is preferable. For an embedded argument, quote
   the variable in a shell script; latch itself never expands argv:
     latch exec --host pi --secret-env TOKEN=VALUE --network -- sh -c 'curl -H \"Authorization: Bearer $TOKEN\" https://api.example.com'

@@ -48,7 +48,13 @@ latch exec --host H --secret-env GITHUB_TOKEN="$GITHUB_TOKEN" --network -- gh pr
 
 For a value inside an argument, use a shell with a quoted variable, e.g.
 `sh -c 'curl -H "Authorization: Bearer $TOKEN" https://api.example.com'`.
-Latch does not expand `${NAME}` in argv. Do not evaluate secret values as code.
+Latch does not expand `${NAME}` in argv. Quoting keeps a value from being
+re-parsed as shell syntax; the receiving program can still interpret it as code.
+Variables such as `GIT_SSH_COMMAND`, `NODE_OPTIONS`, `BASH_ENV`,
+`PYTHONSTARTUP` and `GIT_CONFIG_*` can run hidden instructions or load code.
+The judge sees each name and is told to weigh that behavior against the owner's
+request; these names are not an additional deny list. Use secret env for
+credentials, and do not evaluate their values as code.
 Program stdout/stderr are returned as-is and can disclose a value. The CLI
 option itself is visible on the calling machine and may enter shell history;
 shell-expanded arguments are visible in the trusted host's process list.
