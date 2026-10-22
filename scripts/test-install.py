@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +21,9 @@ class BinaryInstall(unittest.TestCase):
             root = Path(directory)
             setup = root / "setup"
             (setup / "src/google").mkdir(parents=True)
-            shutil.copyfile(ROOT / "latch/install.sh", setup / "install.sh")
+            shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+            # On this fixture OS Chrome for Testing has no build: says so.
+            shutil.copyfile(ROOT / "latch/browser-engines.sh", setup / "browser-engines.sh")
             binary = setup / "latch"
             binary.write_text("#!/bin/sh\necho installed-fixture\n")
             binary.chmod(0o755)
@@ -50,7 +53,7 @@ class BinaryInstall(unittest.TestCase):
                 arguments = [*options[:2], str(binary), *options[2:]]
             else:
                 arguments = [*options, str(binary)]
-            args = ["sh", str(setup / "install.sh"), *arguments]
+            args = ["sh", str(setup / "install-binary.sh"), *arguments]
             env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
             result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -88,8 +91,9 @@ class BinaryInstall(unittest.TestCase):
             setup = root / "setup"
             (setup / "src/google").mkdir(parents=True)
             (setup / "src/browser").mkdir()
-            shutil.copyfile(ROOT / "latch/install.sh", setup / "install.sh")
-            # A release's layout: the app, and `latch` beside install.sh leading into it.
+            shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+            shutil.copyfile(ROOT / "latch/browser-engines.sh", setup / "browser-engines.sh")
+            # A release's layout: the app, and `latch` beside install-binary.sh leading into it.
             app = setup / "Plow Latch.app"
             (app / "Contents/MacOS").mkdir(parents=True)
             (app / "Contents/Info.plist").write_text("<plist>co.plow.latch.cli</plist>\n")
@@ -114,7 +118,7 @@ class BinaryInstall(unittest.TestCase):
             uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo arm64;; esac\n')
             uname.chmod(0o755)
             env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
-            args = ["sh", str(setup / "install.sh"), "--state-dir", str(state), str(setup / "latch")]
+            args = ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state), str(setup / "latch")]
             installed = home / "Applications/Plow Latch.app"
             link = home / ".local/bin/latch"
 
@@ -158,14 +162,127 @@ class BinaryInstall(unittest.TestCase):
             self.assertEqual(leftovers, ["Plow Latch.app"])
 
     def test_help_needs_no_binary_or_setup(self):
-        result = subprocess.run([str(ROOT / "latch/install.sh"), "--help"],
+        result = subprocess.run([str(ROOT / "latch/install-binary.sh"), "--help"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        options = ["--bin-dir", "--state-dir"]
-        if (ROOT / "latch/src/browser/camoufox.json").exists():
-            options.append("--with-camoufox")
-        for option in options:
+        for option in ["--bin-dir", "--state-dir", "--browser", "--no-browser"]:
             self.assertIn(option, result.stdout)
+
+
+def tool(folder, name, body):
+    path = folder / name
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+
+
+class BrowserEngines(unittest.TestCase):
+    """install-binary.sh's engine choice, and browser-engines.sh installing Chrome for
+    Testing from a local, hash-checked fixture."""
+
+    def setUp(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.directory = tempfile.TemporaryDirectory(dir=parent)
+        self.root = Path(self.directory.name)
+        self.tools = self.root / "tools"
+        self.tools.mkdir()
+        self.env = {**os.environ, "HOME": str(self.root / "home"),
+                    "PATH": f"{self.tools}:{os.environ['PATH']}"}
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def engines_chosen(self, *options):
+        """The engines install-binary.sh hands browser-engines.sh, or None if it runs none."""
+        setup = self.root / "setup"
+        shutil.rmtree(setup, ignore_errors=True)
+        (setup / "src/google").mkdir(parents=True)
+        shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+        tool(setup, "latch", "echo installed-fixture\n")
+        state = self.root / "state"
+        gog = state / "plugins/gog/1.0/gog"
+        gog.parent.mkdir(parents=True, exist_ok=True)
+        gog.write_bytes(b"local-gog-fixture")
+        (setup / "src/google/pin.json").write_text(json.dumps({
+            "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest()}, indent=2))
+        chosen = self.root / "chosen"
+        chosen.unlink(missing_ok=True)
+        tool(setup, "browser-engines.sh", f'shift 2\necho "$@" > "{chosen}"\n')
+        tool(self.tools, "uname", 'case "$1" in -s) echo FixtureOS;; -m) echo x86_64;; esac\n')
+        result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                                 *options, str(setup / "latch")],
+                                cwd=self.root, env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return chosen.read_text().strip() if chosen.exists() else None
+
+    def test_chrome_by_default_none_with_no_browser_or_the_ones_named(self):
+        self.assertEqual(self.engines_chosen(), "chrome")
+        self.assertIsNone(self.engines_chosen("--no-browser"))
+        self.assertEqual(self.engines_chosen("--browser", "camoufox"), "camoufox")
+        self.assertEqual(self.engines_chosen("--browser", "chrome", "--browser", "camoufox"),
+                         "chrome camoufox")
+
+    def test_no_browser_and_browser_together_or_an_unknown_engine_are_refused(self):
+        for options, says in ((["--no-browser", "--browser", "chrome"], "both"),
+                              (["--browser", "firefox"], "usage")):
+            result = subprocess.run(["sh", str(ROOT / "latch/install-binary.sh"), *options],
+                                    env=self.env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, options)
+            self.assertIn(says, result.stderr, options)
+
+    def test_chrome_installs_the_pinned_build_once_and_checks_its_hash(self):
+        setup = self.root / "engines"
+        (setup / "src/browser").mkdir(parents=True)
+        shutil.copyfile(ROOT / "latch/browser-engines.sh", setup / "browser-engines.sh")
+        archive = self.root / "cft.zip"
+        with zipfile.ZipFile(archive, "w") as zip_file:
+            zip_file.writestr("chrome-linux-arm64/chrome", "#!/bin/sh\n")
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        # The pin's fixed shape, as browser-engines.sh reads it with sed.
+        (setup / "src/browser/cft.json").write_text(f"""{{
+  "version": "1.0.0",
+  "builds": {{
+    "linux_arm64": {{
+      "url": "https://example.invalid/cft.zip",
+      "zip_sha256": "{digest}",
+      "folder": "chrome-linux-arm64"
+    }}
+  }}
+}}
+""")
+        tool(self.tools, "uname", 'case "$1" in -s) echo Linux;; -m) echo aarch64;; esac\n')
+        fetched = self.root / "fetched"
+        # Serves the fixture for the pinned URL; anything else fails.
+        tool(self.tools, "curl", f"""out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2;; --proto) shift 2;; -*) shift;; *) url=$1; shift;; esac; done
+[ "$url" = https://example.invalid/cft.zip ] || exit 22
+echo "$url" >> "{fetched}"
+cp "{archive}" "$out"
+""")
+        state = self.root / "state"
+
+        def run():
+            return subprocess.run(
+                ["sh", str(setup / "browser-engines.sh"), "--state-dir", str(state), "chrome"],
+                env=self.env, capture_output=True, text=True)
+        first = run()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        installed = state / "plugins/cft/1.0.0"
+        self.assertTrue((installed / "chrome-linux-arm64/chrome").is_file())
+        self.assertEqual((installed / "manifest.json").read_bytes(),
+                         (setup / "src/browser/cft.json").read_bytes())
+        again = run()
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("already installed", again.stdout)
+        self.assertEqual(fetched.read_text().count("\n"), 1, "downloaded once")
+
+        # A download whose hash isn't the pin's installs nothing.
+        shutil.rmtree(state)
+        archive.write_bytes(b"not the pinned zip")
+        bad = run()
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("nothing installed", bad.stderr)
+        self.assertFalse((state / "plugins/cft/1.0.0/manifest.json").exists())
 
 
 if __name__ == "__main__":

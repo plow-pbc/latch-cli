@@ -1,9 +1,21 @@
 #!/bin/sh
-# Download a private GitHub release and run its pinned plugin installer.
+# Installs latch from a private GitHub release: the newest published one, or
+# the tag given first. Options go on to the release's install-binary.sh.
+#
+#   sh install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser]
 set -eu
-[ "$#" -ge 1 ] || { echo 'usage: install-release.sh TAG|latest [--bin-dir DIR] [--state-dir DIR]' >&2; exit 1; }
-version=$1
-shift
+version=latest
+case "${1:-}" in
+  -h | --help)
+    echo 'usage: install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser]'
+    exit 0
+    ;;
+  "" | -*) ;;
+  *)
+    version=$1
+    shift
+    ;;
+esac
 command -v gh >/dev/null || { echo 'install GitHub CLI and run gh auth login first' >&2; exit 1; }
 # `latest` is the newest published release; drafts are never picked.
 if [ "$version" = latest ]; then
@@ -38,6 +50,6 @@ if [ "$(uname -s)" = Darwin ]; then
   echo 'On macOS latch lives in ~/Applications/Plow Latch.app; ~/.local/bin/latch links to it.'
 fi
 echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
-sh "$setup/install.sh" "$@" "$setup/latch"
+sh "$setup/install-binary.sh" "$@" "$setup/latch"
 "$setup/latch" --version
 echo 'An already-running latch serve keeps its old binary; restart it intentionally to update.'

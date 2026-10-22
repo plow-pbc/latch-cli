@@ -383,6 +383,21 @@ pub enum BrowserCommand {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Owner only, on the host itself: download and verify a browser
+    /// engine into this machine's state directory (after `install.sh
+    /// --no-browser`, say). An agent's browser call never downloads one
+    Setup {
+        #[arg(long, value_enum, default_value_t = SetupEngine::Chrome)]
+        engine: SetupEngine,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum SetupEngine {
+    /// Chrome for Testing
+    Chrome,
+    /// Camoufox (macOS)
+    Camoufox,
 }
 
 #[derive(Subcommand, Debug)]

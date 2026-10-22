@@ -1012,6 +1012,21 @@ fn an_agent_gets_owner_only_for_rules_on_its_own_state() {
 }
 
 #[test]
+fn an_agent_gets_owner_only_for_browser_setup_and_nothing_is_downloaded() {
+    let (dir, token, server) = logged_in_agent(vec![]);
+    server.join().unwrap();
+    let state = dir.path().join("state");
+    for engine in ["chrome", "camoufox"] {
+        let args = ["browser", "setup", "--engine", engine];
+        let output = latch(&state, &args, &[("PLOW_TOKEN_FILE", token.as_path())]);
+        assert_eq!(output.status.code(), Some(4), "{engine}: {output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "owner_only");
+    }
+    assert!(!state.join("plugins").exists());
+}
+
+#[test]
 fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
     let (_dir, state, _key) = owner_host();
     fs::write(state.join("audit.ndjson"), "not a record\n").unwrap();

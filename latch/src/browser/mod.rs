@@ -2,6 +2,7 @@
 //!
 //! - `engine.rs`: the pinned engine plugins (Chrome for Testing, Camoufox)
 //!   and their checks.
+//! - `setup.rs`: `latch browser setup`, which installs an engine later.
 //! - `profile.rs`: latch-owned browser profiles in the state directory.
 //! - `client.rs`: the agent's side; `latch browser …` commands.
 //! - `host.rs`: the host's `browser` operation; sessions and their owners.
@@ -45,6 +46,7 @@ pub mod plan;
 pub mod profile;
 pub mod runtime;
 pub mod session;
+mod setup;
 mod shown;
 mod steps;
 pub mod suggest;
