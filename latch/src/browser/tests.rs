@@ -1,12 +1,11 @@
 //! Real sessions on the host: the pinned Chrome for Testing and Camoufox, from the
 //! host's browser worker, run from a logged-in desktop session; headless
 //! unless built with `headed-tests` (see `HEADLESS`). It
-//! needs the engine installed where `just cft` (part of `just test`, and a
-//! step in CI) puts it, `.dev/cft-state`, or in the state directory
-//! `LATCH_CFT_STATE` names; without it the test fails, saying so. On Linux
-//! the engine runs inside the worker's bubblewrap, and the tests are
-//! built only with `linux-browser-tests`, on a host whose install.sh put
-//! the engine in place (`just conformance cft` or `just conformance camoufox`).
+//! needs the engine installed where `just test browser` puts it,
+//! `.dev/cft-state`, or in the state directory `LATCH_CFT_STATE` names;
+//! without it the test fails, saying so. On Linux the engine runs inside
+//! the worker's bubblewrap, and the tests are built only with
+//! `linux-browser-tests`, which `just test` on Linux builds with.
 //!
 //! `LATCH_BROWSER_EVIDENCE=DIR` also keeps the screenshot there.
 
@@ -28,21 +27,38 @@ use crate::failure::Failure;
 
 /// The engines the conformance checks run on, each its own test:
 /// `browser::tests::cft::NAME`, and `browser::tests::camoufox::NAME` on
-/// both platforms (and the same under `fills` and `steps`). `just conformance
-/// ENGINE` runs one engine's.
+/// both platforms (and the same under `fills` and `steps`).
+///
+/// The checks after `mac:` are tagged `mac` (`cft::mac::NAME`): what macOS
+/// can answer differently from Linux (its sandbox, files, processes,
+/// screen). On macOS, `just test` runs only tagged tests on an engine Linux
+/// also runs; Linux runs them all. A browser test built only on macOS goes
+/// in a `mod mac` too, or nothing runs it.
 macro_rules! conformance {
-    ($($check:ident),* $(,)?) => {
+    ($($check:ident),* $(,)? $(; mac: $($mac:ident),* $(,)?)?) => {
         mod cft {
             $(#[tokio::test]
             async fn $check() {
                 super::$check("cft").await
             })*
+            $(mod mac {
+                $(#[tokio::test]
+                async fn $mac() {
+                    super::super::$mac("cft").await
+                })*
+            })?
         }
         mod camoufox {
             $(#[tokio::test]
             async fn $check() {
                 super::$check("camoufox").await
             })*
+            $(mod mac {
+                $(#[tokio::test]
+                async fn $mac() {
+                    super::super::$mac("camoufox").await
+                })*
+            })?
         }
     };
 }
@@ -357,24 +373,26 @@ fn exec_probe_can_reach_its_loopback_fixture() {
 }
 
 conformance!(
-    the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing,
-    the_core_reads_frames_and_acts_by_ref_with_trusted_input,
     frames_that_come_and_go_while_a_page_loads_break_no_call,
     a_frames_target_under_a_parent_page_layer_is_refused,
-    eval_upload_and_download_move_values_and_files,
-    sessions_on_one_profile_share_logins_and_nothing_else,
     a_late_popup_is_followed_before_the_next_step,
     sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused,
     navigating_into_a_reserved_site_is_refused_before_it_is_sent,
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
     a_browser_that_leaves_calls_unanswered_is_closed,
-    a_busy_browser_dies_with_its_host,
     a_dialog_that_opens_between_calls_is_refused_at_once,
     typing_that_opens_a_dialog_returns_without_waiting_on_the_page,
     a_dialog_in_one_session_does_not_hold_another_sessions_download,
     a_download_heard_before_another_sessions_dialog_does_not_wait_on_it,
     back_into_a_reserved_site_is_refused_after_a_return_visit,
+    ;
+    mac:
+    the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing,
+    the_core_reads_frames_and_acts_by_ref_with_trusted_input,
+    eval_upload_and_download_move_values_and_files,
+    sessions_on_one_profile_share_logins_and_nothing_else,
+    a_busy_browser_dies_with_its_host,
     an_answer_shows_the_screen_and_observe_all_every_element,
 );
 
@@ -484,7 +502,7 @@ fn test_state_taking(
     };
     assert!(
         engine_folder.join("manifest.json").is_file(),
-        "{engine} {version} is not installed at {}: run `just cft` in latch/ \
+        "{engine} {version} is not installed at {}: run `just test browser` \
          (or install-binary.sh --state-dir into LATCH_CFT_STATE)",
         engine_folder.display()
     );
@@ -2518,40 +2536,6 @@ async fn back_into_a_reserved_site_is_refused_after_a_return_visit(engine: &str)
     session.close().await.unwrap();
 }
 
-/// Camoufox runs with the prefs that open every window a page opens
-/// (`window.open`, with features or without, or a `target=_blank` link) as a
-/// tab that loads in the background; Firefox keeps the ones that differ from
-/// its defaults in the profile's `prefs.js` as it quits. Whether a window
-/// then stays behind the owner's needs a screen to tell: Playwright keeps
-/// every page active, and Camoufox reports a made-up screen.
-#[tokio::test]
-async fn camoufox_runs_with_page_windows_as_background_tabs() {
-    let (_dir, state, _area) = test_state("camoufox", &["fox-tabs"]);
-    let session = Session::start_with(
-        &latch(),
-        &state,
-        "fox-tabs",
-        Duration::from_secs(120),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
-    session.close().await.unwrap();
-    let prefs = fs::read_to_string(profile::root(&state).join("fox-tabs/data/prefs.js")).unwrap();
-    if HEADLESS && cfg!(target_os = "macos") {
-        assert!(
-            prefs.contains(r#"user_pref("widget.macos.allow-native-select", false);"#),
-            "headless Firefox must disable native macOS select menus"
-        );
-    }
-    for pref in [
-        r#"user_pref("browser.link.open_newwindow.restriction", 0);"#,
-        r#"user_pref("browser.tabs.loadDivertedInBackground", true);"#,
-    ] {
-        assert!(prefs.contains(pref), "{pref} is not in force");
-    }
-}
-
 async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
     let (_dir, state, _area) = test_state(engine, &["b2b-turns"]);
     let frames = test_site();
@@ -2679,4 +2663,45 @@ async fn an_answer_shows_the_screen_and_observe_all_every_element(engine: &str) 
         .unwrap();
     assert_eq!(evaluated["value"], mine);
     h.call(CALLER, "close", &id, json!({})).await.unwrap();
+}
+
+/// Tagged `mac`: what macOS can answer differently from Linux (see
+/// `conformance!`).
+mod mac {
+    use super::*;
+
+    /// Camoufox runs with the prefs that open every window a page opens
+    /// (`window.open`, with features or without, or a `target=_blank` link) as a
+    /// tab that loads in the background; Firefox keeps the ones that differ from
+    /// its defaults in the profile's `prefs.js` as it quits. Whether a window
+    /// then stays behind the owner's needs a screen to tell: Playwright keeps
+    /// every page active, and Camoufox reports a made-up screen.
+    #[tokio::test]
+    async fn camoufox_runs_with_page_windows_as_background_tabs() {
+        let (_dir, state, _area) = test_state("camoufox", &["fox-tabs"]);
+        let session = Session::start_with(
+            &latch(),
+            &state,
+            "fox-tabs",
+            Duration::from_secs(120),
+            HEADLESS,
+        )
+        .await
+        .unwrap();
+        session.close().await.unwrap();
+        let prefs =
+            fs::read_to_string(profile::root(&state).join("fox-tabs/data/prefs.js")).unwrap();
+        if HEADLESS && cfg!(target_os = "macos") {
+            assert!(
+                prefs.contains(r#"user_pref("widget.macos.allow-native-select", false);"#),
+                "headless Firefox must disable native macOS select menus"
+            );
+        }
+        for pref in [
+            r#"user_pref("browser.link.open_newwindow.restriction", 0);"#,
+            r#"user_pref("browser.tabs.loadDivertedInBackground", true);"#,
+        ] {
+            assert!(prefs.contains(pref), "{pref} is not in force");
+        }
+    }
 }

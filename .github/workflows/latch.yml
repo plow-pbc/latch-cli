@@ -78,82 +78,28 @@ jobs:
       ref: ${{ inputs.source-ref }}
       shards: 1
 
+  # The Linux gate (`just test`) on arm64, where both engines are pinned, in
+  # four shards: shard 1 also lints and runs the Python checks.
   linux:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: latch
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source-ref || github.sha }}
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: latch -> target
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
-
-  # The real-engine browser tests, on Linux arm64 (where Chrome for Testing
-  # is pinned): built once into a nextest archive, which four jobs run a
-  # quarter each of, with every test the browser feature compiles in, and
-  # fake-gog's return scenario, as on the Mac. The linux job above runs the
-  # rest on x86_64.
-  browser-build:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: latch
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source-ref || github.sha }}
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: latch -> target
-          key: browser
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
-      - run: cargo clippy --all-targets --locked --features linux-browser-tests,fake-gog -- -D warnings
-      - run: cargo nextest archive --locked --features linux-browser-tests,fake-gog --archive-file ../browser-tests.tar.zst
-      - uses: actions/upload-artifact@v4
-        with:
-          name: browser-tests
-          path: browser-tests.tar.zst
-          retention-days: 1
-
-  browser:
-    needs: browser-build
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: latch
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-ref || github.sha }}
-      # Some tests build small fixtures with rustc as they run.
       - run: rustup toolchain install
-      - uses: taiki-e/install-action@v2
+        working-directory: latch
+      - uses: Swatinem/rust-cache@v2
         with:
-          tool: cargo-nextest
-      - uses: actions/download-artifact@v4
-        with:
-          name: browser-tests
+          workspaces: latch -> target
+          shared-key: linux-arm64
+          save-if: ${{ matrix.shard == 1 }}
       - uses: actions/cache@v4
         with:
           path: .dev/cft-state/plugins/cft
@@ -162,48 +108,86 @@ jobs:
         with:
           path: .dev/cft-state/plugins/camoufox
           key: camoufox-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest@0.9.148
       # Chrome with its own sandbox, as on most Linux hosts: with Ubuntu's
-      # user namespace restriction on, install-binary.sh loads Ubuntu's bwrap
-      # profile and latch runs Chrome without it (browser-restricted below),
-      # so these jobs lift the restriction first and no profile is loaded.
+      # user namespace restriction on, latch runs Chrome without it
+      # (linux-restricted below), so this job lifts the restriction first.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # Into target/, where the tests were built, so the paths compiled into
-      # them hold.
-      - run: cargo nextest list --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite > /dev/null
-      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
-      - run: cargo nextest run --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --partition hash:${{ matrix.part }}/4 --test-threads 6 --no-fail-fast
+      # latch's Linux sandbox, as install-binary.sh installs it.
+      - run: sudo apt-get install -y -q bubblewrap
+      # The lifecycle suite's systemd: a lingering user session.
+      - run: |
+          sudo loginctl enable-linger "$USER"
+          for _ in $(seq 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - run: just test --shard ${{ matrix.shard }}/4 --ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-tests-${{ matrix.shard }}
+          path: .dev/ci/*.json
+          if-no-files-found: error
 
   # The runner as Ubuntu ships it: the restriction on, Ubuntu's bwrap
   # profile loaded by the installer, so latch runs Chrome with page
-  # isolation off; its Chrome tests and status --local say so.
-  browser-restricted:
-    needs: browser-build
+  # isolation off; status --local says so, and `just test browser` runs
+  # Chrome's conformance checks.
+  linux-restricted:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: latch
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-ref || github.sha }}
       - run: rustup toolchain install
-      - uses: taiki-e/install-action@v2
+        working-directory: latch
+      - uses: Swatinem/rust-cache@v2
         with:
-          tool: cargo-nextest
-      - uses: actions/download-artifact@v4
-        with:
-          name: browser-tests
+          workspaces: latch -> target
+          shared-key: linux-arm64
+          save-if: false
       - uses: actions/cache@v4
         with:
           path: .dev/cft-state/plugins/cft
           key: cft-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
-      - run: cargo nextest list --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite > /dev/null
-      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome target/debug/latch
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest@0.9.148
+      - run: test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+      - run: cd latch && cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --no-browser target/debug/latch
+      - run: latch/target/debug/latch --state-dir "$RUNNER_TEMP/status-state" status --local | tee /dev/stderr | grep -q '"page_isolation":"page isolation off on this host"'
+      - run: just test browser --ci
+
+  # x86_64 Linux, where no Chrome for Testing is pinned: the gate runs every
+  # suite but browser and scenario, and says so.
+  linux-x64:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - run: rustup toolchain install
+        working-directory: latch
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest@0.9.148
       - run: |
-          test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
-          target/debug/latch --state-dir "$RUNNER_TEMP/status-state" status --local | tee /dev/stderr | grep -q '"page_isolation":"page isolation off on this host"'
-      - run: cargo nextest run --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --test-threads 6 --no-fail-fast -E 'test(/^browser::tests::cft::/)'
+          sudo loginctl enable-linger "$USER"
+          for _ in $(seq 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - run: just test --ci
 
   linux-static:
     needs: changes
@@ -243,7 +227,7 @@ jobs:
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
-    needs: [changes, mac, linux, browser-build, browser, browser-restricted, linux-static]
+    needs: [changes, mac, linux, linux-restricted, linux-x64, linux-static]
     runs-on: ubuntu-24.04
     env:
       RESULTS: ${{ toJSON(needs) }}
