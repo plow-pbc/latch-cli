@@ -1,7 +1,8 @@
 """`dev-login.py` against a stand-in latch and Plow stack: no credential from
 the environment reaches latch, a state folder logged in to another Plow is
 refused before latch runs, one logged in to this Plow logs in again, and a
-stack that isn't up is named before latch runs. `dev_plow.py`: where the
+stack that isn't up is named before latch runs; each checkout's machine is
+named after it. `dev_plow.py`: where the
 stack's addresses come from."""
 import http.server
 import json
@@ -18,11 +19,11 @@ HELPER = Path(__file__).with_name("dev-login.py")
 sys.path.insert(0, str(HELPER.parent))
 import dev_plow  # noqa: E402
 
-# A latch that records its environment and logs in by text.
+# A latch that records its arguments and environment and logs in by text.
 FAKE_LATCH = """#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["SEEN"], "w") as seen:
-    json.dump(dict(os.environ), seen)
+    json.dump({"argv": sys.argv[1:], "env": dict(os.environ)}, seen)
 print(json.dumps({"type": "code", "code": "123456", "send_to": "+15550000000"}), flush=True)
 print(json.dumps({"type": "verified", "peer": {"name": "dev"}}), flush=True)
 """
@@ -66,19 +67,19 @@ class DevLoginTests(unittest.TestCase):
         self.twin.shutdown()
         self.dir.cleanup()
 
-    def run_helper(self, **plow):
+    def run_helper(self, *args, state=None, **plow):
         env = {k: v for k, v in os.environ.items() if not k.startswith("LATCH_DEV_")}
         env.update({"SEEN": str(self.seen), "PLOW_AGENT_TOKEN": "made-up-prod-token",
                     "PLOW_API_BASE": "https://api.plow.co", "PLOW_API_URL": "https://api.plow.co",
                     "PLOW_TOKEN_FILE": "/config/secrets/plow-api-token",
                     "LATCH_DEV_PLOW_API": self.api, "LATCH_DEV_PLOW_TWIN": self.api, **plow})
-        return subprocess.run([sys.executable, str(HELPER), str(self.latch), str(self.state)],
+        return subprocess.run([sys.executable, str(HELPER), str(self.latch), str(state or self.state), *args],
                               env=env, capture_output=True, text=True)
 
     def test_no_credential_from_the_environment_reaches_latch(self):
         done = self.run_helper()
         self.assertEqual(done.returncode, 0, done.stderr)
-        seen = json.loads(self.seen.read_text())
+        seen = json.loads(self.seen.read_text())["env"]
         for name in ("PLOW_AGENT_TOKEN", "PLOW_API_BASE", "PLOW_API_URL"):
             self.assertNotIn(name, seen)
         self.assertFalse(Path(seen["PLOW_TOKEN_FILE"]).exists())
@@ -114,41 +115,16 @@ class DevLoginTests(unittest.TestCase):
             self.assertIn(name, done.stderr)
         self.assertFalse(self.seen.exists())
 
-
-class MachineNameTests(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.root = Path(self.dir.name)
-
-    def tearDown(self):
-        self.dir.cleanup()
-
-    def name(self, *args):
-        """The --name latch is run with, for a state folder at `args`."""
-        state = self.root.joinpath(*args)
-        state.mkdir(parents=True)
-        latch = self.root / "latch"
-        latch.write_text("#!/bin/sh\necho \"$@\" > \"$SEEN\"\n")
-        latch.chmod(0o755)
-        seen = self.root / "seen"
-        with http.server.HTTPServer(("127.0.0.1", 0), Twin) as stack:
-            threading.Thread(target=stack.serve_forever, daemon=True).start()
-            url = f"http://127.0.0.1:{stack.server_port}"
-            subprocess.run([sys.executable, str(HELPER), str(latch), str(state), "--api", url, "--twin", url, *self.extra],
-                           env={**os.environ, "SEEN": str(seen)}, capture_output=True, text=True)
-            stack.shutdown()
-        argv = seen.read_text().split()
-        return argv[argv.index("--name") + 1]
-
-    extra = []
-
-    def test_each_checkout_s_machine_is_named_after_it(self):
-        self.assertEqual(self.name("Latch CLI_wt.2", ".dev", "state"), "dev-latch-cli-wt-2")
-        self.assertEqual(self.name("other", "state"), "dev-state")
-
-    def test_name_still_names_it(self):
-        self.extra = ["--name", "mine"]
-        self.assertEqual(self.name("wt", ".dev", "state"), "mine")
+    def test_each_checkout_s_machine_is_named_after_it_unless_name_names_it(self):
+        for state, args, name in ((("Latch CLI_wt.2", ".dev", "state"), (), "dev-latch-cli-wt-2"),
+                                  (("other", "state"), (), "dev-state"),
+                                  (("wt", ".dev", "state"), ("--name", "mine"), "mine")):
+            folder = Path(self.dir.name).joinpath(*state)
+            folder.mkdir(parents=True)
+            done = self.run_helper(*args, state=folder)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            argv = json.loads(self.seen.read_text())["argv"]
+            self.assertEqual(argv[argv.index("--name") + 1], name, state)
 
 
 class AddressTests(unittest.TestCase):
