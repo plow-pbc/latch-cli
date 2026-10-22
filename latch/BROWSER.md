@@ -511,10 +511,7 @@ no model key: it asks Plow's decision route (`POST /v1/decisions`) with
 its own Plow login, and Plow asks Jev (`typesafe/jev-1.13`) on OpenRouter
 with zero data retention and bills the call to the host's Plow account, as
 for any model call; the audit records provider `plow`, the model and Plow's
-request id. Only a host set up for development calls TypeSafe jev
-(`jev-1.13.0`) directly: `browser/model.json` in the state directory says
-`{"provider": "jev"}` and its key is in `jev.key` (0600); a key file alone
-is never used. A host not logged in to Plow, an account out of credits,
+request id. A host not logged in to Plow, an account out of credits,
 or a route that fails or can't be reached, means what needs a decision
 stops with `model_unavailable`; there is no keyword stand-in. The message
 says what fixes it: an account out of credits (Plow's 402) waits for the
@@ -716,8 +713,9 @@ at another state directory. Without an installed engine the test fails,
 naming what to run. `src/browser/tests/steps.rs` covers literal steps,
 checks, confirmations and the journal, with a fake
 provider that answers from fixed facts about the test site and can be made
-unreachable; the risk decision and a sentence check on jev itself are built
-only with `--features live-model`, which `just test-model KEYFILE` runs.
+unreachable; the risk decision and a sentence check on the real model,
+through Plow, are built only with `--features live-model`, which `just
+gatekeeper` runs.
 
 On Linux they are built only with `--features linux-browser-tests` (the
 gate's containers have no engine), against the CfT install-binary.sh put in

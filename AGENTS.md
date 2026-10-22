@@ -139,7 +139,7 @@ docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL \
   sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
 ```
 
-`just test-model KEY` runs the browser tests that call the decision model for real.
+`just gatekeeper` runs the checks that ask the decision model for real, through Plow on the login of `.dev/state`.
 
 Rules:
 
