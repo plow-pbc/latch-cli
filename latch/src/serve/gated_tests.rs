@@ -100,7 +100,7 @@ async fn start_with(
     let host = Arc::new(Host {
         plow: plow.client(),
         audit: Arc::new(Mutex::new(
-            AuditLog::open(state.join("audit.ndjson")).unwrap(),
+            AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
         )),
         dashboard,
         workers: WorkerSetup {
@@ -179,12 +179,21 @@ impl TestHost {
         (serde_json::from_slice(&answer).unwrap(), rest)
     }
 
+    /// The audit's records, opened with the key, connections left out.
     fn audit(&self) -> Vec<Value> {
-        std::fs::read_to_string(self.state.join("audit.ndjson"))
-            .unwrap()
+        self.audit_text()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .filter(|record: &Value| record["op"] != "connect")
+            .collect()
+    }
+
+    /// Every audit record, opened with the key, one JSON line each.
+    fn audit_text(&self) -> String {
+        crate::audit::read_all(&self.state.join(crate::audit::FILE))
+            .unwrap()
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap() + "\n")
             .collect()
     }
 
@@ -366,7 +375,7 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     assert!(gate["p"]["COVERED"].as_f64().unwrap() >= 0.5);
     assert_eq!(records[2]["args"]["argv"][2], "echo tidied >> made");
 
-    let log = std::fs::read_to_string(t.state.join("audit.ndjson")).unwrap();
+    let log = t.audit_text();
     for said in [ASKED, "yes, go ahead", "May I run", "Sure, I'll look later"] {
         assert!(!log.contains(said), "chat text in the audit: {said}");
     }
@@ -463,8 +472,7 @@ fn exec_stdin(stdin: &[u8]) -> Value {
 
 /// Whether the host's log or audit holds `text` anywhere.
 fn kept(t: &TestHost, text: &str) -> bool {
-    let audit = std::fs::read_to_string(t.state.join("audit.ndjson")).unwrap();
-    audit.contains(text)
+    t.audit_text().contains(text)
         || crate::log::captured()
             .iter()
             .any(|line| line.contains(text))
@@ -851,4 +859,50 @@ async fn a_stalled_audit_write_holds_up_no_other_caller() {
     assert!(appending.await.unwrap().is_ok());
     stall.join().unwrap();
     assert_eq!(t.audit()[0]["op"], "exec");
+}
+
+#[tokio::test]
+async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let secret = "synthetic-exec-credential-7f3a";
+    // Longer than the 4 KiB the audit once kept: it is kept whole now.
+    let long = "x".repeat(6000);
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        "printf %s \"$2\"",
+        "sh",
+        "--token",
+        secret,
+        long
+    ]);
+    let (answer, _) = t
+        .call(&agent, "exec", json!({"argv": argv, "timeout": 10}))
+        .await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+
+    // The audit keeps the command as it ran, sealed on disk.
+    let records = t.audit();
+    assert_eq!(records[0]["args"]["argv"], argv);
+    let on_disk = std::fs::read_to_string(t.state.join(crate::audit::FILE)).unwrap();
+    assert!(!on_disk.contains(secret) && !on_disk.contains("--token"));
+
+    // serve.log and the dashboard show it with the credential hidden.
+    let logged: Vec<String> = crate::log::captured()
+        .into_iter()
+        .filter(|line| line.contains("exec:") && line.contains("--token"))
+        .collect();
+    assert!(!logged.is_empty());
+    assert!(
+        logged.iter().all(|line| !line.contains(secret)),
+        "{logged:?}"
+    );
+    assert!(
+        logged.iter().all(|line| line.contains("[redacted]")),
+        "{logged:?}"
+    );
+    let (target, _) = dashboard::describe("exec", &records[0]["args"], "ok", Duration::ZERO);
+    assert!(target.contains("--token [redacted]"), "{target}");
+    assert!(!target.contains(secret), "{target}");
 }

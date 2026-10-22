@@ -86,10 +86,7 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
                 working_folder: Some(folder),
                 ..none
             };
-            let argv: Vec<String> =
-                serde_json::from_value(args["argv"].clone()).unwrap_or_default();
-            let mut audit =
-                json!({"argv": crate::exec::capped_argv(&argv), "workdir": args["workdir"]});
+            let mut audit = json!({"argv": args["argv"], "workdir": args["workdir"]});
             if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(args["stdin"].clone()) {
                 audit["stdin"] = crate::exec::stdin_audit(&bytes);
             }
