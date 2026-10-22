@@ -1,2 +1,0 @@
-FROM rust:alpine
-RUN apk add --no-cache musl-dev bubblewrap curl nodejs npm python3

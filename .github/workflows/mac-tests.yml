@@ -1,7 +1,8 @@
 name: mac-tests
 
-# The full macOS suite, with clippy for the macOS-only code Linux never
-# compiles, the Messages reader's tests and the app bundle. By hand on any
+# The macOS gate (`just test`): clippy for the macOS-only code Linux never
+# compiles, the Messages reader's tests, the app bundle, and the tests
+# only macOS can answer. By hand on any
 # branch: `gh workflow run mac-tests --ref BRANCH` tests that branch's head,
 # and its checks show on that commit. A merge to main runs it as one job;
 # the release runs it beside its build and makes its draft only if it passes.
@@ -49,16 +50,12 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
       - run: rustup toolchain install
-      - if: matrix.shard == 1
-        run: python3 scripts/test-test-shard.py
       # Main's runs keep this cache warm for every branch.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: latch -> target
           shared-key: mac-macos-15
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.shard == 1 }}
-      - if: matrix.shard == 1
-        run: cargo fmt --check && cargo clippy --all-targets --locked --features fake-gog -- -D warnings
       - uses: actions/cache@v4
         with:
           path: .dev/cft-state/plugins/cft
@@ -67,20 +64,12 @@ jobs:
         with:
           path: .dev/cft-state/plugins/camoufox
           key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
-      - run: cargo build --locked
-      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
-      # fake-gog: the test-only gog stand-in the return scenario reads mail with.
-      - run: python3 scripts/test-shard.py ${{ matrix.shard }} ${{ inputs.shards == 1 && 1 || 2 }} --features fake-gog
-      - if: matrix.shard == 1
-        run: LATCH_FUZZ_ITERATIONS=50000 swift test
-        working-directory: latch/messages-reader
-      - if: matrix.shard == 1
-        run: |
-          app="$RUNNER_TEMP/Plow Latch.app"
-          sh ../scripts/macos-app-bundle.sh 0.0.0 target/debug/latch "$app"
-          codesign --force --sign - "$app"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          "$app/Contents/MacOS/latch" --version
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      # The macOS gate, as on a laptop; shard 1 also lints and runs the
+      # Swift, Python and app-bundle checks.
+      - run: just test --shard ${{ matrix.shard }}/${{ inputs.shards == 1 && 1 || 2 }} --ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:

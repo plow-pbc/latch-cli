@@ -1,18 +1,6 @@
-# The Rust CLI's checks; live Google evidence uses the documented test identities.
-test: cft
-    cargo fmt --check
-    cargo clippy --locked --all-targets --features fake-gog -- -D warnings
-    cargo test --locked --features fake-gog
-
-# The Linux gate uses the same nested sandbox as a container host.
-test-linux:
-    docker build --platform linux/arm64 -t latch-linux-gates:local -f docker/Dockerfile.gates docker
-    docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL --security-opt=no-new-privileges=true --security-opt=systempaths=unconfined --security-opt seccomp=$PWD/docker/seccomp.json -v "$PWD/..:/repo" -w /repo/latch -e HOME=/tmp -e RUSTUP_HOME=/usr/local/rustup -e CARGO_HOME=/repo/latch/target/cargo-home -e CARGO_TARGET_DIR=/repo/latch/target/linux-check latch-linux-gates:local sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
-
-# The Messages reader (macOS): its tests, with a longer fuzz run of the body
-# parser than the default, against synthetic databases only.
-messages-reader-test iterations="200000":
-    cd messages-reader && LATCH_FUZZ_ITERATIONS={{iterations}} swift test
+# The CLI's own recipes; the root justfile's (`just test`, `just test-list`,
+# `just gatekeeper`) run from here too.
+set fallback := true
 
 # The Messages reader, built and signed into messages-reader/dist/; prints its sha256.
 messages-reader:
@@ -22,33 +10,16 @@ messages-reader:
 # behind the owner's. Their focus checks (the engine never becomes the
 # front app) mean something only here. Not part of the gate: windows appear.
 [macos]
-test-headed: cft
+test-headed: engines
     cargo test --locked --features headed-tests browser::tests
 
-# The driver conformance checks on one engine (cft or camoufox; cft only
-# on Linux arm64), each a test that passes or fails by name: the
-# real-engine browser tests, run against that engine's driver.
-[macos]
-conformance engine: cft
-    cargo test --locked -- --test-threads=1 "::{{engine}}::"
-
-# On Linux, the engine is the one install-binary.sh put in LATCH_CFT_STATE.
-[linux]
-conformance engine:
-    cargo test --locked --features linux-browser-tests -- --test-threads=1 "::{{engine}}::"
-
 # The pinned engines, Chrome for Testing and Camoufox, where the browser
-# tests look for them. HOME keeps install-binary.sh's copy of latch out of the real
-# ~/.local/bin.
+# tests look for them (`just test browser` installs them itself). HOME keeps
+# install-binary.sh's copy of latch out of the real ~/.local/bin.
 [macos]
-cft:
+engines:
     cargo build --locked
     HOME="$PWD/../.dev/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome --browser camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
-
-# On Linux, install-binary.sh puts a host's engine in place; the real-engine tests
-# (`just conformance cft`) find it through LATCH_CFT_STATE.
-[linux]
-cft:
 
 # The browser tests that call the decision model (jev) for real; the key
 # file is copied into each test's own state directory, never printed.
@@ -58,8 +29,8 @@ test-model key:
 # The return scenario, headless, with its transcript: an order found in a
 # made-up mailbox, returned item by item on the test shop. With `key`, the
 # host's judge is the real decision model (jev).
-scenario-return key="": cft
-    if [ -n "{{key}}" ]; then LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features fake-gog,live-model --test cli the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture; else cargo test --locked --features fake-gog --test cli the_owner_returns_items_from_an_emailed_order -- --exact --nocapture; fi
+scenario-return key="": engines
+    if [ -n "{{key}}" ]; then LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features fake-gog,live-model --test cli scenario::the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture; else cargo test --locked --features fake-gog --test cli scenario::the_owner_returns_items_from_an_emailed_order -- --exact --nocapture; fi
 
 # A headless host judging exec on rules alone, on jev 1.14 (synthetic
 # chats only).

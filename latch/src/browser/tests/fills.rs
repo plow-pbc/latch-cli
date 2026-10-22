@@ -27,7 +27,6 @@ const CVV: &str = "319";
 const KEY: &str = "JBSWY3DPEHPK3PXP";
 
 conformance!(
-    vault_fills_go_only_where_the_item_allows_and_never_show_a_value,
     a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out,
     observe_lists_items_by_the_frames_that_hold_fields,
     a_login_goes_on_to_its_password_stage_in_one_pause,
@@ -38,9 +37,12 @@ conformance!(
     a_login_after_an_edit_fills_the_new_password,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
-    a_filled_value_is_guarded_in_every_tab_and_from_screenshots,
     no_vault_value_goes_into_an_editable_region,
     a_stored_password_with_a_line_break_fills_a_single_line_field,
+    ;
+    mac:
+    vault_fills_go_only_where_the_item_allows_and_never_show_a_value,
+    a_filled_value_is_guarded_in_every_tab_and_from_screenshots,
 );
 
 /// `value` as an agent or the audit saw it, for the leak checks, less what
@@ -909,58 +911,6 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     );
     h.call("close", json!({})).await.ok();
     let _ = h.browsers.vault.with(|s| Ok(s.list()));
-}
-
-/// The vault's files from inside `exec` and a file worker: never readable.
-#[test]
-fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
-    let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
-    std::fs::create_dir_all(&parent).unwrap();
-    let dir = tempfile::tempdir_in(parent).unwrap();
-    let (state, area) = (dir.path().join("state"), dir.path().join("area"));
-    for folder in [&state, &area] {
-        std::fs::create_dir(folder).unwrap();
-    }
-    let vault = Vault::new(state.clone());
-    vault
-        .with(|s| {
-            s.add(item(
-                LOGIN,
-                "Shop",
-                &["shop.example"],
-                &[("password", PASSWORD)],
-            ))
-        })
-        .unwrap();
-    let real = state.canonicalize().unwrap();
-    for file in ["vault.json", "vault.key"] {
-        let path = real.join(file);
-        assert!(path.exists());
-        let (ok, text) = exec(&state, &area, &format!("cat '{}'", path.display()));
-        println!("exec: cat {file}: {}", text.trim());
-        assert!(!ok && text.contains(HIDDEN), "{text}");
-        let out = std::process::Command::new(latch())
-            .args(["worker", "--area"])
-            .arg(&area)
-            .arg("--denied")
-            .arg(&state)
-            .args(["read", "--"])
-            .arg(&path)
-            .env_clear()
-            .current_dir(&area)
-            .output()
-            .unwrap();
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        println!("file worker: read {file}: {}", stderr.trim());
-        // Seatbelt refuses the read; Linux's bubblewrap leaves the file out.
-        let refused = if cfg!(target_os = "macos") {
-            "sandbox_denied"
-        } else {
-            "not_found"
-        };
-        assert!(!out.status.success() && stderr.contains(refused));
-        assert!(out.stdout.is_empty());
-    }
 }
 
 /// Fills that cannot finish: no submit to press, a page that covers its
@@ -2550,4 +2500,62 @@ async fn a_stored_password_with_a_line_break_fills_a_single_line_field(engine: &
     assert!(page.contains("password accepted"));
     assert!(!h.shown.join("\n").contains(PASSWORD));
     h.call("close", json!({})).await.ok();
+}
+
+/// Tagged `mac`: what macOS can answer differently from Linux (see
+/// `conformance!`).
+mod mac {
+    use super::*;
+
+    /// The vault's files from inside `exec` and a file worker: never readable.
+    #[test]
+    fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
+        let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let (state, area) = (dir.path().join("state"), dir.path().join("area"));
+        for folder in [&state, &area] {
+            std::fs::create_dir(folder).unwrap();
+        }
+        let vault = Vault::new(state.clone());
+        vault
+            .with(|s| {
+                s.add(item(
+                    LOGIN,
+                    "Shop",
+                    &["shop.example"],
+                    &[("password", PASSWORD)],
+                ))
+            })
+            .unwrap();
+        let real = state.canonicalize().unwrap();
+        for file in ["vault.json", "vault.key"] {
+            let path = real.join(file);
+            assert!(path.exists());
+            let (ok, text) = exec(&state, &area, &format!("cat '{}'", path.display()));
+            println!("exec: cat {file}: {}", text.trim());
+            assert!(!ok && text.contains(HIDDEN), "{text}");
+            let out = std::process::Command::new(latch())
+                .args(["worker", "--area"])
+                .arg(&area)
+                .arg("--denied")
+                .arg(&state)
+                .args(["read", "--"])
+                .arg(&path)
+                .env_clear()
+                .current_dir(&area)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            println!("file worker: read {file}: {}", stderr.trim());
+            // Seatbelt refuses the read; Linux's bubblewrap leaves the file out.
+            let refused = if cfg!(target_os = "macos") {
+                "sandbox_denied"
+            } else {
+                "not_found"
+            };
+            assert!(!out.status.success() && stderr.contains(refused));
+            assert!(out.stdout.is_empty());
+        }
+    }
 }

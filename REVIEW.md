@@ -86,12 +86,12 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
   dashboard) credential-looking values are hidden, best effort, and they
   say so; argv hashing or redaction at write time is declined.
 
-**Reviewer environment note:** the gate is `just test` in `latch/` (it
-installs the pinned Chrome for Testing into `.dev/cft-state` first) and needs
-the toolchain in `latch/rust-toolchain.toml`. CI also runs `cargo fmt --check`
-and `cargo clippy --all-targets -- -D warnings`. Tests that call the decision
-model, a live Plow stack or Google (`just test-model`, `gatekeeper-live`,
-`plan-suite`) need keys and are run by hand; a missing browser engine or key
+**Reviewer environment note:** the gate is `just test` (it installs the
+pinned browser engines into `.dev/cft-state` first, and runs fmt and clippy)
+and needs the toolchain in `latch/rust-toolchain.toml`; `just test --linux`
+is the Linux gate, in Docker. Checks that call the decision model, a live
+Plow stack or Google (`just gatekeeper`, `plan-suite`) need keys and are run
+by hand; a missing browser engine or key
 in a reviewer checkout is "not run", never a PR-introduced failure.
 
 ## Review priority

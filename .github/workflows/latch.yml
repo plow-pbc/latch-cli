@@ -78,25 +78,64 @@ jobs:
       ref: ${{ inputs.source-ref }}
       shards: 1
 
+  # The Linux gate in the Linux test container (`just test --linux`), on
+  # arm64: the only Linux build of Chrome for Testing latch pins.
   linux:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            latch/target/cargo-home
+            latch/target/linux-test
+          key: linux-test-${{ hashFiles('latch/docker/Dockerfile.test', 'latch/rust-toolchain.toml') }}-${{ hashFiles('latch/Cargo.lock') }}
+          restore-keys: linux-test-${{ hashFiles('latch/docker/Dockerfile.test', 'latch/rust-toolchain.toml') }}-
+      - uses: actions/cache@v4
+        with:
+          path: .dev/linux-cft-state/plugins/cft
+          key: cft-linux-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just test --linux --ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-tests
+          path: .dev/ci/*.json
+          if-no-files-found: error
+
+  # What the container cannot run: a host under systemd (`just test
+  # lifecycle`), natively, in a lingering user session.
+  linux-lifecycle:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: latch
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-ref || github.sha }}
       - run: rustup toolchain install
+        working-directory: latch
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: latch -> target
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: |
+          sudo loginctl enable-linger "$USER"
+          for _ in $(seq 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - run: just test lifecycle --ci
 
   linux-static:
     needs: changes
@@ -136,7 +175,7 @@ jobs:
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
-    needs: [changes, mac, linux, linux-static]
+    needs: [changes, mac, linux, linux-lifecycle, linux-static]
     runs-on: ubuntu-24.04
     env:
       RESULTS: ${{ toJSON(needs) }}

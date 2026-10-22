@@ -74,12 +74,11 @@ live-model = []
 # owner's, for what only a real window shows (its focus); `just
 # test-headed` runs them. Never part of the gate.
 headed-tests = []
-# Builds the real-engine browser tests on Linux, for a host whose install.sh
-# put its engine in place (`just conformance cft` on the Pi). Never
-# part of the gate, whose containers have no engine.
+# Builds the real-engine browser tests on Linux; `just test` on Linux
+# builds with it and installs the engine first.
 linux-browser-tests = []
 # Builds the managed-host tests on Linux, for a machine with a systemd user
-# session (the Pi). Never part of the gate, whose containers have no systemd.
+# session; `just test` on Linux builds with it (the container has none).
 systemd-tests = []
 # A stand-in for gog (src/google/fake.rs), so a test can search a made-up
 # mailbox: the host accepts this binary itself as gog. Tests only; it does
