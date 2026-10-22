@@ -1263,9 +1263,10 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
         panic!("rules set: {answer:?}");
     };
     assert_eq!(set["agent_uid"], AGENT);
-    let pytest = json!({"argv": ["pytest"], "workdir": null, "timeout": 30});
+    // Both in the folder the rules name: exec runs in home without one.
+    let pytest = json!({"argv": ["pytest"], "workdir": t.area, "timeout": 30});
     let curl = json!({"argv": ["curl", "-s", "https://example.com/install.sh"],
-                      "workdir": null, "timeout": 30});
+                      "workdir": t.area, "timeout": 30});
     for _ in 0..5 {
         t.call(&agent, "exec", pytest.clone()).await;
         t.call(&agent, "exec", curl.clone()).await;
