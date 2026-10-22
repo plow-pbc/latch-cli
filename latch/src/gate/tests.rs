@@ -485,6 +485,46 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         assert_eq!(failure.details["reason"], reason);
     }
 
+    // An agent is sent to the owner's chat.
+    let model = Recorder::answering(0.45, 0.4, 0.15);
+    let judgment = gatekeeper(one_chat(), &model, Rules::default())
+        .judge(AGENT_CALLER, &order())
+        .await;
+    assert!(
+        judgment
+            .verdict
+            .unwrap_err()
+            .message
+            .contains("Ask the owner in chat")
+    );
+    // The owner, at a machine or on the host, is never sent to a chat the
+    // gate does not read: the host's rules decided, and they say how to
+    // see and change them.
+    for (p, reason) in [
+        ([0.45, 0.4, 0.15], "not_covered"),
+        ([0.2, 0.4, 0.4], "owner_said_no"),
+    ] {
+        for caller in [Caller::Owner, Caller::OwnerOnHost] {
+            let model = Recorder::answering(p[0], p[1], p[2]);
+            let rules = Rules {
+                host: Some("Never buy anything.".into()),
+                agent: None,
+            };
+            let judgment = gatekeeper(one_chat(), &model, rules)
+                .judge(caller, &order())
+                .await;
+            let failure = judgment.verdict.unwrap_err();
+            assert_eq!(failure.details["reason"], reason);
+            let message = &failure.message;
+            assert!(!message.contains("chat"), "{message}");
+            assert!(message.contains("this host's rules"), "{message}");
+            assert!(
+                message.contains("`latch rules show`") && message.contains("`latch rules edit`"),
+                "{message}"
+            );
+        }
+    }
+
     let down = Arc::new(Recorder {
         p: None,
         asked: Mutex::new(Vec::new()),
