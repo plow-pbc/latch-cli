@@ -23,12 +23,36 @@ one JSON object: on stdout when it worked, as `{"error": {"code",
 ## What you can reach
 
 - `latch exec --host H -- PROGRAM ARGS…` runs a program in the host's
-  sandbox, inside the folders the owner shared.
+  sandbox, reading home except hidden latch state and macOS Library (Caches
+  remains available). Declare changes with repeatable `--write PATH`; add
+  `--network` for outbound IP access. Host Unix sockets stay blocked.
 - `latch file get` / `latch file put` copy files to and from those folders.
 - `latch google --host H -- COMMAND…` runs an allowed Google command
   (`latch google --help` lists them).
 - `latch browser …` drives a real browser on the host: `open` a session
   (keep its id), `observe`, then act on the refs it returns.
+
+## Credentials in exec
+
+Use repeatable `--secret-env NAME=VALUE` for credentials instead of putting
+them in the program's arguments. The value goes to the host over the worker's
+private channel and enters only the final program's environment after
+confinement. The remote judge and audit receive names and lengths, never
+values; ordinary argv is sent to the remote judge without redaction.
+
+Prefer a program's native environment support:
+
+```sh
+latch exec --host H --secret-env GITHUB_TOKEN="$GITHUB_TOKEN" --network -- gh pr list
+```
+
+For a value inside an argument, use a shell with a quoted variable, e.g.
+`sh -c 'curl -H "Authorization: Bearer $TOKEN" https://api.example.com'`.
+Latch does not expand `${NAME}` in argv. Do not evaluate secret values as code.
+Program stdout/stderr are returned as-is and can disclose a value. The CLI
+option itself is visible on the calling machine and may enter shell history;
+shell-expanded arguments are visible in the trusted host's process list.
+`HOME`, `PATH`, `TMPDIR`, `LATCH_*`, `LD_*` and `DYLD_*` are refused.
 
 ## The gatekeeper judges your calls
 

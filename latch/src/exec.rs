@@ -22,6 +22,7 @@
 //! folder, which may not be writable (a shared `/`, say). A host that was
 //! killed leaves its folders behind; the next host to start removes them.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
@@ -42,7 +43,7 @@ use crate::log::log;
 use crate::serve::Done;
 use crate::state::to_hex;
 use crate::wire::Response;
-use crate::worker::{WorkerError, WorkerSetup, worker_error};
+use crate::worker::{WorkerError, WorkerSetup, authenticated_worker_error};
 
 /// How much of each output stream the agent gets back.
 const OUTPUT_CAP: usize = 256 * 1024;
@@ -68,6 +69,62 @@ pub(crate) struct ExecArgs {
     pub writes: Vec<PathBuf>,
     #[serde(default)]
     pub network: bool,
+    #[serde(default)]
+    pub secret_env: BTreeMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct PrivateExec {
+    pub secret_env: BTreeMap<String, String>,
+    pub error_token: String,
+}
+
+pub fn parse_secret_env(values: &[String]) -> Result<BTreeMap<String, String>, Failure> {
+    let mut secrets = BTreeMap::new();
+    for value in values {
+        let (name, value) = value.split_once('=').ok_or_else(bad_secret_env)?;
+        if secrets
+            .insert(name.to_string(), value.to_string())
+            .is_some()
+        {
+            return Err(bad_secret_env());
+        }
+    }
+    validate_secret_env(&secrets)?;
+    Ok(secrets)
+}
+
+fn bad_secret_env() -> Failure {
+    Failure::failed("bad_secret_env", "use distinct NAME=VALUE entries with valid environment names; HOME, PATH, TMPDIR, LATCH_*, LD_* and DYLD_* are reserved".into())
+}
+
+pub(crate) fn validate_secret_env(secrets: &BTreeMap<String, String>) -> Result<(), Failure> {
+    for (name, value) in secrets {
+        let mut bytes = name.bytes();
+        let valid = bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+            && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if !valid
+            || ["HOME", "PATH", "TMPDIR"].contains(&name.as_str())
+            || ["LATCH_", "LD_", "DYLD_"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+            || value.contains('\0')
+        {
+            return Err(bad_secret_env());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn secret_metadata(secrets: &BTreeMap<String, String>) -> Value {
+    Value::Array(
+        secrets
+            .iter()
+            .map(|(name, value)| json!({"name": name, "secret": true, "length": value.len()}))
+            .collect(),
+    )
 }
 
 fn default_timeout() -> u64 {
@@ -82,6 +139,7 @@ pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<Value, Failure>
     }
     let mut args: ExecArgs = serde_json::from_value(value.clone())
         .map_err(|_| bad("exec arguments have invalid types"))?;
+    validate_secret_env(&args.secret_env)?;
     if !argv_is_usable(&args.argv) {
         return Err(bad("argv must be a non-empty list of strings"));
     }
@@ -237,7 +295,8 @@ pub async fn run(
     // What the program reads on stdin: the bytes the client sent, or none.
     let input = args.stdin.take();
     let mut audit = json!({ "argv": args.argv, "workdir": args.workdir,
-                           "writes": args.writes, "network": args.network });
+                           "writes": args.writes, "network": args.network,
+                           "secret_env": secret_metadata(&args.secret_env) });
     if let Some(bytes) = &input {
         audit["stdin"] = stdin_audit(bytes);
     }
@@ -367,7 +426,11 @@ async fn run_program(
 ) -> Done {
     let started = Instant::now();
     let kill_after = limits.timeout + WORKER_GRACE;
-    let started_exec = workers.start_exec(args, tmpdir, input.is_some(), kill_after);
+    let private = PrivateExec {
+        secret_env: args.secret_env.clone(),
+        error_token: to_hex(&rand::random::<[u8; 32]>()),
+    };
+    let started_exec = workers.start_exec(args, tmpdir, &private.error_token, kill_after);
     let mut child = match started_exec {
         Ok(child) => child,
         Err(error) => return refused(error, audit),
@@ -377,9 +440,14 @@ async fn run_program(
     // Fed from its own task while the output is read and the clock runs: a
     // program may read slowly, or never (then the write fails, which is
     // fine). Dropping the pipe at the end is the program's EOF.
-    if let (Some(bytes), Some(mut pipe)) = (input, child.stdin.take()) {
+    if let Some(mut pipe) = child.stdin.take() {
+        let header = serde_json::to_vec(&private).expect("private exec request serializes");
         tokio::spawn(async move {
-            let _ = pipe.write_all(&bytes).await;
+            if crate::wire::write_frame(&mut pipe, &header).await.is_ok()
+                && let Some(bytes) = input
+            {
+                let _ = pipe.write_all(&bytes).await;
+            }
         });
     }
     let (status, end) = wait_or_kill(&mut child, limits).await;
@@ -393,7 +461,8 @@ async fn run_program(
 
     // The worker failed before the program started: no execution result.
     if status.code() == Some(125)
-        && let Some(error) = worker_error(&String::from_utf8_lossy(&stderr))
+        && let Some(error) =
+            authenticated_worker_error(&String::from_utf8_lossy(&stderr), &private.error_token)
     {
         return refused(error, audit);
     }
@@ -652,6 +721,10 @@ mod tests {
     async fn malformed_exec_args_never_start_a_worker() {
         let (dir, workers) = worker_setup();
         for (field, values) in [
+            (
+                "secret_env",
+                vec![json!(null), json!([]), json!({"TOKEN": 7})],
+            ),
             ("network", vec![json!(null), json!("false"), json!(1)]),
             (
                 "writes",
@@ -810,6 +883,43 @@ mod tests {
         }
         assert!(rust.join("target/debug/liblatch_exec_probe.rlib").is_file());
         assert!(node.join("package-lock.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn secret_values_are_not_in_the_workers_process_arguments() {
+        let (dir, mut workers) = worker_setup();
+        let binary = std::env::current_exe().unwrap();
+        workers.program = binary.parent().unwrap().parent().unwrap().join("latch");
+        std::fs::create_dir(&workers.state_dir).unwrap();
+        let tmp = dir.path().join("tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        let marker = "worker-argv-private-marker-4a7d";
+        let value = normalize(
+            &workers,
+            &json!({"argv": ["true"], "secret_env": {"TOKEN": marker}}),
+        )
+        .unwrap();
+        let args: ExecArgs = serde_json::from_value(value).unwrap();
+        let mut child = workers
+            .start_exec(&args, &tmp, "startup-test-token", 5)
+            .unwrap();
+        let pid = child.id().unwrap();
+        #[cfg(target_os = "linux")]
+        let arguments = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+        #[cfg(target_os = "macos")]
+        let arguments = {
+            let output = std::process::Command::new("/bin/ps")
+                .args(["-p", &pid.to_string(), "-o", "command="])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            output.stdout
+        };
+        let arguments = String::from_utf8_lossy(&arguments);
+        assert!(arguments.contains("--private-request"));
+        assert!(!arguments.contains(marker));
+        drop(child.stdin.take());
+        child.wait().await.unwrap();
     }
 
     #[tokio::test]

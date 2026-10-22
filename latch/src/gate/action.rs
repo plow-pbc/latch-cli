@@ -44,6 +44,8 @@ struct Action<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     network: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    secret_env: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     size: Option<&'a Value>,
@@ -76,6 +78,7 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
         working_folder: None,
         writes: None,
         network: None,
+        secret_env: None,
         path: None,
         size: None,
         file_name: None,
@@ -86,6 +89,8 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
     let mut once = false;
     let (action, audit) = match op {
         "exec" => {
+            let secrets = serde_json::from_value(args["secret_env"].clone()).unwrap_or_default();
+            let secret_env = crate::exec::secret_metadata(&secrets);
             let folder = args["workdir"].as_str().or(first_area.as_deref());
             let action = Action {
                 argv: Some(&args["argv"]),
@@ -93,10 +98,11 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
                 working_folder: folder,
                 writes: Some(&args["writes"]),
                 network: Some(&args["network"]),
+                secret_env: Some(secret_env.clone()),
                 ..none
             };
             let mut audit = json!({"argv": args["argv"], "workdir": args["workdir"],
-                                   "writes": args["writes"], "network": args["network"]});
+                                   "writes": args["writes"], "network": args["network"], "secret_env": secret_env});
             if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(args["stdin"].clone()) {
                 audit["stdin"] = crate::exec::stdin_audit(&bytes);
             }

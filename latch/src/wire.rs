@@ -107,6 +107,19 @@ pub async fn read_frame(input: &mut (impl AsyncRead + Unpin)) -> std::io::Result
     Ok(json)
 }
 
+/// The same framing for the single-threaded worker, before any runtime starts.
+pub fn read_frame_sync(input: &mut impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    let mut length = [0u8; 4];
+    input.read_exact(&mut length)?;
+    let length = u32::from_be_bytes(length) as usize;
+    if length > MAX_FRAME {
+        return Err(std::io::Error::other("frame too large"));
+    }
+    let mut json = vec![0u8; length];
+    input.read_exact(&mut json)?;
+    Ok(json)
+}
+
 /// Copies exactly `size` bytes from `input` to `out` and returns their
 /// sha256 as hex. Fails if `input` ends early. Used on both sides of a file
 /// transfer, so each side can check the other moved the same bytes.

@@ -824,6 +824,28 @@ fn help_says_what_is_allowed_and_how_to_pass_a_command() {
 }
 
 #[test]
+fn secret_env_validation_never_echoes_the_value() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let marker = "cli-private-marker-68fb";
+    for argument in [
+        format!("LD_PRELOAD={marker}"),
+        format!("BAD-NAME={marker}"),
+        marker.to_string(),
+    ] {
+        let output = latch(
+            &state,
+            &["exec", "--secret-env", &argument, "--", "true"],
+            &[],
+        );
+        assert!(!output.status.success());
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "bad_secret_env");
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(marker));
+    }
+}
+
+#[test]
 fn help_and_skill_need_no_login_and_carry_this_version() {
     let dir = test_dir();
     let state = dir.path().join("none");

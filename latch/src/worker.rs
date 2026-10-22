@@ -4,8 +4,9 @@
 //!
 //! A worker is the latch binary run again as `latch worker …` (hidden from
 //! `--help`), with a clean environment. A Google worker gets its selected
-//! token alone; other workers receive no credentials. Its
-//! first act is to confine itself (`sandbox.rs`); if that fails, it stops.
+//! token alone; exec can receive explicit secrets over its private request
+//! pipe. These enter only the final program's environment, after confinement.
+//! If confinement fails, the worker stops without starting the program.
 //!
 //! It talks to the host over its standard streams:
 //! - `read PATH`: one line `{"size": N}` on stdout, then the file's N bytes;
@@ -13,8 +14,8 @@
 //!   (into PATH/NAME if PATH is a folder) once it can write
 //!   there, then it takes N bytes from stdin and only then puts the file in
 //!   place (all or nothing, see `write`) and exits 0;
-//! - `exec [--workdir DIR] -- ARGV…`: moves into DIR (which must be inside an
-//!   area) and becomes the program, which inherits the sandbox; from then on
+//! - `exec [--workdir DIR] -- ARGV…`: moves into readable DIR and becomes the
+//!   program, which inherits the sandbox; from then on
 //!   its output and exit are the program's own;
 //! - `google PROGRAM`: accepts a JSON job and input bytes, then returns
 //!   gog JSON, download metadata and file bytes from its private call folder;
@@ -25,8 +26,10 @@
 //!   (the code tools like `env` use for "the wrapper failed, not the
 //!   program"). A path the sandbox refuses gives the code `sandbox_denied`.
 
+use std::cell::RefCell;
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
@@ -63,6 +66,11 @@ pub struct WorkerError {
 #[derive(Deserialize)]
 struct ErrorLine {
     worker_error: WorkerError,
+    token: Option<String>,
+}
+
+thread_local! {
+    static ERROR_TOKEN: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// The exit status of a worker that failed before doing its job.
@@ -77,13 +85,17 @@ pub fn worker_error(stderr: &str) -> Option<WorkerError> {
         .map(|line| line.worker_error)
 }
 
+/// Only the trusted worker knows this call's token. Program stderr is data.
+pub fn authenticated_worker_error(stderr: &str, token: &str) -> Option<WorkerError> {
+    let line: ErrorLine = serde_json::from_str(stderr.lines().last()?).ok()?;
+    (line.token.as_deref() == Some(token)).then_some(line.worker_error)
+}
+
 /// The environment every worker gets: just enough for programs to run.
 /// Nothing else from the host's environment is passed on.
 /// Homebrew's folders first, as in a macOS user's shell; they do not exist
 /// on Linux and cost nothing there.
-/// Why `exec` and `file` refuse on a host that shares no folders. Such an
-/// exec does not run in a scratch folder instead: the owner shared nothing
-/// to run programs against.
+/// Why file workers refuse on a host that shares no folders.
 const NO_FOLDERS: &str = "this host shares no folders; the owner can add some with \
     `latch shares set ~/code` and restart `latch serve`";
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -222,7 +234,7 @@ impl WorkerSetup {
         &self,
         args: &crate::exec::ExecArgs,
         tmpdir: &Path,
-        with_stdin: bool,
+        error_token: &str,
         kill_after: u64,
     ) -> Result<Child, WorkerError> {
         let caches =
@@ -247,11 +259,13 @@ impl WorkerSetup {
             command.arg("--network");
         }
         command
+            .arg("--error-token")
+            .arg(error_token)
             .arg("--tmpdir")
             .arg(tmpdir)
             .arg("--kill-after")
             .arg(kill_after.to_string())
-            .arg("exec");
+            .args(["exec", "--private-request"]);
         #[cfg(target_os = "linux")]
         die_with_host(&mut command);
         if let Some(workdir) = &args.workdir {
@@ -265,12 +279,7 @@ impl WorkerSetup {
             )
             .env("TMPDIR", tmpdir)
             .process_group(0)
-            // Without input, the program's stdin is empty (`/dev/null`).
-            .stdin(if with_stdin {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -382,6 +391,24 @@ fn error(code: &str, message: &str) -> WorkerError {
 /// The worker process itself (`latch worker …`). Only the workload is confined;
 /// its supervisor stays outside the sandbox.
 pub fn run(args: WorkerArgs) -> ExitCode {
+    ERROR_TOKEN.with(|token| *token.borrow_mut() = args.error_token.clone());
+    let private_request = matches!(
+        &args.action,
+        WorkerAction::Exec {
+            private_request: true,
+            ..
+        }
+    );
+    let mut private = None;
+    // bubblewrap has already installed the filesystem view on re-entry.
+    // Read before seccomp and the inner supervisor so its failures are authenticated.
+    #[cfg(target_os = "linux")]
+    if private_request && std::env::var_os("LATCH_BWRAP_INNER").is_some() {
+        private = match read_private_exec() {
+            Ok(job) => Some(job),
+            Err(exit) => return exit,
+        };
+    }
     let policy = Policy {
         areas: args.areas,
         reads: args.reads,
@@ -421,7 +448,13 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         WorkerAction::Probe => return ExitCode::SUCCESS,
         WorkerAction::Read { path } => read(path),
         WorkerAction::Write { size, name, path } => write(path, name.as_deref(), *size),
-        WorkerAction::Exec { workdir, argv } => {
+        WorkerAction::Exec { workdir, argv, .. } => {
+            if private_request && private.is_none() {
+                private = match read_private_exec() {
+                    Ok(job) => Some(job),
+                    Err(exit) => return exit,
+                };
+            }
             return exec(
                 &policy
                     .reads
@@ -431,6 +464,7 @@ pub fn run(args: WorkerArgs) -> ExitCode {
                     .collect::<Vec<_>>(),
                 workdir.as_deref(),
                 argv,
+                private.as_ref().map(|job| &job.secret_env),
             );
         }
     };
@@ -443,7 +477,12 @@ pub fn run(args: WorkerArgs) -> ExitCode {
 /// Moves into `workdir` and replaces this process with the program. Only
 /// returns (with an error) if that fails; otherwise the program's own exit
 /// becomes the worker's.
-fn exec(areas: &[PathBuf], workdir: Option<&Path>, argv: &[String]) -> ExitCode {
+fn exec(
+    areas: &[PathBuf],
+    workdir: Option<&Path>,
+    argv: &[String],
+    secrets: Option<&std::collections::BTreeMap<String, String>>,
+) -> ExitCode {
     if let Some(dir) = workdir {
         // The real directory, symlinks resolved; it must be inside an area.
         // One the sandbox will not even let us look up (Seatbelt refuses it,
@@ -483,7 +522,12 @@ fn exec(areas: &[PathBuf], workdir: Option<&Path>, argv: &[String]) -> ExitCode 
     };
     // `exec` replaces this process; the sandbox stays on the program and on
     // everything it starts.
-    let err = std::process::Command::new(program).args(args).exec();
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    if let Some(secrets) = secrets {
+        command.envs(secrets);
+    }
+    let err = command.exec();
     let code = if err.kind() == io::ErrorKind::NotFound {
         "program_not_found"
     } else {
@@ -584,9 +628,32 @@ fn io_code(err: &io::Error) -> &'static str {
 }
 
 fn fail(code: &str, message: &str) -> ExitCode {
-    let line = serde_json::json!({ "worker_error": { "code": code, "message": message } });
+    let token = ERROR_TOKEN.with(|token| token.borrow().clone());
+    let line =
+        serde_json::json!({ "worker_error": { "code": code, "message": message }, "token": token });
     eprintln!("{line}");
     ExitCode::from(WORKER_FAILED)
+}
+
+fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
+    // Stdin buffers reads; a plain duplicated file leaves the program's
+    // bytes in the pipe when exec replaces this process.
+    let fd = io::stdin()
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|_| fail("bad_request", "private exec input is unavailable"))?;
+    let job: crate::exec::PrivateExec = crate::wire::read_frame_sync(&mut File::from(fd))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| fail("bad_request", "invalid private exec request"))?;
+    ERROR_TOKEN.with(|token| *token.borrow_mut() = Some(job.error_token.clone()));
+    crate::exec::validate_secret_env(&job.secret_env).map_err(|_| {
+        fail(
+            "bad_secret_env",
+            "invalid or reserved secret environment name",
+        )
+    })?;
+    Ok(job)
 }
 
 #[cfg(test)]
