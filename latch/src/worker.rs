@@ -80,6 +80,11 @@ pub fn worker_error(stderr: &str) -> Option<WorkerError> {
 /// Nothing else from the host's environment is passed on.
 /// Homebrew's folders first, as in a macOS user's shell; they do not exist
 /// on Linux and cost nothing there.
+/// Why `exec` and `file` refuse on a host that shares no folders. Such an
+/// exec does not run in a scratch folder instead: the owner shared nothing
+/// to run programs against.
+const NO_FOLDERS: &str = "this host shares no folders; the owner can add some with \
+    `latch shares set ~/code` and restart `latch serve`";
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// A started worker: its stdout (for the first line and any file bytes)
@@ -101,7 +106,7 @@ impl WorkerSetup {
         path: &str,
     ) -> Result<(Running, serde_json::Value), WorkerError> {
         let Some(first_area) = self.areas.first() else {
-            return Err(error("no_areas", "this host shares no folders"));
+            return Err(error("no_folders", NO_FOLDERS));
         };
         let mut command = self.command(first_area)?;
         command.arg(action);
@@ -262,7 +267,7 @@ impl WorkerSetup {
         kill_after: u64,
     ) -> Result<Child, WorkerError> {
         let Some(first_area) = self.areas.first() else {
-            return Err(error("no_areas", "this host shares no folders"));
+            return Err(error("no_folders", NO_FOLDERS));
         };
         let mut command = self.command(first_area)?;
         command
@@ -324,7 +329,7 @@ impl WorkerSetup {
 /// with the host. bubblewrap (`--die-with-parent`) then kills the sandbox
 /// and the program in it.
 #[cfg(target_os = "linux")]
-fn die_with_host(command: &mut Command) {
+pub fn die_with_host(command: &mut Command) {
     let host = std::process::id() as libc::pid_t;
     // SAFETY: pre_exec is needed to set Linux's parent-death signal in the
     // child. The closure uses only scalar syscalls and allocation-free OS error

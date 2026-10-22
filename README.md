@@ -6,8 +6,8 @@ on a machine its owner trusts, over Plow's directory.
 ## Install
 
 Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
-(`gh auth login`). Releases are tagged `v<version>-build.<UTC yyyymmddHHMM>`,
-e.g. `v0.1.0-build.202610211830`. This installs the newest published one; set
+(`gh auth login`). Releases are tagged `v<version>-<build>`, e.g. `v0.1.0-1327`, where the build
+number counts release runs; `latch --version` shows it as `0.1.0 (1327)`. This installs the newest published one; set
 `release` to a tag to pick another:
 
 ```sh
@@ -19,6 +19,8 @@ latch --version
 
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
+On macOS that is a link into `~/Applications/Plow Latch.app`, the signed app
+latch runs in (no window or Dock icon), which Full Disk Access is granted to.
 Pass `--bin-dir DIR` after the release tag to choose another binary directory.
 The archive's executable `install.sh` installs the adjacent `latch` with no
 arguments, accepts options before or after an explicit binary path, and shows
@@ -33,7 +35,7 @@ Update by rerunning the commands above; `install-release.sh latest` also
 resolves the newest published release itself. State and versioned plugins stay in place;
 restart an existing `latch serve` intentionally when ready to use the new binary.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
-No Homebrew tap or Mac app is included.
+No Homebrew tap is included.
 
 ## For agents
 
@@ -89,7 +91,18 @@ No Homebrew tap or Mac app is included.
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
   to stderr, or to `serve.log` under the dashboard, never to stdout. On a
   host, each event names the connection's caller key and the operation.
+- The host's audit log is sealed: each record is encrypted with the host's
+  audit key, kept with its other secrets. `latch audit show` prints every
+  record in full, each command as it ran; `latch audit verify` checks the
+  chain without the key; `latch audit rotate-key` starts a new key and keeps
+  the old ones (a running `latch serve` uses it once restarted). The serve
+  dashboard and `serve.log` hide credential-looking values in commands, best
+  effort: some can slip through. The sealed log is
+  `audit.sealed.ndjson`; a plaintext `audit.ndjson` from an older latch is
+  never read, and latch says it can be deleted.
 - `latch shares set ~/work [--allow-read PATH]` saves the folders, and the
-  read-only paths, a `latch serve` named none shares. `latch status --local`,
+  read-only paths, a `latch serve` named none shares. With none named and
+  none saved, it serves the browser and Google only, and `exec` and `file`
+  refuse with `no_folders`. `latch status --local`,
   `latch events --follow` and `latch login --events` are for an app: see
   [latch/APP.md](latch/APP.md).

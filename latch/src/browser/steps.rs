@@ -95,45 +95,6 @@ pub(super) fn fill_to_confirm(entry: &Entry, id: &str) -> Option<Value> {
         })
 }
 
-/// A risk the pass that chose a click or Enter answered, and the context
-/// the pass saw it in, as a review reads it: `target`, the element clicked
-/// (role, name and row) or what Enter submits (its form's submit control,
-/// else the form); `lines_sha256`, the lines around it; and the page's
-/// `title`.
-pub(super) struct Passed {
-    pub(super) p: f64,
-    pub(super) seen: Value,
-}
-
-impl Passed {
-    /// Whether a fresh review finds the very context the pass saw.
-    fn holds(&self, reviewed: &Value, enter: bool) -> bool {
-        let now = if enter {
-            &reviewed["acts_on"]
-        } else {
-            &reviewed["element"]
-        };
-        let then = &self.seen["target"];
-        let known = |v: &Value| !v.is_null();
-        known(then)
-            && known(now)
-            && ["role", "name", "row"]
-                .iter()
-                .all(|key| now[*key] == then[*key])
-            && self.seen["lines_sha256"] == json!(lines_sha256(reviewed))
-            && known(&self.seen["title"])
-            && reviewed["title"] == self.seen["title"]
-    }
-}
-
-/// The SHA-256 of the lines a review read, one per line of text, as the
-/// page's reader hashes them for a pass.
-fn lines_sha256(reviewed: &Value) -> String {
-    to_hex(&Sha256::digest(
-        strings(&reviewed["lines"]).join("\n").as_bytes(),
-    ))
-}
-
 /// Waits until `deadline` for `condition`, checking it a few times a
 /// second: between checks the browser is free for other sessions' calls.
 /// A check can also end the wait early: the condition's element is from a
@@ -797,9 +758,9 @@ impl Run<'_> {
         };
         match literal.op {
             Op::Fill => self.fill(n, literal).await?,
-            Op::Click => self.risky(n, literal, false, None).await?,
-            _ if presses_enter(literal) => self.risky(n, literal, true, None).await?,
-            _ if presses_space(literal) => self.risky(n, literal, false, None).await?,
+            Op::Click => self.risky(n, literal, false).await?,
+            _ if presses_enter(literal) => self.risky(n, literal, true).await?,
+            _ if presses_space(literal) => self.risky(n, literal, false).await?,
             _ => {
                 self.dispatch(n, literal, None, None, None).await?;
             }
@@ -810,44 +771,23 @@ impl Run<'_> {
     /// A click or Enter: the model's risk decision on what it would act on,
     /// then the action, made only if that is still what the page shows, or a
     /// confirmation in its place.
-    /// The risk decision on a click or Enter, then the action or its
-    /// confirmation. `passed` is the risk the pass that chose the action
-    /// already answered, low enough to stand for the decision, with what
-    /// the pass saw the action act on: while the review finds that
-    /// unchanged, no call of its own is made.
-    async fn risky(
-        &mut self,
-        n: usize,
-        literal: &Literal,
-        enter: bool,
-        passed: Option<Passed>,
-    ) -> Result<(), Failure> {
+    async fn risky(&mut self, n: usize, literal: &Literal, enter: bool) -> Result<(), Failure> {
         let reviewed = self.review(literal, enter).await?;
         if !self.model.is_on() {
             return Err(model_unavailable(&self.model, "a click or Enter"));
         }
         let what = action_line(&reviewed, enter, literal.op == Op::Type);
-        let changed = passed.as_ref().is_some_and(|p| !p.holds(&reviewed, enter));
-        if changed && let Some(choice) = self.choice.as_mut() {
-            choice["risk_from"] = json!("own_call");
-            choice["pass_context"] = json!("changed");
-        }
-        let p = match passed.filter(|_| !changed) {
-            Some(passed) => passed.p,
-            None => {
-                let lines = strings(&reviewed["lines"]);
-                let judged = self
-                    .model
-                    .risky(
-                        reviewed["title"].as_str().unwrap_or_default(),
-                        &what,
-                        &lines,
-                    )
-                    .await;
-                record_model(&self.model, self.audit);
-                judged.map_err(|_| model_unavailable(&self.model, "a click or Enter"))?
-            }
-        };
+        let lines = strings(&reviewed["lines"]);
+        let judged = self
+            .model
+            .risky(
+                reviewed["title"].as_str().unwrap_or_default(),
+                &what,
+                &lines,
+            )
+            .await;
+        record_model(&self.model, self.audit);
+        let p = judged.map_err(|_| model_unavailable(&self.model, "a click or Enter"))?;
         if p < RISKY_P {
             let guard = fingerprint(&reviewed);
             return match self
@@ -1751,36 +1691,6 @@ pub async fn wait(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_passs_risk_holds_only_on_the_very_context_it_judged() {
-        let reviewed = json!({"element": {"role": "button", "name": "Continue"},
-                              "acts_on": null, "title": "Review your order",
-                              "lines": ["Nothing is charged yet.", "Continue"]});
-        let passed = Passed {
-            p: 0.03,
-            seen: json!({"target": {"role": "button", "name": "Continue", "row": null},
-                         "lines_sha256": lines_sha256(&reviewed),
-                         "title": "Review your order"}),
-        };
-        assert!(passed.holds(&reviewed, false));
-        let changed = |key: &str, value: Value| {
-            let mut now = reviewed.clone();
-            now[key] = value;
-            passed.holds(&now, false)
-        };
-        assert!(!changed(
-            "element",
-            json!({"role": "button", "name": "Place order"})
-        ));
-        assert!(!changed(
-            "lines",
-            json!(["Continuing places your order.", "Continue"])
-        ));
-        assert!(!changed("title", json!("Confirm and pay")));
-        // An Enter is judged on what it submits, which this review lacks.
-        assert!(!passed.holds(&reviewed, true));
-    }
 
     #[test]
     fn request_ids_are_the_clients_own() {

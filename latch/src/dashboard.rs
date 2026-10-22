@@ -6,9 +6,14 @@
 //! While the dashboard has the screen, the host's log lines go to a file
 //! in the state directory instead (see `log.rs`). With `--no-dashboard`,
 //! `NO_COLOR`, or stdout not a terminal, `serve` logs exactly as before.
+//!
+//! Only the dashboard's own thread writes to the terminal. A terminal that
+//! takes no output (paused, or a stalled ssh session) blocks that thread
+//! alone: the host keeps serving, and the screen catches up once it can.
 
 use std::collections::VecDeque;
 use std::io::Write;
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,6 +25,9 @@ use crate::term;
 
 /// How many calls the dashboard remembers (more than any screen shows).
 const KEEP: usize = 500;
+
+/// How long a stopping host waits to give the terminal back.
+const GIVE_BACK_WITHIN: Duration = Duration::from_secs(1);
 
 /// Column widths, in characters.
 const TIME: usize = 8;
@@ -43,48 +51,116 @@ pub struct Row {
 /// which adds to it, and the task that redraws it every second.
 struct Board {
     host: String,
+    /// A line under the title, such as that the host shares no folders.
+    note: Option<&'static str>,
     last_heartbeat: Option<Timestamp>,
     /// Standing notices under the title: pending browser handoffs.
     notices: Vec<String>,
+    /// What a starting or stopping host is doing, shown in place of the
+    /// heartbeat until the next one.
+    step: Option<String>,
     rows: VecDeque<Row>,
+}
+
+/// Where the screen goes, and whether the host gave the terminal back.
+struct Screen {
+    out: Box<dyn Write + Send>,
+    given_back: bool,
 }
 
 #[derive(Clone)]
 pub struct Dashboard {
     board: Arc<Mutex<Board>>,
+    /// Asks the drawing thread for a redraw; when one is already asked
+    /// for, the change shows in that one.
+    redraw: SyncSender<()>,
+    screen: Arc<Mutex<Screen>>,
 }
 
 impl Dashboard {
     /// Takes over the terminal: the alternate screen, cursor hidden.
-    pub fn start(host: &str) -> Dashboard {
-        print!("{}{}", term::ALTERNATE_SCREEN, term::HIDE_CURSOR);
+    pub fn start(host: &str, note: Option<&'static str>) -> Dashboard {
+        Dashboard::start_on(host, note, Box::new(std::io::stdout()))
+    }
+
+    fn start_on(host: &str, note: Option<&'static str>, out: Box<dyn Write + Send>) -> Dashboard {
         let board = Board {
             host: host.to_string(),
+            note,
             last_heartbeat: None,
             notices: Vec::new(),
+            step: None,
             rows: VecDeque::new(),
         };
+        let (redraw, asked) = mpsc::sync_channel(1);
         let dashboard = Dashboard {
             board: Arc::new(Mutex::new(board)),
+            redraw,
+            screen: Arc::new(Mutex::new(Screen {
+                out,
+                given_back: false,
+            })),
         };
-        let redraw = dashboard.clone();
-        tokio::spawn(async move {
+        let board = dashboard.board.clone();
+        let screen = dashboard.screen.clone();
+        std::thread::spawn(move || {
+            let mut first = true;
             loop {
-                redraw.draw();
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let (width, height) = term::size();
+                let text = board.lock().expect("board lock").screen(width, height);
+                let mut screen = screen.lock().expect("screen lock");
+                if screen.given_back {
+                    return;
+                }
+                if first {
+                    let _ = write!(
+                        screen.out,
+                        "{}{}",
+                        term::ALTERNATE_SCREEN,
+                        term::HIDE_CURSOR
+                    );
+                    first = false;
+                }
+                let _ = write!(screen.out, "{}{text}", term::CLEAR);
+                let _ = screen.out.flush();
+                drop(screen);
+                if let Err(RecvTimeoutError::Disconnected) =
+                    asked.recv_timeout(Duration::from_secs(1))
+                {
+                    return;
+                }
             }
         });
         dashboard
     }
 
-    /// Gives the terminal back as it was.
+    /// Gives the terminal back as it was, waiting at most
+    /// `GIVE_BACK_WITHIN`: a terminal that takes no output is left as it
+    /// is, so stopping never hangs on it.
     pub fn stop(&self) {
-        print!("{}{}", term::SHOW_CURSOR, term::MAIN_SCREEN);
-        let _ = std::io::stdout().flush();
+        let screen = self.screen.clone();
+        let (given, back) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut screen = screen.lock().expect("screen lock");
+            screen.given_back = true;
+            let _ = write!(screen.out, "{}{}", term::SHOW_CURSOR, term::MAIN_SCREEN);
+            let _ = screen.out.flush();
+            let _ = given.send(());
+        });
+        let _ = back.recv_timeout(GIVE_BACK_WITHIN);
     }
 
     pub fn heartbeat(&self) {
-        self.board.lock().expect("board lock").last_heartbeat = Some(Timestamp::now());
+        let mut board = self.board.lock().expect("board lock");
+        board.last_heartbeat = Some(Timestamp::now());
+        board.step = None;
+        drop(board);
+        self.draw();
+    }
+
+    /// Shows what the host is doing now, while it starts or stops.
+    pub fn step(&self, step: &str) {
+        self.board.lock().expect("board lock").step = Some(step.to_string());
         self.draw();
     }
 
@@ -102,12 +178,9 @@ impl Dashboard {
         self.draw();
     }
 
+    /// Asks for a redraw, never waiting for the terminal.
     fn draw(&self) {
-        let (width, height) = term::size();
-        let screen = self.board.lock().expect("board lock").screen(width, height);
-        let mut out = std::io::stdout();
-        let _ = write!(out, "{}{screen}", term::CLEAR);
-        let _ = out.flush();
+        let _ = self.redraw.try_send(());
     }
 }
 
@@ -125,7 +198,10 @@ impl Board {
 
         let mut lines = Vec::new();
         let title = format!(" latch serve · {}", term::one_line(&self.host));
-        let status = format!("last heartbeat {heartbeat} · {per_minute} calls/min ");
+        let status = match &self.step {
+            Some(step) => format!("{step} "),
+            None => format!("last heartbeat {heartbeat} · {per_minute} calls/min "),
+        };
         let gap = width.saturating_sub(title.chars().count() + status.chars().count());
         lines.push(format!(
             "{}{}{}",
@@ -134,6 +210,9 @@ impl Board {
             paint::fg(&status, DIM)
         ));
         lines.push(paint::fg(&"─".repeat(width), FAINT));
+        if let Some(note) = self.note {
+            lines.push(paint::fg(&format!(" {}", term::fit(note, width - 1)), DIM));
+        }
         for notice in &self.notices {
             lines.push(paint::bold(
                 &format!(" {}", term::fit(notice, width - 1)),
@@ -173,9 +252,13 @@ impl Board {
         if self.rows.is_empty() {
             lines.push(paint::fg(" waiting for calls…", DIM));
         }
-        while lines.len() < height.saturating_sub(1) {
+        while lines.len() < height.saturating_sub(2) {
             lines.push(String::new());
         }
+        lines.push(paint::fg(
+            " Commands hide credential-looking values, best effort: some can slip through",
+            DIM,
+        ));
         lines.push(paint::fg(
             " Ctrl-C stops the host · logs: serve.log in the state directory",
             DIM,
@@ -197,14 +280,9 @@ pub fn describe(op: &str, args: &Value, outcome: &str, took: Duration) -> (Strin
     let took = human_duration(took);
     match op {
         "exec" => {
-            let argv = args["argv"]
-                .as_array()
-                .or_else(|| args["argv"]["kept"].as_array());
-            let words: Vec<&str> = argv
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
+            let shown = crate::redact::shown("exec", args);
+            let words: Vec<String> =
+                serde_json::from_value(shown["argv"].clone()).unwrap_or_default();
             let ended = if args["timed_out"] == true {
                 "timed out".to_string()
             } else if let Some(code) = args["exit_code"].as_i64() {
@@ -289,6 +367,72 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A terminal that takes no output: every write waits forever.
+    struct Stuck(Mutex<mpsc::Receiver<()>>);
+
+    impl Write for Stuck {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.lock().unwrap().recv();
+            Ok(0)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_terminal_that_takes_no_output_never_holds_up_the_host() {
+        let (_never, wait) = mpsc::channel();
+        let dashboard = Dashboard::start_on("host", None, Box::new(Stuck(Mutex::new(wait))));
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..100 {
+                dashboard.call(Row {
+                    at: Timestamp::now(),
+                    caller: "agent".to_string(),
+                    op: "exec".to_string(),
+                    target: "pytest".to_string(),
+                    result: "exit 0".to_string(),
+                    refused: false,
+                });
+                dashboard.heartbeat();
+                dashboard.step("stopping");
+            }
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the host's calls returned while the terminal took nothing");
+    }
+
+    #[test]
+    fn a_terminal_that_takes_no_output_never_holds_up_stopping() {
+        let (_never, wait) = mpsc::channel();
+        let dashboard = Dashboard::start_on("host", None, Box::new(Stuck(Mutex::new(wait))));
+        // The drawing thread is stuck in its first write, holding the screen.
+        std::thread::sleep(Duration::from_millis(100));
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            dashboard.stop();
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(GIVE_BACK_WITHIN + Duration::from_secs(4))
+            .expect("stop returned while the terminal took nothing");
+    }
+
+    #[test]
+    fn an_exec_whose_argv_is_not_a_list_of_words_shows_no_command() {
+        let (target, result) = describe(
+            "exec",
+            &json!({"argv": 1, "exit_code": 0}),
+            "ok",
+            Duration::ZERO,
+        );
+        assert_eq!(target, "");
+        assert!(result.starts_with("exit 0"), "{result}");
+    }
+
     #[test]
     fn a_multiline_argv_stays_on_one_row() {
         // `latch exec -- sh -c $'echo a\necho b'`, plus an escape sequence.
@@ -300,8 +444,10 @@ mod tests {
         );
         let mut board = Board {
             host: "host".to_string(),
+            note: None,
             last_heartbeat: None,
             notices: Vec::new(),
+            step: None,
             rows: VecDeque::from([Row {
                 at: Timestamp::now(),
                 caller: "agent".to_string(),
@@ -331,6 +477,32 @@ mod tests {
                 .contains("handoff pending: session dkcfhoeamlpb")
         );
         assert!(screen.contains("sh -c echo a"));
+    }
+
+    #[test]
+    fn a_host_sharing_no_folders_says_so_under_its_title() {
+        let board = Board {
+            host: "host".to_string(),
+            note: Some(crate::serve::SHARING_NONE),
+            last_heartbeat: None,
+            notices: Vec::new(),
+            step: None,
+            rows: VecDeque::new(),
+        };
+        let screen = board.screen(100, 10);
+        let note = screen.lines().nth(2).unwrap();
+        assert!(
+            note.contains("Sharing no folders — browser and Google only")
+                && note.contains("latch shares set ~/code"),
+            "{screen}"
+        );
+        // On a narrower terminal it is cut to the width rather than wrapped,
+        // so the screen still fits.
+        let screen = board.screen(80, 10);
+        assert_eq!(screen.lines().count(), 10, "{screen}");
+        let note = screen.lines().nth(2).unwrap();
+        assert!(note.starts_with(" Sharing no folders"), "{note}");
+        assert!(note.chars().count() <= 80, "{note}");
     }
 
     #[test]

@@ -38,6 +38,7 @@ conformance!(
     a_one_step_do_plan_is_judged_and_act_is_not,
     a_host_out_of_plow_credits_says_its_account_owner_must_add_them,
     goto_on_a_new_site_is_judged_as_a_tab_there_is,
+    a_local_address_is_refused_before_the_judge_or_an_engine,
 );
 
 /// The owner's chat, oldest message first; a test may add to it between
@@ -1511,4 +1512,32 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
     }
     assert_eq!(judge.calls(), asked);
     host.look("close", &id, json!({})).await;
+}
+
+async fn a_local_address_is_refused_before_the_judge_or_an_engine(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    // The owner has not allowed local browsing: the default.
+    std::fs::remove_file(state.join("host.json")).unwrap();
+    let (site, hits) = serve_site();
+    let judge = Judge::new(|_| COVERED);
+    let host = Host::start(&state, &site, &judge, Vec::new());
+    let started = std::time::Instant::now();
+    let (refusal, audit) = host
+        .agent(
+            "open",
+            "default",
+            json!({"url": format!("{site}/files.html")}),
+            None,
+        )
+        .await;
+    let refusal = refusal.unwrap_err();
+    println!(
+        "open of a local address: {} in {:?}",
+        refusal.code,
+        started.elapsed()
+    );
+    assert_eq!(refusal.code, "url_refused");
+    assert!(!audit.contains_key("gate"));
+    assert_eq!(judge.calls(), 0);
+    assert!(hits.lock().unwrap().is_empty());
 }

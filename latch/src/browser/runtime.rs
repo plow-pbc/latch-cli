@@ -129,6 +129,11 @@ impl Runtime {
         if super::display::for_runtime(headless) {
             command.arg("--private-display");
         }
+        // The worker dies with this host: on Linux the kernel kills it (and
+        // bubblewrap, which it becomes, everything inside); on macOS it
+        // watches the host itself (see `browser::worker`).
+        #[cfg(target_os = "linux")]
+        crate::worker::die_with_host(&mut command);
         let mut child = command
             .env_clear()
             .env("PATH", PATH)
