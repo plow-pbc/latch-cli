@@ -10,6 +10,10 @@ use std::thread;
 
 use serde_json::{Value, json};
 
+#[cfg(target_os = "macos")]
+#[path = "support/shop_server.rs"]
+mod shop_server;
+
 /// A fake Plow that answers one HTTP request per entry in `answers`, in
 /// order, and hands back the raw requests it received. Like Plow, it answers
 /// a registration with the key it was sent: a `null` key in an answer is
@@ -1463,6 +1467,20 @@ impl LivePlow {
                                  "sender": {"type": "member", "display_name": "Owner", "role": "owner"}}],
                        "has_more": false}),
             ),
+            // A browser click's risk is asked the same way: low.
+            ("POST", "/v1/decisions")
+                if kind == "device"
+                    && serde_json::from_slice::<Value>(&request.body).unwrap_or_default()
+                        ["questions"]["risky"]
+                        .is_object() =>
+            {
+                (
+                    200,
+                    json!({"id": "req_test", "model": "typesafe/jev-1.13",
+                           "answers": {"risky": {"type": "noul", "noul": 0.05}},
+                           "usage": {"input_tokens": 1, "output_tokens": 0}}),
+                )
+            }
             ("POST", "/v1/decisions") if kind == "device" => (
                 200,
                 json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
@@ -4381,6 +4399,152 @@ fn audit_show_follow_sleeps_while_the_log_is_quiet() {
     drop(follow.stdin.take());
     assert!(follow.wait().unwrap().success());
     assert!(used < 20, "a quiet follow used {used} ticks in 2 s");
+}
+
+/// A host's state given the pinned browser engines the tests installed
+/// (`just cft`), local pages allowed, and the Messages reader.
+#[cfg(target_os = "macos")]
+fn browser_and_messages_host(host: &Path) {
+    let installed = std::env::var_os("LATCH_CFT_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
+    let engines = installed.canonicalize().unwrap().join("plugins");
+    let plugins = host.join("plugins");
+    fs::create_dir_all(&plugins).unwrap();
+    for engine in ["cft", "camoufox"] {
+        if engines.join(engine).exists() {
+            std::os::unix::fs::symlink(engines.join(engine), plugins.join(engine)).unwrap();
+        }
+    }
+    fs::write(host.join("host.json"), r#"{"allow_local_browsing": true}"#).unwrap();
+    let reader = plugins
+        .join("messages")
+        .join(env!("CARGO_PKG_VERSION"))
+        .join("latch-messages");
+    fs::create_dir_all(reader.parent().unwrap()).unwrap();
+    fs::copy(messages_reader(), &reader).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_agent_signs_in_with_a_code_texted_to_the_owner() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let (share, home) = (dir.path().join("share"), dir.path().join("home"));
+    fs::create_dir(&share).unwrap();
+    messages_home(&home);
+    browser_and_messages_host(&host);
+    let mut command = serve_command(&host, &[&share], &relay);
+    command.arg("--headless-browsers").env("HOME", &home);
+    let (serve, mut log, _) = serving_with(command);
+    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    until_serving(&host, &serve);
+    let site = shop_server::serve_shop();
+
+    let agent_runs = |args: &[&str]| {
+        let output = latch(&agent, args, &agent_env);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let answer = serde_json::from_slice::<Value>(printed).unwrap_or(Value::Null);
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {answer}");
+        answer
+    };
+
+    // The sign-in page asks for the code it texted.
+    let opened = agent_runs(&[
+        "browser",
+        "--host",
+        "host",
+        "open",
+        &format!("{site}/verify.html?next=index.html"),
+    ]);
+    let session = opened["session"].as_str().unwrap().to_string();
+    let page = agent_runs(&[
+        "browser",
+        "--host",
+        "host",
+        "--session",
+        &session,
+        "observe",
+    ]);
+    let field = page["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["role"] == "textbox" && e["name"] == "Verification code")
+        .unwrap_or_else(|| panic!("no code field in {page}"))["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Step 1: the agent finds the code in the owner's messages.
+    let found = agent_runs(&[
+        "messages", "search", "--host", "host", "--since", "15m", "code",
+    ]);
+    let text = found["messages"][0]["text"].as_str().unwrap();
+    let code: String = text
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|word| word.len() == 6)
+        .unwrap()
+        .into();
+    assert_eq!(code, "482913");
+
+    // Step 2: it types the code into the page's code field and submits it,
+    // as literal steps; the page goes on once the code is in.
+    let button = page["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["role"] == "button" && e["name"] == "Verify")
+        .unwrap()["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let typed = format!("type {field} \"{code}\"");
+    let submitted = format!("click {button} -> path: /index.html");
+    let plan = agent_runs(&[
+        "browser",
+        "--host",
+        "host",
+        "--session",
+        &session,
+        "do",
+        &typed,
+        &submitted,
+    ]);
+    // The code went into its field, and the page took it: the submit's
+    // check, the page it goes on to, held.
+    assert_eq!(plan["steps"][0]["outcome"], "dispatched", "{plan}");
+    assert_eq!(plan["steps"][1]["outcome"], "checked", "{plan}");
+    agent_runs(&["browser", "--host", "host", "--session", &session, "close"]);
+
+    // Both steps were judged, as the agent's, on the host.
+    let records = audit_records(&host);
+    let judged: Vec<(&str, &str)> = records
+        .iter()
+        // The browser keeps its judgment with its arguments.
+        .filter(|r| r["gate"]["caller"] == "agent" || r["args"]["gate"]["caller"] == "agent")
+        .map(|r| {
+            (
+                r["op"].as_str().unwrap_or(""),
+                r["decision"].as_str().unwrap_or(""),
+            )
+        })
+        .collect();
+    assert!(judged.contains(&("messages", "allow")), "{judged:?}");
+    assert!(judged.contains(&("browser", "allow")), "{judged:?}");
+    drop(serve);
 }
 
 /// Messages and Contacts are macOS connectors: a Linux latch has no such
