@@ -63,21 +63,20 @@ Secrets disclosure (chef, 2026-10-22): the dashboard's footer line about hiding 
 
 Example: `The Messages connector is off. Run: latch plugins enable messages`.
 
-### 3.1 One home for each piece of help (chef, 2026-10-22)
+### 3.1 One source for each piece of help (chef, 2026-10-22)
 
-Today the same agent guidance lives in up to three places: `latch skill` (`SKILL.md`), the text appended to `--help` (`AGENT_HELP`, `EXEC_HELP`, `MESSAGES_HELP`, …) and `help --json`. Nothing tests the first two.
+Goal: help stays as verbose and useful as today, for agents above all; what changes is that each fact is written once and every surface that shows it pulls it from that one source. Today the same guidance is hand-copied across `latch skill` (`SKILL.md`), the text appended to `--help` (`AGENT_HELP`, `EXEC_HELP`, `MESSAGES_HELP`, …) and `help --json`, and nothing tests the copies.
 
-- `latch skill` is the single home for agent guidance: logins, exit-code handling, untrusted content, how to pass secrets (including the secrets disclosure above).
-- The root `--help`'s agent block shrinks to a pointer to `latch skill` and `help --json`. Command-specific facts (exec's limits, `browser do`'s grammar, serve notes) stay in that command's `--help`.
-- `help --json` stays the machine reference and the source of examples; `latch help <cmd>` stays an alias of `--help`.
-- Each fact appears once; other surfaces point to it. Homes (from `research/research-help-layout-{claude,codex}.md`, which agree):
-  - clap doc comments: flags, arguments, defaults. `-h` terse; `--help` long.
-  - `ENTRIES` (behind `help --json`): output, side effects, retry, examples. `--help` builds its examples from it rather than repeating them.
-  - `Exit` / error codes: exit meanings, listed in `help --json` and added to `latch skill` from the same source.
-  - Each command's long help: only that command's grammar and limits (exec's limits, `browser do`'s steps).
-  - `SKILL.md`: only cross-command judgement — refusals, untrusted content, secrets, browsing.
-- Drift tests: every `latch …` line in `SKILL.md` and in `--help` text parses; every error code `SKILL.md` names exists; snapshots of `-h`, `--help` and `skill`.
-- Delete: the root agent block (down to one pointer line), the root messages block, `EXEC_HELP`'s exit-code sentence and repeated example, `DO_HELP`'s hand-written examples (moved into `ENTRIES`), and `help --examples` (a subset of `--json`).
+- **A command's `--help` stays complete for that command.** An agent that reads only `latch <cmd> --help` still gets everything it needs for that command, including the cross-command rules that apply to it (e.g. `messages --help` still says message content is untrusted; `exec --help` still carries the secrets guidance). Those shared paragraphs are written once and included, not re-typed.
+- **Sources** (from `research/research-help-layout-{claude,codex}.md`):
+  - clap doc comments: flags, arguments, defaults. `-h` and `--help` stay the same text.
+  - `ENTRIES` (behind `help --json`): output, side effects, retry, examples. `--help` shows its examples from there.
+  - `Exit` / error codes: exit meanings, shown in `help --json` and in `latch skill`.
+  - Shared guidance blocks (untrusted content, secrets, refusals and retries, logins): one source each, included in `latch skill` and in the `--help` of every command they apply to.
+  - A command's own grammar and limits (exec's limits, `browser do`'s steps): that command's long help.
+- `latch skill` remains the full agent guide (it includes all shared blocks plus browsing, sandbox and sign-in walkthroughs). The root `--help` keeps its command list and points agents to `latch skill` and `help --json`.
+- **Drift tests:** every `latch …` line in `SKILL.md` and `--help` parses; every code `SKILL.md` names exists (denial reasons such as `owner_said_no` count); snapshots of `--help` per command and of `skill`.
+- **Delete:** only true duplicates — hand-typed copies replaced by the shared blocks — and `help --examples` (a subset of `help --json`). No command loses help content.
 
 ## 4. Out of scope
 
@@ -116,7 +115,7 @@ Done when: `setup`, interactive `login`, attached `serve`, `dashboard` and `rule
 ### Chunk 2: Copy pass — proposal
 Implements: §3, §3.1
 Interfaces: consumes every human-facing string after Chunks 1a–1d · produces a before/after table for the chef
-Done when: a proposal for the §3.1 help layout (which fact lives where) plus a table of every human-facing string (human-command screens and prompts, error messages and `next`, help one-liners, `--help` add-on text, `SKILL.md`), with the current text, the proposed text and where it lives, is delivered to the chef; no code changed.
+Done when: a proposal for the §3.1 help sources (which fact comes from where, which shared blocks each command's `--help` includes) plus a table of every human-facing string (human-command screens and prompts, error messages and `next`, help one-liners, `--help` add-on text, `SKILL.md`), with the current text, the proposed text and where it lives, is delivered to the chef; no code changed.
 
 ### Chunk 3: Copy pass — apply
 Implements: §3, §3.1
