@@ -11,14 +11,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 use super::classify;
 use super::item::{Item, Meta};
 use crate::failure::{Exit, Failure};
+use crate::seal::{Sealed, from_hex, seal};
 use crate::secrets::{Secret, Secrets};
 use crate::state::{to_hex, write_private};
 
@@ -54,12 +53,6 @@ const DATA_KEY_AAD: &[u8] = b"latch vault data key v1";
 const ITEMS_AAD: &[u8] = b"latch vault items v1";
 
 #[derive(Serialize, Deserialize)]
-struct Sealed {
-    nonce: String,
-    ciphertext: String,
-}
-
-#[derive(Serialize, Deserialize)]
 struct File {
     version: u32,
     data_key: Sealed,
@@ -82,43 +75,9 @@ fn failed(message: String) -> Failure {
     Failure::failed("vault_failed", message)
 }
 
-fn from_hex(text: &str) -> Result<Vec<u8>, Failure> {
-    let bad = || failed("the vault file is damaged".into());
-    if !text.len().is_multiple_of(2) {
-        return Err(bad());
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| bad()))
-        .collect()
-}
-
-fn seal(key: &[u8; 32], plain: &[u8], aad: &[u8]) -> Sealed {
-    let cipher = Aes256Gcm::new_from_slice(key).expect("a 32-byte key");
-    let nonce: [u8; 12] = rand::random();
-    let ciphertext = cipher
-        .encrypt(&Nonce::from(nonce), Payload { msg: plain, aad })
-        .expect("sealing cannot fail");
-    Sealed {
-        nonce: to_hex(&nonce),
-        ciphertext: to_hex(&ciphertext),
-    }
-}
-
 fn open(key: &[u8; 32], sealed: &Sealed, aad: &[u8]) -> Result<Vec<u8>, Failure> {
-    let cipher = Aes256Gcm::new_from_slice(key).expect("a 32-byte key");
-    let nonce: [u8; 12] = from_hex(&sealed.nonce)?
-        .try_into()
-        .map_err(|_| failed("the vault file is damaged".into()))?;
-    cipher
-        .decrypt(
-            &Nonce::from(nonce),
-            Payload {
-                msg: &from_hex(&sealed.ciphertext)?,
-                aad,
-            },
-        )
-        .map_err(|_| failed("the vault could not be opened with its custody key".into()))
+    crate::seal::open(key, &sealed.nonce, &sealed.ciphertext, aad)
+        .ok_or_else(|| failed("the vault could not be opened with its custody key".into()))
 }
 
 /// Reads the custody key of the vault in `dir`. It is read on each use,
@@ -131,9 +90,9 @@ fn custody(dir: &Path) -> Result<[u8; 32], Failure> {
         )));
     };
     let text = String::from_utf8(bytes).map_err(|_| failed("the custody key is damaged".into()))?;
-    from_hex(text.trim())?
-        .try_into()
-        .map_err(|_| failed("the custody key is damaged".into()))
+    from_hex(text.trim())
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| failed("the custody key is damaged".into()))
 }
 
 impl OwnStore {

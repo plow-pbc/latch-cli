@@ -147,6 +147,8 @@ pub enum Command {
     Rules(RulesArgs),
     /// The folders `latch serve` shares when it is named none, and its --allow-read paths: show them, or set them
     Shares(SharesArgs),
+    /// This machine's host audit log: its records in full, its chain checked without the key, or a new key
+    Audit(AuditArgs),
     /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
     Events(EventsArgs),
     /// Run this machine as a host, in the foreground, until stopped
@@ -746,6 +748,22 @@ pub struct EventsArgs {
     /// Only the host's state changes, no activity
     #[arg(long)]
     pub lifecycle_only: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct AuditArgs {
+    #[command(subcommand)]
+    pub action: AuditAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuditAction {
+    /// Every record, opened with the key: each command in full, as it ran
+    Show,
+    /// Check every record's place in the chain, without the key
+    Verify,
+    /// Seal new records under a new key and keep every old one; a running `latch serve` uses it once restarted
+    RotateKey,
 }
 
 #[derive(Args, Debug)]

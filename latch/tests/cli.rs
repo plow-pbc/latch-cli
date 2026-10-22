@@ -942,6 +942,15 @@ fn owner_host() -> (tempfile::TempDir, PathBuf, String) {
     (dir, state, key)
 }
 
+/// The audit records of the host on `state`, opened with its key
+/// (`latch audit show`).
+fn audit_records(state: &Path) -> Vec<Value> {
+    let shown = latch(state, &["audit", "show"], &[]);
+    assert_eq!(shown.status.code(), Some(0), "{shown:?}");
+    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    shown["records"].as_array().cloned().unwrap_or_default()
+}
+
 /// Points `state`'s later Plow calls at `url`.
 fn use_plow(state: &Path, url: &str) {
     let config_path = state.join("config.json");
@@ -1032,11 +1041,8 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
 
     // Every command is in the host's audit log, by this machine's key, with
     // revisions and never the text.
-    let log = fs::read_to_string(state.join("audit.ndjson")).unwrap();
-    let records: Vec<Value> = log
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
+    let records = audit_records(&state);
+    let log = Value::from(records.clone()).to_string();
     let commands: Vec<&str> = records
         .iter()
         .map(|r| r["args"]["command"].as_str().unwrap())
@@ -1091,9 +1097,34 @@ fn an_agent_gets_owner_only_for_rules_on_its_own_state() {
 }
 
 #[test]
+fn an_older_plaintext_audit_is_left_alone_and_a_sealed_one_starts_beside_it() {
+    let (_dir, state, _key) = owner_host();
+    let old = "{\"op\":\"exec\",\"caller\":\"older-latch\"}\n";
+    fs::write(state.join("audit.ndjson"), old).unwrap();
+
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let said = String::from_utf8_lossy(&set.stderr);
+    assert_eq!(said.lines().count(), 1, "{said}");
+    assert!(
+        said.contains("audit.ndjson is an older latch's plaintext audit log"),
+        "{said}"
+    );
+    assert!(said.contains("can be deleted"), "{said}");
+
+    // Neither read nor changed; the new record is in the sealed log.
+    assert_eq!(fs::read_to_string(state.join("audit.ndjson")).unwrap(), old);
+    let records = audit_records(&state);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["op"], "rules");
+    let sealed = fs::read_to_string(state.join("audit.sealed.ndjson")).unwrap();
+    assert!(!sealed.contains("Never send email") && !sealed.contains("rules"));
+}
+
+#[test]
 fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
     let (_dir, state, _key) = owner_host();
-    fs::write(state.join("audit.ndjson"), "not a record\n").unwrap();
+    fs::write(state.join("audit.sealed.ndjson"), "not a record\n").unwrap();
     let output = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -1106,7 +1137,7 @@ fn a_local_rules_command_on_an_audit_log_it_cannot_write_changes_nothing() {
     let (_dir, state, _key) = owner_host();
     let show = latch(&state, &["rules", "show"], &[]);
     assert_eq!(show.status.code(), Some(0), "{show:?}");
-    let log = state.join("audit.ndjson");
+    let log = state.join("audit.sealed.ndjson");
     fs::set_permissions(&log, std::os::unix::fs::PermissionsExt::from_mode(0o400)).unwrap();
     let output = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -1525,6 +1556,70 @@ fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
 }
 
 #[test]
+fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
+    let (_dir, state, _key) = owner_host();
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let run = |args: &[&str]| -> (Option<i32>, Value) {
+        let output = latch(&state, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        (
+            output.status.code(),
+            serde_json::from_slice(printed).unwrap(),
+        )
+    };
+
+    let (code, rotated) = run(&["audit", "rotate-key"]);
+    assert_eq!(code, Some(0), "{rotated}");
+    assert_eq!(rotated["keys"], json!(["k1", "k2"]));
+    let show = latch(&state, &["rules", "show"], &[]);
+    assert_eq!(show.status.code(), Some(0), "{show:?}");
+    let (code, shown) = run(&["audit", "show"]);
+    assert_eq!(code, Some(0), "{shown}");
+    let commands: Vec<&str> = shown["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["args"]["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(commands, ["set", "show"]);
+
+    // Without the key the chain still checks; the records do not open.
+    fs::remove_file(state.join("audit.keys")).unwrap();
+    let (code, verified) = run(&["audit", "verify"]);
+    assert_eq!(code, Some(0), "{verified}");
+    assert_eq!(verified["records"], 2);
+    assert_eq!(verified["checked_without_the_key"], true);
+    let (code, refused) = run(&["audit", "show"]);
+    assert_eq!(code, Some(1), "{refused}");
+    assert_eq!(refused["error"]["code"], "audit_key");
+}
+
+#[test]
+fn serve_log_says_its_commands_hide_credentials_only_best_effort() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let (serve, lines) = serving_folders(&host, &[&share], &relay, &[]);
+    drop(serve);
+    let note = lines
+        .iter()
+        .find(|line| line.contains("commands in this log:"))
+        .expect("serve.log says how it shows commands");
+    assert!(
+        note.contains("best effort") && note.contains("latch audit show"),
+        "{note}"
+    );
+}
+
+#[test]
 fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
@@ -1931,12 +2026,11 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     assert!(!owner.join("rules").exists() && !agent.join("rules").exists());
 
     // The host audited every command by revision, never by text.
-    let log = fs::read_to_string(host.join("audit.ndjson")).unwrap();
-    let records: Vec<Value> = log
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .filter(|record: &Value| record["op"] == "rules")
+    let records: Vec<Value> = audit_records(&host)
+        .into_iter()
+        .filter(|record| record["op"] == "rules")
         .collect();
+    let log = Value::from(records.clone()).to_string();
     let decisions: Vec<(&str, &str)> = records
         .iter()
         .map(|r| {
@@ -1972,7 +2066,7 @@ fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     let dir = test_dir();
     let state = dir.path().join("state");
     fs::create_dir(&state).unwrap();
-    let marker = r#"{"format": 2, "written_by": "0.2.0"}"#;
+    let marker = r#"{"format": 3, "written_by": "0.3.0"}"#;
     fs::write(state.join("latch.json"), marker).unwrap();
     // Not valid for this latch either way: a newer layout it would misread.
     fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
@@ -2354,10 +2448,8 @@ fn shutdown_exec_cases() {
                 "{what}: its child lives on"
             );
         }
-        let audit = fs::read_to_string(host.join("audit.ndjson")).unwrap();
-        let exec = audit
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        let exec = audit_records(&host)
+            .into_iter()
             .find(|record| record["op"] == "exec")
             .expect("the exec is audited");
         assert_eq!(exec["outcome"], outcome, "{what}: {exec}");
@@ -2434,7 +2526,7 @@ fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapsho
 }
 
 /// The state files a latch keeps its secrets in when it has no Keychain.
-const SECRET_FILES: [&str; 3] = ["key", "plow-token", "vault.key"];
+const SECRET_FILES: [&str; 4] = ["key", "plow-token", "vault.key", "audit.keys"];
 
 fn secret_files_in(state: &Path) -> Vec<&'static str> {
     SECRET_FILES
@@ -2646,10 +2738,8 @@ impl Bench {
 
     /// The host's audit records of `exec`.
     fn exec_records(&self) -> Vec<Value> {
-        fs::read_to_string(self.host.join("audit.ndjson"))
-            .unwrap_or_default()
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        audit_records(&self.host)
+            .into_iter()
             .filter(|record| record["op"] == "exec")
             .collect()
     }

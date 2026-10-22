@@ -11,8 +11,9 @@
 //! connection closes (`caller_gone`): nobody would get its result. A host
 //! that dies without stopping takes the program with it (see
 //! `WorkerSetup::start_exec`).
-//! The audit record holds the argv (up to 4 KiB, as run), the workdir and
-//! how it ended, never the output.
+//! The audit record holds the whole argv, as run, the workdir and how it
+//! ended, never the output. The audit log is encrypted; whatever shows the
+//! argv to people hides credential-looking values first (`redact.rs`).
 //!
 //! Each run gets a fresh, empty temp folder of its own as its `TMPDIR`,
 //! made in the host's OS temp folder and readable and writable by that
@@ -44,8 +45,6 @@ use crate::worker::{WorkerError, WorkerSetup, worker_error};
 
 /// How much of each output stream the agent gets back.
 const OUTPUT_CAP: usize = 256 * 1024;
-/// How much of the argv the audit log keeps.
-const ARGV_AUDIT_CAP: usize = 4 * 1024;
 /// The longest `--timeout` a host accepts.
 const MAX_TIMEOUT_SECS: u64 = 600;
 /// The most stdin a call may bring (`latch exec --stdin`).
@@ -104,7 +103,7 @@ pub async fn run(
     if input.as_ref().is_some_and(|bytes| bytes.len() > MAX_STDIN) {
         return bad_request("stdin must be at most 256 KiB of bytes");
     }
-    let mut audit = json!({ "argv": capped_argv(&argv), "workdir": shown_workdir });
+    let mut audit = json!({ "argv": &argv, "workdir": shown_workdir });
     if let Some(bytes) = &input {
         audit["stdin"] = stdin_audit(bytes);
     }
@@ -386,27 +385,6 @@ async fn collected(capture: Capture, grace: Duration) -> (Vec<u8>, bool) {
     (kept, captured.cut || !finished)
 }
 
-/// argv as run, but at most 4 KiB of it: whole arguments while they fit,
-/// then the start of the one that does not, marked as cut.
-pub fn capped_argv(argv: &[String]) -> Value {
-    let mut kept = Vec::new();
-    let mut room = ARGV_AUDIT_CAP;
-    for arg in argv {
-        if arg.len() <= room {
-            room -= arg.len();
-            kept.push(arg.clone());
-            continue;
-        }
-        let mut end = room;
-        while !arg.is_char_boundary(end) {
-            end -= 1;
-        }
-        kept.push(format!("{}…", &arg[..end]));
-        return json!({ "kept": kept, "truncated": true });
-    }
-    json!(kept)
-}
-
 /// A signal's usual name, e.g. 11 -> "SIGSEGV".
 fn signal_name(signal: i32) -> String {
     let name = match signal {
@@ -617,23 +595,6 @@ mod tests {
             assert!(dir.path().join("worker-started").exists());
             assert_eq!(done.audit_args["workdir"], json!(dir.path()));
         }
-    }
-
-    #[test]
-    fn argv_is_audited_up_to_four_kib() {
-        let short = vec!["echo".to_string(), "hi".to_string()];
-        assert_eq!(capped_argv(&short), json!(["echo", "hi"]));
-
-        let long = vec!["echo".to_string(), "x".repeat(5000)];
-        let capped = capped_argv(&long);
-        assert_eq!(capped["truncated"], true);
-        let kept: usize = capped["kept"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|arg| arg.as_str().unwrap().trim_end_matches('…').len())
-            .sum();
-        assert_eq!(kept, ARGV_AUDIT_CAP);
     }
 
     #[tokio::test]
