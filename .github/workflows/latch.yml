@@ -67,52 +67,16 @@ jobs:
     steps:
       - run: uname -sm && getconf _NPROCESSORS_ONLN
 
-  # On main, one Mac job for what only a Mac tests: Seatbelt (the worker
-  # tests and sandbox, exec and files), the Messages and Contacts reader,
-  # secrets, the managed host under launchd, the real browser engines (Chrome
-  # for Testing and Camoufox), and the app bundle; clippy too, for the
-  # macOS-only code Linux never compiles. The integration test binaries run
-  # whole; in latch's own tests, the modules below.
+  # On main, the full Mac suite (mac-tests) as one job. A Mac-only subset
+  # would save nothing: the real-engine browser tests, Mac-only, are nearly
+  # all of its time, and the tests Linux also runs take seconds here.
   mac:
     needs: changes
     if: github.event_name == 'push' || inputs.mode == 'main'
-    runs-on: macos-15
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: latch
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source-ref || github.sha }}
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: latch -> target
-          shared-key: mac-macos-15
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --all-targets --locked --features fake-gog -- -D warnings
-      - uses: actions/cache@v4
-        with:
-          path: .dev/cft-state/plugins/cft
-          key: cft-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
-      - uses: actions/cache@v4
-        with:
-          path: .dev/cft-state/plugins/camoufox
-          key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
-      - run: cargo build --locked
-      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
-      # fake-gog: the test-only gog stand-in the return scenario reads mail with.
-      - run: 'cargo test --locked --features fake-gog --bins -- browser:: sandbox:: secrets:: messages:: exec:: files:: serve::'
-      - run: cargo test --locked --features fake-gog --test cli --test setup --test worker
-      - run: LATCH_FUZZ_ITERATIONS=50000 swift test
-        working-directory: latch/messages-reader
-      - run: |
-          app="$RUNNER_TEMP/Plow Latch.app"
-          sh ../scripts/macos-app-bundle.sh 0.0.0 target/debug/latch "$app"
-          codesign --force --sign - "$app"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          "$app/Contents/MacOS/latch" --version
+    uses: ./.github/workflows/mac-tests.yml
+    with:
+      ref: ${{ inputs.source-ref }}
+      shards: 1
 
   linux:
     needs: changes
@@ -132,22 +96,6 @@ jobs:
           workspaces: latch -> target
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
-      # The browser tests drive the pinned engines, Chrome for Testing and
-      # Camoufox, headed, from where `just cft` installs them; the caches
-      # keep their downloads (200 MB and 300 MB) to once per pin and
-      # architecture.
-      - if: runner.os == 'macOS'
-        uses: actions/cache@v4
-        with:
-          path: .dev/cft-state/plugins/cft
-          key: cft-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
-      - if: runner.os == 'macOS'
-        uses: actions/cache@v4
-        with:
-          path: .dev/cft-state/plugins/camoufox
-          key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
-      - if: runner.os == 'macOS'
-        run: cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
       - run: cargo test --locked
 
   linux-static:
