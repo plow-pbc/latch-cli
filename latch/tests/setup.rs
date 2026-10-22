@@ -13,8 +13,10 @@ use std::thread;
 
 /// The stand-in. Its state folder (`$STUB`) holds `peer` (logged in),
 /// `ready` (the host answers), `enabled-NAME`, and `enable-NAME`: one answer
-/// per call to `plugins enable NAME`, `ok`, `not_granted` or `fail`, the
-/// last one repeating.
+/// per call to `plugins enable NAME`, `ok`, `not_granted`, `unavailable` or
+/// `fail`, the last one repeating. With `taken`, login finds this machine's
+/// name taken and asks, as the real one does, whether to replace it and
+/// else for a new name; it keeps the answers in `login-answers`.
 const STUB: &str = r#"#!/bin/sh
 [ "$1" = --state-dir ] && shift 2
 echo "$*" >> "$STUB/calls"
@@ -23,7 +25,16 @@ case "$*" in
   "status --local")
     if [ -f "$STUB/peer" ]; then peer='{"name":"mac","key":"k","kind":"device"}'; else peer=null; fi
     echo "{\"peer\":$peer,\"serve\":{\"running\":$(state ready),\"ready\":$(state ready)}}" ;;
-  login) echo "Logged in as mac."; touch "$STUB/peer" ;;
+  login)
+    if [ -f "$STUB/taken" ]; then
+      printf 'A machine named "mac" already exists. Replace it? [y/N] ' >&2
+      read -r answer; echo "$answer" >> "$STUB/login-answers"
+      if [ "$answer" != y ]; then
+        printf 'New name for this machine: ' >&2
+        read -r answer; echo "$answer" >> "$STUB/login-answers"
+      fi
+    fi
+    echo "Logged in as mac."; touch "$STUB/peer" ;;
   "serve -d") touch "$STUB/ready"; echo '{"pid":4242}' ;;
   "plugins list")
     out='{"plugins":['; sep=''
@@ -43,6 +54,7 @@ case "$*" in
       not_granted)
         echo "{\"error\":{\"code\":\"needs_setup\",\"message\":\"no Full Disk Access\",\"details\":{\"access\":\"not_granted\",\"grant\":\"/Applications/Plow Latch.app\",\"settings\":\"x-apple.systempreferences:test\"}}}" >&2
         exit 1 ;;
+      unavailable) echo "{\"error\":{\"code\":\"unavailable\",\"message\":\"$name is unavailable on this host\"}}" >&2; exit 1 ;;
       *) echo "{\"error\":{\"code\":\"google_not_connected\",\"message\":\"Plow has no Google account\"}}" >&2; exit 1 ;;
     esac ;;
   *) echo "{\"error\":{\"code\":\"usage\",\"message\":\"stub: $*\"}}" >&2; exit 2 ;;
@@ -203,6 +215,18 @@ fn a_fresh_run_logs_in_connects_google_and_starts_latch() {
 }
 
 #[test]
+fn login_gets_the_answers_to_its_own_questions() {
+    let stub = Stub::new();
+    stub.file("taken", "");
+    // Login's: keep the other machine, call this one "studio". Then
+    // setup's: Google yes, Messages no.
+    let (code, shown) = stub.setup("n\nstudio\n\nn\n");
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(stub.read("login-answers"), "n\nstudio\n", "{shown}");
+    assert!(shown.contains("✓ Google is connected."), "{shown}");
+}
+
+#[test]
 fn a_rerun_skips_every_step_already_done() {
     let stub = Stub::new();
     for done in [
@@ -341,4 +365,57 @@ fn linux_has_no_messages_step() {
     assert_eq!(code, Some(0), "{shown}");
     assert!(!shown.contains("Messages"), "{shown}");
     assert!(shown.contains("✓ Google is connected."), "{shown}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_connector_failing_for_another_reason_is_reported_not_waited_for() {
+    let stub = Stub::new();
+    stub.file("peer", "");
+    stub.file("ready", "");
+    stub.enable("google");
+    stub.file("enable-messages", "not_granted\nok\n");
+    stub.file("enable-contacts", "unavailable\n");
+    let (code, shown) = stub.setup("y\n");
+    assert_eq!(code, Some(0), "{shown}");
+    for line in [
+        "✗ contacts is unavailable on this host",
+        "  Try again later: latch plugins enable contacts",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
+    assert!(
+        shown.contains("✓ Messages is on (latch plugins enable messages)."),
+        "{shown}"
+    );
+    let calls = stub.read("calls");
+    assert_eq!(
+        calls.matches("plugins enable contacts").count(),
+        1,
+        "{calls}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_failure_on_a_later_check_is_reported_not_waited_out() {
+    let stub = Stub::new();
+    stub.file("peer", "");
+    stub.file("ready", "");
+    stub.enable("google");
+    stub.file("enable-messages", "not_granted\nunavailable\n");
+    stub.file("enable-contacts", "not_granted\nok\n");
+    let (code, shown) = stub.setup("y\n");
+    assert_eq!(code, Some(0), "{shown}");
+    for line in [
+        "✗ messages is unavailable on this host",
+        "  Try again later: latch plugins enable messages",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
+    assert!(
+        shown.contains("✓ Contacts is on (latch plugins enable contacts)."),
+        "{shown}"
+    );
+    assert!(!shown.contains("Not granted yet"), "{shown}");
 }

@@ -33,7 +33,7 @@ pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
     let mut setup = Setup {
         latch: latch_program(),
         state_dir,
-        input: Input::start(),
+        input: None,
     };
     say("Setting up latch. Each step runs a latch command; you can run it yourself later.");
     if setup.log_in() {
@@ -58,7 +58,10 @@ fn latch_program() -> PathBuf {
 struct Setup {
     latch: PathBuf,
     state_dir: Option<PathBuf>,
-    input: Input,
+    /// Started at the first question, after `latch login`: login asks its
+    /// own questions at this terminal, and a reader started earlier would
+    /// take its answers.
+    input: Option<Input>,
 }
 
 /// What a latch command printed, read as JSON: on stdout if it worked, its
@@ -95,6 +98,10 @@ impl Setup {
                 json: serde_json::json!({"error": {"message": err.to_string()}}),
             },
         }
+    }
+
+    fn input(&mut self) -> &Input {
+        self.input.get_or_insert_with(Input::start)
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -166,7 +173,7 @@ impl Setup {
             done("Google is connected.");
             return;
         }
-        if !self.input.yes("Connect Google? [Y/n] ", true) {
+        if !self.input().yes("Connect Google? [Y/n] ", true) {
             say("Skipped; later: `latch plugins enable google`.");
             return;
         }
@@ -197,7 +204,7 @@ impl Setup {
             return;
         }
         if !self
-            .input
+            .input()
             .yes("Enable Messages and Contacts on this Mac? [y/N] ", false)
         {
             say("Skipped; later: `latch plugins enable messages` (and contacts).");
@@ -216,12 +223,14 @@ impl Setup {
                     done(&format!("{} is on ({command}).", title(name)));
                     return false;
                 }
+                // Only a missing grant is worth waiting for; any other
+                // failure is this connector's to retry later.
+                let details = &enabled.json["error"]["details"];
+                if details["access"] != "not_granted" {
+                    failed(&enabled.json, &command);
+                    return false;
+                }
                 if !shown {
-                    let details = &enabled.json["error"]["details"];
-                    if details["access"] != "not_granted" {
-                        failed(&enabled.json, &command);
-                        return false;
-                    }
                     shown = true;
                     show_grant(details);
                 }
@@ -236,7 +245,7 @@ impl Setup {
                 );
                 return;
             }
-            if self.input.skip_within(RECHECK_EVERY) {
+            if self.input().skip_within(RECHECK_EVERY) {
                 say("Skipped; finish later with `latch plugins enable messages` (and contacts).");
                 return;
             }
@@ -249,7 +258,7 @@ impl Setup {
             done("latch is running.");
             return;
         }
-        if !self.input.yes("Start latch now? [Y/n] ", true) {
+        if !self.input().yes("Start latch now? [Y/n] ", true) {
             say("Not started; later: `latch serve -d`.");
             return;
         }
