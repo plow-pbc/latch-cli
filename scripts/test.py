@@ -149,6 +149,9 @@ def plan(args):
     if set(suites) - {"installer"} and where != "container" and not shutil.which("cargo-nextest"):
         raise SystemExit("test.py: the Rust suites run on cargo-nextest; install it (CI pins 0.9.148): "
                          "https://nexte.st/docs/installation/pre-built-binaries/")
+    if where == "linux" and set(suites) - {"installer"} and not shutil.which("bwrap"):
+        raise SystemExit("test.py: latch's Linux sandbox needs bubblewrap (bwrap); install it, as "
+                         "install-binary.sh does")
     if "lifecycle" in suites and where == "linux":
         session = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True)
         if session.returncode:

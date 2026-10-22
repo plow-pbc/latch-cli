@@ -89,7 +89,8 @@ class Suites(unittest.TestCase):
                 for name, case in binary["testcases"].items()
                 if case["filter-match"]["status"] == "matches"}
 
-    def test_each_test_is_in_exactly_one_suite(self):
+    @mock.patch.object(runner, "restricted", return_value=False)
+    def test_each_test_is_in_exactly_one_suite(self, _):
         expected = {}
         for binary, tests in (("latch", UNIT), ("cli", CLI), ("worker", WORKER)):
             for name, suite in tests.items():

@@ -115,6 +115,8 @@ jobs:
       # user namespace restriction on, latch runs Chrome without it
       # (linux-restricted below), so this job lifts the restriction first.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # latch's Linux sandbox, as install-binary.sh installs it.
+      - run: sudo apt-get install -y -q bubblewrap
       # The lifecycle suite's systemd: a lingering user session.
       - run: |
           sudo loginctl enable-linger "$USER"
