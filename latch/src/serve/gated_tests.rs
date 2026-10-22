@@ -47,7 +47,7 @@ fn a_chat(decide: fake::Decide) -> World {
 pub(super) struct TestHost {
     pub(super) host: Arc<Host>,
     pub(super) plow: FakePlow,
-    area: PathBuf,
+    pub(super) area: PathBuf,
     pub(super) state: PathBuf,
     /// The owner's home folder, as `messages` and `contacts` read it (macOS).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

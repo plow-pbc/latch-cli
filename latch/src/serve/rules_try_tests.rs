@@ -341,3 +341,65 @@ async fn a_previewed_exec_is_shown_with_its_credentials_hidden() {
     assert!(board.contains("--token"), "{board}");
     assert!(!board.contains(secret), "{board}");
 }
+
+#[tokio::test]
+async fn the_answer_shows_the_action_as_the_judge_saw_it() {
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    let preview = async |op: &str, args: Value| {
+        let tried = try_args(op, args, Some("Juno"), None);
+        answer(t.call(&device, "rules_try", tried).await.0)
+    };
+
+    let send = json!([
+        "gmail",
+        "send",
+        "--to",
+        "ada@example.com",
+        "--body",
+        "See you at 6."
+    ]);
+    let google = json!({"gog_args": send, "account": ["owner@example.com"],
+                        "confirm_conflict": false, "inputs": []});
+    let tried = preview("google", google).await;
+    let judged = t.plow.world.lock().unwrap().asked.last().unwrap()["proposed_action"].clone();
+    assert_eq!(tried["request"]["action"], judged);
+    assert_eq!(tried["request"]["action"]["command"], send);
+    assert_eq!(
+        tried["request"]["action"]["accounts"],
+        json!(["owner@example.com"])
+    );
+
+    let put = json!({"remote_path": "area/new.txt", "size": 5, "name": "new.txt"});
+    let tried = preview("file_put", put).await;
+    let action = &tried["request"]["action"];
+    assert_eq!(action["operation"], "file_put");
+    assert_eq!(action["file_name"], "new.txt");
+    assert_eq!(action["size"], 5);
+    assert!(
+        action["path"].as_str().unwrap().ends_with("area/new.txt"),
+        "{action}"
+    );
+    assert!(!t.area.join("new.txt").exists());
+
+    // An exec's stdin is shown as the audit keeps it.
+    let script = b"echo hi\n".to_vec();
+    let exec = json!({"argv": ["/bin/sh"], "stdin": script});
+    let tried = preview("exec", exec).await;
+    assert_eq!(
+        tried["request"]["action"]["stdin"],
+        crate::exec::stdin_audit(&script)
+    );
+
+    // The records keep each request as the audit keeps the real call's.
+    let records = t.audit();
+    assert_eq!(
+        records[0]["args"]["action"],
+        json!({"command": "gmail.send"})
+    );
+    assert!(
+        !serde_json::to_string(&records)
+            .unwrap()
+            .contains("See you at 6.")
+    );
+}

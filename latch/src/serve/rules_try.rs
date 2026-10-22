@@ -91,9 +91,12 @@ async fn preview(
         .judgment
         .as_ref()
         .map(|judgment| judgment.gate.clone());
-    let action = gate::gated(&request.op, &request.args).map(|gated| gated.audit);
-    if let Some(action) = &action {
-        audit.insert("action".into(), action.clone());
+    // The answer shows the action as the judge was shown it; the record
+    // keeps it as the audit keeps the real call's.
+    let gated = gate::gated(&request.op, &request.args);
+    let action = gated.as_ref().map(judged_action);
+    if let Some(gated) = gated {
+        audit.insert("action".into(), gated.audit);
     }
     let answer = |verdict: &str| {
         let mut answer = json!({
@@ -157,6 +160,16 @@ async fn preview(
         Err(Response::error(&not_previewable(&request.op)))
     };
     (result, judged)
+}
+
+/// What the judge was shown, an exec's stdin masked as the audit keeps it
+/// (its size and sha256); its secret values were never in it.
+fn judged_action(gated: &gate::Gated) -> Value {
+    let mut action: Value = serde_json::from_str(gated.action.get()).expect("an action is JSON");
+    if let Some(stdin) = action["stdin"].as_str() {
+        action["stdin"] = crate::exec::stdin_audit(stdin.as_bytes());
+    }
+    action
 }
 
 /// A request the gatekeeper does not judge, or browser steps, which it
