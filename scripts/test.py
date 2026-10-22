@@ -41,8 +41,8 @@ SUITES = {
                   "with a systemd user session", {"macos", "linux"}),
     "scenario": ("the return scenario on the test shop, with the fake gog",
                  "the pinned engines", {"macos", "linux", "container"}),
-    "installer": ("install.sh and install-binary.sh against local fixtures, and on macOS the "
-                  "app bundle", "Python 3", {"macos", "linux", "container"}),
+    "installer": ("install.sh, install-binary.sh and dev-login.py against local fixtures, and "
+                  "on macOS the app bundle", "Python 3", {"macos", "linux", "container"}),
 }
 GATE = {
     "macos": ["core", "sandbox", "messages", "browser", "lifecycle", "installer"],
@@ -196,6 +196,7 @@ def steps(where, suites, gate, first_shard):
     if "installer" in suites and first_shard:
         out.append(("install.sh", ["installer"], ["python3", "scripts/test-install-release.py"], ROOT))
         out.append(("install-binary.sh", ["installer"], ["python3", "scripts/test-install.py"], ROOT))
+        out.append(("dev-login.py", ["installer"], ["python3", "scripts/test-dev-login.py"], LATCH))
         if where == "macos":
             if not rust:
                 out.append(("latch", ["installer"], ["cargo", "build", "--locked", "--features", features],

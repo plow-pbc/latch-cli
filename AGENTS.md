@@ -29,7 +29,7 @@ Before making meaningful changes, read:
 
 - All dev and test state lives under the gitignored `.dev/` at the repo root, passed with `--state-dir`. Tests make their throwaway folders in `.dev/tests/`.
 - `just test browser` (and the gate, `just test`) installs the pinned browser engines into `.dev/cft-state` first, where the browser tests look for them.
-- `just build` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and Plow baked in as its defaults, so it never touches `~/.latch` or an installed latch.
+- `just build` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and the local Plow stack (the plow-main kitchen's) baked in as its defaults, so it never touches `~/.latch`, an installed latch or production Plow (`just build api=https://api.plow.co` targets it, for the chef's release smoke only). `just dev-login` logs `.dev/state` in to the local stack; `just gatekeeper` asks the real decision model on that login.
 - A binary built with `LATCH_BUILD_STATE_DIR` set has that state folder as its default. Running hosts and clients may depend on it: do not move, copy, or delete another peer's state folder, and do not stop or restart a running `latch serve`, unless asked.
 - Never print a token, key, or vault value. Credentials stay in their files with mode 600.
 
