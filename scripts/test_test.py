@@ -133,6 +133,37 @@ class Plans(unittest.TestCase):
                 plan(*argv, where=where)
             self.assertIn(says, str(refused.exception))
 
+    def test_a_gate_without_pinned_engines_leaves_them_out_and_says_why(self):
+        unpinned = {"cft": False, "camoufox": True}
+        with mock.patch.object(runner, "pinned_engines", return_value=unpinned), \
+                mock.patch.object(runner, "pin_platform", return_value="linux_x64"), \
+                mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"), \
+                mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=0)):
+            _, suites, gate, not_here = plan(where="linux")
+            self.assertTrue(gate)
+            self.assertEqual(suites, ["core", "sandbox", "lifecycle", "installer"])
+            skipped = dict(not_here)
+            for suite in ("browser", "scenario"):
+                self.assertIn("no Chrome for Testing is pinned for linux_x64", skipped[suite])
+            for argv in (["browser"], ["gate", "scenario"]):
+                with self.assertRaises(SystemExit) as refused:
+                    plan(*argv, where="linux")
+                self.assertIn("no Chrome for Testing is pinned for linux_x64", str(refused.exception))
+
+    def test_a_laptops_gate_without_systemd_leaves_lifecycle_out_but_ci_and_naming_it_fail(self):
+        with mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"), \
+                mock.patch.object(runner, "pinned_engines", return_value={"cft": True, "camoufox": True}), \
+                mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=1)):
+            _, suites, _, not_here = plan(where="linux")
+            self.assertNotIn("lifecycle", suites)
+            self.assertIn("systemd user session", dict(not_here)["lifecycle"])
+            for argv, ci in ((["lifecycle"], False), ([], True)):
+                args = runner.argparse.Namespace(suites=argv, linux=False, shard=None, ci=ci, dry_run=True)
+                with mock.patch.object(runner, "where_we_are", return_value="linux"), \
+                        self.assertRaises(SystemExit) as refused:
+                    runner.plan(args)
+                self.assertIn("systemd user session", str(refused.exception))
+
     def test_the_container_is_linux_arm64_on_any_host(self):
         for machine in ("x86_64", "arm64"):
             with mock.patch.object(runner.platform, "machine", return_value=machine):

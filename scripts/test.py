@@ -140,12 +140,18 @@ def plan(args):
             raise SystemExit(f"test.py: {suite}: {reason}")
     not_here = [(s, NOT_HERE[(s, where)]) for s in SUITES if s not in suites and (s, where) in NOT_HERE
                 and gate]
+    # The gate runs what this machine can, and says what it leaves out; a
+    # suite named on its own must run.
+    named = set(asked) - {"gate"}
     if {"browser", "scenario"} & set(suites) and where != "macos":
         key = pin_platform(where)
         if not pinned_engines(key)["cft"]:
-            raise SystemExit(f"test.py: browser and scenario need an engine, and none is pinned for "
-                             f"{key}; run them on arm64 (CI: ubuntu-24.04-arm) or with --linux "
-                             f"from an Apple silicon Mac")
+            reason = (f"no Chrome for Testing is pinned for {key}; it runs on arm64 (CI's linux "
+                      f"job) or with --linux from an Apple silicon Mac")
+            if {"browser", "scenario"} & named:
+                raise SystemExit(f"test.py: browser and scenario: {reason}")
+            not_here += [(suite, reason) for suite in ("browser", "scenario") if suite in suites]
+            suites = [suite for suite in suites if suite not in ("browser", "scenario")]
     if set(suites) - {"installer"} and where != "container" and not shutil.which("cargo-nextest"):
         raise SystemExit("test.py: the Rust suites run on cargo-nextest; install it (CI pins 0.9.148): "
                          "https://nexte.st/docs/installation/pre-built-binaries/")
@@ -155,8 +161,13 @@ def plan(args):
     if "lifecycle" in suites and where == "linux":
         session = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True)
         if session.returncode:
-            raise SystemExit("test.py: lifecycle needs a systemd user session (`systemctl --user` "
-                             "answers); on a CI runner, `loginctl enable-linger` first")
+            reason = ("needs a systemd user session (`systemctl --user` answers); on a CI runner, "
+                      "`loginctl enable-linger` first")
+            # CI must prove it, so only a laptop's gate leaves it out.
+            if "lifecycle" in named or args.ci:
+                raise SystemExit(f"test.py: lifecycle {reason}")
+            not_here.append(("lifecycle", reason))
+            suites.remove("lifecycle")
     if args.shard:
         try:
             shard, count = (int(n) for n in args.shard.split("/"))

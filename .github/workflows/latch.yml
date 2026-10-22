@@ -163,7 +163,8 @@ jobs:
       - run: latch/target/debug/latch --state-dir "$RUNNER_TEMP/status-state" status --local | tee /dev/stderr | grep -q '"page_isolation":"page isolation off on this host"'
       - run: just test browser --ci
 
-  # x86_64 Linux: the suites that need no browser engine.
+  # x86_64 Linux, where no Chrome for Testing is pinned: the gate runs every
+  # suite but browser and scenario, and says so.
   linux-x64:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -181,7 +182,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-nextest@0.9.148
-      - run: just test core sandbox installer --ci
+      - run: |
+          sudo loginctl enable-linger "$USER"
+          for _ in $(seq 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - run: just test --ci
 
   linux-static:
     needs: changes
