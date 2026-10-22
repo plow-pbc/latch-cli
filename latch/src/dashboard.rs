@@ -202,14 +202,8 @@ pub fn describe(op: &str, args: &Value, outcome: &str, took: Duration) -> (Strin
     match op {
         "exec" => {
             let shown = crate::redact::shown("exec", args);
-            let argv = shown["argv"]
-                .as_array()
-                .or_else(|| shown["argv"]["kept"].as_array());
-            let words: Vec<&str> = argv
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
+            let words: Vec<String> =
+                serde_json::from_value(shown["argv"].clone()).unwrap_or_default();
             let ended = if args["timed_out"] == true {
                 "timed out".to_string()
             } else if let Some(code) = args["exit_code"].as_i64() {
@@ -285,6 +279,18 @@ fn human_duration(took: Duration) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_exec_whose_argv_is_not_a_list_of_words_shows_no_command() {
+        let (target, result) = describe(
+            "exec",
+            &json!({"argv": 1, "exit_code": 0}),
+            "ok",
+            Duration::ZERO,
+        );
+        assert_eq!(target, "");
+        assert!(result.starts_with("exit 0"), "{result}");
+    }
 
     #[test]
     fn a_multiline_argv_stays_on_one_row() {

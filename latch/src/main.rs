@@ -34,6 +34,7 @@ mod paint;
 mod plow;
 mod redact;
 mod sandbox;
+mod seal;
 mod secrets;
 mod serve;
 mod shares;

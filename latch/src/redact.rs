@@ -9,20 +9,13 @@ use serde_json::{Value, json};
 pub const NOTE: &str = "credential-looking values in commands are hidden, best effort: some can slip through; `latch audit show` has them in full";
 
 /// An operation's audit details as shown to people: an exec's argv with
-/// credential-looking values hidden, the rest as it is. A long argv is
-/// audited cut, as `{"kept": [...], "truncated": true}`.
+/// credential-looking values hidden, the rest as it is.
 pub fn shown(op: &str, args: &Value) -> Value {
     let mut shown = args.clone();
-    if op != "exec" {
-        return shown;
-    }
-    let field = if args["argv"].is_array() {
-        &mut shown["argv"]
-    } else {
-        &mut shown["argv"]["kept"]
-    };
-    if let Ok(words) = serde_json::from_value::<Vec<String>>(field.clone()) {
-        *field = json!(argv(&words));
+    if op == "exec"
+        && let Ok(words) = serde_json::from_value::<Vec<String>>(args["argv"].clone())
+    {
+        shown["argv"] = json!(argv(&words));
     }
     shown
 }
@@ -326,5 +319,16 @@ mod shown_tests {
         assert_eq!(display["workdir"], "/w");
         let file = json!({"path": "/w/token.txt"});
         assert_eq!(shown("file_get", &file), file);
+    }
+
+    #[test]
+    fn an_exec_whose_argv_is_not_a_list_of_words_is_shown_as_it_is() {
+        for args in [
+            json!({"argv": 1}),
+            json!({"argv": {"kept": ["a"]}}),
+            json!(7),
+        ] {
+            assert_eq!(shown("exec", &args), args);
+        }
     }
 }

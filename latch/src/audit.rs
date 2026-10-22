@@ -32,14 +32,13 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::cli::AuditAction;
 use crate::failure::Failure;
+use crate::seal::from_hex;
 use crate::secrets::{Secret, Secrets};
 use crate::state::{StateDir, to_hex};
 
@@ -172,21 +171,11 @@ impl Keys {
     /// Seals `record` as the line after `prev`.
     fn seal(&self, record: &Record, prev: &str) -> Line {
         let body = serde_json::to_vec(record).expect("a record serializes");
-        let nonce: [u8; 12] = rand::random();
-        let cipher = Aes256Gcm::new_from_slice(&self.keys[&self.current]).expect("a 32-byte key");
-        let sealed = cipher
-            .encrypt(
-                &Nonce::from(nonce),
-                Payload {
-                    msg: &body,
-                    aad: &aad(&self.current, prev),
-                },
-            )
-            .expect("AES-GCM encryption does not fail");
+        let sealed = crate::seal::seal(&self.keys[&self.current], &body, &aad(&self.current, prev));
         let mut line = Line {
             kid: self.current.clone(),
-            nonce: to_hex(&nonce),
-            body: to_hex(&sealed),
+            nonce: sealed.nonce,
+            body: sealed.ciphertext,
             prev: prev.to_string(),
             hash: String::new(),
         };
@@ -203,20 +192,8 @@ impl Keys {
             ));
         };
         let unreadable = || format!("line {number} does not open with its key");
-        let nonce: [u8; 12] = from_hex(&line.nonce)
-            .and_then(|bytes| bytes.try_into().ok())
+        let body = crate::seal::open(key, &line.nonce, &line.body, &aad(&line.kid, &line.prev))
             .ok_or_else(unreadable)?;
-        let sealed = from_hex(&line.body).ok_or_else(unreadable)?;
-        let cipher = Aes256Gcm::new_from_slice(key).expect("a 32-byte key");
-        let body = cipher
-            .decrypt(
-                &Nonce::from(nonce),
-                Payload {
-                    msg: &sealed,
-                    aad: &aad(&line.kid, &line.prev),
-                },
-            )
-            .map_err(|_| unreadable())?;
         let mut record: Record = serde_json::from_slice(&body).map_err(|_| unreadable())?;
         record.prev = line.prev.clone();
         record.hash = line.hash.clone();
@@ -235,9 +212,10 @@ pub struct AuditLog {
 }
 
 impl AuditLog {
-    /// Opens (or starts) the log and checks the whole chain first, without
-    /// the key. A broken chain is an error: the host refuses to run on a
-    /// tampered log. It is opened for appending, so a log that can't be
+    /// Opens (or starts) the log and checks it whole first: the chain, and
+    /// every record opened with its key. A broken chain or a record that
+    /// does not open is an error: the host refuses to run on a tampered
+    /// log. It is opened for appending, so a log that can't be
     /// written to is an error now, before anything that needs it runs, and
     /// read under the audit lock (`lock`), so a record another process is
     /// appending, or a conversion, is read whole or not at all.
@@ -253,8 +231,16 @@ impl AuditLog {
             .open(&path)
             .and_then(|mut file| file.read_to_string(&mut text))
             .map_err(|err| io_failure(&path, err))?;
-        let (records, _) = verify(&text).map_err(|problem| broken(&path, &problem))?;
-        let keys = Keys::ready(&dir)?;
+        let keys = match Keys::existing(&dir)? {
+            Some(keys) => keys,
+            None if text.is_empty() => Keys::ready(&dir)?,
+            None => {
+                // A broken chain is the first thing to say, key or not.
+                verify(&text).map_err(|problem| broken(&path, &problem))?;
+                return Err(no_key(&path));
+            }
+        };
+        let records = open_all(&keys, &text, &path)?.len();
         Ok(AuditLog {
             path,
             records,
@@ -401,16 +387,17 @@ pub fn read_all(path: &Path) -> Result<Vec<Record>, Failure> {
         return Ok(Vec::new());
     }
     let dir = path.parent().unwrap_or(Path::new("."));
-    let Some(keys) = Keys::existing(dir)? else {
-        return Err(failed(format!(
-            "{}: there is no key to read it with",
-            path.display()
-        )));
-    };
+    let keys = Keys::existing(dir)?.ok_or_else(|| no_key(path))?;
+    open_all(&keys, &text, path)
+}
+
+/// Every record of the log `text` (at `path`, for messages), each line's
+/// chain checked and its record opened with `keys`.
+fn open_all(keys: &Keys, text: &str, path: &Path) -> Result<Vec<Record>, Failure> {
     let mut prev = GENESIS.to_string();
     let mut records = Vec::new();
     for (index, line) in text.lines().enumerate() {
-        let record = read_next(&keys, &prev, line.as_bytes(), index + 1)
+        let record = read_next(keys, &prev, line.as_bytes(), index + 1)
             .map_err(|problem| broken(path, &problem))?;
         prev = record.hash.clone();
         records.push(record);
@@ -481,18 +468,15 @@ fn lock(dir: &Path) -> Result<File, Failure> {
     Ok(file)
 }
 
-fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
-        .collect()
-}
-
 fn damaged() -> Failure {
     failed("the audit keys are damaged".into())
+}
+
+fn no_key(path: &Path) -> Failure {
+    failed(format!(
+        "{}: there is no key to read it with",
+        path.display()
+    ))
 }
 
 fn failed(message: String) -> Failure {
@@ -595,14 +579,19 @@ mod tests {
         )
         .unwrap();
         assert!(verify(&fs::read_to_string(&path).unwrap()).is_ok());
-        let refused = read_all(&path).unwrap_err();
-        assert!(
-            refused
-                .message
-                .ends_with("line 2 does not open with its key"),
-            "{}",
-            refused.message
-        );
+        for refused in [
+            read_all(&path).unwrap_err(),
+            AuditLog::open(path.clone()).err().unwrap(),
+        ] {
+            assert_eq!(refused.code, "audit_broken");
+            assert!(
+                refused
+                    .message
+                    .ends_with("line 2 does not open with its key"),
+                "{}",
+                refused.message
+            );
+        }
 
         // A removed line breaks the chain.
         fs::write(&path, [lines[0], lines[2]].join("\n") + "\n").unwrap();
