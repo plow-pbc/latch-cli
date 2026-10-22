@@ -20,6 +20,7 @@ One sentence: **every command returns JSON, except the human commands (`setup`, 
 - `--version` returns JSON. `browser text` returns the page text inside JSON; `--raw` is removed.
 - Internal protocols are not commands and are out of scope: worker framing (exec, file transfer), and program output that `exec` forwards inside its result.
 - **A regular command's stderr is only its one error line.** (Human commands draw their screens where they like, stderr included; this rule does not apply to them.) `LATCH_TRACE` output goes to a file in the state folder, not stderr. Foreground `serve` is a long-running process, not a command result: its logs, trace included, stay on stderr as today.
+- **Prompts are not output.** A regular command may ask a person something on stderr only when it is at a terminal: a confirmation (`devices remove` without `--yes`), secret entry (`vault add`, `vault edit --ask`), `vault import`'s preview and picks, `vault link`'s QR code. Its result is still JSON on stdout. Without a terminal it never prompts, and the one-error-line rule holds.
 - **The once-a-day "update available" notice leaves regular commands.** Today `update::notice` can print it to stderr after any command when both streams are terminals. Regular commands stop printing it; `status` carries the same fact as a JSON field; the human commands (`setup`, the dashboard) may still show it.
 
 ### 2.2 Streams
