@@ -29,9 +29,19 @@ Before making meaningful changes, read:
 
 - All dev and test state lives under the gitignored `.dev/` at the repo root, passed with `--state-dir`. Tests make their throwaway folders in `.dev/tests/`.
 - `just cft` (run by `just test` on macOS) installs the pinned Chrome for Testing into `.dev/cft-state`, where the browser tests look for it.
-- `just build` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and the local Plow stack (the plow-main kitchen's) baked in as its defaults, so it never touches `~/.latch`, an installed latch or production Plow (`just build api=https://api.plow.co` targets it, for the chef's release smoke only). `just dev-login` logs `.dev/state` in to the local stack; `just gatekeeper` asks the real decision model on that login.
+- `just build` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and the local Plow stack (see Local Plow For Development) baked in as its defaults, so it never touches `~/.latch`, an installed latch or production Plow (`just build api=https://api.plow.co` targets it, for the chef's release smoke only). `just dev-login` logs `.dev/state` in to the local stack; `just gatekeeper` asks the real decision model on that login.
 - A binary built with `LATCH_BUILD_STATE_DIR` set has that state folder as its default. Running hosts and clients may depend on it: do not move, copy, or delete another peer's state folder, and do not stop or restart a running `latch serve`, unless asked.
 - Never print a token, key, or vault value. Credentials stay in their files with mode 600.
+
+## Local Plow For Development
+
+Dev and test flows that need Plow use a local Plow dev stack, never production:
+
+1. In a plow checkout, start its stack: `just api up`, then `cd dtu/linq && just sync && cd ../.. && just dtu linq up` (the Linq twin, which stands in for the phone `just dev-login` texts from). Plow derives each checkout's ports from its `PLOW_VARIANT` into that checkout's `.plow-dev-env`.
+2. Here, `cp .env.local.example .env.local` and set `LATCH_DEV_PLOW_CHECKOUT` to that checkout; its `.plow-dev-env` gives the API and twin addresses. `LATCH_DEV_PLOW_API` and `LATCH_DEV_PLOW_TWIN` override either. With none set, the plow checkout `main`'s ports are used (API `127.0.0.1:18934`, twin `127.0.0.1:18935`).
+3. `just dev-login`, then `just build` or `just gatekeeper`. `dev-login` checks the stack is reachable first and says which variable gave the address it could not reach. Every checkout logs in to the same local account, so its machine is named `dev-<checkout folder>` (`--name` to override).
+
+Use the published `127.0.0.1` ports, not `*.orb.local`: macOS keeps an unapproved latch off OrbStack's network. `just` loads `.env.local`; `scripts/dev_plow.py` reads these variables, and the latch binary never does.
 
 ## Core Standard
 
