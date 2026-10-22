@@ -898,3 +898,68 @@ fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
     let output = exec_script(dir.path(), &["--read", "/tmp"], script);
     assert_eq!(output.stdout, b"made\n", "{output:?}");
 }
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
+    use std::os::unix::net::UnixListener;
+
+    let dir = setup();
+    let root = dir.path().canonicalize().unwrap();
+    fs::create_dir(root.join("state/nested")).unwrap();
+    std::os::unix::fs::symlink(root.join("state"), root.join("area/state-link")).unwrap();
+    let program = root.join("area/connect");
+    let compiled = Command::new("rustc")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unix-connect.rs"))
+        .arg("-o")
+        .arg(&program)
+        .output()
+        .unwrap();
+    assert!(compiled.status.success(), "{compiled:?}");
+    let allowed = root.join("area/allowed.sock");
+    let _allowed = UnixListener::bind(&allowed).unwrap();
+    let run = |socket: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args([
+                "worker", "--area", "..", "--denied", "../state", "--tmpdir", "../tmp", "exec",
+                "--",
+            ])
+            .arg(&program)
+            .arg(socket)
+            .current_dir(root.join("area"))
+            .env_clear()
+            .output()
+            .unwrap()
+    };
+    // The probe works, and outbound Unix sockets outside state stay usable.
+    let outside = run(&allowed);
+    assert!(outside.status.success(), "{outside:?}");
+    for relative in ["serve.sock", "nested/other.sock"] {
+        let socket = root.join("state").join(relative);
+        let listener = UnixListener::bind(&socket).unwrap();
+        assert!(
+            Command::new(&program)
+                .arg(&socket)
+                .status()
+                .unwrap()
+                .success()
+        );
+        for path in [socket, root.join("area/state-link").join(relative)] {
+            let denied = run(&path);
+            assert!(
+                !denied.status.success(),
+                "worker connected to {}: {denied:?}",
+                path.display()
+            );
+            assert!(
+                String::from_utf8_lossy(&denied.stderr).contains(if cfg!(target_os = "macos") {
+                    "PermissionDenied"
+                } else {
+                    "NotFound"
+                }),
+                "{denied:?}"
+            );
+        }
+        drop(listener);
+    }
+}
