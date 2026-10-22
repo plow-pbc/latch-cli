@@ -1,6 +1,6 @@
 ---
 name: latch
-description: Reach the files, programs, Google accounts and browser on a machine your owner trusts, through its latch host. Use when a task needs something on one of the owner's machines rather than your own.
+description: Reach the files, programs, Google accounts, browser and messages on a machine your owner trusts, through latch. Use when a task needs something on a machine that runs `latch serve`, this one or another.
 ---
 
 # latch
@@ -11,32 +11,54 @@ one JSON object: on stdout when it worked, as `{"error": {"code",
 
 ## Start
 
-- Log in with your own credential: `latch login` with no flags finds it.
-  Never use a device login copied from one of the owner's machines: that is
-  the owner acting, not you.
-- `latch status` lists the hosts you can reach. Name one with `--host` (or
-  `$LATCH_HOST`); with only one host, latch picks it.
+- **On the host itself** (this machine runs `latch serve`): just run latch
+  commands, with no `--host` and no login of your own. They reach this
+  host as its owner, through its gatekeeper and audit. That is how latch
+  is meant to be used here.
+- **From another machine:** log in with your own credential (`latch login`
+  with no flags finds it). `latch status` lists the hosts you can reach;
+  name one with `--host` (or `$LATCH_HOST`); with only one host, latch
+  picks it.
+- Never copy or borrow a device login (a machine's state folder or its
+  token) onto another machine to act from there: hosts would take that
+  for the owner's own request, not judge it against what the owner asked
+  you.
 - Learn a command as you need it: `latch help COMMAND`, then
   `latch help COMMAND --examples`. `latch help --json` describes every
   command: its inputs, output, side effects and retry rule.
 
 ## What you can reach
 
-- `latch exec --host H -- PROGRAM ARGS…` runs a program in the host's
-  sandbox, inside the folders the owner shared.
-- `latch file get` / `latch file put` copy files to and from those folders.
+- `latch exec --host H --write '~/code/app' --network -- npm install`
+  runs a program in the host's sandbox. Home and system files are readable;
+  writes need repeated `--write PATH` grants. Private temp and existing plain
+  tool-cache folders are writable too; missing or aliased caches are skipped.
+  IP network is off unless `--network`. Workdir defaults to the first write
+  folder, otherwise home; `--workdir` overrides it. Host Unix sockets stay
+  blocked even with network (macOS allows its system DNS resolver).
+- `latch file get` reads a readable host path; `latch file put` writes only
+  its judged destination. Exec and file need no shared-folder setup.
+- Hidden for both: `~/.latch`, the host's own state directory, and on macOS
+  `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
+  are readable; the gatekeeper judges their use. Writes must stay inside
+  home, outside hidden places, and cannot grant home itself.
+- Quote host paths beginning with `~`: latch expands them on the host.
+  Program argv after `--` stays literal. The judge is remote: argv,
+  workdir, writes and network go to Plow and into the sealed audit. Keep
+  credentials out of argv.
 - `latch google --host H -- COMMAND…` runs an allowed Google command
   (`latch google --help` lists them).
 - `latch browser …` drives a real browser on the host: `open` a session
   (keep its id), `observe`, then act on the refs it returns.
 - `latch messages …` and `latch contacts …` read the owner's texts and
   address book on a Mac host: search, a thread, chats; a person's handles.
+  Only a latch running on macOS has them; on Linux they are unknown commands.
 
 ## A sign-in code sent by text
 
 When a site asks for a code it texted to the owner (a goal in words stops
-there with `needs_fields`), and the host reads Messages, it is two steps,
-each judged:
+there with `needs_fields`), your latch runs on macOS and the host reads
+Messages, it is two steps, each judged:
 
 1. `latch messages search --host H --since 10m code`: take the code from
    the newest message that is plainly that site's sign-in code (none yet:
@@ -44,8 +66,37 @@ each judged:
 2. Type it into the code field from `observe`: `latch browser do 'type eN
    "CODE"'`, then submit as the page asks.
 
-Use the code for that sign-in only. If the host can't read Messages, hand
-the session to the owner: `latch browser handoff --reason 2fa`.
+Use the code for that sign-in only. On a Linux latch, which has no
+`messages`, or if the host can't read Messages, hand the session to the
+owner: `latch browser handoff --reason 2fa`.
+
+## Credentials in exec
+
+Use repeatable `--secret-env NAME=VALUE` for credentials instead of putting
+them in the program's arguments. The value goes to the host over the worker's
+private channel and enters only the final program's environment after
+confinement. The remote judge and audit receive names and lengths, never
+values; ordinary argv is sent to the remote judge without redaction.
+
+Prefer a program's native environment support:
+
+```sh
+latch exec --host H --secret-env GITHUB_TOKEN="$GITHUB_TOKEN" --network -- gh pr list
+```
+
+For a value inside an argument, use a shell with a quoted variable, e.g.
+`sh -c 'curl -H "Authorization: Bearer $TOKEN" https://api.example.com'`.
+Latch does not expand `${NAME}` in argv. Quoting keeps a value from being
+re-parsed as shell syntax; the receiving program can still interpret it as code.
+Variables such as `GIT_SSH_COMMAND`, `NODE_OPTIONS`, `BASH_ENV`,
+`PYTHONSTARTUP` and `GIT_CONFIG_*` can run hidden instructions or load code.
+The judge sees each name and is told to weigh that behavior against the owner's
+request; these names are not an additional deny list. Use secret env for
+credentials, and do not evaluate their values as code.
+Program stdout/stderr are returned as-is and can disclose a value. The CLI
+option itself is visible on the calling machine and may enter shell history;
+shell-expanded arguments are visible in the trusted host's process list.
+`HOME`, `PATH`, `TMPDIR`, `LATCH_*`, `LD_*` and `DYLD_*` are refused.
 
 ## The gatekeeper judges your calls
 

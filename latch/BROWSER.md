@@ -80,7 +80,7 @@ latch browser --session SESSION close
 ```
 
 A saved local host resolves without Plow and connects through the private
-`serve.sock` in its state folder; `--host` naming this machine does the same.
+`serve-v2.sock` in its state folder; `--host` naming this machine does the same.
 These calls use the same browser sessions, profiles, vault, gatekeeper and
 audit as remote calls, with caller kind `owner_on_host`. A stopped receiver
 returns `serve_required`, with instructions to start `latch serve`.
@@ -273,8 +273,11 @@ It prints, per plan, its actions, model calls, the model's total time and
 its cost (an estimate: calls × Plow's stated $0.0001 a call), and over all plans
 the plan share, confirmations and how they were answered, what followed
 each stop, escapes to `eval`, turns, and stops by code.
-Never page text, field values or typed text: `type` records the text's
-length and sha256. `eval` records its script verbatim up to 4 KiB, its
+What the gatekeeper judged is kept whole, as `judged`, like an exec's
+argv: a plan's steps as written with their values, a site, a fill's item
+and fields (never a value). `serve.log` and the dashboard show it with
+credential-looking values hidden. Otherwise never page text, field values
+or typed text: `type` records the text's length and sha256. `eval` records its script verbatim up to 4 KiB, its
 size and sha256, and workaround tags (other frames, shadow roots,
 synthetic events, setting field values, patching `fetch`/XHR, cookies or
 storage, polling); files record name, size and sha256; an
@@ -286,7 +289,7 @@ and command.
 Every caller's browser commands pass the host's gatekeeper, which asks
 whether the owner asked for them: for an agent, in the owner's Plow chat
 with that agent and the owner's rules on the host; for the owner's own
-devices, on the owner's own request within the host's rules. Judged,
+devices, allowed unless the host's rules forbid it. Judged,
 each before anything of it reaches the page:
 
 - opening a site this session has not been judged for: `open URL`, or

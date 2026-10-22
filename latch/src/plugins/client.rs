@@ -39,7 +39,7 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
 /// This machine's own host, when the owner is the one asking. An agent's
 /// login never sends the command at all.
 fn this_host(state: &StateDir) -> Result<Peer, Failure> {
-    let config = state.require_login()?;
+    let config = state.require_config()?;
     if config.peer.kind != "device" {
         let message = "plugins are turned on and off by the owner, on the host itself";
         return Err(Failure::new(Exit::Denied, "owner_only", message.into()));

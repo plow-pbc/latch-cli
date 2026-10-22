@@ -50,8 +50,6 @@ pub struct Row {
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Board {
     pub host: String,
-    /// A line under the title, such as that the host shares no folders.
-    pub note: Option<String>,
     pub last_heartbeat: Option<Timestamp>,
     /// Standing notices under the title: pending browser handoffs.
     pub notices: Vec<String>,
@@ -68,10 +66,9 @@ pub struct Dashboard {
 }
 
 impl Dashboard {
-    pub fn new(host: &str, note: Option<&str>) -> Dashboard {
+    pub fn new(host: &str) -> Dashboard {
         let board = Board {
             host: host.to_string(),
-            note: note.map(str::to_string),
             ..Board::default()
         };
         Dashboard {
@@ -198,9 +195,6 @@ impl Board {
             paint::fg(&status, DIM)
         ));
         lines.push(paint::fg(&"─".repeat(width), FAINT));
-        if let Some(note) = &self.note {
-            lines.push(paint::fg(&format!(" {}", term::fit(note, width - 1)), DIM));
-        }
         for notice in &self.notices {
             lines.push(paint::bold(
                 &format!(" {}", term::fit(notice, width - 1)),
@@ -411,7 +405,6 @@ mod tests {
         );
         let mut board = Board {
             host: "host".to_string(),
-            note: None,
             last_heartbeat: None,
             notices: Vec::new(),
             step: None,
@@ -444,32 +437,6 @@ mod tests {
                 .contains("handoff pending: session dkcfhoeamlpb")
         );
         assert!(screen.contains("sh -c echo a"));
-    }
-
-    #[test]
-    fn a_host_sharing_no_folders_says_so_under_its_title() {
-        let board = Board {
-            host: "host".to_string(),
-            note: Some(crate::serve::SHARING_NONE.to_string()),
-            last_heartbeat: None,
-            notices: Vec::new(),
-            step: None,
-            rows: VecDeque::new(),
-        };
-        let screen = board.screen(100, 10, "Ctrl-C stops the host");
-        let note = screen.lines().nth(2).unwrap();
-        assert!(
-            note.contains("Sharing no folders — browser and Google only")
-                && note.contains("latch shares set ~/code"),
-            "{screen}"
-        );
-        // On a narrower terminal it is cut to the width rather than wrapped,
-        // so the screen still fits.
-        let screen = board.screen(80, 10, "Ctrl-C stops the host");
-        assert_eq!(screen.lines().count(), 10, "{screen}");
-        let note = screen.lines().nth(2).unwrap();
-        assert!(note.starts_with(" Sharing no folders"), "{note}");
-        assert!(note.chars().count() <= 80, "{note}");
     }
 
     #[test]

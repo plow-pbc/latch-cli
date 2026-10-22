@@ -25,13 +25,8 @@
 //! - `browser/`, on a host: profiles, the model's settings and each
 //!   session's journal.
 //! - `plugins/`, on a host: the pinned engines and the Google CLI.
-//! - `shares.json`: the folders `latch serve` shares when named none, and
-//!   the paths it lets callers read besides (see `latch shares`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
-//!
-//! A host has no config file: what it shares is named on `latch serve`'s
-//! command line.
 
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -58,14 +53,6 @@ pub struct Config {
 /// converts older folders. Raise it with a change an older latch would misread.
 const FORMAT: u32 = 2;
 
-/// What `latch serve` shares when it is named no folders, and what it lets
-/// callers read besides (`--allow-read`).
-#[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
-pub struct Shares {
-    pub folders: Vec<PathBuf>,
-    pub allow_read: Vec<PathBuf>,
-}
-
 /// `latch.json`: the folder's format, and which latch first marked it.
 #[derive(Serialize, Deserialize)]
 struct Marker {
@@ -75,14 +62,6 @@ struct Marker {
 
 pub struct StateDir {
     pub path: PathBuf,
-}
-
-/// Whether `dir` is a latch state folder: it holds latch's `latch.json`
-/// marker, or, made before there was one, both a key and a Plow login.
-pub fn is_state_folder(dir: &Path) -> bool {
-    let marked = fs::read_to_string(dir.join("latch.json"))
-        .is_ok_and(|text| serde_json::from_str::<Marker>(&text).is_ok());
-    marked || (dir.join("key").is_file() && dir.join("plow-token").is_file())
 }
 
 impl StateDir {
@@ -210,23 +189,6 @@ impl StateDir {
         })
     }
 
-    /// What `latch shares set` saved, folders in order; none if it never ran.
-    pub fn load_shares(&self) -> Result<Shares, Failure> {
-        let path = self.path.join("shares.json");
-        if !path.exists() {
-            return Ok(Shares::default());
-        }
-        let text = self.read(&path)?;
-        serde_json::from_str(&text).map_err(|err| {
-            let message = format!("{} is not valid: {err}", path.display());
-            Failure::failed("bad_state", message)
-        })
-    }
-
-    pub fn save_shares(&self, shares: &Shares) -> Result<(), Failure> {
-        self.save_json("shares.json", shares)
-    }
-
     fn save_json(&self, name: &str, value: &impl Serialize) -> Result<(), Failure> {
         let path = self.path.join(name);
         let text = serde_json::to_string_pretty(value).expect("state serializes") + "\n";
@@ -283,17 +245,24 @@ impl StateDir {
         write_private(&path, text.as_bytes()).map_err(|err| self.io_failure(&path, err))
     }
 
-    /// Like `load_config`, for commands that need a completed `login`. Also
-    /// checks that the key on disk is the one Plow registered, so a replaced
-    /// or restored key is caught here rather than at a host.
-    pub fn require_login(&self) -> Result<Config, Failure> {
-        let Some(config) = self.load_config()? else {
+    /// Like `load_config`, for commands that need a completed `login`. Reads
+    /// no secret: a call to this machine's own host over its socket needs
+    /// none.
+    pub fn require_config(&self) -> Result<Config, Failure> {
+        self.load_config()?.ok_or_else(|| {
             let message = format!(
                 "{} is not logged in; run `latch login` first",
                 self.path.display()
             );
-            return Err(Failure::usage("not_logged_in", message));
-        };
+            Failure::usage("not_logged_in", message)
+        })
+    }
+
+    /// `require_config`, and checks that the key on disk is the one Plow
+    /// registered, so a replaced or restored key is caught here rather than
+    /// at a host.
+    pub fn require_login(&self) -> Result<Config, Failure> {
+        let config = self.require_config()?;
         if self.load_key()?.public().to_string() != config.peer.key {
             let message = format!(
                 "{}: the key does not match the key this instance registered with Plow",
@@ -354,22 +323,6 @@ mod tests {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         fs::create_dir_all(&parent).unwrap();
         tempfile::tempdir_in(parent).unwrap()
-    }
-
-    #[test]
-    fn shares_and_reads_are_saved_together() {
-        let dir = test_dir();
-        let state = StateDir {
-            path: dir.path().to_path_buf(),
-        };
-        let shares = Shares {
-            folders: vec![PathBuf::from("/work")],
-            allow_read: vec![PathBuf::from("/refs")],
-        };
-        state.save_shares(&shares).unwrap();
-        assert_eq!(state.load_shares().unwrap(), shares);
-        fs::write(dir.path().join("shares.json"), r#"{"folders": ["/other"]}"#).unwrap();
-        assert_eq!(state.load_shares().unwrap_err().code, "bad_state");
     }
 
     #[test]

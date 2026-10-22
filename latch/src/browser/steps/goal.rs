@@ -306,7 +306,7 @@ impl Run<'_> {
                 });
             if suggest::code_stage(&offers) || (suggest::passkey_stage(&offers) && !password_path) {
                 let recovery = if suggest::code_stage(&offers) {
-                    "a one-time code; nothing was sent. If it is the saved login's authenticator code, send `fill --item vN --field otp=eN --press eN`. If the site texted it to the owner, find it with `latch messages search --since 10m code` and enter it as a literal step, `do 'type eN \"CODE\"'`, then submit as the page asks. If neither works, hand off to the owner (`handoff --reason 2fa`)"
+                    "a one-time code; nothing was sent. If it is the saved login's authenticator code, send `fill --item vN --field otp=eN --press eN`. If the site texted it to the owner and your latch runs on macOS with a host that reads Messages, find it with `latch messages search --since 10m code` and enter it as a literal step, `do 'type eN \"CODE\"'`, then submit as the page asks. On a Linux latch, or if neither works, hand off to the owner (`handoff --reason 2fa`)"
                 } else {
                     "a passkey; nothing was sent. Hand off to the owner (`handoff --reason passkey`)"
                 };
@@ -618,7 +618,7 @@ impl Run<'_> {
                 if let Some(object) = args.as_object_mut() {
                     object.remove("kind");
                 }
-                let judged = self.judge_fill(n, &args).await?;
+                self.judge_fill(n, &args).await?;
                 if bundle.confirm {
                     args["item_title"] = json!(bundle.title);
                     let failure = confirm_fill(self.browsers, self.entry, &args, self.audit).await;
@@ -633,17 +633,10 @@ impl Run<'_> {
                         record["gate"] = judgment;
                     }
                     self.records.push(record);
-                    let failure = Err(failure);
-                    if let Some(judged) = judged {
-                        judged.ended(&failure);
-                    }
-                    return failure;
+                    return Err(failure);
                 }
                 self.choice = Some(choice_record(&decision, Some(pick)));
                 let sent = self.fill_now(n, args, None).await;
-                if let Some(judged) = judged {
-                    judged.ended(&sent);
-                }
                 self.choice = None;
                 *acted += 1;
                 before = Some(state);

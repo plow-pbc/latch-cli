@@ -20,9 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iroh::endpoint::{Connection, Incoming, VarInt, presets};
+use iroh::endpoint::{Connection, Incoming, VarInt};
 use iroh::{Endpoint, RelayMode};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
@@ -42,8 +42,7 @@ use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
 use crate::log::log;
 use crate::plow::{Identity, Plow};
-use crate::state::{self, Config, StateDir};
-use crate::state_folders::StateFolders;
+use crate::state::{Config, StateDir};
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
@@ -163,8 +162,6 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// `serve/control.rs`).
 pub async fn run(
     state: &StateDir,
-    folders: &[PathBuf],
-    allow_read: &[PathBuf],
     headless_browsers: bool,
     deny_exec: DenyExec,
     attached: bool,
@@ -188,16 +185,7 @@ pub async fn run(
     let _lock = lock_state(&state_dir)?;
     // From here on, other processes see this host's steps (`lifecycle.rs`).
     lifecycle::record(&state.path, Phase::Starting, None)?;
-    let result = run_locked(
-        state,
-        folders,
-        allow_read,
-        headless_browsers,
-        deny_exec,
-        attached,
-        state_dir,
-    )
-    .await;
+    let result = run_locked(state, headless_browsers, deny_exec, attached, state_dir).await;
     let (phase, error) = match &result {
         Ok(()) => (Phase::Stopped, None),
         Err(failure) => (Phase::Error, Some(failure)),
@@ -214,8 +202,6 @@ pub async fn run(
 /// `run`, once this serve holds the state folder.
 async fn run_locked(
     state: &StateDir,
-    folders: &[PathBuf],
-    allow_read: &[PathBuf],
     headless_browsers: bool,
     deny_exec: DenyExec,
     attached: bool,
@@ -223,33 +209,23 @@ async fn run_locked(
 ) -> Result<(), Failure> {
     let program = std::env::current_exe()
         .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
-    // Named folders (with their `--allow-read`) win; with none, what
-    // `latch shares set` saved.
-    let saved;
-    let (folders, allow_read) = if folders.is_empty() {
-        saved = state.load_shares()?;
-        (&saved.folders[..], &saved.allow_read[..])
-    } else {
-        (folders, allow_read)
-    };
-    let hidden = hidden_paths();
-    let areas = shared_folders(folders, std::env::home_dir().as_deref())?;
-    let reads = allowed_reads(
-        allow_read,
-        std::env::home_dir().as_deref(),
-        &hidden,
-        &state_dir,
-    )?;
-    let roots: Vec<PathBuf> = areas.iter().chain(&reads).cloned().collect();
+    let home = std::env::home_dir()
+        .and_then(|home| home.canonicalize().ok())
+        .ok_or_else(|| {
+            Failure::failed(
+                "bad_home",
+                "the host's home folder cannot be resolved".into(),
+            )
+        })?;
     let workers = WorkerSetup {
-        state_folders: StateFolders::new(&roots, &state_dir),
-        areas,
-        reads,
-        hidden,
+        home,
+        areas: vec![],
+        reads: vec![],
+        hidden: hidden_paths(),
         state_dir,
         program,
     };
-    let rules = RuleFiles::new(&state.path, &workers.areas)?;
+    let rules = RuleFiles::new(&state.path)?;
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
         Failure::failed("sandbox_unavailable", message)
@@ -291,27 +267,6 @@ async fn run_host(
     let home = std::env::home_dir().unwrap_or_default();
     let plugins = crate::plugins::Plugins::load(state, &home)?;
     log(&format!("commands in this log: {}", crate::redact::NOTE));
-    let names: Vec<String> = workers
-        .areas
-        .iter()
-        .map(|area| area.display().to_string())
-        .collect();
-    if names.is_empty() {
-        log(SHARING_NONE);
-    } else {
-        log(&format!("sharing: {}", names.join(", ")));
-    }
-    if !workers.reads.is_empty() {
-        let reads: Vec<String> = workers
-            .reads
-            .iter()
-            .map(|read| read.display().to_string())
-            .collect();
-        log(&format!(
-            "also readable, never written: {}",
-            reads.join(", ")
-        ));
-    }
     if let Some(refused) = deny_exec.describe() {
         log(&refused);
     }
@@ -327,7 +282,7 @@ async fn run_host(
             RelayMode::custom([url])
         }
     };
-    let endpoint = Endpoint::builder(presets::Minimal)
+    let endpoint = crate::dial::endpoint()
         .secret_key(state.load_key()?)
         .relay_mode(relay_mode)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
@@ -341,10 +296,7 @@ async fn run_host(
     ));
 
     // Clients dial us through our relay, so register only once we have one.
-    let dashboard = Dashboard::new(
-        &config.peer.name,
-        workers.areas.is_empty().then_some(SHARING_NONE),
-    );
+    let dashboard = Dashboard::new(&config.peer.name);
     dashboard.step("connecting to the relay…");
     if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
         .await
@@ -640,53 +592,7 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
     Ok(file)
 }
 
-/// What a host sharing no folders says in its log and on its dashboard.
-pub const SHARING_NONE: &str = "Sharing no folders — browser and Google only. \
-    Add some with `latch shares set ~/code`, then restart `latch serve`.";
-
-/// The folders `latch serve` was given, which its workers may use: each
-/// made absolute (a worker runs in another directory, the first folder) and
-/// checked now, so a typo is a plain error rather than refused files later.
-/// Any folder may be shared but `home` (the home folder) and the folders
-/// that hold its `Library`, where macOS keeps mail, messages and the like:
-/// share the projects in it instead. The sandbox hides the state folder and
-/// the never-readable places even inside a shared folder. None at all is a
-/// host for the browser and Google only: its `exec` and `file` refuse.
-pub fn shared_folders(folders: &[PathBuf], home: Option<&Path>) -> Result<Vec<PathBuf>, Failure> {
-    let mut areas = Vec::new();
-    for folder in folders {
-        let refuse = |why: &str| {
-            let message = format!("cannot share {}: {why}", folder.display());
-            Failure::usage("bad_folder", message)
-        };
-        let area = folder
-            .canonicalize()
-            .map_err(|_| refuse("it does not exist"))?;
-        if !area.is_dir() {
-            return Err(refuse("it is not a folder"));
-        }
-        if holds_library(&area, home) {
-            return Err(refuse(HOLDS_LIBRARY));
-        }
-        areas.push(area);
-    }
-    Ok(areas)
-}
-
-/// Whether the real path `path` is the home folder's `Library`, where macOS
-/// keeps mail, messages and the like, or a folder that holds it (the home
-/// folder, `/Users`, `/`). Such a folder is neither shared nor opted in to.
-fn holds_library(path: &Path, home: Option<&Path>) -> bool {
-    home.is_some_and(|home| {
-        let home = home.canonicalize().unwrap_or(home.to_path_buf());
-        home.join("Library").starts_with(path)
-    })
-}
-
-const HOLDS_LIBRARY: &str = "it holds the home folder's Library (mail, messages, keychains); name the folders in it you need";
-
-/// The places no worker may read or write, even inside a shared folder:
-/// the credentials in the home folder (`sandbox::never_readable`). The
+/// The places no worker may read or write (`sandbox::never_readable`). The
 /// state folder is hidden as well, on its own terms (see `sandbox.rs`).
 pub fn hidden_paths() -> Vec<PathBuf> {
     let paths = std::env::home_dir()
@@ -707,47 +613,6 @@ fn with_targets(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         all.extend(target);
     }
     all
-}
-
-/// The paths `--allow-read` names, which workers may read but not write:
-/// each made absolute and checked now, as shared folders are. One inside a
-/// hidden path or the state folder is refused, since no worker could read
-/// it anyway; one that holds them is allowed, and they stay hidden in it,
-/// but not one that holds the home folder's `Library`, as with shares.
-pub fn allowed_reads(
-    paths: &[PathBuf],
-    home: Option<&Path>,
-    hidden: &[PathBuf],
-    state_dir: &Path,
-) -> Result<Vec<PathBuf>, Failure> {
-    let mut reads = Vec::new();
-    for path in paths {
-        let refuse = |code: &str, why: String| {
-            let message = format!("cannot allow reads of {}: {why}", path.display());
-            Failure::usage(code, message)
-        };
-        let real = path
-            .canonicalize()
-            .map_err(|_| refuse("bad_folder", "it does not exist".to_string()))?;
-        if holds_library(&real, home) {
-            return Err(refuse("bad_folder", HOLDS_LIBRARY.to_string()));
-        }
-        let in_state = real.ancestors().find(|dir| state::is_state_folder(dir));
-        let hidden = hidden.iter().map(PathBuf::as_path).chain([state_dir]);
-        let never = hidden
-            .map(|never| never.canonicalize().unwrap_or(never.to_path_buf()))
-            .find(|never| real.starts_with(never))
-            .or(in_state.map(Path::to_path_buf));
-        if let Some(never) = never {
-            let why = format!(
-                "{} holds credentials or latch's own state, which no caller may ever read",
-                never.display()
-            );
-            return Err(refuse("never_readable", why));
-        }
-        reads.push(real);
-    }
-    Ok(reads)
 }
 
 /// Finishes when the host is asked to stop: Ctrl-C (SIGINT) in a terminal,
@@ -892,7 +757,15 @@ async fn serve_request(
     mut recv: crate::transport::RecvStream,
     cut_off: impl std::future::Future<Output = &'static str>,
 ) {
+    // A file's host path is resolved before anything is judged.
+    let unplaced = files::resolve(&request.op, &mut request.args, &host.workers);
     let op = request.op.as_str();
+    let exec_permissions = (op == "exec").then(|| {
+        json!({
+            "writes": request.args.get("writes").cloned().unwrap_or_else(|| json!([])),
+            "network": request.args.get("network").cloned().unwrap_or(json!(false)),
+        })
+    });
     tracing::Span::current().record("op", display(op));
     let started = Instant::now();
 
@@ -909,7 +782,7 @@ async fn serve_request(
     } else {
         host.check(caller).await
     };
-    let response = match identity {
+    let mut response = match identity {
         Err(denial) => {
             let _ = host
                 .append(audit::record(caller, None, op, "deny", &denial.code))
@@ -939,6 +812,18 @@ async fn serve_request(
             // A worker started now would run the new latch under this old
             // host: nothing runs, and nothing is judged.
             let upgraded = host.binary.replaced();
+            let (prepared_exec, exec_failure) = if op == "exec" && !denied_exec && !upgraded {
+                match exec::normalize(&host.workers, &request.args) {
+                    Ok(args) => {
+                        request.args =
+                            serde_json::to_value(&args).expect("prepared exec serializes");
+                        (Some(args), None)
+                    }
+                    Err(failure) => (None, Some(failure)),
+                }
+            } else {
+                (None, None)
+            };
             // Nor for a connector its owner has not enabled. One that is
             // counts as running until its answer is audited, so `disable`
             // waits for it.
@@ -961,22 +846,16 @@ async fn serve_request(
                     Err(done) => unplanned = Some(*done),
                 }
             }
-            // With no shared folder, exec and file refuse: nothing to judge.
-            let unshared =
-                host.workers.areas.is_empty() && matches!(op, "exec" | "file_get" | "file_put");
-            let first_area = host.workers.areas.first().map(PathBuf::as_path);
-            let gated = gate::gated(op, &request.args, first_area).filter(|_| {
-                !denied_exec && !upgraded && !unshared && !not_enabled && unplanned.is_none()
+            let gated = gate::gated(op, &request.args).filter(|_| {
+                !denied_exec
+                    && !upgraded
+                    && !not_enabled
+                    && exec_failure.is_none()
+                    && unplanned.is_none()
+                    && unplaced.is_none()
             });
             let unjudgeable = match (&gate, &gated) {
                 (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
-                _ => None,
-            };
-            // A one-time action (send one email) is judged, run and
-            // recorded before the same caller's next one is judged, so two
-            // sent at once do not both run.
-            let turn = match (&gate, &gated) {
-                (Ok(gate), Some(gated)) if gated.once => Some(gate.one_at_a_time().await),
                 _ => None,
             };
             let judgment = match (&gate, &gated) {
@@ -999,6 +878,12 @@ async fn serve_request(
             let done = if upgraded {
                 let failure = host_upgraded();
                 Done::failed(&failure.code, failure.message, Value::Null)
+            } else if let Some(failure) = exec_failure {
+                Done {
+                    response: Response::error(&failure),
+                    audit_args: Value::Null,
+                    outcome: failure.code,
+                }
             } else if let Some(Err(failure)) = &running {
                 Done {
                     response: Response::error(failure),
@@ -1009,6 +894,8 @@ async fn serve_request(
                 unplanned
             } else if let Some(refused) = refused {
                 refused
+            } else if let Some(unplaced) = unplaced {
+                unplaced
             } else {
                 match op {
                     "file_get" => files::get(&host.workers, &request.args, &mut send).await,
@@ -1025,17 +912,21 @@ async fn serve_request(
                                 .to_string(),
                         },
                         // As a refused judgment keeps it: no stdin.
-                        audit_args: gate::gated(op, &request.args, first_area)
+                        audit_args: gate::gated(op, &request.args)
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
                     "exec" => {
-                        exec::run(&host.workers, &request.args, async {
-                            tokio::select! {
-                                reason = cut_off => reason,
-                                _ = recv.read_u8(), if local => "caller_gone",
-                            }
-                        })
+                        exec::run(
+                            &host.workers,
+                            prepared_exec.expect("exec was validated"),
+                            async {
+                                tokio::select! {
+                                    reason = cut_off => reason,
+                                    _ = recv.read_u8(), if local => "caller_gone",
+                                }
+                            },
+                        )
                         .await
                     }
                     "vault" => {
@@ -1115,13 +1006,6 @@ async fn serve_request(
                     ),
                 }
             };
-            if let (Ok(gate), Some(gated), Some(judgment)) = (&gate, &gated, &judgment)
-                && judgment.verdict.is_ok()
-                && gated.once
-            {
-                gate.did(&gated.action, &done.outcome);
-            }
-            drop(turn);
             let decision = decision(&done.response);
             log(&format!(
                 "{op}: {caller}: {decision}: {} {}",
@@ -1158,6 +1042,14 @@ async fn serve_request(
             response
         }
     };
+    if let (Some(permissions), Response::Error { details, .. }) = (exec_permissions, &mut response)
+    {
+        if details.is_null() {
+            *details = json!({});
+        }
+        details["writes"] = permissions["writes"].clone();
+        details["network"] = permissions["network"].clone();
+    }
     answer(&mut send, &response).await;
 }
 
@@ -1556,119 +1448,15 @@ mod tests {
     }
 
     #[test]
-    fn any_existing_folder_is_shared() {
+    fn linked_state_keeps_its_target_hidden_once_the_link_is_gone() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().canonicalize().unwrap();
-        let code = home.join("code");
-        let docs = home.join("docs");
-        for path in [&code, &docs] {
-            std::fs::create_dir_all(path).unwrap();
-        }
-        std::fs::write(home.join("notes.txt"), b"").unwrap();
-
-        std::fs::create_dir_all(home.join("Library/Developer")).unwrap();
-        let shared = |folders: &[PathBuf]| shared_folders(folders, Some(&home));
-
-        assert_eq!(
-            shared(&[code.join("../docs"), code.clone()]).unwrap(),
-            [docs, code]
-        );
-        // Inside the Library, but not what holds it.
-        assert_eq!(
-            shared(&[home.join("Library/Developer")]).unwrap(),
-            [home.join("Library/Developer")]
-        );
-        assert_eq!(shared(&[]).unwrap(), Vec::<PathBuf>::new());
-        for (folder, why) in [
-            (home.join("missing"), "does not exist"),
-            (home.join("notes.txt"), "not a folder"),
-            (home.clone(), "Library"),
-            (home.join("Library"), "Library"),
-            (home.join(".."), "Library"),
-            (PathBuf::from("/"), "Library"),
-        ] {
-            let failure = shared(std::slice::from_ref(&folder)).unwrap_err();
-            assert_eq!(failure.code, "bad_folder", "{folder:?}");
-            assert!(
-                failure.message.contains(why),
-                "{folder:?}: {}",
-                failure.message
-            );
-        }
-    }
-
-    #[test]
-    fn an_opt_in_inside_credentials_or_state_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().canonicalize().unwrap();
-        let state = home.join("state");
-        for path in [".ssh", ".config/gh", "code", "state/keys"] {
-            std::fs::create_dir_all(home.join(path)).unwrap();
-        }
-        std::fs::write(home.join(".ssh/id_ed25519"), b"").unwrap();
-        let hidden = crate::sandbox::never_readable(&home);
-        let allowed = |path: &str| allowed_reads(&[home.join(path)], Some(&home), &hidden, &state);
-
-        // A folder that holds them is allowed (the sandbox hides them in
-        // it), unless it holds the Library: the home folder, or above it.
-        std::fs::create_dir_all(home.join("code/.ssh")).unwrap();
-        std::fs::create_dir_all(home.join("Library")).unwrap();
-        let in_code = crate::sandbox::never_readable(&home.join("code"));
-        let reads = allowed_reads(&[home.join("code")], None, &in_code, &state);
-        assert_eq!(reads.unwrap(), [home.join("code")]);
-        assert_eq!(allowed("code/../code").unwrap(), [home.join("code")]);
-        for path in [".", "..", "Library"] {
-            let failure = allowed(path).unwrap_err();
-            assert_eq!(failure.code, "bad_folder", "{path}");
-            assert!(failure.message.contains("Library"), "{path}");
-        }
-        for path in [".ssh", ".ssh/id_ed25519", ".config/gh", "state/keys"] {
-            let failure = allowed(path).unwrap_err();
-            assert_eq!(failure.code, "never_readable", "{path}");
-        }
-        assert_eq!(allowed("missing").unwrap_err().code, "bad_folder");
-    }
-
-    #[test]
-    fn an_opt_in_inside_another_state_folder_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        for path in ["share/a/peer/sub", "share/b", "share/d/old"] {
-            std::fs::create_dir_all(root.join(path)).unwrap();
-        }
-        let marker = r#"{"format": 1, "written_by": "test"}"#;
-        std::fs::write(root.join("share/a/peer/latch.json"), marker).unwrap();
-        // Made before the marker: a key and a Plow login, no latch.json.
-        std::fs::write(root.join("share/d/old/key"), "k").unwrap();
-        std::fs::write(root.join("share/d/old/plow-token"), "t").unwrap();
-        // A key alone is anyone's.
-        std::fs::write(root.join("share/b/key"), "k").unwrap();
-
-        let state = root.join("own-state");
-        for path in ["share/a/peer/sub", "share/d/old"] {
-            let inside = allowed_reads(&[root.join(path)], None, &[], &state);
-            assert_eq!(inside.unwrap_err().code, "never_readable", "{path}");
-        }
-        let beside = allowed_reads(&[root.join("share/b")], None, &[], &state);
-        assert_eq!(beside.unwrap(), [root.join("share/b")]);
-    }
-
-    #[test]
-    fn a_linked_credential_keeps_its_target_hidden_once_the_link_is_gone() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().canonicalize().unwrap();
-        std::fs::create_dir_all(home.join(".docker")).unwrap();
         std::fs::create_dir_all(home.join("private")).unwrap();
-        std::fs::write(home.join("private/login.json"), "{}").unwrap();
-        std::os::unix::fs::symlink(
-            home.join("private/login.json"),
-            home.join(".docker/config.json"),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(home.join("private"), home.join(".latch")).unwrap();
         let hidden = with_targets(crate::sandbox::never_readable(&home));
-        std::fs::remove_file(home.join(".docker/config.json")).unwrap();
-        assert!(hidden.contains(&home.join(".docker/config.json")));
-        assert!(hidden.contains(&home.join("private/login.json")));
+        std::fs::remove_file(home.join(".latch")).unwrap();
+        assert!(hidden.contains(&home.join(".latch")));
+        assert!(hidden.contains(&home.join("private")));
     }
 
     #[test]

@@ -260,7 +260,7 @@ class HostUpgrade(unittest.TestCase):
         if engines_fail:
             tool(setup, "browser-engines.sh", "exit 1\n")
         self.recovery = (f"'{root}/home/.local/bin/latch' --state-dir '{state}' "
-                         "serve -d --again")
+                         "serve -d (plus any --deny-exec or --headless-browsers flags you need)")
         dest = root / "home/.local/bin/latch"
         dest.parent.mkdir(parents=True)
         dest.write_text(old)
@@ -282,7 +282,8 @@ class HostUpgrade(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls, ["0.1.0 (1) stop", "0.1.0 (2) serve -d --again"])
         self.assertIn("started the host", result.stdout)
-        self.assertIn(self.recovery, result.stdout, "the stop says how to start it again")
+        self.assertIn("it starts again with the new latch once the install is done",
+                      result.stdout, "the stop says it will start again after installation")
         self.assertNotIn("is stopped", result.stderr)
         self.assertIn("latch 0.1.0 (2)", subprocess.check_output([str(dest), "--version"], text=True))
 
@@ -300,7 +301,7 @@ class HostUpgrade(unittest.TestCase):
         new = fake_latch("0.1.0 (2)", log, start_ok=False)
         result, calls, _ = self.upgrade(fake_latch("0.1.0 (1)", log), new, log)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f"is stopped; start it again with: {self.recovery}", result.stderr)
+        self.assertIn(f"is stopped; start once with: {self.recovery}", result.stderr)
         self.assertEqual(calls, ["0.1.0 (1) stop", "0.1.0 (2) serve -d --again"])
 
     def test_a_later_step_that_fails_leaves_the_command_that_starts_the_host(self):
@@ -308,7 +309,7 @@ class HostUpgrade(unittest.TestCase):
         result, calls, _ = self.upgrade(fake_latch("0.1.0 (1)", log), fake_latch("0.1.0 (2)", log),
                                         log, engines_fail=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f"is stopped; start it again with: {self.recovery}", result.stderr)
+        self.assertIn(f"is stopped; start once with: {self.recovery}", result.stderr)
         self.assertEqual(calls, ["0.1.0 (1) stop"])
 
     def test_no_managed_host_or_the_same_version_stops_nothing(self):

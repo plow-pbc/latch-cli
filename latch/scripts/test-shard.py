@@ -18,9 +18,10 @@ def inventory(executable):
     return [line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")]
 
 
-def run(shard, count):
+def run(shard, count, features=""):
     started = time.monotonic()
-    build = subprocess.run(["cargo", "test", "--locked", "--no-run", "--message-format=json"],
+    chosen = ["--features", features] if features else []
+    build = subprocess.run(["cargo", "test", "--locked", *chosen, "--no-run", "--message-format=json"],
                            stdout=subprocess.PIPE, text=True)
     artifacts = {}
     for line in build.stdout.splitlines():
@@ -60,7 +61,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("shard", type=int)
     parser.add_argument("count", type=int)
+    parser.add_argument("--features", default="", help="cargo features for the test build")
     args = parser.parse_args()
     if not 1 <= args.shard <= args.count:
         parser.error("expected 1 <= shard <= count")
-    raise SystemExit(run(args.shard, args.count))
+    raise SystemExit(run(args.shard, args.count, args.features))

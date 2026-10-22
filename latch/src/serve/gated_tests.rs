@@ -85,14 +85,14 @@ pub(super) async fn start_with(
     std::fs::create_dir_all(&parent).unwrap();
     let dir = tempfile::tempdir_in(parent).unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (area, state, home) = (root.join("area"), root.join("state"), root.join("home"));
-    std::fs::create_dir(&area).unwrap();
+    let home = root.join("home");
+    let (area, state) = (home.join("area"), root.join("state"));
+    std::fs::create_dir_all(&area).unwrap();
     crate::state::StateDir {
         path: state.clone(),
     }
     .create()
     .unwrap();
-    std::fs::create_dir(&home).unwrap();
     std::fs::write(area.join("notes.txt"), "the notes' own words").unwrap();
     let binary = root.join("latch");
     std::fs::write(&binary, "the latch this host started from").unwrap();
@@ -103,26 +103,26 @@ pub(super) async fn start_with(
         r#"{"google": {"state": "enabled"}}"#
     };
     std::fs::write(state.join("plugins.json"), enabled).unwrap();
-    let endpoint = Endpoint::builder(presets::Minimal)
+    let endpoint = crate::dial::endpoint()
         .relay_mode(RelayMode::Disabled)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
         .bind()
         .await
         .unwrap();
     let vault = crate::vault::host::Vault::new(state.clone());
-    let rules = RuleFiles::new(&state, std::slice::from_ref(&area)).unwrap();
+    let rules = RuleFiles::new(&state).unwrap();
     let host = Arc::new(Host {
         plow: plow.client(),
         audit: Arc::new(Mutex::new(
             AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
         )),
-        dashboard: Dashboard::new("test-host", None),
+        dashboard: Dashboard::new("test-host"),
         lifetime: super::Lifetime::new(false),
         workers: WorkerSetup {
-            areas: vec![area.clone()],
+            home: home.clone(),
+            areas: vec![],
             reads: vec![],
             hidden: crate::sandbox::never_readable(&home),
-            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: state.clone(),
             program: latch_binary(),
         },
@@ -163,7 +163,7 @@ pub(super) async fn start_with(
 impl TestHost {
     /// A caller Plow knows as an agent (with its uid) or a device.
     pub(super) async fn caller(&self, kind: &str) -> Endpoint {
-        let client = Endpoint::builder(presets::Minimal)
+        let client = crate::dial::endpoint()
             .relay_mode(RelayMode::Disabled)
             .bind()
             .await
@@ -243,13 +243,50 @@ impl TestHost {
             .collect()
     }
 
+    /// A `file_put` of `sent` to `remote`, promising `size` bytes: the
+    /// first answer, and the final one if the host got that far.
+    async fn put(
+        &self,
+        client: &Endpoint,
+        remote: &str,
+        size: usize,
+        sent: &[u8],
+    ) -> (Response, Option<Response>) {
+        let connection = client
+            .connect(self.host.endpoint.addr(), wire::ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
+        let request = Request {
+            op: "file_put".into(),
+            args: json!({"remote_path": remote, "size": size, "name": "upload.txt"}),
+            chat: None,
+        };
+        wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
+            .await
+            .unwrap();
+        let first: Response =
+            serde_json::from_slice(&wire::read_frame(&mut recv).await.unwrap()).unwrap();
+        if !matches!(first, Response::Ok(_)) {
+            return (first, None);
+        }
+        send.write_all(sent).await.unwrap();
+        send.finish().unwrap();
+        let last = wire::read_frame(&mut recv)
+            .await
+            .ok()
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap());
+        connection.close(VarInt::from_u32(0), b"done");
+        (first, last)
+    }
+
     pub(super) fn judged(&self) -> usize {
         self.plow.saw("POST /v1/decisions")
     }
 }
 
 fn exec(script: &str) -> Value {
-    json!({"argv": ["/bin/sh", "-c", script], "workdir": null, "timeout": 10})
+    json!({"argv": ["/bin/sh", "-c", script], "writes": ["area"], "timeout": 10})
 }
 
 pub(super) fn refusal(response: &Response) -> (Exit, &str, &Value) {
@@ -317,13 +354,13 @@ async fn a_refused_operation_runs_nothing_and_returns_nothing() {
     assert!(!t.area.join("made").exists(), "the program never ran");
 
     let (answer, rest) = t
-        .call(&agent, "file_get", json!({"remote_path": "notes.txt"}))
+        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
         .await;
     assert_eq!(refusal(&answer).1, "gatekeeper_denied");
     assert!(rest.is_empty(), "no bytes of the file");
     assert!(!format!("{answer:?}").contains("own words"));
 
-    let put = json!({"remote_path": "new.txt", "size": 5, "name": "new.txt"});
+    let put = json!({"remote_path": "area/new.txt", "size": 5, "name": "new.txt"});
     let (answer, _) = t.call(&agent, "file_put", put).await;
     assert_eq!(refusal(&answer).1, "gatekeeper_denied");
     assert!(!t.area.join("new.txt").exists());
@@ -359,7 +396,7 @@ async fn a_judge_that_cannot_answer_runs_nothing() {
     assert_eq!((exit, code), (Exit::Unreachable, "gatekeeper_unavailable"));
     assert!(!t.area.join("made").exists());
     let (answer, rest) = t
-        .call(&agent, "file_get", json!({"remote_path": "notes.txt"}))
+        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
         .await;
     assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
     assert!(rest.is_empty());
@@ -400,11 +437,6 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
         "tidied\ntidied\n"
     );
     assert_eq!(t.judged(), 3, "the same exec is judged each time");
-    let asked = t.plow.world.lock().unwrap().asked.clone();
-    assert_eq!(
-        asked[2]["already_done_by_agent"], "(nothing since this host started)",
-        "an exec run again is not a one-time action"
-    );
 
     let records = t.audit();
     let gate = &records[2]["gate"];
@@ -429,8 +461,63 @@ pub(super) fn always_covered(_: &Value) -> Option<[f64; 3]> {
     Some([0.9, 0.08, 0.02])
 }
 
+fn replace_the_judged_write_folder(state: &Value) -> Option<[f64; 3]> {
+    let path = Path::new(state["proposed_action"]["writes"][0].as_str().unwrap());
+    std::fs::rename(path, path.with_file_name("approved-before-swap")).unwrap();
+    let home = path.parent().unwrap().parent().unwrap();
+    std::os::unix::fs::symlink(home.join("outside-write"), path).unwrap();
+    always_covered(state)
+}
+
 #[tokio::test]
-async fn a_google_change_is_already_done_the_next_time_and_a_read_is_not() {
+async fn a_write_path_retargeted_after_judgment_is_refused() {
+    let t = start(a_chat(replace_the_judged_write_folder)).await;
+    let approved = t.area.join("approved");
+    let outside = t.host.workers.home.join("outside-write");
+    std::fs::create_dir(&approved).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("victim.txt"), "unchanged").unwrap();
+    let agent = t.caller("agent").await;
+    let args =
+        json!({"argv": ["/bin/sh", "-c", "printf overwritten > victim.txt"], "writes": [approved]});
+    let (answer, _) = t.call(&agent, "exec", args).await;
+    assert_eq!(
+        std::fs::read(outside.join("victim.txt")).unwrap(),
+        b"unchanged"
+    );
+    assert_eq!(refusal(&answer).1, "bad_path");
+}
+
+#[tokio::test]
+async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
+    let t = start(a_chat(always_covered)).await;
+    let home = &t.host.workers.home;
+    std::fs::write(home.join(".cache"), "plain file").unwrap();
+    let target = home.join("outside-write");
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&target, home.join(".npm")).unwrap();
+    let agent = t.caller("agent").await;
+    let (answer, _) = t
+        .call(
+            &agent,
+            "exec",
+            json!({
+                "argv": ["/bin/sh", "-c", "echo bad > outside-write/victim"]
+            }),
+        )
+        .await;
+    assert!(
+        !target.join("victim").exists(),
+        "cache granted an undeclared path"
+    );
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert_eq!(std::fs::read(home.join(".cache")).unwrap(), b"plain file");
+    assert!(!home.join(".cargo").exists());
+    assert!(!home.join("go").exists());
+}
+
+#[tokio::test]
+async fn a_repeated_google_change_is_judged_afresh_with_no_history() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;
     let google = |gog_args: &[&str]| json!({"gog_args": gog_args, "account": [], "confirm_conflict": false, "inputs": []});
@@ -443,51 +530,76 @@ async fn a_google_change_is_already_done_the_next_time_and_a_read_is_not() {
         "the body",
     ]);
     let search = google(&["gmail", "search", "invoice"]);
-    for args in [&search, &search, &send, &send] {
+    for args in [&search, &send, &send] {
         t.call(&agent, "google", args.clone()).await;
     }
     let asked = t.plow.world.lock().unwrap().asked.clone();
-    assert_eq!(asked.len(), 4);
-    for state in &asked[..3] {
-        assert_eq!(
-            state["already_done_by_agent"],
-            "(nothing since this host started)"
-        );
+    assert_eq!(asked.len(), 3, "each one judged");
+    for state in &asked {
+        assert!(state.get("already_done_by_agent").is_none(), "{state}");
     }
-    let done = &asked[3]["already_done_by_agent"]["since this host started"];
-    assert_eq!(done.as_array().unwrap().len(), 1, "{done}");
-    assert_eq!(done[0]["what"]["command"], send["gog_args"]);
-}
-
-/// Covered until the agent has already done something since the host started.
-fn covered_once(state: &Value) -> Option<[f64; 3]> {
-    Some(if state["already_done_by_agent"].is_string() {
-        [0.9, 0.08, 0.02]
-    } else {
-        [0.1, 0.85, 0.05]
-    })
+    assert_eq!(
+        asked[1]["proposed_action"], asked[2]["proposed_action"],
+        "the second send is judged as the first"
+    );
+    assert_eq!(asked[2]["proposed_action"]["command"], send["gog_args"]);
 }
 
 #[tokio::test]
-async fn the_same_google_change_sent_twice_at_once_runs_once() {
-    let t = start(a_chat(covered_once)).await;
+async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() {
+    let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;
-    let send = json!({"gog_args": ["gmail", "send", "--to", "a@example.com", "--body", "the body"],
-                      "account": [], "confirm_conflict": false, "inputs": []});
-    let (first, second) = tokio::join!(
-        t.call(&agent, "google", send.clone()),
-        t.call(&agent, "google", send.clone()),
-    );
-    // The second is judged after the first ran, and sees it already done.
-    // (The one that runs stops at the missing gog: it ran all the same.)
-    let refused = [&first.0, &second.0]
-        .into_iter()
-        .filter(
-            |answer| matches!(answer, Response::Error { code, .. } if code == "gatekeeper_denied"),
-        )
-        .count();
-    assert_eq!(refused, 1, "{first:?} {second:?}");
+    let notes = t.area.join("notes.txt");
+    // A folder destination takes the file's name, and the judge is shown
+    // the path it resolves to, not what the agent typed.
+    let (_, last) = t.put(&agent, "area", 2, b"hi").await;
+    assert!(matches!(last, Some(Response::Ok(_))), "{last:?}");
+    assert_eq!(std::fs::read(t.area.join("upload.txt")).unwrap(), b"hi");
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let shown = t.area.join("upload.txt").display().to_string();
+    assert!(asked[0].to_string().contains(&shown), "{}", asked[0]);
+    // An upload that breaks off leaves the old file and nothing beside it.
+    let (_, last) = t.put(&agent, "area/notes.txt", 10, b"new").await;
+    assert!(!matches!(last, Some(Response::Ok(_))), "{last:?}");
+    assert_eq!(std::fs::read(&notes).unwrap(), b"the notes' own words");
+    let names = std::fs::read_dir(&t.area).unwrap().count();
+    assert_eq!(names, 2, "only notes.txt and upload.txt");
+    // A hidden destination is refused before anything is judged.
+    let key = t.state.join("key");
+    let (first, _) = t.put(&agent, key.to_str().unwrap(), 1, b"x").await;
+    let (exit, code, _) = refusal(&first);
+    assert_eq!((exit, code), (Exit::Denied, "bad_path"));
     assert_eq!(t.judged(), 2);
+}
+
+#[tokio::test]
+async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    // A dotfile outside any shared folder: readable, judged at its path.
+    let home = &t.host.workers.home;
+    std::fs::create_dir(home.join(".ssh")).unwrap();
+    std::fs::write(home.join(".ssh/config"), "Host example").unwrap();
+    let (answer, bytes) = t
+        .call(&agent, "file_get", json!({"remote_path": "~/.ssh/config"}))
+        .await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert!(bytes.starts_with(b"Host example"), "{bytes:?}");
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let shown = home.join(".ssh/config").display().to_string();
+    assert!(asked[0].to_string().contains(&shown), "{}", asked[0]);
+    // The host's state, and a link into it, are refused before judging.
+    std::fs::write(t.state.join("key"), "made-up key").unwrap();
+    std::os::unix::fs::symlink(t.state.join("key"), home.join("key-link")).unwrap();
+    let key = t.state.join("key");
+    for hidden in [key.to_str().unwrap(), "~/key-link"] {
+        let (answer, _) = t
+            .call(&agent, "file_get", json!({"remote_path": hidden}))
+            .await;
+        let (exit, code, _) = refusal(&answer);
+        assert_eq!((exit, code), (Exit::Denied, "bad_path"), "{hidden}");
+    }
+    assert_eq!(t.judged(), 1);
 }
 
 #[tokio::test]
@@ -503,7 +615,7 @@ async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
     assert!(t.audit()[0].get("gate").is_none());
     // Other operations are still judged.
     let (answer, _) = t
-        .call(&agent, "file_get", json!({"remote_path": "notes.txt"}))
+        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
         .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert_eq!(t.judged(), 1);
@@ -511,7 +623,120 @@ async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
 
 /// An exec of `/bin/sh` reading its script from `stdin`.
 fn exec_stdin(stdin: &[u8]) -> Value {
-    json!({"argv": ["/bin/sh"], "workdir": null, "timeout": 10, "stdin": stdin})
+    json!({"argv": ["/bin/sh"], "writes": ["area"], "timeout": 10, "stdin": stdin})
+}
+
+#[tokio::test]
+async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow() {
+    let t = start(a_chat(covered_after_a_yes)).await;
+    let agent = t.caller("agent").await;
+    for path in ["~", "~/..", "/", "~/.latch/new", t.state.to_str().unwrap()] {
+        let args = json!({"argv": ["true"], "writes": [path]});
+        let (answer, _) = t.call(&agent, "exec", args).await;
+        assert_eq!(refusal(&answer).1, "bad_path", "{path}");
+        assert_eq!(refusal(&answer).2["writes"], json!([path]));
+        assert_eq!(refusal(&answer).2["network"], false);
+    }
+    assert_eq!(t.judged(), 0);
+    let path = t.host.workers.home.join("new-project");
+    let args = json!({"argv": ["/bin/sh", "-c", "printf built > result"],
+                      "writes": ["~/new-project"], "network": true});
+    let (refused, _) = t.call(&agent, "exec", args.clone()).await;
+    assert_eq!(refusal(&refused).1, "gatekeeper_denied");
+    assert!(!path.exists());
+    t.plow.world.lock().unwrap().decide = Some(always_covered);
+    let (answer, _) = t.call(&agent, "exec", args).await;
+    let Response::Ok(result) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(std::fs::read(path.join("result")).unwrap(), b"built");
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    for state in asked {
+        assert_eq!(state["proposed_action"]["writes"], json!([path]));
+        assert_eq!(state["proposed_action"]["working_folder"], json!(path));
+        assert_eq!(state["proposed_action"]["network"], true);
+    }
+    for record in t
+        .audit()
+        .into_iter()
+        .filter(|record| record["gate"].is_object())
+    {
+        assert_eq!(record["args"]["writes"], json!([path]));
+        assert_eq!(record["args"]["network"], true);
+    }
+}
+
+#[tokio::test]
+async fn exec_reads_home_but_writes_only_declarations_and_caches() {
+    let t = start(a_chat(always_covered)).await;
+    let home = &t.host.workers.home;
+    std::fs::create_dir(home.join(".ssh")).unwrap();
+    std::fs::write(home.join(".ssh/config"), "readable-dotfile").unwrap();
+    std::fs::create_dir(home.join(".latch")).unwrap();
+    std::fs::write(home.join(".latch/private"), "hidden-private-value").unwrap();
+    std::fs::create_dir(t.area.join("peer")).unwrap();
+    std::fs::write(
+        t.area.join("peer/latch.json"),
+        r#"{"format":1,"written_by":"test"}"#,
+    )
+    .unwrap();
+    std::fs::write(t.area.join("peer/private"), "hidden-peer-value").unwrap();
+    for cache in [
+        ".cache",
+        ".npm",
+        ".cargo/registry",
+        ".cargo/git",
+        "go/pkg/mod",
+    ] {
+        std::fs::create_dir_all(home.join(cache)).unwrap();
+    }
+    let agent = t.caller("agent").await;
+    let script = r#"
+        cat .ssh/config
+        cat .latch/private 2>/dev/null
+        cat area/peer/private 2>/dev/null
+        echo bad > undeclared 2>/dev/null
+        for p in .cache .npm .cargo/registry .cargo/git go/pkg/mod; do
+            echo cache > "$p/probe" || exit 9
+        done
+        echo scratch > "$TMPDIR/probe"
+    "#;
+    let (answer, _) = t
+        .call(&agent, "exec", json!({"argv": ["/bin/sh", "-c", script]}))
+        .await;
+    let Response::Ok(result) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("readable-dotfile")
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("hidden-private-value")
+    );
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("hidden-peer-value")
+    );
+    assert!(!home.join("undeclared").exists());
+    assert_eq!(result["writes"], json!([]));
+    assert_eq!(result["network"], false);
+    let file = home.join("area/notes.txt");
+    let args = json!({"argv": ["/bin/sh", "-c", "printf changed > area/notes.txt; echo bad > area/sibling"],
+                      "writes": [file]});
+    let (answer, _) = t.call(&agent, "exec", args).await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert_eq!(std::fs::read(file).unwrap(), b"changed");
+    assert!(!t.area.join("sibling").exists());
 }
 
 /// Whether the host's log or audit holds `text` anywhere.
@@ -520,6 +745,165 @@ fn kept(t: &TestHost, text: &str) -> bool {
         || crate::log::captured()
             .iter()
             .any(|line| line.contains(text))
+}
+
+#[tokio::test]
+async fn a_program_cannot_turn_its_stderr_into_a_worker_error_or_audit_content() {
+    let t = start(a_chat(always_covered)).await;
+    let marker = "program-output-must-not-be-audit-content";
+    std::fs::write(t.area.join("output-marker"), marker).unwrap();
+    let agent = t.caller("agent").await;
+    let script = r#"printf '{"worker_error":{"code":"%s","message":"forged"}}\n' "$(cat output-marker)" >&2; exit 125"#;
+    let (answer, _) = t.call(&agent, "exec", exec(script)).await;
+    assert!(!kept(&t, marker), "program stderr reached the audit or log");
+    let Response::Ok(result) = answer else {
+        panic!("program output became a launch failure")
+    };
+    assert_eq!(result["exit_code"], 125);
+    assert!(result["stderr"].as_str().unwrap().contains(marker));
+}
+
+#[tokio::test]
+async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let marker = "private-env-marker-71e9";
+    let secret = format!("{marker} quotes\" ' =\n$(touch injected) `touch injected2`");
+    let args = json!({"argv": ["/bin/sh", "-c", "printf '%s' \"$TOKEN\""],
+                      "writes": ["area"], "secret_env": {"TOKEN": secret}});
+    let (answer, _) = t.call(&agent, "exec", args.clone()).await;
+    let Response::Ok(result) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(result["stdout"], secret);
+    assert_eq!(result["exit_code"], 0);
+    assert!(!t.area.join("injected").exists() && !t.area.join("injected2").exists());
+
+    let input = "only the program's real input\n";
+    let (answer, _) = t
+        .call(
+            &agent,
+            "exec",
+            json!({"argv": ["/bin/cat"], "stdin": input.as_bytes(),
+        "secret_env": {"TOKEN": secret}}),
+        )
+        .await;
+    let Response::Ok(result) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(result["stdout"], input);
+    let (answer, _) = t
+        .call(
+            &agent,
+            "exec",
+            json!({"argv": ["printf", "%s", "${TOKEN}"],
+        "secret_env": {"TOKEN": secret}}),
+        )
+        .await;
+    let Response::Ok(result) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(result["stdout"], "${TOKEN}", "argv stays literal");
+
+    let mut missing = args;
+    missing["argv"] = json!(["latch-missing-exec-for-secret-test"]);
+    let (answer, _) = t.call(&agent, "exec", missing).await;
+    assert_eq!(refusal(&answer).1, "program_not_found");
+    assert!(!serde_json::to_string(&answer).unwrap().contains(marker));
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    assert!(!serde_json::to_string(&asked).unwrap().contains(marker));
+    assert_eq!(
+        asked[0]["proposed_action"]["secret_env"],
+        json!([{"name": "TOKEN", "secret": true, "length": secret.len()}])
+    );
+    assert!(!kept(&t, marker));
+    for record in t.audit() {
+        let (target, result) = dashboard::describe("exec", &record["args"], "ok", Duration::ZERO);
+        assert!(!target.contains(marker) && !result.contains(marker));
+    }
+}
+
+#[tokio::test]
+async fn secret_names_that_control_execution_are_allowed_and_explained_to_the_judge() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let marker = "hidden-execution-value-742e";
+    let names = [
+        "GIT_SSH_COMMAND",
+        "NODE_OPTIONS",
+        "BASH_ENV",
+        "PYTHONSTARTUP",
+        "GIT_CONFIG_PARAMETERS",
+    ];
+    let secrets: serde_json::Map<String, Value> = names
+        .into_iter()
+        .map(|name| (name.to_string(), json!(marker)))
+        .collect();
+    // true does not interpret these values. This checks judgment, not a payload.
+    let (answer, _) = t
+        .call(
+            &agent,
+            "exec",
+            json!({
+                "argv": ["true"], "secret_env": secrets
+            }),
+        )
+        .await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let state = &asked[0];
+    assert!(!serde_json::to_string(state).unwrap().contains(marker));
+    for name in names {
+        assert!(
+            state["proposed_action"]["secret_env"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|secret| secret["name"] == name && secret["secret"] == true)
+        );
+    }
+    let rules = state["rules_of_judgment"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for name in [
+        "*_COMMAND",
+        "NODE_OPTIONS",
+        "BASH_ENV",
+        "PYTHONSTARTUP",
+        "GIT_CONFIG_*",
+    ] {
+        assert!(rules.contains(name), "judge was not warned about {name}");
+    }
+}
+
+#[tokio::test]
+async fn invalid_or_reserved_secret_names_never_reach_the_judge() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let marker = "invalid-env-private-marker-993f";
+    for name in [
+        "",
+        "3TOKEN",
+        "BAD-NAME",
+        "HOME",
+        "PATH",
+        "TMPDIR",
+        "LATCH_BWRAP_INNER",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+    ] {
+        let args = json!({"argv": ["true"], "secret_env": {(name): marker}});
+        let (answer, _) = t.call(&agent, "exec", args).await;
+        assert_eq!(refusal(&answer).1, "bad_secret_env", "{name}");
+        assert!(!serde_json::to_string(&answer).unwrap().contains(marker));
+    }
+    assert_eq!(t.judged(), 0);
+    assert!(!kept(&t, marker));
 }
 
 #[tokio::test]
@@ -602,10 +986,14 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert!(t.area.join("made").exists());
     let (answer, _) = t
-        .call(&device, "file_get", json!({"remote_path": "notes.txt"}))
+        .call(
+            &device,
+            "file_get",
+            json!({"remote_path": "area/notes.txt"}),
+        )
         .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
-    let put = json!({"remote_path": "new.txt", "size": 0, "name": "new.txt"});
+    let put = json!({"remote_path": "area/new.txt", "size": 0, "name": "new.txt"});
     t.call(&device, "file_put", put).await;
     let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": [],
                         "confirm_conflict": false, "inputs": []});
@@ -686,7 +1074,7 @@ async fn an_outage_refuses_gated_operations_for_everyone_but_not_the_owners_sett
         let Response::Error { message, .. } = answer else {
             unreachable!()
         };
-        assert!(message.contains("rules, vault, shares"), "{message}");
+        assert!(message.contains("rules, vault"), "{message}");
     }
     assert!(!t.area.join("made").exists());
     let asked = t.judged();
@@ -948,9 +1336,7 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
     let set = json!({"command": "set", "text": "Never delete or remove any file on this host."});
     let (answer, _) = t.call(&device, "rules", set).await;
     assert!(matches!(answer, Response::Ok(_)), "rules set: {answer:?}");
-    let removal = gate::gated("exec", &removal, Some(t.area.as_path()))
-        .unwrap()
-        .action;
+    let removal = gate::gated("exec", &removal).unwrap().action;
     let mut removals = Vec::new();
     for _ in 0..3 {
         let judged = t.host.gatekeeper.judge(Caller::Owner, &removal).await;
@@ -1002,7 +1388,7 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
 
 /// One request over a phone link's connection, as the phone page sends it.
 async fn phone_call(host: &TestHost, op: &str, args: Value) -> Response {
-    let phone = Endpoint::builder(presets::Minimal)
+    let phone = crate::dial::endpoint()
         .relay_mode(RelayMode::Disabled)
         .bind()
         .await

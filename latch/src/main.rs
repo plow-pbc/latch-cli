@@ -42,9 +42,7 @@ mod seal;
 mod secrets;
 mod serve;
 mod setup;
-mod shares;
 mod state;
-mod state_folders;
 mod status;
 mod term;
 mod trace;
@@ -70,6 +68,10 @@ use state::StateDir;
 use wire::Request;
 
 fn main() -> ExitCode {
+    #[cfg(feature = "fake-gog")]
+    if let Some(exit) = google::fake::run_if_gog() {
+        return exit;
+    }
     // A bare `latch` at a terminal shows the Plow logo. Anywhere else (a
     // pipe, an agent) it stays a usage error, as before.
     if std::env::args_os().len() == 1 && term::stdout_is_terminal() {
@@ -237,7 +239,6 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Plugins(args) => to_json(plugins::client::run(&state, args).await?),
-        Command::Shares(args) => to_json(shares::run(&state, args.action)?),
         // Its lines, printed as they come, are its whole output.
         Command::Audit(cli::AuditArgs {
             action: cli::AuditAction::Show { follow: true },
@@ -257,6 +258,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 exit: ExitCode::SUCCESS,
             })
         }
+        #[cfg(target_os = "macos")]
         Command::Messages(command) => {
             let request = messages::messages_request(&command);
             to_json(
@@ -270,6 +272,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 .await?,
             )
         }
+        #[cfg(target_os = "macos")]
         Command::Contacts(command) => {
             let request = messages::contacts_request(&command);
             to_json(
@@ -284,8 +287,9 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             )
         }
         Command::Exec(args) => {
-            let mut request =
-                json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout });
+            let secret_env = exec::parse_secret_env(&args.secret_env)?;
+            let mut request = json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout,
+                        "writes": args.writes, "network": args.network, "secret_env": secret_env });
             if args.stdin {
                 let bytes = input::read_all(Duration::from_secs(args.timeout))?;
                 request["stdin"] = json!(bytes);
@@ -301,15 +305,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         }
         Command::Serve(args) if args.foreground => {
             let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
-            serve::run(
-                &state,
-                &args.folders,
-                &args.allow_read,
-                args.headless_browsers,
-                deny_exec,
-                args.attached,
-            )
-            .await?;
+            serve::run(&state, args.headless_browsers, deny_exec, args.attached).await?;
             // A clean stop prints nothing: the host's output was its log.
             Ok(Printed {
                 text: String::new(),

@@ -459,10 +459,9 @@ mod tests {
     /// One import over a real stream, from the client's side: the go-ahead,
     /// the bytes, the preview, then `picks`, or a dropped connection.
     async fn import_over_a_stream(vault: &Vault, picks: Option<Value>) -> Result<Value, Failure> {
-        use iroh::endpoint::presets;
-        use iroh::{Endpoint, RelayMode};
+        use iroh::RelayMode;
         let bind = |alpns: Vec<Vec<u8>>| {
-            Endpoint::builder(presets::Minimal)
+            crate::dial::endpoint()
                 .relay_mode(RelayMode::Disabled)
                 .alpns(alpns)
                 .bind()

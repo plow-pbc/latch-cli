@@ -81,6 +81,10 @@ linux-browser-tests = []
 # Builds the managed-host tests on Linux, for a machine with a systemd user
 # session (the Pi). Never part of the gate, whose containers have no systemd.
 systemd-tests = []
+# A stand-in for gog (src/google/fake.rs), so a test can search a made-up
+# mailbox: the host accepts this binary itself as gog. Tests only; it does
+# not compile in release, and the release workflow checks its binaries.
+fake-gog = []
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # A Camoufox handoff brings its app forward through AppKit

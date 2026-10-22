@@ -6,7 +6,10 @@
 //! See ../../NOTICE for attribution and the pinned source.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::{Read, Seek};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,7 +33,8 @@ fn bubblewrap() -> Result<PathBuf, String> {
 }
 
 pub fn check() -> Result<(), String> {
-    bubblewrap().map(|_| ())
+    bubblewrap()?;
+    Ok(())
 }
 
 /// Nothing to hold: the launcher outside bubblewrap watches the host.
@@ -46,7 +50,12 @@ pub fn supervise(_watch: HostWatch, _kill_after: Option<u64>) -> Result<(), Stri
 
 pub fn confine(policy: &Policy) -> Result<(), String> {
     let result = if std::env::var_os(INNER).is_some() {
-        filter(!policy.exec && !policy.network, false).and_then(|()| {
+        filter(
+            !policy.network && policy.program.is_none(),
+            false,
+            policy.exec,
+        )
+        .and_then(|()| {
             if policy.exec {
                 supervise_exec()?;
             }
@@ -106,7 +115,8 @@ fn launch(policy: &Policy) -> Result<(), Error> {
     for read in &policy.reads {
         mount(&mut command, read, true)?;
     }
-    mounts(&mut command, policy, &program)?;
+    let mut writable = Vec::new();
+    mounts(&mut command, policy, &program, &mut writable)?;
     // Credentials stay out of view even inside an area or an opt-in, or
     // above one: an empty, read-only folder or an empty file in their place.
     for hidden in &policy.hidden {
@@ -142,8 +152,34 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         .arg("--chdir")
         .arg(std::env::current_dir()?)
         .args(["--setenv", INNER, "1", "--"])
-        .arg(program)
-        .args(std::env::args_os().skip(1));
+        .arg(program);
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            command.arg(arg).args(args);
+            break;
+        }
+        // The host's startup token must not appear in the private process view.
+        // The inner worker reads it from the host's pipe instead.
+        if arg == "--error-token" {
+            args.next();
+        } else {
+            command.arg(arg);
+        }
+    }
+    let descriptors: Vec<_> = writable.iter().map(AsRawFd::as_raw_fd).collect();
+    // SAFETY: these descriptors are owned by writable until launch finishes.
+    // fcntl is async-signal-safe and the closure only changes scalar FD flags.
+    unsafe {
+        command.pre_exec(move || {
+            for fd in &descriptors {
+                if libc::fcntl(*fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
     match status {
         Some(file) => launch_exec(&mut command, file, policy.kill_after),
         None => Err(command.exec().into()),
@@ -159,7 +195,7 @@ const SYSTEM: &[&str] = &[
 
 pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
     let result = if std::env::var_os(INNER).is_some() {
-        filter(false, true)
+        filter(false, true, false)
     } else {
         std::env::current_exe()
             .and_then(|program| program.canonicalize())
@@ -243,10 +279,15 @@ fn browser_command(view: &BrowserView, program: &Path) -> Result<Command, Error>
     Ok(command)
 }
 
-fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), Error> {
+fn mounts(
+    command: &mut Command,
+    policy: &Policy,
+    program: &Path,
+    writable: &mut Vec<File>,
+) -> Result<(), Error> {
     let mut runtime = if policy.exec {
         // The system's files, /tmp and /run are already there (see `launch`).
-        command.args(["--ro-bind", "/proc", "/proc"]);
+        command.args(["--proc", "/proc", "--remount-ro", "/proc"]);
         vec![]
     } else if policy.program.is_none() {
         // A file worker sees the system's files too, but no processes.
@@ -262,9 +303,8 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
             "/etc/ld.so.cache",
         ]
     };
-    // Exec reuses Docker's masked procfs read-only (container PID metadata).
-    // File and Google workers do not need procfs and get none (a file
-    // worker's has an empty /proc).
+    // Exec has procfs for only its own PID namespace. File and Google
+    // workers need no process metadata.
     if !policy.exec && policy.program.is_some() {
         runtime.extend([
             "/etc/resolv.conf",
@@ -276,7 +316,7 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
             "/etc/localtime",
         ]);
     }
-    if !policy.exec && policy.program.is_none() {
+    if !policy.network && policy.program.is_none() {
         command.arg("--unshare-net");
     }
     for path in runtime {
@@ -285,7 +325,19 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
         }
     }
     for area in &policy.areas {
-        mount(command, area, false)?;
+        let real = if policy.home.is_some() {
+            area.clone()
+        } else {
+            area.canonicalize()?
+        };
+        mount_writable(command, &real, writable)?;
+    }
+    // A file worker's temp folder is where an upload is staged. (An exec
+    // worker's is a private one of its own, above.)
+    if !policy.exec
+        && let Some(tmpdir) = &policy.tmpdir
+    {
+        mount(command, tmpdir, false)?;
     }
     // A worker could otherwise rename a folder above the state folder, the
     // running latch or a hidden path, inside an area: to put its own in
@@ -294,7 +346,7 @@ fn mounts(command: &mut Command, policy: &Policy, program: &Path) -> Result<(), 
     // onto itself makes it a mount point, which cannot be renamed or
     // removed; it stays writable.
     for dir in folders_above(policy, program)? {
-        mount(command, &dir, false)?;
+        mount_writable(command, &dir, writable)?;
     }
     // After the areas, so the running latch stays read-only even inside one.
     mount(command, program, true)?;
@@ -311,7 +363,13 @@ fn folders_above(policy: &Policy, program: &Path) -> Result<Vec<PathBuf>, Error>
     let areas: Vec<PathBuf> = policy
         .areas
         .iter()
-        .map(|area| area.canonicalize())
+        .map(|area| {
+            if policy.home.is_some() {
+                Ok(area.clone())
+            } else {
+                area.canonicalize()
+            }
+        })
         .collect::<Result<_, _>>()?;
     let mut dirs = Vec::new();
     let hidden = policy
@@ -377,7 +435,75 @@ const STATUS: &str = "/.latch-exit-status";
 /// `STATUS` is, where no opt-in or area can cover it.
 const PRIVATE_TMPDIR: &str = "/.latch-tmp";
 
+/// Pathname sockets resolve only inside our private temp. Abstract sockets
+/// cannot reach servers outside this worker's domain; unnamed IPC still works.
+fn confine_unix_sockets() -> Result<(), Error> {
+    const MAKE_SOCK: u64 = 1 << 9;
+    const REFER: u64 = 1 << 13;
+    const RESOLVE_UNIX: u64 = 1 << 16;
+    #[repr(C)]
+    struct Ruleset {
+        fs: u64,
+        net: u64,
+        scoped: u64,
+    }
+    #[repr(C, packed)]
+    struct PathRule {
+        access: u64,
+        parent: i32,
+    }
+    let attr = Ruleset {
+        fs: MAKE_SOCK | REFER | RESOLVE_UNIX,
+        net: 0,
+        scoped: 1, // LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET
+    };
+    // SAFETY: attr has the kernel's C ABI layout and remains live for the call.
+    // A successful return transfers one new descriptor into OwnedFd below.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            &attr,
+            size_of::<Ruleset>(),
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: this descriptor was just created and has no other owner.
+    let rules = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    // REFER is implicitly denied by every ruleset: preserve ordinary renames.
+    for (path, access) in [("/", REFER), (PRIVATE_TMPDIR, MAKE_SOCK | RESOLVE_UNIX)] {
+        let dir = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(path)?;
+        let rule = PathRule {
+            access,
+            parent: dir.as_raw_fd(),
+        };
+        // SAFETY: both descriptors are live and rule has the packed UAPI layout
+        // for LANDLOCK_RULE_PATH_BENEATH (1). The kernel copies it during the call.
+        if unsafe { libc::syscall(libc::SYS_landlock_add_rule, rules.as_raw_fd(), 1, &rule, 0) } < 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    // SAFETY: rules owns a valid ruleset. Seccomp setup already set no_new_privs;
+    // the worker is single-threaded, and its future children inherit the policy.
+    if unsafe { libc::syscall(libc::SYS_landlock_restrict_self, rules.as_raw_fd(), 0) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
 fn supervise_exec() -> Result<(), Error> {
+    // SAFETY: this scalar prctl changes only the current process's dumpability.
+    // Set it before fork so the workload cannot race a read of its supervisor's
+    // memory (which holds the private startup token). Exec resets the child's.
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     // SAFETY: fork preserves the workload's raw wait status outside it. This
     // inner worker has not started other threads, so no other thread can leave
     // a Rust lock held in the child. Only the child returns to run the workload;
@@ -405,10 +531,31 @@ fn mount(command: &mut Command, path: &Path, readonly: bool) -> Result<(), Error
     Ok(())
 }
 
+fn mount_writable(command: &mut Command, path: &Path, files: &mut Vec<File>) -> Result<(), Error> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open(path)?;
+    if super::opened_path(&file)? != path {
+        return Err("a writable path changed after judgment".into());
+    }
+    command
+        .arg("--bind-fd")
+        .arg(file.as_raw_fd().to_string())
+        .arg(path);
+    files.push(file);
+    Ok(())
+}
+
 /// The seccomp filter; `offline` also refuses every socket (file workers).
 /// `namespaces` lets the browser's engine make the namespaces its own
 /// sandbox runs in; no other worker may.
-fn filter(offline: bool, namespaces: bool) -> Result<(), Error> {
+fn filter(offline: bool, namespaces: bool, exec: bool) -> Result<(), Error> {
+    // ABI 9 can confine pathname Unix sockets. Older or disabled Landlock
+    // requires denying their creation; connected stream/seqpacket pairs still support IPC.
+    // SAFETY: the version query uses null/zero arguments and writes no memory.
+    let private_unix =
+        exec && unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, 0, 0, 1) } >= 9;
     let mut rules = BTreeMap::new();
     if !namespaces {
         rules.insert(libc::SYS_unshare, vec![]);
@@ -427,7 +574,7 @@ fn filter(offline: bool, namespaces: bool) -> Result<(), Error> {
     ] {
         rules.insert(syscall, vec![]);
     }
-    if offline {
+    if offline && !exec {
         for syscall in [
             libc::SYS_socket,
             libc::SYS_socketpair,
@@ -439,15 +586,64 @@ fn filter(offline: bool, namespaces: bool) -> Result<(), Error> {
             rules.insert(syscall, vec![]);
         }
     } else {
-        // VM sockets can reach host services outside the filesystem view.
-        let deny_vsock = SeccompRule::new(vec![SeccompCondition::new(
+        // Offline exec retains unnamed Unix IPC, not IP or other host transports.
+        // Landlock restricts named Unix destinations independently of IP access.
+        let denied_domain = SeccompRule::new(vec![SeccompCondition::new(
             0,
             SeccompCmpArgLen::Dword,
-            SeccompCmpOp::Eq,
-            libc::AF_VSOCK as u64,
+            if offline {
+                SeccompCmpOp::Ne
+            } else {
+                SeccompCmpOp::Eq
+            },
+            if offline {
+                libc::AF_UNIX
+            } else {
+                libc::AF_VSOCK
+            } as u64,
         )?])?;
-        rules.insert(libc::SYS_socket, vec![deny_vsock.clone()]);
-        rules.insert(libc::SYS_socketpair, vec![deny_vsock]);
+        rules.insert(libc::SYS_socket, vec![denied_domain.clone()]);
+        rules.insert(libc::SYS_socketpair, vec![denied_domain]);
+        if exec && !private_unix {
+            let unix = SeccompRule::new(vec![SeccompCondition::new(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Eq,
+                libc::AF_UNIX as u64,
+            )?])?;
+            rules.get_mut(&libc::SYS_socket).unwrap().push(unix);
+            // Datagram pairs can sendto/reconnect to host sockets. Connected
+            // stream/seqpacket pairs cannot be redirected to a new peer.
+            let not_unix = SeccompRule::new(vec![SeccompCondition::new(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Ne,
+                libc::AF_UNIX as u64,
+            )?])?;
+            let not_connected_pair = SeccompRule::new(
+                [libc::SOCK_STREAM, libc::SOCK_SEQPACKET]
+                    .into_iter()
+                    .flat_map(|kind| {
+                        [
+                            0,
+                            libc::SOCK_CLOEXEC,
+                            libc::SOCK_NONBLOCK,
+                            libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                        ]
+                        .into_iter()
+                        .map(move |flags| {
+                            SeccompCondition::new(
+                                1,
+                                SeccompCmpArgLen::Dword,
+                                SeccompCmpOp::Ne,
+                                (kind | flags) as u64,
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )?;
+            rules.insert(libc::SYS_socketpair, vec![not_unix, not_connected_pair]);
+        }
     }
     let filter: BpfProgram = SeccompFilter::new(
         rules,
@@ -463,6 +659,9 @@ fn filter(offline: bool, namespaces: bool) -> Result<(), Error> {
         return Err(std::io::Error::last_os_error().into());
     }
     seccompiler::apply_filter(&filter)?;
+    if private_unix {
+        confine_unix_sockets()?;
+    }
     Ok(())
 }
 
@@ -534,11 +733,12 @@ mod tests {
                 hidden: vec![],
                 state_dir: root.join("state"),
                 exec: mode == "exec",
+                home: None,
+                network: mode == "exec" || mode == "google",
                 tmpdir: (mode == "exec").then(|| root.join("outside")),
                 kill_after: None,
                 program: (mode == "google")
                     .then(|| PathBuf::from(std::env::var_os("LATCH_VIEW_PROGRAM").unwrap())),
-                network: mode == "google",
                 break_for_test: false,
             })
             .unwrap();

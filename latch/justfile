@@ -1,8 +1,13 @@
 # The Rust CLI's checks; live Google evidence uses the documented test identities.
 test: cft
     cargo fmt --check
-    cargo clippy --locked --all-targets -- -D warnings
-    cargo test --locked
+    cargo clippy --locked --all-targets --features fake-gog -- -D warnings
+    cargo test --locked --features fake-gog
+
+# The Linux gate uses the same nested sandbox as a container host.
+test-linux:
+    docker build --platform linux/arm64 -t latch-linux-gates:local -f docker/Dockerfile.gates docker
+    docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL --security-opt=no-new-privileges=true --security-opt=systempaths=unconfined --security-opt seccomp=$PWD/docker/seccomp.json -v "$PWD/..:/repo" -w /repo/latch -e HOME=/tmp -e RUSTUP_HOME=/usr/local/rustup -e CARGO_HOME=/repo/latch/target/cargo-home -e CARGO_TARGET_DIR=/repo/latch/target/linux-check latch-linux-gates:local sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
 
 # The Messages reader (macOS): its tests, with a longer fuzz run of the body
 # parser than the default, against synthetic databases only.
@@ -50,6 +55,12 @@ cft:
 test-model key:
     LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model browser::tests::steps::live
 
+# The return scenario, headless, with its transcript: an order found in a
+# made-up mailbox, returned item by item on the test shop. With `key`, the
+# host's judge is the real decision model (jev).
+scenario-return key="": cft
+    if [ -n "{{key}}" ]; then LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features fake-gog,live-model --test cli the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture; else cargo test --locked --features fake-gog --test cli the_owner_returns_items_from_an_emailed_order -- --exact --nocapture; fi
+
 # A headless host judging exec on rules alone, on jev 1.14 (synthetic
 # chats only).
 gatekeeper-live key:
@@ -58,7 +69,11 @@ gatekeeper-live key:
 # The gatekeeper's judge on jev 1.14 over the v0 held-out corpus, twice per
 # probe, its decisions written to `out` (synthetic chats only).
 gatekeeper-replay key out:
-    LATCH_TEST_JEV_KEY="{{key}}" LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live -- --nocapture
+    LATCH_TEST_JEV_KEY="{{key}}" LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live_held_out_replay -- --nocapture
+
+# The owner's own calls on jev itself, judged against the host's rules alone.
+gatekeeper-owner key:
+    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model gate::tests::live_owner -- --nocapture
 
 # The plan suite (tests/browser-shop) on the decision model, through the dev
 # Plow stack the host in `host_state` is logged in to; each run, with its
