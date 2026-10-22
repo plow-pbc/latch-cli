@@ -57,6 +57,22 @@ profile for CfT; for Camoufox, make it first, on the host:
     latch browser profile create shop --engine camoufox
     latch browser open --profile shop https://example.com   # from a client
 
+## Calling from the host itself
+
+Use the host's own state folder and its existing `serve`:
+
+```sh
+latch browser open https://example.com/
+latch browser --session SESSION observe
+latch browser --session SESSION close
+```
+
+A saved local host resolves without Plow and connects through the private
+`serve.sock` in its state folder; `--host` naming this machine does the same.
+These calls use the same browser sessions, profiles, vault, gatekeeper and
+audit as remote calls, with caller kind `owner_on_host`. A stopped receiver
+returns `serve_required`, with instructions to start `latch serve`.
+
 ## Sessions and profiles
 
 Each profile in use has one running browser, its **runtime**, driven by

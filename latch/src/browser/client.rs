@@ -261,7 +261,7 @@ fn read_script(path: &Path) -> Result<String, Failure> {
 
 /// An upload: the bytes, then the host's answer, given this side's sha256.
 async fn send(
-    connection: &iroh::endpoint::Connection,
+    connection: &crate::transport::Connection,
     request: &Request,
     upload: &mut Upload,
 ) -> Result<Value, Failure> {
@@ -626,7 +626,7 @@ pub(super) fn act_literal(
 /// A screenshot or download: its details, then exactly that many bytes
 /// into `path`, then the host's sha256, which must match.
 async fn receive(
-    connection: &iroh::endpoint::Connection,
+    connection: &crate::transport::Connection,
     request: &Request,
     path: &Path,
 ) -> Result<Value, Failure> {

@@ -106,3 +106,16 @@ No Homebrew tap is included.
   refuse with `no_folders`. `latch status --local`,
   `latch events --follow` and `latch login --events` are for an app: see
   [latch/APP.md](latch/APP.md).
+
+## On the host itself
+
+After `latch serve` has registered this machine, commands with no `--host`
+use its private local receiver. `--host NAME` or `LATCH_HOST` still selects
+another host; naming this machine uses the same local receiver. Exec,
+files, browser and Google calls pass through the same gatekeeper and audit as remote
+calls, recorded as `owner_on_host`. If the receiver is stopped, start
+`latch serve` on the same state folder (`serve_required`, exit 3).
+
+Local `vault`, `rules` and `shares` configuration works without `serve` or
+the decision model. Vault edits and rules apply to the running receiver's
+next operation; changes to shared folders apply when it restarts.

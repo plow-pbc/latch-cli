@@ -23,20 +23,23 @@ passport number, hidden custom fields.
 
 ## Commands (owner devices only)
 
-Run from an owner device: a latch client state logged in as a `device`,
-never the host's own state (on the host's machine, a separate
-`--state-dir`). The host refuses agents with exit 4.
+With no `--host` (or naming this peer), manage this state folder's vault
+locally, with or without `serve`. Use the existing device login; no second
+state folder or login is needed. Agents are refused with exit 4. To manage
+another host, pass `--host NAME` (or set `LATCH_HOST`); it must be serving,
+and a failed remote call never falls back to the local vault.
 
 ```sh
-latch vault add --host my-mac --kind login --title Shop --site shop.example \
-  --field username=ada@shop.example                    # asks for the password
-latch vault add --host my-mac --kind card --title Visa \
-  --field "cardholder name=Ada Lovelace" --field "expiry month=4" --field "expiry year=2031"
-latch vault list --host my-mac                         # metadata only
-latch vault edit --host my-mac v3 --revision 2 --title "Shop (work)" \
-  --field username=ada@work.example --ask password      # asks for the new password
-latch vault remove --host my-mac v3 --revision 2
-latch vault import --host my-mac export.1pux           # shows rows, imports the ones you pick
+latch vault add --kind login --title Shop --site shop.example \
+  --field username=owner@shop.example                  # asks for the password
+latch vault add --kind card --title Visa \
+  --field "cardholder name=the owner" --field "expiry month=4" --field "expiry year=2031"
+latch vault list                                      # metadata only
+latch vault edit v3 --revision 2 --title "Shop (work)" \
+  --field username=owner@work.example --ask password    # asks for the new password
+latch vault remove v3 --revision 2
+latch vault import export.1pux                         # imports only rows you pick
+latch vault list --host other-mac                     # another host's vault
 ```
 
 Secrets are typed at a prompt without echo, never taken from the command
@@ -55,20 +58,25 @@ and the new revision, never a value.
 CSV, Chrome's CSV and Bitwarden's CSV and unencrypted JSON. It shows every
 row (values reduced to whether they are there), marks rows the vault
 already holds or that would update a changed password, and imports only
-the rows you pick; nothing is picked by default. The export stays on the
-host only while the command runs: if you quit, the connection drops, or
-you pick nothing within 15 minutes, it is dropped and nothing is saved.
+the rows you pick; nothing is picked by default. For a remote import,
+the uploaded copy stays on the host only while the command runs: if you
+quit, the connection drops, or you pick nothing within 15 minutes, it is
+dropped and nothing is saved. A local import reads the file in place;
+neither path deletes your original export.
 
 ## From your phone: a link (prototype)
 
-`latch vault link` opens a one-time request on the host and prints a link
+`latch vault link` needs a running `serve`, including on this machine: the
+phone needs its live receiver. Without one, the command says to start
+`latch serve`. A private owner-only local socket creates the request in that
+receiver; the CLI can exit and the phone link stays live. It prints a link
 (and a QR code on a terminal) that adds the item from a phone, away from
 your machines. The value goes from the phone straight to the host, never
 through Plow and never to an agent.
 
 ```sh
 latch vault link --host my-mac --kind login --title Shop --site shop.example \
-  --field username=ada@shop.example --page http://localhost:8731/
+  --field username=owner@shop.example --page http://localhost:8731/
 ```
 
 - **The link:** `PAGE#h=HOST_KEY&r=RELAY&c=CODE`. Everything after `#` stays
@@ -206,8 +214,12 @@ browser.
 
 ## Storage
 
-`vault.json` in the host's state directory, written only by `latch serve`,
-atomically. Items are sealed with AES-256-GCM under a random data key; the
+`vault.json` in the host's state directory is written atomically by serve
+and local management. Both take the same exclusive `vault.lock` for each
+read/write transaction. Each transaction reopens the current store while
+holding the lock, so local edits are visible to fills without a restart.
+The lock is released while an import waits for picks.
+Items are sealed with AES-256-GCM under a random data key; the
 data key is sealed under the custody key. A signed macOS latch keeps that
 key in the Keychain, with the host's other secrets (its key and Plow token);
 any other build keeps it in `vault.key` (0600) beside the vault. `exec` and

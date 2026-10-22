@@ -745,48 +745,34 @@ fn serving_before_any_login_says_to_log_in() {
 }
 
 #[test]
-fn calling_the_host_this_state_dir_serves_names_the_fix() {
-    let relay = json!("https://relay.example/");
-    let (login_url, login_server) = fake_plow(vec![(
-        200,
-        peer(Value::Null, "mac", "device", relay.clone()),
-    )]);
+fn calling_a_stopped_local_host_names_the_fix_without_plow() {
+    let plow = LivePlow::start();
     let dir = test_dir();
-    let owner_token = dir.path().join("owner.token");
-    fs::write(&owner_token, "owner-login\n").unwrap();
-    let state = dir.path().join("state");
-    let args = [
-        "login",
-        "--api-url",
-        &login_url,
-        "--token-file",
-        owner_token.to_str().unwrap(),
-        "--name",
-        "mac",
-    ];
-    let login = latch(&state, &args, &[]);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let own_key = serde_json::from_slice::<Value>(&login.stdout).unwrap()["peer"]["key"].clone();
-    login_server.join().unwrap();
-
-    // The directory lists this machine as the host, under its own key.
-    let (api_url, server) = fake_plow(vec![(
-        200,
-        json!({"data": [peer(own_key, "mac", "device", relay)]}),
-    )]);
-    let config_path = state.join("config.json");
-    let mut config: Value =
-        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-    config["api_url"] = json!(api_url);
-    fs::write(&config_path, config.to_string()).unwrap();
-
-    let exec = latch(&state, &["exec", "--host", "mac", "--", "true"], &[]);
-    assert_eq!(exec.status.code(), Some(2), "{exec:?}");
-    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "own_host", "{error}");
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(message.contains("--state-dir"), "{message}");
-    server.join().unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    use_plow(&host, "http://127.0.0.1:1");
+    for args in [
+        vec!["exec", "--host", "host", "--", "true"],
+        vec!["google", "--host", "host", "--", "accounts"],
+        vec![
+            "browser",
+            "--host",
+            "host",
+            "open",
+            "https://example.invalid/",
+        ],
+    ] {
+        let output = latch(&host, &args, &[]);
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "serve_required", "{error}");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("latch serve")
+        );
+        println!("stopped local {}: {error}", args[0]);
+    }
 }
 
 #[test]
@@ -1285,12 +1271,15 @@ const AGENT_UID: &str = "0123456789abcdef0123456789abcdef";
 #[derive(Clone)]
 struct LivePlow {
     url: String,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
     state: std::sync::Arc<std::sync::Mutex<LiveState>>,
 }
 
 struct LiveState {
     owner: String,
     agent: String,
+    model_down: bool,
+    decisions: Vec<Value>,
     /// Each peer with the credential that registered it.
     peers: Vec<(Value, String)>,
     /// Request lines and their bearers, in order.
@@ -1302,8 +1291,11 @@ impl LivePlow {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let plow = LivePlow {
             url: format!("http://{}", listener.local_addr().unwrap()),
+            running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             state: std::sync::Arc::new(std::sync::Mutex::new(LiveState {
                 owner: "owner-login".to_string(),
+                model_down: false,
+                decisions: Vec::new(),
                 agent: "agent-credential".to_string(),
                 peers: Vec::new(),
                 seen: Vec::new(),
@@ -1312,6 +1304,9 @@ impl LivePlow {
         let serving = plow.clone();
         thread::spawn(move || {
             for socket in listener.incoming() {
+                if !serving.running.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
                 let plow = serving.clone();
                 thread::spawn(move || {
                     let mut socket = socket.unwrap();
@@ -1324,6 +1319,20 @@ impl LivePlow {
             }
         });
         plow
+    }
+
+    fn stop(&self) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(self.url.trim_start_matches("http://"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::net::TcpStream::connect(self.url.trim_start_matches("http://")).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake Plow did not stop"
+            );
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// The agent's credential is replaced: the old one stops working, and
@@ -1342,6 +1351,9 @@ impl LivePlow {
         state
             .seen
             .push((request.line().to_string(), bearer.clone()));
+        if request.line().starts_with("GET /socket-page ") {
+            return (200, json!({"fixture": "Local socket browser page"}));
+        }
         let token = bearer.unwrap_or_default();
         let kind = if token == state.owner {
             "device"
@@ -1355,7 +1367,18 @@ impl LivePlow {
         };
         let mut words = request.line().split(' ');
         let (method, path) = (words.next().unwrap(), words.next().unwrap());
+        if path == "/v1/decisions" {
+            state
+                .decisions
+                .push(serde_json::from_slice(&request.body).unwrap());
+            if state.model_down {
+                return (503, json!({}));
+            }
+        }
         match (method, path) {
+            ("POST", "/v1/connectors/gmail/access-token") => {
+                (200, json!({"data": {"accounts": []}}))
+            }
             ("POST", "/v1/latch/peers") => {
                 let sent: Value = serde_json::from_slice(&request.body).unwrap();
                 let name = sent["name"].as_str().unwrap_or("agent");
@@ -1544,8 +1567,15 @@ fn serving_folders(
 ) -> (Serving, Vec<String>) {
     let mut command = serve_command(host, shares, relay);
     command.envs(env.iter().copied());
-    let (serve, mut log, lines) = serving_with(command);
-    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    let (serve, log, lines) = serving_with(command);
+    thread::spawn(move || {
+        for line in log.lines() {
+            let line = line.unwrap();
+            if line.contains("owner_on_host over Unix socket") {
+                println!("{line}");
+            }
+        }
+    });
     until_serving(host, &serve);
     (serve, lines)
 }
@@ -2719,6 +2749,560 @@ fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapsho
     assert!(events.close().success());
 }
 
+#[test]
+fn vault_management_and_self_rules_are_local_without_serve() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let before = plow.seen().len();
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let listed = run(&["vault", "list"]);
+    println!("vault list without serve: {listed}");
+    assert_eq!(listed["items"], json!([]));
+    let added = run(&[
+        "vault",
+        "add",
+        "--kind",
+        "identity",
+        "--title",
+        "the owner",
+        "--field",
+        "city=Example",
+    ]);
+    println!("vault add without serve: {added}");
+    assert_eq!(added["item"]["item"], "v1");
+    assert_eq!(
+        run(&["vault", "list", "--host", "host"])["items"][0]["title"],
+        "the owner"
+    );
+    run(&[
+        "vault",
+        "edit",
+        "--host",
+        "host",
+        "v1",
+        "--revision",
+        "1",
+        "--title",
+        "Updated",
+    ]);
+    assert_eq!(run(&["vault", "list"])["items"][0]["revision"], 2);
+    run(&["rules", "set", "--host", "host", "Only local tests."]);
+    assert_eq!(
+        run(&["rules", "show", "--host", "host"])["every_agent"]["text"],
+        "Only local tests."
+    );
+    run(&["vault", "remove", "v1", "--revision", "2"]);
+    assert_eq!(run(&["vault", "list"])["items"], json!([]));
+    assert_eq!(plow.seen().len(), before, "local management contacted Plow");
+    assert!(
+        !host.join("audit.ndjson").exists(),
+        "local management created the legacy audit"
+    );
+    let records = audit_records(&host);
+    assert!(
+        records
+            .iter()
+            .any(|r| r["op"] == "vault" && r["args"]["command"] == "edit")
+    );
+    assert!(
+        records
+            .iter()
+            .any(|r| r["op"] == "rules" && r["args"]["command"] == "set")
+    );
+    let sealed = fs::read_to_string(host.join("audit.sealed.ndjson")).unwrap();
+    assert!(!sealed.contains("\"op\""), "audit records were not sealed");
+    println!("local vault edit and rules set share the sealed audit; no legacy file");
+    let link = latch(
+        &host,
+        &[
+            "vault",
+            "link",
+            "--page",
+            "https://example.invalid/",
+            "--kind",
+            "identity",
+            "--title",
+            "the owner",
+        ],
+        &[],
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&link.stderr).unwrap()["error"]["code"],
+        "serve_required"
+    );
+}
+
+#[test]
+fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
+    let plow = LivePlow::start();
+    let (runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !host.join("serve.sock").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no local link receiver"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let client = dir.path().join("client");
+    let login = latch(
+        &client,
+        &[
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            dir.path().join("owner.token").to_str().unwrap(),
+            "--name",
+            "client",
+        ],
+        &[],
+    );
+    assert!(login.status.success(), "{login:?}");
+    let remote = |args: &[&str]| {
+        let output = latch(&client, args, &[]);
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    assert_eq!(
+        remote(&["vault", "list", "--host", "host"])["items"],
+        json!([])
+    );
+    // Separate CLI processes contend for the same vault while serve also uses it.
+    thread::scope(|scope| {
+        for _ in 0..6 {
+            let host = &host;
+            scope.spawn(move || {
+                let added = latch(
+                    host,
+                    &["vault", "add", "--kind", "identity", "--title", "the owner"],
+                    &[],
+                );
+                assert!(added.status.success(), "{added:?}");
+            });
+        }
+    });
+    assert_eq!(
+        remote(&["vault", "list", "--host", "host"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+    remote(&[
+        "vault", "add", "--host", "host", "--kind", "identity", "--title", "Remote",
+    ]);
+    let listed = latch(&host, &["vault", "list"], &[]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&listed.stdout).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        7
+    );
+    let opened = latch(
+        &host,
+        &[
+            "vault",
+            "link",
+            "--host",
+            "host",
+            "--kind",
+            "identity",
+            "--title",
+            "Phone",
+            "--page",
+            "https://example.invalid/",
+        ],
+        &[],
+    );
+    assert!(opened.status.success(), "link creation failed");
+    let opened: Value = serde_json::from_slice(&opened.stdout).unwrap();
+    let url = url::Url::parse(opened["url"].as_str().unwrap()).unwrap();
+    let parts: std::collections::HashMap<_, _> =
+        url::form_urlencoded::parse(url.fragment().unwrap().as_bytes())
+            .into_owned()
+            .collect();
+    runtime.block_on(async {
+        use tokio::io::AsyncReadExt;
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
+                .bind()
+                .await
+                .unwrap();
+            let addr = iroh::EndpointAddr::new(parts["h"].parse().unwrap())
+                .with_relay_url(relay.parse().unwrap());
+            let connection = endpoint.connect(addr, b"plow/latch-phone/1").await.unwrap();
+            for op in ["page", "submit"] {
+                let (mut send, mut recv) = connection.open_bi().await.unwrap();
+                let bytes = serde_json::to_vec(
+                    &json!({"op": op, "args": {"code": parts["c"], "values": {}}}),
+                )
+                .unwrap();
+                send.write_all(&(bytes.len() as u32).to_be_bytes())
+                    .await
+                    .unwrap();
+                send.write_all(&bytes).await.unwrap();
+                send.finish().unwrap();
+                let len = recv.read_u32().await.unwrap();
+                assert!(len < 100_000);
+                let mut bytes = vec![0; len as usize];
+                recv.read_exact(&mut bytes).await.unwrap();
+                let response: Value = serde_json::from_slice(&bytes).unwrap();
+                assert!(response.get("ok").is_some(), "phone request refused");
+            }
+            connection.close(0u32.into(), b"done");
+            endpoint.close().await;
+        })
+        .await
+        .expect("phone link timed out");
+    });
+    assert_eq!(
+        remote(&["vault", "list", "--host", "host"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
+    assert!(!host.join("audit.ndjson").exists());
+    let records = audit_records(&host);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r["op"] == "vault" && r["args"]["command"] == "add")
+            .count(),
+        7,
+        "local and remote writes must share one verified audit chain"
+    );
+}
+
+#[test]
+fn a_local_vault_import_saves_only_picked_rows_without_serve() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let file = dir.path().join("export.json");
+    fs::write(
+        &file,
+        r#"{"items":[{"type":3,"name":"Imported","identity":{"city":"Example"}}]}"#,
+    )
+    .unwrap();
+    let before = plow.seen().len();
+    let mut command = latch_command(&host, &["vault", "import", file.to_str().unwrap()], &[]);
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"all\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["saved"], 1);
+    assert_eq!(plow.seen().len(), before);
+}
+
+#[test]
+fn a_local_agent_cannot_manage_a_vault() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let path = host.join("config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["peer"]["kind"] = json!("agent");
+    fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let result = latch(&host, &["vault", "list"], &[]);
+    assert_eq!(result.status.code(), Some(4));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&result.stderr).unwrap()["error"]["code"],
+        "owner_only"
+    );
+    assert!(!host.join("vault.json").exists());
+}
+
+/// The Mac app can send the same operation frames without a second CLI path.
+fn local_operation(host: &Path, op: &str, args: Value) -> Value {
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve.sock")).unwrap();
+    socket
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let request = serde_json::to_vec(&json!({"op":op,"args":args})).unwrap();
+    socket
+        .write_all(&(request.len() as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&request).unwrap();
+    let mut length = [0; 4];
+    socket.read_exact(&mut length).unwrap();
+    let mut bytes = vec![0; u32::from_be_bytes(length) as usize];
+    socket.read_exact(&mut bytes).unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[test]
+fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    assert_eq!(
+        fs::metadata(host.join("serve.sock"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        assert!(output.status.success(), "{output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        println!("local {}: {value}", args[0]);
+        value
+    };
+    let before = plow.seen().len();
+    run(&["rules", "set", "Only read and echo in this test."]);
+    assert_eq!(plow.seen().len(), before);
+    let exec = run(&["exec", "--", "echo", "local socket"]);
+    assert_eq!(exec["stdout"], "local socket\n");
+    assert_eq!(
+        run(&["google", "--host", "host", "--", "accounts"])["accounts"],
+        json!([])
+    );
+    let source = dir.path().join("source.txt");
+    let remote = share.join("copied.txt");
+    let downloaded = dir.path().join("downloaded.txt");
+    fs::write(&source, "socket transfer").unwrap();
+    run(&[
+        "file",
+        "put",
+        source.to_str().unwrap(),
+        remote.to_str().unwrap(),
+    ]);
+    run(&[
+        "file",
+        "get",
+        remote.to_str().unwrap(),
+        downloaded.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&downloaded).unwrap(), b"socket transfer");
+    let decisions = plow.state.lock().unwrap().decisions.clone();
+    assert_eq!(decisions.len(), 4);
+    assert!(
+        decisions[0]
+            .to_string()
+            .contains("Only read and echo in this test.")
+    );
+    assert!(
+        !plow.seen()[before..]
+            .iter()
+            .any(|(line, _)| line.starts_with("GET /v1/latch/peers")),
+        "local operations used directory/identity lookup"
+    );
+    let listed = local_operation(&host, "vault", json!({"command":"list"}));
+    assert_eq!(listed["ok"]["items"], json!([]));
+    let rules = local_operation(
+        &host,
+        "rules",
+        json!({"command":"set","text":"Updated through the socket."}),
+    );
+    assert!(rules.get("ok").is_some(), "{rules}");
+    assert_eq!(
+        plow.state.lock().unwrap().decisions.len(),
+        4,
+        "owner config was judged"
+    );
+    run(&["exec", "--host", "host", "--", "true"]);
+    assert!(
+        plow.state
+            .lock()
+            .unwrap()
+            .decisions
+            .last()
+            .unwrap()
+            .to_string()
+            .contains("Updated through the socket.")
+    );
+    let records = audit_records(&host);
+    let gated: Vec<_> = records
+        .iter()
+        .filter(|r| {
+            matches!(
+                r["op"].as_str(),
+                Some("exec" | "google" | "file_put" | "file_get")
+            )
+        })
+        .collect();
+    assert_eq!(gated.len(), 5);
+    for record in gated {
+        assert_eq!(record["gate"]["caller"], "owner_on_host");
+        assert_eq!(record["gate"]["verdict"], "allow");
+        println!(
+            "socket audit: op={} caller={} verdict={}",
+            record["op"], record["gate"]["caller"], record["gate"]["verdict"]
+        );
+    }
+}
+
+#[test]
+fn local_socket_outages_refuse_gated_work_but_config_still_works() {
+    for (case, plow_down) in [("Plow unreachable", true), ("Plow up, model down", false)] {
+        let plow = LivePlow::start();
+        let (_runtime, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let share = dir.path().join("share");
+        fs::create_dir(&share).unwrap();
+        let _serve = serving(&host, &share, &relay);
+        if plow_down {
+            plow.stop();
+        } else {
+            plow.state.lock().unwrap().model_down = true;
+        }
+        for args in [
+            vec!["exec", "--", "touch", "must-not-exist"],
+            vec!["google", "--host", "host", "--", "accounts"],
+            vec![
+                "browser",
+                "--host",
+                "host",
+                "open",
+                "https://example.invalid/",
+            ],
+        ] {
+            let output = latch(&host, &args, &[]);
+            assert_eq!(output.status.code(), Some(3), "{case}: {output:?}");
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+            println!("{case}, local {}: {error}", args[0]);
+        }
+        assert!(!share.join("must-not-exist").exists());
+        let judged = plow.state.lock().unwrap().decisions.len();
+        assert_eq!(judged, if plow_down { 0 } else { 3 });
+        for args in [
+            vec!["rules", "set", "Config stays available."],
+            vec!["vault", "list"],
+            vec!["shares"],
+            vec!["shares", "set", share.to_str().unwrap()],
+        ] {
+            let output = latch(&host, &args, &[]);
+            assert!(output.status.success(), "{case}: {output:?}");
+            println!(
+                "{case}, config {}: {}",
+                args[0],
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        for (op, args) in [
+            ("vault", json!({"command":"list"})),
+            ("rules", json!({"command":"show"})),
+        ] {
+            let result = local_operation(&host, op, args);
+            assert!(result.get("ok").is_some(), "{case}: {result}");
+        }
+        assert_eq!(
+            plow.state.lock().unwrap().decisions.len(),
+            judged,
+            "owner config was judged"
+        );
+        let record = audit_records(&host)
+            .into_iter()
+            .find(|r| r["op"] == "exec")
+            .unwrap();
+        assert_eq!(record["gate"]["caller"], "owner_on_host");
+        assert_eq!(record["decision"], "deny");
+    }
+}
+
+#[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
+#[test]
+fn local_socket_browser_open_observe_close_uses_one_host_and_owner_audit() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let installed = std::env::var_os("LATCH_CFT_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
+    let plugins = installed.canonicalize().unwrap().join("plugins");
+    std::os::unix::fs::symlink(plugins, host.join("plugins")).unwrap();
+    fs::write(host.join("host.json"), r#"{"allow_local_browsing":true}"#).unwrap();
+    let mut command = serve_command(&host, &[&share], &relay);
+    command.arg("--headless-browsers");
+    let (serve, log, _) = serving_with(command);
+    let logging = thread::spawn(move || log.lines().map(Result::unwrap).collect::<Vec<_>>());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        assert!(output.status.success(), "{output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        println!("socket browser {args:?}: {value}");
+        value
+    };
+    let url = format!("{}/socket-page", plow.url);
+    let opened = run(&["browser", "open", &url]);
+    let session = opened["session"].as_str().unwrap();
+    let observed = run(&["browser", "--host", "host", "--session", session, "observe"]);
+    assert!(
+        observed.to_string().contains("Local socket browser page"),
+        "{observed}"
+    );
+    run(&["browser", "--session", session, "close"]);
+    drop(serve);
+    let lines = logging.join().unwrap();
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains("owner_on_host over Unix socket"))
+            .count(),
+        3,
+        "{lines:?}"
+    );
+    for line in lines
+        .iter()
+        .filter(|line| line.contains("owner_on_host over Unix socket"))
+    {
+        println!("{line}");
+    }
+    let records: Vec<Value> = audit_records(&host)
+        .into_iter()
+        .filter(|r| r["op"] == "browser")
+        .collect();
+    assert_eq!(records.len(), 3);
+    for record in records {
+        assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
+        assert_eq!(record["outcome"], "ok", "{record}");
+        let gate = &record["args"]["gate"];
+        if record["args"]["command"] == "open" {
+            assert_eq!(gate["caller"], "owner_on_host", "{record}");
+            assert_eq!(gate["verdict"], "allow", "{record}");
+        } else {
+            // Reads and close retain the browser's session authorization.
+            assert!(gate.is_null(), "{record}");
+        }
+        println!(
+            "browser audit: command={} caller={} judgment={}",
+            record["args"]["command"], record["gate"]["caller"], gate
+        );
+    }
+}
+
 /// The state files a latch keeps its secrets in when it has no Keychain.
 const SECRET_FILES: [&str; 4] = ["key", "plow-token", "vault.key", "audit.keys"];
 
@@ -3002,25 +3586,85 @@ fn an_exec_cut_off_by_a_host_stop_is_audited_and_leaves_no_temp_folder() {
 
 #[test]
 fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
+    for (caller, local, wait) in [("owner_on_host", true, 5), ("owner_device", false, 90)] {
+        let bench = Bench::new();
+        let serve = bench.serve();
+        let state = if local { &bench.host } else { &bench.owner };
+        let mut client = latch_command(
+            state,
+            &[
+                "exec",
+                "--host",
+                "host",
+                "--timeout",
+                "120",
+                "--",
+                "sh",
+                "-c",
+                TICKING,
+            ],
+            &[],
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+        bench.started();
+        client.kill().unwrap();
+        client.wait().unwrap();
+        // Local EOF is immediate; a remote connection may need its idle timeout.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+        while bench.exec_records().is_empty() && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let records = bench.exec_records();
+        let stopped = bench.stopped_ticking();
+        let folders = bench.exec_folders();
+        drop(serve);
+        assert_eq!(records.len(), 1, "{caller}: {records:?}");
+        assert_eq!(
+            records[0]["outcome"], "caller_gone",
+            "{caller}: {records:?}"
+        );
+        assert_eq!(records[0]["gate"]["caller"], caller);
+        assert!(stopped, "{caller}: the program ran on without its caller");
+        assert_eq!(folders, Vec::<String>::new());
+        println!("{caller}: disconnected program stopped; audited caller_gone; no temp folders");
+    }
+}
+
+#[test]
+fn a_local_socket_exec_finishes_and_is_audited_before_the_host_stops() {
     let bench = Bench::new();
     let serve = bench.serve();
-    let mut client = bench.exec("120", TICKING);
+    let client = latch_command(
+        &bench.host,
+        &[
+            "exec",
+            "--",
+            "sh",
+            "-c",
+            "echo started > tick; sleep 2; echo done > finished",
+        ],
+        &[],
+    )
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
     bench.started();
-    client.kill().unwrap();
-    client.wait().unwrap();
-    // The host learns of it when the connection times out.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-    while bench.exec_records().is_empty() && std::time::Instant::now() < deadline {
-        thread::sleep(std::time::Duration::from_millis(200));
-    }
-    let records = bench.exec_records();
-    let stopped = bench.stopped_ticking();
-    let folders = bench.exec_folders();
     drop(serve);
+    assert_eq!(
+        fs::read_to_string(bench.share.join("finished")).unwrap(),
+        "done\n"
+    );
+    let output = client.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let records = bench.exec_records();
     assert_eq!(records.len(), 1, "{records:?}");
-    assert_eq!(records[0]["outcome"], "caller_gone", "{records:?}");
-    assert!(stopped, "the program ran on without its caller");
-    assert_eq!(folders, Vec::<String>::new());
+    assert_eq!(records[0]["gate"]["caller"], "owner_on_host");
+    assert_eq!(records[0]["outcome"], "ok", "{records:?}");
+    assert_eq!(bench.exec_folders(), Vec::<String>::new());
 }
 
 /// The Messages reader, built from `messages-reader/` once per test run.

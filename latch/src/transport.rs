@@ -1,0 +1,184 @@
+//! Operation streams over authenticated iroh or the owner's private local socket.
+
+use std::fs;
+use std::io;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Mutex;
+use std::task::{Context, Poll};
+
+use iroh::endpoint::{ConnectionError, VarInt};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::{UnixListener, UnixStream};
+
+use crate::failure::{Exit, Failure};
+
+pub enum Connection {
+    Remote(iroh::endpoint::Connection),
+    Local(Mutex<Option<UnixStream>>),
+}
+
+impl From<iroh::endpoint::Connection> for Connection {
+    fn from(connection: iroh::endpoint::Connection) -> Self {
+        Self::Remote(connection)
+    }
+}
+
+impl Connection {
+    pub async fn open_bi(&self) -> io::Result<(SendStream, RecvStream)> {
+        match self {
+            Self::Remote(connection) => connection
+                .open_bi()
+                .await
+                .map(|(send, recv)| (send.into(), recv.into()))
+                .map_err(io::Error::other),
+            Self::Local(socket) => {
+                let socket = socket
+                    .lock()
+                    .expect("local socket lock")
+                    .take()
+                    .ok_or_else(|| io::Error::other("local connection already used"))?;
+                let (recv, send) = socket.into_split();
+                Ok((SendStream::Local(Some(send)), RecvStream::Local(recv)))
+            }
+        }
+    }
+
+    pub fn close_reason(&self) -> Option<ConnectionError> {
+        match self {
+            Self::Remote(connection) => connection.close_reason(),
+            Self::Local(_) => None,
+        }
+    }
+
+    pub fn close(&self, code: VarInt, reason: &[u8]) {
+        if let Self::Remote(connection) = self {
+            connection.close(code, reason);
+        }
+    }
+}
+
+pub enum SendStream {
+    Remote(iroh::endpoint::SendStream),
+    // Dropping the owned half shuts down writes while the reader stays live.
+    Local(Option<OwnedWriteHalf>),
+}
+
+impl From<iroh::endpoint::SendStream> for SendStream {
+    fn from(stream: iroh::endpoint::SendStream) -> Self {
+        Self::Remote(stream)
+    }
+}
+
+impl SendStream {
+    pub fn finish(&mut self) -> io::Result<()> {
+        match self {
+            Self::Remote(send) => send.finish().map_err(io::Error::other),
+            Self::Local(send) => {
+                send.take();
+                Ok(())
+            }
+        }
+    }
+
+    pub fn reset(&mut self, code: VarInt) -> io::Result<()> {
+        match self {
+            Self::Remote(send) => send.reset(code).map_err(io::Error::other),
+            Self::Local(send) => {
+                send.take();
+                Ok(())
+            }
+        }
+    }
+}
+
+impl AsyncWrite for SendStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Self::Remote(send) => AsyncWrite::poll_write(Pin::new(send), cx, bytes),
+            Self::Local(Some(send)) => Pin::new(send).poll_write(cx, bytes),
+            Self::Local(None) => Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
+        }
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Remote(send) => Pin::new(send).poll_flush(cx),
+            Self::Local(Some(send)) => Pin::new(send).poll_flush(cx),
+            Self::Local(None) => Poll::Ready(Ok(())),
+        }
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Remote(send) => Pin::new(send).poll_shutdown(cx),
+            Self::Local(Some(send)) => Pin::new(send).poll_shutdown(cx),
+            Self::Local(None) => Poll::Ready(Ok(())),
+        }
+    }
+}
+
+pub enum RecvStream {
+    Remote(iroh::endpoint::RecvStream),
+    Local(OwnedReadHalf),
+}
+impl From<iroh::endpoint::RecvStream> for RecvStream {
+    fn from(stream: iroh::endpoint::RecvStream) -> Self {
+        Self::Remote(stream)
+    }
+}
+impl AsyncRead for RecvStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Remote(recv) => Pin::new(recv).poll_read(cx, buf),
+            Self::Local(recv) => Pin::new(recv).poll_read(cx, buf),
+        }
+    }
+}
+
+pub async fn connect_local(state: &Path) -> Result<UnixStream, Failure> {
+    UnixStream::connect(state.join("serve.sock")).await.map_err(|err| {
+        if matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) {
+            Failure::new(Exit::Unreachable, "serve_required", "this machine needs a live receiver; start `latch serve` on this state folder, then retry".into())
+        } else {
+            Failure::failed("local_socket", format!("could not connect to this machine's receiver: {err}"))
+        }
+    })
+}
+
+/// Directory permissions and socket mode grant access only to this OS user.
+pub struct LocalSocket {
+    pub listener: UnixListener,
+    path: PathBuf,
+}
+impl LocalSocket {
+    pub fn bind(state: &Path) -> Result<Self, Failure> {
+        let path = state.join("serve.sock");
+        let io = |err| Failure::failed("local_socket", format!("{}: {err}", path.display()));
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(io(err)),
+        }
+        let listener = UnixListener::bind(&path).map_err(io)?;
+        let socket = Self {
+            listener,
+            path: path.clone(),
+        };
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(io)?;
+        Ok(socket)
+    }
+}
+impl Drop for LocalSocket {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
