@@ -1,7 +1,8 @@
 <!doctype html><title>latch editable test</title>
-<!-- An editable region, not a form field: its text is its accessible name
-     and the page's text, both of which latch shows, so no vault value may
-     go into it. -->
+<!-- Editable regions, not form fields (one a textarea made
+     contenteditable): their text is their accessible name and the page's
+     text, both of which latch shows, so no vault value may go into them. -->
 <h1>Delivery</h1>
 <p><span id="label">Delivery note</span></p>
 <div role="textbox" aria-labelledby="label" contenteditable="true" style="border:1px solid #888;min-height:2em"></div>
+<p><span id="memo-label">Memo</span> <textarea id="memo" contenteditable="true" aria-labelledby="memo-label memo"></textarea></p>

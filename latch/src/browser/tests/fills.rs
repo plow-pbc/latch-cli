@@ -2376,16 +2376,18 @@ async fn no_vault_value_goes_into_an_editable_region(engine: &str) {
         .call("open", json!({"url": format!("{local}/editable.html")}))
         .await
         .unwrap();
-    let note = find(&page, "textbox", "Delivery note");
-    let (refused, _) = h
-        .fill(json!({"item": identity.item, "fields": [["first name", [note]]]}))
-        .await;
-    let refused = refused.unwrap_err();
-    println!(
-        "a fill into an editable region: {} ({})",
-        refused.code, refused.message
-    );
-    assert_eq!(refused.code, "bad_target");
+    for name in ["Delivery note", "Memo"] {
+        let region = find(&page, "textbox", name);
+        let (refused, _) = h
+            .fill(json!({"item": identity.item, "fields": [["first name", [region]]]}))
+            .await;
+        let refused = refused.unwrap_err();
+        println!(
+            "a fill into {name:?}: {} ({})",
+            refused.code, refused.message
+        );
+        assert_eq!(refused.code, "bad_target");
+    }
     // Nothing went in: neither the page's text nor its elements show it.
     let text = h.text().await;
     let observed = h.call("observe", json!({})).await.unwrap();

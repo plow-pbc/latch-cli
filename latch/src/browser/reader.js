@@ -240,8 +240,9 @@
     const form = el.form || el.closest('form');
     const r = role(el);
     return {
-      tag: ['input', 'textarea', 'select'].includes(el.localName) ? el.localName
-        : el.isContentEditable ? 'editable' : el.localName,
+      // Editable first: a textarea made contenteditable takes its value as
+      // text too, which its name and the page's text show.
+      tag: el.isContentEditable ? 'editable' : el.localName,
       type: el.localName === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '',
       autocomplete: el.getAttribute('autocomplete') || '',
       form: form ? [...document.forms].indexOf(form) : -1,
