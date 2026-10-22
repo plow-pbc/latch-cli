@@ -569,6 +569,26 @@ fn an_update_stands_under_the_host_line() {
 }
 
 #[test]
+fn a_newer_build_stands_under_the_host_line() {
+    let dashboard = busy();
+    dashboard.available(Some("Build 134 is available. Run `latch update`.".into()));
+    for width in [120, 80] {
+        let lines = screen(&view_of(&dashboard, true), width, 24);
+        let at = lines
+            .iter()
+            .position(|line| line == "Build 134 is available. Run `latch update`.")
+            .unwrap_or_else(|| panic!("{lines:#?}"));
+        assert!(at <= 3, "{lines:#?}");
+    }
+    dashboard.available(None);
+    let lines = screen(&view_of(&dashboard, true), 120, 24);
+    assert!(
+        !lines.iter().any(|line| line.contains("available")),
+        "{lines:#?}"
+    );
+}
+
+#[test]
 fn keys_arrive_as_the_terminal_sends_them() {
     assert_eq!(
         parse(b"\x1b[A\x1b[B\x1b[C\x1b[D\x1b[F\r\tq/\x7f"),

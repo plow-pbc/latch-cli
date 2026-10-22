@@ -2,13 +2,12 @@
 
     python3 scripts/camoufox-pin.py
 
-For each macOS build in the pin, downloads Camoufox and Node, checks their
+For each build of this host's OS in the pin, downloads Camoufox and Node, checks their
 sha256 against the pin, and sets them up as `install.sh --browser camoufox`
-does (Camoufox with `ditto` and its version.json, Node with `tar`, the
+does (Camoufox with `ditto` (macOS) or `unzip` (Linux) and its version.json, Node with `tar`, the
 runtime from `camoufox/` with `npm ci`, for that build's CPU), then takes
 the tree hash of each part, which latch checks before every launch
-(`browser::engine::tree_hash`). Runs on a Mac whose own build is pinned:
-its Node runs `npm ci` for both.
+(`browser::engine::tree_hash`). The host's pinned Node runs `npm ci` for both architectures.
 """
 
 import importlib.util
@@ -28,7 +27,7 @@ spec = importlib.util.spec_from_file_location("cft_pin", HERE / "cft-pin.py")
 cft_pin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cft_pin)
 
-CPU = {"mac_arm64": "arm64", "mac_x64": "x64"}
+SYSTEM = {"Darwin": ("mac", "darwin"), "Linux": ("linux", "linux")}
 RUNTIME_FILES = ["package.json", "package-lock.json", "sqlite"]
 
 
@@ -47,20 +46,27 @@ def fetch(url, sha256, into):
 
 def main():
     pin = json.loads((LATCH / "src/browser/camoufox.json").read_text())
-    host = "mac_arm64" if platform.machine() == "arm64" else "mac_x64"
+    prefix, npm_os = SYSTEM[platform.system()]
+    cpu = "arm64" if platform.machine() in ("arm64", "aarch64") else "x64"
+    host = f"{prefix}_{cpu}"
+    builds = {key: build for key, build in pin["builds"].items() if key.startswith(prefix + "_")}
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        for key, build in pin["builds"].items():
+        for key, build in builds.items():
             root = tmp / key
             (root / "camoufox").mkdir(parents=True)
             fetch(build["camoufox"]["url"], build["camoufox"]["sha256"], tmp / f"{key}.zip")
-            subprocess.run(["ditto", "-x", "-k", str(tmp / f"{key}.zip"), str(root / "camoufox")], check=True)
+            if prefix == "mac":
+                unpack = ["ditto", "-x", "-k", str(tmp / f"{key}.zip"), str(root / "camoufox")]
+            else:
+                unpack = ["unzip", "-q", str(tmp / f"{key}.zip"), "-d", str(root / "camoufox")]
+            subprocess.run(unpack, check=True)
             (root / "camoufox/version.json").write_text(version_json(pin["version"]))
             fetch(build["node"]["url"], build["node"]["sha256"], tmp / f"{key}.tar.gz")
             subprocess.run(["tar", "-xzf", str(tmp / f"{key}.tar.gz"), "-C", str(tmp)], check=True)
             os.rename(tmp / build["node"]["folder"], root / "node")
         host_node = tmp / host / "node"
-        for key, build in pin["builds"].items():
+        for key, build in builds.items():
             runtime = tmp / key / "runtime"
             runtime.mkdir()
             for name in RUNTIME_FILES:
@@ -78,8 +84,8 @@ def main():
                     "--omit=dev",
                     "--no-audit",
                     "--no-fund",
-                    "--os=darwin",
-                    f"--cpu={CPU[key]}",
+                    f"--os={npm_os}",
+                    f"--cpu={key.split('_', 1)[1]}",
                 ],
                 cwd=runtime,
                 env={
@@ -95,7 +101,7 @@ def main():
             build["camoufox"]["tree_sha256"] = cft_pin.tree_hash(tmp / key / "camoufox")
             build["node"]["tree_sha256"] = cft_pin.tree_hash(tmp / key / "node")
             build["runtime_tree_sha256"] = cft_pin.tree_hash(runtime)
-    print(json.dumps(pin["builds"], indent=2))
+    print(json.dumps(builds, indent=2))
 
 
 if __name__ == "__main__":

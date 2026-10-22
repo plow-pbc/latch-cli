@@ -90,10 +90,20 @@ BROWSER = "test(/^browser::tests::/) | test(/(^|::)pinned::/)"
 CLI_MODULES = ("scenario", "lifecycle", "messages")
 
 
+def restricted(where):
+    """Ubuntu's user-namespace restriction is on: install-binary.sh loads
+    Ubuntu's bwrap profile, and latch runs Chrome with page isolation off."""
+    setting = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    return where == "linux" and setting.exists() and setting.read_text().strip() == "1"
+
+
 def filterset(suite, where):
     """A suite's Rust tests, as a nextest filterset. Core is every test no
     other suite takes, so each test is in exactly one."""
     if suite == "browser":
+        if restricted(where):
+            # What holds with page isolation off: Chrome's conformance checks.
+            return "test(/^browser::tests::cft::/)"
         if where != "macos":
             return BROWSER
         # macOS: tests tagged `mac`, and every test on an engine Linux has
@@ -238,6 +248,9 @@ def print_plan(where, suites, gate, not_here, args):
           f"({platform.machine()}{', shard %d/%d' % args.shard if args.shard else ''})")
     for suite, reason in not_here:
         print(f"  {suite}: {reason}")
+    if "browser" in suites and restricted(where):
+        print("  browser: Ubuntu's user-namespace restriction is on, so latch runs Chrome with page "
+              "isolation off: only Chrome's conformance checks (browser::tests::cft::)")
     for name, serves, command, cwd in steps(where, suites, gate, args.shard):
         print(f"  {name:<18} [{', '.join(serves)}] {show(command)}")
 

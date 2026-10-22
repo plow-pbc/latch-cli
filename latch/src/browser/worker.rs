@@ -132,8 +132,10 @@ fn confine(state_dir: &Path, profile_name: &str, scratch: &Path) -> Result<(), F
     )?;
     let view = crate::sandbox::BrowserView {
         profile: profile.dir,
-        // Camoufox is pinned for macOS only, so CfT is the one engine here.
-        plugin: CFT.folder(&state_dir),
+        plugin: match engine.as_deref() {
+            Some("camoufox") => CAMOUFOX.folder(&state_dir),
+            _ => CFT.folder(&state_dir),
+        },
         scratch: scratch.canonicalize().map_err(cft::io_failure)?,
         state_dir,
     };

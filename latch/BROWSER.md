@@ -35,13 +35,13 @@ run `python3 scripts/cft-pin.py VERSION` on a Mac and put its output in
 
 ## Camoufox, the second engine
 
-`install.sh --browser camoufox` (macOS), or `latch browser setup --engine
+`install.sh --browser camoufox` (macOS and Linux arm64/x86_64), or `latch browser setup --engine
 camoufox` later, installs Camoufox, pinned in
 `src/browser/camoufox.json` with the runtime latch drives it through, into
-`<state-dir>/plugins/camoufox/<version>/`, about 1 GB:
+`<state-dir>/plugins/camoufox/<version>/`, about 1 GB on macOS and 1.5 GB on Linux:
 
 - `camoufox/`: the Camoufox build (zip sha256-checked, unpacked with
-  `ditto`) and the `version.json` camoufox-js reads;
+  `ditto` on macOS, `unzip` on Linux) and the `version.json` camoufox-js reads;
 - `node/`: the pinned Node (tarball sha256-checked);
 - `runtime/`: the helper's package from `camoufox/` (Playwright below 1.63
   and camoufox-js, exactly as `package-lock.json` pins them), installed
@@ -50,7 +50,8 @@ camoufox` later, installs Camoufox, pinned in
   package downloads anything unchecked.
 
 Before every launch latch checks each part's tree hash against the pin.
-`python3 scripts/camoufox-pin.py` prints them for every pinned Mac build.
+`python3 scripts/camoufox-pin.py` prints them for both architectures of
+the host's OS.
 
 The driver (`src/browser/camoufox.rs`) runs latch's helper,
 `camoufox/helper.mjs` (built into latch, written into the session's
@@ -59,8 +60,8 @@ JSON lines over its stdio and drives Camoufox through Playwright, which
 reaches it over its own pipe (`-juggler-pipe`), never a port. latch's page
 reader runs in Camoufox's isolated world; the agent's `eval` in the page's
 own world (Camoufox's `mw:`). Each profile gets one fingerprint, made on its
-first launch with the host's OS and kept in the profile (`camoufox.json`,
-0600), so a site sees the same device every time. Camoufox ships with
+first launch (the pin currently claims macOS on every host) and kept in the
+profile (`camoufox.json`, 0600), so a site sees the same device every time. Camoufox ships with
 password saving and form autofill off; its uBlock add-on is left out.
 
 A profile is bound to its engine when it is made. `open` makes a missing
@@ -732,14 +733,17 @@ gatekeeper` runs.
 
 On Linux they are built only with `--features linux-browser-tests`, which
 `just test` (on Linux arm64, or `--linux` in the test container) builds
-with, against the CfT install-binary.sh put in `.dev/cft-state` or
-`LATCH_CFT_STATE`. There the sandbox checks look at the user namespaces and
+with, against the engines installed in `.dev/cft-state` or
+`LATCH_CFT_STATE`. Missing GTK3/audio/X11/DBus libraries join the
+installer's root package step; browser, Node and helper files stay inside
+the state folder.
+There the sandbox checks look at the user namespaces and
 seccomp mode of the engine's processes, exec's view of the network at
 `/proc/net`, and the front-app checks have no front app to watch.
 
 These real-engine tests are also the driver conformance runner: each runs
 once per engine, as `browser::tests::cft::NAME` and
-`browser::tests::camoufox::NAME`, Camoufox on macOS only (and the same
+`browser::tests::camoufox::NAME`, Camoufox on both platforms (and the same
 under `fills` and `steps`).
 A new engine joins by one line in the `conformance!` macro. Checks after
 its `mac:` are tagged `mac`: what macOS can answer differently from Linux.

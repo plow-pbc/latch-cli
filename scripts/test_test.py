@@ -106,6 +106,12 @@ class Suites(unittest.TestCase):
         self.assertEqual(got, ON_MACOS - {"browser::tests::camoufox::a_check"})
 
 
+    def test_a_restricted_ubuntu_host_runs_chromes_conformance_checks(self):
+        with mock.patch.object(runner, "restricted", return_value=True):
+            got = {name.split(":", 1)[1] for name in self.selected("browser", "linux")}
+        self.assertEqual(got, {"browser::tests::cft::a_check", "browser::tests::cft::mac::a_mac_check"})
+
+
 class Plans(unittest.TestCase):
     def test_no_suite_is_this_oss_gate(self):
         self.assertEqual(plan()[1], runner.GATE["macos"])

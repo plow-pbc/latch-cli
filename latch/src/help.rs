@@ -937,6 +937,20 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "update",
+        output: "`updated` and the build installed (`to`), or with --check `current`, `latest` and `available`.",
+        effect: Repeatable(
+            "installs another latch build on this machine and restarts a `serve -d` host on it",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex("Install the newest build", &["update"]),
+            ex("See whether a newer build is out", &["update", "--check"]),
+            ex("Go back to an earlier build", &["update", "v0.1.0-1327"]),
+        ],
+    },
+    Entry {
         id: "stop",
         output: "`stopped` (whether a host was running), `state_dir`, `state` and, if it failed, `error`.",
         effect: Repeatable("stops this state folder's host and removes its service"),

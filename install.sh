@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs latch from its releases on releases.plow.co: the newest one, or
 # the tag given first. Options go on to the release's install-binary.sh.
+# Once installed, `latch update` installs newer builds.
 #
 #   sh install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive]
 set -eu

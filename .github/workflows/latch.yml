@@ -78,8 +78,8 @@ jobs:
       ref: ${{ inputs.source-ref }}
       shards: 1
 
-  # The Linux gate (`just test`) on arm64, where Chrome for Testing is
-  # pinned, in four shards: shard 1 also lints and runs the Python checks.
+  # The Linux gate (`just test`) on arm64, where both engines are pinned, in
+  # four shards: shard 1 also lints and runs the Python checks.
   linux:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -104,12 +104,16 @@ jobs:
         with:
           path: .dev/cft-state/plugins/cft
           key: cft-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/camoufox
+          key: camoufox-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
       - uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-nextest@0.9.148
-      # Until latch installs its own AppArmor profile for the browser's
-      # bwrap: Ubuntu's bwrap profile denies Chrome's sandbox the capability
-      # it needs, so the restriction is lifted first.
+      # Chrome with its own sandbox, as on most Linux hosts: with Ubuntu's
+      # user namespace restriction on, latch runs Chrome without it
+      # (linux-restricted below), so this job lifts the restriction first.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # The lifecycle suite's systemd: a lingering user session.
       - run: |
@@ -125,7 +129,39 @@ jobs:
           path: .dev/ci/*.json
           if-no-files-found: error
 
-  # x86_64 Linux, which has no pinned engine: everything else.
+  # The runner as Ubuntu ships it: the restriction on, Ubuntu's bwrap
+  # profile loaded by the installer, so latch runs Chrome with page
+  # isolation off; status --local says so, and `just test browser` runs
+  # Chrome's conformance checks.
+  linux-restricted:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - run: rustup toolchain install
+        working-directory: latch
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+          shared-key: linux-arm64
+          save-if: false
+      - uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/cft
+          key: cft-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest@0.9.148
+      - run: test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+      - run: cd latch && cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --no-browser target/debug/latch
+      - run: latch/target/debug/latch --state-dir "$RUNNER_TEMP/status-state" status --local | tee /dev/stderr | grep -q '"page_isolation":"page isolation off on this host"'
+      - run: just test browser --ci
+
+  # x86_64 Linux: the suites that need no browser engine.
   linux-x64:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -183,7 +219,7 @@ jobs:
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
-    needs: [changes, mac, linux, linux-x64, linux-static]
+    needs: [changes, mac, linux, linux-restricted, linux-x64, linux-static]
     runs-on: ubuntu-24.04
     env:
       RESULTS: ${{ toJSON(needs) }}

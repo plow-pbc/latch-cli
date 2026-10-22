@@ -1,10 +1,10 @@
-//! A real session on the host: the pinned Chrome for Testing, from the
+//! Real sessions on the host: the pinned Chrome for Testing and Camoufox, from the
 //! host's browser worker, run from a logged-in desktop session; headless
 //! unless built with `headed-tests` (see `HEADLESS`). It
 //! needs the engine installed where `just test browser` puts it,
 //! `.dev/cft-state`, or in the state directory `LATCH_CFT_STATE` names;
-//! without it the test fails, saying so. On Linux arm64 the engine runs
-//! inside the worker's bubblewrap, and the tests are built only with
+//! without it the test fails, saying so. On Linux the engine runs inside
+//! the worker's bubblewrap, and the tests are built only with
 //! `linux-browser-tests`, which `just test` on Linux builds with.
 //!
 //! `LATCH_BROWSER_EVIDENCE=DIR` also keeps the screenshot there.
@@ -27,7 +27,7 @@ use crate::failure::Failure;
 
 /// The engines the conformance checks run on, each its own test:
 /// `browser::tests::cft::NAME`, and `browser::tests::camoufox::NAME` on
-/// macOS (and the same under `fills` and `steps`).
+/// both platforms (and the same under `fills` and `steps`).
 ///
 /// The checks after `mac:` are tagged `mac` (`cft::mac::NAME`): what macOS
 /// can answer differently from Linux (its sandbox, files, processes,
@@ -48,7 +48,6 @@ macro_rules! conformance {
                 })*
             })?
         }
-        #[cfg(target_os = "macos")]
         mod camoufox {
             $(#[tokio::test]
             async fn $check() {
@@ -144,6 +143,14 @@ fn processes() -> Vec<Process> {
         .collect()
 }
 
+fn profile_arg(engine: &str, data: &Path) -> String {
+    if engine == "camoufox" {
+        format!("-profile {}", data.display())
+    } else {
+        format!("--user-data-dir={}", data.display())
+    }
+}
+
 /// The engine's pid as the host sees it. On Linux the worker reports its
 /// pid inside the worker's bubblewrap, so it is found by its profile
 /// argument instead.
@@ -237,6 +244,12 @@ fn helper_of(pid: u32) -> u32 {
 /// returns the port. Each connection gets its own thread: a browser opens
 /// connections it may not use at once.
 fn serve(pages: Vec<(String, Vec<u8>)>) -> u16 {
+    serve_delayed(pages, Duration::ZERO)
+}
+
+/// Keeps the response open after its scripts can run, to exercise loading
+/// while subframes attach, including when their responses are slow too.
+fn serve_delayed(pages: Vec<(String, Vec<u8>)>, delay: Duration) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let pages = Arc::new(pages);
@@ -260,7 +273,10 @@ fn serve(pages: Vec<(String, Vec<u8>)>) -> u16 {
                     body.len()
                 );
                 let _ = socket.write_all(head.as_bytes());
-                let _ = socket.write_all(body);
+                let (start, end) = body.split_at(body.len().saturating_sub(1));
+                let _ = socket.write_all(start);
+                std::thread::sleep(delay);
+                let _ = socket.write_all(end);
             });
         }
     });
@@ -522,16 +538,20 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
         .canonicalize()
         .unwrap();
     let cft = engine_name != "camoufox";
-    let (pipe, profile_arg) = if cft {
-        (
-            "--remote-debugging-pipe",
-            format!("--user-data-dir={}", data.display()),
-        )
+    let pipe = if cft {
+        "--remote-debugging-pipe"
     } else {
-        ("-juggler-pipe", format!("-profile {}", data.display()))
+        "-juggler-pipe"
     };
+    let profile_arg = profile_arg(engine_name, &data);
     let browser = host_pid(session.ready["pid"].as_u64().unwrap() as u32, &profile_arg);
     let scratch = session.scratch().canonicalize().unwrap();
+    // Firefox may create an empty cache folder in its private HOME. The
+    // pinned build must come from the plugin, never a second download.
+    let cache = scratch.join(".cache/camoufox");
+    if cache.exists() {
+        assert!(fs::read_dir(cache).unwrap().next().is_none());
+    }
 
     let url = local_page();
     let page = session
@@ -584,6 +604,8 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
     } else {
         let allowed = [
             "CAMOU_CONFIG_1",
+            #[cfg(target_os = "linux")]
+            "FONTCONFIG_PATH",
             "HOME",
             "MOZ_CRASHREPORTER_DISABLE",
             "PATH",
@@ -594,6 +616,20 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
             "{names:?}"
         );
         assert!(names.iter().any(|n| n == "CAMOU_CONFIG_1") && names.iter().any(|n| n == "HOME"));
+        #[cfg(target_os = "linux")]
+        {
+            let env = fs::read(format!("/proc/{browser}/environ")).unwrap();
+            let fontconfig = super::engine::CAMOUFOX
+                .folder(&state.canonicalize().unwrap())
+                .join("camoufox/fontconfig")
+                .join(&super::engine::CAMOUFOX.fingerprint_os);
+            assert!(fontconfig.join("fonts.conf").is_file());
+            let fonts = format!("FONTCONFIG_PATH={}", fontconfig.display());
+            assert!(
+                env.split(|byte| *byte == 0)
+                    .any(|entry| entry == fonts.as_bytes())
+            );
+        }
         // The helper, the engine's parent, gets the same few.
         let helper = all.iter().find(|p| p.pid == helper_of(browser)).unwrap();
         assert!(
@@ -650,7 +686,6 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
             }
         } else {
             // Firefox's web content processes: `plugin-container … tab`.
-            // Camoufox is pinned for macOS only.
             #[cfg(target_os = "macos")]
             {
                 let content = p.args.contains("plugin-container") && p.args.ends_with(" tab");
@@ -664,6 +699,19 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
                     helpers += 1;
                     assert!(sandboxed(p.pid), "Firefox's sandbox holds web content");
                 }
+            }
+            #[cfg(target_os = "linux")]
+            if p.args.contains("-contentproc") && p.args.contains(" tab") {
+                let (namespace, seccomp) = confinement(p.pid);
+                println!(
+                    "Firefox content {}: user namespace {namespace}, seccomp {seccomp}",
+                    p.pid
+                );
+                helpers += 1;
+                assert!(
+                    namespace != main_confinement.0 && seccomp == "2",
+                    "Firefox's sandbox holds web content"
+                );
             }
         }
     }
@@ -1112,9 +1160,24 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
     )
     .await
     .unwrap();
-    let url = test_site().replace("frames.html", "churn.html");
+    let pages_port = serve_delayed(
+        vec![(
+            "/churn.html".into(),
+            include_bytes!("../../tests/browser-site/churn.html").to_vec(),
+        )],
+        Duration::from_millis(200),
+    );
+    let cross_port = serve_delayed(
+        vec![(
+            "/cross.html".into(),
+            include_bytes!("../../tests/browser-site/cross.html").to_vec(),
+        )],
+        Duration::from_millis(200),
+    );
+    let url = format!("http://127.0.0.1:{pages_port}/churn.html?cross={cross_port}");
     let mut slowest = Duration::ZERO;
     for round in 0..3 {
+        let mut added_on_open = 0;
         // Each load, and each reading after it, while cross-site frames
         // attach and go away underneath. The first call that fails ends
         // the test: the ones after it would only wait out their time.
@@ -1136,7 +1199,23 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
                     failure.message
                 );
             }
+            if n == 0 {
+                let added = session
+                    .call(json!({"op": "eval", "script": "added"}))
+                    .await
+                    .unwrap()
+                    .result;
+                added_on_open = added["value"].as_u64().unwrap();
+            }
         }
+        let page = session
+            .call(json!({"op": "eval", "script": "({state: document.readyState, added})"}))
+            .await
+            .unwrap()
+            .result;
+        println!("round {round}: {}", page["value"]);
+        assert_eq!(page["value"]["state"], "complete");
+        assert!(page["value"]["added"].as_u64().unwrap() > added_on_open);
     }
     println!("slowest call: {slowest:?}");
     let text = session.call(json!({"op": "text"})).await.unwrap().result;
@@ -1213,7 +1292,8 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
         serde_json::from_str::<serde_json::Value>(&line).unwrap_or_default()
     };
     let data = profile::root(&state).join("hang-stuck/data");
-    let profile_arg = format!("--user-data-dir={}", data.canonicalize().unwrap().display());
+    let data = data.canonicalize().unwrap();
+    let profile_arg = profile_arg(engine, &data);
     let browser =
         host_pid(answer()["ok"]["pid"].as_u64().unwrap() as u32, &profile_arg) as libc::pid_t;
     let mut call = |line: serde_json::Value| {
@@ -1284,7 +1364,8 @@ async fn a_busy_browser_dies_with_its_host(engine: &str) {
     };
     let worker = answer().as_i64().unwrap() as libc::pid_t;
     let data = profile::root(&state).join("host-gone/data");
-    let profile_arg = format!("--user-data-dir={}", data.canonicalize().unwrap().display());
+    let data = data.canonicalize().unwrap();
+    let profile_arg = profile_arg(engine, &data);
     let ready = answer();
     let browser =
         host_pid(ready["ok"]["pid"].as_u64().unwrap() as u32, &profile_arg) as libc::pid_t;
@@ -1315,6 +1396,38 @@ async fn a_busy_browser_dies_with_its_host(engine: &str) {
         !worker_left && !browser_left,
         "worker running: {worker_left}, browser running: {browser_left}"
     );
+}
+
+/// The Camoufox helper gives up on a page's title after a wait of its own
+/// and answers its operation without it; the title the browser never sent
+/// is still a command left unanswered.
+#[tokio::test]
+async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
+    use super::camoufox::Camoufox;
+    use super::driver::{Driver, Runtime};
+    let (_dir, state, _area) = test_state("camoufox", &["helper-late"]);
+    let scratch = tempfile::tempdir().unwrap();
+    // The engine gets absolute paths, as the worker gives it.
+    let state = state.canonicalize().unwrap();
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    let proxy = super::egress::Proxy::start(true).unwrap().url();
+    let mut browser =
+        Camoufox::launch(&state, "helper-late", &scratch_path, HEADLESS, None, &proxy).unwrap();
+    browser.begin("k1").unwrap();
+    browser.navigate(&local_page()).unwrap();
+    let pid = browser.pid() as libc::pid_t;
+    // SAFETY: kill sends a signal and touches no Rust memory.
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    // Longer than the helper waits for a title.
+    browser.limit(Some(std::time::Instant::now() + Duration::from_secs(10)));
+    let tabs = browser.tabs();
+    let missed = browser.unanswered();
+    // SAFETY: as above.
+    unsafe { libc::kill(pid, libc::SIGCONT) };
+    browser.limit(None);
+    browser.close();
+    assert_eq!(tabs.unwrap()[0].title, "");
+    assert!(missed);
 }
 
 /// A dialog the page opens on its own, between two calls, holds the page
@@ -2311,6 +2424,40 @@ async fn back_into_a_reserved_site_is_refused_after_a_return_visit(engine: &str)
     session.close().await.unwrap();
 }
 
+/// Camoufox runs with the prefs that open every window a page opens
+/// (`window.open`, with features or without, or a `target=_blank` link) as a
+/// tab that loads in the background; Firefox keeps the ones that differ from
+/// its defaults in the profile's `prefs.js` as it quits. Whether a window
+/// then stays behind the owner's needs a screen to tell: Playwright keeps
+/// every page active, and Camoufox reports a made-up screen.
+#[tokio::test]
+async fn camoufox_runs_with_page_windows_as_background_tabs() {
+    let (_dir, state, _area) = test_state("camoufox", &["fox-tabs"]);
+    let session = Session::start_with(
+        &latch(),
+        &state,
+        "fox-tabs",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
+    session.close().await.unwrap();
+    let prefs = fs::read_to_string(profile::root(&state).join("fox-tabs/data/prefs.js")).unwrap();
+    if HEADLESS && cfg!(target_os = "macos") {
+        assert!(
+            prefs.contains(r#"user_pref("widget.macos.allow-native-select", false);"#),
+            "headless Firefox must disable native macOS select menus"
+        );
+    }
+    for pref in [
+        r#"user_pref("browser.link.open_newwindow.restriction", 0);"#,
+        r#"user_pref("browser.tabs.loadDivertedInBackground", true);"#,
+    ] {
+        assert!(prefs.contains(pref), "{pref} is not in force");
+    }
+}
+
 async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
     let (_dir, state, _area) = test_state(engine, &["b2b-turns"]);
     let frames = test_site();
@@ -2438,79 +2585,4 @@ async fn an_answer_shows_the_screen_and_observe_all_every_element(engine: &str) 
         .unwrap();
     assert_eq!(evaluated["value"], mine);
     h.call(CALLER, "close", &id, json!({})).await.unwrap();
-}
-
-/// Tagged `mac`: what macOS can answer differently from Linux (see
-/// `conformance!`).
-#[cfg(target_os = "macos")]
-mod mac {
-    use super::*;
-
-    /// The Camoufox helper gives up on a page's title after a wait of its own
-    /// and answers its operation without it; the title the browser never sent
-    /// is still a command left unanswered. Camoufox is pinned for macOS only.
-    #[tokio::test]
-    async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
-        use crate::browser::camoufox::Camoufox;
-        use crate::browser::driver::{Driver, Runtime};
-        let (_dir, state, _area) = test_state("camoufox", &["helper-late"]);
-        let scratch = tempfile::tempdir().unwrap();
-        // The engine gets absolute paths, as the worker gives it.
-        let state = state.canonicalize().unwrap();
-        let scratch_path = scratch.path().canonicalize().unwrap();
-        let proxy = crate::browser::egress::Proxy::start(true).unwrap().url();
-        let mut browser =
-            Camoufox::launch(&state, "helper-late", &scratch_path, HEADLESS, None, &proxy).unwrap();
-        browser.begin("k1").unwrap();
-        browser.navigate(&local_page()).unwrap();
-        let pid = browser.pid() as libc::pid_t;
-        // SAFETY: kill sends a signal and touches no Rust memory.
-        unsafe { libc::kill(pid, libc::SIGSTOP) };
-        // Longer than the helper waits for a title.
-        browser.limit(Some(std::time::Instant::now() + Duration::from_secs(10)));
-        let tabs = browser.tabs();
-        let missed = browser.unanswered();
-        // SAFETY: as above.
-        unsafe { libc::kill(pid, libc::SIGCONT) };
-        browser.limit(None);
-        browser.close();
-        assert_eq!(tabs.unwrap()[0].title, "");
-        assert!(missed);
-    }
-
-    /// Camoufox runs with the prefs that open every window a page opens
-    /// (`window.open`, with features or without, or a `target=_blank` link) as a
-    /// tab that loads in the background; Firefox keeps the ones that differ from
-    /// its defaults in the profile's `prefs.js` as it quits. Whether a window
-    /// then stays behind the owner's needs a screen to tell: Playwright keeps
-    /// every page active, and Camoufox reports a made-up screen. Camoufox is
-    /// pinned for macOS only.
-    #[tokio::test]
-    async fn camoufox_runs_with_page_windows_as_background_tabs() {
-        let (_dir, state, _area) = test_state("camoufox", &["fox-tabs"]);
-        let session = Session::start_with(
-            &latch(),
-            &state,
-            "fox-tabs",
-            Duration::from_secs(120),
-            HEADLESS,
-        )
-        .await
-        .unwrap();
-        session.close().await.unwrap();
-        let prefs =
-            fs::read_to_string(profile::root(&state).join("fox-tabs/data/prefs.js")).unwrap();
-        if HEADLESS {
-            assert!(
-                prefs.contains(r#"user_pref("widget.macos.allow-native-select", false);"#),
-                "headless Firefox must disable native macOS select menus"
-            );
-        }
-        for pref in [
-            r#"user_pref("browser.link.open_newwindow.restriction", 0);"#,
-            r#"user_pref("browser.tabs.loadDivertedInBackground", true);"#,
-        ] {
-            assert!(prefs.contains(pref), "{pref} is not in force");
-        }
-    }
 }

@@ -3,8 +3,8 @@
 #
 #   as_root_install [--then STEP NOTE] PACKAGE...
 #
-# PACKAGE is named as apt calls it; Xvfb's package has another name on dnf
-# and pacman. STEP, a shell command, runs as root after the packages, under
+# PACKAGE is named as apt calls it; engine libraries and Xvfb are mapped
+# to the other package managers' names. STEP, a shell command, runs as root after the packages, under
 # the same sudo, and NOTE says what it does.
 as_root_install() {
   then_step=""
@@ -28,6 +28,17 @@ as_root_install() {
   named=""
   for package in "$@"; do
     case "$manager:$package" in
+      apt-get:libgtk-3-0 | apt-get:libasound2)
+        if apt-cache show "${package}t64" >/dev/null 2>&1; then package="${package}t64"; fi
+        ;;
+      dnf:libgtk-3-0) package=gtk3 ;;
+      dnf:libasound2) package=alsa-lib ;;
+      dnf:libx11-xcb1) package=libX11-xcb ;;
+      dnf:libdbus-1-3) package=dbus-libs ;;
+      pacman:libgtk-3-0) package=gtk3 ;;
+      pacman:libasound2) package=alsa-lib ;;
+      pacman:libx11-xcb1) package=libx11 ;;
+      pacman:libdbus-1-3) package=dbus ;;
       dnf:xvfb) package=xorg-x11-server-Xvfb ;;
       pacman:xvfb) package=xorg-server-xvfb ;;
     esac
