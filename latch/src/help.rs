@@ -90,6 +90,16 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "logout",
+        output: "`removed` (the secrets deleted, by file name), `from` (`keychain` or `files`), `stopped` (whether a host was running) and `state_dir`.",
+        effect: Repeatable(
+            "stops this state folder's host and deletes its secrets; its vault and audit log no longer open",
+        ),
+        owner_only: false,
+        connector: None,
+        examples: &[ex("Log this state folder out", &["logout"])],
+    },
+    Entry {
         id: "devices",
         output: "`devices`: the account's machines, online or not.",
         effect: ReadOnly,

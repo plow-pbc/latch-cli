@@ -147,6 +147,9 @@ pub struct Cli {
 pub enum Command {
     /// Create this peer's key if missing and register it with Plow
     Login(LoginArgs),
+    /// Delete this state folder's secrets (its key, Plow token, vault and
+    /// audit keys) from the Keychain or its files, stopping its host first
+    Logout,
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
     /// Print this peer's identity and the hosts it can reach

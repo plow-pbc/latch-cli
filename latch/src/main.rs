@@ -30,6 +30,7 @@ mod lifecycle;
 mod log;
 mod login;
 mod logo;
+mod logout;
 mod managed;
 mod messages;
 mod model;
@@ -186,6 +187,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 exit: ExitCode::SUCCESS,
             })
         }
+        Command::Logout => to_json(logout::run(&state).await?),
         Command::Devices(args) => match args.action {
             None => to_json(devices::list(&state).await?),
             Some(DevicesAction::Remove { name, yes }) => {

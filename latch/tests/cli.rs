@@ -1732,6 +1732,20 @@ fn local_relay() -> (tokio::runtime::Runtime, String) {
 /// passing or not.
 struct Serving(std::process::Child);
 
+impl Serving {
+    /// Whether the host exits on its own within `limit`.
+    fn stopped_within(&mut self, limit: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline {
+            if matches!(self.0.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
+}
+
 impl Drop for Serving {
     fn drop(&mut self) {
         // SAFETY: signals our own child.
@@ -3442,9 +3456,63 @@ fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
     }
     assert!(host.join("vault.json").exists());
     // The same identity, login and vault on the next start.
-    let serve = serving(&host, &relay);
+    let mut serve = serving(&host, &relay);
     assert_eq!(vault_titles(&owner), ["Shop"]);
-    drop(serve);
+
+    // Logging out stops the host and leaves nothing in the Keychain.
+    let host_removed = log_out(&host, "keychain");
+    assert!(
+        host_removed.contains(&"vault.key".to_string()),
+        "{host_removed:?}"
+    );
+    assert!(serve.stopped_within(std::time::Duration::from_secs(10)));
+    log_out(&owner, "keychain");
+}
+
+/// `latch logout` on `state`: it deletes the key and Plow token, at least,
+/// from `from`, and a second finds nothing left. Returns what it deleted.
+fn log_out(state: &Path, from: &str) -> Vec<String> {
+    let run = || {
+        let output = latch(state, &["logout"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let first = run();
+    assert_eq!(first["from"], from, "{first}");
+    let removed: Vec<String> = serde_json::from_value(first["removed"].clone()).unwrap();
+    for secret in ["key", "plow-token"] {
+        assert!(removed.contains(&secret.to_string()), "{first}");
+    }
+    let again = run();
+    assert_eq!(again["removed"], json!([]), "{again}");
+    assert_eq!(again["stopped"], false, "{again}");
+    removed
+}
+
+#[test]
+fn logout_stops_the_host_and_deletes_every_secret_but_no_other_file() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let set = latch(&host, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let mut serve = serving(&host, &relay);
+    let listed = local_operation(&host, "vault", json!({"command": "list"}));
+    assert!(listed.get("ok").is_some(), "{listed}");
+
+    let removed = log_out(&host, "files");
+    assert_eq!(removed, SECRET_FILES);
+    assert!(serve.stopped_within(std::time::Duration::from_secs(10)));
+    assert_eq!(secret_files_in(&host), Vec::<&str>::new());
+    for kept in ["config.json", "vault.json", "audit.sealed.ndjson"] {
+        assert!(host.join(kept).exists(), "{kept}");
+    }
+    let shown = latch(&host, &["rules", "show"], &[]);
+    assert!(!shown.status.success(), "{shown:?}");
+    let error: Value = serde_json::from_slice(&shown.stderr).unwrap();
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("run `latch login` first"), "{error}");
 }
 
 /// A host sharing `share`, with its exec temp folders made in `tmp`, and
