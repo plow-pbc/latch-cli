@@ -1325,7 +1325,7 @@ impl Driver for Cft {
         let deadline = self.by(LOADING);
         // Use the page's event loop: its delayed input effects can run
         // after a wait of the same length on the host has already ended.
-        if self.share().dialog.is_none()
+        if self.share.dialog.is_none()
             && let Some(placement) = self.placements.get(&main).cloned()
         {
             let frame = Frame {

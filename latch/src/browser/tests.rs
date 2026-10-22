@@ -1451,20 +1451,15 @@ async fn a_dialog_that_opens_between_calls_is_refused_at_once(engine: &str) {
 }
 
 async fn typing_that_opens_a_dialog_returns_without_waiting_on_the_page(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["typing-dialog"]);
+    let (_dir, state, _area) = test_state(engine);
     let port = serve(vec![(
         "/".into(),
         br#"<!doctype html><label>Name <input oninput="alert('typed')"></label>"#.to_vec(),
     )]);
-    let mut session = Session::start_with(
-        &latch(),
-        &state,
-        "typing-dialog",
-        Duration::from_secs(120),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
+    let mut session =
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     let page = session
         .call(json!({"op": "open", "url": format!("http://127.0.0.1:{port}/")}))
         .await
