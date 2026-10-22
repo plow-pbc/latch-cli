@@ -757,6 +757,9 @@ pub struct WorkerArgs {
     /// Permit outbound IP networking
     #[arg(long)]
     pub network: bool,
+    /// Authenticate startup failures; removed before Linux's inner worker starts
+    #[arg(long, hide = true)]
+    pub error_token: Option<String>,
     /// An exec worker's own temp folder (its `TMPDIR`), which it may read and write
     #[arg(long)]
     pub tmpdir: Option<PathBuf>,
@@ -1175,6 +1178,21 @@ Input:
     EOF
   For bigger input, `latch file put` a file and read that.
 
+Secrets:
+  Use --secret-env NAME=VALUE for credentials, rather than program arguments.
+  Values reach only the final program's environment after confinement. The
+  remote judge and audit see names and lengths; program output is returned as-is.
+  Quoting protects shell syntax, but a program can interpret environment
+  values as code. *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and
+  GIT_CONFIG_* can run hidden instructions; the judge sees their names and
+  weighs that behavior against the owner's request. These are not extra denied names.
+  Native environment support is preferable. For an embedded argument, quote
+  the variable in a shell script; latch itself never expands argv:
+    latch exec --host pi --secret-env TOKEN=VALUE --network -- sh -c 'curl -H \"Authorization: Bearer $TOKEN\" https://api.example.com'
+  The option is visible in the calling machine's process list and may enter
+  shell history; shell-expanded arguments are visible on the trusted host.
+  HOME, PATH, TMPDIR, LATCH_*, LD_* and DYLD_* are reserved names.
+
 Example:
   latch exec --host pi -- sh -c 'uname -a; ls'";
 
@@ -1195,6 +1213,10 @@ pub struct ExecArgs {
     /// Allow outbound IP networking; host Unix sockets stay blocked
     #[arg(long)]
     pub network: bool,
+
+    /// Set a secret environment value; its value is omitted from judgment and audit (repeatable)
+    #[arg(long = "secret-env", value_name = "NAME=VALUE")]
+    pub secret_env: Vec<String>,
 
     /// Seconds before the program and everything it started are killed (1 to 600)
     #[arg(long, default_value_t = 60, value_name = "SECS",

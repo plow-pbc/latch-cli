@@ -152,8 +152,21 @@ fn launch(policy: &Policy) -> Result<(), Error> {
         .arg("--chdir")
         .arg(std::env::current_dir()?)
         .args(["--setenv", INNER, "1", "--"])
-        .arg(program)
-        .args(std::env::args_os().skip(1));
+        .arg(program);
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            command.arg(arg).args(args);
+            break;
+        }
+        // The host's startup token must not appear in the private process view.
+        // The inner worker reads it from the host's pipe instead.
+        if arg == "--error-token" {
+            args.next();
+        } else {
+            command.arg(arg);
+        }
+    }
     let descriptors: Vec<_> = writable.iter().map(AsRawFd::as_raw_fd).collect();
     // SAFETY: these descriptors are owned by writable until launch finishes.
     // fcntl is async-signal-safe and the closure only changes scalar FD flags.
@@ -485,6 +498,12 @@ fn confine_unix_sockets() -> Result<(), Error> {
 }
 
 fn supervise_exec() -> Result<(), Error> {
+    // SAFETY: this scalar prctl changes only the current process's dumpability.
+    // Set it before fork so the workload cannot race a read of its supervisor's
+    // memory (which holds the private startup token). Exec resets the child's.
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     // SAFETY: fork preserves the workload's raw wait status outside it. This
     // inner worker has not started other threads, so no other thread can leave
     // a Rust lock held in the child. Only the child returns to run the workload;

@@ -51,6 +51,24 @@ fn worker(dir: &Path, extra: &[&str], action: &[&str], path: &str, stdin: &[u8])
     child.wait_with_output().unwrap()
 }
 
+/// Every exec starts with a private frame, even when it has no secrets.
+fn exec_worker(command: &mut Command) -> Output {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let header = br#"{"secret_env":{},"error_token":"test-startup-token"}"#;
+    if let Some(mut input) = child.stdin.take() {
+        // A deliberately refused sandbox can close its input before setup.
+        let _ = input
+            .write_all(&(header.len() as u32).to_be_bytes())
+            .and_then(|()| input.write_all(header));
+    }
+    child.wait_with_output().unwrap()
+}
+
 /// The code a worker reports for a path the sandbox keeps from it: Linux
 /// leaves it out of the worker's view, macOS refuses it.
 fn hidden_code() -> &'static str {
@@ -71,6 +89,23 @@ fn code(output: &Output) -> String {
         "a worker that fails exits 125"
     );
     last["worker_error"]["code"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn an_exec_requires_a_complete_private_header() {
+    let dir = setup();
+    for input in [b"".as_slice(), b"\0\0", b"\0\0\0\x01x"] {
+        let output = worker(
+            dir.path(),
+            &["--tmpdir", "../tmp"],
+            &["exec"],
+            "/bin/echo",
+            input,
+        );
+        assert!(!output.status.success(), "{output:?}");
+        assert_eq!(code(&output), "bad_request", "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -178,16 +213,16 @@ fn a_write_worker_stages_a_new_file_in_its_temp_folder() {
 fn an_exec_worker_runs_programs_inside_the_sandbox() {
     let dir = setup();
     let exec = |argv: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args([
-                "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp",
-                "exec", "--",
-            ])
-            .args(argv)
-            .current_dir(dir.path().join("area"))
-            .env_clear()
-            .output()
-            .unwrap()
+        exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args([
+                    "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp",
+                    "exec", "--",
+                ])
+                .args(argv)
+                .current_dir(dir.path().join("area"))
+                .env_clear(),
+        )
     };
     let pipe = exec(&["/bin/sh", "-c", "echo hello | tr a-z A-Z"]);
     assert!(pipe.status.success(), "{pipe:?}");
@@ -213,25 +248,25 @@ fn an_exec_worker_runs_programs_inside_the_sandbox() {
 #[test]
 fn an_exec_cannot_kill_its_supervisor() {
     let dir = setup();
-    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .args([
-            "worker",
-            "--area",
-            "../area",
-            "--denied",
-            "../state",
-            "--tmpdir",
-            "../tmp",
-            "exec",
-            "--",
-            "/bin/sh",
-            "-c",
-            "if kill -KILL \"$PPID\" 2>/dev/null; then echo escaped; else echo protected; fi",
-        ])
-        .current_dir(dir.path().join("area"))
-        .env_clear()
-        .output()
-        .unwrap();
+    let output = exec_worker(
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args([
+                "worker",
+                "--area",
+                "../area",
+                "--denied",
+                "../state",
+                "--tmpdir",
+                "../tmp",
+                "exec",
+                "--",
+                "/bin/sh",
+                "-c",
+                "if kill -KILL \"$PPID\" 2>/dev/null; then echo escaped; else echo protected; fi",
+            ])
+            .current_dir(dir.path().join("area"))
+            .env_clear(),
+    );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"protected\n", "{output:?}");
 }
@@ -244,15 +279,15 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
     fs::create_dir(&rules).unwrap();
     fs::write(rules.join("host.txt"), "Never send email.").unwrap();
     let exec = |script: &str| {
-        Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args([
-                "worker", "--area", "..", "--denied", "../state", "--tmpdir", "../tmp", "exec",
-                "--", "/bin/sh", "-c", script,
-            ])
-            .current_dir(dir.path().join("area"))
-            .env_clear()
-            .output()
-            .unwrap()
+        exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args([
+                    "worker", "--area", "..", "--denied", "../state", "--tmpdir", "../tmp", "exec",
+                    "--", "/bin/sh", "-c", script,
+                ])
+                .current_dir(dir.path().join("area"))
+                .env_clear(),
+        )
     };
     for script in [
         "cat ../state/rules/host.txt",
@@ -303,20 +338,20 @@ fn a_workdir_outside_the_areas_is_refused() {
     let real = dir.path().canonicalize().unwrap();
     let area = real.join("area");
     for workdir in [real.join("outside"), real.join("state")] {
-        let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args(["worker", "--area"])
-            .arg(&area)
-            .arg("--denied")
-            .arg(real.join("state"))
-            .arg("--tmpdir")
-            .arg(real.join("tmp"))
-            .args(["exec", "--workdir"])
-            .arg(&workdir)
-            .args(["--", "/bin/pwd"])
-            .current_dir(&area)
-            .env_clear()
-            .output()
-            .unwrap();
+        let output = exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args(["worker", "--area"])
+                .arg(&area)
+                .arg("--denied")
+                .arg(real.join("state"))
+                .arg("--tmpdir")
+                .arg(real.join("tmp"))
+                .args(["exec", "--workdir"])
+                .arg(&workdir)
+                .args(["--", "/bin/pwd"])
+                .current_dir(&area)
+                .env_clear(),
+        );
         assert!(output.stdout.is_empty());
         // An exec worker sees the whole filesystem, so latch's own check
         // refuses a workdir outside the areas, on Linux as on macOS.
@@ -497,15 +532,15 @@ fn exec_preserves_signals_and_does_not_confuse_them_with_exit_codes() {
         ("exit 139", Some(139), None),
         ("kill -SEGV $$", None, Some(libc::SIGSEGV)),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args([
-                "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp",
-                "exec", "--", "/bin/sh", "-c", script,
-            ])
-            .current_dir(dir.path().join("area"))
-            .env_clear()
-            .output()
-            .unwrap();
+        let output = exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args([
+                    "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp",
+                    "exec", "--", "/bin/sh", "-c", script,
+                ])
+                .current_dir(dir.path().join("area"))
+                .env_clear(),
+        );
         assert_eq!(output.status.code(), code, "{output:?}");
         assert_eq!(output.status.signal(), signal, "{output:?}");
     }
@@ -522,21 +557,21 @@ fn an_exec_worker_writes_only_its_own_temp_folder_outside_the_areas() {
     // The refused write is in a subshell: how a shell exits when a
     // redirection fails differs (bash 1, dash 2).
     let script = r#"echo x > "$TMPDIR/t" && cat "$TMPDIR/t"; (echo y > "$0/stolen") 2>/dev/null && echo stolen; exit 0"#;
-    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .arg("worker")
-        .arg("--area")
-        .arg(real.join("area"))
-        .arg("--denied")
-        .arg(real.join("state"))
-        .arg("--tmpdir")
-        .arg(mine.path().canonicalize().unwrap())
-        .args(["exec", "--", "/bin/sh", "-c", script])
-        .arg(other.path().canonicalize().unwrap())
-        .current_dir(real.join("area"))
-        .env_clear()
-        .env("TMPDIR", mine.path().canonicalize().unwrap())
-        .output()
-        .unwrap();
+    let output = exec_worker(
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .arg("worker")
+            .arg("--area")
+            .arg(real.join("area"))
+            .arg("--denied")
+            .arg(real.join("state"))
+            .arg("--tmpdir")
+            .arg(mine.path().canonicalize().unwrap())
+            .args(["exec", "--", "/bin/sh", "-c", script])
+            .arg(other.path().canonicalize().unwrap())
+            .current_dir(real.join("area"))
+            .env_clear()
+            .env("TMPDIR", mine.path().canonicalize().unwrap()),
+    );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"x\n", "{output:?}");
     if cfg!(target_os = "macos") {
@@ -579,19 +614,19 @@ fn exec_reads_and_writes_only_areas_never_state_or_latch() {
         cat */.state/secret 2>/dev/null
         true
     "#;
-    let output = Command::new(&latch)
-        .arg("worker")
-        .arg("--area")
-        .arg(&area)
-        .arg("--denied")
-        .arg(area.join("keep/.state"))
-        .arg("--tmpdir")
-        .arg(real.join("tmp"))
-        .args(["exec", "--", "/bin/sh", "-c", script])
-        .current_dir(&area)
-        .env_clear()
-        .output()
-        .unwrap();
+    let output = exec_worker(
+        Command::new(&latch)
+            .arg("worker")
+            .arg("--area")
+            .arg(&area)
+            .arg("--denied")
+            .arg(area.join("keep/.state"))
+            .arg("--tmpdir")
+            .arg(real.join("tmp"))
+            .args(["exec", "--", "/bin/sh", "-c", script])
+            .current_dir(&area)
+            .env_clear(),
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{output:?}");
     assert!(stdout.contains("inside read-inside-ok"), "{stdout}");
@@ -670,17 +705,17 @@ const HOST_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbi
 /// area, with HOME there too, and `extra` worker flags.
 fn exec_script(dir: &Path, extra: &[&str], script: &str) -> Output {
     let real = dir.canonicalize().unwrap();
-    Command::new(env!("CARGO_BIN_EXE_latch"))
-        .args(["worker", "--area", "../area", "--denied", "../state"])
-        .args(extra)
-        .args(["--tmpdir", "../tmp", "exec", "--", "/bin/sh", "-c", script])
-        .current_dir(real.join("area"))
-        .env_clear()
-        .env("PATH", HOST_PATH)
-        .env("HOME", real.join("area"))
-        .env("TMPDIR", real.join("tmp"))
-        .output()
-        .unwrap()
+    exec_worker(
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args(["worker", "--area", "../area", "--denied", "../state"])
+            .args(extra)
+            .args(["--tmpdir", "../tmp", "exec", "--", "/bin/sh", "-c", script])
+            .current_dir(real.join("area"))
+            .env_clear()
+            .env("PATH", HOST_PATH)
+            .env("HOME", real.join("area"))
+            .env("TMPDIR", real.join("tmp")),
+    )
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -957,15 +992,15 @@ fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
     if network {
         command.arg("--network");
     }
-    command
-        .args(["exec", "--", "/bin/sh", "-c", script])
-        .current_dir(&home)
-        .env_clear()
-        .env("PATH", path)
-        .env("HOME", &home)
-        .env("TMPDIR", dir.join("tmp").canonicalize().unwrap())
-        .output()
-        .unwrap()
+    exec_worker(
+        command
+            .args(["exec", "--", "/bin/sh", "-c", script])
+            .current_dir(&home)
+            .env_clear()
+            .env("PATH", path)
+            .env("HOME", &home)
+            .env("TMPDIR", dir.join("tmp").canonicalize().unwrap()),
+    )
 }
 
 fn declared_setup() -> tempfile::TempDir {
@@ -1285,17 +1320,17 @@ fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
     let allowed = root.join("area/allowed.sock");
     let _allowed = UnixListener::bind(&allowed).unwrap();
     let run = |socket: &Path| {
-        Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args([
-                "worker", "--area", "..", "--denied", "../state", "--hidden", "peer", "--tmpdir",
-                "../tmp", "exec", "--",
-            ])
-            .arg(&program)
-            .arg(socket)
-            .current_dir(root.join("area"))
-            .env_clear()
-            .output()
-            .unwrap()
+        exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args([
+                    "worker", "--area", "..", "--denied", "../state", "--hidden", "peer",
+                    "--tmpdir", "../tmp", "exec", "--",
+                ])
+                .arg(&program)
+                .arg(socket)
+                .current_dir(root.join("area"))
+                .env_clear(),
+        )
     };
     // Host Unix sockets stay blocked even outside state.
     let outside = run(&allowed);

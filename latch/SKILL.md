@@ -70,6 +70,34 @@ Use the code for that sign-in only. On a Linux latch, which has no
 `messages`, or if the host can't read Messages, hand the session to the
 owner: `latch browser handoff --reason 2fa`.
 
+## Credentials in exec
+
+Use repeatable `--secret-env NAME=VALUE` for credentials instead of putting
+them in the program's arguments. The value goes to the host over the worker's
+private channel and enters only the final program's environment after
+confinement. The remote judge and audit receive names and lengths, never
+values; ordinary argv is sent to the remote judge without redaction.
+
+Prefer a program's native environment support:
+
+```sh
+latch exec --host H --secret-env GITHUB_TOKEN="$GITHUB_TOKEN" --network -- gh pr list
+```
+
+For a value inside an argument, use a shell with a quoted variable, e.g.
+`sh -c 'curl -H "Authorization: Bearer $TOKEN" https://api.example.com'`.
+Latch does not expand `${NAME}` in argv. Quoting keeps a value from being
+re-parsed as shell syntax; the receiving program can still interpret it as code.
+Variables such as `GIT_SSH_COMMAND`, `NODE_OPTIONS`, `BASH_ENV`,
+`PYTHONSTARTUP` and `GIT_CONFIG_*` can run hidden instructions or load code.
+The judge sees each name and is told to weigh that behavior against the owner's
+request; these names are not an additional deny list. Use secret env for
+credentials, and do not evaluate their values as code.
+Program stdout/stderr are returned as-is and can disclose a value. The CLI
+option itself is visible on the calling machine and may enter shell history;
+shell-expanded arguments are visible in the trusted host's process list.
+`HOME`, `PATH`, `TMPDIR`, `LATCH_*`, `LD_*` and `DYLD_*` are refused.
+
 ## The gatekeeper judges your calls
 
 The host's gatekeeper checks what you ask for against what the owner
