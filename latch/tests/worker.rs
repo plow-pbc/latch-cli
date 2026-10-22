@@ -432,7 +432,8 @@ fn serve_with_denied(rules: Option<(i64, Vec<seccompiler::SeccompRule>)>) -> Out
         .arg(state.path())
         .arg(area)
         .env_clear()
-        .env("HOME", dir.path());
+        .env("HOME", dir.path())
+        .env("LATCH_TEST_LOOPBACK", "1");
     if let Some((syscall, conditions)) = rules {
         let filter: seccompiler::BpfProgram = seccompiler::SeccompFilter::new(
             [(syscall, conditions)].into_iter().collect(),

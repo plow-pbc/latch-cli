@@ -23,6 +23,23 @@ use crate::plow::Peer;
 use crate::state::StateDir;
 use crate::wire::{self, Request, Response};
 
+/// An iroh endpoint as latch makes them, client or host. In tests
+/// (`LATCH_TEST_LOOPBACK`, which the test harness sets, and this crate's own
+/// tests) it binds 127.0.0.1 only and never probes the router for port
+/// mappings, so a test touches nothing on the local network, and macOS
+/// never asks to let latch find devices there.
+pub fn endpoint() -> iroh::endpoint::Builder {
+    let builder = Endpoint::builder(presets::Minimal);
+    if !(cfg!(test) || std::env::var_os("LATCH_TEST_LOOPBACK").is_some()) {
+        return builder;
+    }
+    builder
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .expect("127.0.0.1:0 is a socket address")
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+}
+
 /// How long to try to reach a host before giving up with exit 3.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -72,7 +89,7 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
     // Our own key is our identity: the host learns who we are from the
     // connection's handshake, not from anything we send. Our only relay is
     // the host's own, so a client contacts no relay the host did not choose.
-    let endpoint = Endpoint::builder(presets::Minimal)
+    let endpoint = endpoint()
         .secret_key(key)
         .relay_mode(RelayMode::custom([relay.clone()]))
         .bind()
@@ -270,6 +287,28 @@ pub fn lost(connection: &Connection, sent: bool) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_test_endpoint_is_on_loopback_alone() {
+        let endpoint = endpoint()
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let bound = endpoint.bound_sockets();
+        assert!(!bound.is_empty());
+        assert!(
+            bound.iter().all(|socket| socket.ip().is_loopback()),
+            "{bound:?}"
+        );
+        let addr = endpoint.addr();
+        let advertised: Vec<_> = addr.ip_addrs().collect();
+        assert!(
+            advertised.iter().all(|socket| socket.ip().is_loopback()),
+            "{advertised:?}"
+        );
+        endpoint.close().await;
+    }
     use std::time::Instant;
 
     #[tokio::test]
@@ -325,7 +364,7 @@ mod tests {
     async fn closing_is_quick_and_the_host_hears_it() {
         // A host and a client on this machine, with no relay.
         let bind = |alpns: Vec<Vec<u8>>| {
-            Endpoint::builder(presets::Minimal)
+            endpoint()
                 .relay_mode(RelayMode::Disabled)
                 .alpns(alpns)
                 .bind()

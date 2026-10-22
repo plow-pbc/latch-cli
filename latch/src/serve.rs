@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iroh::endpoint::{Connection, Incoming, VarInt, presets};
+use iroh::endpoint::{Connection, Incoming, VarInt};
 use iroh::{Endpoint, RelayMode};
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
@@ -333,7 +333,7 @@ async fn run_host(
             RelayMode::custom([url])
         }
     };
-    let endpoint = Endpoint::builder(presets::Minimal)
+    let endpoint = crate::dial::endpoint()
         .secret_key(state.load_key()?)
         .relay_mode(relay_mode)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
