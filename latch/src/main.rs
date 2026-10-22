@@ -253,6 +253,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 exit: ExitCode::SUCCESS,
             })
         }
+        #[cfg(target_os = "macos")]
         Command::Messages(command) => {
             let request = messages::messages_request(&command);
             to_json(
@@ -266,6 +267,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 .await?,
             )
         }
+        #[cfg(target_os = "macos")]
         Command::Contacts(command) => {
             let request = messages::contacts_request(&command);
             to_json(
