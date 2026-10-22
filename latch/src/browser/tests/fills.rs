@@ -39,6 +39,7 @@ conformance!(
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
     a_filled_value_is_guarded_in_every_tab_and_from_screenshots,
+    no_vault_value_goes_into_an_editable_region,
 );
 
 /// `value` as an agent or the audit saw it, for the leak checks, less what
@@ -2355,6 +2356,42 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
         };
         assert_eq!(beacons(port).1, 0, "the number left as the {how}");
     }
+}
+
+async fn no_vault_value_goes_into_an_editable_region(engine: &str) {
+    const NAME: &str = "Ada-e7c1";
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let vault = Vault::new(state.clone());
+    let identity = vault
+        .with(|s| s.add(item(IDENTITY, "Home", &[], &[("first name", NAME)])))
+        .unwrap();
+    let local = format!("http://127.0.0.1:{}", site());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers).await;
+    let page = h
+        .call("open", json!({"url": format!("{local}/editable.html")}))
+        .await
+        .unwrap();
+    let note = find(&page, "textbox", "Delivery note");
+    let (refused, _) = h
+        .fill(json!({"item": identity.item, "fields": [["first name", [note]]]}))
+        .await;
+    let refused = refused.unwrap_err();
+    println!(
+        "a fill into an editable region: {} ({})",
+        refused.code, refused.message
+    );
+    assert_eq!(refused.code, "bad_target");
+    // Nothing went in: neither the page's text nor its elements show it.
+    let text = h.text().await;
+    let observed = h.call("observe", json!({})).await.unwrap();
+    assert!(!text.contains(NAME) && !observed.to_string().contains(NAME));
+    assert!(!h.shown.join("\n").contains(NAME));
+    h.call("close", json!({})).await.unwrap();
 }
 
 async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {

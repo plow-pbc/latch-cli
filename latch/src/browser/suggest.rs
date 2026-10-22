@@ -220,11 +220,12 @@ impl Control {
     }
 
     /// An element a value could go into at all: a text-like input, a
-    /// textarea, a dropdown or an editable region.
+    /// textarea or a dropdown. Never an editable region: its text is its
+    /// name and the page's text, which latch shows the agent.
     pub fn takes_value(&self) -> bool {
         match self.tag.as_str() {
             "input" => !NOT_FIELDS.contains(&self.kind.as_str()),
-            "textarea" | "select" | "editable" => true,
+            "textarea" | "select" => true,
             _ => false,
         }
     }
