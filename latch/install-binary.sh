@@ -12,12 +12,13 @@
 # appear before or after the path. --help prints usage without installing.
 #
 # A host on the state directory runs the latch being replaced: when the
-# version changes, or the latch there says the host is another version's,
-# it is stopped with `latch stop` first. One `serve -d` started is started
+# version changes, it is stopped with `latch stop` first. One `serve -d` started is started
 # again with the new latch, with what it was last given (`serve -d
 # --again`), once everything is in place. One that runs in a terminal (an
 # attached `latch serve`, or `serve --foreground`) cannot be started again
-# in that terminal: the install says to run `latch serve` there again.
+# in that terminal: the install says to run `latch serve` there again. A
+# host from yet another version, which no latch here can reach, is left
+# for its owner to stop, and the install says how.
 #
 # On macOS a release's latch is inside Plow Latch.app (the `latch` beside
 # this script leads into it). Then the whole app goes to ~/Applications,
@@ -142,12 +143,16 @@ trap on_exit EXIT
 host=""
 if [ -x "$dest" ]; then
   host=$("$dest" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
-  if [ "$("$dest" --version 2>/dev/null)" = "$("$src" --version 2>/dev/null)" ]; then
-    case "$host" in
-      *'"other_version"'*) ;;
-      *) host="" ;;
-    esac
-  fi
+  case "$host" in
+    # A host from yet another latch version: no latch here can reach it,
+    # so its owner is told how to stop it.
+    *'"other_version"'*)
+      say "$(printf '%s\n' "$host" | sed -n 's/.*"blocked":{"code":"other_version","message":"\([^"]*\)"}.*/\1/p')"
+      host=""
+      ;;
+  esac
+  # Only a host of the latch being replaced is stopped.
+  [ "$("$dest" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ] || host=""
 fi
 case "$host" in
   *'"running":true'*)

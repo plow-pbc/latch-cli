@@ -325,19 +325,14 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
         if !asked && let Some(pid) = target {
             asked = ask(dir, "host_stop", json!({"pid": pid})).await.is_ok();
         }
-        // A host of another latch never answers on this one's socket: the
-        // process its lock and serve.json both name is told to stop
-        // instead, but only while it is the very one they recorded. One
-        // that cannot be told apart from a reused pid is the owner's to stop.
+        // A host of another latch never answers on this one's socket: its
+        // service manager stops it if it has one; otherwise its owner does.
         if !asked
-            && let Some(pid) = target
-            && lifecycle::other_version(dir) == Some(pid)
+            && !removed
+            && !service.registered()
+            && let Some(pid) = lifecycle::other_version(dir)
         {
-            if !lifecycle::recorded_instance(dir, pid) {
-                return Err(lifecycle::other_version_running(pid));
-            }
-            // SAFETY: kill only sends a signal.
-            asked = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0;
+            return Err(lifecycle::other_version_running(pid));
         }
         if !asked && !removed {
             service.remove()?;

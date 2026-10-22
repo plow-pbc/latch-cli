@@ -322,19 +322,23 @@ class HostUpgrade(unittest.TestCase):
         self.assertEqual(calls, ["0.1.0 (1) stop"])
 
     def test_a_host_in_a_terminal_is_stopped_and_the_owner_told_to_serve_again(self):
-        # `serve --foreground`; an attached `latch serve`; an older latch's
-        # host, found by the new latch already installed.
-        for version, managed, attached, other_version in [
-                ("0.1.0 (1)", False, False, False), ("0.1.0 (1)", True, True, False),
-                ("0.1.0 (2)", False, False, True)]:
+        # `serve --foreground`, then an attached `latch serve`.
+        for managed, attached in [(False, False), (True, True)]:
             log = self.log()
-            old = fake_latch(version, log, managed=managed, attached=attached,
-                             other_version=other_version)
+            old = fake_latch("0.1.0 (1)", log, managed=managed, attached=attached)
             result, calls, _ = self.upgrade(old, fake_latch("0.1.0 (2)", log), log)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(calls, [f"{version} stop"], "never started again in the background")
+            self.assertEqual(calls, ["0.1.0 (1) stop"], "never started again in the background")
             self.assertIn("ran in a terminal and was stopped: run `latch serve` there again",
                           result.stdout)
+
+    def test_a_host_of_yet_another_version_is_left_to_its_owner_with_how_to_stop_it(self):
+        log = self.log()
+        old = fake_latch("0.1.0 (2)", log, managed=False, other_version=True)
+        result, calls, _ = self.upgrade(old, fake_latch("0.1.0 (2)", log), log)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [])
+        self.assertIn("install-binary.sh: a host from another latch version\n", result.stdout)
 
     def test_no_host_or_the_same_version_stops_nothing(self):
         for old_version, running in [("0.1.0 (1)", False), ("0.1.0 (2)", True)]:
