@@ -22,6 +22,7 @@ mod files;
 mod gate;
 mod google;
 mod heartbeat;
+mod help;
 mod hosts;
 mod input;
 mod keyart;
@@ -32,7 +33,9 @@ mod logo;
 mod model;
 mod paint;
 mod plow;
+mod redact;
 mod sandbox;
+mod seal;
 mod secrets;
 mod serve;
 mod shares;
@@ -95,6 +98,12 @@ fn main() -> ExitCode {
                     failure.exit.into()
                 }
             };
+        }
+        // Help is in latch itself: no state folder, no host.
+        Command::Help(args) => return help::run(args),
+        Command::Skill => {
+            print!("{}", help::skill());
+            return ExitCode::SUCCESS;
         }
         command => command,
     };
@@ -221,6 +230,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Shares(args) => to_json(shares::run(&state, args.action)?),
+        Command::Audit(args) => to_json(audit::run(&state, args.action)?),
         // Its lines, printed as they come, are its whole output.
         Command::Events(args) => {
             events::run(&state, args)?;
@@ -283,7 +293,9 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 exit: ExitCode::SUCCESS,
             })
         }
-        Command::Worker(_) | Command::BrowserWorker(_) => unreachable!("handled in main"),
+        Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
+            unreachable!("handled in main")
+        }
     }
 }
 

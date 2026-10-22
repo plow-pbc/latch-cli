@@ -139,7 +139,12 @@ stderr with its exit code either way.
 `fill` takes values from the host's vault without the agent ever seeing
 one, into the elements the agent maps or latch suggested; `observe` shows
 the items that fit, what the page asks for and latch's suggestions.
-[VAULT.md](VAULT.md) has the rules.
+[VAULT.md](VAULT.md) has the rules. A field that does not keep the value
+latch set stops the fill (`needs_owner`), with one exception: a stored
+value with a line break (an import can leave one) fills a single-line
+field without it, as a paste would, and the audit names the field under
+`dropped_line_breaks` so the owner can fix it in the vault. A value split
+across boxes must land whole.
 
 `open` answers the new session's id, once: 128 random bits, never derived
 from the profile (`--profile` defaults to `default`). Every other session
@@ -228,9 +233,15 @@ operation's and target's `p`, and what was left out to fit), the risk
 dispatch (`sent`, `refused`, `unknown`) and its screenshot's size and
 sha256. Each decision-model call records its purpose, provider, model,
 the provider's request id, latency and the kinds of data sent, never
-content. `scripts/plan-metrics.py STATE/audit.ndjson` reads these back:
-per plan its actions, model calls, the model's total time and its cost
-(an estimate: calls × Plow's stated $0.0001 a call), and over all plans
+content. `scripts/plan-metrics.py` reads these back from the records
+`latch audit show` opens:
+
+```sh
+latch --state-dir STATE audit show | jq -c '.records[]' | python3 scripts/plan-metrics.py /dev/stdin
+```
+
+It prints, per plan, its actions, model calls, the model's total time and
+its cost (an estimate: calls × Plow's stated $0.0001 a call), and over all plans
 the plan share, confirmations and how they were answered, what followed
 each stop, escapes to `eval`, turns, and stops by code.
 Never page text, field values or typed text: `type` records the text's
@@ -401,16 +412,7 @@ out, create credentials or otherwise can't be undone, judged on the exact
 element, its row text, the page title and the lines of the form or section
 around it; an Enter in a field is judged as its form's submit (the form's
 submit control, else the form), and so is `type` text with a line break,
-which the engine types as Enter. For a click or Enter an instruction step
-chose, the pass that chose it also answers the risk question of "the
-click this pass would make" (or the Enter): below 0.3, for a click whose
-target the pass was at least 0.9 sure of, that answer stands for the
-decision and no call of its own is made, while the review before dispatch
-still finds the whole context the pass read: the element (role, name, row)
-or what the Enter submits, the lines around it and the page title;
-otherwise (a button renamed, or the lines beside it changed, while the
-model answered)
-the element gets its own call, which alone can stop for a confirmation. The action is then made only if the
+which the engine types as Enter. The action is then made only if the
 worker, at dispatch, still finds that element and those lines unchanged;
 a page that changed while the model answered stops with `stale_snapshot`,
 nothing sent. At p ≥ 0.5 the step stops with

@@ -246,9 +246,13 @@ impl Board {
         if self.rows.is_empty() {
             lines.push(paint::fg(" waiting for calls…", DIM));
         }
-        while lines.len() < height.saturating_sub(1) {
+        while lines.len() < height.saturating_sub(2) {
             lines.push(String::new());
         }
+        lines.push(paint::fg(
+            " Commands hide credential-looking values, best effort: some can slip through",
+            DIM,
+        ));
         lines.push(paint::fg(
             " Ctrl-C stops the host · logs: serve.log in the state directory",
             DIM,
@@ -270,14 +274,9 @@ pub fn describe(op: &str, args: &Value, outcome: &str, took: Duration) -> (Strin
     let took = human_duration(took);
     match op {
         "exec" => {
-            let argv = args["argv"]
-                .as_array()
-                .or_else(|| args["argv"]["kept"].as_array());
-            let words: Vec<&str> = argv
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
+            let shown = crate::redact::shown("exec", args);
+            let words: Vec<String> =
+                serde_json::from_value(shown["argv"].clone()).unwrap_or_default();
             let ended = if args["timed_out"] == true {
                 "timed out".to_string()
             } else if let Some(code) = args["exit_code"].as_i64() {
@@ -406,6 +405,18 @@ mod tests {
         finished
             .recv_timeout(GIVE_BACK_WITHIN + Duration::from_secs(4))
             .expect("stop returned while the terminal took nothing");
+    }
+
+    #[test]
+    fn an_exec_whose_argv_is_not_a_list_of_words_shows_no_command() {
+        let (target, result) = describe(
+            "exec",
+            &json!({"argv": 1, "exit_code": 0}),
+            "ok",
+            Duration::ZERO,
+        );
+        assert_eq!(target, "");
+        assert!(result.starts_with("exit 0"), "{result}");
     }
 
     #[test]
