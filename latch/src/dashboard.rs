@@ -211,7 +211,7 @@ impl Board {
         ));
         lines.push(paint::fg(&"─".repeat(width), FAINT));
         if let Some(note) = self.note {
-            lines.push(paint::fg(&format!(" {note}"), DIM));
+            lines.push(paint::fg(&format!(" {}", term::fit(note, width - 1)), DIM));
         }
         for notice in &self.notices {
             lines.push(paint::bold(
@@ -477,6 +477,13 @@ mod tests {
                 && note.contains("latch shares set ~/code"),
             "{screen}"
         );
+        // On a narrower terminal it is cut to the width rather than wrapped,
+        // so the screen still fits.
+        let screen = board.screen(80, 10);
+        assert_eq!(screen.lines().count(), 10, "{screen}");
+        let note = screen.lines().nth(2).unwrap();
+        assert!(note.starts_with(" Sharing no folders"), "{note}");
+        assert!(note.chars().count() <= 80, "{note}");
     }
 
     #[test]
