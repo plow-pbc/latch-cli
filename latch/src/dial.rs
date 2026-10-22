@@ -7,6 +7,7 @@
 //! - the connection dropped after the request was sent: exit 5 (the
 //!   operation may or may not have happened; check before resending).
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use iroh::endpoint::{
@@ -15,6 +16,7 @@ use iroh::endpoint::{
 };
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl};
 use serde_json::Value;
+use tokio::task::JoinHandle;
 
 use crate::failure::{Exit, Failure};
 use crate::plow::Peer;
@@ -119,12 +121,26 @@ fn speaks_another_version(err: &ConnectError) -> bool {
 /// lost, when the connection times out.
 const CLOSE_WITHIN: Duration = Duration::from_millis(100);
 
+/// Closes still going out, which the command's output does not wait for.
+static CLOSING: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+
 impl Link {
-    /// Closes the connection, giving the close up to `CLOSE_WITHIN` to
-    /// reach the host before this process exits.
-    pub async fn close(self) {
+    /// Closes the connection. The close goes out while the command prints
+    /// its answer; `closed` gives it up to `CLOSE_WITHIN` before exit.
+    pub fn close(self) {
         self.connection.close(VarInt::from_u32(0), b"done");
-        let _ = tokio::time::timeout(CLOSE_WITHIN, self.endpoint.close()).await;
+        let closing = tokio::spawn(async move {
+            let _ = tokio::time::timeout(CLOSE_WITHIN, self.endpoint.close()).await;
+        });
+        CLOSING.lock().expect("closing lock").push(closing);
+    }
+}
+
+/// Waits for every close `Link::close` started, before this process exits.
+pub async fn closed() {
+    let closing = std::mem::take(&mut *CLOSING.lock().expect("closing lock"));
+    for close in closing {
+        let _ = close.await;
     }
 }
 
@@ -141,7 +157,7 @@ pub async fn call(
 ) -> Result<Value, Failure> {
     let link = connect(state, host).await?;
     let result = one_exchange(&link.connection, request, answer_within).await;
-    link.close().await;
+    link.close();
     result
 }
 
@@ -273,7 +289,8 @@ mod tests {
         };
 
         let started = Instant::now();
-        link.close().await;
+        link.close();
+        closed().await;
         let took = started.elapsed();
 
         // The host learns the client closed with "done", rather than timing

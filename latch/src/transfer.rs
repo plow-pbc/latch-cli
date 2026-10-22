@@ -37,7 +37,7 @@ pub async fn get(
     };
     let link = dial::connect(state, host).await?;
     let result = receive(&link.connection, chat, remote_path, &local).await;
-    link.close().await;
+    link.close();
     result
 }
 
@@ -90,7 +90,7 @@ pub async fn put(
     let name = local.file_name().and_then(|name| name.to_str());
     let link = dial::connect(state, host).await?;
     let result = send(&link.connection, chat, &mut file, size, remote_path, name).await;
-    link.close().await;
+    link.close();
     let mut result = result?;
     result["local_path"] = json!(local);
     Ok(result)

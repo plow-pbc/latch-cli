@@ -399,6 +399,7 @@ impl Plow {
                 "Plow rejected the request's fields",
             ),
             429 => (Exit::Failed, "rate_limited", "Plow asked us to slow down"),
+            400..=499 => (Exit::Failed, "plow_rejected", "Plow refused the request"),
             _ => (Exit::Failed, "plow_error", "Plow could not answer"),
         };
         let message = format!("Plow answered HTTP {}: {meaning}", status.as_u16());
@@ -410,6 +411,15 @@ impl Plow {
             .and_then(retry_after);
         Err(failure)
     }
+}
+
+/// Whether Plow refused the request itself: a 4xx answer other than 429.
+/// Sending the same request again gets the same answer.
+pub fn refused(failure: &Failure) -> bool {
+    matches!(
+        failure.code.as_str(),
+        "plow_denied" | "conflict" | "not_found" | "expired" | "invalid_request" | "plow_rejected"
+    )
 }
 
 /// The `Retry-After` header as a number of seconds, if Plow sent one.
