@@ -6,33 +6,37 @@ on a machine its owner trusts, over Plow's directory.
 ## Install
 
 Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
-(`gh auth login`). Releases are tagged `v<version>-<build>`, e.g. `v0.1.0-1327`, where the build
-number counts release runs; `latch --version` shows it as `0.1.0 (1327)`. This installs the newest published one; set
-`release` to a tag to pick another:
+(`gh auth login`). This installs the newest published release:
 
 ```sh
-release=$(gh release view -R plow-pbc/latch-cli --json tagName --jq .tagName)
-d=$(mktemp -d) && gh release download "$release" -R plow-pbc/latch-cli -p install-release.sh -D "$d" && sh "$d/install-release.sh" "$release"
+gh release download --repo plow-pbc/latch-cli --pattern install.sh && sh install.sh
 export PATH="$HOME/.local/bin:$PATH"
 latch --version
 ```
+
+Releases are tagged `v<version>-<build>`, e.g. `v0.1.0-1327`, where the build
+number counts release runs; `latch --version` shows it as `0.1.0 (1327)`.
+`sh install.sh TAG` installs that release instead.
 
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
 On macOS that is a link into `~/Applications/Plow Latch.app`, the signed app
 latch runs in (no window or Dock icon), which Full Disk Access is granted to.
-Pass `--bin-dir DIR` after the release tag to choose another binary directory.
-The archive's executable `install.sh` installs the adjacent `latch` with no
+Pass `--bin-dir DIR` (after the tag, if any) to choose another binary directory.
+The archive's executable `install-binary.sh` installs the adjacent `latch` with no
 arguments, accepts options before or after an explicit binary path, and shows
 usage with `--help`.
-It downloads pinned gog into `~/.latch/plugins`. Setup requires curl, tar and
-SHA-256 tools.
+It downloads pinned gog into `~/.latch/plugins`, and Chrome for Testing for
+`latch browser` on macOS and Linux arm64: `--browser camoufox` installs Camoufox
+instead (name both with `--browser chrome --browser camoufox`), `--no-browser`
+none, and `latch browser setup --engine chrome|camoufox` installs one later.
+Setup requires curl, tar and SHA-256 tools.
 Linux hosting needs bubblewrap and usable user namespaces; setup explains missing
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
 
-Update by rerunning the commands above; `install-release.sh latest` also
-resolves the newest published release itself. State and versioned plugins stay in place;
+Update by rerunning the commands above, adding `--clobber` to `gh release download` so
+the download replaces the one already there. State and versioned plugins stay in place;
 restart an existing `latch serve` intentionally when ready to use the new binary.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
 No Homebrew tap is included.

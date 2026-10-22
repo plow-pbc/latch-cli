@@ -76,7 +76,9 @@ Agents:
   what fixes it: often a retry later, but a host out of Plow credits fails
   until the host's account owner adds them. A browser step's
   model_unavailable (exit 1) is the same decision model, for a click's risk,
-  a goal or a sentence check; nothing was sent, and nothing gets around it.
+  a goal or a sentence check, and nothing gets around it. Before retrying,
+  read the answer's `steps` and `trail`, the failed step's included: earlier
+  steps, and a goal's earlier actions, may already have run.
 
   `latch skill` prints the guide for agents; `latch help --json` describes
   every command; `latch help COMMAND --examples` shows how to call one.
@@ -432,6 +434,13 @@ pub enum BrowserCommand {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Owner only, on the host itself: download and verify a browser
+    /// engine into this machine's state directory (after `install.sh
+    /// --no-browser`, say). An agent's browser call never downloads one
+    Setup {
+        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
+        engine: EngineArg,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -447,7 +456,10 @@ pub enum ProfileCommand {
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum EngineArg {
+    /// Chrome for Testing
+    #[value(name = "chrome")]
     Cft,
+    /// Camoufox (macOS)
     Camoufox,
 }
 

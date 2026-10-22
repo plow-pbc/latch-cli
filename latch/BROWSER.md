@@ -3,11 +3,22 @@
 A host runs Chrome for Testing (CfT), the release pinned in
 `src/browser/cft.json`. latch downloads it, it does not ship it: on macOS
 and on Linux arm64 (the Pi) `install.sh` fetches the zip for the machine's
-architecture, checks its sha256 against the pin, unpacks it (`ditto` on
-macOS, `unzip` on Linux) into `<state-dir>/plugins/cft/<version>/` (beside
-older versions, as gog's are) and copies the pin in as `manifest.json`,
-which marks the install complete. On Linux it also installs Xvfb, for
-hosts with no screen.
+architecture by default, checks its sha256 against the pin, unpacks it
+(`ditto` on macOS, `unzip` on Linux) into `<state-dir>/plugins/cft/<version>/`
+(beside older versions, as gog's are) and copies the pin in as
+`manifest.json`, which marks the install complete. On Linux it also
+installs Xvfb, for hosts with no screen. `install.sh --no-browser` installs
+no engine; `--browser camoufox` installs Camoufox instead (name both
+engines with `--browser chrome --browser camoufox`).
+
+The download is `browser-engines.sh`'s, beside `install-binary.sh`, which
+`install.sh` runs. `latch browser setup [--engine chrome|camoufox]` runs a
+copy of it that latch carries, with the same pins, to install an engine
+later; it is the host's owner's command, run on the host, and refuses a
+latch logged in as an agent. On Linux, installing Chrome either way first
+installs unzip and Xvfb if they are missing, asking for sudo once. An agent's browser call never downloads anything: with no engine it
+fails with `engine_not_installed`, whose `details.setup` is the owner's
+command (`latch browser setup --engine chrome`).
 
 A build may add launch arguments of its own (`args`) after the recipe's.
 The macOS builds add `--disable-crashpad-for-testing`, which keeps Chrome's
@@ -24,7 +35,8 @@ run `python3 scripts/cft-pin.py VERSION` on a Mac and put its output in
 
 ## Camoufox, the second engine
 
-`install.sh --with-camoufox` (macOS) also installs Camoufox, pinned in
+`install.sh --browser camoufox` (macOS), or `latch browser setup --engine
+camoufox` later, installs Camoufox, pinned in
 `src/browser/camoufox.json` with the runtime latch drives it through, into
 `<state-dir>/plugins/camoufox/<version>/`, about 1 GB:
 
@@ -656,7 +668,7 @@ unreachable; the risk decision and a sentence check on jev itself are built
 only with `--features live-model`, which `just test-model KEYFILE` runs.
 
 On Linux they are built only with `--features linux-browser-tests` (the
-gate's containers have no engine), against the CfT install.sh put in
+gate's containers have no engine), against the CfT install-binary.sh put in
 `LATCH_CFT_STATE`. There the sandbox checks look at the user namespaces and
 seccomp mode of the engine's processes, exec's view of the network at
 `/proc/net`, and the front-app checks have no front app to watch.

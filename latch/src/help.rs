@@ -657,6 +657,25 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "browser.setup",
+        output: "The engine installed: its name, version and folder.",
+        effect: Repeatable(
+            "downloads and verifies a browser engine into this machine's state folder",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Chrome for Testing, after install.sh --no-browser",
+                &["browser", "setup"],
+            ),
+            ex(
+                "Camoufox (macOS)",
+                &["browser", "setup", "--engine", "camoufox"],
+            ),
+        ],
+    },
+    Entry {
         id: "vault.list",
         output: "Every item's metadata: id, kind, title, sites, revision; never a value.",
         effect: ReadOnly,
