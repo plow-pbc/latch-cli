@@ -192,7 +192,7 @@ export LATCH_HOST=my-mac
 latch browser open https://example.com > open.json
 export LATCH_BROWSER_SESSION=$(jq -r .session open.json)
 latch browser text                          # the page's text
-latch browser screenshot --output page.png  # a PNG on this machine
+latch browser screenshot page.png  # a PNG on this machine
 latch browser observe --all                 # elements with refs (e1, e2, …); without --all, on-screen ones only
 latch browser act click e1                  # needs the decision model (see 6)
 latch browser close
@@ -290,11 +290,14 @@ retry once you agree. `owner_said_no` and `exec_denied` mean no.
 
 ## 6. Troubleshooting
 
+**`host_offline` (exit 3): "host … is offline".** Plow lists the host
+offline: it isn't serving. Start `latch serve` there. Nothing was sent.
+
 **`host_unreachable` (exit 3): "could not connect to host …; nothing was
 sent".**
-- The host isn't serving: `latch status` shows it `"online":false`. Start
-  `latch serve` there. A call to an offline host takes about 18 seconds to
-  fail.
+- Plow still lists the host online, but it doesn't answer: it may have
+  stopped without saying so. Plow lists it offline once its heartbeat runs
+  out; until then a call takes about 18 seconds to fail.
 - Several calls at once from the same machine (or the same agent) can fail
   this way even though the host is up: in a test, 3 of 8 parallel `exec`s
   failed. Nothing was sent, so it's safe to retry; run calls from one
