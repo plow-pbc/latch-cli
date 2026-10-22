@@ -46,20 +46,23 @@ func otherBodyFormsDecode() throws {
 
 @Test
 func moreArchivedShapesDecode() throws {
-    let attributes: [NSAttributedString.Key: Any] = [
-        NSAttributedString.Key("__kIMMessagePartAttributeName"): NSNumber(value: 0),
-        NSAttributedString.Key("__kIMDataDetectedAttributeName"): Data(repeating: 7, count: 300),
-        NSAttributedString.Key("NSLink"): URL(string: "https://example.com/a")!,
-        NSAttributedString.Key("double"): NSNumber(value: 2.5),
-        NSAttributedString.Key("bool"): NSNumber(value: true),
-        NSAttributedString.Key("date"): Date(timeIntervalSince1970: 1_700_000_000),
-        NSAttributedString.Key("list"): ["a", NSNumber(value: 3), ["nested": "x"]] as NSArray,
-        NSAttributedString.Key("range"): NSValue(range: NSRange(location: 2, length: 5)),
+    // In this order, the last NSNumber's type is a C string read before,
+    // named by its place among the objects; the C strings before it whose
+    // text was itself read before count among those objects too.
+    let attributes: KeyValuePairs<String, Any> = [
+        "__kIMDataDetectedAttributeName": Data(repeating: 7, count: 300),
+        "NSLink": URL(string: "https://example.com/a")!,
+        "bool": NSNumber(value: true),
+        "date": Date(timeIntervalSince1970: 1_700_000_000),
+        "double": NSNumber(value: 2.5),
+        "list": ["a", NSNumber(value: 3), ["nested": "x"]] as NSArray,
+        "range": NSValue(range: NSRange(location: 2, length: 5)),
+        "__kIMMessagePartAttributeName": NSNumber(value: 0),
     ]
     let text = "Your code is 482913 🎉"
     let body = NSMutableAttributedString(string: text)
     for (offset, (key, value)) in attributes.enumerated() {
-        body.addAttribute(key, value: value, range: NSRange(location: offset, length: 2))
+        body.addAttribute(NSAttributedString.Key(key), value: value, range: NSRange(location: offset, length: 2))
     }
     let bytes = [UInt8](NSArchiver.archivedData(withRootObject: body))
     #expect(try decodeAttributedBody(bytes).get() == text)
