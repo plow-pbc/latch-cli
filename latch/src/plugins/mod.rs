@@ -230,6 +230,24 @@ impl Plugins {
         }
     }
 
+    /// Each connector and its state in a word, as the dashboard shows it:
+    /// as its last setup left it.
+    pub fn health(&self) -> Vec<(String, String)> {
+        let inner = self.inner.lock().expect("plugins lock");
+        Connector::ALL
+            .iter()
+            .map(|&connector| {
+                let state = match inner.settings.get(&connector) {
+                    Some(Setting::Enabled) if connector == Connector::Google => "connected",
+                    Some(Setting::Enabled) => "ready",
+                    Some(Setting::NeedsSetup { .. }) => "needs setup",
+                    None => "off",
+                };
+                (connector.name().to_string(), state.to_string())
+            })
+            .collect()
+    }
+
     /// Every connector with its state, and for one not enabled, why and
     /// the owner's command that turns it on.
     fn list(&self) -> Value {

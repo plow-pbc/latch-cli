@@ -32,7 +32,7 @@ use tracing::field::{Empty, display};
 
 use crate::audit::{self, AuditLog, Record};
 use crate::credential;
-use crate::dashboard::{self, Dashboard, Row};
+use crate::dashboard::{self, Dashboard};
 use crate::exec;
 use crate::failure::Failure;
 use crate::files;
@@ -47,6 +47,7 @@ use crate::state_folders::StateFolders;
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
+pub use control::DETACH;
 use control::Lifetime;
 
 /// What every connection handler shares. `Arc` lets many tasks hold the
@@ -391,6 +392,9 @@ async fn run_host(
     });
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(&state.path, Phase::Serving, None)?;
+    host.dashboard.socket(true);
+    host.dashboard.connectors(host.plugins.health());
+    host.dashboard.serving();
     control::await_holder(&host);
     let mut heartbeat = tokio::spawn(heartbeat::run(
         host.plow.clone(),
@@ -805,7 +809,7 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
             // Already refusing, so a failed audit write changes nothing here.
             let record = audit::record(caller, None, "connect", "deny", &denial.code);
             let _ = host.append(record).await;
-            host.show_refusal(caller, "connect", &denial.code);
+            host.show_refusal(caller, "connect", &denial);
             Some(denial.message)
         }
     };
@@ -915,7 +919,7 @@ async fn serve_request(
                 .append(audit::record(caller, None, op, "deny", &denial.code))
                 .await;
             log(&format!("{op}: {caller}: denied: {}", denial.message));
-            host.show_refusal(caller, op, &denial.code);
+            host.show_refusal(caller, op, &denial);
             Response::Error {
                 exit: crate::failure::Exit::Denied,
                 details: Value::Null,
@@ -924,6 +928,13 @@ async fn serve_request(
             }
         }
         Ok(identity) => {
+            // On the board, running, from now until it is audited.
+            let asked = request.args.clone();
+            let on_board = host.dashboard.begin(
+                host.board_caller(&identity, local, None),
+                dashboard::session(op, &asked),
+                dashboard::begun(op, &asked),
+            );
             // Any caller's exec, file or Google operation runs only if the
             // gatekeeper allows it.
             let gate = if local {
@@ -1128,8 +1139,7 @@ async fn serve_request(
                 done.outcome,
                 crate::redact::shown(op, &done.audit_args)
             ));
-            let (target, result) =
-                dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed());
+            let judged = judgment.map(|judgment| judgment.gate);
             let mut record = audit::record(
                 caller,
                 identity.agent_uid.clone(),
@@ -1137,22 +1147,33 @@ async fn serve_request(
                 decision,
                 &done.outcome,
             );
-            record.args = done.audit_args;
-            record.gate = judgment
-                .map(|judgment| judgment.gate)
+            record.args = done.audit_args.clone();
+            record.gate = judged
+                .clone()
                 .or_else(|| local.then(|| serde_json::json!({"caller":"owner_on_host"})));
-            let response = match host.append(record).await {
+            let appended = host.append(record).await;
+            let finished = dashboard::finished(
+                op,
+                &asked,
+                &done.audit_args,
+                &done.response,
+                judged.as_ref(),
+                appended.as_deref().ok(),
+                started.elapsed(),
+            );
+            let response = match appended {
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed("audit_failed", message),
             };
-            host.dashboard.call(Row {
-                at: jiff::Timestamp::now(),
-                caller: host.shown_name(&identity).await,
-                op: op.to_string(),
-                target,
-                result,
-                refused: decision == "deny",
-            });
+            let name = host.shown_name(&identity).await;
+            host.dashboard.end(
+                on_board,
+                host.board_caller(&identity, local, Some(name)),
+                finished,
+            );
+            if op == "plugins" {
+                host.dashboard.connectors(host.plugins.health());
+            }
             drop(running);
             drop(names);
             response
@@ -1237,23 +1258,24 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
             "vault_link: phone {caller}: {decision}: {} {}",
             done.outcome, done.audit_args
         ));
-        let (target, result) = dashboard::describe(
+        let mut record = audit::record(caller, None, "vault_link", decision, &done.outcome);
+        record.args = done.audit_args.clone();
+        let appended = host.append(record).await;
+        let finished = dashboard::finished(
             "vault_link",
+            &Value::Null,
             &done.audit_args,
-            &done.outcome,
+            &done.response,
+            None,
+            appended.as_deref().ok(),
             started.elapsed(),
         );
-        host.dashboard.call(Row {
-            at: jiff::Timestamp::now(),
-            caller: "phone link".to_string(),
-            op: "vault_link".to_string(),
-            target,
-            result,
-            refused: decision == "deny",
-        });
-        let mut record = audit::record(caller, None, "vault_link", decision, &done.outcome);
-        record.args = done.audit_args;
-        let response = match host.append(record).await {
+        let phone = dashboard::Caller {
+            label: "phone link".to_string(),
+            detail: format!("the phone page of a vault link, key {caller}"),
+        };
+        host.dashboard.call(phone, finished);
+        let response = match appended {
             Ok(audit_id) => with_audit_id(done.response, audit_id),
             Err(message) => failed("audit_failed", message),
         };
@@ -1394,16 +1416,41 @@ impl Host {
         identity.name.clone()
     }
 
-    /// A refused caller as a plain dashboard row.
-    fn show_refusal(&self, caller: &str, op: &str, code: &str) {
-        self.dashboard.call(Row {
-            at: jiff::Timestamp::now(),
-            caller: format!("{}…", &caller[..8.min(caller.len())]),
-            op: op.to_string(),
-            target: String::new(),
-            result: format!("refused: {code}"),
-            refused: true,
-        });
+    /// A caller refused at the door, on the board by its key.
+    fn show_refusal(&self, caller: &str, op: &str, denial: &Denial) {
+        let shown = dashboard::Caller {
+            label: format!("{}…", &caller[..8.min(caller.len())]),
+            detail: format!("key {caller}, not let in"),
+        };
+        self.dashboard
+            .call(shown, dashboard::refused(op, &denial.code, &denial.message));
+    }
+
+    /// Who called, as the board shows them: the owner here or at one of
+    /// their machines, or the agent by its `name` in Plow.
+    fn board_caller(
+        &self,
+        identity: &Identity,
+        local: bool,
+        name: Option<String>,
+    ) -> dashboard::Caller {
+        if local {
+            return dashboard::Caller {
+                label: "the owner (local)".to_string(),
+                detail: format!("{}, on this host's own socket", identity.name),
+            };
+        }
+        if identity.kind == "device" {
+            return dashboard::Caller {
+                label: "the owner (device)".to_string(),
+                detail: format!("{}, key {}", identity.name, identity.key),
+            };
+        }
+        let uid = identity.agent_uid.as_deref().unwrap_or("unknown");
+        dashboard::Caller {
+            label: name.unwrap_or_else(|| identity.name.clone()),
+            detail: format!("agent {uid}, peer {}, key {}", identity.name, identity.key),
+        }
     }
 
     /// Appends to the audit log and returns the record's hash, once the

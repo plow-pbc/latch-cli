@@ -76,11 +76,18 @@ No Homebrew tap is included.
 - `latch serve ~/work` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing
-  the terminal, stops the host. `latch serve -d` starts it detached and
-  prints it as JSON once it answers; `latch stop` stops it, and nothing
-  starts it again until the next `latch serve`. `latch dashboard` views a
-  running host (Ctrl-C closes only the view), `latch logs [-f]` shows its
-  log (`serve.log`) and `latch audit show [-f]` its audit.
+  the terminal, stops the host; `q` leaves it running. `latch serve -d`
+  starts it detached and prints it as JSON once it answers; `latch stop`
+  stops it, and nothing starts it again until the next `latch serve`.
+  `latch dashboard` views a running host (`q` or Ctrl-C closes only the
+  view), `latch logs [-f]` shows its log (`serve.log`) and `latch audit
+  show [-f]` its audit.
+- The dashboard lists what callers asked for and how it went: Done,
+  Running, Refused (the gatekeeper or your settings), Stopped (a browser
+  safety check) or Failed. A browser session's calls, and a plan's steps,
+  fold out under it (Left/Right); Enter opens a call's details, with the
+  gatekeeper's recorded judgment on its Decision tab (Tab switches). `/`
+  filters, `r` shows only problems, Space pauses and End resumes.
   One host runs per state folder. `latch serve --foreground` runs the host
   in the terminal's own process, logging to stderr, for CI, tests and
   containers.

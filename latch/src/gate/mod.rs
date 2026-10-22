@@ -207,7 +207,8 @@ impl Gatekeeper {
     /// Whether the owner asked for `action` by `caller`.
     pub async fn judge(&self, caller: Caller<'_>, action: &RawValue) -> Judgment {
         let started = Instant::now();
-        let mut gate = json!({"caller": caller.kind()});
+        // The threshold this judgment was held to, so a record shows it.
+        let mut gate = json!({"caller": caller.kind(), "threshold": ALLOW_P});
         let verdict = self.decide(caller, action, &mut gate).await;
         gate["verdict"] = json!(match &verdict {
             Ok(()) => "allow",

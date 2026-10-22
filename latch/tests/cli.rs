@@ -4401,7 +4401,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
 
     // Ctrl-C at the serve's terminal stops the host.
     let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve", folder], &env);
-    shows(&shown, "Ctrl-C stops the host");
+    shows(&shown, "Ctrl-C stop host");
     assert_eq!(local_serve(&host)["state"], "serving");
     let hello = local_operation(&host, "host_hello", json!({}));
     assert_eq!(hello["ok"]["attached"], true, "{hello}");
@@ -4415,7 +4415,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
 
     // A dashboard's Ctrl-C closes only the view.
     let (mut view, mut view_terminal, view_shown) = at_its_own_terminal(&host, &["dashboard"], &[]);
-    shows(&view_shown, "the host keeps running");
+    shows(&view_shown, "Ctrl-C close");
     view_terminal.write_all(b"\x03").unwrap();
     assert_eq!(exits_within(&mut view, 10).code(), Some(0));
     thread::sleep(std::time::Duration::from_secs(1));
@@ -4429,7 +4429,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
 
     // The terminal going away stops it too.
     let (mut serve, terminal, shown) = at_its_own_terminal(&host, &["serve", folder], &env);
-    shows(&shown, "Ctrl-C stops the host");
+    shows(&shown, "Ctrl-C stop host");
     drop(terminal);
     drop(shown);
     exits_within(&mut serve, 45);
@@ -4442,7 +4442,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
     // Even a serve that is killed outright takes its host with it: the
     // host's lifetime is the connection, which the kernel closes.
     let (mut serve, _terminal, shown) = at_its_own_terminal(&host, &["serve", folder], &env);
-    shows(&shown, "Ctrl-C stops the host");
+    shows(&shown, "Ctrl-C stop host");
     serve.kill().unwrap();
     serve.wait().unwrap();
     assert!(eventually(45, || local_serve(&host)["running"] == false));
@@ -4479,7 +4479,7 @@ fn an_attached_serve_that_ends_late_leaves_a_host_that_took_over_alone() {
 
     let (mut serve, mut terminal, shown) =
         at_its_own_terminal(&host, &["serve", share.to_str().unwrap()], &env);
-    shows(&shown, "Ctrl-C stops the host");
+    shows(&shown, "Ctrl-C stop host");
     // The attached serve's cleanup waits for the start/stop lock, held
     // here while its host stops and another takes the folder over.
     let launching = fs::File::open(host.join("launch.lock")).unwrap();
@@ -5026,4 +5026,44 @@ fn a_linux_latch_has_no_messages_or_contacts() {
             .any(|id| id.starts_with("messages") || id.starts_with("contacts")),
         "{ids:?}"
     );
+}
+
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn q_in_an_attached_serve_leaves_its_host_running_and_shows_the_call() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _managed = Managed(host.clone());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let env = [("LATCH_TEST_RELAY_URL", Path::new(&relay))];
+
+    let (mut serve, mut terminal, shown) =
+        at_its_own_terminal(&host, &["serve", share.to_str().unwrap()], &env);
+    shows(&shown, "Ctrl-C stop host");
+    // A call shows as what was asked, and how it went.
+    fs::write(share.join("note.txt"), "hi").unwrap();
+    let read = local_operation(
+        &host,
+        "exec",
+        json!({"argv": ["cat", "note.txt"], "timeout": 10}),
+    );
+    assert_eq!(read["ok"]["stdout"], "hi", "{read}");
+    shows(&shown, "Run: cat note.txt");
+    shows(&shown, "Done - exit 0");
+
+    terminal.write_all(b"q").unwrap();
+    assert!(exits_within(&mut serve, 20).success());
+    thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(
+        local_serve(&host)["state"],
+        "serving",
+        "q left the host running"
+    );
+    let hello = local_operation(&host, "host_hello", json!({}));
+    assert_eq!(hello["ok"]["attached"], false, "{hello}");
+    let stopped = latch(&host, &["stop"], &[]);
+    assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
 }

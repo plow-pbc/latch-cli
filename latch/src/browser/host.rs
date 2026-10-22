@@ -1008,7 +1008,7 @@ fn shared_site(entry: &Entry, result: &mut Value, audit: &mut Map<String, Value>
 }
 
 /// A short hash of a session id: what the audit records.
-fn hash_of(id: &str) -> String {
+pub(crate) fn hash_of(id: &str) -> String {
     letters(&Sha256::digest(id.as_bytes())[..6])
 }
 
