@@ -7,7 +7,7 @@
 //! credential; and, only with a person at the terminal, a login by text.
 
 use std::io::Write;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -16,12 +16,17 @@ use crate::cli::{self, BUILD_API_URL, LoginArgs};
 use crate::credential;
 use crate::failure::Failure;
 use crate::heartbeat;
-use crate::plow::{Peer, Plow, Registration};
+use crate::plow::{self, Peer, Plow, Registration};
 use crate::state::{Config, StateDir};
 use crate::term;
 
-/// How often a login by text asks Plow whether the code has been texted.
-const POLL: Duration = Duration::from_secs(3);
+/// How often a login by text asks Plow whether the code has been texted:
+/// every second for the first two minutes, then every five.
+const POLL: Duration = Duration::from_secs(1);
+const POLL_FAST_FOR: Duration = Duration::from_secs(2 * 60);
+const POLL_SLOW: Duration = Duration::from_secs(5);
+/// How long a login by text waits for the text before it gives up.
+const GIVE_UP_AFTER: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Serialize)]
 pub struct LoginOutput {
@@ -205,10 +210,13 @@ async fn by_text(
         }
         eprintln!("{}", term::link(&link, &link));
         eprintln!("Text {code} to {}", for_people(&activation.send_to));
+        eprintln!("Waiting for your text…");
     }
 
+    let started = Instant::now();
     let mut failures = 0;
     loop {
+        let poll = poll_every(started.elapsed());
         let wait = match plow.redeem(&activation.activation_secret).await {
             Ok(answer) if answer.status == "verified" => {
                 // Only the first `verified` answer carries the token.
@@ -226,7 +234,7 @@ async fn by_text(
             }
             Ok(_) => {
                 failures = 0;
-                POLL
+                poll
             }
             Err(failure) if failure.code == "expired" => {
                 let message = "the code expired before it was texted; run `latch login` again";
@@ -236,13 +244,39 @@ async fn by_text(
                 let message = "Plow no longer knows this login; run `latch login` again";
                 return Err(Failure::failed("login_not_found", message.to_string()));
             }
-            // Plow unreachable or failing: wait longer each time.
+            // Asking again would get the same refusal.
+            Err(failure) if plow::refused(&failure) => return Err(failure),
+            // Plow unreachable, failing or asking us to slow down: wait
+            // longer each time.
             Err(failure) => {
                 failures += 1;
-                heartbeat::backoff(failures, failure.retry_after).max(POLL)
+                heartbeat::backoff(failures, failure.retry_after).max(poll)
             }
         };
+        let Some(wait) = before_giving_up(started.elapsed(), wait) else {
+            let message = format!(
+                "no text arrived within {} minutes; run `latch login` again",
+                GIVE_UP_AFTER.as_secs() / 60
+            );
+            return Err(Failure::failed("code_expired", message));
+        };
         tokio::time::sleep(wait).await;
+    }
+}
+
+/// `wait`, cut short so the last ask comes when the login gives up; none
+/// once it has, `waited` into the login.
+fn before_giving_up(waited: Duration, wait: Duration) -> Option<Duration> {
+    let left = GIVE_UP_AFTER.saturating_sub(waited);
+    (!left.is_zero()).then(|| wait.min(left))
+}
+
+/// How long to wait between asks, `waited` into the login.
+fn poll_every(waited: Duration) -> Duration {
+    if waited < POLL_FAST_FOR {
+        POLL
+    } else {
+        POLL_SLOW
     }
 }
 
@@ -391,6 +425,25 @@ mod tests {
         assert_eq!(for_people("+14155550100"), "+1 415-555-0100");
         assert_eq!(for_people("+442071838750"), "+442071838750");
         assert_eq!(for_people("+1415555010"), "+1415555010");
+    }
+
+    #[test]
+    fn a_login_asks_every_second_for_two_minutes_then_every_five() {
+        assert_eq!(poll_every(Duration::ZERO), Duration::from_secs(1));
+        assert_eq!(poll_every(Duration::from_secs(119)), Duration::from_secs(1));
+        assert_eq!(poll_every(Duration::from_secs(120)), Duration::from_secs(5));
+        assert_eq!(poll_every(Duration::from_secs(599)), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_login_gives_up_after_ten_minutes() {
+        let second = Duration::from_secs(1);
+        assert_eq!(before_giving_up(Duration::ZERO, second), Some(second));
+        assert_eq!(
+            before_giving_up(Duration::from_millis(599_500), 5 * second),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(before_giving_up(Duration::from_secs(600), second), None);
     }
 
     #[test]
