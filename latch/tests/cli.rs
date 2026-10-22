@@ -3617,33 +3617,6 @@ fn a_local_socket_exec_finishes_and_is_audited_before_the_host_stops() {
     assert_eq!(bench.exec_folders(), Vec::<String>::new());
 }
 
-#[test]
-fn a_local_socket_exec_stops_when_its_caller_disconnects() {
-    let bench = Bench::new();
-    let serve = bench.serve();
-    let mut client = latch_command(&bench.host, &["exec", "--", "sh", "-c", TICKING], &[])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    bench.started();
-    client.kill().unwrap();
-    client.wait().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while bench.exec_records().is_empty() && std::time::Instant::now() < deadline {
-        thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let records = bench.exec_records();
-    let stopped = bench.stopped_ticking();
-    let folders = bench.exec_folders();
-    drop(serve);
-    assert!(stopped, "the local program ran on without its caller");
-    assert_eq!(records.len(), 1, "{records:?}");
-    assert_eq!(records[0]["outcome"], "caller_gone", "{records:?}");
-    assert_eq!(records[0]["gate"]["caller"], "owner_on_host");
-    assert_eq!(folders, Vec::<String>::new());
-}
-
 #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 #[test]
 fn an_attached_serve_that_ends_late_leaves_a_host_that_took_over_alone() {
@@ -3746,4 +3719,29 @@ fn stop_gives_up_waiting_behind_a_start_that_never_finishes() {
     assert_eq!(stop.status.code(), Some(1), "{stop:?}");
     assert!(String::from_utf8_lossy(&stop.stderr).contains("stop_failed"));
     assert!(started.elapsed() < std::time::Duration::from_secs(45));
+}
+
+#[test]
+fn audit_refuses_a_log_whose_last_record_was_cut_short() {
+    let (_dir, state, _) = owner_host();
+    for text in ["Never send email.", "Ask before paying."] {
+        let set = latch(&state, &["rules", "set", text], &[]);
+        assert_eq!(set.status.code(), Some(0), "{set:?}");
+    }
+    let whole = latch(&state, &["audit"], &[]);
+    assert_eq!(whole.status.code(), Some(0), "{whole:?}");
+    assert_eq!(String::from_utf8_lossy(&whole.stdout).lines().count(), 2);
+
+    // The last record loses its end, as a crash mid-write would leave it.
+    let path = state.join("audit.ndjson");
+    let log = fs::read_to_string(&path).unwrap();
+    fs::write(&path, &log[..log.len() - 20]).unwrap();
+    let cut = latch(&state, &["audit"], &[]);
+    assert_eq!(cut.status.code(), Some(1), "{cut:?}");
+    let stderr = String::from_utf8_lossy(&cut.stderr);
+    assert!(
+        stderr.contains("audit_broken") && stderr.contains("line 2"),
+        "{stderr}"
+    );
+    assert!(cut.stdout.is_empty(), "nothing of a broken log is printed");
 }

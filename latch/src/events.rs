@@ -86,25 +86,36 @@ pub fn run(state: &StateDir, args: EventsArgs) -> Result<(), Failure> {
     }
 }
 
-/// `latch audit`: every verified record of the audit log, one JSON line
-/// each, with its arguments; with `follow`, then each new one as it is
-/// written. A record that fails the host's checks is never printed: the
-/// command stops there with `audit_broken`.
+/// `latch audit`: every record of the audit log, one JSON line each, with
+/// its arguments; with `follow`, then each new one as it is written. The
+/// log is read and checked as the host reads it: one that fails its checks
+/// (a record changed, out of the chain, or cut short), or that no longer
+/// begins with what was printed, stops the command with `audit_broken`.
 pub fn audit(state: &StateDir, follow: bool) -> Result<(), Failure> {
     let path = state.path.join("audit.ndjson");
     let mut watch = start_watch(state, &path)?;
-    let mut follower = Follower::new(&state.path, true);
+    let mut printed: Option<(usize, String)> = None;
     let mut out = std::io::stdout().lock();
     loop {
         watch.arm().map_err(|err| watch_failed(state, err))?;
-        let Some(records) = follower.read_new()? else {
-            let message = format!("{}: the audit log fails its checks", path.display());
-            return Err(Failure::failed("audit_broken", message));
+        let records = audit::records(&path)?;
+        let from = match &printed {
+            None => 0,
+            Some((count, hash)) if records.get(count - 1).is_some_and(|r| &r.hash == hash) => {
+                *count
+            }
+            Some(_) => {
+                let message = format!("{}: the audit log was replaced", path.display());
+                return Err(Failure::failed("audit_broken", message));
+            }
         };
-        for record in &records {
+        for record in &records[from..] {
             if !emit(&mut out, &json!(record)) {
                 return Ok(());
             }
+        }
+        if let Some(last) = records.last() {
+            printed = Some((records.len(), last.hash.clone()));
         }
         if !follow || !sleep(&mut watch, state)? {
             return Ok(());

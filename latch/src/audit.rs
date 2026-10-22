@@ -62,22 +62,14 @@ impl AuditLog {
     /// shared, so a record another process is appending is read whole or
     /// not at all.
     pub fn open(path: PathBuf) -> Result<AuditLog, Failure> {
-        let mut text = String::new();
-        fs::OpenOptions::new()
+        let file = fs::OpenOptions::new()
             .create(true)
             .read(true)
             .append(true)
             .mode(0o600)
             .open(&path)
-            .and_then(|mut file| {
-                file.lock_shared()?;
-                file.read_to_string(&mut text)
-            })
             .map_err(|err| io_failure(&path, err))?;
-        let (records, _) = verify(&text).map_err(|problem| {
-            let message = format!("{}: {problem}", path.display());
-            Failure::failed("audit_broken", message)
-        })?;
+        let records = read_locked(&path, file)?.len();
         Ok(AuditLog { path, records })
     }
 
@@ -110,6 +102,31 @@ impl AuditLog {
     }
 }
 
+/// Every record of the log at `path`, read and checked as the host reads
+/// it when it opens the log, without writing it. A log not started yet has
+/// none.
+pub fn records(path: &Path) -> Result<Vec<Record>, Failure> {
+    match File::open(path) {
+        Ok(file) => read_locked(path, file),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(io_failure(path, err)),
+    }
+}
+
+/// The whole log read under its lock, shared, so a record another process
+/// is appending is read whole or not at all, and every record checked: a
+/// last line cut short fails too.
+fn read_locked(path: &Path, mut file: File) -> Result<Vec<Record>, Failure> {
+    let mut text = String::new();
+    file.lock_shared()
+        .and_then(|()| file.read_to_string(&mut text))
+        .map_err(|err| io_failure(path, err))?;
+    verified(&text).map_err(|problem| {
+        let message = format!("{}: {problem}", path.display());
+        Failure::failed("audit_broken", message)
+    })
+}
+
 /// The `hash` of the log's last record, read from the end of the file.
 fn last_hash(file: &mut File) -> std::io::Result<String> {
     let size = file.metadata()?.len();
@@ -137,18 +154,17 @@ fn last_hash(file: &mut File) -> std::io::Result<String> {
     }
 }
 
-/// Checks every record's own `hash`, and its `prev` against the record
-/// before it. Returns the number of records and the last hash, or what is
-/// wrong, by line number.
-pub fn verify(text: &str) -> Result<(usize, String), String> {
-    let mut expected_prev = GENESIS.to_string();
-    let mut count = 0;
+/// The records of `text`, each checked: its own `hash`, and its `prev`
+/// against the record before it. Says what is wrong, by line number.
+fn verified(text: &str) -> Result<Vec<Record>, String> {
+    let mut records: Vec<Record> = Vec::new();
     for (index, line) in text.lines().enumerate() {
-        let record = verify_next(&expected_prev, line.as_bytes(), index + 1)?;
-        expected_prev = record.hash;
-        count += 1;
+        let prev = records
+            .last()
+            .map_or(GENESIS, |record| record.hash.as_str());
+        records.push(verify_next(prev, line.as_bytes(), index + 1)?);
     }
-    Ok((count, expected_prev))
+    Ok(records)
 }
 
 /// Checks one line, number `number`, as the record after the one whose
@@ -227,7 +243,7 @@ mod tests {
     fn an_untouched_log_verifies_and_reopens() {
         let (_dir, path) = log_with_three_records();
         let text = fs::read_to_string(&path).unwrap();
-        assert_eq!(verify(&text).unwrap().0, 3);
+        assert_eq!(verified(&text).unwrap().len(), 3);
         assert_eq!(AuditLog::open(path).unwrap().len(), 3);
     }
 
@@ -268,7 +284,9 @@ mod tests {
         host.append(record("abc", None, "exec", "allow", "ok"))
             .unwrap();
         let text = fs::read_to_string(&path).unwrap();
-        assert_eq!(verify(&text), Ok((6, last_line_hash(&text))));
+        let records = verified(&text).unwrap();
+        assert_eq!(records.len(), 6);
+        assert_eq!(records[5].hash, last_line_hash(&text));
     }
 
     #[test]
