@@ -30,6 +30,7 @@ mod lifecycle;
 mod log;
 mod login;
 mod logo;
+mod messages;
 mod model;
 mod paint;
 mod plow;
@@ -238,6 +239,32 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 text: String::new(),
                 exit: ExitCode::SUCCESS,
             })
+        }
+        Command::Messages(command) => {
+            let request = messages::messages_request(&command);
+            to_json(
+                call_host(
+                    &state,
+                    command.host(),
+                    "messages",
+                    request,
+                    dial::ANSWER_WITHIN,
+                )
+                .await?,
+            )
+        }
+        Command::Contacts(command) => {
+            let request = messages::contacts_request(&command);
+            to_json(
+                call_host(
+                    &state,
+                    command.host(),
+                    "contacts",
+                    request,
+                    dial::ANSWER_WITHIN,
+                )
+                .await?,
+            )
         }
         Command::Exec(args) => {
             let mut request =
