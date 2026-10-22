@@ -531,7 +531,7 @@ fn a_name_clash_at_a_terminal_replaces_the_old_machine_with_no_second_text() {
     assert_eq!(code, Some(0), "{shown}");
     assert!(
         shown.contains(
-            r#"A machine named "mac" already exists (last seen 2026-10-15T01:30:12Z). Replace it? [y/N]"#
+            r#"A machine named "mac" already exists (last seen 2026-10-15T01:30:12Z). Replace it (this signs it out of Plow)? [y/N]"#
         ),
         "{shown}"
     );

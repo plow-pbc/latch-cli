@@ -77,7 +77,7 @@ named after its hostname; `--name NAME` picks another. Names are unique in your
 account. If another of your machines holds the name, latch asks:
 
 ```
-A machine named "mac" already exists (last seen 2026-10-15T01:30:12Z). Replace it? [y/N]
+A machine named "mac" already exists (last seen 2026-10-15T01:30:12Z). Replace it (this signs it out of Plow)? [y/N]
 ```
 
 `y` removes the old machine (which signs it out of Plow) and finishes the login

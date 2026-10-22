@@ -348,7 +348,7 @@ async fn clash(plow: &Plow, mut registration: Registration, rerun: &str) -> Resu
         return Err(taken());
     }
     if term::confirm(&format!(
-        "A machine named {name:?} already exists (last seen {last_seen}). Replace it?"
+        "A machine named {name:?} already exists (last seen {last_seen}). Replace it (this signs it out of Plow)?"
     )) {
         devices::remove_from_plow(plow, machine).await?;
         return plow.register(&registration).await;
