@@ -370,6 +370,7 @@ async function launch(params) {
       openingPages.add(request);
     }
   });
+  context.on("requestfinished", (request) => openingPages.delete(request));
   context.on("requestfailed", (request) => openingPages.delete(request));
   context.on("page", async (page) => {
     if (opening > 0) return;
@@ -382,11 +383,6 @@ async function launch(params) {
       const id = adopt(owner.key, page, owner.tab.id);
       owner.share.pending.push({ event: "new_tab", tab: id, url: page.url(), opener: owner.tab.id });
     } finally {
-      for (const request of openingPages) {
-        try {
-          if (request.frame().page() === page) openingPages.delete(request);
-        } catch {}
-      }
       adopting -= 1;
     }
   });

@@ -1813,7 +1813,8 @@ async fn a_late_popup_is_followed_before_the_next_step(engine: &str) {
                 let mut request = [0; 4096];
                 let _ = socket.read(&mut request);
                 std::thread::sleep(Duration::from_millis(1200));
-                let body = "<!doctype html><title>late popup</title><h1>Popup arrived</h1>";
+                let body = "<!doctype html><title>late popup</title><h1>Popup arrived</h1>\
+                    <button onclick=\"document.querySelector('h1').textContent = 'Continued'\">Continue</button>";
                 let _ = write!(
                     socket,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -1837,11 +1838,23 @@ async fn a_late_popup_is_followed_before_the_next_step(engine: &str) {
         .await
         .unwrap();
     let seen = h.call(CALLER, "observe", &id, json!({})).await.unwrap();
+    let next = find(&seen, "button", "Continue");
+    let started = std::time::Instant::now();
+    h.call(CALLER, "do", &id, act(&format!("click {next}")))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let continued = h.call(CALLER, "text", &id, json!({})).await.unwrap();
     h.call(CALLER, "close", &id, json!({})).await.unwrap();
     println!(
-        "late popup: trail {}, page {}",
-        clicked["trail"], seen["title"]
+        "late popup: trail {}, page {}; second action {elapsed:?}: {}",
+        clicked["trail"], seen["title"], continued["text"]
     );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "second action took {elapsed:?}"
+    );
+    assert!(continued["text"].as_str().unwrap().contains("Continued"));
     assert_eq!(clicked["trail"][0]["followed"], "t2");
     assert_eq!(seen["tab"], "t2");
     assert_eq!(seen["title"], "late popup");
