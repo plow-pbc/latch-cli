@@ -15,7 +15,7 @@ The goal is strong engineering judgment with low ceremony.
 
 - `latch/` is the latch CLI, one Rust crate (and the root of its Cargo workspace): a peer that lets an agent reach the files, programs, Google accounts and browser on a machine its owner trusts, over Plow's directory.
 - `latch/tests/` holds the integration tests, their fixtures, and `browser-site/`, the local site the browser tests drive.
-- `latch/*.md` documents each area: `BROWSER.md`, `VAULT.md`, `GOOGLE.md`, `GOOGLE-AGENT-GUIDE.md`, `DOCKER.md`, `DEPENDENCIES.md`. `latch/SKILL.md` is the agents' guide `latch skill` prints.
+- `latch/*.md` documents each area: `BROWSER.md`, `VAULT.md`, `GOOGLE.md`, `GOOGLE-AGENT-GUIDE.md`, `DOCKER.md`, `MACOS.md`, `DEPENDENCIES.md`. `latch/SKILL.md` is the agents' guide `latch skill` prints.
 - Plow's side of latch (the peer directory API in `api/plow/latch.py`, its model and migration) lives in [`plow-pbc/plow`](https://github.com/plow-pbc/plow), not here. latch reaches it over HTTP.
 
 ## Read First

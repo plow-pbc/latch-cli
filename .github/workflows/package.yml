@@ -147,5 +147,6 @@ jobs:
           "$folder/install-binary.sh" --help
           "$folder/latch" --version
           if [[ '${{ runner.os }}' == macOS ]]; then
-            codesign --verify --deep --strict --verbose=2 "$folder/Plow Latch.app"
+            . "$GITHUB_WORKSPACE/latch/macos/identity.sh"
+            codesign --verify --deep --strict --verbose=2 "$folder/$LATCH_APP_NAME.app"
           fi
