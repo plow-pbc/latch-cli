@@ -1604,17 +1604,20 @@ impl LivePlow {
                                  "sender": {"type": "member", "display_name": "Owner", "role": "owner"}}],
                        "has_more": false}),
             ),
-            // A browser click's risk is asked the same way: low.
+            // A browser click's risk is asked the same way: low, but for a
+            // return's submit, which can't be undone, as a real judge sees it.
             ("POST", "/v1/decisions")
                 if kind == "device"
                     && serde_json::from_slice::<Value>(&request.body).unwrap_or_default()
                         ["questions"]["risky"]
                         .is_object() =>
             {
+                let submit = String::from_utf8_lossy(&request.body).contains("Submit return");
+                let risk = if submit { 0.9 } else { 0.05 };
                 (
                     200,
                     json!({"id": "req_test", "model": "typesafe/jev-1.13",
-                           "answers": {"risky": {"type": "noul", "noul": 0.05}},
+                           "answers": {"risky": {"type": "noul", "noul": risk}},
                            "usage": {"input_tokens": 1, "output_tokens": 0}}),
                 )
             }
@@ -5149,8 +5152,9 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
         ("White tank (M)", "Too small"),
         ("Oxford shirt (L)", "Not as described"),
     ];
-    // The ops each plan sends, in order, for the audit to show.
-    let mut plans = vec![vec!["click"]];
+    // Each judged plan's ops, in order, as the audit shows them, and how
+    // it ended.
+    let mut plans = vec![(vec!["click"], "ok")];
     for (count, (item, reason)) in picks.into_iter().enumerate() {
         let added = match count {
             0 => "Review return (1 item)".to_string(),
@@ -5166,7 +5170,7 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
         ]);
         // The click's check saw the return grow by this item.
         assert_eq!(done["steps"][1]["outcome"], "checked", "{item}: {done}");
-        plans.push(vec!["select", "click"]);
+        plans.push((vec!["select", "click"], "ok"));
     }
     let page = on(&["observe"]);
     let review = refs(&page, "link", "Review return (3 items)").remove(0);
@@ -5176,8 +5180,35 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
     ]);
     let page = on(&["observe"]);
     let submit = refs(&page, "button", "Submit return").remove(0);
-    on(&["do", &format!("click {submit} -> path: /returns")]);
-    plans.extend([vec!["click"], vec!["click"]]);
+    plans.push((vec!["click"], "ok"));
+    // Submitting can't be undone: a judge that weighs the click's risk may
+    // stop it for a confirmation, which the agent then carries out.
+    let submitting = format!("click {submit} -> path: /returns");
+    let mut all = vec!["browser", "--session", session.as_str(), "do", &submitting];
+    let submitted = latch(&host, &all, &[]);
+    let mut confirmed = None;
+    println!(
+        "latch {all:?}: {}",
+        String::from_utf8_lossy(&submitted.stdout)
+    );
+    if !submitted.status.success() {
+        let stop: Value = serde_json::from_slice(&submitted.stderr).unwrap();
+        println!("submit stopped: {stop}");
+        let error = &stop["error"];
+        assert_eq!(error["code"], "confirm_needed", "{stop}");
+        let id = error["confirmation"]["id"]
+            .as_str()
+            .or_else(|| error["stop"]["confirmation"]["id"].as_str())
+            .unwrap_or_else(|| panic!("no confirmation in {stop}"))
+            .to_string();
+        all.truncate(3);
+        all.extend(["do", "--confirm", &id]);
+        run(&all);
+        plans.push((vec!["click"], "confirm_needed"));
+        confirmed = Some(id);
+    } else {
+        plans.push((vec!["click"], "ok"));
+    }
     on(&["close"]);
     drop(serve);
 
@@ -5202,16 +5233,26 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
     // Every plan was judged and allowed, as the owner on this host, and
     // the audit keeps each plan's steps.
     let records = audit_records(&host);
-    let plan_records: Vec<&Value> = records
+    // A plan that carries out a confirmation is the plan it confirms,
+    // judged when it stopped; it is not judged again.
+    let (confirming, plan_records): (Vec<&Value>, Vec<&Value>) = records
         .iter()
         .filter(|r| r["op"] == "browser" && r["args"]["command"] == "do")
-        .collect();
+        .partition(|r| r["args"]["confirmation"].is_string());
+    match &confirmed {
+        Some(id) => {
+            assert_eq!(confirming.len(), 1, "{records:#?}");
+            assert_eq!(confirming[0]["args"]["confirmation"], *id);
+            assert_eq!(confirming[0]["outcome"], "ok", "{}", confirming[0]);
+        }
+        None => assert!(confirming.is_empty(), "{records:#?}"),
+    }
     assert_eq!(plan_records.len(), plans.len(), "{records:#?}");
-    for (record, ops) in plan_records.iter().zip(&plans) {
+    for (record, (ops, outcome)) in plan_records.iter().zip(&plans) {
         println!("plan audit: {}", record["args"]);
         assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
         assert_eq!(record["args"]["gate"]["verdict"], "allow", "{record}");
-        assert_eq!(record["outcome"], "ok", "{record}");
+        assert_eq!(record["outcome"], *outcome, "{record}");
         let sent: Vec<&str> = record["args"]["step_records"]
             .as_array()
             .unwrap()
