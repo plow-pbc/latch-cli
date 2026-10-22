@@ -308,3 +308,36 @@ async fn the_owner_on_the_host_previews_over_the_socket() {
     assert!(!tried.to_string().contains("own words"), "no file content");
     assert_eq!(t.audit()[0]["op"], "rules_try");
 }
+
+#[tokio::test]
+async fn a_previewed_exec_is_shown_with_its_credentials_hidden() {
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    let secret = "synthetic-preview-credential-4c1e";
+    let argv = json!(["curl", "--token", secret, "https://example.com"]);
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", json!({"argv": argv}), Some("Juno"), None),
+        )
+        .await;
+    assert_eq!(answer(response)["verdict"], "allow");
+
+    // The record keeps the request as it was asked, sealed on disk.
+    assert_eq!(t.audit()[0]["args"]["action"]["argv"], argv);
+
+    // serve.log and the dashboard show it with the credential hidden.
+    let logged: Vec<String> = crate::log::captured()
+        .into_iter()
+        .filter(|line| line.contains("rules_try:") && line.contains("--token"))
+        .collect();
+    assert!(!logged.is_empty());
+    assert!(
+        logged.iter().all(|line| !line.contains(secret)),
+        "{logged:?}"
+    );
+    let board = serde_json::to_string(&*t.host.dashboard.watch().borrow()).unwrap();
+    assert!(board.contains("--token"), "{board}");
+    assert!(!board.contains(secret), "{board}");
+}

@@ -10,9 +10,16 @@ pub const NOTE: &str = "credential-looking values in commands are hidden, best e
 
 /// An operation's audit details as shown to people: an exec's argv, and
 /// everything of a browser action the gatekeeper judged, with
-/// credential-looking values hidden; the rest as it is.
+/// credential-looking values hidden, a previewed request's (`rules_try`)
+/// as its own operation's are; the rest as it is.
 pub fn shown(op: &str, args: &Value) -> Value {
     let mut shown = args.clone();
+    if op == "rules_try"
+        && let Some(previewed) = args["op"].as_str()
+        && args.get("action").is_some()
+    {
+        shown["action"] = self::shown(previewed, &args["action"]);
+    }
     if op == "exec"
         && let Ok(words) = serde_json::from_value::<Vec<String>>(args["argv"].clone())
     {
@@ -198,6 +205,22 @@ fn existing_path(arg: &str, start: usize, end: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_previewed_request_is_shown_as_its_own_operation_is() {
+        let args = json!({"op": "exec", "from": "0123",
+                          "action": {"argv": ["curl", "--token", "preview-credential"], "network": true}});
+        let shown = super::shown("rules_try", &args);
+        assert_eq!(
+            shown["action"]["argv"],
+            json!(["curl", "--token", "[redacted]"])
+        );
+        assert_eq!(shown["action"]["network"], true);
+        assert_eq!(shown["from"], "0123");
+        // A preview refused before it named an action shows as it is.
+        let bare = json!({"op": "browser"});
+        assert_eq!(super::shown("rules_try", &bare), bare);
+    }
 
     fn shown(words: &[&str]) -> Vec<String> {
         argv(&words.iter().map(|word| (*word).into()).collect::<Vec<_>>())
