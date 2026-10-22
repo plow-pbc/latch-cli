@@ -39,7 +39,7 @@ normal answer, not an error.
 ```
 {"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/1)","protocol":1,
  "peer":{"name":"studio","key":"d9438ef1…","kind":"device"},
- "serve":{"running":true,"ready":true,"state":"serving","pid":63632},
+ "serve":{"running":true,"ready":true,"managed":true,"state":"serving","pid":63632},
  "shares":["/Users/me/work"],"allow_read":["/Users/me/.rustup"],"last_error":null}
 ```
 
@@ -48,6 +48,7 @@ Field by field:
 - `peer` is `null` before login.
 - `serve.running` means a `latch serve` holds the state folder's lock.
 - `serve.ready` means that serve is online and accepting callers.
+- `serve.managed` means it runs as this user's service, as `latch serve` and `serve -d` start it, not `serve --foreground`. An upgrade stops a managed host and starts it again with `latch serve -d --again`.
 - `serve.state` is one of `starting`, `serving`, `stopped` or `error`.
 - `allow_read` lists the paths saved with `latch shares set --allow-read`, which callers may read but not write.
 - `last_error` says why the host last stopped, when it stopped because of a failure. A host that was killed or crashed shows `serve_ended`.

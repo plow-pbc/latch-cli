@@ -50,8 +50,9 @@ instead; pass the same `--state-dir DIR` to every `latch` command then.
 **Update:** run the same command again, adding `--clobber` to `gh release
 download` so it replaces the `install.sh` already there. The installer replaces
 the binary in place and skips anything already installed at the pinned
-version. Running it twice changes nothing. A `latch serve` that is already
-running keeps its old binary: stop it and start it again.
+version. Running it twice changes nothing. A host that `latch serve` or
+`latch serve -d` started is stopped and started again with the new latch,
+with the same folders and flags.
 
 Check it:
 

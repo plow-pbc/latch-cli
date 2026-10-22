@@ -70,6 +70,9 @@ pub struct Serve {
     pub running: bool,
     /// It is online and accepting callers.
     pub ready: bool,
+    /// It runs as this user's service, as `latch serve` and `serve -d`
+    /// start it, rather than in the foreground (`serve --foreground`).
+    pub managed: bool,
     pub state: Phase,
     pub pid: Option<u32>,
 }
@@ -84,14 +87,16 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         kind: config.peer.kind,
     });
     let saved = state.load_shares()?;
+    let dir = state.path.canonicalize().unwrap_or(state.path.clone());
     Ok(LocalStatus {
-        state_dir: state.path.canonicalize().unwrap_or(state.path.clone()),
+        state_dir: dir.clone(),
         version: crate::cli::version(),
         protocol: crate::wire::protocol(),
         peer,
         serve: Serve {
             running: host.running,
             ready: host.state == Phase::Serving,
+            managed: host.running && crate::managed::Service::new(&dir).registered(),
             state: host.state,
             pid: host.pid,
         },
