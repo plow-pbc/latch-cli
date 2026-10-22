@@ -491,6 +491,15 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     assert_eq!(login.status.code(), Some(2), "{login:?}");
     let error: Value = serde_json::from_slice(&login.stderr).unwrap();
     assert_eq!(error["error"]["code"], "conflict", "{error}");
+    // Nobody to ask: it says what to run next.
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("`latch login --token-file FILE --name OTHER`")
+            && message.contains(&format!(
+                "`latch login --token-file FILE --name {hostname}` again at a terminal to replace it"
+            )),
+        "{message}"
+    );
     assert!(!state.join("config.json").exists());
 
     // One registration, never retried to take the name over.
@@ -502,9 +511,69 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
 }
 
 #[test]
-fn a_name_clash_stops_a_login_at_a_terminal_too() {
+fn a_name_clash_at_a_terminal_replaces_the_old_machine_with_no_second_text() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let old_key = "c".repeat(64);
+    let holder = peer(json!(old_key), "mac", "device", Value::Null);
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (409, json!({})),
+        (200, json!({"data": [holder.clone()]})),
+        // The old machine removed, then this one registered under its name.
+        (200, holder),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let args = ["login", "--api-url", &api_url, "--name", "mac"];
+    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "y\n", false, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(
+        shown.contains(
+            r#"A machine named "mac" already exists (last seen 2026-10-15T01:30:12Z). Replace it (this signs it out of Plow)? [y/N]"#
+        ),
+        "{shown}"
+    );
+    let login: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(login["peer"]["name"], "mac");
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["peer"]["name"], "mac");
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 6);
+    // One text only.
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.contains("/v1/auth/activate"))
+            .count(),
+        2
+    );
+    assert!(
+        requests[4].starts_with(&format!("DELETE /v1/latch/peers/{old_key} ")),
+        "{}",
+        requests[4]
+    );
+    assert!(
+        requests[4].contains("Bearer texted-login"),
+        "{}",
+        requests[4]
+    );
+    assert_eq!(body(&requests[5])["name"], "mac");
+}
+
+#[test]
+fn a_name_clash_at_a_terminal_asks_for_another_name_until_one_is_free_or_none_is_given() {
     let holder = peer(json!("c".repeat(64)), "mac", "device", Value::Null);
-    let (api_url, server) = fake_plow(vec![(409, json!({})), (200, json!({"data": [holder]}))]);
+    let (api_url, server) = fake_plow(vec![
+        (409, json!({})),
+        (200, json!({"data": [holder.clone()]})),
+        (409, json!({})),
+        (200, peer(Value::Null, "mac-2", "device", Value::Null)),
+    ]);
     let dir = test_dir();
     let owner_token = dir.path().join("owner.token");
     fs::write(&owner_token, "owner-login\n").unwrap();
@@ -520,13 +589,44 @@ fn a_name_clash_stops_a_login_at_a_terminal_too() {
         "mac",
     ];
 
-    // Even a person ready to say yes is not asked to replace the machine.
-    let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false, &[]);
+    // Enter keeps the old machine; the first new name is taken too.
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "\nmac-taken\nmac-2\n", false, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(shown.contains("New name for this machine:"), "{shown}");
+    assert!(shown.contains(r#""mac-taken" is taken too."#), "{shown}");
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["peer"]["name"], "mac-2");
+    let requests = server.join().unwrap();
+    assert_eq!(body(&requests[2])["name"], "mac-taken");
+    assert_eq!(body(&requests[3])["name"], "mac-2");
+    assert!(!requests.iter().any(|r| r.starts_with("DELETE ")));
+
+    // No, then no name: the login ends, saying what to run next.
+    // The suggested retry keeps the name asked for, quoted for the shell.
+    let quoted = peer(json!("c".repeat(64)), "Ada's Mac", "device", Value::Null);
+    let (api_url, server) = fake_plow(vec![(409, json!({})), (200, json!({"data": [quoted]}))]);
+    let state = dir.path().join("state-2");
+    let args = [
+        "login",
+        "--api-url",
+        &api_url,
+        "--token-file",
+        owner,
+        "--name",
+        "Ada's Mac",
+    ];
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "n\n\n", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
-    // A person reads the sentence, not the JSON.
-    assert!(!shown.contains("\"conflict\""), "{shown}");
-    assert!(shown.contains("latch devices remove mac"), "{shown}");
-    assert!(!shown.contains("Replace it?"), "{shown}");
+    assert!(
+        shown.contains("`latch login --token-file FILE --name OTHER`"),
+        "{shown}"
+    );
+    assert!(
+        shown
+            .contains(r"`latch login --token-file FILE --name 'Ada'\''s Mac'` again at a terminal"),
+        "{shown}"
+    );
     assert!(!state.join("config.json").exists());
     assert_eq!(server.join().unwrap().len(), 2);
 }
@@ -625,7 +725,8 @@ fn a_login_that_fails_after_the_text_is_retried_against_the_same_plow() {
     let dir = test_dir();
     let state = dir.path().join("state");
     let first = ["login", "--api-url", &api_url, "--name", "mac"];
-    let (code, shown, _) = latch_at_a_terminal(&state, &first, "", true, &[]);
+    // Asked, the person neither replaces the machine nor gives a name.
+    let (code, shown, _) = latch_at_a_terminal(&state, &first, "n\n\n", true, &[]);
     assert_eq!(code, Some(2), "{shown}");
     assert!(!state.join("config.json").exists());
 

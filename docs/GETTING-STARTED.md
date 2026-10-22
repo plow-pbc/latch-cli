@@ -74,11 +74,20 @@ latch login --api-url https://api.plow.co
 
 `--api-url` is needed on the first login only; latch saves it. The machine is
 named after its hostname; `--name NAME` picks another. Names are unique in your
-account: if another of your machines holds the name, the login stops after
-the text with `conflict` and never replaces it. Run it again with another
-`--name`, and `--api-url` again (no second text needed). Or, from another of
-your machines, free the name with `latch devices remove NAME --yes`, which
-signs that machine out. `latch devices` lists your machines.
+account. If another of your machines holds the name, latch asks:
+
+```
+A machine named "mac" already exists (last seen 2026-10-15T01:30:12Z). Replace it (this signs it out of Plow)? [y/N]
+```
+
+`y` removes the old machine (which signs it out of Plow) and finishes the login
+under its name. `n` or Enter asks `New name for this machine:` and finishes
+under the name you type, asking again if that one is taken too; an empty name
+stops the login. Either way you don't text again. Without a terminal to ask
+at, the login stops with `conflict` and says what to run: `latch login --name
+OTHER`, or `latch login --name NAME` (the name you asked for) again at a
+terminal to replace the old machine.
+`latch devices` lists your machines.
 
 **What you see:** a QR code, then
 
