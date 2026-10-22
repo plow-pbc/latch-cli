@@ -644,8 +644,8 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
 }
 
 /// What a host sharing no folders says in its log and on its dashboard.
-pub const SHARING_NONE: &str = "Sharing no folders — exec reads home; browser and Google are available. \
-    File copies need `latch shares set ~/code`, then restart `latch serve`.";
+pub const SHARING_NONE: &str =
+    "Sharing no folders — exec reads home. Files: `latch shares set ~/code`; restart serve.";
 
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
@@ -894,16 +894,17 @@ async fn serve_operation(
             // A worker started now would run the new latch under this old
             // host: nothing runs, and nothing is judged.
             let upgraded = host.binary.replaced();
-            let exec_failure = if op == "exec" && !denied_exec && !upgraded {
+            let (prepared_exec, exec_failure) = if op == "exec" && !denied_exec && !upgraded {
                 match exec::normalize(&host.workers, &request.args) {
                     Ok(args) => {
-                        request.args = args;
-                        None
+                        request.args =
+                            serde_json::to_value(&args).expect("prepared exec serializes");
+                        (Some(args), None)
                     }
-                    Err(failure) => Some(failure),
+                    Err(failure) => (None, Some(failure)),
                 }
             } else {
-                None
+                (None, None)
             };
             // File copies still need a shared folder; exec uses per-call permissions.
             let unshared = host.workers.areas.is_empty() && matches!(op, "file_get" | "file_put");
@@ -970,7 +971,12 @@ async fn serve_operation(
                         outcome: "exec_denied".to_string(),
                     },
                     "exec" => {
-                        exec::run(&host.workers, &request.args, cut_off(host, connection)).await
+                        exec::run(
+                            &host.workers,
+                            prepared_exec.expect("exec was validated"),
+                            cut_off(host, connection),
+                        )
+                        .await
                     }
                     "vault" => {
                         crate::vault::host::run(

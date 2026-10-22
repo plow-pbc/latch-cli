@@ -1952,7 +1952,7 @@ fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
     let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
     assert!(
         lines.iter().any(|line| line
-            .contains("Sharing no folders — exec reads home; browser and Google are available.")),
+            .contains("Sharing no folders — exec reads home. Files: `latch shares set ~/code`")),
         "{lines:?}"
     );
     let local = latch(&host, &["status", "--local"], &[]);

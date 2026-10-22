@@ -484,7 +484,7 @@ mod tests {
         let screen = board.screen(100, 10);
         let note = screen.lines().nth(2).unwrap();
         assert!(
-            note.contains("Sharing no folders — browser and Google only")
+            note.contains("Sharing no folders — exec reads home")
                 && note.contains("latch shares set ~/code"),
             "{screen}"
         );

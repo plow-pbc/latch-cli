@@ -70,12 +70,17 @@ pub(crate) struct ExecArgs {
     pub network: bool,
 }
 
+/// A validated request whose resolved paths are the ones the judge sees.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct PreparedExec(ExecArgs);
+
 fn default_timeout() -> u64 {
     60
 }
 
 /// Resolves host path fields before judgment, without creating anything.
-pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<Value, Failure> {
+pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<PreparedExec, Failure> {
     let bad = |message: &str| Failure::failed("bad_request", message.to_string());
     if !value.is_object() {
         return Err(bad("exec arguments must be an object"));
@@ -125,7 +130,10 @@ pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<Value, Failure>
             .ok_or_else(|| bad("host paths must be valid UTF-8"))?
             .to_owned(),
     );
-    serde_json::to_value(args).map_err(|_| bad("host paths must be valid UTF-8"))
+    if args.writes.iter().any(|path| path.to_str().is_none()) {
+        return Err(bad("host paths must be valid UTF-8"));
+    }
+    Ok(PreparedExec(args))
 }
 
 fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
@@ -189,27 +197,32 @@ pub(crate) fn caches(workers: &WorkerSetup) -> Result<Vec<PathBuf>, Failure> {
     .into_iter()
     .chain(cfg!(target_os = "macos").then_some("Library/Caches"))
     {
-        let path = resolve(&workers.home, Path::new(name))?;
+        let path = workers.home.join(name);
         check_path(workers, &path, true)?;
-        std::fs::create_dir_all(&path).map_err(|_| {
+        cache_dir(&workers.home, name).map_err(|_| {
             Failure::failed("cache_failed", "could not prepare a tool cache".into())
         })?;
         paths.push(path);
     }
-    for name in [".cargo/.package-cache", ".cargo/.package-cache-mutate"] {
-        use std::os::unix::fs::OpenOptionsExt;
-        let path = resolve(&workers.home, Path::new(name))?;
+    for name in [".package-cache", ".package-cache-mutate"] {
+        let path = workers.home.join(".cargo").join(name);
         check_path(workers, &path, true)?;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-            .map_err(|_| {
-                Failure::failed("cache_failed", "could not prepare a tool cache lock".into())
-            })?;
+        let prepare = || -> std::io::Result<()> {
+            let folder = cache_dir(&workers.home, ".cargo")?;
+            let name = std::ffi::CString::new(name).unwrap();
+            let file = open_at(
+                &folder,
+                &name,
+                libc::O_WRONLY | libc::O_CREAT | libc::O_NONBLOCK,
+            )?;
+            if !file.metadata()?.is_file() {
+                return Err(std::io::Error::other("cache lock is not a regular file"));
+            }
+            Ok(())
+        };
+        prepare().map_err(|_| {
+            Failure::failed("cache_failed", "could not prepare a tool cache lock".into())
+        })?;
         paths.push(path);
     }
     Ok(paths)
@@ -219,20 +232,10 @@ pub(crate) fn caches(workers: &WorkerSetup) -> Result<Vec<PathBuf>, Failure> {
 /// first, the program is killed, and its outcome is the one `cut_off` gives.
 pub async fn run(
     workers: &WorkerSetup,
-    args: &Value,
+    prepared: PreparedExec,
     cut_off: impl Future<Output = &'static str>,
 ) -> Done {
-    let value = match normalize(workers, args) {
-        Ok(value) => value,
-        Err(failure) => {
-            return Done {
-                response: Response::error(&failure),
-                audit_args: Value::Null,
-                outcome: failure.code,
-            };
-        }
-    };
-    let mut args: ExecArgs = serde_json::from_value(value).expect("normalized exec arguments");
+    let mut args = prepared.0;
     let timeout = args.timeout;
     // What the program reads on stdin: the bytes the client sent, or none.
     let input = args.stdin.take();
@@ -242,9 +245,20 @@ pub async fn run(
         audit["stdin"] = stdin_audit(bytes);
     }
 
+    for path in args
+        .writes
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(args.workdir.as_deref().map(Path::new))
+    {
+        if !resolve(&workers.home, path).is_ok_and(|real| real == path) {
+            return Done::failed("bad_path", "the path changed after judgment".into(), audit);
+        }
+    }
+
     for path in &args.writes {
         if !path.exists()
-            && let Err(error) = std::fs::create_dir(path)
+            && let Err(error) = create_write_dir(path)
         {
             return Done::failed("write_path_failed", error.to_string(), audit);
         }
@@ -268,6 +282,82 @@ pub async fn run(
         ));
     }
     done
+}
+
+fn create_write_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no parent folder"))?;
+    let folder = open_dir(parent)?;
+    if crate::sandbox::opened_path(&folder)? != parent {
+        return Err(std::io::Error::other(
+            "the write parent changed after judgment",
+        ));
+    }
+    let name = std::ffi::CString::new(
+        path.file_name()
+            .ok_or_else(|| std::io::Error::other("no folder name"))?
+            .as_bytes(),
+    )
+    .map_err(std::io::Error::other)?;
+    mkdir_at(&folder, &name)
+}
+
+fn open_dir(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)
+}
+
+/// Walk from an open home directory without following cache aliases or swapped parents.
+fn cache_dir(home: &Path, name: &str) -> std::io::Result<std::fs::File> {
+    let mut folder = open_dir(home)?;
+    for name in name.split('/') {
+        let name = std::ffi::CString::new(name).unwrap();
+        if let Err(error) = mkdir_at(&folder, &name)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(error);
+        }
+        folder = open_at(&folder, &name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+    }
+    Ok(folder)
+}
+
+fn mkdir_at(folder: &std::fs::File, name: &std::ffi::CStr) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: the file owns a live directory descriptor and name is one NUL-
+    // terminated component. Anchoring mkdirat there cannot follow a swapped parent.
+    if unsafe { libc::mkdirat(folder.as_raw_fd(), name.as_ptr(), 0o777) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn open_at(
+    folder: &std::fs::File,
+    name: &std::ffi::CStr,
+    flags: libc::c_int,
+) -> std::io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    // SAFETY: folder is live and name is NUL-terminated. NOFOLLOW prevents alias
+    // traversal; a successful descriptor is transferred exactly once into File.
+    let fd = unsafe {
+        libc::openat(
+            folder.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: openat just returned this owned descriptor; no other File owns it.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 /// What the audit keeps of an exec's stdin: its size and sha256, never
@@ -581,6 +671,21 @@ mod tests {
     use crate::failure::Exit;
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;
+
+    async fn run(
+        workers: &WorkerSetup,
+        args: &Value,
+        cut_off: impl Future<Output = &'static str>,
+    ) -> Done {
+        match normalize(workers, args) {
+            Ok(prepared) => super::run(workers, prepared, cut_off).await,
+            Err(failure) => Done {
+                response: Response::error(&failure),
+                audit_args: Value::Null,
+                outcome: failure.code,
+            },
+        }
+    }
 
     #[tokio::test]
     async fn an_elapsed_timeout_wins_over_a_ready_exit() {

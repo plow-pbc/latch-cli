@@ -390,6 +390,57 @@ fn always_covered(_: &Value) -> Option<[f64; 3]> {
     Some([0.9, 0.08, 0.02])
 }
 
+fn replace_the_judged_write_folder(state: &Value) -> Option<[f64; 3]> {
+    let path = Path::new(state["proposed_action"]["writes"][0].as_str().unwrap());
+    std::fs::rename(path, path.with_file_name("approved-before-swap")).unwrap();
+    let home = path.parent().unwrap().parent().unwrap();
+    std::os::unix::fs::symlink(home.join("outside-write"), path).unwrap();
+    always_covered(state)
+}
+
+#[tokio::test]
+async fn a_write_path_retargeted_after_judgment_is_refused() {
+    let t = start(a_chat(replace_the_judged_write_folder)).await;
+    let approved = t.area.join("approved");
+    let outside = t.host.workers.home.join("outside-write");
+    std::fs::create_dir(&approved).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("victim.txt"), "unchanged").unwrap();
+    let agent = t.caller("agent").await;
+    let args =
+        json!({"argv": ["/bin/sh", "-c", "printf overwritten > victim.txt"], "writes": [approved]});
+    let (answer, _) = t.call(&agent, "exec", args).await;
+    assert_eq!(
+        std::fs::read(outside.join("victim.txt")).unwrap(),
+        b"unchanged"
+    );
+    assert_eq!(refusal(&answer).1, "bad_path");
+}
+
+#[tokio::test]
+async fn a_cache_symlink_does_not_grant_its_target() {
+    let t = start(a_chat(always_covered)).await;
+    let home = &t.host.workers.home;
+    let target = home.join("outside-write");
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&target, home.join(".npm")).unwrap();
+    let agent = t.caller("agent").await;
+    let (answer, _) = t
+        .call(
+            &agent,
+            "exec",
+            json!({
+                "argv": ["/bin/sh", "-c", "echo bad > outside-write/victim"]
+            }),
+        )
+        .await;
+    assert!(
+        !target.join("victim").exists(),
+        "cache granted an undeclared path"
+    );
+    assert_eq!(refusal(&answer).1, "cache_failed");
+}
+
 #[tokio::test]
 async fn a_google_change_is_already_done_the_next_time_and_a_read_is_not() {
     let t = start(a_chat(always_covered)).await;
