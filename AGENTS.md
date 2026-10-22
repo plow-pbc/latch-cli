@@ -39,7 +39,7 @@ Dev and test flows that need Plow use a local Plow dev stack, never production:
 
 1. In a plow checkout, start its stack: `just api up`, then `cd dtu/linq && just sync && cd ../.. && just dtu linq up` (the Linq twin, which stands in for the phone `just dev-login` texts from). Plow derives each checkout's ports from its `PLOW_VARIANT` into that checkout's `.plow-dev-env`.
 2. Here, `cp .env.local.example .env.local` and set `LATCH_DEV_PLOW_CHECKOUT` to that checkout; its `.plow-dev-env` gives the API and twin addresses. `LATCH_DEV_PLOW_API` and `LATCH_DEV_PLOW_TWIN` override either. With none set, the plow checkout `main`'s ports are used (API `127.0.0.1:18934`, twin `127.0.0.1:18935`).
-3. `just dev-login`, then `just build` or `just gatekeeper`. `dev-login` checks the stack is reachable first and says which variable gave the address it could not reach.
+3. `just dev-login`, then `just build` or `just gatekeeper`. `dev-login` checks the stack is reachable first and says which variable gave the address it could not reach. Every checkout logs in to the same local account, so its machine is named `dev-<checkout folder>` (`--name` to override).
 
 Use the published `127.0.0.1` ports, not `*.orb.local`: macOS keeps an unapproved latch off OrbStack's network. `just` loads `.env.local`; `scripts/dev_plow.py` reads these variables, and the latch binary never does.
 

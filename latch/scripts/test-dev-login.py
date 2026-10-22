@@ -115,6 +115,42 @@ class DevLoginTests(unittest.TestCase):
         self.assertFalse(self.seen.exists())
 
 
+class MachineNameTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.dir.name)
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def name(self, *args):
+        """The --name latch is run with, for a state folder at `args`."""
+        state = self.root.joinpath(*args)
+        state.mkdir(parents=True)
+        latch = self.root / "latch"
+        latch.write_text("#!/bin/sh\necho \"$@\" > \"$SEEN\"\n")
+        latch.chmod(0o755)
+        seen = self.root / "seen"
+        with http.server.HTTPServer(("127.0.0.1", 0), Twin) as stack:
+            threading.Thread(target=stack.serve_forever, daemon=True).start()
+            url = f"http://127.0.0.1:{stack.server_port}"
+            subprocess.run([sys.executable, str(HELPER), str(latch), str(state), "--api", url, "--twin", url, *self.extra],
+                           env={**os.environ, "SEEN": str(seen)}, capture_output=True, text=True)
+            stack.shutdown()
+        argv = seen.read_text().split()
+        return argv[argv.index("--name") + 1]
+
+    extra = []
+
+    def test_each_checkout_s_machine_is_named_after_it(self):
+        self.assertEqual(self.name("Latch CLI_wt.2", ".dev", "state"), "dev-latch-cli-wt-2")
+        self.assertEqual(self.name("other", "state"), "dev-state")
+
+    def test_name_still_names_it(self):
+        self.extra = ["--name", "mine"]
+        self.assertEqual(self.name("wt", ".dev", "state"), "mine")
+
+
 class AddressTests(unittest.TestCase):
     def test_a_named_address_then_the_checkout_s_then_the_default(self):
         with tempfile.TemporaryDirectory() as checkout:
