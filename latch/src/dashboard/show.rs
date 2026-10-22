@@ -27,6 +27,29 @@ pub enum Ending {
     Detached,
 }
 
+/// The screen `text`, drawn over the one before in place, as one update:
+/// each line cleared as it is written and the rows below it cleared, never
+/// the whole screen at once, so the terminal never shows it blank. A line
+/// is cleared before it is written: after a line as wide as the screen,
+/// the cursor sits on its last character.
+pub(super) fn frame(text: &str, height: usize) -> String {
+    let mut frame = format!("{}{}", term::SYNC_START, term::HOME);
+    let lines: Vec<&str> = text.split('\n').collect();
+    for (at, line) in lines.iter().enumerate() {
+        if at > 0 {
+            frame.push('\n');
+        }
+        frame.push_str(term::CLEAR_LINE_END);
+        frame.push_str(line);
+    }
+    if lines.len() < height {
+        frame.push('\n');
+        frame.push_str(term::CLEAR_BELOW);
+    }
+    frame.push_str(term::SYNC_END);
+    frame
+}
+
 /// Shows the boards `boards` yields until `until` (Ctrl-C) or `q`. An
 /// `attached` view ends when the host does; a detached one says the host
 /// went away and stays until it is closed. `notice` stands under the
@@ -64,12 +87,17 @@ pub(super) async fn show_on(
     let drawn = view.clone();
     std::thread::spawn(move || {
         let _ = write!(out, "{}{}", term::ALTERNATE_SCREEN, term::HIDE_CURSOR);
-        // Each second, or sooner when asked, until the view is closed.
+        // Each second, or sooner when asked, until the view is closed; a
+        // frame like the last is not drawn again.
+        let mut last = String::new();
         loop {
             let (width, height) = term::size();
             let text = drawn.lock().expect("view lock").screen(width, height);
-            let _ = write!(out, "{}{text}", term::CLEAR);
-            let _ = out.flush();
+            if text != last {
+                let _ = write!(out, "{}", frame(&text, height));
+                let _ = out.flush();
+                last = text;
+            }
             if let Err(RecvTimeoutError::Disconnected) = asked.recv_timeout(Duration::from_secs(1))
             {
                 break;
