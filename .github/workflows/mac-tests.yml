@@ -16,6 +16,8 @@ on:
         type: string
         default: ''
   workflow_call:
+  push:
+    branches: [ci-mac-manual]
 
 permissions:
   contents: read
@@ -25,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        include: [{shard: 1, count: 1}, {shard: 1, count: 2}, {shard: 2, count: 2}]
     runs-on: macos-15
     timeout-minutes: 30
     defaults:
@@ -57,13 +59,13 @@ jobs:
       - run: cargo build --locked
       - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
       # fake-gog: the test-only gog stand-in the return scenario reads mail with.
-      - run: python3 scripts/test-shard.py ${{ matrix.shard }} 2 --features fake-gog
+      - run: python3 scripts/test-shard.py ${{ matrix.shard }} ${{ matrix.count }} --features fake-gog
       - if: matrix.shard == 1
         run: LATCH_FUZZ_ITERATIONS=50000 swift test
         working-directory: latch/messages-reader
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mac-tests-${{ matrix.shard }}
+          name: mac-tests-${{ matrix.shard }}-of-${{ matrix.count }}
           path: .dev/ci/*.json
           if-no-files-found: error
