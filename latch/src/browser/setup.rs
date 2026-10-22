@@ -19,10 +19,14 @@ use crate::failure::{Exit, Failure};
 use crate::state::StateDir;
 
 /// What `browser-engines.sh` reads, at the paths it reads them from.
-const FILES: [(&str, &[u8]); 7] = [
+const FILES: [(&str, &[u8]); 8] = [
     (
         "browser-engines.sh",
         include_bytes!("../../browser-engines.sh"),
+    ),
+    (
+        "install-packages.sh",
+        include_bytes!("../../install-packages.sh"),
     ),
     ("src/browser/cft.json", include_bytes!("cft.json")),
     ("src/browser/camoufox.json", include_bytes!("camoufox.json")),

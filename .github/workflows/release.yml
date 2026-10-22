@@ -265,6 +265,7 @@ jobs:
           uname -sm
           test -x "$folder/install-binary.sh"
           test -x "$folder/browser-engines.sh"
+          test -f "$folder/install-packages.sh"
           "$folder/install-binary.sh" --help
           "$folder/latch" --version
           if [[ '${{ runner.os }}' == macOS ]]; then

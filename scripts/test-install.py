@@ -33,6 +33,7 @@ class BinaryInstall(unittest.TestCase):
             setup = root / "setup"
             (setup / "src/google").mkdir(parents=True)
             shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+            shutil.copyfile(ROOT / "latch/install-packages.sh", setup / "install-packages.sh")
             # On this fixture OS Chrome for Testing has no build: says so.
             shutil.copyfile(ROOT / "latch/browser-engines.sh", setup / "browser-engines.sh")
             binary = setup / "latch"
@@ -98,6 +99,7 @@ class BinaryInstall(unittest.TestCase):
             (setup / "src/google").mkdir(parents=True)
             (setup / "src/browser").mkdir()
             shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+            shutil.copyfile(ROOT / "latch/install-packages.sh", setup / "install-packages.sh")
             shutil.copyfile(ROOT / "latch/browser-engines.sh", setup / "browser-engines.sh")
             # A release's layout: the app, and `latch` beside install-binary.sh leading into it.
             app = setup / "Plow Latch.app"
@@ -170,6 +172,16 @@ class BinaryInstall(unittest.TestCase):
             self.assertIn(option, result.stdout)
 
 
+def link_basic_tools(folder):
+    """The everyday tools the installers use, linked into `folder`: as a
+    PATH of its own it has no package manager, unzip, Xvfb or bwrap."""
+    for name in ["sh", "dirname", "sed", "cksum", "mkdir", "mktemp", "cp", "mv", "rm",
+                 "cut", "id", "cat", "chmod", "grep", "tr", "sha256sum", "shasum", "perl"]:
+        found = shutil.which(name)
+        if found:
+            (folder / name).symlink_to(found)
+
+
 def tool(folder, name, body):
     path = folder / name
     path.write_text("#!/bin/sh\n" + body)
@@ -199,6 +211,7 @@ class BrowserEngines(unittest.TestCase):
         shutil.rmtree(setup, ignore_errors=True)
         (setup / "src/google").mkdir(parents=True)
         shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+        shutil.copyfile(ROOT / "latch/install-packages.sh", setup / "install-packages.sh")
         tool(setup, "latch", "echo installed-fixture\n")
         state = self.root / "state"
         seed_gog(setup, state)
@@ -234,6 +247,7 @@ class BrowserEngines(unittest.TestCase):
         setup = self.root / "engines"
         (setup / "src/browser").mkdir(parents=True)
         shutil.copyfile(ROOT / "latch/browser-engines.sh", setup / "browser-engines.sh")
+        shutil.copyfile(ROOT / "latch/install-packages.sh", setup / "install-packages.sh")
         archive = self.root / "cft.zip"
         with zipfile.ZipFile(archive, "w") as zip_file:
             zip_file.writestr("chrome-linux-arm64/chrome", "#!/bin/sh\n")
@@ -289,16 +303,37 @@ cp "{archive}" "$out"
         self.assertIn("nothing installed", bad.stderr)
         self.assertFalse((state / "plugins/cft/1.0.0/manifest.json").exists())
 
+    @unittest.skipIf(Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").exists()
+                     and Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+                     .read_text().strip() == "1",
+                     "this host would also load the AppArmor profile")
+    def test_a_linux_install_without_bubblewrap_installs_it_as_root(self):
+        setup = self.root / "setup"
+        setup.mkdir()
+        for name in ["install-binary.sh", "install-packages.sh"]:
+            shutil.copyfile(ROOT / "latch" / name, setup / name)
+        tool(setup, "latch", "echo installed-fixture\n")
+        state = self.root / "state"
+        seed_gog(setup, state)
+        log = self.root / "root-log"
+        tool(self.tools, "uname", 'case "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
+        tool(self.tools, "sudo", f'echo "sudo $*" >> "{log}"\nexec "$@"\n')
+        tool(self.tools, "apt-get", f'echo "apt-get $*" >> "{log}"\n')
+        link_basic_tools(self.tools)
+        env = {**self.env, "PATH": str(self.tools)}
+        result = subprocess.run(
+            ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state), "--no-browser",
+             str(setup / "latch")], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("installing as root: bubblewrap", result.stdout)
+        self.assertIn("apt-get install -y -q bubblewrap", log.read_text())
+
     def test_chrome_set_up_after_no_browser_installs_unzip_and_xvfb_first(self):
         # A Pi with neither unzip nor Xvfb: only the tools named here are on
         # its PATH, and its package manager installs the two.
         tools = self.root / "pi"
         tools.mkdir()
-        for name in ["sh", "dirname", "sed", "cksum", "mkdir", "mktemp", "cp", "mv", "rm",
-                     "cut", "id", "cat", "chmod", "grep", "tr", "sha256sum", "shasum", "perl"]:
-            found = shutil.which(name)
-            if found:
-                (tools / name).symlink_to(found)
+        link_basic_tools(tools)
         unzip = shutil.which("unzip")
         self.assertIsNotNone(unzip, "the test unpacks its fixture with the real unzip")
         log = self.root / "root-log"
@@ -337,7 +372,6 @@ esac; done
         self.assertEqual(later.returncode, 0, later.stderr)
         self.assertIn("installing as root: unzip xvfb", later.stdout)
         self.assertIn("apt-get install -y -q unzip xvfb", log.read_text())
-        self.assertIn("sudo sh -c", log.read_text())
         self.assertTrue((tools / "Xvfb").exists())
         self.assertTrue((state / "plugins/cft/1.0.0/manifest.json").is_file())
         self.assertEqual(fetched.read_text().count("\n"), 1)

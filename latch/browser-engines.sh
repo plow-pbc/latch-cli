@@ -6,7 +6,8 @@
 # ENGINE is chrome or camoufox. install-binary.sh runs this, and so does
 # `latch browser setup`, which carries a copy of this script and the pins.
 # The pins are read next to this script: src/browser/cft.json,
-# src/browser/camoufox.json and camoufox/ (the helper's lockfile).
+# src/browser/camoufox.json and camoufox/ (the helper's lockfile), and so is
+# install-packages.sh.
 #
 # chrome: Chrome for Testing, on macOS and on Linux arm64 (the Pi), the
 # release pinned in src/browser/cft.json, into
@@ -51,44 +52,8 @@ fi
 cft_tmp=""
 fox_tmp=""
 
-# Installs `$@` (package names as apt calls them) as root, under one sudo.
-as_root_install() {
-  if command -v apt-get >/dev/null 2>&1; then
-    manager=apt-get
-  elif command -v dnf >/dev/null 2>&1; then
-    manager=dnf
-  elif command -v apk >/dev/null 2>&1; then
-    manager=apk
-  elif command -v pacman >/dev/null 2>&1; then
-    manager=pacman
-  else
-    die "no apt-get, dnf, apk or pacman found; install $* yourself, then run this again"
-  fi
-  # Xvfb's package has a different name on each.
-  named=""
-  for package in "$@"; do
-    case "$manager:$package" in
-      dnf:xvfb) package=xorg-x11-server-Xvfb ;;
-      pacman:xvfb) package=xorg-server-xvfb ;;
-    esac
-    named="${named:+$named }$package"
-  done
-  case $manager in
-    apt-get) install="apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q $named" ;;
-    dnf) install="dnf install -y $named" ;;
-    apk) install="apk add $named" ;;
-    pacman) install="pacman -Sy --needed --noconfirm $named" ;;
-  esac
-  say "installing as root: $named"
-  if [ "$(id -u)" -eq 0 ]; then
-    as_root=""
-  elif command -v sudo >/dev/null 2>&1; then
-    as_root=sudo
-  else
-    die "need root to install $named, and sudo is not installed; run this as root"
-  fi
-  $as_root sh -c "$install" || die "installing $named as root failed (see above); fix that and run this again"
-}
+# as_root_install, which install-binary.sh uses too.
+. "$here/install-packages.sh"
 trap 'rm -rf ${cft_tmp:+"$cft_tmp"} ${fox_tmp:+"$fox_tmp"}' EXIT
 
 # The pinned Chrome for Testing. The pin's JSON has a fixed shape: each

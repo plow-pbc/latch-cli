@@ -17,7 +17,7 @@ case "$target" in
     ;;
   *) cp "$binary" "$out/latch" ;;
 esac
-cp latch/install-binary.sh "$out/"
+cp latch/install-binary.sh latch/install-packages.sh "$out/"
 cp latch/src/google/pin.json "$out/src/google/"
 if [ -d latch/src/browser ]; then
   mkdir -p "$out/src/browser" "$out/camoufox"

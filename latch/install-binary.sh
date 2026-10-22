@@ -237,35 +237,12 @@ if [ "$(uname -s)" = Linux ]; then
   if [ -z "$packages" ]; then
     say "bubblewrap already installed"
   else
-    if command -v apt-get >/dev/null 2>&1; then
-      manager=apt-get
-    elif command -v dnf >/dev/null 2>&1; then
-      manager=dnf
-    elif command -v apk >/dev/null 2>&1; then
-      manager=apk
-    elif command -v pacman >/dev/null 2>&1; then
-      manager=pacman
+    . "$(dirname "$0")/install-packages.sh"
+    if [ -n "$apparmor" ]; then
+      as_root_install --then "$apparmor" "loading the bwrap-userns-restrict AppArmor profile" $packages
     else
-      die "no apt-get, dnf, apk or pacman found; install $packages yourself, then run this again"
+      as_root_install $packages
     fi
-    named=$packages
-    case $manager in
-      apt-get) install="apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q $named" ;;
-      dnf) install="dnf install -y $named" ;;
-      apk) install="apk add $named" ;;
-      pacman) install="pacman -Sy --needed --noconfirm $named" ;;
-    esac
-    root_steps="$install${apparmor:+ && $apparmor}"
-
-    say "installing as root: $named${apparmor:+ (and loading the bwrap-userns-restrict AppArmor profile)}"
-    if [ "$(id -u)" -eq 0 ]; then
-      as_root=""
-    elif command -v sudo >/dev/null 2>&1; then
-      as_root=sudo
-    else
-      die "need root for that, and sudo is not installed; run this as root"
-    fi
-    $as_root sh -c "$root_steps" || die "installing as root failed (see above); fix that and run this again"
   fi
 fi
 
