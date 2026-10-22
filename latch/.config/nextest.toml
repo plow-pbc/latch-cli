@@ -13,3 +13,14 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'test(/^browser::tests::/)'
 test-group = 'engines'
+
+# Longest first, so no part of a CI run ends on one of them started late:
+# these three took 70 to 104 seconds each on CI's Linux runners, then the
+# other engine tests, with the fast ones filling in at the end.
+[[profile.default.overrides]]
+filter = 'test(/::no_secret_goes_into_a_form_sent_by_get$/) | test(/::each_checker_tells_its_right_state_from_the_near_misses$/) | test(/::instruction_steps_offer_only_what_is_possible_and_stop_in_order$/)'
+priority = 100
+
+[[profile.default.overrides]]
+filter = 'test(/^browser::tests::/)'
+priority = 50
