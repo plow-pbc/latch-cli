@@ -163,10 +163,10 @@ try it on one computer, give the caller its own state folder: `latch
 command after.
 
 Your own machines are you, and the host's gatekeeper judges their calls
-too: `exec`, `file` and `google` run only as your own request within your
-rules on that host, so they need the decision model (see 6). The browser's
-judged actions need it too: opening a new site, plans, vault fills, scripts,
-uploads and downloads (see [the browser gatekeeper](../latch/BROWSER.md#the-gatekeeper)).
+too: `exec`, `file`, `google`, `messages` and `contacts` run only as your own
+request within your rules on that host, so they need the decision model (see
+6). The browser's judged actions need it too: opening a new site, plans, vault
+fills, scripts, uploads and downloads (see [the browser gatekeeper](../latch/BROWSER.md#the-gatekeeper)).
 Your settings (`rules`, `vault`, `shares`) are never judged. Set
 `LATCH_HOST=my-mac` to leave out `--host`.
 
@@ -345,10 +345,10 @@ For either one, the message says why the model couldn't answer:
 - "Plow's decision route answered HTTP 503; retry later": retry later.
 
 Your own machines need the model for every judged call (`exec`, `file`,
-`google`) and the browser's judged actions, including `browser open` and
-`do`. Browser goals and sentence checks also need the model. Page reads
-(`text`, `screenshot`) in an existing session and your settings (`rules`,
-`vault`, `shares`) work without it.
+`google`, `messages`, `contacts`) and the browser's judged actions, including
+`browser open` and `do`. Browser goals and sentence checks also need the
+model. Page reads (`text`, `screenshot`) in an existing session and your
+settings (`rules`, `vault`, `shares`) work without it.
 
 **`state_format` (exit 1): "… is in state format 2, set up by latch …; this
 latch … reads only format 1".** That state folder was set up by a newer latch
