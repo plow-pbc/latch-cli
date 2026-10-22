@@ -174,12 +174,19 @@ class BinaryInstall(unittest.TestCase):
 
 def link_basic_tools(folder):
     """The everyday tools the installers use, linked into `folder`: as a
-    PATH of its own it has no package manager, unzip, Xvfb or bwrap."""
+    PATH of its own it has no package manager, unzip, Xvfb or bwrap. Its
+    cat reads the kernel's AppArmor user-namespace setting as 0, so no
+    AppArmor profile is loaded, whatever the machine running the test says."""
     for name in ["sh", "dirname", "sed", "cksum", "mkdir", "mktemp", "cp", "mv", "rm",
-                 "cut", "id", "cat", "chmod", "grep", "tr", "sha256sum", "shasum", "perl"]:
+                 "cut", "id", "chmod", "grep", "tr", "sha256sum", "shasum", "perl"]:
         found = shutil.which(name)
         if found:
             (folder / name).symlink_to(found)
+    tool(folder, "cat", f"""case "$1" in
+  /proc/sys/kernel/apparmor_restrict_unprivileged_userns) echo 0 ;;
+  *) exec "{shutil.which("cat")}" "$@" ;;
+esac
+""")
 
 
 def tool(folder, name, body):
@@ -316,15 +323,6 @@ cp "{archive}" "$out"
         tool(self.tools, "sudo", f'echo "sudo $*" >> "{log}"\nexec "$@"\n')
         tool(self.tools, "apt-get", f'echo "apt-get $*" >> "{log}"\n')
         link_basic_tools(self.tools)
-        # The kernel lets bubblewrap make user namespaces here: no AppArmor
-        # profile to load, whatever the machine running the test says.
-        real_cat = os.readlink(self.tools / "cat")
-        (self.tools / "cat").unlink()
-        tool(self.tools, "cat", f"""case "$1" in
-  /proc/sys/kernel/apparmor_restrict_unprivileged_userns) echo 0 ;;
-  *) exec "{real_cat}" "$@" ;;
-esac
-""")
         env = {**self.env, "PATH": str(self.tools)}
         result = subprocess.run(
             ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state), "--no-browser",
