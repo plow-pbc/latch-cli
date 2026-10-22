@@ -562,6 +562,36 @@ fn any_command_fails_in_a_sentence_at_a_terminal_and_in_json_piped() {
     }
 }
 
+#[test]
+fn a_failure_with_details_shows_them_at_a_terminal_too() {
+    let (dir, state, _) = owner_host();
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    // An editor during whose edit the rules change: the save is refused,
+    // with the revision it found in the failure's details.
+    let editor = dir.path().join("editor");
+    fs::write(
+        &editor,
+        format!(
+            "#!/bin/sh\n'{}' --state-dir '{}' rules set 'Changed meanwhile.' >/dev/null\n\
+             echo 'Mine.' > \"$1\"\n",
+            latch_bin().display(),
+            state.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let env = [("EDITOR", editor.as_path())];
+    let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &env);
+    assert_eq!(code, Some(4), "{shown}");
+    assert!(
+        shown.contains("the rules changed since they were read"),
+        "{shown}"
+    );
+    assert!(shown.contains("\"revision\""), "{shown}");
+    assert!(!shown.contains("\"error\""), "{shown}");
+}
+
 /// A login by text: Plow gives a code, the phone texts it at once, and
 /// Plow registers the machine.
 fn plow_texted_at_once() -> (String, thread::JoinHandle<Vec<String>>) {

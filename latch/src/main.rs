@@ -334,12 +334,23 @@ fn usage_error(err: clap::Error) -> ExitCode {
     Exit::Usage.into()
 }
 
-/// Puts a failure on stderr: its message, a sentence, for a person at a
-/// terminal; the JSON error for a pipe, so agents and scripts read its code.
+/// Puts a failure on stderr: for a person at a terminal its message, a
+/// sentence, then any details it carries (a stopped plan's steps, a request
+/// id) as JSON; for a pipe the JSON error, so agents and scripts read its
+/// code.
 fn report(failure: &Failure) {
-    if term::stderr_is_terminal() {
-        eprintln!("{}", failure.message);
-    } else {
+    if !term::stderr_is_terminal() {
         eprintln!("{}", failure.to_json());
+        return;
+    }
+    eprintln!("{}", failure.message);
+    let has_details = match &failure.details {
+        Value::Null => false,
+        Value::Object(details) => !details.is_empty(),
+        _ => true,
+    };
+    if has_details {
+        let details = serde_json::to_string_pretty(&failure.details).expect("details serialize");
+        eprintln!("{details}");
     }
 }
