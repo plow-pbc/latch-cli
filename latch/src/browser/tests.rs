@@ -127,6 +127,14 @@ fn processes() -> Vec<Process> {
         .collect()
 }
 
+fn profile_arg(engine: &str, data: &Path) -> String {
+    if engine == "camoufox" {
+        format!("-profile {}", data.display())
+    } else {
+        format!("--user-data-dir={}", data.display())
+    }
+}
+
 /// The engine's pid as the host sees it. On Linux the worker reports its
 /// pid inside the worker's bubblewrap, so it is found by its profile
 /// argument instead.
@@ -503,14 +511,12 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
         .canonicalize()
         .unwrap();
     let cft = engine_name != "camoufox";
-    let (pipe, profile_arg) = if cft {
-        (
-            "--remote-debugging-pipe",
-            format!("--user-data-dir={}", data.display()),
-        )
+    let pipe = if cft {
+        "--remote-debugging-pipe"
     } else {
-        ("-juggler-pipe", format!("-profile {}", data.display()))
+        "-juggler-pipe"
     };
+    let profile_arg = profile_arg(engine_name, &data);
     let browser = host_pid(session.ready["pid"].as_u64().unwrap() as u32, &profile_arg);
     let scratch = session.scratch().canonicalize().unwrap();
     // Firefox may create an empty cache folder in its private HOME. The
@@ -1229,11 +1235,7 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
     };
     let data = profile::root(&state).join("hang-stuck/data");
     let data = data.canonicalize().unwrap();
-    let profile_arg = if engine == "camoufox" {
-        format!("-profile {}", data.display())
-    } else {
-        format!("--user-data-dir={}", data.display())
-    };
+    let profile_arg = profile_arg(engine, &data);
     let browser =
         host_pid(answer()["ok"]["pid"].as_u64().unwrap() as u32, &profile_arg) as libc::pid_t;
     let mut call = |line: serde_json::Value| {
@@ -1305,11 +1307,7 @@ async fn a_busy_browser_dies_with_its_host(engine: &str) {
     let worker = answer().as_i64().unwrap() as libc::pid_t;
     let data = profile::root(&state).join("host-gone/data");
     let data = data.canonicalize().unwrap();
-    let profile_arg = if engine == "camoufox" {
-        format!("-profile {}", data.display())
-    } else {
-        format!("--user-data-dir={}", data.display())
-    };
+    let profile_arg = profile_arg(engine, &data);
     let ready = answer();
     let browser =
         host_pid(ready["ok"]["pid"].as_u64().unwrap() as u32, &profile_arg) as libc::pid_t;
