@@ -7,6 +7,10 @@
 //! kept up to 256 KiB (the rest is read and dropped, and `truncated` is
 //! set), so a runaway command cannot flood the agent. At the time limit the
 //! whole process group (the program and everything it started) is killed.
+//! So is it, cut off, when the host stops (`interrupted`) or the caller's
+//! connection closes (`caller_gone`): nobody would get its result. A host
+//! that dies without stopping takes the program with it (see
+//! `WorkerSetup::start_exec`).
 //! The audit record holds the argv (up to 4 KiB, as run), the workdir and
 //! how it ended, never the output.
 //!
@@ -14,8 +18,11 @@
 //! made in the host's OS temp folder and readable and writable by that
 //! worker only (on Linux the worker's private `/tmp` plays that part), and
 //! the folder is deleted when the run ends. It never lands in a shared
-//! folder, which may not be writable (a shared `/`, say).
+//! folder, which may not be writable (a shared `/`, say). A host that was
+//! killed leaves its folders behind; the next host to start removes them.
 
+use std::future::Future;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -46,6 +53,9 @@ pub const MAX_STDIN: usize = 256 * 1024;
 /// After the program ends, how long to wait for its output pipes to close
 /// (a process that left the group could otherwise hold them open).
 const DRAIN_GRACE: Duration = Duration::from_secs(5);
+/// How long after its timeout the worker kills a program itself, if the
+/// host has not by then.
+const WORKER_GRACE: u64 = 5;
 
 #[derive(Deserialize)]
 struct ExecArgs {
@@ -60,8 +70,13 @@ fn default_timeout() -> u64 {
     60
 }
 
-/// `exec`: runs `args.argv` and returns its result.
-pub async fn run(workers: &WorkerSetup, args: &Value) -> Done {
+/// `exec`: runs `args.argv` and returns its result. If `cut_off` finishes
+/// first, the program is killed, and its outcome is the one `cut_off` gives.
+pub async fn run(
+    workers: &WorkerSetup,
+    args: &Value,
+    cut_off: impl Future<Output = &'static str>,
+) -> Done {
     if !args.is_object() {
         return bad_request("exec arguments must be an object");
     }
@@ -101,7 +116,8 @@ pub async fn run(workers: &WorkerSetup, args: &Value) -> Done {
             return Done::failed("tmpdir_failed", message, audit);
         }
     };
-    let done = run_program(workers, workdir, &tmpdir, &argv, input, timeout, audit).await;
+    let limits = Limits { timeout, cut_off };
+    let done = run_program(workers, workdir, &tmpdir, &argv, input, limits, audit).await;
     // `remove_dir_all` deletes links the program left there, never what
     // they point to.
     if let Err(err) = std::fs::remove_dir_all(&tmpdir) {
@@ -119,30 +135,100 @@ pub fn stdin_audit(bytes: &[u8]) -> Value {
     json!({ "size": bytes.len(), "sha256": to_hex(&Sha256::digest(bytes)) })
 }
 
-/// A new, empty folder `latch-exec-<random>` in the OS temp folder, for
-/// this user only. Its real path, since the sandbox matches real paths
-/// (macOS's temp folder is behind the `/var` link).
+/// A new, empty folder `latch-exec-<host pid>-<random>` in the OS temp
+/// folder, for this user only. Its real path, since the sandbox matches
+/// real paths (macOS's temp folder is behind the `/var` link).
 fn make_tmpdir() -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
-    let name = format!("latch-exec-{:016x}", rand::random::<u64>());
+    let name = format!(
+        "latch-exec-{}-{:016x}",
+        std::process::id(),
+        rand::random::<u64>()
+    );
     let path = std::env::temp_dir().join(name);
     // `create` (not `recursive`) fails if the name already exists.
     std::fs::DirBuilder::new().mode(0o700).create(&path)?;
     path.canonicalize()
 }
 
-/// Starts the program and waits for it (up to `timeout` seconds).
+/// Removes the temp folders that killed hosts left: this user's
+/// `latch-exec-<pid>-…` folders in the OS temp folder whose host no longer
+/// runs. Those of hosts still running (this one, or another on another
+/// state folder) stay.
+pub fn sweep_tmpdirs() {
+    let temp = std::env::temp_dir();
+    let Ok(entries) = std::fs::read_dir(&temp) else {
+        return;
+    };
+    // SAFETY: std has no UID API. getuid takes no arguments, accesses no Rust
+    // memory, and returns our real UID for the ownership check below.
+    let me = unsafe { libc::getuid() };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let host = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("latch-exec-"))
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<libc::pid_t>().ok());
+        let Some(host) = host.filter(|pid| *pid > 0) else {
+            continue;
+        };
+        let Ok(meta) = entry.path().symlink_metadata() else {
+            continue;
+        };
+        if !meta.is_dir() || meta.uid() != me || running(host) {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => log(&format!(
+                "exec: removed {}, left by a host that was killed",
+                entry.path().display()
+            )),
+            Err(err) => log(&format!(
+                "exec: could not remove {}: {err}",
+                entry.path().display()
+            )),
+        }
+    }
+}
+
+/// Whether a process `pid` runs (one of another user counts too).
+fn running(pid: libc::pid_t) -> bool {
+    // SAFETY: std cannot probe an arbitrary PID. Signal 0 checks existence
+    // without delivering a signal; this scalar-only call accesses no Rust memory.
+    let found = unsafe { libc::kill(pid, 0) } == 0;
+    found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// When a program must stop: at `timeout` seconds, or when `cut_off`
+/// finishes, with the outcome it gives.
+struct Limits<F> {
+    timeout: u64,
+    cut_off: F,
+}
+
+/// How the wait for a program ended.
+enum End {
+    Exited,
+    TimedOut,
+    /// Cut off, with this outcome.
+    Cut(&'static str),
+}
+
+/// Starts the program and waits for it, within `limits`.
 async fn run_program(
     workers: &WorkerSetup,
     workdir: Option<&str>,
     tmpdir: &Path,
     argv: &[String],
     input: Option<Vec<u8>>,
-    timeout: u64,
+    limits: Limits<impl Future<Output = &'static str>>,
     mut audit: Value,
 ) -> Done {
     let started = Instant::now();
-    let mut child = match workers.start_exec(workdir, tmpdir, argv, input.is_some()) {
+    let kill_after = limits.timeout + WORKER_GRACE;
+    let started_exec = workers.start_exec(workdir, tmpdir, argv, input.is_some(), kill_after);
+    let mut child = match started_exec {
         Ok(child) => child,
         Err(error) => return refused(error, audit),
     };
@@ -156,7 +242,8 @@ async fn run_program(
             let _ = pipe.write_all(&bytes).await;
         });
     }
-    let (status, timed_out) = wait_or_kill(&mut child, Duration::from_secs(timeout)).await;
+    let (status, end) = wait_or_kill(&mut child, limits).await;
+    let timed_out = matches!(end, End::TimedOut);
     // Both streams get the same grace, side by side.
     let ((stdout, stdout_cut), (stderr, stderr_cut)) = tokio::join!(
         collected(stdout, DRAIN_GRACE),
@@ -179,6 +266,22 @@ async fn run_program(
     audit["duration_ms"] = json!(duration_ms);
     // How much it wrote to stderr (never what), so the host's view can mark it.
     audit["stderr_bytes"] = json!(stderr.len());
+    if let End::Cut(outcome) = end {
+        let message = match outcome {
+            "interrupted" => "the host stopped while the program ran, and killed it",
+            _ => "the caller went away while the program ran, so the host killed it",
+        };
+        return Done {
+            response: Response::Error {
+                exit: crate::failure::Exit::Unknown,
+                details: Value::Null,
+                code: outcome.to_string(),
+                message: format!("{message} after {duration_ms} ms"),
+            },
+            audit_args: audit,
+            outcome: outcome.to_string(),
+        };
+    }
     let result = json!({
         "exit_code": exit_code,
         "signal": signal,
@@ -198,23 +301,33 @@ fn argv_is_usable(argv: &[String]) -> bool {
     !argv.is_empty() && !argv[0].is_empty()
 }
 
-/// Waits for the program, up to `limit`. Past it, kills the program's
-/// whole process group and returns its (killed) status with `true`.
-async fn wait_or_kill(child: &mut Child, limit: Duration) -> (ExitStatus, bool) {
-    if let Ok(Ok(status)) = tokio::time::timeout(limit, child.wait()).await {
-        return (status, false);
-    }
+/// Waits for the program, within `limits`. Past them, kills the program's
+/// whole process group and returns its (killed) status, and why.
+async fn wait_or_kill(
+    child: &mut Child,
+    limits: Limits<impl Future<Output = &'static str>>,
+) -> (ExitStatus, End) {
+    let end = tokio::select! {
+        biased;
+        () = tokio::time::sleep(Duration::from_secs(limits.timeout)) => End::TimedOut,
+        status = child.wait() => match status {
+            Ok(status) => return (status, End::Exited),
+            Err(_) => End::TimedOut,
+        },
+        outcome = limits.cut_off => End::Cut(outcome),
+    };
     if let Some(pid) = child.id() {
         // The worker started the program as the leader of a new process
         // group whose id is its pid, so this reaches every process in it.
-        // SAFETY: killpg only sends a signal; it touches no memory of ours.
+        // SAFETY: std's child kill cannot reach descendants. This live child's
+        // PID names the group we created for it; killpg takes only scalar arguments.
         unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
     }
     let status = child
         .wait()
         .await
         .unwrap_or_else(|_| ExitStatus::from_raw(libc::SIGKILL));
-    (status, true)
+    (status, end)
 }
 
 /// What has been read from one output stream so far. A reader task fills
@@ -352,6 +465,53 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;
 
+    #[tokio::test]
+    async fn an_elapsed_timeout_wins_over_a_ready_exit() {
+        let mut children = Vec::new();
+        let mut inputs = Vec::new();
+        for _ in 0..32 {
+            let mut child = tokio::process::Command::new("/bin/sh")
+                .args(["-c", "read line"])
+                .stdin(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            inputs.push(child.stdin.take().unwrap());
+            children.push(child);
+        }
+        let mut waits: Vec<_> = children
+            .iter_mut()
+            .map(|child| {
+                Box::pin(wait_or_kill(
+                    child,
+                    Limits {
+                        timeout: 1,
+                        cut_off: std::future::pending(),
+                    },
+                ))
+            })
+            .collect();
+        std::future::poll_fn(|cx| {
+            for wait in &mut waits {
+                assert!(wait.as_mut().poll(cx).is_pending());
+            }
+            std::task::Poll::Ready(())
+        })
+        .await;
+        // Like a frozen host: both the exits and the timers become ready
+        // before it is able to poll the waits again.
+        drop(inputs);
+        std::thread::sleep(Duration::from_millis(1100));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        for wait in waits {
+            let (_, end) = wait.await;
+            assert!(
+                matches!(end, End::TimedOut),
+                "reported completion after timeout"
+            );
+        }
+    }
+
     fn worker_setup() -> (tempfile::TempDir, WorkerSetup) {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         std::fs::create_dir_all(&parent).unwrap();
@@ -361,6 +521,9 @@ mod tests {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let workers = WorkerSetup {
             areas: vec![dir.path().to_path_buf()],
+            reads: vec![],
+            hidden: vec![],
+            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: dir.path().join("state"),
             program,
         };
@@ -411,7 +574,7 @@ mod tests {
             for (case, value) in values.into_iter().enumerate() {
                 let mut args = json!({"argv": ["unused"]});
                 args[field] = value;
-                let done = run(&workers, &args).await;
+                let done = run(&workers, &args, std::future::pending()).await;
                 assert!(
                     !dir.path().join("worker-started").exists(),
                     "{field} case {case} started a worker"
@@ -428,7 +591,12 @@ mod tests {
     #[tokio::test]
     async fn positional_exec_args_never_start_a_worker() {
         let (dir, workers) = worker_setup();
-        let done = run(&workers, &json!([["unused"], 60, null, null])).await;
+        let done = run(
+            &workers,
+            &json!([["unused"], 60, null, null]),
+            std::future::pending(),
+        )
+        .await;
         assert!(!dir.path().join("worker-started").exists());
         assert!(matches!(
             done.response,
@@ -444,7 +612,7 @@ mod tests {
             json!({"argv": ["unused"]}),
             json!({"argv": ["unused"], "workdir": null, "stdin": null}),
         ] {
-            let done = run(&workers, &args).await;
+            let done = run(&workers, &args, std::future::pending()).await;
             assert!(matches!(done.response, Response::Ok(_)));
             assert!(dir.path().join("worker-started").exists());
             assert_eq!(done.audit_args["workdir"], json!(dir.path()));

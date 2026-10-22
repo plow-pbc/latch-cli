@@ -1650,10 +1650,12 @@ impl Driver for Cft {
         let _ = self.child.wait();
         let gone_by = Instant::now() + CLOSING;
         // A group with no process left answers ESRCH.
-        while unsafe { libc::killpg(group, 0) } == 0 && Instant::now() < gone_by {
+        // SAFETY: signal 0 only checks whether the group still exists.
+        let exists = || unsafe { libc::killpg(group, 0) } == 0;
+        while exists() && Instant::now() < gone_by {
             std::thread::sleep(Duration::from_millis(50));
         }
-        let left = unsafe { libc::killpg(group, 0) } == 0;
+        let left = exists();
         json!({"closed": !left, "forced": forced})
     }
 }

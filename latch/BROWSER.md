@@ -625,9 +625,26 @@ runs first;
 CI does the same on its Macs. They run headless, so a test run never puts
 a window on the screen. `just test-headed` (the `headed-tests` feature)
 runs the same tests headed, where the checks that the engine never becomes
-the front app have something to check; it is not part of the gate. Headless
-Camoufox also disables native macOS select menus: Firefox's headless flag
-alone does not keep those menus off the desktop. Headed runs retain them.
+the front app have something to check; it is not part of the gate. In headless
+Camoufox, native macOS select menus are disabled too: Firefox's headless
+flag alone does not prevent those menus from reaching the desktop. Headed
+runs retain the engine's native menus.
+
+On a macOS CI runner with a logged-in graphical session, run the opt-in
+suite and record its wall-clock time with:
+
+```sh
+cd latch
+/usr/bin/time -p just test-headed
+```
+
+Use a dedicated runner desktop: this suite intentionally opens browser
+windows and exercises focus and handoff. A runner with only an SSH login
+and no graphical session cannot validate those behaviors. Keep the default
+`just test` headless; run the headed suite as a separate CI job. The timed
+command includes engine preparation and compilation; use the reported
+Cargo test duration to distinguish test execution from setup.
+
 `LATCH_CFT_STATE` points the test
 at another state directory. Without an installed engine the test fails,
 naming what to run. `src/browser/tests/steps.rs` covers literal steps,

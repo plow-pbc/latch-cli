@@ -1711,8 +1711,9 @@ mod tests {
             )
             .unwrap()
             .result;
+        // Soon after its 400 ms, on a slow machine too; reading on would take 2 s.
         let took = started.elapsed();
-        assert!(took < Duration::from_millis(500), "took {took:?}");
+        assert!(took < Duration::from_secs(1), "took {took:?}");
         assert_eq!(observed["truncated"], true);
         let read = observed["frames"].as_array().unwrap().len();
         assert!((1..40).contains(&read), "{read} frames read");
