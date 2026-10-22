@@ -157,10 +157,14 @@ latch login --api-url https://api.plow.co --name my-laptop
 latch status    # "hosts":[{"name":"my-mac","online":true,…}]
 ```
 
-A machine never calls its own host, so a second machine is what calls it. To
-try it on one computer, give the caller its own state folder: `latch
---state-dir ~/latch-laptop login …`, and the same `--state-dir` on every
-command after.
+To try it on the serving machine, use the same state folder as `latch serve`;
+no second login is needed. Leave out `--host` to use its private local
+receiver, or name this host explicitly. If you started serve with
+`--state-dir DIR`, pass that same option to each command:
+
+```sh
+latch --state-dir DIR exec -- ls -la
+```
 
 Your own machines are you, and the host's gatekeeper judges their calls
 too: `exec`, `file`, `google`, `messages` and `contacts` run only as your own
