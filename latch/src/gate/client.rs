@@ -24,16 +24,24 @@ use crate::wire::Request;
 use crate::{google, transfer};
 
 pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
-    if let RulesCommand::Try { request } = args.command {
-        return preview(state, args.host, args.from, request).await;
-    }
+    let scope = match args.command {
+        RulesCommand::Try {
+            host,
+            from,
+            request,
+        } => return preview(state, host, from, request).await,
+        RulesCommand::Set { ref scope, .. }
+        | RulesCommand::Edit { ref scope }
+        | RulesCommand::Clear { ref scope }
+        | RulesCommand::Show { ref scope } => scope,
+    };
     let target = Target {
         state,
-        host: args.host,
+        host: scope.host.clone(),
     };
-    let from = args.from;
+    let from = scope.from.clone();
     match args.command {
-        RulesCommand::Set { text, file } => {
+        RulesCommand::Set { text, file, .. } => {
             let text = match (text, file) {
                 (Some(text), None) => text,
                 (None, Some(file)) => read_file(&file)?,
@@ -46,7 +54,7 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                 .call(json!({"command": "set", "from": from, "text": text}))
                 .await
         }
-        RulesCommand::Edit => {
+        RulesCommand::Edit { .. } => {
             let shown = target
                 .call(json!({"command": "show", "from": from}))
                 .await?;
@@ -64,8 +72,8 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                              "revision": current["revision"]}))
                 .await
         }
-        RulesCommand::Clear => target.call(json!({"command": "clear", "from": from})).await,
-        RulesCommand::Show => target.call(json!({"command": "show", "from": from})).await,
+        RulesCommand::Clear { .. } => target.call(json!({"command": "clear", "from": from})).await,
+        RulesCommand::Show { .. } => target.call(json!({"command": "show", "from": from})).await,
         RulesCommand::Try { .. } => unreachable!("previewed above"),
     }
 }
@@ -82,7 +90,13 @@ async fn preview(
     from: Option<String>,
     words: Vec<String>,
 ) -> Result<Value, Failure> {
-    let usage = |err: clap::Error| Failure::usage("usage", err.to_string().trim_end().to_string());
+    // The parser's message, its usage line written as the request goes
+    // after `latch rules try --`.
+    let usage = |err: clap::Error| {
+        let message = err.to_string().trim_end().to_string();
+        let message = message.replacen("Usage: latch ", "Usage: latch rules try -- ", 1);
+        Failure::usage("usage", message)
+    };
     let matches = Cli::command()
         .try_get_matches_from(std::iter::once("latch".to_string()).chain(words))
         .map_err(usage)?;

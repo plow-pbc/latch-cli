@@ -1048,7 +1048,11 @@ async fn serve_request(
                     ),
                 }
             };
-            let decision = decision(&done.response);
+            // A preview that found a refusal is recorded as one.
+            let decision = match done.audit_args["verdict"].as_str() {
+                Some(verdict) if op == "rules_try" && verdict != "allow" => "deny",
+                _ => decision(&done.response),
+            };
             log(&format!(
                 "{op}: {caller}: {decision}: {} {}",
                 done.outcome,

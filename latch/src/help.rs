@@ -835,7 +835,7 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[ex(
             "Edit one agent's rules",
-            &["rules", "--from", "ada", "edit"],
+            &["rules", "edit", "--from", "ada"],
         )],
     },
     Entry {

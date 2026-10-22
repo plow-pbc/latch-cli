@@ -688,17 +688,20 @@ pub enum VaultCommand {
 /// Arguments the host gives a browser worker (see `browser/worker.rs`).
 #[derive(Args, Debug)]
 pub struct RulesArgs {
-    /// The serving machine the rules are for [default: this machine's own host state]
-    #[arg(long, global = true)]
-    pub host: Option<String>,
-    /// The agent whose rules these are, or, for `try`, the agent to judge the
-    /// request as: its name, the peer name of the latch it calls from, or its
-    /// agent uid, resolved once to the uid [default: every agent's rules; for
-    /// `try`, you]
-    #[arg(long, global = true, value_name = "NAME")]
-    pub from: Option<String>,
     #[command(subcommand)]
     pub command: RulesCommand,
+}
+
+/// Which rules a rules command is about.
+#[derive(Args, Debug)]
+pub struct RulesScope {
+    /// The serving machine the rules are for [default: this machine's own host state]
+    #[arg(long)]
+    pub host: Option<String>,
+    /// Whose rules: an agent's name, the peer name of the latch it calls
+    /// from, or its agent uid, resolved once to the uid [default: every agent's]
+    #[arg(long, value_name = "NAME")]
+    pub from: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -731,18 +734,38 @@ pub enum RulesCommand {
         text: Option<String>,
         #[arg(long, value_name = "F")]
         file: Option<PathBuf>,
+        #[command(flatten)]
+        scope: RulesScope,
     },
     /// Change the rules in $EDITOR; saved only if they did not change meanwhile
-    Edit,
+    Edit {
+        #[command(flatten)]
+        scope: RulesScope,
+    },
     /// Remove the rules
-    Clear,
+    Clear {
+        #[command(flatten)]
+        scope: RulesScope,
+    },
     /// The rules for every agent and each agent's own, with their revisions
-    Show,
+    Show {
+        #[command(flatten)]
+        scope: RulesScope,
+    },
     /// Preview the verdict the gatekeeper would give a request right now,
-    /// without running it: as the agent --from names, or as you. Each
-    /// preview is billed to your Plow balance like a real judgment, about
-    /// $0.0001
+    /// without running it: as the agent --from names, or as you. The verdict
+    /// is the gatekeeper's judgment at this moment, so a close call can come
+    /// out differently next time; the answer's `gate.p` shows how sure it
+    /// was. Each preview is billed to your Plow balance like a real
+    /// judgment, about $0.0001
     Try {
+        /// The host to preview on [default: this machine's own host]
+        #[arg(long)]
+        host: Option<String>,
+        /// Judge the request as this agent: its name, the peer name of the
+        /// latch it calls from, or its agent uid [default: you]
+        #[arg(long, value_name = "NAME")]
+        from: Option<String>,
         /// The latch command to preview, after `--`, as an agent would send
         /// it: exec, file, google, messages or contacts. Example: `-- exec
         /// --write ~/site -- npm run build`

@@ -26,6 +26,14 @@ pub(super) async fn run(
 ) -> (Done, Option<Value>) {
     let mut audit = Map::new();
     let (result, judged) = preview(host, identity, local, args, &mut audit).await;
+    // The record says what the preview found: its verdict, and whether
+    // that was a refusal (its decision).
+    if let Ok(answer) = &result {
+        audit.insert("verdict".into(), answer["verdict"].clone());
+        if let Some(code) = answer["refused"]["code"].as_str() {
+            audit.insert("refused".into(), json!(code));
+        }
+    }
     let done = match result {
         Ok(answer) => Done {
             outcome: answer["verdict"].as_str().unwrap_or_default().to_string(),
@@ -91,6 +99,14 @@ async fn preview(
         .judgment
         .as_ref()
         .map(|judgment| judgment.gate.clone());
+    // An exec the host refuses outright is refused before its paths are
+    // checked; they are resolved here so its answer shows them as a judged
+    // one's does.
+    if checked.denied_exec
+        && let Ok(prepared) = crate::exec::normalize(&host.workers, &request.args)
+    {
+        request.args = serde_json::to_value(&prepared).expect("prepared exec serializes");
+    }
     // The answer shows the action as the judge was shown it; the record
     // keeps it as the audit keeps the real call's.
     let gated = gate::gated(&request.op, &request.args);
@@ -101,16 +117,19 @@ async fn preview(
         audit.insert("action".into(), gated.audit);
     }
     let answer = |verdict: &str| {
-        let mut answer = json!({
+        // One shape whatever the verdict: no judgment is a null `gate`,
+        // and a judgment with no rules has null `rules`.
+        let mut gate = judged.clone().unwrap_or(Value::Null);
+        if gate.is_object() && gate.get("rules").is_none() {
+            gate["rules"] = Value::Null;
+        }
+        json!({
             "verdict": verdict,
             "host": host.name,
             "as": shown_as,
             "request": {"op": request.op, "action": action},
-        });
-        if let Some(judged) = &judged {
-            answer["gate"] = judged.clone();
-        }
-        answer
+            "gate": gate,
+        })
     };
     let host_refused = |failure: &Failure| {
         let mut answer = answer("host_refused");
@@ -157,7 +176,11 @@ async fn preview(
     } else if let Some(done) = unplaced {
         Err(done.response)
     } else if denied_exec {
-        Ok(host_refused(&exec_denied()))
+        let uid = judged_as.agent_uid.as_deref().unwrap_or_default();
+        Ok(host_refused(&exec_turned_off(
+            host.deny_exec.every_agent,
+            uid,
+        )))
     } else {
         Err(Response::error(&not_previewable(&request.op)))
     };
@@ -176,6 +199,21 @@ fn judged_action(op: &str, gated: &gate::Gated) -> Value {
         action["arguments"] = crate::messages::host::kept_plan(op, &action["arguments"]);
     }
     action
+}
+
+/// `exec_denied` as the owner who turned exec off reads it.
+fn exec_turned_off(every_agent: bool, uid: &str) -> Failure {
+    let (whom, flag) = match every_agent {
+        true => ("every agent", "--deny-exec".to_string()),
+        false => ("this agent", format!("--deny-exec={uid}")),
+    };
+    let message = format!(
+        "You turned exec off for {whom} on this host when you started it with \
+         `latch serve {flag}`. Start it again without that flag to turn exec back on."
+    );
+    let mut failure = exec_denied();
+    failure.message = message;
+    failure
 }
 
 /// A request the gatekeeper does not judge, or browser steps, which it

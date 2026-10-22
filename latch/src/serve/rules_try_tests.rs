@@ -215,7 +215,13 @@ async fn the_hosts_own_refusals_are_previewed_without_the_judge() {
         let tried = answer(response);
         assert_eq!(tried["verdict"], "host_refused", "{flags}");
         assert_eq!(tried["refused"]["code"], "exec_denied");
-        assert!(tried.get("gate").is_none());
+        assert_eq!(tried["gate"], Value::Null);
+        let whom = match flags == crate::cli::EVERY_AGENT {
+            true => "You turned exec off for every agent",
+            false => "You turned exec off for this agent",
+        };
+        let message = tried["refused"]["message"].as_str().unwrap();
+        assert!(message.starts_with(whom), "{message}");
         assert_eq!(t.judged(), 0, "{flags}");
         assert!(!t.host.workers.home.join("ran").exists());
         assert_eq!(t.audit()[0]["outcome"], "host_refused");
@@ -447,4 +453,137 @@ async fn a_previewed_contacts_page_does_not_show_where_the_last_page_ended() {
     let record = t.audit().into_iter().last().unwrap();
     assert_eq!(record["op"], "rules_try");
     assert_eq!(record["args"]["action"]["plan"]["after"]["key"], "[name]");
+}
+
+/// Every call on the host's board, newest first.
+fn board_calls(t: &super::gated_tests::TestHost) -> Vec<Value> {
+    let board = serde_json::to_value(&*t.host.dashboard.watch().borrow()).unwrap();
+    let mut calls = Vec::new();
+    fn walk(value: &Value, calls: &mut Vec<Value>) {
+        match value {
+            Value::Object(map) if map.contains_key("outcome") && map.contains_key("command") => {
+                calls.push(value.clone())
+            }
+            Value::Object(map) => map.values().for_each(|v| walk(v, calls)),
+            Value::Array(values) => values.iter().for_each(|v| walk(v, calls)),
+            _ => {}
+        }
+    }
+    walk(&board["tasks"], &mut calls);
+    calls
+}
+
+#[tokio::test]
+async fn a_preview_is_recorded_and_shown_with_what_it_found() {
+    let deny = DenyExec::from_flags(&[AGENT.to_string()]);
+    let t = start_denying(chat_with(covered_after_a_yes), deny).await;
+    let device = t.caller("device").await;
+    let build = json!({"argv": ["npm", "run", "build"], "writes": ["~/site"]});
+
+    // Refused by the judge: the record says so, and so does the board.
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", build.clone(), None, None),
+        )
+        .await;
+    let refused = answer(response);
+    // The owner's own preview: shared rules only, none set, so allowed.
+    assert_eq!(refused["verdict"], "allow");
+    assert_eq!(refused["gate"]["rules"], Value::Null, "{refused}");
+    let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": [],
+                        "confirm_conflict": false, "inputs": []});
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("google", google, Some("Juno"), None),
+        )
+        .await;
+    let not_covered = answer(response);
+    assert_eq!(not_covered["verdict"], "not_covered");
+
+    // Refused by the host: the same shape, its paths resolved, no gate.
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", build, Some("Juno"), None),
+        )
+        .await;
+    let host_refused = answer(response);
+    assert_eq!(host_refused["verdict"], "host_refused");
+    assert_eq!(host_refused["gate"], Value::Null);
+    let site = t.host.workers.home.join("site");
+    assert_eq!(host_refused["request"]["action"]["writes"], json!([site]));
+    assert_eq!(
+        host_refused["request"]["action"]["working_folder"],
+        json!(site)
+    );
+    let message = host_refused["refused"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("You turned exec off for this agent")
+            && message.contains(&format!("--deny-exec={AGENT}")),
+        "{message}"
+    );
+    assert!(!site.exists());
+
+    let records = t.audit();
+    let kept: Vec<(&str, &str, &str)> = records
+        .iter()
+        .map(|record| {
+            (
+                record["decision"].as_str().unwrap(),
+                record["outcome"].as_str().unwrap(),
+                record["args"]["verdict"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            ("allow", "allow", "allow"),
+            ("deny", "not_covered", "not_covered"),
+            ("deny", "host_refused", "host_refused"),
+        ]
+    );
+    assert_eq!(records[2]["args"]["refused"], "exec_denied");
+
+    let calls = board_calls(&t);
+    let shown: Vec<(&str, &str, &str)> = calls
+        .iter()
+        .map(|call| {
+            (
+                call["title"].as_str().unwrap(),
+                call["command"].as_str().unwrap(),
+                call["outcome"]["text"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    let line = format!(
+        "try --from Juno -- exec --write {} npm run build",
+        site.display()
+    );
+    assert_eq!(
+        shown,
+        [
+            (
+                "Preview: Run: npm run build",
+                line.as_str(),
+                "would be refused: exec is off for this agent"
+            ),
+            (
+                "Preview: Google: gmail.search",
+                "try --from Juno -- google gmail search",
+                "would be refused: outside your instructions"
+            ),
+            (
+                "Preview: Run: npm run build",
+                format!("try -- exec --write {} npm run build", site.display()).as_str(),
+                "would be allowed"
+            ),
+        ],
+        "{calls:#?}"
+    );
 }

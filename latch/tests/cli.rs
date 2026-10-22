@@ -5981,6 +5981,11 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
     let no_program = ["rules", "try", "--", "exec", "--write", "~/out"];
     let (code, error) = answered(&latch(&fresh, &no_program, &[]));
     assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("Usage: latch rules try -- exec"),
+        "{message}"
+    );
     // The host goes on `rules try`, never inside the request.
     for nested in [
         &["rules", "try", "--", "exec", "--host", "mac", "--", "true"][..],
@@ -6013,4 +6018,7 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
     let help = latch(&fresh, &["rules", "try", "-h"], &[]);
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("about $0.0001"), "{help}");
+    assert!(help.contains("`gate.p` shows how sure it was"), "{help}");
+    assert!(help.contains("Judge the request as this agent"), "{help}");
+    assert!(help.contains("The host to preview on"), "{help}");
 }
