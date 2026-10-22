@@ -14,8 +14,8 @@ owner trusts, over Plow's peer directory. The same binary plays every role:
 - a **host** runs `latch serve` and answers callers over iroh (QUIC,
   ALPN `plow/latch/2`), each operation in a sandboxed worker;
 - a **device** is one of the owner's own machines, logged in with an owner
-  login; it is the owner acting, judged on the owner's own request within
-  the host's rules;
+  login; it is the owner acting, judged only against the host's rules
+  (allowed unless they forbid it);
 - an **agent** logs in with its own Plow credential and reaches hosts with
   `latch exec|file|browser|google … --host NAME`; every agent request passes
   the host's gatekeeper.
@@ -59,10 +59,14 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
   not enforced; only `--deny-exec` is a guarantee.
 - **Owner provenance is Plow's classification** of chat messages, not proven
   ingress.
-- **A device login placed where an agent runs is judged as the owner**, on
-  its own requests within the host's rules, not against what the owner
-  asked the agent. The docs tell agents to use their own credential; the
+- **A device login placed where an agent runs is judged as the owner**:
+  only against the host's rules, not against what the owner asked the
+  agent. The docs tell agents to use their own credential; the
   host cannot tell.
+- **The gatekeeper does not remember what a caller already ran.** The same
+  send or purchase asked twice is judged twice, on its own. Repeats are
+  left to request ids (`duplicate_request`), exit 5's "outcome unknown"
+  and the agent's guidance to check before resending.
 - **The state folder is protected only from latch's own workers.** Root, and
   any process of the host's OS user outside latch, can read or write it.
 - **On macOS the browser engine runs outside latch's Seatbelt** (Chrome's own

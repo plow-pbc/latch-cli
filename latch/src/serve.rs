@@ -858,13 +858,6 @@ async fn serve_request(
                 (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
             };
-            // A one-time action (send one email) is judged, run and
-            // recorded before the same caller's next one is judged, so two
-            // sent at once do not both run.
-            let turn = match (&gate, &gated) {
-                (Ok(gate), Some(gated)) if gated.once => Some(gate.one_at_a_time().await),
-                _ => None,
-            };
             let judgment = match (&gate, &gated) {
                 (Ok(gate), Some(gated)) if unjudgeable.is_none() => {
                     Some(gate.judge(&gated.action).await)
@@ -1013,13 +1006,6 @@ async fn serve_request(
                     ),
                 }
             };
-            if let (Ok(gate), Some(gated), Some(judgment)) = (&gate, &gated, &judgment)
-                && judgment.verdict.is_ok()
-                && gated.once
-            {
-                gate.did(&gated.action, &done.outcome);
-            }
-            drop(turn);
             let decision = decision(&done.response);
             log(&format!(
                 "{op}: {caller}: {decision}: {} {}",

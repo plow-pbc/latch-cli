@@ -39,7 +39,7 @@ use sha2::{Digest, Sha256};
 use super::core::{Action, fingerprint};
 use super::host::{Browsers, Entry, paused, take_audit};
 use super::journal::{self, Journal};
-use super::judged::{self, Judged};
+use super::judged;
 use super::model::{self, CHECKABLE_P, RISKY_P};
 use super::plan::{Check, CheckKind, Literal, Op, Plan, Step};
 use super::session::Session;
@@ -693,17 +693,18 @@ fn stopped(code: &str, message: String) -> Failure {
 impl<'a> Run<'a> {
     /// Judges a vault fill the plan is about to make, as `fill` is
     /// judged; a refusal is recorded and stops the plan, nothing sent.
-    async fn judge_fill(&mut self, n: usize, args: &Value) -> Result<Option<Judged<'a>>, Failure> {
+    async fn judge_fill(&mut self, n: usize, args: &Value) -> Result<(), Failure> {
         let Some(gate) = self.gate else {
-            return Ok(None);
+            return Ok(());
         };
         let site = judged::site(self.browsers, self.entry).await?;
         let action = judged::fill(self.browsers, args, site, false);
-        let (judged, record) = judged::judgment(gate, action).await;
-        match judged {
-            Ok(judged) => {
+        let judgment = gate.judge(&action).await;
+        let record = judgment.gate;
+        match judgment.verdict {
+            Ok(()) => {
                 self.judgment = Some(record);
-                Ok(Some(judged))
+                Ok(())
             }
             Err(failure) => {
                 self.records
@@ -1118,8 +1119,8 @@ impl Run<'_> {
     /// confirmation first; any other fills now.
     async fn fill(&mut self, n: usize, literal: &Literal) -> Result<(), Failure> {
         let mut args = super::fill::resolve(self.browsers, self.entry, &fill_args(literal)).await?;
-        let judged = self.judge_fill(n, &args).await?;
-        let filled = match super::fill::releases_secret(self.browsers, &args) {
+        self.judge_fill(n, &args).await?;
+        match super::fill::releases_secret(self.browsers, &args) {
             Ok(Some(title)) => {
                 args["item_title"] = json!(title);
                 let failure = confirm_fill(self.browsers, self.entry, &args, self.audit).await;
@@ -1130,11 +1131,7 @@ impl Run<'_> {
             }
             Ok(None) => self.fill_now(n, args, None).await,
             Err(failure) => Err(failure),
-        };
-        if let Some(judged) = judged {
-            judged.ended(&filled);
         }
-        filled
     }
 
     /// A vault fill as one action: pause, origin match, set, press, clean

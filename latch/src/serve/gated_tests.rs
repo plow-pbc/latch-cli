@@ -437,11 +437,6 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
         "tidied\ntidied\n"
     );
     assert_eq!(t.judged(), 3, "the same exec is judged each time");
-    let asked = t.plow.world.lock().unwrap().asked.clone();
-    assert_eq!(
-        asked[2]["already_done_by_agent"], "(nothing since this host started)",
-        "an exec run again is not a one-time action"
-    );
 
     let records = t.audit();
     let gate = &records[2]["gate"];
@@ -522,7 +517,7 @@ async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
 }
 
 #[tokio::test]
-async fn a_google_change_is_already_done_the_next_time_and_a_read_is_not() {
+async fn a_repeated_google_change_is_judged_afresh_with_no_history() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;
     let google = |gog_args: &[&str]| json!({"gog_args": gog_args, "account": [], "confirm_conflict": false, "inputs": []});
@@ -535,29 +530,19 @@ async fn a_google_change_is_already_done_the_next_time_and_a_read_is_not() {
         "the body",
     ]);
     let search = google(&["gmail", "search", "invoice"]);
-    for args in [&search, &search, &send, &send] {
+    for args in [&search, &send, &send] {
         t.call(&agent, "google", args.clone()).await;
     }
     let asked = t.plow.world.lock().unwrap().asked.clone();
-    assert_eq!(asked.len(), 4);
-    for state in &asked[..3] {
-        assert_eq!(
-            state["already_done_by_agent"],
-            "(nothing since this host started)"
-        );
+    assert_eq!(asked.len(), 3, "each one judged");
+    for state in &asked {
+        assert!(state.get("already_done_by_agent").is_none(), "{state}");
     }
-    let done = &asked[3]["already_done_by_agent"]["since this host started"];
-    assert_eq!(done.as_array().unwrap().len(), 1, "{done}");
-    assert_eq!(done[0]["what"]["command"], send["gog_args"]);
-}
-
-/// Covered until the agent has already done something since the host started.
-fn covered_once(state: &Value) -> Option<[f64; 3]> {
-    Some(if state["already_done_by_agent"].is_string() {
-        [0.9, 0.08, 0.02]
-    } else {
-        [0.1, 0.85, 0.05]
-    })
+    assert_eq!(
+        asked[1]["proposed_action"], asked[2]["proposed_action"],
+        "the second send is judged as the first"
+    );
+    assert_eq!(asked[2]["proposed_action"]["command"], send["gog_args"]);
 }
 
 #[tokio::test]
@@ -615,28 +600,6 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
         assert_eq!((exit, code), (Exit::Denied, "bad_path"), "{hidden}");
     }
     assert_eq!(t.judged(), 1);
-}
-
-#[tokio::test]
-async fn the_same_google_change_sent_twice_at_once_runs_once() {
-    let t = start(a_chat(covered_once)).await;
-    let agent = t.caller("agent").await;
-    let send = json!({"gog_args": ["gmail", "send", "--to", "a@example.com", "--body", "the body"],
-                      "account": [], "confirm_conflict": false, "inputs": []});
-    let (first, second) = tokio::join!(
-        t.call(&agent, "google", send.clone()),
-        t.call(&agent, "google", send.clone()),
-    );
-    // The second is judged after the first ran, and sees it already done.
-    // (The one that runs stops at the missing gog: it ran all the same.)
-    let refused = [&first.0, &second.0]
-        .into_iter()
-        .filter(
-            |answer| matches!(answer, Response::Error { code, .. } if code == "gatekeeper_denied"),
-        )
-        .count();
-    assert_eq!(refused, 1, "{first:?} {second:?}");
-    assert_eq!(t.judged(), 2);
 }
 
 #[tokio::test]

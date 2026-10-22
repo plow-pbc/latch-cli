@@ -18,11 +18,6 @@ pub struct Gated {
     /// What the audit keeps if it is refused: no Google arguments, which
     /// can hold a message body or a search.
     pub audit: Value,
-    /// Whether it is a one-time action, which the judge then sees as
-    /// already done: a Google command that changes something. Running,
-    /// reading or searching again is normal, so exec, files and Google
-    /// reads are not.
-    pub once: bool,
     /// Why the judge cannot be asked at all: an exec's stdin it cannot read.
     pub unjudgeable: Option<Failure>,
 }
@@ -90,7 +85,6 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
         accounts: None,
         arguments: None,
     };
-    let mut once = false;
     let (action, audit) = match op {
         "exec" => {
             let secrets = serde_json::from_value(args["secret_env"].clone()).unwrap_or_default();
@@ -139,7 +133,6 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
             let words: Vec<String> =
                 serde_json::from_value(args["gog_args"].clone()).unwrap_or_default();
             let command = crate::google::policy::command_prefix(&words);
-            once = crate::google::policy::parse(&words).map_or(true, |plan| !plan.read_only());
             (action, json!({"command": command}))
         }
         // Reads, judged on their effective request (the host's plan: every
@@ -159,7 +152,6 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
     Some(Gated {
         action: serde_json::value::to_raw_value(&action).expect("an action serializes"),
         audit,
-        once,
         unjudgeable,
     })
 }
