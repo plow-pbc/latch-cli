@@ -855,7 +855,14 @@ async fn release_and_set(
             }
             // Worth fixing in the vault, though the fill went through.
             if dropped {
-                audit.insert("dropped_line_breaks".into(), json!(label));
+                let fields = audit
+                    .entry("dropped_line_breaks")
+                    .or_insert_with(|| json!([]));
+                if let Some(fields) = fields.as_array_mut()
+                    && !fields.iter().any(|f| f == label)
+                {
+                    fields.push(json!(label));
+                }
             }
         }
     }
