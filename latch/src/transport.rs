@@ -149,8 +149,30 @@ pub fn local_socket_path(state: &Path) -> PathBuf {
     state.join(format!("serve-v{}.sock", crate::wire::protocol()))
 }
 
+/// The longest path a Unix socket may have: the OS's `sun_path`, less its
+/// closing NUL.
+const MAX_SOCKET_PATH: usize = if cfg!(target_os = "macos") { 103 } else { 107 };
+
+/// `local_socket_path`, or a failure that says the state folder's path is
+/// too long for one.
+fn socket_path(state: &Path) -> Result<PathBuf, Failure> {
+    let path = local_socket_path(state);
+    let length = path.as_os_str().len();
+    if length > MAX_SOCKET_PATH {
+        let message = format!(
+            "the state folder {} is too deep for this machine's local socket: its path {} is \
+             {length} bytes, and the limit is {MAX_SOCKET_PATH}; use a state folder with a \
+             shorter path",
+            state.display(),
+            path.display()
+        );
+        return Err(Failure::usage("state_dir_too_long", message));
+    }
+    Ok(path)
+}
+
 pub async fn connect_local(state: &Path) -> Result<UnixStream, Failure> {
-    UnixStream::connect(local_socket_path(state)).await.map_err(|err| {
+    UnixStream::connect(socket_path(state)?).await.map_err(|err| {
         if matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) {
             Failure::new(Exit::Unreachable, "serve_required", "this machine needs a live receiver; start `latch serve` on this state folder, then retry".into())
         } else {
@@ -166,7 +188,7 @@ pub struct LocalSocket {
 }
 impl LocalSocket {
     pub fn bind(state: &Path) -> Result<Self, Failure> {
-        let path = local_socket_path(state);
+        let path = socket_path(state)?;
         let io = |err| Failure::failed("local_socket", format!("{}: {err}", path.display()));
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -205,5 +227,22 @@ mod tests {
         let current = LocalSocket::bind(dir.path()).unwrap();
         let _client = connect_local(dir.path()).await.unwrap();
         let _accepted = current.listener.accept().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_state_folder_too_deep_for_a_socket_says_so_and_names_the_limit() {
+        let state = Path::new("/state").join("deep".repeat(MAX_SOCKET_PATH / 4));
+        for failure in [
+            connect_local(&state).await.unwrap_err(),
+            LocalSocket::bind(&state).err().unwrap(),
+        ] {
+            assert_eq!(failure.code, "state_dir_too_long");
+            assert!(
+                failure
+                    .message
+                    .contains(&format!("the limit is {MAX_SOCKET_PATH}"))
+            );
+            assert!(!failure.message.contains("SUN_LEN"));
+        }
     }
 }
