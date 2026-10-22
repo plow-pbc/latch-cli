@@ -72,6 +72,7 @@ pub(super) fn import(state: &StateDir, path: &Path) -> Result<Value, Failure> {
         let mut result = json!(outcome);
         result["source"] = preview["source"].clone();
         result["picked"] = json!(picks);
+        result["preview"] = preview;
         Ok(result)
     })
 }

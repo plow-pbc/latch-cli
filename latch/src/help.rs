@@ -126,7 +126,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "status",
-        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one.",
+        output: "This peer, its Plow and the hosts it can reach; each key's art (`art`) to compare between machines; with --local, only this machine's own latch, asking no one.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -279,7 +279,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "exec",
-        output: "The program's `exit_code` (or `signal`, or `timed_out`), `stdout`, `stderr`, declared `writes` and `network` flag. Secret environment values are omitted from judgment and audit; program output is returned as-is.",
+        output: "The program's `exit_code` (or `signal`), `stdout`, `stderr`, declared `writes` and `network` flag. Secret environment values are omitted from judgment and audit; program output is returned as-is.",
         effect: Once(
             "runs the program on the host, inside its sandbox; its effects are the program's",
         ),
@@ -367,7 +367,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.text",
-        output: "The page's text, at most 20,000 characters (`truncated` when cut); with --raw, the text alone.",
+        output: "The page's text, at most 20,000 characters (`truncated` when cut).",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -1031,9 +1031,10 @@ pub fn skill() -> String {
     format!("---\n{front}\nmetadata:\n  version: {version}\n---\n{body}")
 }
 
-/// `latch help [COMMAND…] [--examples | --json]`. Under `google`, the
-/// words after it name gog commands, from the grammar that validates them.
-pub fn run(args: HelpArgs) -> ExitCode {
+/// `latch help [COMMAND…] [--examples | --json]`, the JSON indented with
+/// `--pretty`. Under `google`, the words after it name gog commands, from
+/// the grammar that validates them.
+pub fn run(args: HelpArgs, pretty: bool) -> ExitCode {
     let mut root = Cli::command();
     root.build();
     let (path, gog_words) = match args.path.split_first() {
@@ -1088,7 +1089,11 @@ pub fn run(args: HelpArgs) -> ExitCode {
                 .collect(),
             actions: listed,
         };
-        println!("{}", serde_json::to_string(&help).expect("help serializes"));
+        let help = match pretty {
+            true => serde_json::to_string_pretty(&help),
+            false => serde_json::to_string(&help),
+        };
+        println!("{}", help.expect("help serializes"));
     } else if args.examples {
         for action in &listed {
             println!("{}", action.usage);

@@ -144,7 +144,6 @@ latch browser --host my-mac wait --text "Saved" | --ref e4 --state hidden | --ur
 latch browser --host my-mac screenshot page.png
 latch browser --host my-mac goto https://example.com/next   # the active tab loads it
 latch browser --host my-mac text | tab new URL | tab switch t2 | tab close
-latch browser --host my-mac text --raw > page.txt        # the same text alone, not JSON
 latch browser --host my-mac dialog accept | dismiss
 latch browser --host my-mac eval --script-file check.js   # its JSON value
 latch browser --host my-mac upload e4 ./invoice.pdf
@@ -160,10 +159,9 @@ latch browser --host my-mac sessions | close
 latch browser --host my-mac open --profile shop --task basket --reserve-site https://shop.example/
 ```
 
-`text` answers the page's main-frame text, at most 20,000 characters
-(`truncated` when cut); `text --raw` prints that same text alone, for a
-pipe, with a note on stderr when it was cut. An error is the usual JSON on
-stderr with its exit code either way.
+`text` answers the page's main-frame text in its JSON, at most 20,000
+characters (`truncated` when cut). An error is the usual JSON on stderr
+with its exit code.
 
 `fill` takes values from the host's vault without the agent ever seeing
 one, into the elements the agent maps or latch suggested; `observe` shows

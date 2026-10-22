@@ -132,12 +132,7 @@ impl StateDir {
             Failure::failed("bad_state", message)
         })?;
         let fix = match marker.format.cmp(&FORMAT) {
-            std::cmp::Ordering::Equal => {
-                if let Some(notice) = crate::audit::plaintext_notice(&self.path) {
-                    eprintln!("{notice}");
-                }
-                return Ok(());
-            }
+            std::cmp::Ordering::Equal => return Ok(()),
             std::cmp::Ordering::Greater => "update this latch",
             std::cmp::Ordering::Less => "use the latch that wrote it",
         };

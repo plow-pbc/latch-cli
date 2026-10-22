@@ -19,7 +19,8 @@
 //!
 //! The log is `audit.sealed.ndjson`. A plaintext `audit.ndjson` an older
 //! latch left is neither read nor changed: a fresh sealed log starts beside
-//! it, and `plaintext_notice` says it can be deleted.
+//! it, and `latch status --local` names it (`old_audit_log`): it can be
+//! deleted.
 //!
 //! Records hold who called, what they asked (an exec's whole argv), the
 //! decision and the outcome; never file contents, command output or
@@ -516,17 +517,11 @@ pub fn record(
     }
 }
 
-/// The one line latch says while an older latch's plaintext audit log is
-/// in the folder: this latch never reads it, and it can be deleted.
-pub fn plaintext_notice(dir: &Path) -> Option<String> {
+/// An older latch's plaintext audit log in the folder, if there is one:
+/// this latch never reads it, and it can be deleted.
+pub fn plaintext(dir: &Path) -> Option<PathBuf> {
     let old = dir.join(PLAINTEXT);
-    old.exists().then(|| {
-        format!(
-            "latch: {} is an older latch's plaintext audit log; this latch keeps a sealed one \
-             ({FILE}) and never reads it, so it can be deleted",
-            old.display()
-        )
-    })
+    old.exists().then_some(old)
 }
 
 /// The file everything that writes the log, or rotates or first makes its

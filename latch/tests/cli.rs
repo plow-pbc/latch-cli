@@ -108,9 +108,15 @@ fn test_dir() -> tempfile::TempDir {
 }
 
 /// `latch --state-dir STATE ARGS...`, with none of the caller's latch or
-/// Plow environment leaking in.
+/// Plow environment leaking in. A regular command that worked has said
+/// nothing on stderr.
 fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
-    latch_command(state, args, env).output().unwrap()
+    let output = latch_command(state, args, env).output().unwrap();
+    let human = ["setup", "dashboard"].contains(&args.first().copied().unwrap_or_default());
+    if output.status.success() && !human {
+        assert!(output.stderr.is_empty(), "{args:?}: {output:?}");
+    }
+    output
 }
 
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
@@ -702,7 +708,7 @@ fn regular_commands() -> Vec<Vec<String>> {
     let dir = test_dir();
     let help = latch(&dir.path().join("none"), &["help", "--json"], &[]);
     let help: Value = serde_json::from_slice(&help.stdout).unwrap();
-    let human = ["setup", "dashboard", "serve", "help", "skill"];
+    let human = ["setup", "dashboard", "serve", "rules.edit", "help", "skill"];
     let mut commands = Vec::new();
     for action in help["actions"].as_array().unwrap() {
         let id = action["id"].as_str().unwrap();
@@ -770,6 +776,132 @@ fn every_regular_command_fails_in_one_json_line_at_a_terminal_and_piped() {
         assert_eq!(code, piped.status.code(), "{args:?}: {shown}");
         assert_eq!(one_error_line(&shown, code), error, "{args:?}");
     }
+}
+
+/// A JSON value's shape: its keys and the kind of each value, so two runs
+/// whose times and ids differ compare equal.
+fn shape(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            Value::Object(map.iter().map(|(k, v)| (k.clone(), shape(v))).collect())
+        }
+        // The kinds of item a list holds, not how many: runs share one Plow,
+        // whose machines add up.
+        Value::Array(items) => {
+            let mut kinds: Vec<Value> = Vec::new();
+            for kind in items.iter().map(shape) {
+                if !kinds.contains(&kind) {
+                    kinds.push(kind);
+                }
+            }
+            Value::Array(kinds)
+        }
+        Value::String(_) => json!("string"),
+        Value::Number(_) => json!("number"),
+        Value::Bool(_) => json!("bool"),
+        Value::Null => Value::Null,
+    }
+}
+
+/// Every regular command but the streams (`events`, `logs`), each run on a
+/// fresh owner's machine three times: at a terminal, piped, and piped with
+/// `--pretty`. A success prints the same JSON shape every way, `--pretty`
+/// indented, with nothing on stderr; a failure prints one error line.
+#[test]
+fn every_regular_command_prints_the_same_json_at_a_terminal_piped_and_pretty() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let streams = [&["events"][..], &["logs"]];
+    let commands: Vec<Vec<String>> = regular_commands()
+        .into_iter()
+        .filter(|args| !streams.iter().any(|stream| args[..] == **stream))
+        .collect();
+    let mut worked = Vec::new();
+    for (n, args) in commands.iter().enumerate() {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let fresh = |mode: &str| {
+            // `logout` signs the owner's login out of Plow: each run logs in anew.
+            plow.state.lock().unwrap().owner = "owner-login".to_string();
+            let machine = dir.path().join(format!("{n}-{mode}"));
+            fs::create_dir_all(&machine).unwrap();
+            owner_host_on(&plow, &machine)
+        };
+        let (code, shown, _) = latch_at_a_terminal(&fresh("terminal"), &args, "", true, &[]);
+        let shown = shown.replace("\r\n", "\n");
+        let piped = latch(&fresh("piped"), &args, &[]);
+        assert_eq!(piped.status.code(), code, "{args:?}: {shown} / {piped:?}");
+        let mut pretty_args = args.clone();
+        pretty_args.push("--pretty");
+        let pretty = latch(&fresh("pretty"), &pretty_args, &[]);
+        assert_eq!(pretty.status.code(), code, "{args:?}: {pretty:?}");
+        if code != Some(0) {
+            let error = one_error_line(&String::from_utf8_lossy(&piped.stderr), code);
+            assert_eq!(
+                shape(&one_error_line(&shown, code)),
+                shape(&error),
+                "{args:?}"
+            );
+            one_error_line(&String::from_utf8_lossy(&pretty.stderr), code);
+            continue;
+        }
+        worked.push(args.join(" "));
+        assert!(piped.stderr.is_empty(), "{args:?}: {piped:?}");
+        assert!(pretty.stderr.is_empty(), "{args:?}: {pretty:?}");
+        let text = String::from_utf8(piped.stdout).unwrap();
+        assert_eq!(text.lines().count(), 1, "{args:?}: {text}");
+        let result: Value = serde_json::from_str(&text).unwrap();
+        let at_terminal: Value = serde_json::from_str(shown.trim())
+            .unwrap_or_else(|_| panic!("{args:?}: not only JSON at a terminal: {shown}"));
+        assert_eq!(shape(&at_terminal), shape(&result), "{args:?}");
+        let indented = String::from_utf8(pretty.stdout).unwrap();
+        let same: Value = serde_json::from_str(&indented).unwrap();
+        assert_eq!(shape(&same), shape(&result), "{args:?}");
+        if matches!(&result, Value::Object(map) if !map.is_empty()) {
+            assert!(
+                indented.contains("\n  \""),
+                "{args:?} not indented: {indented}"
+            );
+        }
+    }
+    // The ones a machine with no host running can do.
+    assert!(worked.len() >= 8, "{worked:?}");
+    eprintln!("worked: {worked:?}");
+}
+
+/// `--pretty` changes the layout, never the content.
+#[test]
+fn pretty_json_holds_the_same_content() {
+    let (_dir, state, _key) = owner_host();
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    for args in [&["rules", "show"][..], &["--version"], &["help", "--json"]] {
+        let compact = latch(&state, args, &[]);
+        let mut pretty_args = args.to_vec();
+        pretty_args.push("--pretty");
+        let pretty = latch(&state, &pretty_args, &[]);
+        let compact = String::from_utf8(compact.stdout).unwrap();
+        let pretty = String::from_utf8(pretty.stdout).unwrap();
+        assert_eq!(compact.lines().count(), 1, "{args:?}: {compact}");
+        assert!(pretty.lines().count() > 1, "{args:?}: {pretty}");
+        let (mut compact, mut pretty): (Value, Value) = (
+            serde_json::from_str(&compact).unwrap(),
+            serde_json::from_str(&pretty).unwrap(),
+        );
+        // Each read is audited under its own id.
+        for read in [&mut compact, &mut pretty] {
+            read.as_object_mut().unwrap().remove("audit_id");
+        }
+        assert_eq!(compact, pretty, "{args:?}");
+    }
+}
+
+#[test]
+fn browser_text_has_no_raw_mode() {
+    let dir = test_dir();
+    let raw = latch(&dir.path().join("none"), &["browser", "text", "--raw"], &[]);
+    assert_eq!(raw.status.code(), Some(2), "{raw:?}");
+    let error = one_error_line(&String::from_utf8_lossy(&raw.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "usage");
 }
 
 #[test]
@@ -957,7 +1089,7 @@ fn a_login_by_text_stops_at_plows_refusal_and_retries_a_slow_down() {
 }
 
 #[test]
-fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
+fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_then_its_json() {
     let (api_url, server) = plow_texted_at_once();
     let dir = test_dir();
     let state = dir.path().join("state");
@@ -980,21 +1112,20 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
         shown.contains(&format!("{opens}{link}\x1b]8;;\x1b\\")),
         "{shown}"
     );
-    // Then what to do, that it is waiting, and one line when it is done:
-    // no JSON.
+    // Then what to do, that it is waiting, and the result: its JSON, as
+    // anywhere else.
     let said: Vec<&str> = rows
         .iter()
         .filter(|row| !row.contains(&opens))
-        .copied()
+        .map(|row| row.trim_end())
         .collect();
     assert_eq!(
-        said,
-        [
-            "Text TRY12 to +1 415-555-0100",
-            "Waiting for your text…",
-            "Logged in as mac."
-        ]
+        said[..2],
+        ["Text TRY12 to +1 415-555-0100", "Waiting for your text…"]
     );
+    let result: Value = serde_json::from_str(said[2]).unwrap();
+    assert_eq!(result["peer"]["name"], "mac");
+    assert_eq!(said.len(), 3, "{shown}");
     assert_eq!(server.join().unwrap().len(), 3);
 }
 
@@ -1117,8 +1248,8 @@ fn help_and_skill_need_no_login_and_carry_this_version() {
     let dir = test_dir();
     let state = dir.path().join("none");
     let version = latch(&state, &["--version"], &[]);
-    let version = String::from_utf8(version.stdout).unwrap();
-    let version = version.trim().strip_prefix("latch ").unwrap();
+    let version: Value = serde_json::from_slice(&version.stdout).unwrap();
+    let version = version["version"].as_str().unwrap();
 
     let help = latch(&state, &["help", "--json"], &[]);
     assert_eq!(help.status.code(), Some(0), "{help:?}");
@@ -1531,13 +1662,12 @@ fn an_older_plaintext_audit_is_left_alone_and_a_sealed_one_starts_beside_it() {
 
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
-    let said = String::from_utf8_lossy(&set.stderr);
-    assert_eq!(said.lines().count(), 1, "{said}");
-    assert!(
-        said.contains("audit.ndjson is an older latch's plaintext audit log"),
-        "{said}"
-    );
-    assert!(said.contains("can be deleted"), "{said}");
+    assert!(set.stderr.is_empty(), "{set:?}");
+    // `status --local` names it, so its owner can delete it.
+    let local = latch(&state, &["status", "--local"], &[]);
+    let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+    let named = local["old_audit_log"].as_str().unwrap();
+    assert!(named.ends_with("audit.ndjson"), "{local}");
 
     // Neither read nor changed; the new record is in the sealed log.
     assert_eq!(fs::read_to_string(state.join("audit.ndjson")).unwrap(), old);
@@ -3263,8 +3393,14 @@ fn a_local_vault_import_saves_only_picked_rows_without_serve() {
     child.stdin.take().unwrap().write_all(b"all\n").unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "{output:?}");
+    // A program is asked nothing: the preview is in the result.
+    assert!(output.stderr.is_empty(), "{output:?}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["saved"], 1);
+    assert_eq!(
+        result["preview"]["items"][0]["title"], "Imported",
+        "{result}"
+    );
     assert_eq!(plow.seen().len(), before);
 }
 
@@ -4110,12 +4246,48 @@ fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
     let output = client.wait_with_output().unwrap();
     drop(serve);
     assert!(stopped, "the program ran on past its time limit");
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["timed_out"], true, "{result}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let error = one_error_line(
+        &String::from_utf8_lossy(&output.stderr),
+        output.status.code(),
+    );
+    assert_eq!(
+        (&error["error"]["code"], &error["error"]["exit"]),
+        (&json!("timed_out"), &json!(1)),
+        "{error}"
+    );
+
     let records = bench.exec_records();
     assert_eq!(records.len(), 1, "{records:?}");
     assert_eq!(records[0]["outcome"], "timed_out", "{records:?}");
+}
+
+#[test]
+fn a_failing_program_is_a_result_and_one_past_its_timeout_an_error_with_its_output() {
+    let bench = Bench::new();
+    let _serve = bench.serve();
+    // latch worked: the program's own failure is in the result.
+    let failed = bench.exec(&bench.owner, "10", "echo no; exit 1");
+    let failed = failed.wait_with_output().unwrap();
+    assert_eq!(failed.status.code(), Some(0), "{failed:?}");
+    assert!(failed.stderr.is_empty(), "{failed:?}");
+    let result: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(
+        (&result["exit_code"], &result["stdout"]),
+        (&json!(1), &json!("no\n"))
+    );
+
+    // Stopped at its time limit: an error, with what it printed until then.
+    let stopped = bench.exec(&bench.owner, "1", "echo before; sleep 30");
+    let stopped = stopped.wait_with_output().unwrap();
+    assert!(stopped.stdout.is_empty(), "{stopped:?}");
+    let error = one_error_line(
+        &String::from_utf8_lossy(&stopped.stderr),
+        stopped.status.code(),
+    );
+    assert_eq!(error["error"]["code"], "timed_out", "{error}");
+    assert_eq!(error["error"]["exit"], 1, "{error}");
+    assert_eq!(error["error"]["stdout"], "before\n", "{error}");
 }
 
 #[test]

@@ -322,25 +322,31 @@ async fn import(connection: &crate::transport::Connection, path: &Path) -> Resul
     let mut outcome = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     outcome["source"] = preview["source"].clone();
     outcome["picked"] = json!(picks);
+    outcome["preview"] = preview.clone();
     Ok(outcome)
 }
 
+/// The rows to import, as a line on stdin (`1,3-5`, `all`, or nothing for
+/// none). At a terminal the owner sees the preview and a question first;
+/// a program reads the preview in the result and is asked nothing.
 pub(super) fn choose(preview: &Value) -> Result<Vec<usize>, Failure> {
-    show(preview);
+    let person = term::interactive();
+    if person {
+        show(preview);
+    }
     let rows = preview["items"].as_array().map_or(0, Vec::len);
     if rows == 0 {
-        Ok(Vec::new())
-    } else {
-        pick(
-            &term::ask(
-                "Import which? Numbers or ranges (1,3-5), \"all\", or nothing to import none: ",
-            ),
-            rows,
-        )
+        return Ok(Vec::new());
     }
+    let question = match person {
+        true => "Import which? Numbers or ranges (1,3-5), \"all\", or nothing to import none: ",
+        false => "",
+    };
+    pick(&term::ask(question), rows)
 }
 
-/// The preview, for the owner, on stderr: stdout stays the command's JSON.
+/// The preview, for the owner picking at a terminal, on stderr: stdout
+/// stays the command's JSON.
 fn show(preview: &Value) {
     eprintln!("{} export:", preview["source"].as_str().unwrap_or("this"));
     for row in preview["items"].as_array().into_iter().flatten() {

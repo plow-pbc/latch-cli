@@ -356,6 +356,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("stop_failed", Exit::Failed),
     ("store_failed", Exit::Failed),
     ("store_rejected", Exit::Failed),
+    ("timed_out", Exit::Failed),
     ("timeout", Exit::Failed),
     ("tmpdir_failed", Exit::Failed),
     ("tool_failed", Exit::Failed),

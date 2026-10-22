@@ -311,7 +311,7 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             set(request, "all", json!(all.then_some(true)));
             "observe"
         }
-        BrowserCommand::Text { .. } => "text",
+        BrowserCommand::Text => "text",
         BrowserCommand::Screenshot { .. } => "screenshot",
         // Its plan is in the request already. `act` marks it as one
         // action, which the host's gatekeeper leaves to the risk decision.

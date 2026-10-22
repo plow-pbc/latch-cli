@@ -588,9 +588,12 @@ fn watch_binary(host: &Arc<Host>, every: Duration) {
 }
 
 /// `latch was updated; restart to use build 1327`, from what the new
-/// latch's `--version` said (`latch 0.1.0 (1327): commit …`).
-fn updated_to(version: &str) -> String {
-    let number = version
+/// latch's `--version` said (`{"version": "0.1.0 (1327): commit …"}`).
+fn updated_to(said: &str) -> String {
+    let said: Value = serde_json::from_str(said).unwrap_or_default();
+    let number = said["version"]
+        .as_str()
+        .unwrap_or_default()
         .split_once(" (")
         .and_then(|(_, rest)| rest.split_once("):"))
         .map(|(number, _)| number)
@@ -1487,12 +1490,14 @@ mod tests {
 
     #[test]
     fn an_update_names_its_build_when_it_has_one() {
-        let release = "latch 0.1.0 (1327): commit 1a2b3c4d5, built 2026-10-22, standalone";
+        let release =
+            r#"{"version":"0.1.0 (1327): commit 1a2b3c4d5, built 2026-10-22, standalone"}"#;
         assert_eq!(
             updated_to(release),
             "latch was updated; restart to use build 1327"
         );
-        let local = "latch 0.1.0 (commit 1a2b3c4d5, built 2026-10-22 03:45 UTC, local build)";
+        let local =
+            r#"{"version":"0.1.0 (commit 1a2b3c4d5, built 2026-10-22 03:45 UTC, local build)"}"#;
         for said in [local, ""] {
             assert_eq!(
                 updated_to(said),

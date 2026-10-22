@@ -79,6 +79,16 @@ pub(crate) struct PrivateExec {
     pub error_token: String,
 }
 
+/// A program that ran past its `--timeout`: an error, carrying everything
+/// the host answered (the output it wrote before it was stopped included)
+/// in its details.
+pub fn timed_out(timeout: u64, result: Value) -> Failure {
+    let message = format!("the program ran past its {timeout} s timeout and was stopped");
+    let mut failure = Failure::failed("timed_out", message);
+    failure.details = result;
+    failure
+}
+
 pub fn parse_secret_env(values: &[String]) -> Result<BTreeMap<String, String>, Failure> {
     let mut secrets = BTreeMap::new();
     for value in values {

@@ -1450,7 +1450,10 @@ async fn a_host_whose_binary_was_replaced_says_which_build_is_there_on_its_dashb
 
     // An upgrade renames the new latch over the old one.
     let new = host.binary.with_extension("tmp");
-    std::fs::write(&new, "#!/bin/sh\necho 'latch 0.1.0 (133): commit 1a2b3c'\n").unwrap();
+    let says = r#"#!/bin/sh
+echo '{"version":"0.1.0 (133): commit 1a2b3c"}'
+"#;
+    std::fs::write(&new, says).unwrap();
     std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::rename(&new, &host.binary).unwrap();
     let said = tokio::time::timeout(

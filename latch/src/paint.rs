@@ -1,5 +1,5 @@
 //! Colors for the few things latch shows a person at a terminal (the logo,
-//! the `serve` dashboard, `status --pretty`). Agents read latch's JSON
+//! the `serve` dashboard). Agents read latch's JSON
 //! through a pipe and never see any of this.
 //!
 //! Color is off unless `set_color(true)` was called, which latch does only
@@ -15,7 +15,6 @@ pub struct Rgb(pub u8, pub u8, pub u8);
 pub const VOLT: Rgb = Rgb(213, 239, 138);
 /// The glint that sweeps across the logo.
 pub const SHINE: Rgb = Rgb(255, 255, 255);
-pub const INK: Rgb = Rgb(222, 224, 230);
 pub const DIM: Rgb = Rgb(120, 126, 138);
 pub const FAINT: Rgb = Rgb(64, 70, 80);
 pub const RED: Rgb = Rgb(238, 96, 96);

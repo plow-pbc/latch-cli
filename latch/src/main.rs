@@ -9,7 +9,6 @@
 
 mod audit;
 mod browser;
-mod card;
 mod cli;
 mod credential;
 mod dashboard;
@@ -64,7 +63,7 @@ use clap::error::ErrorKind;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use cli::{BrowserCommand, Cli, Command, DevicesAction, FileCommand, HostArg};
+use cli::{Cli, Command, DevicesAction, FileCommand, HostArg};
 use failure::{Exit, Failure};
 use state::StateDir;
 use wire::Request;
@@ -112,7 +111,7 @@ fn main() -> ExitCode {
             };
         }
         // Help is in latch itself: no state folder, no host.
-        Command::Help(args) => return help::run(args),
+        Command::Help(args) => return help::run(args, cli.pretty),
         Command::Skill => {
             print!("{}", help::skill());
             return ExitCode::SUCCESS;
@@ -128,7 +127,7 @@ fn main() -> ExitCode {
         _ => false,
     };
     let state_dir = cli.state_dir.clone();
-    let exit = run_async(cli.state_dir, command);
+    let exit = run_async(cli.state_dir, command, cli.pretty);
     if notice && let Ok(state) = StateDir::new(state_dir) {
         update::notice(&state.path);
     }
@@ -136,13 +135,13 @@ fn main() -> ExitCode {
 }
 
 #[tokio::main]
-async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
-    let exit = match run(state_dir, command).await {
-        Ok(output) => {
-            if !output.text.is_empty() {
-                println!("{}", output.text);
+async fn run_async(state_dir: Option<PathBuf>, command: Command, pretty: bool) -> ExitCode {
+    let exit = match run(state_dir, command, pretty).await {
+        Ok(Printed(text)) => {
+            if !text.is_empty() {
+                println!("{text}");
             }
-            output.exit
+            ExitCode::SUCCESS
         }
         Err(failure) => {
             report(&failure);
@@ -153,17 +152,17 @@ async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
     exit
 }
 
-/// What a command prints on stdout (JSON, `status --pretty`'s card, or
-/// `login`'s one line at a terminal), and the exit code that goes with it.
-/// That code is 0, except for an `exec` whose time ran out: its result is
-/// still printed, but latch exits 1.
-struct Printed {
-    text: String,
-    exit: ExitCode,
-}
+/// What a command that worked prints on stdout: its JSON; nothing, for a
+/// stream that printed its lines as they came; or, for a person leaving
+/// attached `serve`'s dashboard, one line.
+struct Printed(String);
 
 /// Runs one command and returns its JSON output.
-async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Failure> {
+async fn run(
+    state_dir: Option<PathBuf>,
+    command: Command,
+    pretty: bool,
+) -> Result<Printed, Failure> {
     let state = StateDir::new(state_dir)?;
     state.check_format()?;
     let foreground = matches!(&command, Command::Serve(args) if args.foreground);
@@ -176,10 +175,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                     let peer = &output.peer;
                     login::event(json!({"type": "verified", "peer":
                         {"name": peer.name, "key": peer.key, "kind": peer.kind}}));
-                    Ok(Printed {
-                        text: String::new(),
-                        exit: ExitCode::SUCCESS,
-                    })
+                    Ok(Printed(String::new()))
                 }
                 Err(failure) if failure.code == "code_expired" => {
                     login::event(json!({"type": "expired"}));
@@ -192,44 +188,26 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 }
             }
         }
-        Command::Login(args) => {
-            let output = login::run(&state, args).await?;
-            // A person at a terminal reads one line; a pipe gets the JSON.
-            if !term::stdout_is_terminal() {
-                return to_json(output);
-            }
-            Ok(Printed {
-                text: format!("Logged in as {}.", output.peer.name),
-                exit: ExitCode::SUCCESS,
-            })
-        }
-        Command::Logout(args) => to_json(logout::run(&state, args.purge).await?),
+        Command::Login(args) => json(pretty, login::run(&state, args).await?),
+        Command::Logout(args) => json(pretty, logout::run(&state, args.purge).await?),
         Command::Devices(args) => match args.action {
-            None => to_json(devices::list(&state).await?),
+            None => json(pretty, devices::list(&state).await?),
             Some(DevicesAction::Remove { name, yes }) => {
-                to_json(devices::remove(&state, &name, yes).await?)
+                json(pretty, devices::remove(&state, &name, yes).await?)
             }
         },
-        Command::Status(args) if args.local => to_json(status::local(&state)?),
-        Command::Status(args) => {
-            let output = status::run(&state).await?;
-            if !args.pretty {
-                return to_json(output);
-            }
-            // The card is for a person: colored only at a terminal.
-            paint::set_color(term::stdout_is_terminal() && !term::no_color());
-            Ok(Printed {
-                text: card::render(&output, &state.path.display().to_string()),
-                exit: ExitCode::SUCCESS,
-            })
-        }
+        Command::Status(args) if args.local => json(pretty, status::local(&state)?),
+        Command::Status(_) => json(pretty, status::run(&state).await?),
         Command::File(FileCommand::Get {
             remote_path,
             local_dest,
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::get(&state, &peer, host.chat, &remote_path, local_dest).await?)
+            json(
+                pretty,
+                transfer::get(&state, &peer, host.chat, &remote_path, local_dest).await?,
+            )
         }
         Command::File(FileCommand::Put {
             local_path,
@@ -237,50 +215,35 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?)
+            json(
+                pretty,
+                transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?,
+            )
         }
-        Command::Google(args) => to_json(google::client::run(&state, args).await?),
-        Command::Browser(args) => {
-            let raw = matches!(args.command, BrowserCommand::Text { raw: true });
-            let result = browser::client::run(&state, args).await?;
-            if !raw {
-                return to_json(result);
-            }
-            if result["truncated"] == true {
-                eprintln!("latch: the page's text was cut short; this is its beginning");
-            }
-            Ok(Printed {
-                text: result["text"].as_str().unwrap_or_default().to_string(),
-                exit: ExitCode::SUCCESS,
-            })
-        }
-        Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
-        Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
-        Command::Plugins(args) => to_json(plugins::client::run(&state, args).await?),
-        Command::Update(args) => to_json(update::run(&state, args).await?),
+        Command::Google(args) => json(pretty, google::client::run(&state, args).await?),
+        Command::Browser(args) => json(pretty, browser::client::run(&state, args).await?),
+        Command::Vault(args) => json(pretty, vault::client::run(&state, args).await?),
+        Command::Rules(args) => json(pretty, gate::client::run(&state, args).await?),
+        Command::Plugins(args) => json(pretty, plugins::client::run(&state, args).await?),
+        Command::Update(args) => json(pretty, update::run(&state, args).await?),
         // Its lines, printed as they come, are its whole output.
         Command::Audit(cli::AuditArgs {
             action: cli::AuditAction::Show { follow: true },
         }) => {
             audit::follow(&state)?;
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            Ok(Printed(String::new()))
         }
-        Command::Audit(args) => to_json(audit::run(&state, args.action)?),
+        Command::Audit(args) => json(pretty, audit::run(&state, args.action)?),
         // Its lines, printed as they come, are its whole output.
         Command::Events(args) => {
             events::run(&state, args)?;
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            Ok(Printed(String::new()))
         }
         #[cfg(target_os = "macos")]
         Command::Messages(command) => {
             let request = messages::messages_request(&command);
-            to_json(
+            json(
+                pretty,
                 call_host(
                     &state,
                     command.host(),
@@ -294,7 +257,8 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         #[cfg(target_os = "macos")]
         Command::Contacts(command) => {
             let request = messages::contacts_request(&command);
-            to_json(
+            json(
+                pretty,
                 call_host(
                     &state,
                     command.host(),
@@ -316,54 +280,44 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             // The host may let the program run for its whole timeout.
             let answer_within = Duration::from_secs(args.timeout) + dial::ANSWER_MARGIN;
             let result = call_host(&state, args.host, "exec", request, answer_within).await?;
-            let mut printed = to_json(&result)?;
             if result["timed_out"] == true {
-                printed.exit = Exit::Failed.into();
+                return Err(exec::timed_out(args.timeout, result));
             }
-            Ok(printed)
+            json(pretty, result)
         }
         Command::Serve(args) if args.foreground => {
             let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
             serve::run(&state, args.headless_browsers, deny_exec, args.attached).await?;
             // A clean stop prints nothing: the host's output was its log.
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            Ok(Printed(String::new()))
         }
-        Command::Serve(args) if args.detach => to_json(managed::start(&state, &args).await?),
+        Command::Serve(args) if args.detach => json(pretty, managed::start(&state, &args).await?),
         Command::Serve(args) => {
             paint::set_color(!term::no_color());
             match managed::attach(&state, &args).await? {
-                managed::Attached::Stopped(stopped) => to_json(stopped),
+                managed::Attached::Stopped(stopped) => json(pretty, stopped),
                 // A person at the terminal reads one line.
-                managed::Attached::Detached(line) => Ok(Printed {
-                    text: line,
-                    exit: ExitCode::SUCCESS,
-                }),
+                managed::Attached::Detached(line) => Ok(Printed(line)),
             }
         }
-        Command::Stop => to_json(managed::stop(&state).await?),
+        Command::Stop => json(pretty, managed::stop(&state).await?),
         Command::Dashboard => {
             paint::set_color(!term::no_color());
             managed::dashboard(&state).await?;
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            Ok(Printed(String::new()))
         }
         // Its lines, printed as they come, are its whole output.
         Command::Logs(args) => {
             events::logs(&state, args.follow)?;
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            Ok(Printed(String::new()))
         }
         #[cfg(target_os = "macos")]
         Command::AccessCheck { name } => {
             let connector = plugins::Connector::named(&name)?;
-            to_json(messages::access::check_here(&state, connector).await?)
+            json(
+                pretty,
+                messages::access::check_here(&state, connector).await?,
+            )
         }
         Command::Worker(_)
         | Command::BrowserWorker(_)
@@ -392,23 +346,28 @@ async fn call_host(
     dial::call(state, &peer, &request, answer_within).await
 }
 
-fn to_json(output: impl Serialize) -> Result<Printed, Failure> {
+/// A command's result as its JSON: one line, or indented with `--pretty`.
+fn json(pretty: bool, output: impl Serialize) -> Result<Printed, Failure> {
     // Our outputs are plain structs of strings and lists, so this cannot fail.
-    let text = serde_json::to_string(&output).expect("output serializes");
-    Ok(Printed {
-        text,
-        exit: ExitCode::SUCCESS,
-    })
+    let text = match pretty {
+        true => serde_json::to_string_pretty(&output),
+        false => serde_json::to_string(&output),
+    };
+    Ok(Printed(text.expect("output serializes")))
 }
 
-/// clap prints `--help` and `--version` itself; every real usage error
-/// becomes a JSON error with exit 2, like latch's own errors.
+/// clap prints `--help` itself; `--version` is JSON, and every real usage
+/// error becomes a JSON error with exit 2, like latch's own errors.
 fn usage_error(err: clap::Error) -> ExitCode {
-    if matches!(
-        err.kind(),
-        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
-    ) {
+    if err.kind() == ErrorKind::DisplayHelp {
         let _ = err.print();
+        return ExitCode::SUCCESS;
+    }
+    if err.kind() == ErrorKind::DisplayVersion {
+        // clap stops at `--version`, so `--pretty` is looked for by hand.
+        let pretty = std::env::args().any(|word| word == "--pretty");
+        let version = json!({ "version": cli::version() });
+        let _ = json(pretty, version).map(|Printed(text)| println!("{text}"));
         return ExitCode::SUCCESS;
     }
     let message = err.to_string().trim_end().to_string();
