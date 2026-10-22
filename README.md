@@ -94,6 +94,8 @@ No Homebrew tap is included.
   `audit.sealed.ndjson`; a plaintext `audit.ndjson` from an older latch is
   never read, and latch says it can be deleted.
 - `latch shares set ~/work [--allow-read PATH]` saves the folders, and the
-  read-only paths, a `latch serve` named none shares. `latch status --local`,
+  read-only paths, a `latch serve` named none shares. With none named and
+  none saved, it serves the browser and Google only, and `exec` and `file`
+  refuse with `no_folders`. `latch status --local`,
   `latch events --follow` and `latch login --events` are for an app: see
   [latch/APP.md](latch/APP.md).

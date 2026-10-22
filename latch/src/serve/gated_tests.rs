@@ -233,7 +233,7 @@ async fn an_operation_is_audited_before_dashboard_name_lookup() {
         plow,
         Arc::new(provider),
         DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]),
-        Some(Dashboard::start("test-host")),
+        Some(Dashboard::start("test-host", None)),
     )
     .await;
     let agent = t.caller("agent").await;

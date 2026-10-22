@@ -60,6 +60,9 @@ with no folders, and the paths outside them it lets callers read
 
 - Folders named on the command line still win over the saved ones, and
   bring only their own `--allow-read` paths.
+- With none named and none saved, serve still starts, sharing no folders:
+  the browser and Google work, and `exec` and `file` refuse with
+  `no_folders` (exit 4).
 - A running serve keeps its folders until it is restarted.
 - Each folder and path must exist. Each is saved as its real, absolute path.
 - The home folder, its `Library` and the folders above them are refused,
