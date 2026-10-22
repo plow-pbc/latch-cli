@@ -5,11 +5,10 @@ on a machine its owner trusts, over Plow's directory.
 
 ## Install
 
-Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
-(`gh auth login`). This installs the newest published release:
+This installs the newest release from `releases.plow.co`:
 
 ```sh
-gh release download --repo plow-pbc/latch-cli --pattern install.sh && sh install.sh
+curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 export PATH="$HOME/.local/bin:$PATH"
 latch --version
 ```
@@ -35,8 +34,8 @@ Linux hosting needs bubblewrap and usable user namespaces; setup explains missin
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
 
-Update by rerunning the commands above, adding `--clobber` to `gh release download` so
-the download replaces the one already there. State and versioned plugins stay in place.
+Update by rerunning the commands above (`curl -O` replaces the `install.sh`
+already there). State and versioned plugins stay in place.
 A host `serve -d` started is stopped and started again with the new latch, with what
 it was given. One running in a terminal (`latch serve`, or `serve --foreground`) is
 stopped, and the update says to run `latch serve` there again.
