@@ -69,7 +69,7 @@ async fn start(world: World) -> TestHost {
 async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
     let fake = fake::serve(world);
     let provider = model::Plow::new(&fake.url, "made-up-login".into()).with_model(gate::MODEL);
-    start_with(fake, Arc::new(provider), deny_exec).await
+    start_with(fake, Arc::new(provider), deny_exec, None).await
 }
 
 /// A host on `plow`, its gatekeeper asking `provider`.
@@ -77,6 +77,7 @@ async fn start_with(
     plow: FakePlow,
     provider: Arc<dyn model::Provider>,
     deny_exec: DenyExec,
+    dashboard: Option<Dashboard>,
 ) -> TestHost {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     std::fs::create_dir_all(&parent).unwrap();
@@ -101,18 +102,23 @@ async fn start_with(
         audit: Arc::new(Mutex::new(
             AuditLog::open(state.join("audit.ndjson")).unwrap(),
         )),
-        dashboard: None,
+        dashboard,
         workers: WorkerSetup {
             areas: vec![area.clone()],
+            reads: vec![],
+            hidden: vec![],
+            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: state.clone(),
             program: latch_binary(),
         },
+        browsers: crate::browser::host::Browsers::new(state.clone(), vault.clone(), true),
         vault,
         endpoint: endpoint.clone(),
         name: "test-host".into(),
         gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
         deny_exec,
         binary: Binary::at(&binary).unwrap(),
+        stopping: tokio::sync::watch::Sender::new(Stopping::No),
     });
     let serving = host.clone();
     tokio::spawn(async move {
@@ -201,6 +207,46 @@ fn refusal(response: &Response) -> (Exit, &str, &Value) {
         } => (*exit, code.as_str(), details),
         Response::Ok(result) => panic!("allowed: {result}"),
     }
+}
+
+#[tokio::test]
+async fn an_operation_is_audited_before_dashboard_name_lookup() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let released = Arc::new(AtomicBool::new(false));
+    let names = format!("/v1/agents/{AGENT}");
+    let world = World {
+        paused: Some((names.clone(), released.clone())),
+        ..World::default()
+    };
+    let plow = fake::serve(world);
+    let provider = model::Plow::new(&plow.url, "made-up-login".into()).with_model(gate::MODEL);
+    let t = start_with(
+        plow,
+        Arc::new(provider),
+        DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]),
+        Some(Dashboard::start("test-host")),
+    )
+    .await;
+    let agent = t.caller("agent").await;
+    let during_lookup = async {
+        let requested = tokio::time::timeout(Duration::from_secs(30), async {
+            while t.plow.saw(&format!("GET {names}")) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let records = t.audit();
+        released.store(true, Ordering::SeqCst);
+        (requested, records)
+    };
+    let ((answer, _), (requested, records)) =
+        tokio::join!(t.call(&agent, "exec", exec("touch made")), during_lookup);
+    t.host.dashboard.as_ref().unwrap().stop();
+    assert!(requested.is_ok(), "the dashboard never asked for the name");
+    assert_eq!(refusal(&answer).1, "exec_denied");
+    assert!(!t.area.join("made").exists());
+    assert_eq!(records.len(), 1, "the audit waited for the name lookup");
+    assert_eq!(records[0]["outcome"], "exec_denied");
 }
 
 #[tokio::test]
@@ -766,7 +812,13 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
     .unwrap();
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
 
-    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
+    let t = start_with(
+        fake::serve(World::default()),
+        provider,
+        DenyExec::default(),
+        None,
+    )
+    .await;
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
     assert_eq!(refusal(&answer).1, "no_intent", "neither chat nor rules");

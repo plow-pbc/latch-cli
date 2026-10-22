@@ -5,37 +5,106 @@
 //! cannot be lifted, not even by programs the worker starts: writes only
 //! inside the host's areas (and an `exec` call's own temp folder), never the
 //! host's state directory or the running latch. File and `exec` workers read
-//! the whole filesystem, as Codex CLI's do; Google workers read only their
-//! call's folder and the system locations programs need. A file worker gets no
+//! only the areas, an `exec` call's temp folder, the system's own files
+//! programs need, and the paths the owner opted in to with `--allow-read`
+//! (read-only); Google workers read only their call's folder and the system
+//! locations programs need. Credentials (`never_readable`) stay out of reach
+//! of every worker, even inside an area or an opt-in. A file worker gets no
 //! network; `exec` and Google workers may reach out to the network. Google
 //! can execute only its pinned binary; neither can send Apple Events. The
 //! kernel resolves every path (symlinks included) before checking it, so a
 //! link into a hidden path is refused by Seatbelt and reports `not_found`
 //! in Linux's filesystem view.
 //!
+//! A hard link is a second name for the same file, and both systems check
+//! names. A worker cannot make one to a hidden file (Seatbelt refuses it;
+//! Linux shows the file empty or not at all, on a mount of its own), nor
+//! rename a folder above a hidden path to move it out of the rules' way.
+//! A hard link made outside latch, from a readable place to a hidden file,
+//! stays readable through that name: an accepted limit.
+//!
 //! Linux hides the state directory with an empty, read-only mount, even when
 //! an area contains it. Other systems refuse to run a worker at all.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What a worker may touch.
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub struct Policy {
     /// Directories the worker may read and write, with everything below them.
     pub areas: Vec<PathBuf>,
+    /// Files and folders a file or `exec` worker may also read, never write:
+    /// the owner's `--allow-read` opt-ins.
+    pub reads: Vec<PathBuf>,
+    /// Paths no worker may read or write, even inside an area or an opt-in
+    /// (`never_readable`). Those that do not exist are skipped.
+    pub hidden: Vec<PathBuf>,
     /// The host's state directory: denied on macOS, hidden on Linux, even in an area.
     pub state_dir: PathBuf,
     /// An `exec` worker: may start programs and use the outbound network.
     pub exec: bool,
     /// An `exec` worker's own temp folder, made by the host for this call:
-    /// readable and writable on macOS. On Linux the worker's private `/tmp`
-    /// takes its place, and the folder only holds bubblewrap's status file.
+    /// readable and writable on macOS. On Linux a private TMPDIR of the
+    /// worker's own takes its place, and the folder only holds bubblewrap's
+    /// status file.
     pub tmpdir: Option<PathBuf>,
+    /// An `exec` worker kills its program this many seconds after it
+    /// started, even if the host that should have stopped it by then cannot
+    /// (it hangs, or is stopped).
+    pub kill_after: Option<u64>,
     /// A Google worker may run only this pinned program.
     pub program: Option<PathBuf>,
     /// Test only: make the OS refuse the sandbox, to show that a sandbox
     /// that cannot be applied fails the operation.
     pub break_for_test: bool,
+}
+
+/// Where a user keeps credentials and private data: ssh and gpg keys,
+/// keychains, browser profiles, mail, messages, calendars and contacts,
+/// macOS's privacy permissions (TCC), latch's own state, and cloud and
+/// developer tools' logins. No worker may read them, even when the owner
+/// shares or opts in to a folder that holds them (the sandbox denies them
+/// after everything it allows), and `--allow-read` of a path inside one is
+/// refused.
+pub fn never_readable(home: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = [
+        ".ssh",
+        ".gnupg",
+        "Library/Keychains",
+        "Library/Messages",
+        "Library/Mail",
+        "Library/Calendars",
+        "Library/Application Support/AddressBook",
+        "Library/Application Support/com.apple.TCC",
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Chromium",
+        "Library/Application Support/Firefox",
+        "Library/Application Support/BraveSoftware",
+        "Library/Application Support/Microsoft Edge",
+        "Library/Application Support/Arc",
+        "Library/Safari",
+        "Library/Cookies",
+        ".mozilla",
+        ".config/google-chrome",
+        ".config/chromium",
+        ".config/BraveSoftware",
+        ".config/microsoft-edge",
+        ".latch",
+        ".aws",
+        ".config/gcloud",
+        ".azure",
+        ".kube",
+        ".docker/config.json",
+        ".netrc",
+        ".npmrc",
+        ".git-credentials",
+        ".config/gh",
+    ]
+    .into_iter()
+    .map(|path| home.join(path))
+    .collect();
+    paths.push(PathBuf::from("/Library/Application Support/com.apple.TCC"));
+    paths
 }
 
 /// Confines the calling thread and any threads or processes it creates.
@@ -45,12 +114,68 @@ pub fn confine(policy: &Policy) -> Result<(), String> {
     platform::confine(policy)
 }
 
+/// An `exec` worker's watch on the host that started it, taken before the
+/// worker confines itself (see `supervise`).
+pub use platform::HostWatch;
+
+/// Starts watching the host that started this worker. Call before `confine`.
+/// Fails if the host is already gone.
+pub fn watch_host() -> Result<HostWatch, String> {
+    platform::watch_host()
+}
+
+/// Before an `exec` worker is confined, makes sure
+/// the program ends when the host does, however the host ends (SIGKILL
+/// included), and at `kill_after` seconds at the latest, even if the host
+/// that should stop it by then cannot. On macOS the worker forks; the child
+/// returns to confine itself and become the program while the parent stays
+/// outside its sandbox to watch, and ends as the program did. On Linux the
+/// launcher outside bubblewrap does this, so this returns at once.
+pub fn supervise(watch: HostWatch, kill_after: Option<u64>) -> Result<(), String> {
+    platform::supervise(watch, kill_after)
+}
+
+/// Waits for our child, retrying a wait interrupted by a signal.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn reap(pid: libc::pid_t) -> std::io::Result<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt;
+    let mut status = 0;
+    loop {
+        // SAFETY: std has no Child handle for this forked supervisor child.
+        // `pid` is that child, and `status` is writable for one wait status.
+        if unsafe { libc::waitpid(pid, &mut status, 0) } >= 0 {
+            return Ok(std::process::ExitStatus::from_raw(status));
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+/// Ends this process as `status` says another ended: with the same exit
+/// code, or killed by the same signal.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn exit_with_status(status: std::process::ExitStatus) -> ! {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(signal) = status.signal() {
+        // SAFETY: std::process::exit cannot reproduce a signal termination.
+        // The signal came from waitpid, SIG_DFL is a valid disposition, and
+        // raise targets this process; neither call accesses Rust memory.
+        unsafe {
+            libc::signal(signal, libc::SIG_DFL);
+            libc::raise(signal);
+        }
+        std::process::exit(128 + signal);
+    }
+    std::process::exit(status.code().unwrap_or(125));
+}
+
 /// What a Linux browser worker sees: the system files its engine and
 /// display need, read-only, and of the state directory only its profile
 /// (read-write) and its engine's plugin folder (read-only); its scratch
 /// folder; a private `/tmp`; and the outbound network. No areas.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)] // the browser worker confines itself with it
 pub struct BrowserView {
     pub state_dir: PathBuf,
     pub profile: PathBuf,
@@ -61,7 +186,6 @@ pub struct BrowserView {
 /// Confines a browser worker as `confine` does other workers, to `view`.
 /// The engine's own sandbox runs inside it, in namespaces of its own.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)] // the browser worker confines itself with it
 pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
     platform::confine_browser(view)
 }
@@ -106,12 +230,15 @@ pub fn startup_error(stderr: &str) -> String {
 #[cfg(target_os = "macos")]
 mod platform {
     use std::ffi::{CStr, CString, c_char, c_int};
+    use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
 
-    use super::Policy;
+    use super::{Policy, exit_with_status, reap};
 
     // `sandbox_init` is part of macOS's system library. Apple marks it
     // deprecated but it is what `sandbox-exec` and other tools still use.
+    // SAFETY: these declarations match libsystem's C ABI; their checked
+    // callers keep the profile alive and release errors with sandbox_free_error.
     unsafe extern "C" {
         fn sandbox_init(profile: *const c_char, flags: u64, errorbuf: *mut *mut c_char) -> c_int;
         fn sandbox_free_error(errorbuf: *mut c_char);
@@ -120,6 +247,114 @@ mod platform {
     /// Seatbelt is part of every macOS, so there is nothing to probe.
     pub fn check() -> Result<(), String> {
         Ok(())
+    }
+
+    /// A kqueue that reports the host's exit.
+    pub struct HostWatch(c_int);
+
+    pub fn watch_host() -> Result<HostWatch, String> {
+        // SAFETY: std has no kqueue API. This no-argument call accesses no
+        // Rust memory; a negative result is rejected before using the descriptor.
+        let queue = unsafe { libc::kqueue() };
+        if queue < 0 {
+            return Err(format!("kqueue: {}", std::io::Error::last_os_error()));
+        }
+        let host = std::os::unix::process::parent_id() as libc::pid_t;
+        // A worker whose host is gone already belongs to launchd.
+        if host == 1 {
+            return Err("the host that started this worker is gone".to_string());
+        }
+        watch_exit(queue, host)
+            .map_err(|err| format!("cannot watch the host: {err}"))
+            .map(|()| HostWatch(queue))
+    }
+
+    /// Adds `pid`'s exit to the events `queue` reports.
+    fn watch_exit(queue: c_int, pid: libc::pid_t) -> std::io::Result<()> {
+        let change = libc::kevent {
+            ident: pid as usize,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        // SAFETY: std has no process-exit watch API. `queue` is our kqueue,
+        // `change` stays live for its one input entry, and null output has count 0.
+        let added =
+            unsafe { libc::kevent(queue, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
+        if added < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub fn supervise(watch: HostWatch, kill_after: Option<u64>) -> Result<(), String> {
+        // SAFETY: fork is needed to supervise outside Seatbelt. This worker
+        // has not started other threads, so no other thread can leave a Rust
+        // lock held in the child. Only the child returns to confine itself;
+        // the parent watches and waits. kqueue descriptors are not inherited.
+        let program = unsafe { libc::fork() };
+        if program < 0 {
+            return Err(format!("fork: {}", std::io::Error::last_os_error()));
+        }
+        if program == 0 {
+            return Ok(());
+        }
+        let HostWatch(queue) = watch;
+        let deadline = kill_after
+            .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds));
+        // A program that is already gone is reaped below all the same.
+        if watch_exit(queue, program).is_ok() {
+            loop {
+                let left = deadline.map(|deadline| {
+                    let left = deadline.saturating_duration_since(std::time::Instant::now());
+                    libc::timespec {
+                        tv_sec: left.as_secs() as libc::time_t,
+                        tv_nsec: libc::c_long::from(left.subsec_nanos()),
+                    }
+                });
+                // SAFETY: kevent needs output storage. Its integer fields may
+                // be zero and its raw udata pointer may be null; neither is a reference.
+                let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+                let timeout = left
+                    .as_ref()
+                    .map_or(std::ptr::null(), |left| left as *const _);
+                // SAFETY: std has no kqueue wait API. `queue` is open, `event`
+                // holds one output entry, null input has count 0, and any timeout
+                // points to the live timespec in `left` for the duration of the call.
+                let got =
+                    unsafe { libc::kevent(queue, std::ptr::null(), 0, &mut event, 1, timeout) };
+                let interrupted =
+                    std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+                if got < 0 && interrupted {
+                    continue;
+                }
+                if got != 1 || event.ident != program as usize {
+                    // The host exited, the time is up, or the watch broke.
+                    kill_all(program);
+                }
+                break;
+            }
+        }
+        exit_with_status(
+            reap(program).unwrap_or_else(|_| std::process::ExitStatus::from_raw(libc::SIGKILL)),
+        )
+    }
+
+    /// Kills the worker's process group: the program, everything it
+    /// started, and this process. The host makes each worker the leader of
+    /// a group of its own; a worker run any other way kills its program alone.
+    fn kill_all(program: libc::pid_t) {
+        // SAFETY: std cannot kill a process group. The group is ours only when
+        // we are its leader; otherwise we target only our positive fork result.
+        // These scalar-only signal calls access no Rust memory.
+        unsafe {
+            if libc::getpgrp() == std::process::id() as libc::pid_t {
+                libc::killpg(libc::getpgrp(), libc::SIGKILL);
+            }
+            libc::kill(program, libc::SIGKILL);
+        }
     }
 
     pub fn confine(policy: &Policy) -> Result<(), String> {
@@ -138,8 +373,9 @@ mod platform {
         let profile =
             CString::new(profile).map_err(|_| "profile contains a NUL byte".to_string())?;
         let mut error: *mut c_char = std::ptr::null_mut();
-        // SAFETY: `profile` is a valid C string for the duration of the call,
-        // and `error` is either left null or set to a message we free below.
+        // SAFETY: Seatbelt has no std wrapper. `profile` is a live NUL-terminated
+        // CString and `error` is writable pointer storage; the API leaves it null
+        // or returns an allocated diagnostic that we release below.
         let status = unsafe { sandbox_init(profile.as_ptr(), 0, &mut error) };
         if status == 0 {
             return Ok(());
@@ -147,11 +383,14 @@ mod platform {
         let message = if error.is_null() {
             std::io::Error::last_os_error().to_string()
         } else {
-            // SAFETY: on failure `error` points to a C string owned by the
-            // sandbox library, which we copy and then hand back to free.
+            // SAFETY: reading the C diagnostic needs CStr::from_ptr. On failure,
+            // this non-null error points to the library's NUL-terminated string,
+            // which stays allocated until sandbox_free_error below.
             let text = unsafe { CStr::from_ptr(error) }
                 .to_string_lossy()
                 .into_owned();
+            // SAFETY: the diagnostic must use the library's deallocator. This
+            // is its original error pointer, copied into `text` and not freed yet.
             unsafe { sandbox_free_error(error) };
             text
         };
@@ -171,7 +410,7 @@ mod platform {
     }
 
     /// File and Google workers: deny by default, the system files programs
-    /// need to start, and the areas (file workers also read everything).
+    /// need to start, and the areas (file workers also read what `exec` does).
     fn narrow_rules(policy: &Policy) -> Result<Vec<String>, String> {
         let mut rules = vec![
             "(version 1)".to_string(),
@@ -182,10 +421,10 @@ mod platform {
                 .to_string(),
             "(allow sysctl-read)".to_string(),
         ];
-        // A file worker reads the whole filesystem, as `exec` does; it
-        // still writes only in the areas, and the state folder stays denied.
+        // A file worker reads what `exec` does; it still writes only in the
+        // areas, and the state folder stays denied.
         if policy.program.is_none() {
-            rules.push("(allow file-read*)".to_string());
+            rules.extend(read_rules(policy)?);
         }
         if let Some(program) = &policy.program {
             rules.push(format!(
@@ -203,20 +442,10 @@ mod platform {
             rules.push("(allow file-read* (subpath \"/private/etc\") (literal \"/private/var/run/resolv.conf\") (subpath \"/Library/Keychains\"))".to_string());
             rules.push("(allow mach-lookup (global-name \"com.apple.SystemConfiguration.configd\") (global-name \"com.apple.SystemConfiguration.DNSConfiguration\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.trustd\"))".to_string());
         }
+        // Looking a path up inside an area (as `pwd` does) needs the details
+        // of each folder above it: `read_rules` grants them to a file
+        // worker, the blanket metadata rule to a Google worker.
         for area in &policy.areas {
-            // Looking up a path inside an area (as `pwd` does) needs the
-            // details, not the contents, of each directory above it.
-            let real = area
-                .canonicalize()
-                .map_err(|err| format!("{}: {err}", area.display()))?;
-            let mut parent = real.parent();
-            while let Some(dir) = parent {
-                rules.push(format!(
-                    "(allow file-read-metadata (literal {}))",
-                    quoted(dir)?
-                ));
-                parent = dir.parent();
-            }
             rules.push(format!(
                 "(allow file-read* file-write* (subpath {}))",
                 quoted(area)?
@@ -226,12 +455,14 @@ mod platform {
     }
 
     /// `exec` workers follow Codex CLI's macOS sandbox (vendored, see
-    /// NOTICE): its base and network rules, reads of the whole filesystem
-    /// (what the user can read; macOS privacy protections still apply) and
-    /// preferences, and writes only in the areas and the call's temp folder.
-    /// Outbound network only, no Apple Events.
+    /// NOTICE): its base and network rules, reads as in `read_rules`, and
+    /// writes only in the areas and the call's temp folder. Not its
+    /// preferences rules: they read any preference through `cfprefsd`, which
+    /// Codex allows only with reads of the whole filesystem. Outbound network
+    /// only, no Apple Events.
     fn exec_rules(policy: &Policy) -> Result<Vec<String>, String> {
-        let mut rules = vec![CODEX_BASE.to_string(), "(allow file-read*)".to_string()];
+        let mut rules = vec![CODEX_BASE.to_string()];
+        rules.extend(read_rules(policy)?);
         for root in policy.areas.iter().chain(&policy.tmpdir) {
             rules.push(format!(
                 "(allow file-read* file-write* (subpath {}))",
@@ -242,7 +473,6 @@ mod platform {
             "(allow network-outbound)".to_string(),
             "(allow system-socket (socket-domain AF_UNIX))".to_string(),
             CODEX_NETWORK.to_string(),
-            CODEX_PREFERENCES.to_string(),
             // As Codex: no embedded XPC services, except the speech
             // synthesizer `say` uses, and no fcntls that change a file
             // through a read-only descriptor (F_MAKECOMPRESSED,
@@ -254,6 +484,51 @@ mod platform {
         ]);
         Ok(rules)
     }
+
+    /// What file and `exec` workers read besides the areas and the temp
+    /// folder: the system's own files and the owner's opt-ins. A file's
+    /// details (as `stat` gives them) only there and on the folders above
+    /// each place a worker may read, which looking a path up needs, and on
+    /// `/Applications`, which resolving Xcode's tools needs: so nothing
+    /// else, not even whether `~/.aws` exists, shows.
+    fn read_rules(policy: &Policy) -> Result<Vec<String>, String> {
+        let mut rules = vec![
+            SYSTEM_READS.to_string(),
+            "(allow file-read-metadata (literal \"/Applications\"))".to_string(),
+        ];
+        let roots = policy
+            .areas
+            .iter()
+            .chain(&policy.tmpdir)
+            .chain(&policy.reads);
+        for root in roots {
+            let real = root
+                .canonicalize()
+                .map_err(|err| format!("{}: {err}", root.display()))?;
+            for above in real.ancestors().skip(1) {
+                rules.push(format!(
+                    "(allow file-read-metadata (literal {}))",
+                    quoted(above)?
+                ));
+            }
+        }
+        for read in &policy.reads {
+            rules.push(format!("(allow file-read* (subpath {}))", quoted(read)?));
+        }
+        Ok(rules)
+    }
+
+    /// The system's own files: what programs, their libraries, the shell,
+    /// developer tools, Homebrew, name resolution and certificates need.
+    /// `/Users` and the like only as folders to pass through, not to list.
+    const SYSTEM_READS: &str = "(allow file-read*
+  (literal \"/\") (literal \"/Users\") (literal \"/private\") (literal \"/var\")
+  (literal \"/etc\") (literal \"/tmp\") (literal \"/opt\")
+  (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/System\")
+  (subpath \"/Library\") (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\")
+  (subpath \"/private/var/db/timezone\") (subpath \"/private/var/select\")
+  (literal \"/private/var/run/resolv.conf\") (subpath \"/dev\")
+  (subpath \"/opt/homebrew\") (subpath \"/Applications/Xcode.app\"))";
 
     /// Every embedded XPC service is denied but the speech synthesizer's.
     const SPEECH_XPC_EXCEPTION: &str = "(deny mach-lookup
@@ -280,13 +555,13 @@ mod platform {
 
     const CODEX_BASE: &str = include_str!("sandbox/codex/seatbelt_base_policy.sbpl");
     const CODEX_NETWORK: &str = include_str!("sandbox/codex/seatbelt_network_policy.sbpl");
-    const CODEX_PREFERENCES: &str = include_str!("sandbox/codex/seatbelt_preferences_policy.sbpl");
 
-    /// For every kind, last: the state directory can be neither read nor
-    /// written, and the running latch never written. Seatbelt matches
-    /// paths, so renaming a folder above either would move it out of reach
-    /// of these rules; directories above them inside a writable folder, and
-    /// the writable folders themselves, cannot be renamed or removed.
+    /// For every kind, last: the state directory and the hidden paths can
+    /// be neither read nor written, and the running latch never written.
+    /// Seatbelt matches paths, so renaming a folder above any of them would
+    /// move it out of reach of these rules; directories above them inside a
+    /// writable folder, and the writable folders themselves, cannot be
+    /// renamed or removed.
     fn protections(policy: &Policy) -> Result<Vec<String>, String> {
         let real = |path: &Path| {
             path.canonicalize()
@@ -306,6 +581,15 @@ mod platform {
             ),
             format!("(deny file-write* (literal {}))", quoted(&latch)?),
         ];
+        let mut hidden = Vec::new();
+        for path in policy.hidden.iter().filter(|path| path.exists()) {
+            let path = real(path)?;
+            rules.push(format!(
+                "(deny file-read* file-write* (subpath {}))",
+                quoted(&path)?
+            ));
+            hidden.push(path);
+        }
         // The one part of the state folder a worker may see: a Google
         // worker reads, and runs, its own plugin's folder (gog's version
         // folder), never writes it.
@@ -319,7 +603,7 @@ mod platform {
             ));
         }
         let mut anchors: Vec<&Path> = writable.iter().map(PathBuf::as_path).collect();
-        for protected in [&state, &latch] {
+        for protected in [&state, &latch].into_iter().chain(&hidden) {
             for above in protected.ancestors().skip(1) {
                 if writable.iter().any(|root| above.starts_with(root)) {
                     anchors.push(above);
@@ -369,6 +653,16 @@ mod platform {
     pub fn confine(_policy: &Policy) -> Result<(), String> {
         Err("no worker sandbox on this operating system yet".to_string())
     }
+
+    pub struct HostWatch;
+
+    pub fn watch_host() -> Result<HostWatch, String> {
+        Err("no worker sandbox on this operating system yet".to_string())
+    }
+
+    pub fn supervise(_watch: HostWatch, _kill_after: Option<u64>) -> Result<(), String> {
+        Err("no worker sandbox on this operating system yet".to_string())
+    }
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
@@ -383,9 +677,12 @@ mod google_tests {
             let inside_state = call.starts_with(root.join("state"));
             let confined = confine(&Policy {
                 areas: vec![call.clone()],
+                reads: vec![],
+                hidden: vec![],
                 state_dir: root.join("state"),
                 exec: false,
                 tmpdir: None,
+                kill_after: None,
                 program: Some(PathBuf::from(
                     std::env::var_os("LATCH_PRIVATE_PROGRAM").unwrap(),
                 )),
@@ -460,9 +757,12 @@ mod google_tests {
             let gog = root.join("state/plugins/gog/0.1/gog");
             confine(&Policy {
                 areas: vec![root.join("private/call")],
+                reads: vec![],
+                hidden: vec![],
                 state_dir: root.join("state"),
                 exec: mode == "exec",
                 tmpdir: (mode == "exec").then(|| root.join("private/call")),
+                kill_after: None,
                 program: (mode == "google").then(|| gog.clone()),
                 break_for_test: false,
             })

@@ -1,0 +1,19 @@
+<!doctype html><title>latch two-page login test</title>
+<!-- The first page of a two-page sign-in: the email, then "Next" sends the
+     browser, after a second and a half, to the password page on another
+     site (open with ?next=PORT: http://localhost:PORT), as sign-ins that
+     hand over to an identity provider do. Neither button is type=submit. -->
+<h1>Sign in</h1>
+<form>
+  <p><label>Email <input type="email" id="email"></label></p>
+  <p><button type="button" id="next">Next</button> <button type="button">Sign up</button></p>
+</form>
+<script>
+  const next = new URLSearchParams(location.search).get('next');
+  document.getElementById('next').addEventListener('click', () => {
+    const email = encodeURIComponent(document.getElementById('email').value);
+    setTimeout(() => {
+      location.href = 'http://localhost:' + next + '/id-first-password.html?email=' + email;
+    }, 1500);
+  });
+</script>

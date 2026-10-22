@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Your cart — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+const items = cart();
+const total = items.reduce((t, i) => t + byId(i.id).price * i.qty, 0);
+main.innerHTML = items.length ? `<h1>Your cart</h1><table><tr><th>Item</th><th>Size</th><th>Qty</th><th>Price</th><th></th></tr>
+${items.map((i, k) => `<tr><td>${byId(i.id).name}</td><td>${i.size || "—"}</td><td>${i.qty}</td><td>${money(byId(i.id).price * i.qty)}</td><td><button type="button" onclick="removeItem(${k})">Remove</button></td></tr>`).join("")}</table>
+<p>Subtotal: <b>${money(total)}</b></p><p><a href="checkout.html">Proceed to checkout</a></p>` : "<h1>Your cart</h1><p>Your cart is empty.</p>";
+function removeItem(k) { const it = cart(); it.splice(k, 1); store.set("cart", it); location.reload(); }
+</script></body></html>

@@ -1,0 +1,14 @@
+<!doctype html><title>latch files test</title>
+<!-- An upload shows the chosen file's name, size and sha256, worked out by
+     the page itself; the link downloads report.csv. -->
+<p><label>Attachment <input type="file" id="attach"></label></p>
+<p id="out">no file yet</p>
+<p><a href="report.csv" download>Download the report</a></p>
+<script>
+  document.getElementById('attach').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+    const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    document.getElementById('out').textContent = `uploaded ${file.name} ${file.size} bytes sha256 ${hex}`;
+  });
+</script>

@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Product — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+const p = byId(qs("id")) || CATALOG[0]; document.title = `${p.name} — Greenleaf Market`;
+main.innerHTML = `<h1>${p.name}</h1><p class="price">${money(p.price)}</p>${p.out ? "<p class=\"out\">Currently unavailable</p>" : "<p>In stock</p>"}
+<form id="add" onsubmit="return false">
+${p.sizes.length ? `<label>Size <select id="size">${p.sizes.map((s) => `<option${s === "Regular" ? " selected" : ""}>${s}</option>`).join("")}</select></label>` : ""}
+<label>Quantity <input id="qty" type="number" min="1" value="1" style="width:4em"></label>
+<p><button type="submit" id="add-btn">Add to cart</button></p></form>
+<h2>You might also like</h2><ul class="products">${CATALOG.filter((o) => o.cat === p.cat && o.id !== p.id).slice(0, 3).map(productRow).join("")}</ul>`;
+document.getElementById("add-btn").onclick = () => { const s = document.getElementById("size"); flash(addToCart(p.id, s ? s.value : "", Number(document.getElementById("qty").value) || 1)); };
+</script></body></html>
