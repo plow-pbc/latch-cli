@@ -173,12 +173,16 @@ def steps(where, suites, gate, first_shard):
                                     "--message-format=json-render-diagnostics"], LATCH))
     if {"browser", "scenario"} & set(suites):
         state = engines_state(where)
-        home = DEV / ("linux-cft-home" if where == "container" else "cft-home")
-        browsers = ["--browser", "chrome"] + (["--browser", "camoufox"] if where == "macos" or
-                                              pinned_engines(pin_platform(where))["camoufox"] else [])
-        out.append(("engines", ["browser", "scenario"],
-                    ["env", f"HOME={home}", "sh", "install-binary.sh", "--non-interactive", "--state-dir",
-                     str(state), *browsers, str(target_dir(where) / "debug/latch")], LATCH))
+        if where == "macos":
+            # The pinned gog too, which macOS's Google tests run; HOME keeps
+            # install-binary.sh's copy of latch out of the real ~/.local/bin.
+            command = ["env", f"HOME={DEV / 'cft-home'}", "sh", "install-binary.sh", "--non-interactive",
+                       "--state-dir", str(state), "--browser", "chrome", "--browser", "camoufox",
+                       str(target_dir(where) / "debug/latch")]
+        else:
+            engines = ["chrome"] + (["camoufox"] if pinned_engines(pin_platform(where))["camoufox"] else [])
+            command = ["sh", "browser-engines.sh", "--state-dir", str(state), *engines]
+        out.append(("engines", ["browser", "scenario"], command, LATCH))
     if rust:
         out.append(("rust", rust, None, LATCH))
     if "messages" in suites and first_shard:
