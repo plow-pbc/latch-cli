@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Your orders — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header();
+const main = document.querySelector('main');
+// Order A1001: two identical white tank lines among the rest.
+const ORDER = { number: 'A1001', placed: 'October 16, 2026', lines: [
+  { line: 1, name: 'White tank (M)', price: 18.0 },
+  { line: 2, name: 'White tank (M)', price: 18.0 },
+  { line: 3, name: 'Oxford shirt (L)', price: 54.0 },
+  { line: 4, name: 'Wool socks', price: 12.0 },
+  { line: 5, name: 'Canvas belt', price: 29.0 },
+] };
+main.innerHTML = `<h1>Order ${ORDER.number}</h1><p>Placed ${ORDER.placed} · Delivered</p>
+<table><thead><tr><th>Item</th><th>Price</th></tr></thead><tbody>
+${ORDER.lines.map((l) => `<tr><td>${l.name}</td><td>${money(l.price)}</td></tr>`).join('')}
+</tbody></table>
+<p>Items can be returned within 30 days of delivery.</p>
+<p><a id="start" href="return.html?order=${ORDER.number}">Start a return</a></p>`;
+// Each return starts empty.
+document.getElementById('start').onclick = () => store.set('return', []);
+</script></body></html>

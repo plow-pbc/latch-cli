@@ -1,0 +1,44 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Start a return — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header();
+const main = document.querySelector('main');
+// Order A1001: two identical white tank lines among the rest.
+const ORDER = { number: 'A1001', placed: 'October 16, 2026', lines: [
+  { line: 1, name: 'White tank (M)', price: 18.0 },
+  { line: 2, name: 'White tank (M)', price: 18.0 },
+  { line: 3, name: 'Oxford shirt (L)', price: 54.0 },
+  { line: 4, name: 'Wool socks', price: 12.0 },
+  { line: 5, name: 'Canvas belt', price: 29.0 },
+] };
+const chosen = () => store.get('return', []);
+function render() {
+  const picked = chosen();
+  main.innerHTML = `<h1>Return items from order ${ORDER.number}</h1>
+<p>Choose a reason for each item you are sending back, then add it to the return. Add one item at a time.</p>
+<ul class="return-lines">${ORDER.lines.map((l) => {
+    const added = picked.find((p) => p.line === l.line);
+    return `<li><span>${l.name} · ${money(l.price)}</span>
+${added ? `<strong>Added to return: ${added.reason}</strong>` : `<label>Reason <select id="reason-${l.line}">
+<option value="">Choose a reason</option><option>Too small</option><option>Too large</option>
+<option>Not as described</option><option>Changed my mind</option></select></label>
+<button type="button" data-line="${l.line}">Return this item</button>`}</li>`;
+  }).join('')}</ul>
+<p id="message" role="status"></p>
+<p>${picked.length ? `<a href="return-review.html">Review return (${picked.length} ${picked.length === 1 ? 'item' : 'items'})</a>` : 'No items added yet.'}</p>`;
+  for (const button of main.querySelectorAll('button[data-line]')) {
+    button.onclick = () => {
+      const line = Number(button.dataset.line);
+      const reason = document.getElementById(`reason-${line}`).value;
+      if (!reason) {
+        document.getElementById('message').textContent = 'Choose a reason first.';
+        return;
+      }
+      const item = ORDER.lines.find((l) => l.line === line);
+      store.set('return', [...chosen(), { line, name: item.name, reason }]);
+      render();
+      document.getElementById('message').textContent = `Added ${item.name} to your return.`;
+    };
+  }
+}
+render();
+</script></body></html>

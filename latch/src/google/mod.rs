@@ -10,6 +10,8 @@
 //!   planner of the old Latch app and Plow's Google route.
 
 pub mod client;
+#[cfg(feature = "fake-gog")]
+pub mod fake;
 pub mod host;
 pub mod merge;
 #[cfg(test)]
