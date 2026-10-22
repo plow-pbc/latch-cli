@@ -28,8 +28,8 @@
 #
 # On Linux it also installs bubblewrap, which `latch serve` uses to sandbox
 # its workers, and on Ubuntu 24.04 and later the AppArmor profile that lets
-# bubblewrap create user namespaces there; on arm64 with Chrome, also Xvfb,
-# the display of a host with no screen, and unzip. Those need root, so it asks for sudo
+# bubblewrap create user namespaces there (browser-engines.sh adds Xvfb and
+# unzip for Chrome on arm64). Those need root, so it asks for sudo
 # once, and only when something is missing. On macOS none of that is
 # needed. It downloads no latch binary. Running it again changes
 # nothing that is already in place.
@@ -212,21 +212,12 @@ else
   say "installed gog $gog_version to $gog (sha256 $(sha256 "$gog"))"
 fi
 
-# 3. Linux: work out what needs root, then run it all under one sudo.
-# On a Linux with a Chrome for Testing build (arm64, the Pi), Chrome also
-# needs Xvfb, a screenless host's display, and unzip to unpack it.
-cft_linux=""
-case "$(uname -s)/$(uname -m)/$browsers" in
-  Linux/aarch64/*chrome* | Linux/arm64/*chrome*) cft_linux=1 ;;
-esac
+# 3. Linux: work out what needs root, then run it all under one sudo. What
+# Chrome needs is browser-engines.sh's to install, then or later.
 if [ "$(uname -s)" = Linux ]; then
   packages=""
   want() { packages="${packages:+$packages }$1"; }
   command -v bwrap >/dev/null 2>&1 || want bubblewrap
-  if [ -n "$cft_linux" ]; then
-    command -v Xvfb >/dev/null 2>&1 || want xvfb
-    command -v unzip >/dev/null 2>&1 || want unzip
-  fi
 
   # Ubuntu 24.04 and later let a program create user namespaces only if an
   # AppArmor profile allows it (the kernel setting below reads 1). Ubuntu's
@@ -244,7 +235,7 @@ if [ "$(uname -s)" = Linux ]; then
   fi
 
   if [ -z "$packages" ]; then
-    say "bubblewrap${cft_linux:+, Xvfb and unzip} already installed"
+    say "bubblewrap already installed"
   else
     if command -v apt-get >/dev/null 2>&1; then
       manager=apt-get
@@ -257,15 +248,7 @@ if [ "$(uname -s)" = Linux ]; then
     else
       die "no apt-get, dnf, apk or pacman found; install $packages yourself, then run this again"
     fi
-    # Xvfb's package has a different name on each.
-    named=""
-    for package in $packages; do
-      case "$manager:$package" in
-        dnf:xvfb) package=xorg-x11-server-Xvfb ;;
-        pacman:xvfb) package=xorg-server-xvfb ;;
-      esac
-      named="${named:+$named }$package"
-    done
+    named=$packages
     case $manager in
       apt-get) install="apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q $named" ;;
       dnf) install="dnf install -y $named" ;;

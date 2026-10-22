@@ -15,7 +15,8 @@ The download is `browser-engines.sh`'s, beside `install-binary.sh`, which
 `install.sh` runs. `latch browser setup [--engine chrome|camoufox]` runs a
 copy of it that latch carries, with the same pins, to install an engine
 later; it is the host's owner's command, run on the host, and refuses a
-latch logged in as an agent. An agent's browser call never downloads anything: with no engine it
+latch logged in as an agent. On Linux, installing Chrome either way first
+installs unzip and Xvfb if they are missing, asking for sudo once. An agent's browser call never downloads anything: with no engine it
 fails with `engine_not_installed`, whose `details.setup` is the owner's
 command (`latch browser setup --engine chrome`).
 

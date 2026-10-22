@@ -230,7 +230,10 @@ class BrowserEngines(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, options)
             self.assertIn(says, result.stderr, options)
 
-    def test_chrome_installs_the_pinned_build_once_and_checks_its_hash(self):
+    def chrome_fixture(self, tools):
+        """A browser-engines.sh beside a pin for a local CfT archive, on a
+        Linux arm64 machine whose curl serves only that archive. Returns the
+        script's folder, the archive, and the file listing each download."""
         setup = self.root / "engines"
         (setup / "src/browser").mkdir(parents=True)
         shutil.copyfile(ROOT / "latch/browser-engines.sh", setup / "browser-engines.sh")
@@ -250,15 +253,20 @@ class BrowserEngines(unittest.TestCase):
   }}
 }}
 """)
-        tool(self.tools, "uname", 'case "$1" in -s) echo Linux;; -m) echo aarch64;; esac\n')
+        tool(tools, "uname", 'case "$1" in -s) echo Linux;; -m) echo aarch64;; esac\n')
         fetched = self.root / "fetched"
         # Serves the fixture for the pinned URL; anything else fails.
-        tool(self.tools, "curl", f"""out=""; url=""
+        tool(tools, "curl", f"""out=""; url=""
 while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2;; --proto) shift 2;; -*) shift;; *) url=$1; shift;; esac; done
 [ "$url" = https://example.invalid/cft.zip ] || exit 22
 echo "$url" >> "{fetched}"
 cp "{archive}" "$out"
 """)
+        return setup, archive, fetched
+
+    def test_chrome_installs_the_pinned_build_once_and_checks_its_hash(self):
+        setup, archive, fetched = self.chrome_fixture(self.tools)
+        tool(self.tools, "Xvfb", "exit 0\n")
         state = self.root / "state"
 
         def run():
@@ -283,6 +291,68 @@ cp "{archive}" "$out"
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn("nothing installed", bad.stderr)
         self.assertFalse((state / "plugins/cft/1.0.0/manifest.json").exists())
+
+    def test_chrome_set_up_after_no_browser_installs_unzip_and_xvfb_first(self):
+        # A Pi with neither unzip nor Xvfb: only the tools named here are on
+        # its PATH, and its package manager installs the two.
+        tools = self.root / "pi"
+        tools.mkdir()
+        for name in ["sh", "dirname", "sed", "cksum", "mkdir", "mktemp", "cp", "mv", "rm",
+                     "cut", "id", "cat", "chmod", "grep", "tr", "sha256sum", "shasum", "perl"]:
+            found = shutil.which(name)
+            if found:
+                (tools / name).symlink_to(found)
+        unzip = shutil.which("unzip")
+        self.assertIsNotNone(unzip, "the test unpacks its fixture with the real unzip")
+        log = self.root / "root-log"
+        tool(tools, "bwrap", "exit 0\n")
+        tool(tools, "sudo", f'echo "sudo $*" >> "{log}"\nexec "$@"\n')
+        tool(tools, "apt-get", f"""PATH=/usr/bin:/bin
+echo "apt-get $*" >> "{log}"
+[ "$1" = install ] || exit 0
+for package in "$@"; do case "$package" in
+  unzip) ln -sf "{unzip}" "{tools}/unzip" ;;
+  xvfb) printf '#!/bin/sh\\nexit 0\\n' > "{tools}/Xvfb"; chmod 755 "{tools}/Xvfb" ;;
+esac; done
+""")
+        setup, _, fetched = self.chrome_fixture(tools)
+        env = {**self.env, "PATH": str(tools)}
+        state = self.root / "state"
+
+        # The installer with --no-browser installs neither.
+        (setup / "src/google").mkdir(parents=True)
+        shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+        tool(setup, "latch", "echo installed-fixture\n")
+        gog = state / "plugins/gog/1.0/gog"
+        gog.parent.mkdir(parents=True)
+        gog.write_bytes(b"local-gog-fixture")
+        (setup / "src/google/pin.json").write_text(json.dumps({
+            "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest()}, indent=2))
+        installed = subprocess.run(
+            ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state), "--no-browser",
+             str(setup / "latch")], env=env, capture_output=True, text=True)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertFalse((tools / "unzip").exists() or (tools / "Xvfb").exists())
+        self.assertFalse((state / "plugins/cft").exists())
+
+        # Later, what `latch browser setup --engine chrome` runs.
+        def setup_chrome():
+            return subprocess.run(
+                ["sh", str(setup / "browser-engines.sh"), "--state-dir", str(state), "chrome"],
+                env=env, capture_output=True, text=True)
+        later = setup_chrome()
+        self.assertEqual(later.returncode, 0, later.stderr)
+        self.assertIn("installing as root: unzip xvfb", later.stdout)
+        self.assertIn("apt-get install -y -q unzip xvfb", log.read_text())
+        self.assertIn("sudo sh -c", log.read_text())
+        self.assertTrue((tools / "Xvfb").exists())
+        self.assertTrue((state / "plugins/cft/1.0.0/manifest.json").is_file())
+        self.assertEqual(fetched.read_text().count("\n"), 1)
+
+        again = setup_chrome()
+        self.assertEqual(again.returncode, 0, again.stderr)
+        installs = [line for line in log.read_text().splitlines() if line.startswith("apt-get install")]
+        self.assertEqual(len(installs), 1, "installed once")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,10 @@
 # release pinned in src/browser/cft.json, into
 # <state-dir>/plugins/cft/<version>/, beside older versions, with the pin
 # copied in as manifest.json. That download needs curl, and ditto (macOS)
-# or unzip (Linux). On another platform it says so and installs nothing.
+# or unzip (Linux). On Linux, Chrome also needs Xvfb, the display of a host
+# with no screen: unzip and Xvfb are installed first if missing, which
+# needs root, so it asks for sudo once. On another platform it says so and
+# installs nothing.
 #
 # camoufox (macOS): the Camoufox build, the Node it runs its helper on, and
 # the helper's runtime (Playwright and camoufox-js, from camoufox/'s
@@ -47,6 +50,45 @@ else
 fi
 cft_tmp=""
 fox_tmp=""
+
+# Installs `$@` (package names as apt calls them) as root, under one sudo.
+as_root_install() {
+  if command -v apt-get >/dev/null 2>&1; then
+    manager=apt-get
+  elif command -v dnf >/dev/null 2>&1; then
+    manager=dnf
+  elif command -v apk >/dev/null 2>&1; then
+    manager=apk
+  elif command -v pacman >/dev/null 2>&1; then
+    manager=pacman
+  else
+    die "no apt-get, dnf, apk or pacman found; install $* yourself, then run this again"
+  fi
+  # Xvfb's package has a different name on each.
+  named=""
+  for package in "$@"; do
+    case "$manager:$package" in
+      dnf:xvfb) package=xorg-x11-server-Xvfb ;;
+      pacman:xvfb) package=xorg-server-xvfb ;;
+    esac
+    named="${named:+$named }$package"
+  done
+  case $manager in
+    apt-get) install="apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q $named" ;;
+    dnf) install="dnf install -y $named" ;;
+    apk) install="apk add $named" ;;
+    pacman) install="pacman -Sy --needed --noconfirm $named" ;;
+  esac
+  say "installing as root: $named"
+  if [ "$(id -u)" -eq 0 ]; then
+    as_root=""
+  elif command -v sudo >/dev/null 2>&1; then
+    as_root=sudo
+  else
+    die "need root to install $named, and sudo is not installed; run this as root"
+  fi
+  $as_root sh -c "$install" || die "installing $named as root failed (see above); fix that and run this again"
+}
 trap 'rm -rf ${cft_tmp:+"$cft_tmp"} ${fox_tmp:+"$fox_tmp"}' EXIT
 
 # The pinned Chrome for Testing. The pin's JSON has a fixed shape: each
@@ -65,6 +107,13 @@ chrome() {
       return 0
       ;;
   esac
+  # Chrome needs these even when its build is already in place.
+  if [ "$(uname -s)" = Linux ]; then
+    missing=""
+    command -v unzip >/dev/null 2>&1 || missing="unzip"
+    command -v Xvfb >/dev/null 2>&1 || missing="${missing:+$missing }xvfb"
+    [ -z "$missing" ] || as_root_install $missing
+  fi
   cft_pin="$here/src/browser/cft.json"
   [ -f "$cft_pin" ] || die "$cft_pin not found; run install.sh from the latch workspace"
   cft() {
@@ -80,9 +129,6 @@ chrome() {
     return 0
   fi
   command -v curl >/dev/null 2>&1 || die "need curl to download Chrome for Testing"
-  if [ "$(uname -s)" != Darwin ]; then
-    command -v unzip >/dev/null 2>&1 || die "need unzip to unpack Chrome for Testing; install it, then run this again"
-  fi
   cft_url=$(cft url)
   cft_zip_sha256=$(cft zip_sha256)
   cft_folder=$(cft folder)
