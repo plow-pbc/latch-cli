@@ -52,10 +52,11 @@ struct Action<'a> {
 }
 
 /// `op` with `args` as the judge sees it, if the gatekeeper judges `op`.
-/// An exec without a working folder runs in `first_area`. An exec's stdin
+/// An exec without a working folder runs in `first_area`, if the host
+/// shares one. An exec's stdin
 /// may be the program itself (`sh`, `python -`), so the judge reads it
 /// too; the audit keeps only its size and sha256.
-pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
+pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated> {
     let mut unjudgeable = None;
     let stdin = match op {
         "exec" => judged_stdin(&args["stdin"]).unwrap_or_else(|failure| {
@@ -75,21 +76,18 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
         command: None,
         accounts: None,
     };
-    let first_area = first_area.to_string_lossy();
+    let first_area = first_area.map(Path::to_string_lossy);
     let mut once = false;
     let (action, audit) = match op {
         "exec" => {
-            let folder = args["workdir"].as_str().unwrap_or(&first_area);
+            let folder = args["workdir"].as_str().or(first_area.as_deref());
             let action = Action {
                 argv: Some(&args["argv"]),
                 stdin: stdin.as_deref(),
-                working_folder: Some(folder),
+                working_folder: folder,
                 ..none
             };
-            let argv: Vec<String> =
-                serde_json::from_value(args["argv"].clone()).unwrap_or_default();
-            let mut audit =
-                json!({"argv": crate::exec::capped_argv(&argv), "workdir": args["workdir"]});
+            let mut audit = json!({"argv": args["argv"], "workdir": args["workdir"]});
             if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(args["stdin"].clone()) {
                 audit["stdin"] = crate::exec::stdin_audit(&bytes);
             }
