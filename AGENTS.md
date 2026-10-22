@@ -29,6 +29,7 @@ Before making meaningful changes, read:
 
 - All dev and test state lives under the gitignored `.dev/` at the repo root, passed with `--state-dir`. Tests make their throwaway folders in `.dev/tests/`.
 - `just cft` (run by `just test` on macOS) installs the pinned Chrome for Testing into `.dev/cft-state`, where the browser tests look for it.
+- `just try` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and Plow baked in as its defaults, so it never touches `~/.latch` or an installed latch.
 - A binary built with `LATCH_BUILD_STATE_DIR` set has that state folder as its default. Running hosts and clients may depend on it: do not move, copy, or delete another peer's state folder, and do not stop or restart a running `latch serve`, unless asked.
 - Never print a token, key, or vault value. Credentials stay in their files with mode 600.
 
