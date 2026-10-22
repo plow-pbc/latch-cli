@@ -3,8 +3,8 @@ name: promote
 # update` install: this writes releases.plow.co/latch-cli/install.sh, then
 # latest.json, signed, last, and has CloudFront drop its copies of both. The
 # release's own files were uploaded by the release workflow and are not
-# touched. It runs in the release environment, so whatever that environment
-# requires (a reviewer's approval) applies again here.
+# touched. Publishing the draft is the approval. It runs in the release
+# environment, the only place its key and upload role are available.
 run-name: Promote ${{ github.event.release.tag_name }}
 on:
   release:
