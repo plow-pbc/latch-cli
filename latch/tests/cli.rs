@@ -10,6 +10,10 @@ use std::thread;
 
 use serde_json::{Value, json};
 
+#[cfg(target_os = "macos")]
+#[path = "support/shop_server.rs"]
+mod shop_server;
+
 /// A fake Plow that answers one HTTP request per entry in `answers`, in
 /// order, and hands back the raw requests it received. Like Plow, it answers
 /// a registration with the key it was sent: a `null` key in an answer is
@@ -3229,48 +3233,6 @@ fn agent_help_says_messages_and_contacts_are_untrusted_data() {
     }
 }
 
-/// Serves `tests/browser-shop` on 127.0.0.1; returns its origin.
-#[cfg(target_os = "macos")]
-fn shop_site() -> String {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-shop");
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-    thread::spawn(move || {
-        for socket in listener.incoming() {
-            let Ok(mut socket) = socket else { continue };
-            let mut line = String::new();
-            BufReader::new(&socket).read_line(&mut line).unwrap_or(0);
-            let path = line
-                .split(' ')
-                .nth(1)
-                .unwrap_or("/")
-                .split('?')
-                .next()
-                .unwrap_or("/");
-            let path = path.trim_start_matches('/');
-            let found = (!path.split('/').any(|part| part == ".."))
-                .then(|| fs::read(root.join(path)).ok())
-                .flatten();
-            let kind = match path.rsplit('.').next() {
-                Some("js") => "text/javascript",
-                Some("css") => "text/css",
-                _ => "text/html; charset=utf-8",
-            };
-            let (status, body) = match &found {
-                Some(body) => ("200 OK", body.as_slice()),
-                None => ("404 Not Found", &b""[..]),
-            };
-            let head = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = socket.write_all(head.as_bytes());
-            let _ = socket.write_all(body);
-        }
-    });
-    origin
-}
-
 /// A host's state given the pinned browser engines the tests installed
 /// (`just cft`), local pages allowed, and the Messages reader.
 #[cfg(target_os = "macos")]
@@ -3317,7 +3279,7 @@ fn an_agent_signs_in_with_a_code_texted_to_the_owner() {
     let (serve, mut log, _) = serving_with(command);
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
     until_serving(&host, &serve);
-    let site = shop_site();
+    let site = shop_server::serve_shop();
 
     let agent_runs = |args: &[&str]| {
         let output = latch(&agent, args, &agent_env);

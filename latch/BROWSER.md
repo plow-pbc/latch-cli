@@ -358,7 +358,10 @@ line (`model_assessed`). Before its first action a step whose result is
 already a field's value, the address or the title ends `already_held`;
 page text alone, such as a message an earlier step left, never counts. A
 pass stops, in this order, at a CAPTCHA (`needs_owner`), a code stage
-or a passkey stage (`needs_fields`, before the model is asked; a passkey
+or a passkey stage (`needs_fields`, before the model is asked; a code
+stage's stop names the way on: the vault's authenticator code with `fill`,
+a texted code found and typed as below ("A code sent by text"), else a
+handoff; a passkey
 stage goes on when a named item that fits holds a password, so the model
 can take the page's password path), `blocked`,
 `unconfirmed`, `stuck` or `already_true`, a budget (8 actions a step, 30 a

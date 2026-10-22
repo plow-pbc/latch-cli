@@ -34,8 +34,9 @@ one JSON object: on stdout when it worked, as `{"error": {"code",
 
 ## A sign-in code sent by text
 
-When a site asks for a code it texted to the owner, and the host reads
-Messages, it is two steps, each judged:
+When a site asks for a code it texted to the owner (a goal in words stops
+there with `needs_fields`), and the host reads Messages, it is two steps,
+each judged:
 
 1. `latch messages search --host H --since 10m code`: take the code from
    the newest message that is plainly that site's sign-in code (none yet:
