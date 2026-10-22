@@ -19,7 +19,7 @@ use std::thread;
 /// else for a new name; it keeps the answers in `login-answers`.
 const STUB: &str = r#"#!/bin/sh
 [ "$1" = --state-dir ] && shift 2
-echo "$*" >> "$STUB/calls"
+echo "${LATCH_HOST:+LATCH_HOST=$LATCH_HOST }$*" >> "$STUB/calls"
 state() { if [ -f "$STUB/$1" ]; then echo true; else echo false; fi; }
 case "$*" in
   "status --local")
@@ -35,7 +35,7 @@ case "$*" in
       fi
     fi
     echo "Logged in as mac."; touch "$STUB/peer" ;;
-  "serve -d") touch "$STUB/ready"; echo '{"pid":4242}' ;;
+  "serve -d"|"serve -d --again") touch "$STUB/ready"; echo '{"pid":4242}' ;;
   "plugins list")
     out='{"plugins":['; sep=''
     for name in google messages contacts; do
@@ -52,7 +52,7 @@ case "$*" in
     case $answer in
       ok) touch "$STUB/enabled-$name"; echo "{\"plugin\":\"$name\",\"state\":\"enabled\"}" ;;
       not_granted)
-        echo "{\"error\":{\"code\":\"needs_setup\",\"message\":\"no Full Disk Access\",\"details\":{\"access\":\"not_granted\",\"grant\":\"/Applications/Plow Latch.app\",\"settings\":\"x-apple.systempreferences:test\"}}}" >&2
+        echo "{\"error\":{\"code\":\"needs_setup\",\"message\":\"no Full Disk Access\",\"access\":\"not_granted\",\"grant\":\"/Applications/Plow Latch.app\",\"settings\":\"x-apple.systempreferences:test\"}}" >&2
         exit 1 ;;
       unavailable) echo "{\"error\":{\"code\":\"unavailable\",\"message\":\"$name is unavailable on this host\"}}" >&2; exit 1 ;;
       *) echo "{\"error\":{\"code\":\"google_not_connected\",\"message\":\"Plow has no Google account\"}}" >&2; exit 1 ;;
@@ -142,6 +142,8 @@ impl Stub {
             .arg("setup")
             .env("LATCH_SETUP_LATCH", self.root.join("latch-stub"))
             .env("STUB", self.root.join("stub"))
+            // As if the owner's shell named another host for other commands.
+            .env("LATCH_HOST", "elsewhere")
             .env("PATH", path)
             .stdin(side.try_clone().unwrap())
             .stdout(side.try_clone().unwrap())
@@ -207,11 +209,14 @@ fn a_fresh_run_logs_in_connects_google_and_starts_latch() {
     }
     let calls = stub.read("calls");
     assert!(
-        calls.contains("\nlogin\n") && calls.contains("serve -d"),
+        calls.contains("\nlogin\n") && calls.contains("serve -d\n"),
         "{calls}"
     );
+    assert!(!calls.contains("LATCH_HOST"), "{calls}");
     assert!(stub.has("enabled-google"));
     assert!(!stub.has("enabled-messages"));
+    #[cfg(not(target_os = "macos"))]
+    assert!(!shown.contains("Messages"), "{shown}");
 }
 
 #[test]
@@ -356,15 +361,24 @@ fn s_skips_the_full_disk_access_wait_and_leaves_it_for_later() {
     assert!(shown.contains("✓ latch is running."), "{shown}");
 }
 
-#[cfg(not(target_os = "macos"))]
 #[test]
-fn linux_has_no_messages_step() {
+fn a_host_that_ran_here_before_starts_again_with_its_flags() {
     let stub = Stub::new();
     stub.file("peer", "");
-    let (code, shown) = stub.setup("y\ny\n");
+    fs::create_dir_all(stub.root.join("state")).unwrap();
+    fs::write(
+        stub.root.join("state/serve-args.json"),
+        r#"["--deny-exec"]"#,
+    )
+    .unwrap();
+    let (code, shown) = stub.setup("\nn\n");
     assert_eq!(code, Some(0), "{shown}");
-    assert!(!shown.contains("Messages"), "{shown}");
-    assert!(shown.contains("✓ Google is connected."), "{shown}");
+    assert!(
+        shown.contains("→ Start latch: latch serve -d --again"),
+        "{shown}"
+    );
+    let calls = stub.read("calls");
+    assert!(calls.contains("serve -d --again\n"), "{calls}");
 }
 
 #[cfg(target_os = "macos")]

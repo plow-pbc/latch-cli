@@ -109,7 +109,8 @@ impl Setup {
         if let Some(dir) = &self.state_dir {
             command.arg("--state-dir").arg(dir);
         }
-        command.args(args);
+        // Setup is about this machine: `plugins list` must not ask another.
+        command.env_remove("LATCH_HOST").args(args);
         command
     }
 
@@ -136,15 +137,24 @@ impl Setup {
     }
 
     /// Whether this machine's host answers, starting it with `serve -d` if
-    /// not. Steps that change a connector need it.
+    /// not: `--again` once a host ran here, so it keeps the flags its owner
+    /// gave it (`--deny-exec`). Steps that change a connector need it.
     fn host(&mut self) -> bool {
         if self.local()["serve"]["ready"] == true {
             return true;
         }
-        step("Start latch", "latch serve -d");
-        let started = self.latch(&["serve", "-d"]);
+        let ran_before = StateDir::new(self.state_dir.clone())
+            .is_ok_and(|state| state.path.join(crate::managed::ARGS_FILE).exists());
+        let args: &[&str] = if ran_before {
+            &["serve", "-d", "--again"]
+        } else {
+            &["serve", "-d"]
+        };
+        let command = format!("latch {}", args.join(" "));
+        step("Start latch", &command);
+        let started = self.latch(args);
         if !started.ok {
-            failed(&started.json, "latch serve -d");
+            failed(&started.json, &command);
         }
         started.ok
     }
@@ -225,14 +235,14 @@ impl Setup {
                 }
                 // Only a missing grant is worth waiting for; any other
                 // failure is this connector's to retry later.
-                let details = &enabled.json["error"]["details"];
-                if details["access"] != "not_granted" {
+                let error = &enabled.json["error"];
+                if error["access"] != "not_granted" {
                     failed(&enabled.json, &command);
                     return false;
                 }
                 if !shown {
                     shown = true;
-                    show_grant(details);
+                    show_grant(error);
                 }
                 true
             });
@@ -271,9 +281,9 @@ impl Setup {
 /// Opens the Full Disk Access pane and shows the app to grant it to, and
 /// says what to do there.
 #[cfg(target_os = "macos")]
-fn show_grant(details: &Value) {
-    let grant = details["grant"].as_str().unwrap_or("Plow Latch.app");
-    let settings = details["settings"]
+fn show_grant(error: &Value) {
+    let grant = error["grant"].as_str().unwrap_or("Plow Latch.app");
+    let settings = error["settings"]
         .as_str()
         .unwrap_or(crate::messages::access::SETTINGS);
     say(&format!(
