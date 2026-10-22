@@ -8,8 +8,9 @@ use serde_json::{Value, json};
 /// What a display says next to commands shown through this module.
 pub const NOTE: &str = "credential-looking values in commands are hidden, best effort: some can slip through; `latch audit show` has them in full";
 
-/// An operation's audit details as shown to people: an exec's argv with
-/// credential-looking values hidden, the rest as it is.
+/// An operation's audit details as shown to people: an exec's argv, and
+/// everything of a browser action the gatekeeper judged, with
+/// credential-looking values hidden; the rest as it is.
 pub fn shown(op: &str, args: &Value) -> Value {
     let mut shown = args.clone();
     if op == "exec"
@@ -17,7 +18,25 @@ pub fn shown(op: &str, args: &Value) -> Value {
     {
         shown["argv"] = json!(argv(&words));
     }
+    if op == "browser"
+        && let Some(judged) = shown.get_mut("judged")
+    {
+        hide_in(judged);
+    }
     shown
+}
+
+/// Hides the credential-looking words of every string in `value`.
+fn hide_in(value: &mut Value) {
+    match value {
+        Value::String(words) => {
+            let split: Vec<String> = words.split_whitespace().map(str::to_string).collect();
+            *words = argv(&split).join(" ");
+        }
+        Value::Array(values) => values.iter_mut().for_each(hide_in),
+        Value::Object(values) => values.values_mut().for_each(hide_in),
+        _ => {}
+    }
 }
 
 /// Credential-looking argv for display only; never use this to run or judge a command.
@@ -319,6 +338,31 @@ mod shown_tests {
         assert_eq!(display["workdir"], "/w");
         let file = json!({"path": "/w/token.txt"});
         assert_eq!(shown("file_get", &file), file);
+    }
+
+    #[test]
+    fn a_judged_browser_plans_steps_are_shown_with_their_credentials_hidden() {
+        let audit = json!({"command": "do", "judged": {"kind": "browser_plan", "steps": [
+            {"step": "type e4 --password hunter2-made-up"},
+            {"step": "type e5 v1", "values": {"v1": "Authorization: Bearer abc123def456"}},
+            {"step": "click e9"}]}});
+        let display = shown("browser", &audit);
+        let steps = &display["judged"]["steps"];
+        assert_eq!(steps[0]["step"], "type e4 --password [redacted]");
+        let header = steps[1]["values"]["v1"].as_str().unwrap();
+        assert!(
+            header.starts_with("Authorization:") && !header.contains("abc123def456"),
+            "{header}"
+        );
+        assert_eq!(steps[2]["step"], "click e9");
+        assert_eq!(display["command"], "do");
+        // Anything else the judge saw is hidden the same way.
+        let audit = json!({"command": "do", "judged": {"kind": "browser_plan",
+            "facts": {"header": "Authorization: Bearer fact-credential-77"},
+            "sites": ["https://u:site-credential-88@shop.example/"]}});
+        let display = shown("browser", &audit).to_string();
+        assert!(!display.contains("fact-credential-77"), "{display}");
+        assert!(!display.contains("site-credential-88"), "{display}");
     }
 
     #[test]

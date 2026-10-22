@@ -584,23 +584,16 @@ pub(super) async fn fill(
 ) -> Result<Value, Failure> {
     audit.insert("item".into(), args["item"].clone());
     let args = super::fill::resolve(browsers, entry, args).await?;
-    let judged = match caller.gate {
-        Some(_) => {
-            let site = judged::site(browsers, entry).await?;
-            judged::judge(
-                caller.gate,
-                judged::fill(browsers, &args, site, false),
-                audit,
-            )
-            .await?
-        }
-        None => None,
-    };
-    let filled = fill_resolved(browsers, entry, session, caller.key, &args, audit).await;
-    if let Some(judged) = judged {
-        judged.ended(&filled);
+    if caller.gate.is_some() {
+        let site = judged::site(browsers, entry).await?;
+        judged::judge(
+            caller.gate,
+            judged::fill(browsers, &args, site, false),
+            audit,
+        )
+        .await?;
     }
-    filled
+    fill_resolved(browsers, entry, session, caller.key, &args, audit).await
 }
 
 async fn fill_resolved(
@@ -699,13 +692,11 @@ async fn answer(
     {
         off_web(browsers, url).await?;
     }
-    let judged = match caller.gate {
-        Some(_) => match judged_action(browsers, &entry, command, args).await? {
-            Some(action) => judged::judge(caller.gate, action, audit).await?,
-            None => None,
-        },
-        None => None,
-    };
+    if caller.gate.is_some()
+        && let Some(action) = judged_action(browsers, &entry, command, args).await?
+    {
+        judged::judge(caller.gate, action, audit).await?;
+    }
     let result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
         "fill" => fill(browsers, &entry, name, caller, args, audit)
@@ -725,9 +716,6 @@ async fn answer(
             .map(|result| (result, None)),
         _ => worker(browsers, &entry, command, args, input, audit).await,
     };
-    if let Some(judged) = judged {
-        judged.ended(&result);
-    }
     if matches!(command, "tab" | "goto")
         && result.is_ok()
         && let Some(site) = args["url"].as_str().and_then(sites::site_of)
@@ -862,18 +850,11 @@ async fn open(
     if let Some(url) = url {
         off_web(browsers, url).await?;
     }
-    let judged = match url {
-        Some(url) => {
-            let action = judged::open_site(browsers, url);
-            judged::judge(caller.gate, action, audit).await?
-        }
-        None => None,
-    };
-    let opened = open_judged(browsers, caller.key, profile, args, audit).await;
-    if let Some(judged) = judged {
-        judged.ended(&opened);
+    if let Some(url) = url {
+        let action = judged::open_site(browsers, url);
+        judged::judge(caller.gate, action, audit).await?;
     }
-    opened
+    open_judged(browsers, caller.key, profile, args, audit).await
 }
 
 async fn open_judged(

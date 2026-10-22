@@ -242,14 +242,15 @@ private struct Archive {
                 found = try valid(string, as: UTF8.self, &budget)
             }
         case UInt8(ascii: "*"):
-            // A C string (an NSValue's type, say): nil, a new one (an object
-            // as well as a shared string), or one read before.
+            // A C string (an NSValue's type, say): nil, a new one (an object,
+            // whatever its shared string is: new or one read before), or one
+            // read before.
             let tag = try byte()
             if tag == empty {
                 index += 1
             } else if tag == start {
                 index += 1
-                if try byte() == start { objects += 1 }
+                objects += 1
                 _ = try sharedString()
             } else {
                 _ = try referenceTo(objects)
