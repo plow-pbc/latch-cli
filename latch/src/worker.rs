@@ -88,21 +88,26 @@ pub struct Running {
 }
 
 impl WorkerSetup {
+    /// A worker that reads home, less the hidden paths, and writes only
+    /// `writes`: exec's and a get's.
+    fn home_readable(&self, writes: Vec<PathBuf>) -> WorkerSetup {
+        WorkerSetup {
+            home: self.home.clone(),
+            areas: writes,
+            reads: vec![self.home.clone()],
+            hidden: self.hidden.clone(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
+        }
+    }
+
     /// Starts a worker that reads `path`, which the host resolved: home
     /// readable, less the hidden paths, and nothing writable. Its first line is `{"size": N}`.
     pub async fn start_read(
         &self,
         path: &Path,
     ) -> Result<(Running, serde_json::Value), WorkerError> {
-        let reader = WorkerSetup {
-            home: self.home.clone(),
-            areas: vec![],
-            reads: vec![self.home.clone()],
-            hidden: self.hidden.clone(),
-            state_dir: self.state_dir.clone(),
-            program: self.program.clone(),
-        };
-        let mut command = reader.command(&self.home)?;
+        let mut command = self.home_readable(vec![]).command(&self.home)?;
         // `--` so a path starting with `-` is never read as a flag.
         command
             .arg("--home")
@@ -229,15 +234,8 @@ impl WorkerSetup {
         kill_after: u64,
     ) -> Result<Child, WorkerError> {
         let caches = crate::exec::caches(self);
-        let restricted = WorkerSetup {
-            home: self.home.clone(),
-            areas: args.writes.iter().cloned().chain(caches).collect(),
-            reads: vec![self.home.clone()],
-            hidden: self.hidden.clone(),
-            state_dir: self.state_dir.clone(),
-            program: self.program.clone(),
-        };
-        let mut command = restricted.command(&self.home)?;
+        let writes = args.writes.iter().cloned().chain(caches).collect();
+        let mut command = self.home_readable(writes).command(&self.home)?;
         command.arg("--home").arg(&self.home);
         if args.network {
             command.arg("--network");

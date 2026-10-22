@@ -18,14 +18,14 @@
 use std::ffi::CString;
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::exec::{check_path, is_hidden, resolve};
 use crate::failure::{Exit, Failure};
-use crate::sandbox::opened_path;
+use crate::sandbox::{open_at, open_folder};
 use crate::worker::WorkerSetup;
 
 /// The file a get of `remote` reads: in home, or a system file exec can
@@ -57,7 +57,8 @@ pub fn destination(
                 format!("{remote} is a folder, and the file has no plain name to go under"),
             ));
         };
-        path.push(name);
+        // Resolved too: a link at that name is followed and checked.
+        path = resolve(&workers.home, &path.join(name))?;
         if path.is_dir() {
             let message = format!("{} is a folder", path.display());
             return Err(Failure::failed("is_a_directory", message));
@@ -68,6 +69,12 @@ pub fn destination(
         return Err(Failure::failed("not_found", message));
     }
     check_path(workers, &path, true)?;
+    // The latch this host runs stays as it is.
+    let program = workers.program.canonicalize();
+    if program.as_ref().is_ok_and(|program| *program == path) {
+        let message = format!("{remote} is the latch this host runs");
+        return Err(Failure::new(Exit::Denied, "bad_path", message));
+    }
     Ok(path)
 }
 
@@ -78,19 +85,9 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
         return Err(Failure::failed("bad_path", message));
     };
     let failed = |err: io::Error| Failure::failed("io_error", format!("{}: {err}", path.display()));
-    // `O_NOFOLLOW`: a folder that became a symlink is not opened at all.
-    let dir = open(
-        None,
-        folder.as_os_str().as_bytes(),
-        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-        0,
-    )
-    .map_err(|_| changed(folder))?;
-    // A folder above it swapped for a symlink would still be followed:
-    // the handle must be the folder that was judged, and pass again.
-    if opened_path(&dir).map_err(failed)? != folder {
-        return Err(changed(folder));
-    }
+    // The folder that was judged, or nothing: not one swapped for a symlink,
+    // nor one under a folder swapped for one. It must pass again.
+    let dir = open_folder(folder).map_err(|_| changed(folder))?;
     check_path(workers, path, true)?;
 
     let temp = format!(
@@ -99,20 +96,22 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
         std::process::id(),
         rand::random::<u32>()
     );
+    // A file it replaces keeps its permissions, from the moment the new one
+    // exists: a 0600 key stays 0600, a script stays executable.
+    let kept = mode_of(&dir, name.as_bytes());
     // `O_EXCL | O_NOFOLLOW`: never an existing name, nor a link at it.
-    let mut file = open(
-        Some(&dir),
-        temp.as_bytes(),
+    let mut file = open_at(
+        &dir,
+        temp.as_ref(),
         libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
-        0o666,
+        kept.unwrap_or(0o666),
     )
     .map_err(failed)?;
-    // A file it replaces keeps its permissions: a 0600 key stays 0600, a
-    // script stays executable.
-    let kept = mode_of(&dir, name.as_bytes())
+    // The umask may have taken bits off the kept mode; put them back.
+    let restored = kept
         .map(|mode| file.set_permissions(std::fs::Permissions::from_mode(mode)))
         .transpose();
-    let written = kept
+    let written = restored
         .and_then(|_| File::open(staged))
         .and_then(|mut staged| io::copy(&mut staged, &mut file))
         .and_then(|_| file.sync_all())
@@ -161,20 +160,6 @@ fn c_name(name: &[u8]) -> io::Result<CString> {
     CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
 }
 
-/// `openat(dir, name, flags)`, or `open` with no `dir`; close-on-exec.
-fn open(dir: Option<&File>, name: &[u8], flags: i32, mode: libc::c_uint) -> io::Result<File> {
-    let name = c_name(name)?;
-    let at = dir.map_or(libc::AT_FDCWD, AsRawFd::as_raw_fd);
-    // SAFETY: `name` is a NUL-terminated string that outlives the call, and
-    // `at` is a descriptor we hold open (or AT_FDCWD).
-    let fd = unsafe { libc::openat(at, name.as_ptr(), flags | libc::O_CLOEXEC, mode) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: openat just returned this descriptor, and nothing else owns it.
-    Ok(unsafe { File::from_raw_fd(fd) })
-}
-
 fn rename(dir: &File, from: &str, to: &[u8]) -> io::Result<()> {
     let (from, to) = (c_name(from.as_bytes())?, c_name(to)?);
     let fd = dir.as_raw_fd();
@@ -205,13 +190,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().canonicalize().unwrap();
         fs::create_dir(home.join(".latch")).unwrap();
+        fs::write(home.join("latch"), "the latch this host runs").unwrap();
         let workers = WorkerSetup {
             hidden: crate::sandbox::never_readable(&home),
             state_dir: home.join(".latch"),
+            program: home.join("latch"),
             home,
             areas: vec![],
             reads: vec![],
-            program: PathBuf::from("/nonexistent"),
         };
         (dir, workers)
     }
@@ -246,6 +232,12 @@ mod tests {
             );
         }
         assert_eq!(refused("~/missing/a.txt").1, "not_found");
+        // A link at the file's name inside a folder is followed and checked.
+        fs::write(home.join(".latch/key"), "made-up key").unwrap();
+        std::os::unix::fs::symlink(home.join(".latch/key"), home.join("docs/report.pdf")).unwrap();
+        assert_eq!(refused("~/docs"), (Exit::Denied, "bad_path".into()));
+        // The latch this host runs is never written over.
+        assert_eq!(refused("~/latch"), (Exit::Denied, "bad_path".into()));
         // A folder with no plain name for the file is not guessed at.
         let sneaky = destination("~/docs", Some("../x"), &workers).unwrap_err();
         assert_eq!(sneaky.code, "is_a_directory");

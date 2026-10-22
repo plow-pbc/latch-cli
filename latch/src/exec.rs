@@ -270,19 +270,10 @@ pub async fn run(
 fn create_write_dir(path: &Path) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::OpenOptionsExt;
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("no parent folder"))?;
-    let folder = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(parent)?;
-    if crate::sandbox::opened_path(&folder)? != parent {
-        return Err(std::io::Error::other(
-            "the write parent changed after judgment",
-        ));
-    }
+    let folder = crate::sandbox::open_folder(parent)?;
     let name = std::ffi::CString::new(
         path.file_name()
             .ok_or_else(|| std::io::Error::other("no folder name"))?
@@ -580,12 +571,12 @@ fn signal_name(signal: i32) -> String {
 }
 
 /// The worker refused or failed before the program ran: a refusal by the
-/// sandbox (or a workdir outside the areas, or a host sharing no folders)
-/// is a denial, anything else a failure. There is no execution result.
+/// sandbox (or a workdir outside the areas) is a denial, anything else a
+/// failure. There is no execution result.
 fn refused(error: WorkerError, audit_args: Value) -> Done {
     let refusal = matches!(
         error.code.as_str(),
-        "sandbox_denied" | "workdir_outside_areas" | "no_folders"
+        "sandbox_denied" | "workdir_outside_areas"
     );
     if !refusal {
         return Done::failed(&error.code, error.message, audit_args);

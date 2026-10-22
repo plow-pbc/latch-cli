@@ -93,6 +93,52 @@ pub(crate) fn opened_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
     }
 }
 
+/// The folder `path` names, opened without following a symlink at it and
+/// checked to be that folder still, a folder above it swapped included: the
+/// handle the host anchors a judged write to (`open_at`, `mkdirat`, …).
+pub(crate) fn open_folder(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let folder = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)?;
+    if opened_path(&folder)? != path {
+        return Err(std::io::Error::other(format!(
+            "{} changed after it was checked",
+            path.display()
+        )));
+    }
+    Ok(folder)
+}
+
+/// `openat(folder, name, flags, mode)`, close-on-exec: `name` is looked up
+/// in `folder` alone.
+pub(crate) fn open_at(
+    folder: &std::fs::File,
+    name: &std::ffi::OsStr,
+    flags: i32,
+    mode: libc::c_uint,
+) -> std::io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(name.as_bytes()).map_err(std::io::Error::other)?;
+    // SAFETY: `name` is NUL-terminated and outlives the call, and `folder`
+    // holds its descriptor open.
+    let fd = unsafe {
+        libc::openat(
+            folder.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CLOEXEC,
+            mode,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: openat just returned this descriptor, and nothing else owns it.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
 /// Confines the calling thread and any threads or processes it creates.
 /// Call before starting other threads: the Linux launcher replaces this process.
 /// An error means the process is not confined and must not go on.
