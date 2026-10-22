@@ -1070,7 +1070,7 @@ async fn a_stalled_audit_write_holds_up_no_other_caller() {
 }
 
 #[tokio::test]
-async fn local_vault_edits_reach_a_running_hosts_cached_release_path() {
+async fn local_vault_edits_reach_a_running_hosts_release_path() {
     use crate::vault::store::Backend;
     use tokio::io::AsyncWriteExt;
     let t = start(a_chat(always_covered)).await;

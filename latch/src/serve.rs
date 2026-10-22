@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use iroh::endpoint::{Connection, Incoming, VarInt, presets};
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
+use tokio::io::AsyncReadExt;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
@@ -949,7 +950,15 @@ async fn serve_operation(
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
-                    "exec" => exec::run(&host.workers, &request.args, cut_off).await,
+                    "exec" => {
+                        exec::run(&host.workers, &request.args, async {
+                            tokio::select! {
+                                reason = cut_off => reason,
+                                _ = recv.read_u8(), if local => "caller_gone",
+                            }
+                        })
+                        .await
+                    }
                     "vault" => {
                         crate::vault::host::run(
                             &host.vault,
