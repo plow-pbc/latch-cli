@@ -32,7 +32,7 @@ pub const OPS: [&str; 4] = ["host_hello", "host_stop", "host_watch", "host_attac
 const HOLD_WITHIN: Duration = Duration::from_secs(30);
 
 pub struct Lifetime {
-    attached: bool,
+    pub attached: bool,
     held: AtomicBool,
     /// Ends the host's serving loop.
     pub stop: Notify,

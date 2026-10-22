@@ -37,9 +37,9 @@ see [Docker hosting](latch/DOCKER.md).
 
 Update by rerunning the commands above, adding `--clobber` to `gh release download` so
 the download replaces the one already there. State and versioned plugins stay in place.
-A host `latch serve` or `serve -d` started is stopped and started again with the new
-latch, with what it was given; one run with `serve --foreground` keeps the old binary
-until you restart it.
+A host `serve -d` started is stopped and started again with the new latch, with what
+it was given. One running in a terminal (`latch serve`, or `serve --foreground`) is
+stopped, and the update says to run `latch serve` there again.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
 No Homebrew tap is included.
 
@@ -131,7 +131,7 @@ No Homebrew tap is included.
   audit key, kept with its other secrets. `latch audit show` prints every
   record in full, each command as it ran; `latch audit verify` checks the
   chain without the key; `latch audit rotate-key` starts a new key and keeps
-  the old ones (a running `latch serve` uses it once restarted). The serve
+  the old ones (a running `latch serve` uses it from its next record). The serve
   dashboard and `serve.log` hide credential-looking values in commands, best
   effort: some can slip through. The sealed log is
   `audit.sealed.ndjson`; a plaintext `audit.ndjson` from an older latch is

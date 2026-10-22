@@ -58,18 +58,18 @@ async fn without_a_host(state: &StateDir, args: &Value) -> Result<Value, Failure
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
     let command = args["command"].as_str().unwrap_or_default();
     let connector = Connector::named(args["name"].as_str().unwrap_or_default())?;
+    if let Some(pid) = lifecycle::other_version(&dir) {
+        return Err(lifecycle::other_version_running(pid));
+    }
     let who = format!("{}{command} {}", lifecycle::CONFIGURING, connector.name());
     // Another `plugins` command lets go once it is done; a host never does.
     let serving = |holder: &str| holder.starts_with("latch serve");
     let _held = match crate::serve::hold_state(&dir, &who, HOLD_WITHIN, |h| !serving(h))? {
         Ok(held) => held,
         Err(holder) if serving(&holder) => {
-            // Running, but not on this latch's socket: most likely an older latch.
-            let message = format!(
-                "{holder} holds this state folder but does not answer this latch, so it may \
-                 be an older one: stop it, then run this again"
-            );
-            return Err(Failure::new(Exit::Unreachable, "host_unreachable", message));
+            // A host of this latch's, not answering yet.
+            let message = format!("{holder} is starting on this state folder; run this again");
+            return Err(Failure::new(Exit::Unreachable, "serve_required", message));
         }
         Err(holder) => {
             let message = format!("{holder} still holds this state folder; run this again");

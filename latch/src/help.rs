@@ -891,7 +891,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "audit.rotate-key",
-        output: "The `current` key and every key kept; a running `latch serve` uses the new one once restarted.",
+        output: "The `current` key and every key kept; a running `latch serve` seals its next record with the new one.",
         effect: Once("makes a new audit key for new records; old records keep theirs"),
         owner_only: true,
         connector: None,

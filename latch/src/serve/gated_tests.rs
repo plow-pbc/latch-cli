@@ -1445,6 +1445,35 @@ async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_link
 }
 
 #[tokio::test]
+async fn a_host_whose_binary_was_replaced_says_which_build_is_there_on_its_dashboard() {
+    use std::os::unix::fs::PermissionsExt;
+    let host = start(a_chat(covered_after_a_yes)).await;
+    let mut board = host.host.dashboard.watch();
+    watch_binary(&host.host, Duration::from_millis(50));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(board.borrow().update, None, "the same binary");
+
+    // An upgrade renames the new latch over the old one.
+    let new = host.binary.with_extension("tmp");
+    std::fs::write(&new, "#!/bin/sh\necho 'latch 0.1.0 (133): commit 1a2b3c'\n").unwrap();
+    std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&new, &host.binary).unwrap();
+    let said = tokio::time::timeout(
+        Duration::from_secs(10),
+        board.wait_for(|board| board.update.is_some()),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .update
+    .clone();
+    assert_eq!(
+        said.as_deref(),
+        Some("latch was updated; restart to use build 133")
+    );
+}
+
+#[tokio::test]
 async fn a_stalled_audit_write_holds_up_no_other_caller() {
     let t = start(a_chat(down)).await;
     // A slow disk, as the next append sees it: the log stays busy for a while.

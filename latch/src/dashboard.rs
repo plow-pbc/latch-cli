@@ -53,6 +53,8 @@ pub struct Board {
     pub last_heartbeat: Option<Timestamp>,
     /// Standing notices under the title: pending browser handoffs.
     pub notices: Vec<String>,
+    /// That latch was updated since the host started, and to which build.
+    pub update: Option<String>,
     /// What a starting or stopping host is doing, shown in place of the
     /// heartbeat until the next one.
     pub step: Option<String>,
@@ -92,6 +94,11 @@ impl Dashboard {
     pub fn step(&self, step: &str) {
         self.board
             .send_modify(|board| board.step = Some(step.to_string()));
+    }
+
+    /// Says latch was updated since the host started (`update`).
+    pub fn updated(&self, update: String) {
+        self.board.send_modify(|board| board.update = Some(update));
     }
 
     /// Replaces the standing notices.
@@ -195,13 +202,13 @@ impl Board {
             paint::fg(&status, DIM)
         ));
         lines.push(paint::fg(&"─".repeat(width), FAINT));
-        for notice in &self.notices {
+        for notice in self.update.iter().chain(&self.notices) {
             lines.push(paint::bold(
                 &format!(" {}", term::fit(notice, width - 1)),
                 RED,
             ));
         }
-        if !self.notices.is_empty() {
+        if self.update.is_some() || !self.notices.is_empty() {
             lines.push(paint::fg(&"─".repeat(width), FAINT));
         }
 
@@ -383,6 +390,21 @@ mod tests {
     }
 
     #[test]
+    fn an_update_stands_under_the_title() {
+        let board = Board {
+            host: "host".to_string(),
+            update: Some("latch was updated; restart to use build 133".to_string()),
+            ..Board::default()
+        };
+        let screen = board.screen(100, 10, "Ctrl-C stops the host");
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(
+            lines[2].contains("latch was updated; restart to use build 133"),
+            "{screen}"
+        );
+    }
+
+    #[test]
     fn an_exec_whose_argv_is_not_a_list_of_words_shows_no_command() {
         let (target, result) = describe(
             "exec",
@@ -407,6 +429,7 @@ mod tests {
             host: "host".to_string(),
             last_heartbeat: None,
             notices: Vec::new(),
+            update: None,
             step: None,
             rows: VecDeque::from([Row {
                 at: Timestamp::now(),

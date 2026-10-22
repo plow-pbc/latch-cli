@@ -65,21 +65,33 @@ pub struct Me {
 pub struct Serve {
     /// A `latch serve` holds this state folder.
     pub running: bool,
-    /// It is online and accepting callers.
+    /// It is online and accepting callers: this latch can reach it.
     pub ready: bool,
     /// No host runs; a `latch plugins` command is changing the connectors.
     pub configuring: bool,
     /// It runs as this user's service, as `latch serve` and `serve -d`
     /// start it, rather than in the foreground (`serve --foreground`).
     pub managed: bool,
+    /// A managed host held by the `latch serve` in a terminal that started
+    /// it, rather than one `serve -d` started.
+    pub attached: bool,
     pub state: Phase,
     pub pid: Option<u32>,
+    /// Why a host that runs cannot be used: one from another latch version.
+    pub blocked: Option<Problem>,
 }
 
 /// `status --local`: reads the state folder and asks no one, so it works
 /// offline and before login. Not logged in and not serving are answers.
 pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
     let host = lifecycle::now(&state.path);
+    let blocked = lifecycle::other_version(&state.path).map(|pid| {
+        let failure = lifecycle::other_version_running(pid);
+        Problem {
+            code: failure.code,
+            message: failure.message,
+        }
+    });
     let peer = state.load_config()?.map(|config| Me {
         name: config.peer.name,
         key: config.peer.key,
@@ -93,11 +105,13 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         peer,
         serve: Serve {
             running: host.running,
-            ready: host.state == Phase::Serving,
+            ready: host.state == Phase::Serving && blocked.is_none(),
             configuring: host.configuring,
             managed: host.running && crate::managed::Service::new(&dir).registered(),
+            attached: host.attached,
             state: host.state,
             pid: host.pid,
+            blocked,
         },
         last_error: host.error,
     })

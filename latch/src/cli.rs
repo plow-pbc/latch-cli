@@ -865,7 +865,7 @@ pub enum AuditAction {
     },
     /// Check every record's place in the chain, without the key
     Verify,
-    /// Seal new records under a new key and keep every old one; a running `latch serve` uses it once restarted
+    /// Seal new records under a new key and keep every old one; a running `latch serve` uses it from its next record
     RotateKey,
 }
 
