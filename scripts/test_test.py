@@ -1,6 +1,7 @@
 """scripts/test.py's own tests: each Rust test is in exactly one suite, as
 nextest selects them, and a plan refuses what cannot run where it was asked."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -163,6 +164,18 @@ class Plans(unittest.TestCase):
                         self.assertRaises(SystemExit) as refused:
                     runner.plan(args)
                 self.assertIn("systemd user session", str(refused.exception))
+
+    def test_a_missing_tool_exits_127_with_how_to_install_it(self):
+        for missing, argv, where in (("cargo", [], "macos"), ("cargo-nextest", ["core"], "macos"),
+                                     ("docker", [], "container")):
+            def which(tool):
+                return None if tool == missing else f"/usr/bin/{tool}"
+            with mock.patch.object(runner.shutil, "which", side_effect=which), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO) as said, \
+                    self.assertRaises(SystemExit) as stopped:
+                plan(*argv, where=where)
+            self.assertEqual(stopped.exception.code, 127, missing)
+            self.assertIn(f"{missing} is not installed; {runner.INSTALL[missing]}", said.getvalue())
 
     def test_the_container_is_linux_arm64_on_any_host(self):
         for machine in ("x86_64", "arm64"):

@@ -58,6 +58,23 @@ FEATURES = {"macos": "fake-gog", "linux": "fake-gog,linux-browser-tests,systemd-
 ENGINES = ("cft", "camoufox")
 
 
+# A missing tool exits as a missing command does, 127: the tests did not
+# run, which is not the same as failing.
+NOT_INSTALLED = 127
+INSTALL = {
+    "cargo": "install Rust with rustup: https://rustup.rs",
+    "cargo-nextest": "install cargo-nextest (CI pins 0.9.148): "
+                     "https://nexte.st/docs/installation/pre-built-binaries/",
+    "docker": "install Docker, or run without --linux",
+}
+
+
+def require(tool):
+    if not shutil.which(tool):
+        print(f"test.py: {tool} is not installed; {INSTALL[tool]}", file=sys.stderr)
+        raise SystemExit(NOT_INSTALLED)
+
+
 def where_we_are(args):
     if args.linux or os.environ.get("LATCH_TEST_CONTAINER"):
         return "container"
@@ -152,9 +169,12 @@ def plan(args):
                 raise SystemExit(f"test.py: browser and scenario: {reason}")
             not_here += [(suite, reason) for suite in ("browser", "scenario") if suite in suites]
             suites = [suite for suite in suites if suite not in ("browser", "scenario")]
-    if set(suites) - {"installer"} and where != "container" and not shutil.which("cargo-nextest"):
-        raise SystemExit("test.py: the Rust suites run on cargo-nextest; install it (CI pins 0.9.148): "
-                         "https://nexte.st/docs/installation/pre-built-binaries/")
+    if where == "container":
+        require("docker")
+    elif gate or set(suites) - {"installer"} or (where == "macos" and "installer" in suites):
+        require("cargo")
+        if set(suites) - {"installer"}:
+            require("cargo-nextest")
     if where == "linux" and set(suites) - {"installer"} and not shutil.which("bwrap"):
         raise SystemExit("test.py: latch's Linux sandbox needs bubblewrap (bwrap); install it, as "
                          "install-binary.sh does")
@@ -358,8 +378,6 @@ def container_seccomp():
 
 def in_container(args):
     """--linux: this same plan, in the Linux test container."""
-    if not shutil.which("docker"):
-        raise SystemExit("test.py: --linux needs Docker")
     docker = LATCH / "docker"
     subprocess.run(["docker", "build", "--platform", "linux/arm64", "-q", "-t", IMAGE, "-f",
                     docker / "Dockerfile.test", docker], check=True, stdout=subprocess.DEVNULL)
