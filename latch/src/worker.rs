@@ -296,7 +296,7 @@ impl WorkerSetup {
             .arg(tmpdir)
             .arg("--kill-after")
             .arg(kill_after.to_string())
-            .args(["exec", "--private-request"]);
+            .arg("exec");
         #[cfg(target_os = "linux")]
         die_with_host(&mut command);
         if let Some(workdir) = &args.workdir {
@@ -422,29 +422,26 @@ fn error(code: &str, message: &str) -> WorkerError {
 /// its supervisor stays outside the sandbox.
 pub fn run(args: WorkerArgs) -> ExitCode {
     ERROR_TOKEN.with(|token| *token.borrow_mut() = args.error_token.clone());
-    let private_request = matches!(
-        &args.action,
-        WorkerAction::Exec {
-            private_request: true,
-            ..
-        }
-    );
-    let mut private = None;
+    let is_exec = matches!(args.action, WorkerAction::Exec { .. });
     // bubblewrap has already installed the filesystem view on re-entry.
     // Read before seccomp and the inner supervisor so its failures are authenticated.
     #[cfg(target_os = "linux")]
-    if private_request && std::env::var_os("LATCH_BWRAP_INNER").is_some() {
-        private = match read_private_exec() {
+    let private = if is_exec && std::env::var_os("LATCH_BWRAP_INNER").is_some() {
+        match read_private_exec() {
             Ok(job) => Some(job),
             Err(exit) => return exit,
-        };
-    }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    let private = None;
     let policy = Policy {
         areas: args.areas,
         reads: args.reads,
         hidden: args.hidden,
         state_dir: args.denied,
-        exec: matches!(args.action, WorkerAction::Exec { .. }),
+        exec: is_exec,
         home: args.home,
         network: args.network || matches!(args.action, WorkerAction::Google { .. }),
         tmpdir: args.tmpdir,
@@ -485,13 +482,14 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         }
         WorkerAction::Read { path } => read(path),
         WorkerAction::Write { size, name, path } => write(path, name.as_deref(), *size),
-        WorkerAction::Exec { workdir, argv, .. } => {
-            if private_request && private.is_none() {
-                private = match read_private_exec() {
-                    Ok(job) => Some(job),
+        WorkerAction::Exec { workdir, argv } => {
+            let private = match private {
+                Some(job) => job,
+                None => match read_private_exec() {
+                    Ok(job) => job,
                     Err(exit) => return exit,
-                };
-            }
+                },
+            };
             return exec(
                 &policy
                     .reads
@@ -501,7 +499,7 @@ pub fn run(args: WorkerArgs) -> ExitCode {
                     .collect::<Vec<_>>(),
                 workdir.as_deref(),
                 argv,
-                private.as_ref().map(|job| &job.secret_env),
+                &private.secret_env,
             );
         }
     };
@@ -518,7 +516,7 @@ fn exec(
     areas: &[PathBuf],
     workdir: Option<&Path>,
     argv: &[String],
-    secrets: Option<&std::collections::BTreeMap<String, String>>,
+    secrets: &std::collections::BTreeMap<String, String>,
 ) -> ExitCode {
     if let Some(dir) = workdir {
         // The real directory, symlinks resolved; it must be inside an area.
@@ -561,9 +559,7 @@ fn exec(
     // everything it starts.
     let mut command = std::process::Command::new(program);
     command.args(args);
-    if let Some(secrets) = secrets {
-        command.envs(secrets);
-    }
+    command.envs(secrets);
     let err = command.exec();
     let code = if err.kind() == io::ErrorKind::NotFound {
         "program_not_found"

@@ -761,8 +761,6 @@ pub enum WorkerAction {
     /// Become ARGV, run from WORKDIR (inside an area)
     Exec {
         #[arg(long)]
-        private_request: bool,
-        #[arg(long)]
         workdir: Option<PathBuf>,
         #[arg(last = true, required = true)]
         argv: Vec<String>,

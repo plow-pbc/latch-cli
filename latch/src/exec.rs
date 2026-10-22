@@ -960,7 +960,7 @@ mod tests {
             output.stdout
         };
         let arguments = String::from_utf8_lossy(&arguments);
-        assert!(arguments.contains("--private-request"));
+        assert!(arguments.contains("exec"));
         assert!(!arguments.contains(marker));
         drop(child.stdin.take());
         child.wait().await.unwrap();
