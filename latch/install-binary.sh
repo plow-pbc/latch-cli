@@ -122,6 +122,26 @@ fi
 [ -f "$src" ] && [ -x "$src" ] || die "$src is not an executable file"
 
 dest="$bin_dir/latch"
+# On macOS, the app bundle the binary (or the link to it) sits in, if any.
+app=""
+if [ "$(uname -s)" = Darwin ]; then
+  inner=$src
+  if [ -L "$src" ]; then
+    case "$(readlink "$src")" in
+      /*) inner=$(readlink "$src") ;;
+      *) inner="$(dirname "$src")/$(readlink "$src")" ;;
+    esac
+  fi
+  case "$inner" in
+    *.app/Contents/MacOS/*) app=${inner%/Contents/MacOS/*} ;;
+  esac
+fi
+# The latch being replaced: on macOS the app's own, wherever a link to it
+# is (or none is), since the app is what gets replaced; elsewhere $dest.
+old=$dest
+if [ -n "$app" ]; then
+  old="$HOME/Applications/$(basename "$app")/Contents/MacOS/$(basename "$inner")"
+fi
 # A first install: no login in the state directory yet.
 first_install=""
 [ -f "$state_dir/config.json" ] || first_install=1
@@ -144,7 +164,7 @@ trap on_exit EXIT
 # The new latch asks and stops: the latch there may be too old to know
 # `stop`, or to reach a host of a latch older still.
 host=""
-if [ -x "$dest" ]; then
+if [ -x "$old" ]; then
   host=$("$src" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
   case "$host" in
     # A host this latch cannot reach: its owner is told how to stop it,
@@ -155,7 +175,7 @@ if [ -x "$dest" ]; then
       ;;
   esac
   # Only a host of the latch being replaced is stopped.
-  [ "$("$dest" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ] || host=""
+  [ "$("$old" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ] || host=""
 fi
 case "$host" in
   *'"running":true'*)
@@ -179,20 +199,6 @@ esac
 
 # 1. The binary. Copy next to the target, then rename, so a running latch is
 # never overwritten in place. cksum, unlike cmp, is on every system.
-# On macOS, the app bundle the binary (or the link to it) sits in, if any.
-app=""
-if [ "$(uname -s)" = Darwin ]; then
-  inner=$src
-  if [ -L "$src" ]; then
-    case "$(readlink "$src")" in
-      /*) inner=$(readlink "$src") ;;
-      *) inner="$(dirname "$src")/$(readlink "$src")" ;;
-    esac
-  fi
-  case "$inner" in
-    *.app/Contents/MacOS/*) app=${inner%/Contents/MacOS/*} ;;
-  esac
-fi
 if [ -n "$app" ]; then
   installed="$HOME/Applications/$(basename "$app")"
   if [ -d "$installed" ] && [ "$(cksum < "$inner")" = "$(cksum < "$installed/Contents/MacOS/$(basename "$inner")")" ]; then
