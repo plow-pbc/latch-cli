@@ -149,8 +149,13 @@ async fn one_exchange(
     answer_within: Duration,
 ) -> Result<Value, Failure> {
     let (mut send, mut recv) = start(connection, request).await?;
-    send.finish().map_err(|_| lost(connection, true))?;
-    answer(connection, &mut recv, answer_within).await
+    // A local caller keeps its write half alive so EOF means it disconnected.
+    if matches!(connection, Connection::Remote(_)) {
+        send.finish().map_err(|_| lost(connection, true))?;
+    }
+    let result = answer(connection, &mut recv, answer_within).await;
+    drop(send);
+    result
 }
 
 /// Opens a stream for one operation and sends its request. The send side
@@ -192,19 +197,7 @@ pub async fn answer(
         let message = "the host's answer was not a valid response".to_string();
         Failure::new(Exit::Unknown, "bad_response", message)
     })?;
-    match response {
-        Response::Ok(result) => Ok(result),
-        Response::Error {
-            exit,
-            code,
-            message,
-            details,
-        } => {
-            let mut failure = Failure::new(exit, &code, message);
-            failure.details = details;
-            Err(failure)
-        }
-    }
+    response.into_result()
 }
 
 /// Where to dial: the host's key and relay, both from the Plow directory.

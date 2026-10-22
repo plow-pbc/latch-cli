@@ -4,8 +4,8 @@
 //! The audit records which item and kind, never a value.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::fs::OpenOptions;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,51 +25,34 @@ use crate::wire::{self, Response};
 /// when the owner's connection drops, the export is dropped unsaved.
 const PICK_WITHIN: Duration = Duration::from_secs(15 * 60);
 
-/// The host's one vault, opened on first use.
+/// The host's vault location and open phone links.
 pub struct Vault {
     dir: PathBuf,
-    store: Mutex<Option<Cached>>,
     /// Open phone links, by the sha256 of their code (see `link.rs`).
     pub(super) links: Mutex<HashMap<String, super::link::Request>>,
-}
-
-struct Cached {
-    version: Version,
-    store: OwnStore,
-}
-
-#[derive(PartialEq, Eq)]
-struct Version {
-    inode: u64,
-    size: u64,
-    modified: (i64, i64),
 }
 
 impl Vault {
     pub fn new(dir: PathBuf) -> Arc<Vault> {
         Arc::new(Vault {
             dir,
-            store: Mutex::new(None),
             links: Mutex::new(HashMap::new()),
         })
     }
 
     /// Every item's metadata, without creating a vault where none exists.
     pub fn list_if_present(&self) -> Vec<super::item::Meta> {
-        let present = self.store.lock().expect("vault lock").is_some()
-            || self.dir.join("vault.json").exists();
-        if !present {
+        if !self.dir.join("vault.json").exists() {
             return Vec::new();
         }
         self.with(|store| Ok(store.list())).unwrap_or_default()
     }
 
-    /// Runs `f` on the store, opening it first if needed.
+    /// Opens the current store and runs `f` under the shared file lock.
     pub fn with<T>(
         &self,
         f: impl FnOnce(&mut OwnStore) -> Result<T, Failure>,
     ) -> Result<T, Failure> {
-        let mut cached = self.store.lock().expect("vault lock");
         // Lock a stable sidecar: vault.json itself is replaced atomically on save.
         let path = self.dir.join("vault.lock");
         let io = |err| Failure::failed("vault_failed", format!("{}: {err}", path.display()));
@@ -82,28 +65,8 @@ impl Vault {
             .open(&path)
             .map_err(io)?;
         lock.lock().map_err(io)?;
-        let version = || -> Result<Version, Failure> {
-            let path = self.dir.join("vault.json");
-            let meta = fs::metadata(&path).map_err(|err| {
-                Failure::failed("vault_failed", format!("{}: {err}", path.display()))
-            })?;
-            Ok(Version {
-                inode: meta.ino(),
-                size: meta.len(),
-                modified: (meta.mtime(), meta.mtime_nsec()),
-            })
-        };
-        if cached.is_none() || version()? != cached.as_ref().expect("cached").version {
-            let store = OwnStore::open(&self.dir)?;
-            *cached = Some(Cached {
-                version: version()?,
-                store,
-            });
-        }
-        let cached = cached.as_mut().expect("opened");
-        let result = f(&mut cached.store);
-        cached.version = version()?;
-        result
+        let mut store = OwnStore::open(&self.dir)?;
+        f(&mut store)
     }
 }
 
@@ -595,7 +558,7 @@ mod local_tests {
     use super::*;
 
     #[test]
-    fn a_cached_vault_reloads_edits_and_keeps_both_writers_items() {
+    fn vault_transactions_reopen_edits_and_keep_both_writers_items() {
         let dir = tempfile::tempdir().unwrap();
         let serving = Vault::new(dir.path().into());
         let local = Vault::new(dir.path().into());

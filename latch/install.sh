@@ -1,7 +1,10 @@
 #!/bin/sh
-# Installs a latch binary you already have into ~/.local/bin.
+# Installs a latch binary you already have into ~/.local/bin, or --bin-dir.
 #
-#   sh install.sh [--state-dir DIR] [--with-camoufox] path/to/latch
+#   sh install.sh [--bin-dir DIR] [--state-dir DIR] [--with-camoufox] [path/to/latch]
+#
+# With no binary path, installs the latch next to this script. Options can
+# appear before or after the path. --help prints usage without installing.
 #
 # It also installs gog, the Google CLI a host runs for `latch google`: the
 # release pinned in src/google/pin.json next to this script (the pin latch
@@ -35,13 +38,28 @@ set -eu
 say() { printf 'install.sh: %s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 
-usage="usage: sh install.sh [--state-dir DIR] [--with-camoufox] path/to/latch"
+usage="usage: sh install.sh [--bin-dir DIR] [--state-dir DIR] [--with-camoufox] [path/to/latch]"
+bin_dir="$HOME/.local/bin"
 state_dir="$HOME/.latch"
 with_camoufox=""
-while [ $# -gt 1 ]; do
+src="$(dirname "$0")/latch"
+given_src=""
+while [ $# -gt 0 ]; do
   case "$1" in
+    -h|--help)
+      printf '%s\n' "$usage" '' \
+        'Without a binary path, installs the latch next to this script.' \
+        'Options may appear before or after the binary path.' \
+        'Binary directory defaults to ~/.local/bin; state and plugins default to ~/.latch.'
+      exit 0
+      ;;
+    --bin-dir)
+      [ $# -ge 2 ] && [ -n "$2" ] || die "$usage"
+      bin_dir=$2
+      shift 2
+      ;;
     --state-dir)
-      [ $# -ge 3 ] || die "$usage"
+      [ $# -ge 2 ] && [ -n "$2" ] || die "$usage"
       state_dir=$2
       shift 2
       ;;
@@ -49,16 +67,19 @@ while [ $# -gt 1 ]; do
       with_camoufox=1
       shift
       ;;
-    *) die "$usage" ;;
+    -*) die "$usage" ;;
+    *)
+      [ -z "$given_src" ] || die "$usage"
+      src=$1
+      given_src=1
+      shift
+      ;;
   esac
 done
-[ $# -eq 1 ] || die "$usage"
-src=$1
 [ -f "$src" ] && [ -x "$src" ] || die "$src is not an executable file"
 
 # 1. The binary. Copy next to the target, then rename, so a running latch is
 # never overwritten in place. cksum, unlike cmp, is on every system.
-bin_dir="$HOME/.local/bin"
 dest="$bin_dir/latch"
 if [ -f "$dest" ] && [ "$(cksum < "$src")" = "$(cksum < "$dest")" ]; then
   say "latch already installed at $dest"

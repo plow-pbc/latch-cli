@@ -20,7 +20,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Notify;
 
-use super::{Host, answer, failed};
+use super::{Host, Stopping, answer, failed};
 use crate::lifecycle;
 use crate::log::log;
 use crate::wire::{self, Response};
@@ -104,7 +104,8 @@ fn hello(host: &Host) -> Value {
 }
 
 /// Answers `hello`, then sends the board as it changes until the watcher
-/// goes away: its side of the socket ends, or it cannot be written to.
+/// goes away (its side of the socket ends, or it cannot be written to) or
+/// the host is stopping.
 async fn watch(host: &Host, hello: Response, mut send: OwnedWriteHalf, mut recv: OwnedReadHalf) {
     let hello = serde_json::to_vec(&hello).expect("a response serializes");
     if wire::write_frame(&mut send, &hello).await.is_err() {
@@ -114,6 +115,7 @@ async fn watch(host: &Host, hello: Response, mut send: OwnedWriteHalf, mut recv:
         return;
     };
     let mut boards = dashboard.watch();
+    let mut stopping = host.stopping.subscribe();
     let mut byte = [0];
     loop {
         let board = serde_json::to_vec(&*boards.borrow_and_update()).expect("a board serializes");
@@ -125,6 +127,9 @@ async fn watch(host: &Host, hello: Response, mut send: OwnedWriteHalf, mut recv:
             // A watcher sends nothing after its request: anything read,
             // the end included, means it is gone.
             _ = recv.read(&mut byte) => return,
+            // A stopping host lets its watchers go first, rather than
+            // wait for them as for an operation.
+            _ = stopping.wait_for(|stopping| *stopping != Stopping::No) => return,
         }
     }
 }

@@ -691,6 +691,12 @@ const ops = {
     return {};
   },
 
+  /// Whether any session holds a guard: then the browser is killed, not
+  /// closed, as closing its pages lets them send what they hold.
+  guarded() {
+    return guarding();
+  },
+
   guard_stopped() {
     const stopped = Boolean(share().stopped);
     share().stopped = false;

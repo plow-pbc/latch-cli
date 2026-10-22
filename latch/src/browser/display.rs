@@ -43,6 +43,7 @@ impl Display {
         if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
             return Err(failed(std::io::Error::last_os_error().to_string()));
         }
+        // SAFETY: both fds were just created by `pipe` and nothing else owns them.
         let (reads, writes) =
             unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
         let write_fd = writes.as_raw_fd();
@@ -55,9 +56,9 @@ impl Display {
             .process_group(0);
         // Gone with the worker, however it ends.
         bound(&mut command);
+        let read_fd = reads.as_raw_fd();
         // SAFETY: only async-signal-safe calls: the read end is closed in
         // the child, so the parent sees the end of the pipe if Xvfb dies.
-        let read_fd = reads.as_raw_fd();
         unsafe {
             command.pre_exec(move || {
                 libc::close(read_fd);
@@ -101,8 +102,8 @@ impl Drop for Display {
 fn bound(command: &mut Command) {
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: only async-signal-safe calls between fork and exec.
         let parent = std::process::id() as libc::pid_t;
+        // SAFETY: only async-signal-safe calls between fork and exec.
         unsafe {
             command.pre_exec(move || {
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
@@ -211,6 +212,7 @@ mod tests {
         }
         let gone = !alive();
         if !gone {
+            // SAFETY: a signal only, to the test's own leftover process.
             unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         }
         assert!(gone, "the bound process outlived its killed parent");

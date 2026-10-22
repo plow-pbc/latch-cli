@@ -6,7 +6,6 @@
 
 use std::fs::{self, File};
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -161,8 +160,7 @@ pub fn holds_lock(state_dir: &Path) -> bool {
     let Ok(file) = File::open(state_dir.join("serve.lock")) else {
         return false;
     };
-    // SAFETY: flock only reads the descriptor, which `file` keeps open.
-    let free = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0;
+    let free = file.try_lock_shared().is_ok();
     // Closing the file releases the probe's lock, if it got one.
     !free
 }
@@ -186,8 +184,7 @@ mod tests {
 
         let mut lock = File::create(dir.path().join("serve.lock")).unwrap();
         write!(lock, "latch serve (pid {}, /bin/latch)", std::process::id()).unwrap();
-        // SAFETY: as in `holds_lock`.
-        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        lock.lock().unwrap();
         assert_eq!(now(dir.path()).state, Phase::Starting);
         record(dir.path(), Phase::Serving, None).unwrap();
         let serving = now(dir.path());

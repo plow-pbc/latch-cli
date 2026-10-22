@@ -9,12 +9,21 @@ use clap::{Args, Parser, Subcommand};
 
 /// Defaults baked in when latch is built with these variables set, for a
 /// local build that keeps its own state and talks to one Plow. Flags still
-/// override them. Unset, latch uses `~/.latch` and has no default Plow.
+/// override them. Unset, latch uses `~/.latch`, and only a release build has
+/// a default Plow (`default_api_url`).
 pub const BUILD_STATE_DIR: Option<&str> = option_env!("LATCH_BUILD_STATE_DIR");
 pub const BUILD_API_URL: Option<&str> = option_env!("LATCH_BUILD_API_URL");
 /// How this build is distributed (e.g. `standalone`), set by a release
 /// build. Unset, it is a local build: made by hand from a checkout.
-const BUILD_CHANNEL: Option<&str> = option_env!("LATCH_BUILD_CHANNEL");
+pub const BUILD_CHANNEL: Option<&str> = option_env!("LATCH_BUILD_CHANNEL");
+
+/// The Plow a build from `channel` logs in to when nothing else names one:
+/// real Plow for a release (`standalone`), none for a local build, which
+/// points at a dev stack.
+pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
+    let first = channel.and_then(|channel| channel.split_whitespace().next());
+    (first == Some("standalone")).then_some("https://api.plow.co")
+}
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
 /// 03:45 UTC, local build, protocol plow/latch/1)`: where this build came from
@@ -121,12 +130,13 @@ pub enum Command {
     /// The owner's standing rules for agents on a host, which the host's
     /// gatekeeper reads at every judgment (owner devices only)
     Rules(RulesArgs),
-    /// The folders `latch serve` shares when it is named none: show them, or set them
+    /// The folders `latch serve` shares when it is named none, and its --allow-read paths: show them, or set them
     Shares(SharesArgs),
     /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
     Events(EventsArgs),
     /// Run this machine as a host, as a service of this user's: with its
     /// dashboard (Ctrl-C stops the host), or detached with -d
+    #[command(after_help = SERVE_HELP)]
     Serve(ServeArgs),
     /// Stop the host on this state folder; its state is kept
     Stop,
@@ -634,12 +644,22 @@ pub struct WorkerArgs {
     /// A directory the worker may read and write (repeated)
     #[arg(long = "area")]
     pub areas: Vec<PathBuf>,
+    /// A file or folder a file or exec worker may also read, never write (repeated)
+    #[arg(long = "read")]
+    pub reads: Vec<PathBuf>,
+    /// A path no worker may read or write, even inside an area (repeated)
+    #[arg(long = "hidden")]
+    pub hidden: Vec<PathBuf>,
     /// The host's state directory, which the worker may never touch
     #[arg(long)]
     pub denied: PathBuf,
     /// An exec worker's own temp folder (its `TMPDIR`), which it may read and write
     #[arg(long)]
     pub tmpdir: Option<PathBuf>,
+    /// An exec worker's own time limit in seconds: past it, the worker
+    /// kills its program, whether or not the host is still there to
+    #[arg(long)]
+    pub kill_after: Option<u64>,
     /// Test only: make the sandbox fail to apply
     #[arg(long)]
     pub break_sandbox_for_test: bool,
@@ -712,10 +732,13 @@ pub struct SharesArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum SharesAction {
-    /// Replace the saved folders; a running `latch serve` keeps its own until restarted
+    /// Replace the saved folders and --allow-read paths; a running `latch serve` keeps its own until restarted
     Set {
         #[arg(value_name = "FOLDER", required = true)]
         folders: Vec<PathBuf>,
+        /// A file or folder callers may also read, never write (repeatable; see `latch serve --help`)
+        #[arg(long, value_name = "PATH")]
+        allow_read: Vec<PathBuf>,
     },
 }
 
@@ -732,16 +755,20 @@ pub struct StatusArgs {
     #[arg(long)]
     pub pretty: bool,
     /// Only this machine's own latch, asking no one: state folder, login,
-    /// whether a host serves it, version and saved shares. Works offline and before login
+    /// whether a host serves it, version, saved shares and --allow-read paths. Works offline and before login
     #[arg(long, conflicts_with = "pretty")]
     pub local: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
-    /// Folders to share: callers may read and write only inside these (the first is where `exec` starts) [default: the ones `latch shares set` saved]
+    /// Folders to share: callers may read and write inside these (the first is where `exec` starts) [default: the ones `latch shares set` saved, with its --allow-read paths]
     #[arg(value_name = "FOLDER")]
     pub folders: Vec<PathBuf>,
+
+    /// A file or folder outside the shares that callers may also read, never write, e.g. ~/.rustup (repeatable; needs FOLDERs). Refused inside the never-readable places below
+    #[arg(long, value_name = "PATH", requires = "folders")]
+    pub allow_read: Vec<PathBuf>,
 
     /// Start the host and return once it answers, printing it as JSON; it
     /// runs until `latch stop`
@@ -769,6 +796,26 @@ pub struct ServeArgs {
           default_missing_value = EVERY_AGENT)]
     pub deny_exec: Vec<String>,
 }
+
+/// What `latch serve --help` adds after the options.
+const SERVE_HELP: &str = "\
+What callers can reach (`exec`'s programs and `file get`/`file put` alike):
+  Read and write: the shared folders, and an exec call's own temp folder.
+  Read only: each --allow-read path, and the system's own files: programs,
+  libraries, developer tools, Homebrew, certificates. Nothing else: not the
+  rest of your home folder, not other projects.
+  Never, even inside a shared or --allow-read folder: ~/.ssh, ~/.gnupg,
+  keychains, browser profiles, Mail, Messages, Calendars, Contacts, macOS's
+  privacy settings (TCC), latch's state (this host's, ~/.latch, and any
+  other state folder in the shares, even one made while the host runs),
+  ~/.aws, ~/.config/gcloud, ~/.azure, ~/.kube, ~/.docker/config.json,
+  ~/.netrc, ~/.npmrc, ~/.git-credentials and ~/.config/gh. An --allow-read
+  inside one of these is refused.
+  Your home folder, its Library, and the folders above them (/Users, /)
+  can be neither shared nor named with --allow-read: name the folders in it
+  you need.
+  exec runs with HOME set to the first shared folder. Tools kept in your home
+  folder (~/.rustup and ~/.cargo, nvm, pyenv) need --allow-read.";
 
 /// What a bare `--deny-exec` stands for. An agent uid is hex, so it is
 /// never this.
@@ -810,7 +857,7 @@ pub struct HostArg {
 pub enum FileCommand {
     /// Copy a file from the host to this machine
     Get {
-        /// The file on the host: absolute, or relative to the host's first shared folder. Anything the host's user can read except latch's state folder
+        /// The file on the host: absolute, or relative to the host's first shared folder. Inside a shared folder or one of the host's --allow-read paths, or one of the system's own files (see `latch serve --help`)
         remote_path: String,
         /// Where to write it on this machine [default: the remote file's name, in the current directory]
         local_dest: Option<PathBuf>,

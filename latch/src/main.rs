@@ -5,6 +5,8 @@
 //! exit 0; on failure `{"error": {"code", "message"}}` on stderr and an exit
 //! code from the table in `failure.rs`.
 
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 mod audit;
 mod browser;
 mod card;
@@ -35,6 +37,7 @@ mod sandbox;
 mod serve;
 mod shares;
 mod state;
+mod state_folders;
 mod status;
 mod term;
 mod trace;
@@ -154,7 +157,18 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             }
         }
         Command::Login(args) => {
-            let output = login::run(&state, args).await?;
+            let output = match login::run(&state, args).await {
+                Ok(output) => output,
+                // A person at a terminal reads the sentence; a pipe gets the JSON.
+                Err(failure) if term::stderr_is_terminal() => {
+                    eprintln!("{}", failure.message);
+                    return Ok(Printed {
+                        text: String::new(),
+                        exit: failure.exit.into(),
+                    });
+                }
+                Err(failure) => return Err(failure),
+            };
             // A person at a terminal reads one line; a pipe gets the JSON.
             if !term::stdout_is_terminal() {
                 return to_json(output);
@@ -246,6 +260,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             serve::run(
                 &state,
                 &args.folders,
+                &args.allow_read,
                 args.headless_browsers,
                 deny_exec,
                 args.attached,

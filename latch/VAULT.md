@@ -216,9 +216,9 @@ browser.
 
 `vault.json` in the host's state directory is written atomically by serve
 and local management. Both take the same exclusive `vault.lock` for each
-read/write transaction. Serve reloads its cached store when the file's
-identity or modification changes, so local edits are visible to fills
-without a restart. The lock is released while an import waits for picks.
+read/write transaction. Each transaction reopens the current store while
+holding the lock, so local edits are visible to fills without a restart.
+The lock is released while an import waits for picks.
 Items are sealed with AES-256-GCM under a random data key; the
 data key is sealed under the custody key in `vault.key` (0600) beside it.
 `exec` and file workers can read neither (the state directory is denied to

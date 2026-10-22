@@ -119,7 +119,7 @@ async fn launch(state: &StateDir, args: &ServeArgs, attached: bool) -> Result<Pa
     let folders = if args.folders.is_empty() {
         Vec::new()
     } else {
-        crate::serve::shared_folders(&args.folders)?
+        crate::serve::shared_folders(&args.folders, std::env::home_dir().as_deref())?
     };
     let program = std::env::current_exe()
         .and_then(|exe| exe.canonicalize())
@@ -142,6 +142,13 @@ async fn launch(state: &StateDir, args: &ServeArgs, attached: bool) -> Result<Pa
             crate::cli::EVERY_AGENT => "--deny-exec".into(),
             agent => format!("--deny-exec={agent}").into(),
         });
+    }
+    // The host checks each one; made absolute here, where a relative one
+    // means something.
+    for path in &args.allow_read {
+        let mut flag = OsString::from("--allow-read=");
+        flag.push(std::path::absolute(path).map_err(|err| io_failure(path, err))?);
+        argv.push(flag);
     }
     argv.extend(folders.into_iter().map(OsString::from));
 
