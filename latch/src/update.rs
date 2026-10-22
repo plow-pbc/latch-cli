@@ -36,11 +36,11 @@ use crate::state::{StateDir, to_hex, write_private};
 /// Where latch's releases are published.
 pub const RELEASES: &str = "https://releases.plow.co/latch-cli";
 
-/// The minisign public key that releases' `SHA256SUMS` and `latest.json`
-/// are signed with (the base64 line of `minisign -G`'s public key file).
-/// Its secret half is kept in 1Password and only the release workflow
-/// loads it. A build without the key refuses to update.
-const RELEASE_KEY: Option<&str> = None;
+/// The minisign public key (id DA695E5C4D2D36B9) that releases'
+/// `SHA256SUMS` and `latest.json` are signed with: the base64 line of its
+/// public key file. Its secret half is kept in 1Password, and only the
+/// release workflow loads it.
+const RELEASE_KEY: &str = "RWS5Ni1NXF5p2g7U9HvReN/6scLD8gpzhEZVW//t8Dkn4SyhqAdExFTu";
 
 /// Who signs the app a macOS release carries, and the app's own id. A
 /// different signer, or a re-signed app, would also lose the Full Disk
@@ -102,17 +102,12 @@ struct Signer {
 
 impl Source {
     /// latch's own releases.
-    pub fn releases() -> Result<Source, Failure> {
-        let key = RELEASE_KEY.ok_or_else(|| {
-            let message = "this latch was built without the key its releases are signed with, \
-                           so it cannot check one; install a release with install.sh";
-            Failure::failed("no_release_key", message.into())
-        })?;
-        Ok(Source {
+    pub fn releases() -> Source {
+        Source {
             url: RELEASES.to_string(),
-            key: PublicKey::from_base64(key).expect("the release key is valid"),
+            key: PublicKey::from_base64(RELEASE_KEY).expect("the release key is valid"),
             signer: cfg!(target_os = "macos").then_some(APP_SIGNER),
-        })
+        }
     }
 
     /// One file under the releases' URL.
@@ -204,7 +199,7 @@ pub async fn run(state: &StateDir, args: UpdateArgs) -> Result<Value, Failure> {
         let message = "latch is updated by the owner of this machine, never by an agent";
         return Err(Failure::new(Exit::Denied, "owner_only", message.into()));
     }
-    let source = Source::releases()?;
+    let source = Source::releases();
     update(state, &source, current(), args.tag.as_deref(), args.check).await
 }
 
@@ -217,6 +212,13 @@ async fn update(
     tag: Option<&str>,
     check: bool,
 ) -> Result<Value, Failure> {
+    // A local build has no number to update from: refused before anything
+    // is downloaded.
+    if current.is_none() && !check {
+        let message = "this latch was built from a checkout, not released; \
+                       build it again, or install a release with install.sh";
+        return Err(Failure::failed("local_build", message.into()));
+    }
     let release = match tag {
         Some(tag) => Release::named(tag)?,
         None => source.latest().await?,
@@ -225,11 +227,7 @@ async fn update(
         let available = newer(Some(release.build), current);
         return Ok(json!({"current": current, "latest": release, "available": available}));
     }
-    let Some(current) = current else {
-        let message = "this latch was built from a checkout, not released; \
-                       build it again, or install a release with install.sh";
-        return Err(Failure::failed("local_build", message.into()));
-    };
+    let current = current.expect("a local build was refused above");
     // Only a named tag goes back to an older build, or installs this one again.
     if tag.is_none() && release.build <= current {
         return Ok(json!({"updated": false, "current": current, "latest": release}));
@@ -500,13 +498,7 @@ pub fn watch(state: &Path, dashboard: &Dashboard) {
         log("updates: not looking for a newer build (LATCH_NO_UPDATE_CHECK=1)");
         return;
     }
-    let source = match Source::releases() {
-        Ok(source) => source,
-        Err(failure) => {
-            log(&format!("updates: not looking: {}", failure.message));
-            return;
-        }
-    };
+    let source = Source::releases();
     let (state, dashboard) = (state.to_path_buf(), dashboard.clone());
     tokio::spawn(async move {
         loop {

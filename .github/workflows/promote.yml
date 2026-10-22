@@ -40,7 +40,7 @@ jobs:
           export-env: true
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          LATCH_MINISIGN_SECRET_KEY: op://terraform/GitHub Actions Release Secrets/LATCH_MINISIGN_SECRET_KEY
+          LATCH_MINISIGN_SECRET_KEY: op://terraform/latch-cli release signing key/secret_key
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_LATCH_RELEASE_ROLE_ARN }}

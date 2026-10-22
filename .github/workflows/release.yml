@@ -200,7 +200,7 @@ jobs:
           export-env: true
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          LATCH_MINISIGN_SECRET_KEY: op://terraform/GitHub Actions Release Secrets/LATCH_MINISIGN_SECRET_KEY
+          LATCH_MINISIGN_SECRET_KEY: op://terraform/latch-cli release signing key/secret_key
       # latch update refuses a release whose SHA256SUMS this key did not sign.
       # The key has no password (minisign -G -W): 1Password is what keeps it.
       - name: Sign SHA256SUMS

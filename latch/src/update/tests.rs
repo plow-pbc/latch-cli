@@ -324,6 +324,7 @@ async fn a_local_build_never_updates_itself() {
         .await
         .unwrap_err();
     assert_eq!(failure.code, "local_build");
+    assert_eq!(*world.server.requests.lock().unwrap(), 0);
     let answer = update(&world.state, &world.source(), None, None, true)
         .await
         .unwrap();
@@ -347,6 +348,21 @@ async fn an_agent_login_is_refused_before_anything_is_downloaded() {
         ("owner_only", Exit::Denied)
     );
     assert_eq!(*world.server.requests.lock().unwrap(), 0);
+}
+
+/// The key latch carries is the release key, DA695E5C4D2D36B9 as minisign
+/// shows its id: the key number's bytes, last first.
+#[test]
+fn latch_carries_the_release_key() {
+    let key = minisign::PublicKey::from_base64(RELEASE_KEY).unwrap();
+    let id: String = key
+        .keynum()
+        .iter()
+        .rev()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    assert_eq!(id, "DA695E5C4D2D36B9");
+    Source::releases();
 }
 
 #[test]
