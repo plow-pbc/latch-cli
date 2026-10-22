@@ -1,16 +1,12 @@
 # Getting started with latch
 
-latch lets you, and agents you allow, reach the files and programs (and, in
-builds that carry it, the browser) on your own machines. You log each machine in with your Plow account. One machine
-*serves* a folder. Your other machines and your agents *call* it.
+latch lets you, and agents you allow, reach the files, programs and browser
+on your own machines. You log each machine in with your Plow account. One
+machine *serves* a folder. Your other machines and your agents *call* it.
 
 This guide takes you from nothing to a Mac serving a folder and a second
-machine calling it, in about 10 minutes. The commands below were run as
-written with a `v0.1.0-pr.2` build, against a local Plow stack in place of
-`https://api.plow.co`; only the release download (there is no release yet)
-and the agent's allowed path (that stack has no decision model) were not.
-The browser commands were run on an earlier build of that PR that still
-carried the browser; today's builds don't (see 1).
+machine calling it, in about 10 minutes.
+
 Every command prints one JSON object, except at a terminal, where
 `login` and `status --pretty` print for a person.
 
@@ -20,38 +16,20 @@ Exit codes: 0 ok, 1 failed, 2 usage, 3 host unreachable, 4 denied,
 ## 1. Install
 
 You need the GitHub CLI, logged in to an account that can read
-`plow-pbc/latch-cli` (`gh auth login`).
-
-**From a release** (once one is published; not yet tried):
-
-```sh
-gh release download vVERSION --repo plow-pbc/latch-cli --pattern install-release.sh
-sh install-release.sh vVERSION
-```
-
-**From a pull request's build** (before there's a release). Each run of the
-`release` workflow keeps a `release-downloads` artifact with every platform's
-archive and a `SHA256SUMS`:
+`plow-pbc/latch-cli` (`gh auth login`). This installs the newest published
+release:
 
 ```sh
-gh run list --repo plow-pbc/latch-cli --workflow release --branch packaging --limit 1   # note the run id
-mkdir latch-download && cd latch-download
-gh run download RUN_ID --repo plow-pbc/latch-cli --name release-downloads
-shasum -a 256 -c SHA256SUMS            # every line should say OK
-tar -xzf latch-*-aarch64-apple-darwin.tar.gz     # Apple silicon; see the list below
-sh latch-*-aarch64-apple-darwin/install.sh latch-*-aarch64-apple-darwin/latch
+gh release download --repo plow-pbc/latch-cli --pattern install.sh && sh install.sh
 ```
 
-Archives: `aarch64-apple-darwin` (Apple silicon Mac), `x86_64-apple-darwin`
-(Intel Mac), `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`
-(Linux, including a Raspberry Pi).
-
-**Which build has the browser.** The packaging PR's builds are **core only**:
-login, status, devices, shares, serve, exec, file, google, vault and rules,
-but no `latch browser`, and the installer downloads no browser. `latch browser`
-comes with the browser PR: builds and releases cut after it merges carry the
-command, and their installer adds Chrome for Testing (below). `latch --help`
-lists `browser` when your build has it.
+`sh install.sh TAG` installs that release instead (tags look like
+`v0.1.0-build.202610220005`). The installer picks the archive for your
+machine (Apple silicon or Intel Mac, Linux x86_64 or arm64, including a
+Raspberry Pi), checks it against the release's `SHA256SUMS`, and installs
+it. Options after the tag (or alone) go to the installer: `--bin-dir DIR`,
+`--state-dir DIR`, `--browser chrome|camoufox` (repeat it for both) and
+`--no-browser`.
 
 **What it puts where:**
 
@@ -60,12 +38,17 @@ lists `browser` when your build has it.
 | The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer says so; add it. On macOS it links into `~/Applications/Plow Latch.app`. |
 | Your machine's state: its key, Plow login, config, audit log | `~/.latch` (made by the installer, filled in by `latch login`) |
 | gog, the Google CLI a host runs for `latch google` | `~/.latch/plugins/gog/<version>/` |
-| Builds with the browser only: Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64; about 200 MB) | `~/.latch/plugins/cft/<version>/` |
+| Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64; about 200 MB), unless `--no-browser` | `~/.latch/plugins/cft/<version>/` |
+| Camoufox, with `--browser camoufox` (macOS; about 1 GB) | `~/.latch/plugins/camoufox/<version>/` |
+
+`latch browser setup --engine chrome|camoufox` installs an engine later, on
+the host.
 
 `--state-dir DIR` on the installer puts the plugins in another state folder
 instead; pass the same `--state-dir DIR` to every `latch` command then.
 
-**Update:** run the same steps with the newer build. The installer replaces
+**Update:** run the same command again, adding `--clobber` to `gh release
+download` so it replaces the `install.sh` already there. The installer replaces
 the binary in place and skips anything already installed at the pinned
 version. Running it twice changes nothing. A `latch serve` that is already
 running keeps its old binary: stop it and start it again.
@@ -74,13 +57,13 @@ Check it:
 
 ```sh
 latch --version
-# latch 0.1.0 (commit 081605f…, built 2026-10-21 21:05 UTC, standalone tag v0.1.0-pr.2, protocol plow/latch/1)
+# latch 0.1.0 (commit …, built …, standalone tag v0.1.0-build.…, protocol plow/latch/1)
 ```
 
 **Linux:** a host sandboxes what it runs with bubblewrap. The installer
 installs it (and, on Ubuntu 24.04 and later, loads the AppArmor profile that
-lets it work), asking for `sudo` once, only if something is missing. With a build that
-has the browser, a Pi also gets Xvfb and unzip for it.
+lets it work), asking for `sudo` once, only if something is missing. A Pi
+also gets Xvfb and unzip for Chrome.
 
 ## 2. Log in
 
