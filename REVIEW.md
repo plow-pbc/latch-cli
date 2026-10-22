@@ -11,8 +11,8 @@ not here; the reviewer prepends its own copy to every agent.
 agent reach the files, programs, Google accounts and browser on a machine its
 owner trusts, over Plow's peer directory. The same binary plays every role:
 
-- a **host** runs `latch serve FOLDER…` and answers callers over iroh (QUIC,
-  ALPN `plow/latch/1`), each operation in a sandboxed worker;
+- a **host** runs `latch serve` and answers callers over iroh (QUIC,
+  ALPN `plow/latch/2`), each operation in a sandboxed worker;
 - a **device** is one of the owner's own machines, logged in with an owner
   login; it is the owner acting, judged only against the host's rules
   (allowed unless they forbid it);

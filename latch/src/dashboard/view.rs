@@ -332,7 +332,6 @@ impl View {
         // Each line with how it is painted; wrapped before it is.
         let bold = |text: &str| paint::bold(text, VOLT);
         let alert = |text: &str| paint::bold(text, RED);
-        let dim = |text: &str| paint::fg(text, DIM);
         let plain = |text: &str| text.to_string();
         type Painted<'a> = (String, &'a dyn Fn(&str) -> String);
         let mut shown: Vec<Painted> = Vec::new();
@@ -357,9 +356,6 @@ impl View {
         }
         if let Some(notice) = &self.notice {
             shown.push((notice.clone(), &alert));
-        }
-        if let Some(note) = &board.note {
-            shown.push((note.clone(), &dim));
         }
         for handoff in &board.handoffs {
             shown.push((handoff.clone(), &alert));

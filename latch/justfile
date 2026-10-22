@@ -4,6 +4,11 @@ test: cft
     cargo clippy --locked --all-targets --features fake-gog -- -D warnings
     cargo test --locked --features fake-gog
 
+# The Linux gate uses the same nested sandbox as a container host.
+test-linux:
+    docker build --platform linux/arm64 -t latch-linux-gates:local -f docker/Dockerfile.gates docker
+    docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL --security-opt=no-new-privileges=true --security-opt=systempaths=unconfined --security-opt seccomp=$PWD/docker/seccomp.json -v "$PWD/..:/repo" -w /repo/latch -e HOME=/tmp -e RUSTUP_HOME=/usr/local/rustup -e CARGO_HOME=/repo/latch/target/cargo-home -e CARGO_TARGET_DIR=/repo/latch/target/linux-check latch-linux-gates:local sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
+
 # The Messages reader (macOS): its tests, with a longer fuzz run of the body
 # parser than the default, against synthetic databases only.
 messages-reader-test iterations="200000":

@@ -34,8 +34,6 @@ const KEEP_CALLS: usize = 50;
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Board {
     pub host: String,
-    /// A line under the header, such as that the host shares no folders.
-    pub note: Option<String>,
     /// When the host began serving.
     pub since: Option<Timestamp>,
     /// What a starting or stopping host is doing, until it serves.
@@ -174,10 +172,9 @@ pub struct Dashboard {
 pub struct CallId(u64);
 
 impl Dashboard {
-    pub fn new(host: &str, note: Option<&str>) -> Dashboard {
+    pub fn new(host: &str) -> Dashboard {
         let board = Board {
             host: host.to_string(),
-            note: note.map(str::to_string),
             ..Board::default()
         };
         Dashboard {

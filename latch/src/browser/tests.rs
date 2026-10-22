@@ -292,8 +292,8 @@ fn latch() -> PathBuf {
 /// with one area, the state directory denied.
 fn exec(state: &Path, area: &Path, script: &str) -> (bool, String) {
     let tmp = tempfile::tempdir_in(area).unwrap();
-    let out = Command::new(latch())
-        .args(["worker", "--area"])
+    let mut child = Command::new(latch())
+        .args(["worker", "--network", "--area"])
         .arg(area)
         .arg("--denied")
         .arg(state)
@@ -304,11 +304,40 @@ fn exec(state: &Path, area: &Path, script: &str) -> (bool, String) {
         .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
         .env("HOME", area)
         .current_dir(area)
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    let header = br#"{"secret_env":{},"error_token":"browser-probe"}"#;
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(&(header.len() as u32).to_be_bytes())
+        .unwrap();
+    input.write_all(header).unwrap();
+    drop(input);
+    let out = child.wait_with_output().unwrap();
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     (out.status.success(), text)
+}
+
+#[test]
+fn exec_probe_can_reach_its_loopback_fixture() {
+    let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+    fs::create_dir_all(&parent).unwrap();
+    let dir = tempfile::tempdir_in(parent).unwrap();
+    let state = dir.path().join("state");
+    let area = dir.path().join("area");
+    fs::create_dir(&state).unwrap();
+    fs::create_dir(&area).unwrap();
+    let port = serve(vec![("/".into(), b"loopback exec probe".to_vec())]);
+    let (ok, output) = exec(
+        &state,
+        &area,
+        &format!("curl -fsS --max-time 5 http://127.0.0.1:{port}/"),
+    );
+    assert!(ok && output == "loopback exec probe", "{output}");
 }
 
 conformance!(

@@ -57,7 +57,7 @@ fn run(
 /// A host's board with an exec, a refused upload, and a browser session
 /// whose plan stopped at its third step.
 fn busy() -> Dashboard {
-    let dashboard = Dashboard::new("workstation", None);
+    let dashboard = Dashboard::new("workstation");
     dashboard.serving();
     dashboard.directory(true);
     dashboard.socket(true);
@@ -204,7 +204,7 @@ fn a_browser_session_groups_its_calls_and_a_plan_its_steps() {
 
 #[test]
 fn results_say_what_happened_in_words() {
-    let dashboard = Dashboard::new("host", None);
+    let dashboard = Dashboard::new("host");
     let exec = |code: i64| json!({"argv": ["false"], "exit_code": code});
     run(
         &dashboard,
@@ -266,7 +266,7 @@ fn results_say_what_happened_in_words() {
 
 #[test]
 fn a_running_call_shows_running_until_it_ends() {
-    let dashboard = Dashboard::new("host", None);
+    let dashboard = Dashboard::new("host");
     let request = json!({"argv": ["sleep", "5"]});
     let id = dashboard.begin(owner(), None, begun("exec", &request));
     let running = board(&dashboard);
@@ -287,7 +287,7 @@ fn a_running_call_shows_running_until_it_ends() {
 
 #[test]
 fn what_was_dropped_is_said_never_implied_complete() {
-    let dashboard = Dashboard::new("host", None);
+    let dashboard = Dashboard::new("host");
     let request = json!({"argv": ["true"]});
     let audit = json!({"argv": ["true"], "exit_code": 0});
     for _ in 0..=KEEP_TASKS {
@@ -769,7 +769,7 @@ fn a_session_shows_its_latest_plan_or_problem_not_just_its_last_call() {
 
 #[test]
 fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
-    let dashboard = Dashboard::new("host", None);
+    let dashboard = Dashboard::new("host");
     let long = "The owner said not to do this. ".repeat(20);
     let refused = denied(
         "gatekeeper_denied",
@@ -850,7 +850,7 @@ fn the_first_row_is_selected_and_keys_do_what_they_say() {
 
 #[test]
 fn rows_hidden_above_are_said_and_home_goes_back_to_them() {
-    let dashboard = Dashboard::new("host", None);
+    let dashboard = Dashboard::new("host");
     for n in 0..12 {
         let request = json!({"argv": ["echo", format!("call {n}")]});
         let audit = json!({"argv": ["echo", format!("call {n}")], "exit_code": 0});
@@ -893,7 +893,7 @@ fn rows_hidden_above_are_said_and_home_goes_back_to_them() {
 
 #[test]
 fn a_browser_call_shows_the_judgment_its_own_record_holds() {
-    let dashboard = Dashboard::new("host", None);
+    let dashboard = Dashboard::new("host");
     let plan = json!({"command": "do", "session": "s",
         "plan": {"steps": [{"literal": {"op": "click", "ref": "e7"},
                             "check": {"kind": "path", "value": "/nowhere.html"}}]}});
@@ -928,7 +928,7 @@ fn a_browser_call_shows_the_judgment_its_own_record_holds() {
 
 #[test]
 fn nothing_typed_queried_or_sent_as_a_terminal_command_reaches_the_screen() {
-    let dashboard = Dashboard::new("host", None);
+    let dashboard = Dashboard::new("host");
     let typing = json!({"command": "do", "session": "s",
         "plan": {"steps": [{"literal": {"op": "type", "ref": "e3", "text": "482913"}}]}});
     run(
@@ -988,7 +988,7 @@ fn nothing_typed_queried_or_sent_as_a_terminal_command_reaches_the_screen() {
 
 #[test]
 fn the_decision_tab_shows_the_owners_rule_for_an_owners_call() {
-    let dashboard = Dashboard::new("host", None);
+    let dashboard = Dashboard::new("host");
     let gate = json!({"caller": "owner_on_host",
         "rule": "refused when forbidden >= within instructions",
         "p": {"COVERED": 0.3, "NOT_COVERED": 0.3, "FORBIDDEN": 0.4}});

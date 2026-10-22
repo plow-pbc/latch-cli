@@ -80,7 +80,7 @@ latch browser --session SESSION close
 ```
 
 A saved local host resolves without Plow and connects through the private
-`serve.sock` in its state folder; `--host` naming this machine does the same.
+`serve-v2.sock` in its state folder; `--host` naming this machine does the same.
 These calls use the same browser sessions, profiles, vault, gatekeeper and
 audit as remote calls, with caller kind `owner_on_host`. A stopped receiver
 returns `serve_required`, with instructions to start `latch serve`.

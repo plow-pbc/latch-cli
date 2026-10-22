@@ -338,6 +338,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_client_cannot_connect_to_an_old_protocol_host() {
+        let host = endpoint()
+            .relay_mode(RelayMode::Disabled)
+            .alpns(vec![b"plow/latch/1".to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let client = endpoint()
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let (accepted, connection) = tokio::join!(
+            async { host.accept().await.unwrap().await },
+            client.connect(host.addr(), wire::ALPN),
+        );
+        assert!(accepted.is_err());
+        assert!(connection.is_err());
+        client.close().await;
+        host.close().await;
+    }
+
+    #[tokio::test]
     async fn closing_is_quick_and_the_host_hears_it() {
         // A host and a client on this machine, with no relay.
         let bind = |alpns: Vec<Vec<u8>>| {

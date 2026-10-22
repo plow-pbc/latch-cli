@@ -2,9 +2,10 @@
 
 latch lets you, and agents you allow, reach the files, programs and browser
 on your own machines. You log each machine in with your Plow account. One
-machine *serves* a folder. Your other machines and your agents *call* it.
+machine *serves* exec, files and connectors. Your other machines and your
+agents *call* it.
 
-This guide takes you from nothing to a Mac serving a folder and a second
+This guide takes you from nothing to a Mac serving calls and a second
 machine calling it, in about 10 minutes.
 
 Every command prints one JSON object, except at a terminal, where
@@ -52,13 +53,18 @@ download` so it replaces the `install.sh` already there. The installer replaces
 the binary in place and skips anything already installed at the pinned
 version. Running it twice changes nothing. A host that `latch serve` or
 `latch serve -d` started is stopped and started again with the new latch,
-with the same folders and flags.
+with the same flags.
+
+If the previous host was started with folder arguments, automatic restart
+is refused. Start once with `latch serve -d`, adding any `--deny-exec` or
+`--headless-browsers` flags you need. This saves the current flags for later
+restarts.
 
 Check it:
 
 ```sh
 latch --version
-# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/1
+# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/2
 ```
 
 **Linux:** a host sandboxes what it runs with bubblewrap. The installer
@@ -105,39 +111,34 @@ Check it:
 ```sh
 latch status            # JSON: this peer, your Plow URL, and the hosts it can reach
 latch status --pretty   # the same for a person, with key art to compare between machines
-latch status --local    # only this machine: state folder, login, serve, shares. Works offline
+latch status --local    # only this machine: state folder, login and serve. Works offline
 ```
 
-## 3. Choose what to share, then serve
+## 3. Serve this machine
 
-Pick a folder for callers to work in, save it, and serve:
+Exec and file calls need no shared-folder setup:
 
 ```sh
-latch shares set ~/code/my-project
-latch shares          # {"shares":["/Users/you/code/my-project"]}
 latch serve
 ```
 
-`latch serve` runs in the foreground with a live dashboard; each call shows up
-as a row. Ctrl-C stops it. Leave it running in its own terminal. (`latch serve
-FOLDER…` shares those folders this time instead of the saved ones.)
+`latch serve` shows a live dashboard; each call shows up as a row. Ctrl-C
+stops the host. Leave it running in its own terminal, or use `latch serve -d`
+to start it detached and `latch stop` to stop it.
 
 What a caller from one of your machines can reach:
 
-- **Write** only inside the shared folders. A `file put` elsewhere is refused
-  (`sandbox_denied`, exit 4).
-- **Read** anything your user account can read, not only the shared folders:
-  `latch file get --host mac /etc/hosts` works. Only latch's own state folder
-  is always hidden.
-- `exec` starts in the first shared folder.
-
-> **Never share your home folder (or `/`).** latch does not stop you: `latch
-> shares set ~` is accepted without a warning. Then every caller, including
-> agents you allow, can change or delete anything in it: your SSH keys,
-> shell profile, browser profiles, other credentials. Share a project folder.
-
-`latch shares set` replaces the saved list. A running `latch serve` keeps its
-folders until you restart it.
+- **Files:** `file get` reads what exec can: your home folder and the
+  system's own files (`latch file get --host mac /etc/hosts` works). `file
+  put` writes anywhere in your home folder. Neither touches latch's own
+  state or, on macOS, `~/Library` (its Caches excepted); anything else is
+  refused (`bad_path`, exit 4). A put replaces the file only once all of it
+  has arrived, and keeps the old file's permissions.
+- **Exec:** reads home and system files, with the same hidden places as file
+  calls. It writes only repeated `--write PATH` grants, private temp and
+  existing plain tool-cache folders. IP networking is off unless `--network`
+  is given. Workdir defaults to the first write folder, otherwise home;
+  `--workdir` overrides it.
 
 ## 4. Call the host from another of your machines
 
@@ -164,7 +165,7 @@ too: `exec`, `file`, `google`, `messages` and `contacts` run only as your own
 request within your rules on that host, so they need the decision model (see
 6). The browser's judged actions need it too: opening a new site, plans, vault
 fills, scripts, uploads and downloads (see [the browser gatekeeper](../latch/BROWSER.md#the-gatekeeper)).
-Your settings (`rules`, `vault`, `shares`) are never judged. Set
+Your settings (`rules`, `vault`) are never judged. Set
 `LATCH_HOST=my-mac` to leave out `--host`.
 
 **Run a program.** No shell is involved unless you run one. The JSON has
@@ -172,16 +173,17 @@ Your settings (`rules`, `vault`, `shares`) are never judged. Set
 
 ```sh
 latch exec --host my-mac -- ls -la
-latch exec --host my-mac -- sh -c 'pwd; uname -s'
+latch exec --host my-mac --write '~/code/my-project' -- sh -c 'pwd; uname -s'
 # {"exit_code":0,"stdout":"/Users/you/code/my-project\nDarwin\n",…}
 ```
 
-**Copy a file.** Paths on the host are relative to its first shared folder:
+**Copy a file.** Paths on the host are in its home folder: `'~/…'` (quoted,
+so your shell leaves the `~` alone) or relative to home:
 
 ```sh
-latch file get --host my-mac hello.txt              # to ./hello.txt
+latch file get --host my-mac '~/hello.txt'             # to ./hello.txt
 echo "note from my laptop" > notes.txt
-latch file put --host my-mac notes.txt notes.txt    # into the shared folder
+latch file put --host my-mac notes.txt '~/Documents'   # as ~/Documents/notes.txt
 ```
 
 **Drive a browser on the host** (needs a build with the browser, on both
@@ -345,7 +347,7 @@ Your own machines need the model for every judged call (`exec`, `file`,
 `google`, `messages`, `contacts`) and the browser's judged actions, including
 `browser open` and `do`. Browser goals and sentence checks also need the
 model. Page reads (`text`, `screenshot`) in an existing session and your
-settings (`rules`, `vault`, `shares`) work without it.
+settings (`rules`, `vault`) work without it.
 
 **`state_format` (exit 1): "… is in state format 2, set up by latch …; this
 latch … reads only format 1".** That state folder was set up by a newer latch

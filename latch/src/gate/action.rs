@@ -1,8 +1,6 @@
 //! What the judge is shown of a caller's exec, file or Google operation,
 //! and what the audit keeps of one the judge refused.
 
-use std::path::Path;
-
 use serde::Serialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
@@ -35,6 +33,12 @@ struct Action<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     working_folder: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    writes: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret_env: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     size: Option<&'a Value>,
@@ -49,11 +53,10 @@ struct Action<'a> {
 }
 
 /// `op` with `args` as the judge sees it, if the gatekeeper judges `op`.
-/// An exec without a working folder runs in `first_area`, if the host
-/// shares one. An exec's stdin
+/// An exec's paths are normalized before judgment. Its stdin
 /// may be the program itself (`sh`, `python -`), so the judge reads it
 /// too; the audit keeps only its size and sha256.
-pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated> {
+pub fn gated(op: &str, args: &Value) -> Option<Gated> {
     let mut unjudgeable = None;
     let stdin = match op {
         "exec" => judged_stdin(&args["stdin"]).unwrap_or_else(|failure| {
@@ -72,6 +75,9 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
         argv: None,
         stdin: None,
         working_folder: None,
+        writes: None,
+        network: None,
+        secret_env: None,
         path: None,
         size: None,
         file_name: None,
@@ -79,17 +85,21 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
         accounts: None,
         arguments: None,
     };
-    let first_area = first_area.map(Path::to_string_lossy);
     let (action, audit) = match op {
         "exec" => {
-            let folder = args["workdir"].as_str().or(first_area.as_deref());
+            let secrets = serde_json::from_value(args["secret_env"].clone()).unwrap_or_default();
+            let secret_env = crate::exec::secret_metadata(&secrets);
             let action = Action {
                 argv: Some(&args["argv"]),
                 stdin: stdin.as_deref(),
-                working_folder: folder,
+                working_folder: args["workdir"].as_str(),
+                writes: Some(&args["writes"]),
+                network: Some(&args["network"]),
+                secret_env: Some(secret_env.clone()),
                 ..none
             };
-            let mut audit = json!({"argv": args["argv"], "workdir": args["workdir"]});
+            let mut audit = json!({"argv": args["argv"], "workdir": args["workdir"],
+                                   "writes": args["writes"], "network": args["network"], "secret_env": secret_env});
             if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(args["stdin"].clone()) {
                 audit["stdin"] = crate::exec::stdin_audit(&bytes);
             }
