@@ -201,7 +201,8 @@ esac
 # never overwritten in place. cksum, unlike cmp, is on every system.
 if [ -n "$app" ]; then
   installed="$HOME/Applications/$(basename "$app")"
-  if [ -d "$installed" ] && [ "$(cksum < "$inner")" = "$(cksum < "$installed/Contents/MacOS/$(basename "$inner")")" ]; then
+  # The whole app counts: a new window with the same latch is a new app.
+  if [ -d "$installed" ] && diff -rq "$app" "$installed" >/dev/null 2>&1; then
     say "$(basename "$app") already installed at $installed"
   else
     # Copied beside the old one first. The old one then moves aside, not

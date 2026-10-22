@@ -1,33 +1,44 @@
 # latch on macOS
 
-On macOS a release's latch is `~/Applications/Plow Latch.app`. The app is
-not a separate program: its executable, `Contents/MacOS/latch`, is the same
-`latch` binary Linux ships bare. The bundle exists to give that binary a
-signed identity, so the owner can grant it Full Disk Access the supported
-way and it can keep its secrets in the Keychain.
+On macOS a release's latch is `~/Applications/Plow Latch.app`. Its
+executable, `Contents/MacOS/latch`, is the same `latch` binary Linux ships
+bare. The bundle gives that binary a signed identity, so the owner can grant
+it Full Disk Access the supported way and it can keep its secrets in the
+Keychain, and it carries the app's window.
 
 ## The bundle
 
 `scripts/macos-app-bundle.sh` builds it from a latch binary:
 
 - `Contents/MacOS/latch`, the bundle's executable (`CFBundleExecutable`);
+- `Contents/Frameworks/libPlowLatchUI.dylib`, the app's window: a SwiftUI
+  library (`latch/gui/`, built universal by `gui/build.sh`, Xcode 26 or
+  later);
 - `Contents/Info.plist`, written by the script: bundle id
-  `co.plow.latch.cli`, `LSUIElement` (no window, no Dock icon), macOS 13 or
-  later. `CFBundleVersion` is the version without its build number, so
-  every build of 0.1.0 reads 0.1.0;
+  `co.plow.latch.cli`, macOS 13 or later. `CFBundleVersion` is the
+  release's build number;
 - `Contents/Resources/AppIcon.icns` (`latch/macos/`);
 - `Contents/embedded.provisionprofile`, the Developer ID profile that lets
   the signature claim latch's keychain group.
 
-Opened from the Finder, the app does nothing visible: `latch` with no
-arguments and no terminal is a usage error.
+**The window.** When LaunchServices opens the app (the Finder, the Dock,
+`open`, a login item) with no arguments, or exactly `--state-dir PATH`
+(`open APP --args --state-dir PATH`), latch sees its own bundle id in
+`__CFBundleIdentifier`, loads the window's library and hands it the main
+thread (`src/gui.rs`): a normal Dock app. The window needs macOS 26 or
+later; below that the app shows one alert pointing to `latch setup` and
+quits. Every other run of the same binary is the CLI and loads no AppKit or
+SwiftUI. The window gets everything it shows from this bundle's own latch,
+run with `--state-dir`.
 
 `scripts/package-release.sh` puts the bundle in a macOS release archive,
-ad hoc signed, with a `latch` symlink beside `install-binary.sh` that leads
-into it. The release workflow (`.github/workflows/release.yml`) then signs
-the whole bundle with Plow's Developer ID, the hardened runtime and
+ad hoc signed (`scripts/macos-sign-app.sh`), with a `latch` symlink beside
+`install-binary.sh` that leads into it. The release workflow
+(`.github/workflows/release.yml`, on macOS 26's Xcode) then signs it inside
+out with the same script: the window's library, then the bundle, with
+Plow's Developer ID, the hardened runtime and
 `latch/macos/latch.entitlements` (app id `3559PD337Z.co.plow.latch.cli`,
-keychain group `3559PD337Z.co.plow.latch`), notarizes it and staples the
+keychain group `3559PD337Z.co.plow.latch`); it notarizes it and staples the
 ticket.
 
 ## What the identity is for
@@ -52,7 +63,8 @@ ticket.
 
 `install-binary.sh` sees that the `latch` it was given leads into an app
 bundle. Then it copies the whole bundle to `~/Applications`, replacing the
-one there, and makes `~/.local/bin/latch` (or `--bin-dir`'s) a symlink to
+one there unless every file is the same (a new window with the same latch
+is a new app), and makes `~/.local/bin/latch` (or `--bin-dir`'s) a symlink to
 `~/Applications/Plow Latch.app/Contents/MacOS/latch`. The link's target
 never changes, so later installs leave it alone.
 
@@ -89,9 +101,13 @@ bundle, into the state folder (`~/.latch`, or `--state-dir`):
 ## Dev and CI builds
 
 `just build` makes a bare `.dev/bin/latch`, not an app, and so do `cargo
-build` and the tests. Such a latch keeps its secrets as files, and Full Disk
+build` and the tests. `just app` wraps that latch, with the window, in
+`.dev/app/Plow Latch Dev.app`, under its own bundle id
+(`co.plow.latch.dev`), so it never shares the installed app's grants,
+preferences or windows; `open` it to see the window. Such a latch keeps its secrets as files, and Full Disk
 Access is granted to the binary itself. `install-binary.sh` given a bare
 binary on macOS copies it into the bin folder as it does on Linux; `just
-cft` and the macOS CI tests install that way. CI builds the bundle in
-`mac-tests.yml` (ad hoc signed, to check it is valid) and `keychain.yml`
-(Developer ID signed, to test the Keychain).
+cft` and the macOS CI tests install that way. CI builds the bundle, with
+the window built for Apple silicon and Intel on macOS 26's Xcode, in
+`mac-tests.yml` (its `app` job: ad hoc signed, to check it is valid) and
+`keychain.yml` (Developer ID signed, to test the Keychain).

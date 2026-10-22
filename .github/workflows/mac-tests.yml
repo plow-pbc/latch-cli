@@ -1,7 +1,7 @@
 name: mac-tests
 
 # The full macOS suite, with clippy for the macOS-only code Linux never
-# compiles, the Messages reader's tests and the app bundle. By hand on any
+# compiles, the Messages reader's tests and the app bundle (its own job). By hand on any
 # branch: `gh workflow run mac-tests --ref BRANCH` tests that branch's head,
 # and its checks show on that commit. A merge to main runs it as one job;
 # the release runs it beside its build and makes its draft only if it passes.
@@ -74,17 +74,38 @@ jobs:
       - if: matrix.shard == 1
         run: LATCH_FUZZ_ITERATIONS=50000 swift test
         working-directory: latch/messages-reader
-      - if: matrix.shard == 1
-        run: |
-          . macos/identity.sh
-          app="$RUNNER_TEMP/$LATCH_APP_NAME.app"
-          sh ../scripts/macos-app-bundle.sh 0.0.0 target/debug/latch "$app"
-          codesign --force --sign - "$app"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          "$app/Contents/MacOS/latch" --version
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mac-tests-${{ matrix.shard }}
           path: .dev/ci/*.json
           if-no-files-found: error
+  # The app bundle: latch with its window, built for Apple silicon and
+  # Intel on macOS 26's Xcode (the window needs the macOS 26 SDK), signed ad
+  # hoc and checked whole; its latch runs as the CLI.
+  app:
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: latch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+          shared-key: mac-macos-26
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --locked
+      - run: gui/build.sh
+      - run: |
+          . macos/identity.sh
+          app="$RUNNER_TEMP/$LATCH_APP_NAME.app"
+          sh ../scripts/macos-app-bundle.sh 0.0.0 target/debug/latch "$app"
+          sh ../scripts/macos-sign-app.sh "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          lipo "$app/Contents/Frameworks/libPlowLatchUI.dylib" -verify_arch arm64 x86_64
+          "$app/Contents/MacOS/latch" --version

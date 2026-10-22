@@ -7,3 +7,6 @@ build *args:
 
 test:
     @just --justfile latch/justfile test
+
+app *args:
+    @just --justfile latch/justfile app {{args}}

@@ -621,10 +621,13 @@ fn activate(pid: u32) -> bool {
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject};
 
-    // `NSRunningApplication` lives in AppKit.
-    #[link(name = "AppKit", kind = "framework")]
-    unsafe extern "C" {}
-
+    // `NSRunningApplication` lives in AppKit, loaded here and not linked, so
+    // no other latch command pays for it.
+    let appkit = c"/System/Library/Frameworks/AppKit.framework/AppKit";
+    // SAFETY: a NUL-terminated path; AppKit stays loaded once loaded.
+    if unsafe { libc::dlopen(appkit.as_ptr(), libc::RTLD_LAZY) }.is_null() {
+        return false;
+    }
     objc2::rc::autoreleasepool(|_| {
         let Some(class) = AnyClass::get(c"NSRunningApplication") else {
             return false;

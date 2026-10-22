@@ -203,6 +203,15 @@ class BinaryInstall(unittest.TestCase):
             self.assertIn("Plow Latch.app already installed", again.stdout)
             self.assertIn("latch already linked", again.stdout)
 
+            # A new window with the same latch is a new app, and installs.
+            (app / "Contents/Frameworks").mkdir()
+            (app / "Contents/Frameworks/libPlowLatchUI.dylib").write_text("window-two\n")
+            window = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(window.returncode, 0, window.stderr)
+            self.assertIn("installed Plow Latch.app", window.stdout)
+            self.assertEqual((installed / "Contents/Frameworks/libPlowLatchUI.dylib").read_text(),
+                             "window-two\n")
+
             # An update whose final rename fails keeps the working app and link.
             failing_mv = tools / "mv"
             failing_mv.write_text('#!/bin/sh\ncase "$1" in *.app.new) exit 73;; esac\nexec /bin/mv "$@"\n')

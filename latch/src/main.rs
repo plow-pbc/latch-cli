@@ -21,6 +21,8 @@ mod failure;
 mod files;
 mod gate;
 mod google;
+#[cfg(target_os = "macos")]
+mod gui;
 mod heartbeat;
 mod help;
 mod hosts;
@@ -72,6 +74,11 @@ use wire::Request;
 fn main() -> ExitCode {
     #[cfg(feature = "fake-gog")]
     if let Some(exit) = google::fake::run_if_gog() {
+        return exit;
+    }
+    // Opened as the Mac app, latch runs its window instead (gui.rs).
+    #[cfg(target_os = "macos")]
+    if let Some(exit) = gui::launch() {
         return exit;
     }
     // A bare `latch` at a terminal shows the Plow logo. Anywhere else (a

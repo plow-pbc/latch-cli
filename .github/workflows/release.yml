@@ -70,7 +70,8 @@ jobs:
       fail-fast: false
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
-    runs-on: macos-15
+    # macOS 26's Xcode: the app's window (latch/gui) needs the macOS 26 SDK.
+    runs-on: macos-26
     timeout-minutes: 45
     env:
       VERSION: ${{ needs.version.outputs.tag }}
@@ -128,12 +129,15 @@ jobs:
           cargo build --release --locked --target '${{ matrix.target }}'
           codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
           'target/${{ matrix.target }}/release/latch' --version
+          # The app's window, one universal library for both archives.
+          gui/build.sh
       - name: Package
         shell: bash
         run: |
           binary='latch/target/${{ matrix.target }}/release/latch'
           sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
-      # The app is signed as a whole: its latch takes the bundle's identity,
+      # The app is signed inside out: its window's library, then the app,
+      # whose latch takes the bundle's identity,
       # LATCH_BUNDLE_ID, which Full Disk Access is granted to, and latch's
       # keychain group, which its embedded profile allows, so it keeps its
       # secrets in the Keychain (latch/src/secrets.rs).
@@ -146,8 +150,7 @@ jobs:
           tar -xzf "$archive" -C unpacked
           app="unpacked/$name/$LATCH_APP_NAME.app"
           test -f "$app/Contents/embedded.provisionprofile"
-          codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
-            --entitlements latch/macos/latch.entitlements --sign "$LATCH_SIGNING_IDENTITY" "$app"
+          sh scripts/macos-sign-app.sh "$app" "$LATCH_SIGNING_IDENTITY" "$KEYCHAIN_PATH"
           codesign --verify --deep --strict --verbose=2 "$app"
           echo "NAME=$name" >> "$GITHUB_ENV"
       # The ticket is stapled to the app, so Gatekeeper need not look it up
