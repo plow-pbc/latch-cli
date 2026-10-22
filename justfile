@@ -28,7 +28,7 @@ gatekeeper what="checks" *args="":
     cd latch
     case "$1" in
       checks) just test-model "$key" && just gatekeeper-live "$key" && just gatekeeper-owner "$key" ;;
-      replay) [ "$#" -eq 2 ] || { echo "usage: just gatekeeper replay OUT" >&2; exit 2; }
+      replay) [ -n "${2:-}" ] || { echo "usage: just gatekeeper replay OUT" >&2; exit 2; }
               just gatekeeper-replay "$key" "$2" ;;
       scenario) just scenario-return "$key" ;;
       *) echo "just gatekeeper [checks | replay OUT | scenario]" >&2; exit 2 ;;
