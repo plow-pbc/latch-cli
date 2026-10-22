@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use crate::cli::{self, BUILD_API_URL, LoginArgs};
 use crate::credential;
+use crate::devices;
 use crate::failure::Failure;
 use crate::heartbeat;
 use crate::plow::{self, Peer, Plow, Registration};
@@ -139,10 +140,15 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         }
         // Another of the owner's machines may hold the name.
         Err(failure) if failure.code == "conflict" && owner => {
-            let Some(name) = &registration.name else {
+            if registration.name.is_none() {
                 return Err(failure);
+            }
+            let rerun = if save_token {
+                "latch login --token-file FILE"
+            } else {
+                "latch login"
             };
-            return Err(clash(&plow, name, &registration.key).await);
+            clash(&plow, registration, rerun).await?
         }
         result => result?,
     };
@@ -308,27 +314,56 @@ fn for_people(number: &str) -> String {
     }
 }
 
-/// The name is taken by another peer: the login stops and says by whom
-/// and what to do. It never renames this machine or replaces the other.
-async fn clash(plow: &Plow, name: &str, key: &str) -> Failure {
+/// The name is taken by another peer. A person at the terminal may replace
+/// another of the owner's machines (removed in Plow, which signs it out) or
+/// pick a new name, and the login goes on with the login already in hand.
+/// Anyone else is told what to run next. An agent's name is never taken
+/// over.
+async fn clash(plow: &Plow, mut registration: Registration, rerun: &str) -> Result<Peer, Failure> {
+    let name = registration.name.clone().expect("a clash is over a name");
     let peers = plow.list_peers().await.unwrap_or_default();
-    let holder = peers.iter().find(|peer| peer.name == name);
-    let message = match holder {
+    let machine = match peers.iter().find(|peer| peer.name == name) {
         Some(peer) if peer.kind == "agent" => {
-            format!("the name {name:?} belongs to an agent; choose another --name")
+            let message = format!("the name {name:?} belongs to an agent; choose another --name");
+            return Err(Failure::usage("conflict", message));
         }
-        Some(machine) if machine.key != key => {
-            let last_seen = machine.last_seen_at.as_deref().unwrap_or("never");
-            format!(
-                "a machine named {name:?} already exists (last seen {last_seen}); \
-                 remove it with `latch devices remove {name}`, or choose another --name"
-            )
-        }
+        Some(machine) if machine.key != registration.key => machine,
         _ => {
-            format!("this key or the name {name:?} is taken by another peer; choose another --name")
+            let message = format!(
+                "this key or the name {name:?} is taken by another peer; choose another --name"
+            );
+            return Err(Failure::usage("conflict", message));
         }
     };
-    Failure::usage("conflict", message)
+    let last_seen = machine.last_seen_at.as_deref().unwrap_or("never");
+    let taken = || {
+        let message = format!(
+            "a machine named {name:?} already exists (last seen {last_seen}); run \
+             `{rerun} --name OTHER` to use another name, or `{rerun}` again at a \
+             terminal to replace it (no second text needed)"
+        );
+        Failure::usage("conflict", message)
+    };
+    if !term::interactive() {
+        return Err(taken());
+    }
+    if term::confirm(&format!(
+        "A machine named {name:?} already exists (last seen {last_seen}). Replace it?"
+    )) {
+        devices::remove_from_plow(plow, machine).await?;
+        return plow.register(&registration).await;
+    }
+    loop {
+        let other = term::ask("New name for this machine: ");
+        if other.is_empty() {
+            return Err(taken());
+        }
+        registration.name = Some(other.clone());
+        match plow.register(&registration).await {
+            Err(failure) if failure.code == "conflict" => eprintln!("{other:?} is taken too."),
+            result => return result,
+        }
+    }
 }
 
 /// `text` percent-encoded for a URL: letters, digits and `-._~` stay as
