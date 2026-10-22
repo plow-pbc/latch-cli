@@ -89,6 +89,9 @@ pub struct Call {
     /// A browser plan's steps, in order.
     pub steps: Vec<Step>,
     pub detail: Detail,
+    /// The id a browser plan's client gave it, which its progress names.
+    #[serde(skip)]
+    request: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -231,7 +234,7 @@ impl Dashboard {
         &self,
         caller: Caller,
         session: Option<String>,
-        (title, steps): (String, Vec<Step>),
+        (title, steps, request): (String, Vec<Step>, Option<String>),
     ) -> CallId {
         let mut id = 0;
         self.change(|board| {
@@ -248,16 +251,17 @@ impl Dashboard {
                     outcome,
                     steps,
                     detail: Detail::default(),
+                    request,
                 },
             );
         });
         CallId(id)
     }
 
-    /// One step of the plan running in browser session `session` finished,
+    /// One step of plan `request` in browser session `session` finished,
     /// as its answer shows it (`step`, `outcome`, `code`): at most once per
     /// step, so a plan's updates are as many as its steps.
-    pub fn progress(&self, session: &str, shown: &Value) {
+    pub fn progress(&self, session: &str, request: &str, shown: &Value) {
         let Some(n) = shown["step"]
             .as_u64()
             .and_then(|n| (n as usize).checked_sub(1))
@@ -270,7 +274,11 @@ impl Dashboard {
                 .iter_mut()
                 .filter(|task| task.session.as_deref() == Some(session))
                 .flat_map(|task| task.calls.iter_mut())
-                .find(|call| call.outcome.state == State::Running && n < call.steps.len());
+                .find(|call| {
+                    call.outcome.state == State::Running
+                        && call.request.as_deref() == Some(request)
+                        && n < call.steps.len()
+                });
             if let Some(call) = running {
                 call.steps[n].outcome = describe::step_outcome(shown);
                 call.outcome = Outcome::running(&call.steps);
@@ -287,7 +295,11 @@ impl Dashboard {
     /// A call that ended before it could run: a caller refused at the
     /// door, a phone link's.
     pub fn once(&self, caller: Caller, finished: Finished) {
-        let id = self.begin(caller.clone(), None, (finished.title.clone(), Vec::new()));
+        let id = self.begin(
+            caller.clone(),
+            None,
+            (finished.title.clone(), Vec::new(), None),
+        );
         self.end(id, caller, finished);
     }
 }

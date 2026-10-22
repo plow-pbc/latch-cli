@@ -229,9 +229,9 @@ impl Browsers {
 
     /// Shows on the dashboard that a plan in session `hash` finished one
     /// step (`shown`, as its answer has it).
-    pub(super) fn progress(&self, hash: &str, shown: &Value) {
+    pub(super) fn progress(&self, hash: &str, request: &str, shown: &Value) {
         if let Some(dashboard) = &*self.dashboard.lock().expect("dashboard lock") {
-            dashboard.progress(hash, shown);
+            dashboard.progress(hash, request, shown);
         }
     }
 

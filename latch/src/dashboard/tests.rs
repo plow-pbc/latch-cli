@@ -636,8 +636,8 @@ async fn q_detaches_and_an_attached_view_ends_with_its_host() {
 
 /// The plan from `busy`, begun again in its session: running, its steps
 /// still to come.
-fn plan_in_session(dashboard: &Dashboard) -> CallId {
-    let plan = json!({"command": "do", "session": "the-session-id",
+fn plan_in_session(dashboard: &Dashboard, request: &str) -> CallId {
+    let plan = json!({"command": "do", "session": "the-session-id", "request": request,
         "plan": {"steps": [{"goal": "Open example.com"}, {"goal": "Find recent orders"},
                            {"goal": "Open order details"}]}});
     dashboard.begin(owner(), session("browser", &plan), begun("browser", &plan))
@@ -646,15 +646,15 @@ fn plan_in_session(dashboard: &Dashboard) -> CallId {
 #[test]
 fn a_running_plan_shows_its_step_as_each_one_ends() {
     let dashboard = busy();
-    plan_in_session(&dashboard);
+    plan_in_session(&dashboard, "r1");
     let session = crate::browser::host::hash_of("the-session-id");
     let task = |board: &Board| board.tasks.front().unwrap().clone();
     assert_eq!(
         task(&board(&dashboard)).outcome().line(),
         "Running - step 1"
     );
-    dashboard.progress(&session, &json!({"step": 1, "outcome": "checked"}));
-    dashboard.progress(&session, &json!({"step": 2, "outcome": "checked"}));
+    dashboard.progress(&session, "r1", &json!({"step": 1, "outcome": "checked"}));
+    dashboard.progress(&session, "r1", &json!({"step": 2, "outcome": "checked"}));
     let running = task(&board(&dashboard));
     assert_eq!(running.outcome().line(), "Running - step 3");
     let plan = running.calls.last().unwrap();
@@ -681,6 +681,22 @@ fn a_running_plan_shows_its_step_as_each_one_ends() {
         details.contains("3 Open order details — pending"),
         "{details}"
     );
+}
+
+#[test]
+fn overlapping_plans_in_a_session_each_show_their_own_steps() {
+    let dashboard = Dashboard::new("host");
+    plan_in_session(&dashboard, "r1");
+    plan_in_session(&dashboard, "r2");
+    let session = crate::browser::host::hash_of("the-session-id");
+    dashboard.progress(&session, "r2", &json!({"step": 1, "outcome": "checked"}));
+    dashboard.progress(&session, "r2", &json!({"step": 2, "outcome": "checked"}));
+    let lines: Vec<String> = board(&dashboard).tasks[0]
+        .calls
+        .iter()
+        .map(|call| call.outcome.line())
+        .collect();
+    assert_eq!(lines, ["Running - step 1", "Running - step 3"]);
 }
 
 #[test]
@@ -712,7 +728,7 @@ fn a_session_shows_its_latest_plan_or_problem_not_just_its_last_call() {
     );
 
     // A later plan that went through is what the session shows then.
-    let id = plan_in_session(&dashboard);
+    let id = plan_in_session(&dashboard, "r1");
     let plan = json!({"command": "do", "session": "the-session-id",
         "plan": {"steps": [{"goal": "Open example.com"}, {"goal": "Find recent orders"},
                            {"goal": "Open order details"}]}});

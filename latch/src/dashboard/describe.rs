@@ -26,11 +26,15 @@ pub struct Finished {
 }
 
 /// A call `op` as requested, before it runs: its title and, for a browser
-/// plan, its steps (none reached yet).
-pub fn begun(op: &str, request: &Value) -> (String, Vec<Step>) {
+/// plan, its steps (none reached yet) and the id its client gave it.
+pub fn begun(op: &str, request: &Value) -> (String, Vec<Step>, Option<String>) {
     (
         title(op, request, &Value::Null),
         plan_steps(request, &Value::Null),
+        (op == "browser")
+            .then(|| request["request"].as_str())
+            .flatten()
+            .map(str::to_string),
     )
 }
 
