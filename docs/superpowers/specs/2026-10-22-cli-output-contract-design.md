@@ -34,7 +34,7 @@ One sentence: **every command returns JSON, except the human commands (`setup`, 
 ### 2.4 Human commands
 - `setup`, interactive `login`, and the dashboard (attached `serve`, `dashboard`) are for people and are never JSON. Nothing blocks an agent from running them; they just aren't a machine interface. `help`, `--help`, `skill` and bare `latch` (its logo and help) are text by nature.
 - Their machine equivalents are regular JSON commands: setup's steps (`plugins enable …`, `status`), `login --events` (JSON lines as today: `code` carrying the link and expiry, `waiting`, `verified`, `expired`, `error`), `serve -d` / `serve --foreground`, and the audit (`audit show [-f]`, `events --follow`) in place of the dashboard.
-- Without a terminal, a human command exits 2 with JSON `no_terminal` (the code the dashboard already uses), whose `next` names its machine equivalent. Only interaction needs a terminal: `login` with an agent credential or an existing login still works non-interactively as today, returning JSON.
+- Without a terminal, a human command exits 2 with JSON `no_terminal` (the code the dashboard already uses), whose `next` names its machine equivalent. For `setup`, which has no single equivalent, `next` names the first step not yet done (e.g. `latch login --events`, then `latch plugins enable messages`), or `latch status` when everything is done. Only interaction needs a terminal: `login` with an agent credential or an existing login still works non-interactively as today, returning JSON.
 - latch invoking itself (e.g. `setup` running its steps) parses its children's JSON.
 
 ### 2.5 One error shape
@@ -47,16 +47,36 @@ One sentence: **every command returns JSON, except the human commands (`setup`, 
 
 Applies to every human-facing string: the human commands' screens and prompts, error `message` and `next`, help one-liners.
 
+Tone (chef, 2026-10-22, from a 16-string sample): **slightly warm and explicit**. Plain sentences in sentence case with a full stop; say the consequence when a person must decide ("Replace it and sign the old one out?"); keep a short hint when it teaches the person something they'll need.
+
 1. Lead with the outcome in one short sentence.
 2. Name what was affected (host, connector, path).
-3. At most one next step, as a command when there is one.
+3. One next step, as a command when there is one. A short "or" alternative is fine when both are real choices for a person (e.g. "Update this latch, or use another --state-dir").
 4. Say refused / unavailable / failed / skipped precisely; never claim success early.
-5. No explanation unless something failed or the user must decide.
+5. No explanation unless something failed or the user must decide. Warnings go where the person acts on them, not on standing screens.
 6. No apologies, celebration or exclamation marks.
-7. IDs, codes and diagnostics go in details, not the sentence.
+7. Internal IDs and diagnostics (process ids, protocol names, version strings) go in details. Values the person acts on stay in the sentence: a code to text, host names to pick from, when a host was last seen.
 8. Colour and symbols only reinforce words; honour `NO_COLOR`; sanitize terminal control characters.
 
+Secrets disclosure (chef, 2026-10-22): the dashboard's footer line about hiding credential-looking values is removed. The disclosure moves to where people choose how to pass secrets: `latch exec --help` next to `--secret-env`, and the agent instructions `latch skill` prints. `REVIEW.md`'s "best effort, and they say so" note is updated to say where it is said. Redaction itself is unchanged.
+
 Example: `The Messages connector is off. Run: latch plugins enable messages`.
+
+### 3.1 One home for each piece of help (chef, 2026-10-22)
+
+Today the same agent guidance lives in up to three places: `latch skill` (`SKILL.md`), the text appended to `--help` (`AGENT_HELP`, `EXEC_HELP`, `MESSAGES_HELP`, …) and `help --json`. Nothing tests the first two.
+
+- `latch skill` is the single home for agent guidance: logins, exit-code handling, untrusted content, how to pass secrets (including the secrets disclosure above).
+- The root `--help`'s agent block shrinks to a pointer to `latch skill` and `help --json`. Command-specific facts (exec's limits, `browser do`'s grammar, serve notes) stay in that command's `--help`.
+- `help --json` stays the machine reference and the source of examples; `latch help <cmd>` stays an alias of `--help`.
+- Each fact appears once; other surfaces point to it. Homes (from `research/research-help-layout-{claude,codex}.md`, which agree):
+  - clap doc comments: flags, arguments, defaults. `-h` terse; `--help` long.
+  - `ENTRIES` (behind `help --json`): output, side effects, retry, examples. `--help` builds its examples from it rather than repeating them.
+  - `Exit` / error codes: exit meanings, listed in `help --json` and added to `latch skill` from the same source.
+  - Each command's long help: only that command's grammar and limits (exec's limits, `browser do`'s steps).
+  - `SKILL.md`: only cross-command judgement — refusals, untrusted content, secrets, browsing.
+- Drift tests: every `latch …` line in `SKILL.md` and in `--help` text parses; every error code `SKILL.md` names exists; snapshots of `-h`, `--help` and `skill`.
+- Delete: the root agent block (down to one pointer line), the root messages block, `EXEC_HELP`'s exit-code sentence and repeated example, `DO_HELP`'s hand-written examples (moved into `ENTRIES`), and `help --examples` (a subset of `--json`).
 
 ## 4. Out of scope
 
@@ -93,11 +113,11 @@ Interfaces: consumes 1a's error shape and 1b's JSON commands · produces `no_ter
 Done when: `setup`, interactive `login`, attached `serve` and `dashboard` each exit 2 with `no_terminal` and a `next` naming the machine equivalent when run without a terminal; `login` with an agent credential or an existing login succeeds without a terminal and returns JSON; `setup` still completes in a terminal, with its steps' JSON parsed rather than printed.
 
 ### Chunk 2: Copy pass — proposal
-Implements: §3
+Implements: §3, §3.1
 Interfaces: consumes every human-facing string after Chunks 1a–1d · produces a before/after table for the chef
-Done when: a table of every human-facing string (human-command screens and prompts, error messages and `next`, help one-liners), with the current text, the proposed text and where it lives, is delivered to the chef; no code changed.
+Done when: a proposal for the §3.1 help layout (which fact lives where) plus a table of every human-facing string (human-command screens and prompts, error messages and `next`, help one-liners, `--help` add-on text, `SKILL.md`), with the current text, the proposed text and where it lives, is delivered to the chef; no code changed.
 
 ### Chunk 3: Copy pass — apply
-Implements: §3
+Implements: §3, §3.1
 Interfaces: consumes the chef-approved table from Chunk 2
 Done when: every approved string is in the code; tests that assert copy are updated; a grep shows none of the replaced strings remain.
