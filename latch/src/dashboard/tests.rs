@@ -335,65 +335,83 @@ fn what_was_dropped_is_said_never_implied_complete() {
 }
 
 #[test]
-fn at_120_columns_each_column_is_its_own_and_a_plan_unfolds() {
-    let dashboard = busy();
-    let mut view = view_of(&dashboard, true);
-    let lines = screen(&view, 120, 30);
-    assert!(
-        lines.iter().all(|line| line.chars().count() <= 120),
-        "{lines:#?}"
-    );
-    assert!(
-        lines[0].starts_with("HOST workstation | Serving since "),
-        "{}",
-        lines[0]
-    );
-    assert!(lines[0].ends_with("| Directory: connected"), "{}", lines[0]);
-    assert_eq!(
-        lines[1],
-        "Messages: enabled | Google: disabled | Local socket: listening"
-    );
-    let heading = lines
-        .iter()
-        .find(|line| line.contains("TASK / STEP"))
-        .unwrap();
-    for column in ["TIME", "CALLER", "RESULT"] {
-        assert!(heading.contains(column), "{heading}");
-    }
-    let at = lines
-        .iter()
-        .position(|line| line.contains("Write: report.pdf"))
-        .unwrap();
-    let upload = &lines[at];
-    assert!(
-        upload.contains("report-agent"),
-        "the caller has its column: {upload}"
-    );
-    // The result column lines up with its heading, and its reason wraps
-    // whole onto the next line.
-    let result = heading.find("RESULT").unwrap();
-    assert_eq!(upload.find("Refused"), Some(result), "{upload}\n{heading}");
-    assert_eq!(
-        format!(
-            "{} {}",
-            upload[result..].trim(),
-            lines[at + 1][result..].trim()
+fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_title_at_80() {
+    // Width, height, the status lines under the host's, and how far under
+    // the title the caller is.
+    let layouts: [(usize, usize, &[&str], usize); 2] = [
+        (
+            120,
+            30,
+            &["Messages: enabled | Google: disabled | Local socket: listening"],
+            0,
         ),
-        "Refused - outside your instructions"
-    );
-    let footer = lines.last().unwrap();
+        (
+            80,
+            24,
+            &[
+                "Directory: connected | Local socket: listening",
+                "Messages: enabled | Google: disabled",
+            ],
+            1,
+        ),
+    ];
+    for (width, height, status, caller_row) in layouts {
+        let lines = screen(&view_of(&busy(), true), width, height);
+        assert!(
+            lines.iter().all(|line| line.chars().count() <= width),
+            "{lines:#?}"
+        );
+        assert!(
+            lines[0].starts_with("HOST workstation | Serving since "),
+            "{}",
+            lines[0]
+        );
+        assert_eq!(lines[0].ends_with("| Directory: connected"), width == 120);
+        assert_eq!(&lines[1..=status.len()], status);
+        let heading = lines
+            .iter()
+            .find(|line| line.contains("TASK / STEP"))
+            .unwrap();
+        assert_eq!(heading.contains("CALLER"), caller_row == 0, "{heading}");
+        let at = lines
+            .iter()
+            .position(|line| line.contains("Write: report.pdf"))
+            .unwrap();
+        assert!(
+            lines[at + caller_row].contains("report-agent"),
+            "{:?}",
+            &lines[at..at + 2]
+        );
+        // The result column lines up with its heading, and its reason is
+        // never cut: it wraps whole onto the next line.
+        let result = heading.find("RESULT").unwrap();
+        assert_eq!(lines[at].find("Refused"), Some(result), "{heading}");
+        let words: Vec<&str> = lines[at..at + 2]
+            .iter()
+            .map(|line| line[result..].trim())
+            .collect();
+        assert_eq!(words.join(" "), "Refused - outside your instructions");
+        assert!(!lines.iter().any(|line| line.contains('…')));
+        let footer = lines[lines.len() - 2..].join("\n");
+        assert!(
+            footer.contains("q detach") && footer.contains("Ctrl-C stop host"),
+            "{footer}"
+        );
+    }
+
+    // A detached viewer is not offered to stop the host.
+    let lines = screen(&view_of(&busy(), false), 80, 24);
     assert!(
-        footer.contains("q detach") && footer.contains("Ctrl-C stop host"),
-        "{footer}"
+        !lines.iter().any(|line| line.contains("stop host")),
+        "{lines:#?}"
     );
 
     // Selecting the session and unfolding it, then its plan: the steps in
     // order, the one that stopped saying why.
-    view.key(Key::Down);
-    view.key(Key::Right);
-    view.key(Key::Down);
-    view.key(Key::Down);
-    view.key(Key::Right);
+    let mut view = view_of(&busy(), true);
+    for key in [Key::Down, Key::Right, Key::Down, Key::Down, Key::Right] {
+        view.key(key);
+    }
     let lines = screen(&view, 120, 30);
     let at = |text: &str| lines.iter().position(|line| line.contains(text)).unwrap();
     assert!(at("Check order status at example.com") < at("1 Open example.com"));
@@ -404,59 +422,6 @@ fn at_120_columns_each_column_is_its_own_and_a_plan_unfolds() {
         lines
             .iter()
             .any(|line| line.starts_with(">") && line.contains("Plan: Open"))
-    );
-}
-
-#[test]
-fn at_80_columns_the_caller_goes_under_the_title_and_a_refusal_wraps_whole() {
-    let mut view = view_of(&busy(), true);
-    let lines = screen(&view, 80, 24);
-    assert!(
-        lines.iter().all(|line| line.chars().count() <= 80),
-        "{lines:#?}"
-    );
-    assert!(
-        lines[0].starts_with("HOST workstation | Serving since "),
-        "{}",
-        lines[0]
-    );
-    assert_eq!(lines[1], "Directory: connected | Local socket: listening");
-    assert_eq!(lines[2], "Messages: enabled | Google: disabled");
-    let heading = lines
-        .iter()
-        .find(|line| line.contains("TASK / STEP"))
-        .unwrap();
-    assert!(!heading.contains("CALLER"), "{heading}");
-    let at = lines
-        .iter()
-        .position(|line| line.contains("Write: report.pdf"))
-        .unwrap();
-    assert!(
-        lines[at + 1].contains("report-agent"),
-        "under the title: {:?}",
-        &lines[at..at + 2]
-    );
-    // The reason is never cut: it wraps onto the next line.
-    let result: String = lines[at..at + 2]
-        .iter()
-        .map(|line| line[heading.find("RESULT").unwrap()..].trim().to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert_eq!(result, "Refused - outside your instructions");
-    assert!(!lines.iter().any(|line| line.contains('…')));
-    let footer = &lines[lines.len() - 2..];
-    assert!(footer[0].contains("q detach"), "{footer:?}");
-    assert!(
-        footer[1].contains("Ctrl-C stop host") && footer[1].contains("Live"),
-        "{footer:?}"
-    );
-
-    // A detached viewer is not offered to stop the host.
-    view = view_of(&busy(), false);
-    let lines = screen(&view, 80, 24);
-    assert!(
-        !lines.iter().any(|line| line.contains("stop host")),
-        "{lines:#?}"
     );
 }
 
@@ -924,6 +889,38 @@ fn a_browser_call_shows_the_judgment_its_own_record_holds() {
         decision.contains("Judge P: within instructions 0.90"),
         "{decision}"
     );
+}
+
+#[test]
+fn a_fill_refused_part_way_through_a_plan_says_what_ran_first() {
+    let dashboard = Dashboard::new("host");
+    let plan = json!({"command": "do", "session": "s",
+        "plan": {"steps": [{"goal": "Open the sign-in page"}, {"goal": "Find the form"},
+                           {"literal": {"op": "fill", "ref": "e4", "item": "bank"}}]}});
+    let audit = json!({"command": "do", "session": "x",
+        "step_outcomes": [{"step": 1, "outcome": "checked"}, {"step": 2, "outcome": "checked"},
+                          {"step": 3, "outcome": "stopped", "code": "gatekeeper_denied"}],
+        "stop": {"step": 3, "code": "gatekeeper_denied"}});
+    let no = denied(
+        "gatekeeper_denied",
+        "The owner's messages don't cover this.",
+        json!({}),
+    );
+    run(&dashboard, agent(), "browser", plan, audit, no, None);
+    let call = board(&dashboard).tasks[0].calls[0].clone();
+    assert_eq!(call.outcome.line(), "Stopped - step 3; 2 ran");
+    assert_eq!(
+        call.steps[2].outcome.as_ref().map(Outcome::line).as_deref(),
+        Some("Refused - outside your instructions")
+    );
+    let mut view = view_of(&dashboard, false);
+    view.key(Key::Enter);
+    let inspector = screen(&view, 100, 30).join("\n");
+    assert!(
+        inspector.contains("STOPPED - step 3; 2 ran."),
+        "{inspector}"
+    );
+    assert!(!inspector.contains("did not run"), "{inspector}");
 }
 
 #[test]

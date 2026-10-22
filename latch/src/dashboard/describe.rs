@@ -320,11 +320,8 @@ fn done(op: &str, audit: &Value, steps: &[Step]) -> Outcome {
 
 /// How a call that was not answered went: refused, stopped or failed.
 fn failed(op: &str, code: &str, details: &Value, audit: &Value, steps: &[Step]) -> Outcome {
-    if let Some(refused) = refusal(code, details) {
-        return refused;
-    }
-    // A plan that stopped part way: where, and how much ran first; the
-    // step itself says why.
+    // A plan that stopped part way, a refused fill too: where, and how much
+    // ran first; the step itself says why.
     if op == "browser"
         && let Some(at) = audit["stop"]["step"].as_u64()
         && steps.len() > 1
@@ -337,11 +334,10 @@ fn failed(op: &str, code: &str, details: &Value, audit: &Value, steps: &[Step]) 
                     .is_some_and(|o| o.state == State::Done)
             })
             .count();
-        let state = steps
-            .get(at as usize - 1)
-            .and_then(|step| step.outcome.as_ref())
-            .map_or(State::Stopped, |outcome| outcome.state);
-        return Outcome::new(state, Some(format!("step {at}; {ran} ran")));
+        return Outcome::new(State::Stopped, Some(format!("step {at}; {ran} ran")));
+    }
+    if let Some(refused) = refusal(code, details) {
+        return refused;
     }
     if op == "browser" && (STOPS.iter().any(|(stop, _)| *stop == code) || !audit["stop"].is_null())
     {
