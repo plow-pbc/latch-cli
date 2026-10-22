@@ -339,6 +339,8 @@ def run(args):
         return in_container(args)
     print_plan(where, suites, gate, not_here, args)
     env = cargo_env(where)
+    if args.ci:
+        env["NEXTEST_PROFILE"] = "ci"  # latch/.config/nextest.toml
     results = []
     for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive):
         print(f"\n== {name} [{', '.join(serves)}]", flush=True)

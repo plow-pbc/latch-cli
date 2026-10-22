@@ -1,5 +1,6 @@
 """scripts/test.py's own tests: each Rust test is in exactly one suite, as
 nextest selects them, and a plan refuses what cannot run where it was asked."""
+import contextlib
 import importlib.util
 import io
 import json
@@ -15,9 +16,13 @@ spec.loader.exec_module(runner)
 
 
 def plan(*argv, where="macos"):
+    """The plan for `argv` on `where`, with every tool installed unless the
+    test says otherwise: a macOS runner has no Docker."""
     args = runner.argparse.Namespace(suites=list(argv), linux=False, shard=None, ci=False, dry_run=True,
                                      build_archive=None, from_archive=None)
-    with mock.patch.object(runner, "where_we_are", return_value=where):
+    tools = (contextlib.nullcontext() if isinstance(runner.shutil.which, mock.Mock)
+             else mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"))
+    with mock.patch.object(runner, "where_we_are", return_value=where), tools:
         return runner.plan(args)
 
 
