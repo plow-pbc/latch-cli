@@ -1298,6 +1298,8 @@ struct LiveState {
     owner: String,
     agent: String,
     model_down: bool,
+    /// The judge answers that the owner forbids every operation.
+    forbidden: bool,
     decisions: Vec<Value>,
     /// Each peer with the credential that registered it.
     peers: Vec<(Value, String)>,
@@ -1314,6 +1316,7 @@ impl LivePlow {
             state: std::sync::Arc::new(std::sync::Mutex::new(LiveState {
                 owner: "owner-login".to_string(),
                 model_down: false,
+                forbidden: false,
                 decisions: Vec::new(),
                 agent: "agent-credential".to_string(),
                 peers: Vec::new(),
@@ -1481,6 +1484,13 @@ impl LivePlow {
                            "usage": {"input_tokens": 1, "output_tokens": 0}}),
                 )
             }
+            ("POST", "/v1/decisions") if kind == "device" && state.forbidden => (
+                200,
+                json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
+                    "type": "choice", "choice": "FORBIDDEN",
+                    "probabilities": {"COVERED": 0.02, "NOT_COVERED": 0.08, "FORBIDDEN": 0.9}}},
+                    "usage": {"input_tokens": 1, "output_tokens": 0}}),
+            ),
             ("POST", "/v1/decisions") if kind == "device" => (
                 200,
                 json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
@@ -3249,6 +3259,87 @@ fn local_socket_outages_refuse_gated_work_but_config_still_works() {
         assert_eq!(record["gate"]["caller"], "owner_on_host");
         assert_eq!(record["decision"], "deny");
     }
+}
+
+#[test]
+fn a_local_socket_call_the_judge_forbids_does_not_run() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    plow.state.lock().unwrap().forbidden = true;
+    let target = share.join("must-not-exist");
+    let source = dir.path().join("source.txt");
+    fs::write(&source, "forbidden").unwrap();
+    for args in [
+        vec!["exec", "--", "touch", target.to_str().unwrap()],
+        vec![
+            "file",
+            "put",
+            source.to_str().unwrap(),
+            target.to_str().unwrap(),
+        ],
+    ] {
+        let output = latch(&host, &args, &[]);
+        assert_eq!(output.status.code(), Some(4), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "gatekeeper_denied", "{error}");
+        println!("forbidden local {}: {error}", args[0]);
+    }
+    assert!(!target.exists());
+    assert_eq!(plow.state.lock().unwrap().decisions.len(), 2);
+    let records: Vec<Value> = audit_records(&host)
+        .into_iter()
+        .filter(|r| matches!(r["op"].as_str(), Some("exec" | "file_put")))
+        .collect();
+    assert_eq!(records.len(), 2);
+    for record in records {
+        assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
+        assert_eq!(record["decision"], "deny", "{record}");
+    }
+}
+
+#[test]
+fn a_local_socket_call_reads_no_secret_of_the_state_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    // The client's secret store refuses, as the Keychain does inside a
+    // sandbox: its key and Plow login can't be read. The running host has
+    // them already.
+    let locked = |mode| {
+        for secret in ["key", "plow-token"] {
+            fs::set_permissions(host.join(secret), fs::Permissions::from_mode(mode)).unwrap();
+        }
+    };
+    locked(0o000);
+    let exec = latch(&host, &["exec", "--", "echo", "no secrets"], &[]);
+    let source = dir.path().join("source.txt");
+    fs::write(&source, "keyless").unwrap();
+    let put = latch(
+        &host,
+        &[
+            "file",
+            "put",
+            source.to_str().unwrap(),
+            share.join("copied.txt").to_str().unwrap(),
+        ],
+        &[],
+    );
+    locked(0o600);
+    assert!(exec.status.success(), "{exec:?}");
+    let answer: Value = serde_json::from_slice(&exec.stdout).unwrap();
+    assert_eq!(answer["stdout"], "no secrets\n");
+    assert!(put.status.success(), "{put:?}");
+    assert_eq!(fs::read(share.join("copied.txt")).unwrap(), b"keyless");
 }
 
 #[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]

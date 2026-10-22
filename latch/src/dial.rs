@@ -58,14 +58,16 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
         );
         return Err(Failure::new(Exit::Unreachable, "host_offline", message));
     }
-    let key = state.load_key()?;
-    if host.key == key.public().to_string() {
+    // This machine's own host is reached over its socket, with no secret:
+    // the running host holds them.
+    if host.this_machine {
         let socket = crate::transport::connect_local(&state.path).await?;
         return Ok(Link {
             endpoint: None,
             connection: Connection::Local(std::sync::Mutex::new(Some(socket))),
         });
     }
+    let key = state.load_key()?;
     let (id, relay) = host_address(host)?;
     // Our own key is our identity: the host learns who we are from the
     // connection's handshake, not from anything we send. Our only relay is

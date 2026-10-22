@@ -19,11 +19,12 @@ pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failu
     })
 }
 
-/// Resolves a saved local host without Plow; otherwise looks up the account's hosts. If Plow no longer
+/// Resolves a saved local host without Plow or any secret; otherwise looks
+/// up the account's hosts. If Plow no longer
 /// lists this machine (an agent whose credential was rotated, say), it
 /// registers again first: a host refuses a caller Plow does not know.
 pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Failure> {
-    let config = state.require_login()?;
+    let config = state.require_config()?;
     if asked.as_deref() == Some(config.peer.name.as_str())
         || (asked.is_none()
             && (config.peer.relay_url.is_some() || state.path.join("serve.sock").exists()))
