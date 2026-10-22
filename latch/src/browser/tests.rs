@@ -292,7 +292,7 @@ fn latch() -> PathBuf {
 /// with one area, the state directory denied.
 fn exec(state: &Path, area: &Path, script: &str) -> (bool, String) {
     let tmp = tempfile::tempdir_in(area).unwrap();
-    let out = Command::new(latch())
+    let mut child = Command::new(latch())
         .args(["worker", "--area"])
         .arg(area)
         .arg("--denied")
@@ -304,8 +304,19 @@ fn exec(state: &Path, area: &Path, script: &str) -> (bool, String) {
         .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
         .env("HOME", area)
         .current_dir(area)
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    let header = br#"{"secret_env":{},"error_token":"browser-probe"}"#;
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(&(header.len() as u32).to_be_bytes())
+        .unwrap();
+    input.write_all(header).unwrap();
+    drop(input);
+    let out = child.wait_with_output().unwrap();
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     (out.status.success(), text)

@@ -914,7 +914,13 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
 /// The vault's files from inside `exec` and a file worker: never readable.
 #[test]
 fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
-    let (_dir, state, area) = test_state("cft", &[]);
+    let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+    std::fs::create_dir_all(&parent).unwrap();
+    let dir = tempfile::tempdir_in(parent).unwrap();
+    let (state, area) = (dir.path().join("state"), dir.path().join("area"));
+    for folder in [&state, &area] {
+        std::fs::create_dir(folder).unwrap();
+    }
     let vault = Vault::new(state.clone());
     vault
         .with(|s| {
