@@ -339,13 +339,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_new_client_cannot_connect_to_an_old_protocol_host() {
-        let host = Endpoint::builder(presets::Minimal)
+        let host = endpoint()
             .relay_mode(RelayMode::Disabled)
             .alpns(vec![b"plow/latch/1".to_vec()])
             .bind()
             .await
             .unwrap();
-        let client = Endpoint::builder(presets::Minimal)
+        let client = endpoint()
             .relay_mode(RelayMode::Disabled)
             .bind()
             .await
