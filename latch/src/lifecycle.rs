@@ -4,7 +4,8 @@
 //! still holds `serve.lock`. A serve that was killed or crashed never wrote
 //! its last step; its released lock says so. With no host running, an
 //! offline `latch plugins enable/disable` holds the lock while it changes
-//! the connectors (`CONFIGURING`): that is no host, only a busy folder.
+//! the connectors (`CONFIGURING`), and `latch logout` while it deletes the
+//! folder's secrets (`LOGGING_OUT`): that is no host, only a busy folder.
 
 use std::fs::{self, File};
 use std::path::Path;
@@ -53,6 +54,8 @@ struct Written {
 
 /// How `serve.lock` begins while a `latch plugins` command holds it.
 pub const CONFIGURING: &str = "latch plugins ";
+/// How `serve.lock` begins while `latch logout` holds it.
+pub const LOGGING_OUT: &str = "latch logout";
 
 /// The host now: its step, and, while one runs or last ran, its process and
 /// run. A serve that has just locked the folder has no run yet.
@@ -114,7 +117,7 @@ pub fn now(state_dir: &Path) -> Host {
     let held = holds_lock(state_dir);
     let configuring = held
         && fs::read_to_string(state_dir.join("serve.lock"))
-            .is_ok_and(|holder| holder.starts_with(CONFIGURING));
+            .is_ok_and(|holder| holder.starts_with(CONFIGURING) || holder.starts_with(LOGGING_OUT));
     let running = held && !configuring;
     let written = fs::read(state_dir.join("serve.json"))
         .ok()

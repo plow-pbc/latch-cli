@@ -617,6 +617,13 @@ fn host_upgraded() -> Failure {
 /// so this waits that long before refusing.
 fn lock_state(state_dir: &Path) -> Result<File, Failure> {
     hold_state(state_dir, "latch serve", Duration::from_secs(1), |_| true)?.map_err(|holder| {
+        if !holder.starts_with("latch serve") {
+            let message = format!(
+                "{} is held by {holder}; start latch once it finishes",
+                state_dir.display()
+            );
+            return Failure::failed("state_busy", message);
+        }
         let message = format!(
             "{} is already served by {holder}; stop that `latch serve` first",
             state_dir.display()
