@@ -105,3 +105,25 @@ phone-serve port="8731" bind="127.0.0.1":
 # live host and its relay.
 phone-e2e host: phone
     phone/e2e/run.sh {{host}}
+
+# This checkout, built for release into ../.dev/bin/latch for hand testing.
+# Its state folder, ../.dev/state, and Plow (`api`) are baked in, so it never
+# touches ~/.latch or an installed latch; flags still override them. A running
+# serve keeps its old binary until it is restarted.
+build api="https://api.plow.co":
+    #!/bin/sh
+    set -eu
+    root="$(cd .. && pwd)"
+    state="$root/.dev/state"
+    # The host's socket lives in the state folder; macOS caps its path at 104 bytes.
+    if [ "$(printf '%s' "$state/serve-v2.sock" | wc -c)" -ge 104 ]; then
+        echo "$state is too deep for the host's socket; use a worktree with a shorter path" >&2
+        exit 1
+    fi
+    mkdir -p "$root/.dev/bin" "$state"
+    chmod 700 "$state"
+    target="${CARGO_TARGET_DIR:-target}/build"
+    LATCH_BUILD_STATE_DIR="$state" LATCH_BUILD_API_URL="{{api}}" CARGO_TARGET_DIR="$target" cargo build --release --locked
+    cp "$target/release/latch" "$root/.dev/bin/.latch.new"
+    mv -f "$root/.dev/bin/.latch.new" "$root/.dev/bin/latch"
+    "$root/.dev/bin/latch" --version
