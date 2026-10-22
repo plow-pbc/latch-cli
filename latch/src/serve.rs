@@ -38,12 +38,13 @@ use crate::gate::rules::RuleFiles;
 use crate::gate::{self, Caller, Gate, Gatekeeper};
 use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
-use crate::log::{self, log};
+use crate::log::log;
 use crate::plow::{Identity, Plow};
 use crate::state::{Config, StateDir};
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
+use control::Lifetime;
 
 /// What every connection handler shares. `Arc` lets many tasks hold the
 /// same `Host`; the `Mutex` lets one task at a time append to the log.
@@ -51,8 +52,11 @@ struct Host {
     plow: Plow,
     /// Also held by the blocking thread that appends (see `Host::append`).
     audit: Arc<Mutex<AuditLog>>,
-    /// The live view, when `serve` shows one (see `dashboard.rs`).
+    /// The board viewers of this host watch (see `dashboard.rs`).
     dashboard: Option<Dashboard>,
+    /// Whose life this host's is, and how it is asked to stop (see
+    /// `serve/control.rs`).
+    lifetime: Lifetime,
     workers: WorkerSetup,
     /// Open browser sessions, one per profile.
     browsers: crate::browser::host::Browsers,
@@ -132,16 +136,16 @@ impl Done {
 /// How long the host waits for a relay connection when it starts.
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Runs the host until it is asked to stop. With `show_dashboard`, a live
-/// view takes the terminal and the log goes to `serve.log` in the state
-/// directory; the terminal is given back however the host stops.
-/// With `headless_browsers`, every browser session runs with no window.
+/// Runs the host until it is asked to stop. With `headless_browsers`,
+/// every browser session runs with no window. An `attached` host stops
+/// when the `latch serve` that started it goes away (see
+/// `serve/control.rs`).
 pub async fn run(
     state: &StateDir,
     folders: &[PathBuf],
-    show_dashboard: bool,
     headless_browsers: bool,
     deny_exec: DenyExec,
+    attached: bool,
 ) -> Result<(), Failure> {
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
@@ -167,9 +171,9 @@ pub async fn run(
     let result = run_locked(
         state,
         folders,
-        show_dashboard,
         headless_browsers,
         deny_exec,
+        attached,
         state_dir,
         program,
     )
@@ -191,9 +195,9 @@ pub async fn run(
 async fn run_locked(
     state: &StateDir,
     folders: &[PathBuf],
-    show_dashboard: bool,
     headless_browsers: bool,
     deny_exec: DenyExec,
+    attached: bool,
     state_dir: PathBuf,
     program: PathBuf,
 ) -> Result<(), Failure> {
@@ -217,38 +221,26 @@ async fn run_locked(
     })?;
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
     let config = state.require_login()?;
-    let dashboard = if show_dashboard {
-        let path = state.path.join("serve.log");
-        log::to_file(&path)
-            .map_err(|err| Failure::failed("log_file", format!("{}: {err}", path.display())))?;
-        Some(Dashboard::start(&config.peer.name))
-    } else {
-        None
-    };
-    let result = run_host(
+    run_host(
         state,
         config,
         workers,
-        dashboard.clone(),
         headless_browsers,
         rules,
         deny_exec,
+        Lifetime::new(attached),
     )
-    .await;
-    if let Some(dashboard) = &dashboard {
-        dashboard.stop();
-    }
-    result
+    .await
 }
 
 async fn run_host(
     state: &StateDir,
     config: Config,
     workers: WorkerSetup,
-    dashboard: Option<Dashboard>,
     headless_browsers: bool,
     rules: RuleFiles,
     deny_exec: DenyExec,
+    lifetime: Lifetime,
 ) -> Result<(), Failure> {
     let binary = Binary::at(&workers.program)?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
@@ -319,14 +311,14 @@ async fn run_host(
         vault.clone(),
         headless_browsers,
     );
-    if let Some(dashboard) = &dashboard {
-        browsers.show_on(dashboard.clone());
-    }
+    let dashboard = Dashboard::new(&config.peer.name);
+    browsers.show_on(dashboard.clone());
     let host = Arc::new(Host {
         plow,
         audit: Arc::new(Mutex::new(audit)),
         workers,
-        dashboard,
+        dashboard: Some(dashboard),
+        lifetime,
         browsers,
         vault,
         endpoint: endpoint.clone(),
@@ -337,6 +329,7 @@ async fn run_host(
     });
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(&state.path, Phase::Serving, None)?;
+    control::await_holder(&host);
     let mut heartbeat = tokio::spawn(heartbeat::run(
         host.plow.clone(),
         endpoint.clone(),
@@ -364,6 +357,7 @@ async fn run_host(
                 log("stopping: signal received");
                 break;
             }
+            () = host.lifetime.stop.notified() => break,
             // The heartbeat only ends when Plow gave our name to another
             // key. That key is not ours any more, so there is nothing to
             // take offline.
@@ -626,13 +620,37 @@ async fn serve_operation(
     mut send: crate::transport::SendStream,
     mut recv: crate::transport::RecvStream,
 ) {
-    let Ok(json) = wire::read_frame(&mut recv).await else {
+    let Some(request) = read_request(&mut send, &mut recv).await else {
         return;
     };
-    let Ok(request) = serde_json::from_slice::<Request>(&json) else {
-        let response = failed("bad_request", "the request frame is not valid".to_string());
-        return answer(&mut send, &response).await;
-    };
+    serve_request(host, caller, local, request, send, recv).await;
+}
+
+/// The operation's request frame. A frame that is not one is answered
+/// `bad_request`; then, as when the stream ends first, there is none.
+async fn read_request(
+    send: &mut (impl tokio::io::AsyncWrite + Unpin),
+    recv: &mut (impl tokio::io::AsyncRead + Unpin),
+) -> Option<Request> {
+    let json = wire::read_frame(recv).await.ok()?;
+    match serde_json::from_slice::<Request>(&json) {
+        Ok(request) => Some(request),
+        Err(_) => {
+            let response = failed("bad_request", "the request frame is not valid".to_string());
+            answer(send, &response).await;
+            None
+        }
+    }
+}
+
+async fn serve_request(
+    host: &Host,
+    caller: &str,
+    local: bool,
+    request: Request,
+    mut send: crate::transport::SendStream,
+    mut recv: crate::transport::RecvStream,
+) {
     let op = request.op.as_str();
     tracing::Span::current().record("op", display(op));
     let started = Instant::now();
@@ -833,16 +851,23 @@ async fn serve_operation(
 
 /// Local callers are trusted by the private socket, never by a request field.
 async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
+    let (mut recv, mut send) = socket.into_split();
+    let Some(request) = read_request(&mut send, &mut recv).await else {
+        return;
+    };
+    if control::OPS.contains(&request.op.as_str()) {
+        return control::serve(&host, &request.op, send, recv).await;
+    }
     let caller = host.endpoint.id().to_string();
     log(&format!(
         "connect: {caller}: owner_on_host over Unix socket"
     ));
-    let (recv, send) = socket.into_split();
     let operation = tracing::info_span!("operation", op = Empty);
-    serve_operation(
+    serve_request(
         &host,
         &caller,
         true,
+        request,
         crate::transport::SendStream::Local(Some(send)),
         crate::transport::RecvStream::Local(recv),
     )
@@ -1101,6 +1126,7 @@ fn describe_paths(connection: &Connection) -> String {
     paths.join(", ")
 }
 
+mod control;
 #[cfg(test)]
 mod gated_tests;
 

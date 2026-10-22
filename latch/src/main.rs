@@ -27,6 +27,7 @@ mod lifecycle;
 mod log;
 mod login;
 mod logo;
+mod managed;
 mod model;
 mod paint;
 mod plow;
@@ -240,21 +241,46 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             }
             Ok(printed)
         }
-        Command::Serve(args) => {
-            // The dashboard is for a person at a terminal who has not asked
-            // for plain output (`--no-dashboard`, `NO_COLOR`).
-            let dashboard = !args.no_dashboard && term::stdout_is_terminal() && !term::no_color();
-            paint::set_color(dashboard);
+        Command::Serve(args) if args.foreground => {
             let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
             serve::run(
                 &state,
                 &args.folders,
-                dashboard,
                 args.headless_browsers,
                 deny_exec,
+                args.attached,
             )
             .await?;
             to_json(json!({}))
+        }
+        Command::Serve(args) if args.detach => to_json(managed::start(&state, &args).await?),
+        Command::Serve(args) => {
+            paint::set_color(!term::no_color());
+            to_json(managed::attach(&state, &args).await?)
+        }
+        Command::Stop => to_json(managed::stop(&state).await?),
+        Command::Dashboard => {
+            paint::set_color(!term::no_color());
+            managed::dashboard(&state).await?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        // Their lines, printed as they come, are their whole output.
+        Command::Logs(args) => {
+            events::logs(&state, args.follow)?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        Command::Audit(args) => {
+            events::audit(&state, args.follow)?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
         }
         Command::Worker(_) | Command::BrowserWorker(_) => unreachable!("handled in main"),
     }

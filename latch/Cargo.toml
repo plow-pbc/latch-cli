@@ -18,7 +18,7 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 # aws-lc-rs, and metrics we don't use.
 iroh = { version = "1.3.0", default-features = false, features = ["tls-aws-lc-rs", "portmapper", "fast-apple-datapath"] }
 # Time stamps (RFC 3339, UTC) in the audit log and the host's log.
-jiff = "0.2.38"
+jiff = { version = "0.2.38", features = ["serde"] }
 # The C library: `killpg` to stop a timed-out program with everything it
 # started, and signal numbers to name how a program ended.
 libc = "0.2.190"
@@ -78,6 +78,9 @@ headed-tests = []
 # put its engine in place (`just conformance cft` on the Pi). Never
 # part of the gate, whose containers have no engine.
 linux-browser-tests = []
+# Builds the managed-host tests on Linux, for a machine with a systemd user
+# session (the Pi). Never part of the gate, whose containers have no systemd.
+systemd-tests = []
 
 # A Camoufox handoff brings its app forward through AppKit
 # (`NSRunningApplication`); already in the tree through iroh.

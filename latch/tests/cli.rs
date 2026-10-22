@@ -588,7 +588,7 @@ fn serving_before_any_login_says_to_log_in() {
 
     let output = latch(
         &state,
-        &["serve", "--no-dashboard", area.to_str().unwrap()],
+        &["serve", "--foreground", area.to_str().unwrap()],
         &[],
     );
 
@@ -1331,7 +1331,7 @@ fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
             "--state-dir",
             host.to_str().unwrap(),
             "serve",
-            "--no-dashboard",
+            "--foreground",
         ])
         .args(shares)
         .env("LATCH_TEST_RELAY_URL", relay)
@@ -2626,4 +2626,323 @@ fn local_socket_browser_open_observe_close_uses_one_host_and_owner_audit() {
             record["args"]["command"], record["gate"]["caller"], gate
         );
     }
+}
+
+/// A managed host's state folder: `latch stop` when the test ends, passing
+/// or not, so no host and no service outlives it.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+struct Managed(PathBuf);
+
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+impl Drop for Managed {
+    fn drop(&mut self) {
+        let _ = latch(&self.0, &["stop"], &[]);
+    }
+}
+
+/// Whether the service manager still has the host's service: the label
+/// `latch` names after the state folder's real path.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+fn registered(state: &Path) -> bool {
+    use sha2::Digest;
+    let real = state.canonicalize().unwrap();
+    let hash = sha2::Sha256::digest(real.as_os_str().as_encoded_bytes());
+    let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    let label = format!("co.plow.latch.serve.{}", &hex[..16]);
+    if cfg!(target_os = "macos") {
+        // SAFETY: getuid cannot fail.
+        let target = format!("gui/{}/{label}", unsafe { libc::getuid() });
+        Command::new("launchctl")
+            .args(["print", &target])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    } else {
+        let output = Command::new("systemctl")
+            .args(["--user", "show", "--property=LoadState", "--value"])
+            .arg(format!("{label}.service"))
+            .output()
+            .unwrap();
+        output.stdout.starts_with(b"loaded")
+    }
+}
+
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+fn local_serve(state: &Path) -> Value {
+    let output = latch(state, &["status", "--local"], &[]);
+    serde_json::from_slice::<Value>(&output.stdout).unwrap()["serve"].clone()
+}
+
+/// Waits up to `limit` for `done`.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+fn eventually(limit: u64, mut done: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(limit);
+    while std::time::Instant::now() < deadline {
+        if done() {
+            return true;
+        }
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+    done()
+}
+
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _managed = Managed(host.clone());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let relay = Path::new(&relay);
+    let env = [("LATCH_TEST_RELAY_URL", relay)];
+
+    let started = latch(&host, &["serve", "-d", share.to_str().unwrap()], &env);
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+    let started: Value = serde_json::from_slice(&started.stdout).unwrap();
+    // Ready means the socket answers, the moment `-d` returns.
+    let hello = local_operation(&host, "host_hello", json!({}));
+    assert_eq!(hello["ok"]["pid"], started["pid"], "{hello}");
+    assert_eq!(hello["ok"]["attached"], false);
+    assert!(registered(&host));
+    // A real call through it: the host shares what `-d` named.
+    fs::write(share.join("note.txt"), "hi").unwrap();
+    let read = local_operation(
+        &host,
+        "exec",
+        json!({"argv": ["cat", "note.txt"], "timeout": 10}),
+    );
+    assert_eq!(read["ok"]["stdout"], "hi", "{read}");
+
+    // One host per state folder, however the second is started.
+    let again = latch(&host, &["serve", "-d"], &env);
+    assert_eq!(again.status.code(), Some(1));
+    let refusal = String::from_utf8_lossy(&again.stderr);
+    assert!(
+        refusal.contains("already_serving") && refusal.contains("latch dashboard"),
+        "{refusal}"
+    );
+    let direct = latch(&host, &["serve", "--foreground"], &env);
+    assert!(String::from_utf8_lossy(&direct.stderr).contains("already_serving"));
+    // A detached host is never adopted by an attached serve.
+    let adopt = local_operation(&host, "host_attach", json!({}));
+    assert_eq!(adopt["error"]["code"], "not_attached", "{adopt}");
+    // Nobody else asks the host on the network what its socket answers.
+    assert_eq!(local_serve(&host)["state"], "serving");
+
+    let stopped = latch(&host, &["stop"], &[]);
+    assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+    let stopped: Value = serde_json::from_slice(&stopped.stdout).unwrap();
+    assert_eq!(stopped["stopped"], true);
+    assert_eq!(stopped["state"], "stopped");
+    assert!(!registered(&host), "the service outlived stop");
+    // Not resurrected.
+    thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(local_serve(&host)["running"], false);
+    assert!(!registered(&host));
+    // Stopping again stops nothing, and says so.
+    let twice: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
+    assert_eq!(twice["stopped"], false);
+
+    let log = fs::read_to_string(host.join("serve.log")).unwrap();
+    assert!(log.contains("stopping: asked to by `latch stop`"), "{log}");
+    let logs = latch(&host, &["logs"], &[]);
+    assert_eq!(String::from_utf8_lossy(&logs.stdout), log);
+    let audit = latch(&host, &["audit"], &[]);
+    let records: Vec<Value> = String::from_utf8_lossy(&audit.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let exec = records
+        .iter()
+        .find(|record| record["op"] == "exec")
+        .unwrap();
+    assert_eq!(exec["args"]["argv"], json!(["cat", "note.txt"]), "{exec}");
+}
+
+/// `latch ARGS` on a terminal of its own, as its controlling terminal, the
+/// way a shell starts it: Ctrl-C typed there interrupts it, and closing
+/// the terminal hangs it up. Returns the process and the terminal's side
+/// we type into and read.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+fn at_its_own_terminal(
+    state: &Path,
+    args: &[&str],
+    env: &[(&str, &Path)],
+) -> (
+    std::process::Child,
+    fs::File,
+    std::sync::mpsc::Receiver<String>,
+) {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::process::CommandExt;
+    let (mut main, mut side) = (0, 0);
+    let size = libc::winsize {
+        ws_row: 30,
+        ws_col: 120,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: openpty fills in two new descriptors, which we then own.
+    let opened = unsafe {
+        libc::openpty(
+            &mut main,
+            &mut side,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &size as *const _ as _,
+        )
+    };
+    assert_eq!(opened, 0);
+    // Neither end may leak into another child: one holding the terminal
+    // open would keep it from ever going away.
+    for fd in [main, side] {
+        // SAFETY: sets close-on-exec on descriptors we own.
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+    }
+    let (main, side) = unsafe { (fs::File::from_raw_fd(main), fs::File::from_raw_fd(side)) };
+    let mut command = latch_command(state, args, env);
+    command
+        .stdin(side.try_clone().unwrap())
+        .stdout(side.try_clone().unwrap())
+        .stderr(side.try_clone().unwrap());
+    // SAFETY: setsid and the ioctl only change this child's session and
+    // terminal, between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn().unwrap();
+    drop(command);
+    drop(side);
+    let mut reading = main.try_clone().unwrap();
+    let (send, shown) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let mut buffer = [0; 4096];
+        while let Ok(read) = reading.read(&mut buffer) {
+            if read == 0
+                || send
+                    .send(String::from_utf8_lossy(&buffer[..read]).to_string())
+                    .is_err()
+            {
+                break;
+            }
+        }
+    });
+    (child, main, shown)
+}
+
+/// Reads what the terminal shows until it has shown `text`.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
+    let mut all = String::new();
+    while !all.contains(text) {
+        match shown.recv_timeout(std::time::Duration::from_secs(60)) {
+            Ok(more) => all.push_str(&more),
+            Err(_) => panic!("never showed {text:?}: {all}"),
+        }
+    }
+    all
+}
+
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::ExitStatus {
+    let mut status = None;
+    assert!(
+        eventually(limit, || {
+            status = child.try_wait().unwrap();
+            status.is_some()
+        }),
+        "still running after {limit} s"
+    );
+    status.unwrap()
+}
+
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _managed = Managed(host.clone());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let relay = Path::new(&relay);
+    let env = [("LATCH_TEST_RELAY_URL", relay)];
+    let folder = share.to_str().unwrap();
+
+    // Ctrl-C at the serve's terminal stops the host.
+    let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve", folder], &env);
+    shows(&shown, "Ctrl-C stops the host");
+    assert_eq!(local_serve(&host)["state"], "serving");
+    let hello = local_operation(&host, "host_hello", json!({}));
+    assert_eq!(hello["ok"]["attached"], true, "{hello}");
+    // A second attached serve is refused and pointed at the dashboard.
+    let (mut second, _second_terminal, second_shown) =
+        at_its_own_terminal(&host, &["serve", folder], &env);
+    let refusal = shows(&second_shown, "latch dashboard");
+    assert!(refusal.contains("already_serving"), "{refusal}");
+    assert_eq!(exits_within(&mut second, 10).code(), Some(1));
+
+    // A dashboard's Ctrl-C closes only the view.
+    let (mut view, mut view_terminal, view_shown) = at_its_own_terminal(&host, &["dashboard"], &[]);
+    shows(&view_shown, "the host keeps running");
+    view_terminal.write_all(b"\x03").unwrap();
+    assert_eq!(exits_within(&mut view, 10).code(), Some(0));
+    thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(local_serve(&host)["state"], "serving");
+    assert_eq!(serve.try_wait().unwrap(), None);
+
+    terminal.write_all(b"\x03").unwrap();
+    assert!(exits_within(&mut serve, 45).success());
+    assert_eq!(local_serve(&host)["running"], false);
+    assert!(!registered(&host), "Ctrl-C left the service registered");
+
+    // The terminal going away stops it too.
+    let (mut serve, terminal, shown) = at_its_own_terminal(&host, &["serve", folder], &env);
+    shows(&shown, "Ctrl-C stops the host");
+    drop(terminal);
+    drop(shown);
+    exits_within(&mut serve, 45);
+    assert!(eventually(45, || local_serve(&host)["running"] == false));
+    assert!(
+        !registered(&host),
+        "a closed terminal left the service registered"
+    );
+
+    // Even a serve that is killed outright takes its host with it: the
+    // host's lifetime is the connection, which the kernel closes.
+    let (mut serve, _terminal, shown) = at_its_own_terminal(&host, &["serve", folder], &env);
+    shows(&shown, "Ctrl-C stops the host");
+    serve.kill().unwrap();
+    serve.wait().unwrap();
+    assert!(eventually(45, || local_serve(&host)["running"] == false));
+    let log = fs::read_to_string(host.join("serve.log")).unwrap();
+    assert!(
+        log.contains("the `latch serve` that holds this host went away"),
+        "{log}"
+    );
+}
+
+#[test]
+fn the_dashboard_and_an_attached_serve_need_a_terminal() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let view = latch(&state, &["dashboard"], &[]);
+    assert_eq!(view.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&view.stderr).contains("no_terminal"));
+    let serve = latch(&state, &["serve"], &[]);
+    assert_eq!(serve.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&serve.stderr).contains("serve -d"));
 }

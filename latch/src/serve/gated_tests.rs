@@ -102,6 +102,7 @@ async fn start_with(
             AuditLog::open(state.join("audit.ndjson")).unwrap(),
         )),
         dashboard: None,
+        lifetime: super::Lifetime::new(false),
         workers: WorkerSetup {
             areas: vec![area.clone()],
             state_dir: state.clone(),

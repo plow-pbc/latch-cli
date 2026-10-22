@@ -23,6 +23,17 @@ on a machine its owner trusts, over Plow's directory.
 
 ## For hosts
 
+- `latch serve ~/work` starts this machine's host as a service of yours (a
+  launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
+  user service on Linux) and shows its dashboard: Ctrl-C there, or closing
+  the terminal, stops the host. `latch serve -d` starts it detached and
+  prints it as JSON once it answers; `latch stop` stops it, and nothing
+  starts it again until the next `latch serve`. `latch dashboard` views a
+  running host (Ctrl-C closes only the view), `latch logs [-f]` shows its
+  log (`serve.log`) and `latch audit [-f]` its audit, one record per line.
+  One host runs per state folder. `latch serve --foreground` runs the host
+  in the terminal's own process, logging to stderr, for CI, tests and
+  containers.
 - `latch login` names a machine after its hostname; `--name` picks another.
   If another of your machines holds the name, the login stops and says so.
 - `latch serve ~/work --deny-exec` refuses `exec` to every agent;
@@ -31,7 +42,7 @@ on a machine its owner trusts, over Plow's directory.
 - A connection problem (`host_unreachable`, a slow call): set
   `LATCH_TRACE=iroh=debug,latch=info` on the client, the host or both, to
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
-  to stderr, or to `serve.log` under the dashboard, never to stdout. On a
+  to the host's log (`latch logs`), never to stdout. On a
   host, each event names the connection's caller key and the operation.
 - `latch shares set ~/work` saves the folders a `latch serve` named none
   shares. `latch status --local`, `latch events --follow` and

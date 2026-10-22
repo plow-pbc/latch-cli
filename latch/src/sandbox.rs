@@ -302,6 +302,12 @@ mod platform {
                 "(deny file-read* file-write* process-exec (subpath {}))",
                 quoted(&state)?
             ),
+            // Nor its socket: connecting to one is not a file access, and
+            // the host's socket answers as the owner.
+            format!(
+                "(deny network-outbound (remote unix-socket (subpath {})))",
+                quoted(&state)?
+            ),
             format!("(deny file-write* (literal {}))", quoted(&latch)?),
         ];
         // The one part of the state folder a worker may see: a Google

@@ -396,7 +396,7 @@ fn serve_with_denied(rules: Option<(i64, Vec<seccompiler::SeccompRule>)>) -> Out
     let area = dir.path().join("area").canonicalize().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
-        .args(["serve", "--no-dashboard", "--state-dir"])
+        .args(["serve", "--foreground", "--state-dir"])
         .arg(dir.path().join("state"))
         .arg(area)
         .env_clear();
@@ -664,4 +664,42 @@ fn a_write_to_a_folder_lands_inside_it_under_its_own_name() {
     );
     assert!(!sneaky.status.success(), "{sneaky:?}");
     assert!(!dir.path().join("area/x").exists());
+}
+
+/// The host's socket is in its state folder and answers as the owner: an
+/// exec worker may use the network, but not connect to it.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_exec_worker_cannot_connect_to_the_hosts_socket() {
+    let dir = setup();
+    let _listener =
+        std::os::unix::net::UnixListener::bind(dir.path().join("state/serve.sock")).unwrap();
+    let connect = [
+        "/usr/bin/perl",
+        "-MIO::Socket::UNIX",
+        "-e",
+        "IO::Socket::UNIX->new(Peer => shift) or die \"$!\\n\"",
+        "../state/serve.sock",
+    ];
+    let outside = Command::new(connect[0])
+        .args(&connect[1..])
+        .current_dir(dir.path().join("area"))
+        .output()
+        .unwrap();
+    assert!(outside.status.success(), "{outside:?}");
+    let inside = Command::new(env!("CARGO_BIN_EXE_latch"))
+        .args([
+            "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp", "exec",
+            "--",
+        ])
+        .args(connect)
+        .current_dir(dir.path().join("area"))
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(!inside.status.success());
+    assert!(
+        String::from_utf8_lossy(&inside.stderr).contains("Operation not permitted"),
+        "{inside:?}"
+    );
 }
