@@ -1,0 +1,131 @@
+name: keychain
+
+# A signed macOS latch keeps its secrets in the data-protection Keychain
+# (latch/src/secrets.rs). This signs one as a release would (Developer ID,
+# in the helper bundle with its provisioning profile) and runs what only it
+# can show: the `--ignored` Keychain tests in tests/cli.rs, and a clear
+# failure where the Keychain is unusable.
+# The release environment signs only on main: after a merge that touches
+# secret custody, and by hand.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - latch/src/secrets.rs
+      - latch/src/state.rs
+      - latch/src/vault/**
+      - latch/macos/**
+      - scripts/macos-helper-bundle.sh
+      - .github/workflows/keychain.yml
+permissions:
+  contents: read
+jobs:
+  signed:
+    environment: release
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      IDENTITY: 'Developer ID Application: The Plow Collective, Inc (3559PD337Z)'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build latch and its tests
+        working-directory: latch
+        run: |
+          rustup toolchain install
+          cargo build --release --locked
+          cargo test --release --locked --test cli --no-run
+      - name: Load signing credentials
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APPLE_CERTIFICATE_P12_BASE64: op://terraform/GitHub Actions Release Secrets/APPLE_CERTIFICATE_P12_BASE64
+          APPLE_CERTIFICATE_PASSWORD: op://terraform/GitHub Actions Release Secrets/APPLE_CERTIFICATE_PASSWORD  # pragma: allowlist secret
+      - name: Import signing identity
+        shell: bash
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          keychain_password=$(openssl rand -base64 32)
+          security create-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
+          cert="$RUNNER_TEMP/cert.p12"
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$cert"
+          security import "$cert" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm "$cert"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$IDENTITY\""
+      - name: Sign the helper bundle
+        shell: bash
+        run: |
+          app="$RUNNER_TEMP/Latch.app"
+          sh scripts/macos-helper-bundle.sh latch/target/release/latch "$app"
+          test -f "$app/Contents/embedded.provisionprofile"
+          codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
+            --entitlements latch/macos/helper.entitlements --sign "$IDENTITY" "$app"
+          codesign --verify --strict --verbose=2 "$app"
+          codesign -dvvv --entitlements - "$app" 2>&1
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -s "$app/Contents/MacOS/latch" "$RUNNER_TEMP/bin/latch"
+      # The signed latch is reached through a PATH-style link, as installed.
+      - name: Keychain tests
+        working-directory: latch
+        env:
+          LATCH_TEST_BIN: ${{ runner.temp }}/bin/latch
+        run: cargo test --release --locked --test cli -- --ignored --nocapture a_signed_latch
+      # A system daemon runs outside any user session, where the
+      # data-protection Keychain is unavailable (Apple TN3137): the signed
+      # latch must fail and say so, and write no key file.
+      - name: An unusable Keychain fails clearly
+        shell: bash
+        run: |
+          state="$RUNNER_TEMP/daemon-state"
+          printf 'owner-login\n' > "$RUNNER_TEMP/daemon.token"
+          plist="$RUNNER_TEMP/co.plow.latch.keychain-check.plist"
+          echo "DAEMON_PLIST=/Library/LaunchDaemons/co.plow.latch.keychain-check.plist" >> "$GITHUB_ENV"
+          cat > "$plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key><string>co.plow.latch.keychain-check</string>
+            <key>ProgramArguments</key>
+            <array>
+              <string>$RUNNER_TEMP/bin/latch</string>
+              <string>--state-dir</string><string>$state</string>
+              <string>login</string>
+              <string>--api-url</string><string>http://127.0.0.1:9</string>
+              <string>--token-file</string><string>$RUNNER_TEMP/daemon.token</string>
+              <string>--name</string><string>daemon</string>
+            </array>
+            <key>StandardOutPath</key><string>$RUNNER_TEMP/daemon.out</string>
+            <key>StandardErrorPath</key><string>$RUNNER_TEMP/daemon.err</string>
+          </dict>
+          </plist>
+          PLIST
+          sudo cp "$plist" /Library/LaunchDaemons/
+          sudo launchctl bootstrap system /Library/LaunchDaemons/co.plow.latch.keychain-check.plist
+          sudo launchctl kickstart system/co.plow.latch.keychain-check
+          for _ in $(seq 30); do
+            [[ -s "$RUNNER_TEMP/daemon.err" ]] && break
+            sleep 1
+          done
+          sudo launchctl print system/co.plow.latch.keychain-check | grep -E 'last exit code|state =' || true
+          sudo launchctl bootout system/co.plow.latch.keychain-check || true
+          cat "$RUNNER_TEMP/daemon.err"
+          grep -q '"keychain_failed"' "$RUNNER_TEMP/daemon.err"
+          sudo ls -la "$state"
+          if sudo test -e "$state/key"; then
+            echo "a key file was written" >&2
+            exit 1
+          fi
+      - name: Clean up
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${DAEMON_PLIST:-}" ]]; then sudo rm -f "$DAEMON_PLIST"; fi
+          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi

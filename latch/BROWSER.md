@@ -224,8 +224,7 @@ step count and how many are goals, its status and stop (step and code),
 each step's kind and outcome, and per action the step and action number,
 operation, ref and role, how it was chosen (`ref`, or `model` with the
 operation's and target's `p`, and what was left out to fit), the risk
-`p` (and for a model-chosen click or Enter, the pass's own risk answer,
-`risk_pass_p`, and `risk_from`: `pass` or `own_call`), the confirmation id when one was used, the origin and path, the
+`p`, the confirmation id when one was used, the origin and path, the
 dispatch (`sent`, `refused`, `unknown`) and its screenshot's size and
 sha256. Each decision-model call records its purpose, provider, model,
 the provider's request id, latency and the kinds of data sent, never

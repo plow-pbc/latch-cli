@@ -117,6 +117,7 @@ impl Camoufox {
             .map_err(|err| {
                 Failure::failed("engine_failed", format!("{}: {err}", engine.node.display()))
             })?;
+        super::worker::started_group(helper.id());
         let to_helper = helper.stdin.take().expect("piped");
         let from_helper = helper.stdout.take().expect("piped");
         let mut browser = Camoufox {
@@ -163,7 +164,10 @@ impl Camoufox {
                 .ok_or_else(|| Failure::failed("engine_failed", "Camoufox did not start".into()))
         });
         match found {
-            Ok(pid) => browser.browser = pid,
+            Ok(pid) => {
+                super::worker::started_group(pid);
+                browser.browser = pid;
+            }
             Err(failure) => {
                 browser.close();
                 return Err(failure);
