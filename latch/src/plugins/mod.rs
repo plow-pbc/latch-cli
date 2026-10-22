@@ -95,7 +95,7 @@ impl Connector {
 /// A connector's saved setting. One with none is disabled.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]
-enum Setting {
+pub(crate) enum Setting {
     Enabled,
     /// Its last setup did not succeed, for `reason`.
     NeedsSetup {
@@ -129,24 +129,9 @@ impl Plugins {
     /// The settings saved in `state`'s `plugins.json`; none if there is no
     /// such file yet.
     pub fn load(state: &StateDir, home: &Path) -> Result<Plugins, Failure> {
-        let path = state.path.join("plugins.json");
-        let settings = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|err| {
-                Failure::failed(
-                    "bad_state",
-                    format!("{} is not valid: {err}", path.display()),
-                )
-            })?,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(err) => {
-                return Err(Failure::failed(
-                    "bad_state",
-                    format!("{}: {err}", path.display()),
-                ));
-            }
-        };
+        let settings = saved(state)?;
         Ok(Plugins {
-            path,
+            path: state.path.join("plugins.json"),
             home: home.to_path_buf(),
             inner: Mutex::new(Inner {
                 settings,
@@ -267,6 +252,26 @@ impl Plugins {
             })
             .collect();
         json!({"plugins": plugins})
+    }
+}
+
+/// The settings saved in `state`'s `plugins.json`, which a running host
+/// keeps up to date and a host-less `enable` or `disable` writes; none if
+/// there is no such file yet.
+pub(crate) fn saved(state: &StateDir) -> Result<BTreeMap<Connector, Setting>, Failure> {
+    let path = state.path.join("plugins.json");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|err| {
+            Failure::failed(
+                "bad_state",
+                format!("{} is not valid: {err}", path.display()),
+            )
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(err) => Err(Failure::failed(
+            "bad_state",
+            format!("{}: {err}", path.display()),
+        )),
     }
 }
 
