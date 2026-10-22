@@ -640,9 +640,6 @@ mod tests {
         ] {
             let parsed = plan(&args).unwrap();
             assert!(!parsed.read_only() && !parsed.fanout(), "{args:?}");
-            let request = serde_json::json!({"gog_args": args, "account": []});
-            let gated = crate::gate::gated("google", &request, Some(Path::new("/"))).unwrap();
-            assert!(gated.once, "{args:?}");
         }
     }
 

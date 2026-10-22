@@ -58,7 +58,11 @@ gatekeeper-live key:
 # The gatekeeper's judge on jev 1.14 over the v0 held-out corpus, twice per
 # probe, its decisions written to `out` (synthetic chats only).
 gatekeeper-replay key out:
-    LATCH_TEST_JEV_KEY="{{key}}" LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live -- --nocapture
+    LATCH_TEST_JEV_KEY="{{key}}" LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live_held_out_replay -- --nocapture
+
+# The owner's own calls on jev itself, judged against the host's rules alone.
+gatekeeper-owner key:
+    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model gate::tests::live_owner -- --nocapture
 
 # The plan suite (tests/browser-shop) on the decision model, through the dev
 # Plow stack the host in `host_state` is logged in to; each run, with its
