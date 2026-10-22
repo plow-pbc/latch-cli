@@ -3530,6 +3530,8 @@ fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
                 "host",
                 "--timeout",
                 "120",
+                "--write",
+                bench.share.to_str().unwrap(),
                 "--",
                 "sh",
                 "-c",
@@ -3573,6 +3575,8 @@ fn a_local_socket_exec_finishes_and_is_audited_before_the_host_stops() {
         &bench.host,
         &[
             "exec",
+            "--write",
+            bench.share.to_str().unwrap(),
             "--",
             "sh",
             "-c",
@@ -3906,12 +3910,12 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     assert_eq!(hello["ok"]["pid"], started["pid"], "{hello}");
     assert_eq!(hello["ok"]["attached"], false);
     assert!(registered(&host));
-    // A real call through it: the host shares what `-d` named.
+    // A real read through it, naming the file under the host's home.
     fs::write(share.join("note.txt"), "hi").unwrap();
     let read = local_operation(
         &host,
         "exec",
-        json!({"argv": ["cat", "note.txt"], "timeout": 10}),
+        json!({"argv": ["cat", share.join("note.txt")], "timeout": 10}),
     );
     assert_eq!(read["ok"]["stdout"], "hi", "{read}");
 
@@ -3947,14 +3951,13 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     assert_eq!(twice["stopped"], false);
     assert_eq!(local_serve(&host)["managed"], false);
 
-    // Started again with what it was given, as an upgrade restarts it: the
-    // same share, though `--again` names none.
+    // Started again with what it was given, as an upgrade restarts it.
     let restarted = latch(&host, &["serve", "-d", "--again"], &env);
     assert_eq!(restarted.status.code(), Some(0), "{restarted:?}");
     let read = local_operation(
         &host,
         "exec",
-        json!({"argv": ["cat", "note.txt"], "timeout": 10}),
+        json!({"argv": ["cat", share.join("note.txt")], "timeout": 10}),
     );
     assert_eq!(read["ok"]["stdout"], "hi", "{read}");
     let stopped: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
@@ -3973,7 +3976,11 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
         .iter()
         .find(|record| record["op"] == "exec")
         .unwrap();
-    assert_eq!(exec["args"]["argv"], json!(["cat", "note.txt"]), "{exec}");
+    assert_eq!(
+        exec["args"]["argv"],
+        json!(["cat", share.join("note.txt")]),
+        "{exec}"
+    );
 }
 
 #[test]
