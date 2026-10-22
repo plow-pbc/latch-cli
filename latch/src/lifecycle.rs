@@ -43,6 +43,9 @@ struct Written {
     since: String,
     #[serde(default)]
     error: Option<Problem>,
+    /// Held by the `latch serve` in a terminal that started it.
+    #[serde(default)]
+    attached: bool,
 }
 
 /// The host now: its step, and, while one runs or last ran, its process and
@@ -55,6 +58,8 @@ pub struct Host {
     pub pid: Option<u32>,
     pub run: Option<String>,
     pub error: Option<Problem>,
+    /// It runs held by the `latch serve` in a terminal that started it.
+    pub attached: bool,
 }
 
 /// This process's run, set when it starts serving.
@@ -65,9 +70,15 @@ pub fn this_run() -> Option<&'static str> {
     RUN.get().map(String::as_str)
 }
 
-/// Records `phase` for this serve; `error` with `Phase::Error`. Written
-/// atomically (renamed into place) so a reader sees one step or the next.
-pub fn record(state_dir: &Path, phase: Phase, error: Option<&Failure>) -> Result<(), Failure> {
+/// Records `phase` for this serve, `attached` or not; `error` with
+/// `Phase::Error`. Written atomically (renamed into place) so a reader sees
+/// one step or the next.
+pub fn record(
+    state_dir: &Path,
+    phase: Phase,
+    attached: bool,
+    error: Option<&Failure>,
+) -> Result<(), Failure> {
     let run = RUN.get_or_init(|| {
         let started = jiff::Timestamp::now().as_millisecond();
         format!("{}-{started}", std::process::id())
@@ -81,6 +92,7 @@ pub fn record(state_dir: &Path, phase: Phase, error: Option<&Failure>) -> Result
             code: failure.code.clone(),
             message: failure.message.clone(),
         }),
+        attached,
     };
     let path = state_dir.join("serve.json");
     let json = serde_json::to_string(&written).expect("a step serializes") + "\n";
@@ -111,6 +123,7 @@ pub fn now(state_dir: &Path) -> Host {
             pid: if running { holder } else { None },
             run: None,
             error: None,
+            attached: false,
         };
     };
     let state = match (running, written.state) {
@@ -132,7 +145,28 @@ pub fn now(state_dir: &Path) -> Host {
         pid: running.then_some(written.pid),
         run: Some(written.run),
         error,
+        attached: running && written.attached,
     }
+}
+
+/// The pid of a host from another latch version serving `state_dir`: it
+/// holds the folder and says it serves, but not on this version's socket,
+/// so nothing this latch asks reaches it.
+pub fn other_version(state_dir: &Path) -> Option<u32> {
+    let host = now(state_dir);
+    let serving = host.running && host.state == Phase::Serving;
+    let theirs = serving && !crate::transport::local_socket_path(state_dir).exists();
+    host.pid.filter(|_| theirs)
+}
+
+/// What every command that needs the host says while one from another
+/// latch version holds the folder.
+pub fn other_version_running(pid: u32) -> Failure {
+    let message = format!(
+        "a host from another latch version is running (pid {pid}); stop it \
+         (Ctrl-C in its terminal, or kill {pid}), then retry"
+    );
+    Failure::new(crate::failure::Exit::Unreachable, "other_version", message)
 }
 
 /// The pid `serve.lock` names (`latch serve (pid N, …)`).
@@ -169,6 +203,7 @@ mod tests {
             pid: None,
             run: None,
             error: None,
+            attached: false,
         };
         assert_eq!(now(dir.path()), stopped);
         assert_eq!(now(&dir.path().join("missing")), stopped);
@@ -177,27 +212,29 @@ mod tests {
         write!(lock, "latch serve (pid {}, /bin/latch)", std::process::id()).unwrap();
         lock.lock().unwrap();
         assert_eq!(now(dir.path()).state, Phase::Starting);
-        record(dir.path(), Phase::Serving, None).unwrap();
+        record(dir.path(), Phase::Serving, true, None).unwrap();
         let serving = now(dir.path());
         assert_eq!(serving.state, Phase::Serving);
         assert_eq!(serving.pid, Some(std::process::id()));
+        assert!(serving.attached);
 
         // A serve that wrote `serving` but holds no lock: killed. (Another
         // folder: a test's own lock may outlive its drop for an instant in a
         // worker another test is starting.)
         drop(lock);
         let killed = tempfile::tempdir().unwrap();
-        record(killed.path(), Phase::Serving, None).unwrap();
+        record(killed.path(), Phase::Serving, true, None).unwrap();
         let ended = now(killed.path());
         assert_eq!(ended.state, Phase::Error);
+        assert!(!ended.attached);
         assert_eq!(ended.error.unwrap().code, "serve_ended");
         assert_eq!(ended.run, serving.run);
         let dir = killed;
 
         let failure = Failure::failed("relay_unreachable", "no relay".to_string());
-        record(dir.path(), Phase::Error, Some(&failure)).unwrap();
+        record(dir.path(), Phase::Error, false, Some(&failure)).unwrap();
         assert_eq!(now(dir.path()).error.unwrap().code, "relay_unreachable");
-        record(dir.path(), Phase::Stopped, None).unwrap();
+        record(dir.path(), Phase::Stopped, false, None).unwrap();
         assert_eq!(now(dir.path()).state, Phase::Stopped);
         assert_eq!(now(dir.path()).error, None);
     }

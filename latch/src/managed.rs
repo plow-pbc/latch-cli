@@ -127,12 +127,13 @@ pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
             .to_string();
         return Err(Failure::usage("no_terminal", message));
     }
-    let (hello, boards) = watch(&state.path, "host_watch").await.map_err(|failure| {
-        match other_version(&state.path) {
-            Some(pid) => other_version_running(pid),
-            None => not_serving(failure),
-        }
-    })?;
+    let (hello, boards) =
+        watch(&state.path, "host_watch").await.map_err(
+            |failure| match lifecycle::other_version(&state.path) {
+                Some(pid) => lifecycle::other_version_running(pid),
+                None => not_serving(failure),
+            },
+        )?;
     let footer = "Ctrl-C closes this view; the host keeps running (`latch stop` stops it)";
     show(&hello, boards, footer).await;
     Ok(())
@@ -165,8 +166,8 @@ async fn launch(
         return Err(Failure::failed("launch_busy", message));
     };
     if lifecycle::holds_lock(&dir) {
-        return Err(match other_version(&dir) {
-            Some(pid) => other_version_running(pid),
+        return Err(match lifecycle::other_version(&dir) {
+            Some(pid) => lifecycle::other_version_running(pid),
             None => already_serving(&dir).await,
         });
     }
@@ -328,7 +329,7 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
         // pid its lock and serve.json both name is told to stop instead.
         if !asked
             && let Some(pid) = target
-            && other_version(dir) == Some(pid)
+            && lifecycle::other_version(dir) == Some(pid)
         {
             // SAFETY: kill only sends a signal.
             asked = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0;
@@ -338,8 +339,8 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
             removed = true;
         }
         if started.elapsed() > STOP_WITHIN {
-            if let Some(pid) = other_version(dir) {
-                return Err(other_version_running(pid));
+            if let Some(pid) = lifecycle::other_version(dir) {
+                return Err(lifecycle::other_version_running(pid));
             }
             let pid = target.map_or("?".to_string(), |pid| pid.to_string());
             let message = format!(
@@ -367,23 +368,6 @@ async fn already_serving(dir: &Path) -> Failure {
         message.push_str(&mismatch(&hello));
     }
     Failure::failed("already_serving", message)
-}
-
-/// The pid of a host from another latch version serving `dir`: it holds
-/// the folder and says it serves, but not on this version's socket.
-fn other_version(dir: &Path) -> Option<u32> {
-    let host = lifecycle::now(dir);
-    let serving = host.running && host.state == Phase::Serving;
-    let theirs = serving && !transport::local_socket_path(dir).exists();
-    host.pid.filter(|_| theirs)
-}
-
-fn other_version_running(pid: u32) -> Failure {
-    let message = format!(
-        "a host from another latch version is running (pid {pid}); stop it \
-         (Ctrl-C in its terminal, or kill {pid}), then retry"
-    );
-    Failure::failed("other_version", message)
 }
 
 /// What to say when the host runs another latch than this one.

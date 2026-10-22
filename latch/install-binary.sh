@@ -9,11 +9,13 @@
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
 #
-# A managed host on the state directory (one `latch serve` or `serve -d`
-# started) runs the latch being replaced: when the version changes, it is
-# stopped with `latch stop` first and started again with the new latch,
-# with what it was last given (`serve -d --again`), once everything is in
-# place. A host run with `serve --foreground` is left alone.
+# A host on the state directory runs the latch being replaced: when the
+# version changes, or the latch there says the host is another version's,
+# it is stopped with `latch stop` first. One `serve -d` started is started
+# again with the new latch, with what it was last given (`serve -d
+# --again`), once everything is in place. One that runs in a terminal (an
+# attached `latch serve`, or `serve --foreground`) cannot be started again
+# in that terminal: the install says to run `latch serve` there again.
 #
 # On macOS a release's latch is inside Plow Latch.app (the `latch` beside
 # this script leads into it). Then the whole app goes to ~/Applications,
@@ -117,10 +119,12 @@ fi
 
 dest="$bin_dir/latch"
 
-# 0. A managed host running the latch being replaced is stopped first; only
-# a stop it confirms counts, and a failed one changes nothing. If anything
-# fails before it runs again, show the command for one explicit start.
+# 0. A host running the latch being replaced is stopped first; only a stop
+# it confirms counts, and a failed one changes nothing. If anything fails
+# before one `serve -d` started runs again, show the command for one
+# explicit start.
 restart_host=""
+terminal_host=""
 tmp=""
 on_exit() {
   ended=$?
@@ -130,19 +134,35 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
-if [ -x "$dest" ] && [ "$("$dest" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ]; then
-  case "$("$dest" --state-dir "$state_dir" status --local 2>/dev/null)" in
-    *'"managed":true'*)
-      stopped=$("$dest" --state-dir "$state_dir" stop) || die "could not stop the host on $state_dir (see above); nothing was changed"
-      case "$stopped" in
-        *'"stopped":true'*)
-          restart_host="$(quote "$dest") --state-dir $(quote "$state_dir") serve -d"
-          say "stopped the host on $state_dir; it starts again with the new latch once the install is done"
-          ;;
-      esac
-      ;;
-  esac
+host=""
+if [ -x "$dest" ]; then
+  host=$("$dest" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
+  if [ "$("$dest" --version 2>/dev/null)" = "$("$src" --version 2>/dev/null)" ]; then
+    case "$host" in
+      *'"other_version"'*) ;;
+      *) host="" ;;
+    esac
+  fi
 fi
+case "$host" in
+  *'"running":true'*)
+    stopped=$("$dest" --state-dir "$state_dir" stop) || die "could not stop the host on $state_dir (see above); nothing was changed"
+    case "$stopped" in
+      *'"stopped":true'*)
+        case "$host" in
+          *'"attached":true'*) terminal_host=1 ;;
+          *'"managed":true'*) restart_host="$(quote "$dest") --state-dir $(quote "$state_dir") serve -d" ;;
+          *) terminal_host=1 ;;
+        esac
+        if [ -n "$terminal_host" ]; then
+          say "stopped the host on $state_dir, which ran in a terminal; run \`latch serve\` again to start it with the new latch"
+        else
+          say "stopped the host on $state_dir; it starts again with the new latch once the install is done"
+        fi
+        ;;
+    esac
+    ;;
+esac
 
 # 1. The binary. Copy next to the target, then rename, so a running latch is
 # never overwritten in place. cksum, unlike cmp, is on every system.
@@ -320,6 +340,9 @@ if [ -n "$restart_host" ]; then
     die "the new latch did not start the host again (see above)"
   restart_host=""
   say "started the host on $state_dir again with the new latch"
+fi
+if [ -n "$terminal_host" ]; then
+  say "the host on $state_dir ran in a terminal and was stopped: run \`latch serve\` there again to start it with the new latch"
 fi
 
 # At a terminal, `latch setup` takes it from here, reading the terminal

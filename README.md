@@ -37,9 +37,9 @@ see [Docker hosting](latch/DOCKER.md).
 
 Update by rerunning the commands above, adding `--clobber` to `gh release download` so
 the download replaces the one already there. State and versioned plugins stay in place.
-A host `latch serve` or `serve -d` started is stopped and started again with the new
-latch, with what it was given; one run with `serve --foreground` keeps the old binary
-until you restart it.
+A host `serve -d` started is stopped and started again with the new latch, with what
+it was given. One running in a terminal (`latch serve`, or `serve --foreground`) is
+stopped, and the update says to run `latch serve` there again.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
 No Homebrew tap is included.
 
