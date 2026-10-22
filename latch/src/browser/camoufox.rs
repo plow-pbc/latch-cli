@@ -155,7 +155,6 @@ impl Camoufox {
         let launched = browser.request::<Value>(
             "launch",
             json!({
-                "profile": profile.dir,
                 "data": profile.data(),
                 "downloads": scratch.join("downloads"),
                 "executable": engine.executable,

@@ -60,9 +60,8 @@ JSON lines over its stdio and drives Camoufox through Playwright, which
 reaches it over its own pipe (`-juggler-pipe`), never a port. latch's page
 reader runs in Camoufox's isolated world; the agent's `eval` in the page's
 own world (Camoufox's `mw:`). Each session gets a fingerprint of its own,
-made at launch (the pin currently claims macOS on every host) and kept in
-its profile (`camoufox.json`, 0600) for as long as the session lasts: a
-site sees the same device for the whole task, and a new one the next.
+made at launch (the pin currently claims macOS on every host): a site sees
+the same device for the whole task, and a new one the next.
 Camoufox ships with password saving and form autofill off; its uBlock
 add-on is left out.
 

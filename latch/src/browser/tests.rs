@@ -730,12 +730,16 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
     println!("exec: {listeners} TCP listeners; engine pids among them: {held:?}");
     assert!(listeners > 0, "exec sees other processes' listeners");
     assert!(held.is_empty());
-    // The engine's own settings file in the profile: Chrome's preferences,
-    // or the fingerprint Camoufox keeps for the profile.
+    // A file the engine keeps in the profile: Chrome's preferences, or
+    // whichever Firefox wrote first.
     let preferences = if cft {
         data.join("Default/Preferences")
     } else {
-        data.parent().unwrap().join("camoufox.json")
+        fs::read_dir(&data)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_file())
+            .unwrap()
     };
     for script in [
         format!("cat '{}'", preferences.display()),
@@ -750,23 +754,16 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
         assert!(!ok && text.contains(HIDDEN), "{script}: {text}");
     }
 
-    // Password saving and autofill are off (Camoufox ships with them off),
-    // and Camoufox's fingerprint is private.
-    let settings: serde_json::Value =
-        serde_json::from_slice(&fs::read(&preferences).unwrap()).unwrap();
+    // Password saving and autofill are off (Camoufox ships with them off).
     if cft {
+        let settings: serde_json::Value =
+            serde_json::from_slice(&fs::read(&preferences).unwrap()).unwrap();
         println!(
             "profile: credentials_enable_service {}, autofill.profile_enabled {}",
             settings["credentials_enable_service"], settings["autofill"]["profile_enabled"]
         );
         assert_eq!(settings["credentials_enable_service"], false);
         assert_eq!(settings["autofill"]["profile_enabled"], false);
-    } else {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(&preferences).unwrap().permissions().mode();
-        println!("profile: camoufox.json mode {:o}", mode & 0o777);
-        assert_eq!(mode & 0o077, 0);
-        assert!(settings["env"]["CAMOU_CONFIG_1"].is_string());
     }
 
     let shot = session.call(json!({"op": "screenshot"})).await.unwrap();

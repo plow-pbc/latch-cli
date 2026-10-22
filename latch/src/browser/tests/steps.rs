@@ -196,8 +196,6 @@ impl Provider for Fake {
 
 pub(super) struct Harness {
     pub(super) browsers: Arc<Browsers>,
-    /// The engine its sessions run on.
-    engine: String,
     /// The session the harness acts in, and its id.
     pub(super) entry: Arc<host::Entry>,
     pub(super) id: String,
@@ -234,7 +232,6 @@ impl Harness {
         let (id, entry) = browsers.open(engine, CALLER, None).await.unwrap();
         Harness {
             browsers,
-            engine: engine.to_string(),
             entry,
             id,
             state: state.to_path_buf(),
@@ -243,32 +240,20 @@ impl Harness {
         }
     }
 
-    /// A command in the harness's session. An `open` starts a new session,
-    /// which takes the place of the one before.
+    /// A command in the harness's session.
     pub(super) async fn call(&mut self, command: &str, args: Value) -> Value {
         let mut audit = Map::new();
-        let name = if command == "open" {
-            crate::browser::engine::named(&self.engine)
-        } else {
-            &self.id
-        };
         let (result, _) = host::call(
             &self.browsers,
             CALLER.into(),
             command,
-            name,
+            &self.id,
             &args,
             None,
             &mut audit,
         )
         .await
         .unwrap();
-        if command == "open" {
-            let id = result["session"].as_str().unwrap().to_string();
-            self.entry = self.browsers.session(&id, CALLER).await.unwrap();
-            let before = std::mem::replace(&mut self.id, id);
-            self.browsers.close(&before, CALLER).await.unwrap();
-        }
         result
     }
 

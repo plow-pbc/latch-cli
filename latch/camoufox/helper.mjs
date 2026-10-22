@@ -307,24 +307,17 @@ const THROUGH_PROXY = {
 
 async function launch(params) {
   reader = params.reader;
-  // One fingerprint for the session, kept in its profile: a site sees the
-  // same device for the whole task.
-  const stored = path.join(params.profile, "camoufox.json");
-  let identity;
-  try {
-    identity = JSON.parse(fs.readFileSync(stored, "utf8"));
-  } catch {
-    const options = await launchOptions({
-      os: params.os,
-      headless: params.headless,
-      main_world_eval: true,
-      exclude_addons: ["UBO"],
-      geoip: false,
-      env: {},
-    });
-    identity = { env: options.env, prefs: options.firefoxUserPrefs };
-    fs.writeFileSync(stored, JSON.stringify(identity), { mode: 0o600 });
-  }
+  // One fingerprint for the session: a site sees the same device for the
+  // whole task, and a new one the next.
+  const options = await launchOptions({
+    os: params.os,
+    headless: params.headless,
+    main_world_eval: true,
+    exclude_addons: ["UBO"],
+    geoip: false,
+    env: {},
+  });
+  const identity = { env: options.env, prefs: options.firefoxUserPrefs };
   context = await firefox.launchPersistentContext(params.data, {
     executablePath: params.executable,
     headless: params.headless,

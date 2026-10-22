@@ -3,8 +3,7 @@
 //! its name random and never derived from the session's id. The host makes
 //! one for each `open` and removes it when the session's runtime ends
 //! (`runtime.rs`); a host starting removes any an earlier one left. A
-//! profile folder holds `data/`, the engine's own data folder, and for
-//! Camoufox `camoufox.json`, the session's fingerprint. `exec` and file
+//! profile folder holds `data/`, the engine's own data folder. `exec` and file
 //! workers are denied the whole state directory, profiles included.
 //!
 //! Folders an earlier latch kept under `<state-dir>/browser/profiles/` are
