@@ -34,7 +34,7 @@
 
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use iroh::SecretKey;
@@ -313,27 +313,25 @@ impl StateDir {
     }
 }
 
-/// Writes a file only its owner can read, atomically (`<name>.tmp`
-/// renamed over it). Skips the write when the file already holds exactly
-/// these bytes, so a repeated `login` changes nothing.
+/// Writes a file only its owner can read, atomically: into a temporary
+/// file of this write's own beside it (0600), synced, then renamed over it,
+/// so concurrent writers never share one. Skips the write when the file
+/// already holds exactly these bytes, so a repeated `login` changes nothing.
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if fs::read(path).is_ok_and(|current| current == bytes) {
         return Ok(());
     }
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(".tmp");
-    let temp = PathBuf::from(temp);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)?;
-    // `mode` applies only when the file is created.
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(&temp, path)
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty());
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(".");
+    let mut temp = tempfile::Builder::new()
+        .prefix(&name)
+        .suffix(".tmp")
+        .tempfile_in(dir.unwrap_or(Path::new(".")))?;
+    temp.write_all(bytes)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|err| err.error)?;
+    Ok(())
 }
 
 /// Bytes as lowercase hex, two characters per byte.
@@ -401,6 +399,34 @@ mod tests {
             assert!(refused.message.contains("9.9.9"), "{}", refused.message);
             assert_eq!(fs::read_to_string(&marker).unwrap(), other);
         }
+    }
+
+    #[test]
+    fn two_writers_at_once_each_leave_a_whole_file() {
+        let dir = test_dir();
+        let path = dir.path().join("config.json");
+        // Big enough that one writer's bytes can land amid the other's.
+        let contents = [vec![b'a'; 1 << 20], vec![b'b'; 1 << 20]];
+        std::thread::scope(|scope| {
+            for bytes in &contents {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        write_private(path, bytes).unwrap();
+                        let _ = fs::remove_file(path);
+                    }
+                });
+            }
+            scope.spawn(|| {
+                for _ in 0..500 {
+                    if let Ok(read) = fs::read(&path) {
+                        assert!(contents.contains(&read), "a mixed or partial file");
+                    }
+                }
+            });
+        });
+        let names: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert!(names.len() <= 1, "a temporary file was left: {names:?}");
     }
 
     #[test]
