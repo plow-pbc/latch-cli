@@ -20,7 +20,7 @@ test-plan *args:
 
 # Runs the real decision model (not tests): checks (default), replay OUT, scenario.
 [positional-arguments]
-gatekeeper what="checks" *args:
+gatekeeper what="checks" *args="":
     #!/bin/sh
     set -eu
     # The key file: LATCH_TEST_JEV_KEY, never a flag.

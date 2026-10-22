@@ -71,7 +71,10 @@ def where_we_are(args):
 
 
 def pin_platform(where):
-    """The engine pins' name for the machine the tests run on."""
+    """The engine pins' name for the machine the tests run on: the
+    container is always linux/arm64, whatever the host."""
+    if where == "container":
+        return "linux_arm64"
     machine = platform.machine().lower()
     arch = "arm64" if machine in ("arm64", "aarch64") else "x64" if machine in ("x86_64", "amd64") else machine
     return f"{'mac' if where == 'macos' else 'linux'}_{arch}"
@@ -194,7 +197,10 @@ def steps(where, suites, gate, first_shard):
         out.append(("install.sh", ["installer"], ["python3", "scripts/test-install-release.py"], ROOT))
         out.append(("install-binary.sh", ["installer"], ["python3", "scripts/test-install.py"], ROOT))
         if where == "macos":
-            out.append(("app bundle", ["installer"], ["sh", "scripts/test-app-bundle.sh"], ROOT))
+            if not rust:
+                out.append(("latch", ["installer"], ["cargo", "build", "--locked", "--features", features],
+                            LATCH))
+            out.append(("app bundle", ["installer"], ["sh", str(ROOT / "scripts/test-app-bundle.sh")], LATCH))
     return out
 
 
@@ -372,7 +378,15 @@ def in_container(args):
         inner.append("--ci")
     # --init: a PID 1 that reaps orphans, as a host's init does; the tests
     # check that a dead host's worker is gone, not left a zombie.
-    command = ["docker", "run", "--rm", "--init", "--platform", "linux/arm64", "--user", f"{os.getuid()}:{os.getgid()}",
+    # On an AppArmor host, docker-default refuses bwrap's mounts; the
+    # container runs under latch's own profile, which must be loaded first.
+    apparmor = []
+    if Path("/sys/module/apparmor/parameters/enabled").exists() and \
+            Path("/sys/module/apparmor/parameters/enabled").read_text().strip() == "Y":
+        apparmor = ["--security-opt=apparmor=latch-bwrap"]
+        print("test.py: AppArmor host: the container runs under latch-bwrap "
+              "(sudo apparmor_parser -r latch/docker/latch-bwrap.apparmor)", flush=True)
+    command = ["docker", "run", "--rm", "--init", "--platform", "linux/arm64", *apparmor, "--user", f"{os.getuid()}:{os.getgid()}",
                "--cap-drop=ALL", "--security-opt=no-new-privileges=true",
                "--security-opt=systempaths=unconfined",
                f"--security-opt=seccomp={container_seccomp()}",

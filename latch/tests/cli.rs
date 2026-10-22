@@ -4624,10 +4624,6 @@ mod scenario {
     /// items and reasons. Over `serve.sock` as `owner_on_host`, with the fake
     /// gog (feature `fake-gog`) answering the made-up mailbox. With `live`,
     /// the host's judge is the real decision model.
-    #[cfg(all(
-        feature = "fake-gog",
-        any(target_os = "macos", feature = "linux-browser-tests")
-    ))]
     fn an_owner_returns_items_from_an_emailed_order(live: bool) {
         let plow = LivePlow::start();
         let (_relay, relay) = local_relay();
@@ -4830,10 +4826,6 @@ mod scenario {
         }
     }
 
-    #[cfg(all(
-        feature = "fake-gog",
-        any(target_os = "macos", feature = "linux-browser-tests")
-    ))]
     #[test]
     fn the_owner_returns_items_from_an_emailed_order() {
         an_owner_returns_items_from_an_emailed_order(false);
@@ -4841,11 +4833,7 @@ mod scenario {
 
     /// The same return through the real decision model, which must allow
     /// every plan (a regression for a return whose later items were refused).
-    #[cfg(all(
-        feature = "fake-gog",
-        feature = "live-model",
-        any(target_os = "macos", feature = "linux-browser-tests")
-    ))]
+    #[cfg(feature = "live-model")]
     #[test]
     fn the_owner_returns_items_from_an_emailed_order_through_the_real_judge() {
         an_owner_returns_items_from_an_emailed_order(true);

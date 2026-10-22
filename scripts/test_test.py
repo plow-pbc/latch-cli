@@ -78,6 +78,11 @@ class Plans(unittest.TestCase):
                 plan(*argv, where=where)
             self.assertIn(says, str(refused.exception))
 
+    def test_the_container_is_linux_arm64_on_any_host(self):
+        for machine in ("x86_64", "arm64"):
+            with mock.patch.object(runner.platform, "machine", return_value=machine):
+                self.assertEqual(runner.pin_platform("container"), "linux_arm64")
+
     def test_a_named_suite_is_added_to_the_gate_once(self):
         self.assertEqual(plan("gate", "core")[1], runner.GATE["macos"])
         self.assertEqual(plan("scenario", "gate")[1], runner.GATE["macos"] + ["scenario"])

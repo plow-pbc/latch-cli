@@ -103,6 +103,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
+      # Docker's default AppArmor profile refuses bwrap's mounts here.
+      - run: sudo apparmor_parser -r latch/docker/latch-bwrap.apparmor
       - run: just test --linux --ci
       - uses: actions/upload-artifact@v4
         if: always()

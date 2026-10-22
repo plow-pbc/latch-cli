@@ -29,6 +29,7 @@ test-model key:
 # The return scenario, headless, with its transcript: an order found in a
 # made-up mailbox, returned item by item on the test shop. With `key`, the
 # host's judge is the real decision model (jev).
+[macos]
 scenario-return key="": engines
     if [ -n "{{key}}" ]; then LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features fake-gog,live-model --test cli scenario::the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture; else cargo test --locked --features fake-gog --test cli scenario::the_owner_returns_items_from_an_emailed_order -- --exact --nocapture; fi
 
