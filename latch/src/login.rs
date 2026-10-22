@@ -369,7 +369,7 @@ async fn clash(plow: &Plow, mut registration: Registration, rerun: &str) -> Resu
 
 /// `word` as a shell reads it back: as it is when it holds only safe
 /// characters, else in single quotes (a quote inside written `'\''`).
-fn shell_quoted(word: &str) -> String {
+pub(crate) fn shell_quoted(word: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || "-._/:@%+=,".contains(c);
     if !word.is_empty() && word.chars().all(safe) {
         word.to_string()

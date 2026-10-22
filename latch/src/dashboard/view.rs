@@ -1,13 +1,13 @@
-//! What a viewer of the board sees, and what its keys do: the task list
-//! with steps that fold open, and a full-screen inspector for one call.
-//! The view holds only where the person is (selection, what is open, a
-//! filter, a pause); the board is the host's.
+//! What a viewer of the board sees, and what its keys do: every call as
+//! its command, close to as typed (a browser session's under the call that
+//! opened it), and a full-screen inspector for one call with what it means
+//! (its title, a plan's steps, the judge's decision). The view holds only
+//! where the person is (selection, a filter, a pause); the board is the
+//! host's.
 //!
 //! Text is laid out in fixed columns and wrapped onto continuation lines,
 //! never cut where it matters (a refusal's reason is always whole). Every
 //! state is in words, so nothing depends on color.
-
-use std::collections::HashSet;
 
 use jiff::{Timestamp, tz::TimeZone};
 use serde_json::Value;
@@ -41,13 +41,9 @@ pub enum Asked {
     Detach,
 }
 
-/// What can be selected: a task, or a call in a session. A plan's steps
-/// show under their call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Sel {
-    Task(u64),
-    Call(u64, u64),
-}
+/// What can be selected: a call, by its task and its own id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sel(pub u64, pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tab {
@@ -74,7 +70,6 @@ pub struct View {
     /// The viewer's own line under the header (a version mismatch).
     notice: Option<String>,
     selected: Option<Sel>,
-    open: HashSet<Sel>,
     filter: String,
     /// The filter being typed after `/`.
     typing: Option<String>,
@@ -83,16 +78,16 @@ pub struct View {
     inspect: Option<Inspect>,
 }
 
-/// One line of the list, before layout.
+/// One row of the list, before layout.
 struct Item {
     sel: Option<Sel>,
-    depth: usize,
+    /// Under the call that opened its session.
+    under: bool,
     at: Option<Timestamp>,
     caller: Option<Caller>,
-    title: String,
+    kind: String,
+    command: String,
     outcome: Option<Outcome>,
-    /// Has children: open (true) or folded (false).
-    fold: Option<bool>,
 }
 
 impl View {
@@ -104,7 +99,6 @@ impl View {
             attached,
             notice,
             selected: None,
-            open: HashSet::new(),
             filter: String::new(),
             typing: None,
             problems: false,
@@ -168,23 +162,6 @@ impl View {
                 }
             }
             Key::Home => self.selected = selectable.first().copied(),
-            Key::Right => {
-                if let Some(sel) = self.selected
-                    && items
-                        .iter()
-                        .any(|item| item.sel == Some(sel) && item.fold.is_some())
-                {
-                    self.open.insert(sel);
-                }
-            }
-            Key::Left => {
-                if let Some(sel) = self.selected {
-                    if self.open.remove(&sel) {
-                    } else {
-                        self.selected = parent(sel);
-                    }
-                }
-            }
             Key::Enter => {
                 if let Some(sel) = self.selected {
                     self.inspect = Some(Inspect {
@@ -211,7 +188,7 @@ impl View {
     }
 
     /// The list as it stands: tasks with work running first, then the
-    /// latest; within each, what is open.
+    /// latest; a browser session's calls in order, under the first.
     fn items(&self) -> Vec<Item> {
         let board = self.shown();
         let filter = self.filter.to_lowercase();
@@ -229,57 +206,24 @@ impl View {
         });
         let mut items = Vec::new();
         for task in tasks {
-            let sel = Sel::Task(task.id);
-            let open = self.open.contains(&sel);
-            if let Some(call) = task.lone() {
-                items.push(Item {
-                    sel: Some(sel),
-                    depth: 0,
-                    at: Some(call.at),
-                    caller: Some(task.caller.clone()),
-                    title: call.title.clone(),
-                    outcome: Some(call.outcome.clone()),
-                    fold: (!call.steps.is_empty()).then_some(open),
-                });
-                if open {
-                    steps(&mut items, call, 1);
-                }
-                continue;
-            }
-            items.push(Item {
-                sel: Some(sel),
-                depth: 0,
-                at: Some(task.at()),
-                caller: Some(task.caller.clone()),
-                title: task.title.clone(),
-                outcome: Some(task.outcome()),
-                fold: Some(open),
-            });
-            if !open {
-                continue;
-            }
             if task.dropped > 0 {
-                items.push(note(1, "Earlier steps unavailable"));
+                items.push(note("earlier calls of this session unavailable"));
             }
-            for call in &task.calls {
-                let sel = Sel::Call(task.id, call.id);
-                let open = self.open.contains(&sel);
+            for (n, call) in task.calls.iter().enumerate() {
+                let first = n == 0;
                 items.push(Item {
-                    sel: Some(sel),
-                    depth: 1,
-                    at: Some(call.at),
-                    caller: None,
-                    title: call.title.clone(),
+                    sel: Some(Sel(task.id, call.id)),
+                    under: !first,
+                    at: first.then_some(call.at),
+                    caller: first.then(|| task.caller.clone()),
+                    kind: call.kind.clone(),
+                    command: call.command.clone(),
                     outcome: Some(call.outcome.clone()),
-                    fold: (!call.steps.is_empty()).then_some(open),
                 });
-                if open {
-                    steps(&mut items, call, 2);
-                }
             }
         }
         if board.dropped && !board.tasks.is_empty() {
-            items.push(note(0, "Earlier tasks unavailable"));
+            items.push(note("earlier calls unavailable"));
         }
         items
     }
@@ -460,13 +404,13 @@ impl View {
         if width >= 100 {
             lines.push(paint::fg(
                 &format!(
-                    "Up/Down select  Left/Right fold  Enter details  / filter  r problems  Space pause  q detach  {stop}"
+                    "Up/Down select  Enter details  / filter  r problems  Space pause  q detach  {stop}"
                 ),
                 DIM,
             ));
         } else {
             lines.push(paint::fg(
-                "Enter details  Left/Right fold  / filter  r problems  q detach",
+                "Up/Down select  Enter details  / filter  r problems  q detach",
                 DIM,
             ));
             lines.push(paint::fg(&format!("{stop} | {live}"), DIM));
@@ -485,12 +429,11 @@ impl View {
             lines.extend(footer);
             return lines;
         };
-        let (title, at) = call.map_or((&task.title, task.at()), |call| (&call.title, call.at));
         let heading = format!(
             "{} | {} | {}",
-            term::one_line(title),
+            term::one_line(&call.title),
             task.caller.label,
-            clock(at)
+            clock(call.at)
         );
         let mut lines: Vec<String> = wrap(&heading, width)
             .iter()
@@ -509,11 +452,10 @@ impl View {
             tab("Decision", Tab::Decision),
             tab("Request", Tab::Request)
         ));
-        let body = match (inspect.tab, call) {
-            (Tab::Steps, Some(call)) => call_steps(task, call),
-            (Tab::Decision, Some(call)) => decision(task, call),
-            (Tab::Request, Some(call)) => request(call),
-            (_, None) => vec!["Select one of the session's calls for its details.".to_string()],
+        let body = match inspect.tab {
+            Tab::Steps => call_steps(task, call),
+            Tab::Decision => decision(task, call),
+            Tab::Request => request(call),
         };
         let mut wrapped = Vec::new();
         for line in body {
@@ -539,62 +481,34 @@ fn current(selected: Option<Sel>, items: &[Item]) -> Option<Sel> {
         .or_else(|| items.iter().find_map(|item| item.sel))
 }
 
-/// A task, and the call selected in it, or the one that says how it is
-/// going.
-fn find(board: &Board, sel: Sel) -> Option<(&Task, Option<&Call>)> {
-    let (task_id, call_id) = match sel {
-        Sel::Task(task) => (task, None),
-        Sel::Call(task, call) => (task, Some(call)),
-    };
-    let task = board.tasks.iter().find(|task| task.id == task_id)?;
-    let call = match call_id {
-        Some(id) => Some(task.calls.iter().find(|call| call.id == id)?),
-        None => task.key_call(),
-    };
+/// The selected call, and the task it is in.
+fn find(board: &Board, Sel(task, call): Sel) -> Option<(&Task, &Call)> {
+    let task = board.tasks.iter().find(|each| each.id == task)?;
+    let call = task.calls.iter().find(|each| each.id == call)?;
     Some((task, call))
-}
-
-fn parent(sel: Sel) -> Option<Sel> {
-    match sel {
-        Sel::Task(_) => Some(sel),
-        Sel::Call(task, _) => Some(Sel::Task(task)),
-    }
 }
 
 fn matches(task: &Task, filter: &str) -> bool {
     let has = |text: &str| text.to_lowercase().contains(filter);
     has(&task.title)
         || has(&task.caller.label)
-        || task
-            .calls
-            .iter()
-            .any(|call| has(&call.title) || call.steps.iter().any(|step| has(&step.title)))
+        || task.calls.iter().any(|call| {
+            has(&call.kind)
+                || has(&call.command)
+                || has(&call.title)
+                || call.steps.iter().any(|step| has(&step.title))
+        })
 }
 
-/// A call's plan steps, in order, under it.
-fn steps(items: &mut Vec<Item>, call: &Call, depth: usize) {
-    for (n, step) in call.steps.iter().enumerate() {
-        items.push(Item {
-            sel: None,
-            depth,
-            at: None,
-            caller: None,
-            title: format!("{} {}", n + 1, step.title),
-            outcome: step.outcome.clone(),
-            fold: None,
-        });
-    }
-}
-
-fn note(depth: usize, text: &str) -> Item {
+fn note(text: &str) -> Item {
     Item {
         sel: None,
-        depth,
+        under: false,
         at: None,
         caller: None,
-        title: text.to_string(),
+        kind: String::new(),
+        command: text.to_string(),
         outcome: None,
-        fold: None,
     }
 }
 
@@ -606,6 +520,11 @@ fn call_steps(task: &Task, call: &Call) -> Vec<String> {
         lines.push(message.clone());
     }
     lines.push(String::new());
+    lines.push(format!(
+        "Command: latch {} {}",
+        term::one_line(&call.kind),
+        term::one_line(&call.command)
+    ));
     lines.push(format!("Action: {}", term::one_line(&detail.action)));
     if let Some(page) = &detail.page {
         lines.push(format!("Page: {page}"));
@@ -751,79 +670,74 @@ fn score(p: &Value) -> String {
 }
 
 /// The list's columns at one width: at 100 and more, the caller has its
-/// own column; narrower, it goes under the task's title.
+/// own column; narrower, it goes under the command.
 struct Layout {
     caller: Option<usize>,
-    task: usize,
+    command: usize,
     result: usize,
 }
 
 const TIME: usize = 8;
+const KIND: usize = 8;
 
 impl Layout {
     fn for_width(width: usize) -> Layout {
         if width >= 100 {
-            // A margin, the selection mark, TIME, CALLER, the fold mark,
-            // TASK and RESULT, with two-space gaps.
-            let (caller, result) = (18, 32);
-            let task = width.saturating_sub(1 + 2 + TIME + 2 + caller + 2 + 2 + 2 + result + 1);
+            // A margin, the selection mark, then TIME, CALLER, KIND,
+            // COMMAND and RESULT, with two-space gaps.
+            let (caller, result) = (14, 30);
+            let command =
+                width.saturating_sub(1 + 2 + TIME + 2 + caller + 2 + KIND + 2 + 2 + result + 1);
             Layout {
                 caller: Some(caller),
-                task,
+                command,
                 result,
             }
         } else {
-            let result = 25.min(width / 3);
-            let task = width.saturating_sub(1 + TIME + 2 + 2 + 2 + result + 1);
+            let result = 22.min(width / 3);
+            let command = width.saturating_sub(1 + TIME + 2 + KIND + 2 + 2 + result + 1);
             Layout {
                 caller: None,
-                task,
+                command,
                 result,
             }
         }
     }
 
     /// One screen line in the list's columns.
-    fn line(
-        &self,
-        mark: &str,
-        time: &str,
-        caller: &str,
-        fold: &str,
-        title: &str,
-        result: &str,
-    ) -> String {
+    fn line(&self, mark: &str, time: &str, caller: &str, kind: &str, command: &str) -> String {
         match self.caller {
             Some(width) => format!(
-                "{mark}  {}  {}  {fold} {}  {result}",
+                "{mark}  {}  {}  {}  {}  ",
                 pad(time, TIME),
                 pad(caller, width),
-                pad(title, self.task)
+                pad(kind, KIND),
+                pad(command, self.command)
             ),
             None => format!(
-                "{mark}{}  {fold} {}  {result}",
+                "{mark}{}  {}  {}  ",
                 pad(time, TIME),
-                pad(title, self.task)
+                pad(kind, KIND),
+                pad(command, self.command)
             ),
         }
     }
 
     fn heading(&self) -> String {
-        self.line(" ", "TIME", "CALLER", " ", "TASK / STEP", "RESULT")
+        format!(
+            "{}RESULT",
+            self.line(" ", "TIME", "CALLER", "KIND", "COMMAND")
+        )
     }
 
     /// One item as its lines: the first with every column, then the
     /// continuations of whatever wrapped.
     fn row(&self, item: &Item, selected: bool) -> Vec<String> {
-        let fold = match item.fold {
-            Some(true) => "v",
-            Some(false) => ">",
-            None => " ",
-        };
         let time = item.at.map(clock).unwrap_or_default();
-        let indent = "  ".repeat(item.depth);
-        let task_width = self.task.saturating_sub(indent.len()).max(10);
-        let mut titles: Vec<String> = wrap(&term::one_line(&item.title), task_width)
+        let kind = term::one_line(&item.kind);
+        let indent = if item.under { "  " } else { "" };
+        let width = self.command.saturating_sub(indent.len()).max(10);
+        let mut commands: Vec<String> = wrap(&item.command, width)
             .into_iter()
             .map(|line| format!("{indent}{line}"))
             .collect();
@@ -831,19 +745,15 @@ impl Layout {
         if let Some(caller) = &item.caller {
             match self.caller {
                 Some(width) => callers = wrap(&caller.label, width),
-                // Narrow: under the title.
-                None => titles.extend(
-                    wrap(&caller.label, task_width)
-                        .into_iter()
-                        .map(|line| format!("{indent}{line}")),
-                ),
+                // Narrow: under the command.
+                None => commands.extend(wrap(&caller.label, width)),
             }
         }
         let results = match &item.outcome {
-            Some(outcome) => wrap(&outcome.line(), self.result),
+            Some(outcome) => wrap(&outcome.short(), self.result),
             None => Vec::new(),
         };
-        let height = titles.len().max(results.len()).max(callers.len()).max(1);
+        let height = commands.len().max(results.len()).max(callers.len()).max(1);
         let problem = item.outcome.as_ref().is_some_and(Outcome::problem);
         let at = |lines: &[String], n: usize| lines.get(n).cloned().unwrap_or_default();
         (0..height)
@@ -853,9 +763,8 @@ impl Layout {
                     if first && selected { ">" } else { " " },
                     if first { &time } else { "" },
                     &at(&callers, n),
-                    if first { fold } else { " " },
-                    &at(&titles, n),
-                    "",
+                    if first { &kind } else { "" },
+                    &at(&commands, n),
                 );
                 let text = if first && selected {
                     paint::bold(&text, VOLT)

@@ -5453,8 +5453,8 @@ fn q_in_an_attached_serve_leaves_its_host_running_and_shows_the_call() {
         json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
     );
     assert_eq!(read["ok"]["stdout"], "hi", "{read}");
-    shows(&shown, "Run: cat note.txt");
-    shows(&shown, "Done - exit 0");
+    shows(&shown, "cat note.txt");
+    shows(&shown, "ok · exit 0");
     assert_eq!(local_serve(&host)["attached"], true);
 
     terminal.write_all(b"q").unwrap();
@@ -5477,4 +5477,11 @@ fn q_in_an_attached_serve_leaves_its_host_running_and_shows_the_call() {
     assert_eq!(local_serve(&host)["attached"], false);
     let stopped = latch(&host, &["stop"], &[]);
     assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+
+    // Started again, its board starts with the call from before, from its
+    // audit log.
+    let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
+    shows(&shown, "cat note.txt");
+    terminal.write_all(b"\x03").unwrap();
+    assert!(exits_within(&mut serve, 45).success());
 }

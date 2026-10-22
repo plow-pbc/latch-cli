@@ -1,18 +1,23 @@
-//! A call as people read it: a title for what was asked, a result for how
-//! it went, and the details behind them, from what the host already holds
-//! when the call ends (the request, its audit details and record id, the
-//! answer, the gatekeeper's record). Titles say what was requested, never
-//! a guess at why.
+//! A call as people read it: its kind and command, close to what was
+//! typed; a title for what was asked; a result for how it went; and the
+//! details behind them, from what the host already holds when the call
+//! ends (the request, its audit details and record id, the answer, the
+//! gatekeeper's record). Titles say what was requested, never a guess at
+//! why.
 
 use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Detail, Outcome, State, Step};
+use jiff::Timestamp;
+
+use super::{Caller, Detail, Outcome, State, Step};
 use crate::wire::Response;
 
 /// A call as it ended, for `Dashboard::end`.
 pub struct Finished {
+    pub kind: String,
+    pub command: String,
     pub title: String,
     pub outcome: Outcome,
     pub steps: Vec<Step>,
@@ -25,17 +30,30 @@ pub struct Finished {
     pub site: Option<String>,
 }
 
-/// A call `op` as requested, before it runs: its title and, for a browser
-/// plan, its steps (none reached yet) and the id its client gave it.
-pub fn begun(op: &str, request: &Value) -> (String, Vec<Step>, Option<String>) {
-    (
-        title(op, request, &Value::Null),
-        plan_steps(request, &Value::Null),
-        (op == "browser")
+/// A call as requested, before it runs, for `Dashboard::begin`.
+pub struct Begun {
+    pub kind: String,
+    pub command: String,
+    pub title: String,
+    /// A browser plan's steps, none reached yet.
+    pub steps: Vec<Step>,
+    /// The id a browser plan's client gave it.
+    pub request: Option<String>,
+}
+
+/// A call `op` as requested, before it runs.
+pub fn begun(op: &str, request: &Value) -> Begun {
+    let (kind, command) = command(op, request, &Value::Null);
+    Begun {
+        kind,
+        command,
+        title: title(op, request, &Value::Null),
+        steps: plan_steps(request, &Value::Null),
+        request: (op == "browser")
             .then(|| request["request"].as_str())
             .flatten()
             .map(str::to_string),
-    )
+    }
 }
 
 /// The browser session a request names, as the audit records it.
@@ -59,6 +77,7 @@ pub fn finished(
     took: Duration,
 ) -> Finished {
     let title = title(op, request, audit);
+    let (kind, command) = command(op, request, audit);
     let steps = plan_steps(request, audit);
     let (outcome, code, message) = match response {
         Response::Ok(_) => (done(op, audit, &steps), None, None),
@@ -112,6 +131,8 @@ pub fn finished(
                 .cloned(),
             request: crate::redact::shown(op, audit),
         },
+        kind,
+        command,
         title,
         outcome,
         steps,
@@ -119,6 +140,55 @@ pub fn finished(
         label: audit["task"].as_str().map(str::to_string),
         site,
     }
+}
+
+/// A call the audit log recorded, as it ended, by whom and when: what a
+/// host's board starts with. `host` is this host's own key, the caller
+/// of the owner's calls on its socket. The log keeps no request, so a call
+/// is what its audit details say of it; a refusal's code says why.
+pub fn recorded(
+    record: &crate::audit::Record,
+    host: &str,
+) -> Option<(Caller, Timestamp, Finished)> {
+    let at = record.time.parse().ok()?;
+    let key: String = record.caller.chars().take(8).collect();
+    let caller = if record.caller == host {
+        Caller {
+            label: "you (local)".to_string(),
+            detail: "on this host's own socket".to_string(),
+        }
+    } else if let Some(agent) = &record.agent {
+        Caller {
+            label: format!("agent {key}"),
+            detail: format!("agent {agent}, key {}", record.caller),
+        }
+    } else {
+        Caller {
+            label: "you (device)".to_string(),
+            detail: format!("key {}", record.caller),
+        }
+    };
+    let response = match record.outcome.as_str() {
+        "ok" => Response::Ok(Value::Null),
+        code => Response::Error {
+            exit: crate::failure::Exit::Failed,
+            code: code.to_string(),
+            message: String::new(),
+            details: Value::Null,
+        },
+    };
+    let mut finished = finished(
+        &record.op,
+        &Value::Null,
+        &record.args,
+        &response,
+        record.gate.as_ref(),
+        Some(&record.hash),
+        Duration::ZERO,
+    );
+    finished.detail.took_ms = None;
+    finished.detail.message = None;
+    Some((caller, at, finished))
 }
 
 /// A call refused before it could run: its caller not let in.
@@ -138,6 +208,119 @@ pub fn refused(op: &str, code: &str, message: &str) -> Finished {
         None,
         Duration::ZERO,
     )
+}
+
+/// What kind of call `op` is (`exec`, `browser`, `google`, …) and its
+/// command, close to what was typed after `latch <kind>`: from the request
+/// as sent, else what the audit kept of it. Never a query, a search or the
+/// text a step types, and credential-looking words hidden.
+fn command(op: &str, request: &Value, audit: &Value) -> (String, String) {
+    let pick = |key: &str| -> Value {
+        if request[key].is_null() {
+            audit[key].clone()
+        } else {
+            request[key].clone()
+        }
+    };
+    let words = |value: Value| -> Vec<String> { serde_json::from_value(value).unwrap_or_default() };
+    let mut line: Vec<String> = Vec::new();
+    let kind = match op {
+        "exec" => {
+            if pick("network") == true {
+                line.push("--network".into());
+            }
+            for path in words(pick("writes")) {
+                line.extend(["--write".into(), quoted(&path)]);
+            }
+            if let Some(dir) = pick("workdir").as_str() {
+                line.extend(["--workdir".into(), quoted(dir)]);
+            }
+            let argv = crate::redact::argv(&words(pick("argv")));
+            line.extend(argv.iter().map(|word| quoted(word)));
+            "exec"
+        }
+        "file_get" | "file_put" => {
+            let verb = if op == "file_get" { "get" } else { "put" };
+            line.extend([verb.into(), quoted(&pick_path(request, audit))]);
+            "file"
+        }
+        "messages" | "contacts" => {
+            let action = pick("action");
+            let action = action.as_str().unwrap_or_default();
+            line.push(action.trim_start_matches(&format!("{op}.")).to_string());
+            op
+        }
+        "google" => {
+            let mut args = words(request["gog_args"].clone());
+            if let Some(at) = args.iter().position(|arg| arg == "--account")
+                && at + 1 < args.len()
+            {
+                let account = args.drain(at..at + 2).nth(1).unwrap_or_default();
+                line.extend(["--account".into(), quoted(&account)]);
+            }
+            let prefix = match audit["command"].as_str() {
+                Some(prefix) => prefix.to_string(),
+                None => crate::google::policy::command_prefix(&args),
+            };
+            line.push(prefix.replace('.', " "));
+            "google"
+        }
+        "browser" => {
+            let command = pick("command");
+            let command = command.as_str().unwrap_or_default();
+            line.push(command.to_string());
+            match command {
+                "open" | "goto" => {
+                    let url = pick("url");
+                    let place = match url.as_str().and_then(|url| url::Url::parse(url).ok()) {
+                        Some(url) => {
+                            format!("{}{}", url.origin().ascii_serialization(), url.path())
+                        }
+                        None => format!(
+                            "{}{}",
+                            audit["origin"].as_str().unwrap_or_default(),
+                            audit["path"].as_str().unwrap_or_default()
+                        ),
+                    };
+                    line.push(place);
+                    if let Some(task) = pick("task").as_str() {
+                        line.extend(["--task".into(), quoted(task)]);
+                    }
+                }
+                "do" | "act" => {
+                    if let Some(confirm) = pick("confirm").as_str() {
+                        line.extend(["--confirm".into(), quoted(confirm)]);
+                    }
+                    let plan = pick("plan");
+                    for step in plan["steps"].as_array().into_iter().flatten() {
+                        line.push(quoted(&step_words(step)));
+                    }
+                }
+                _ => {}
+            }
+            "browser"
+        }
+        "vault" | "rules" | "plugins" => {
+            for key in ["command", "name"] {
+                if let Some(word) = pick(key).as_str() {
+                    line.push(word.to_string());
+                }
+            }
+            op
+        }
+        "vault_link" => {
+            line.push(pick("op").as_str().unwrap_or_default().to_string());
+            "phone link"
+        }
+        op => return (op.replace('_', " "), String::new()),
+    };
+    let line: Vec<String> = line.into_iter().filter(|word| !word.is_empty()).collect();
+    (kind.to_string(), line.join(" "))
+}
+
+/// `word` as a shell reads it back.
+fn quoted(word: &str) -> String {
+    crate::login::shell_quoted(word)
 }
 
 /// What was asked: `Run: cargo test`, `Read: notes.txt`, `Search

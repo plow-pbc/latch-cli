@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::watch;
 
-pub use describe::{Finished, begun, finished, refused, session};
+pub use describe::{Begun, Finished, begun, finished, recorded, refused, session};
 pub use show::{Ending, show};
 
 /// How many tasks the board keeps, and how many calls in each: older ones
@@ -86,6 +86,11 @@ pub struct Caller {
 pub struct Call {
     pub id: u64,
     pub at: Timestamp,
+    /// `exec`, `browser`, `google`, …
+    pub kind: String,
+    /// What was asked, close to as typed after `latch <kind>`.
+    pub command: String,
+    /// What was asked, in words, for the inspector.
     pub title: String,
     pub outcome: Outcome,
     /// A browser plan's steps, in order.
@@ -137,6 +142,24 @@ impl Outcome {
 
     pub fn problem(&self) -> bool {
         matches!(self.state, State::Refused | State::Stopped | State::Failed)
+    }
+
+    /// For the list: `ok`, `ok · exit 0`, `exit 1`, `refused · why`,
+    /// `stopped · why`, `failed · why`, `running · step 2`.
+    pub fn short(&self) -> String {
+        let state = match self.state {
+            State::Done => "ok",
+            State::Running => "running",
+            State::Refused => "refused",
+            State::Stopped => "stopped",
+            State::Failed => "failed",
+        };
+        match &self.text {
+            // A program's own exit says it failed.
+            Some(text) if self.state == State::Failed && text.starts_with("exit ") => text.clone(),
+            Some(text) => format!("{state} · {text}"),
+            None => state.to_string(),
+        }
     }
 }
 
@@ -237,32 +260,52 @@ impl Dashboard {
 
     /// A call starting, by `caller`: shown running, in its session's task
     /// if it names one, or as a task of its own.
-    pub fn begin(
-        &self,
-        caller: Caller,
-        session: Option<String>,
-        (title, steps, request): (String, Vec<Step>, Option<String>),
-    ) -> CallId {
+    pub fn begin(&self, caller: Caller, session: Option<String>, begun: Begun) -> CallId {
         let mut id = 0;
         self.change(|board| {
             board.next += 1;
             id = board.next;
-            let outcome = Outcome::running(&steps);
             board.add(
                 caller,
                 session,
                 Call {
                     id,
                     at: Timestamp::now(),
-                    title,
-                    outcome,
-                    steps,
+                    kind: begun.kind,
+                    command: begun.command,
+                    title: begun.title,
+                    outcome: Outcome::running(&begun.steps),
+                    steps: begun.steps,
                     detail: Detail::default(),
-                    request,
+                    request: begun.request,
                 },
             );
         });
         CallId(id)
+    }
+
+    /// Calls made before this host started, oldest first, each at the time
+    /// it was made, as the audit log keeps them: the board as it was.
+    pub fn restore(&self, calls: Vec<(Caller, Timestamp, Finished)>) {
+        self.change(|board| {
+            for (caller, at, finished) in calls {
+                board.next += 1;
+                let id = board.next;
+                let call = Call {
+                    id,
+                    at,
+                    kind: String::new(),
+                    command: String::new(),
+                    title: String::new(),
+                    outcome: finished.outcome.clone(),
+                    steps: Vec::new(),
+                    detail: Detail::default(),
+                    request: None,
+                };
+                board.add(caller.clone(), finished.session.clone(), call);
+                board.end(id, caller, finished);
+            }
+        });
     }
 
     /// One step of plan `request` in browser session `session` finished,
@@ -302,11 +345,14 @@ impl Dashboard {
     /// A call that ended before it could run: a caller refused at the
     /// door, a phone link's.
     pub fn once(&self, caller: Caller, finished: Finished) {
-        let id = self.begin(
-            caller.clone(),
-            None,
-            (finished.title.clone(), Vec::new(), None),
-        );
+        let begun = Begun {
+            kind: finished.kind.clone(),
+            command: finished.command.clone(),
+            title: finished.title.clone(),
+            steps: Vec::new(),
+            request: None,
+        };
+        let id = self.begin(caller.clone(), None, begun);
         self.end(id, caller, finished);
     }
 }
@@ -375,6 +421,8 @@ impl Board {
             .iter_mut()
             .find(|call| call.id == id)
             .expect("the call is in its task");
+        call.kind = finished.kind;
+        call.command = finished.command;
         call.title = finished.title;
         call.outcome = finished.outcome;
         call.steps = finished.steps;
@@ -411,14 +459,6 @@ impl Task {
         self.calls
             .last()
             .map_or(Timestamp::UNIX_EPOCH, |call| call.at)
-    }
-
-    /// A task of one call and no session: the call is the task.
-    pub fn lone(&self) -> Option<&Call> {
-        match (&self.session, self.calls.as_slice()) {
-            (None, [call]) => Some(call),
-            _ => None,
-        }
     }
 
     pub fn problem(&self) -> bool {

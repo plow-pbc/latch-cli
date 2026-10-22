@@ -268,7 +268,7 @@ async fn run_host(
             .map_err(|why| Failure::failed("not_logged_in", why))?,
         Box::new(rules),
     );
-    let audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
+    let mut audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
     log(&format!("audit log verified: {} records", audit.len()));
     let home = std::env::home_dir().unwrap_or_default();
     let plugins = crate::plugins::Plugins::load(state, &home)?;
@@ -303,6 +303,15 @@ async fn run_host(
 
     // Clients dial us through our relay, so register only once we have one.
     let dashboard = Dashboard::new(&config.peer.name);
+    // The board as it was: the calls the log holds from before this start.
+    let own = endpoint.id().to_string();
+    dashboard.restore(
+        audit
+            .take_recent()
+            .iter()
+            .filter_map(|record| dashboard::recorded(record, &own))
+            .collect(),
+    );
     dashboard.step("connecting to the relay…");
     if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
         .await
@@ -1393,13 +1402,13 @@ impl Host {
     ) -> dashboard::Caller {
         if local {
             return dashboard::Caller {
-                label: "the owner (local)".to_string(),
+                label: "you (local)".to_string(),
                 detail: format!("{}, on this host's own socket", identity.name),
             };
         }
         if identity.kind == "device" {
             return dashboard::Caller {
-                label: "the owner (device)".to_string(),
+                label: "you (device)".to_string(),
                 detail: format!("{}, key {}", identity.name, identity.key),
             };
         }

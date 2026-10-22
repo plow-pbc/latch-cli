@@ -17,7 +17,7 @@ fn agent() -> Caller {
 
 fn owner() -> Caller {
     Caller {
-        label: "the owner (local)".into(),
+        label: "you (local)".into(),
         detail: "workstation, on this host's own socket".into(),
     }
 }
@@ -191,7 +191,7 @@ fn a_browser_session_groups_its_calls_and_a_plan_its_steps() {
         .iter()
         .find(|task| task.title == "Run: cargo test")
         .unwrap();
-    assert_eq!(exec.lone().unwrap().outcome.line(), "Done - exit 0");
+    assert_eq!(exec.calls[0].outcome.line(), "Done - exit 0");
     let upload = board.tasks.front().unwrap();
     assert_eq!(upload.title, "Write: report.pdf");
     assert_eq!(
@@ -319,23 +319,21 @@ fn what_was_dropped_is_said_never_implied_complete() {
     assert_eq!(shown.tasks.len(), KEEP_TASKS);
     assert_eq!(shown.tasks[0].dropped, 1);
 
-    let mut view = view_of(&dashboard, false);
-    view.key(Key::Right);
-    let lines = screen(&view, 120, 400);
+    let lines = screen(&view_of(&dashboard, false), 120, 400);
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("Earlier steps unavailable"))
+            .any(|line| line.contains("earlier calls of this session unavailable"))
     );
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("Earlier tasks unavailable"))
+            .any(|line| line.contains("earlier calls unavailable"))
     );
 }
 
 #[test]
-fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_title_at_80() {
+fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_command_at_80() {
     // Width, height, the status lines under the host's, and how far under
     // the title the caller is.
     let layouts: [(usize, usize, &[&str], usize); 2] = [
@@ -368,14 +366,12 @@ fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_title_at_80() {
         );
         assert_eq!(lines[0].ends_with("| Directory: connected"), width == 120);
         assert_eq!(&lines[1..=status.len()], status);
-        let heading = lines
-            .iter()
-            .find(|line| line.contains("TASK / STEP"))
-            .unwrap();
+        let heading = lines.iter().find(|line| line.contains("COMMAND")).unwrap();
         assert_eq!(heading.contains("CALLER"), caller_row == 0, "{heading}");
+        assert!(heading.contains("KIND"), "{heading}");
         let at = lines
             .iter()
-            .position(|line| line.contains("Write: report.pdf"))
+            .position(|line| line.contains("file      put report.pdf"))
             .unwrap();
         assert!(
             lines[at + caller_row].contains("report-agent"),
@@ -385,12 +381,15 @@ fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_title_at_80() {
         // The result column lines up with its heading, and its reason is
         // never cut: it wraps whole onto the next line.
         let result = heading.find("RESULT").unwrap();
-        assert_eq!(lines[at].find("Refused"), Some(result), "{heading}");
+        assert_eq!(lines[at].find("refused"), Some(result), "{heading}");
         let words: Vec<&str> = lines[at..at + 2]
             .iter()
-            .map(|line| line[result..].trim())
+            .map(|line| line.get(result..).unwrap_or_default().trim())
             .collect();
-        assert_eq!(words.join(" "), "Refused - outside your instructions");
+        assert_eq!(
+            words.join(" ").trim(),
+            "refused · outside your instructions"
+        );
         assert!(!lines.iter().any(|line| line.contains('…')));
         let footer = lines[lines.len() - 2..].join("\n");
         assert!(
@@ -406,22 +405,29 @@ fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_title_at_80() {
         "{lines:#?}"
     );
 
-    // Selecting the session and unfolding it, then its plan: the steps in
-    // order, the one that stopped saying why.
-    let mut view = view_of(&busy(), true);
-    for key in [Key::Down, Key::Right, Key::Down, Key::Down, Key::Right] {
-        view.key(key);
-    }
-    let lines = screen(&view, 120, 30);
+    // The session: its calls as typed, under the open that started it.
+    let lines = screen(&view_of(&busy(), true), 120, 30);
     let at = |text: &str| lines.iter().position(|line| line.contains(text)).unwrap();
-    assert!(at("Check order status at example.com") < at("1 Open example.com"));
-    assert!(at("1 Open example.com") < at("3 Open order details"));
-    let stopped = &lines[at("3 Open order details")];
-    assert!(stopped.ends_with("Stopped - target unclear"), "{stopped}");
+    let open = &lines[at("open https://example.com/ --task 'Check order")];
+    assert!(
+        open.contains("you (local)  ") && open.contains("browser"),
+        "{open}"
+    );
+    let plan = &lines[at("do 'Open example.com'")];
+    assert!(at("--task 'Check order") < at("do 'Open example.com'"));
+    assert!(
+        plan.contains("browser     do 'Open example.com'"),
+        "indented, with no time or caller: {plan}"
+    );
+    assert!(
+        plan.trim_end().ends_with("stopped · step 3; 2 ran"),
+        "{plan}"
+    );
+    // Each call's kind and its command as typed.
     assert!(
         lines
             .iter()
-            .any(|line| line.starts_with(">") && line.contains("Plan: Open"))
+            .any(|line| line.contains("exec      cargo test"))
     );
 }
 
@@ -461,7 +467,7 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
     assert!(
         screen(&view, 80, 40)
             .iter()
-            .any(|line| line.contains("TASK / STEP"))
+            .any(|line| line.contains("COMMAND"))
     );
 }
 
@@ -486,7 +492,7 @@ fn new_work_never_moves_the_selection_and_a_pause_holds_the_screen() {
     let lines = screen(&view, 120, 30);
     let marked: Vec<&String> = lines.iter().filter(|line| line.starts_with('>')).collect();
     assert_eq!(marked.len(), 1);
-    assert!(!marked[0].contains("Run: ls"), "{marked:?}");
+    assert!(!marked[0].contains("exec      ls"), "{marked:?}");
 
     view.key(Key::Char(' '));
     run(
@@ -501,16 +507,16 @@ fn new_work_never_moves_the_selection_and_a_pause_holds_the_screen() {
     view.board = board(&dashboard);
     let paused = screen(&view, 120, 30).join("\n");
     assert!(
-        paused.contains("Paused") && !paused.contains("Run: pwd"),
+        paused.contains("Paused") && !paused.contains("exec      pwd"),
         "{paused}"
     );
     view.key(Key::End);
-    assert!(screen(&view, 120, 30).join("\n").contains("Run: pwd"));
+    assert!(screen(&view, 120, 30).join("\n").contains("exec      pwd"));
 
     // `r`: only what went wrong; `/`: a filter.
     view.key(Key::Char('r'));
     let problems = screen(&view, 120, 30).join("\n");
-    assert!(problems.contains("Write: report.pdf") && !problems.contains("Run: pwd"));
+    assert!(problems.contains("put report.pdf") && !problems.contains("exec      pwd"));
     view.key(Key::Char('r'));
     for key in [
         Key::Char('/'),
@@ -523,7 +529,7 @@ fn new_work_never_moves_the_selection_and_a_pause_holds_the_screen() {
     }
     let filtered = screen(&view, 120, 30).join("\n");
     assert!(
-        filtered.contains("Run: cargo test") && !filtered.contains("Run: pwd"),
+        filtered.contains("exec      cargo test") && !filtered.contains("exec      pwd"),
         "{filtered}"
     );
 }
@@ -679,10 +685,16 @@ fn a_running_plan_shows_its_step_as_each_one_ends() {
         .collect();
     assert_eq!(steps, ["Done", "Done", "-"]);
 
-    // Its details: two done, the third still to come.
+    // On the list, running, as asked; in its details, two done, the third
+    // still to come.
     let mut view = view_of(&dashboard, false);
-    view.key(Key::Right);
-    for _ in 0..3 {
+    let lines = screen(&view, 120, 30);
+    let row = lines
+        .iter()
+        .rfind(|line| line.contains("do 'Open example.com'"))
+        .unwrap();
+    assert!(row.trim_end().ends_with("running · step 3"), "{row}");
+    for _ in 0..2 {
         view.key(Key::Down);
     }
     view.key(Key::Enter);
@@ -783,7 +795,7 @@ fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
         None,
     );
     let mut view = view_of(&dashboard, false);
-    // Its title wraps onto more lines than the 80 by 12 screen has room.
+    // Its command wraps onto more lines than the 80 by 12 screen has room.
     let lines = screen(&view, 80, 12);
     assert_eq!(lines.len(), 12);
     assert!(
@@ -799,7 +811,7 @@ fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("Refused - owner said no")),
+            .any(|line| line.contains("refused · owner said")),
         "{lines:#?}"
     );
     // And all of it is in its details.
@@ -814,7 +826,7 @@ fn the_first_row_is_selected_and_keys_do_what_they_say() {
     let first = screen(&view, 120, 30);
     let marked: Vec<&String> = first.iter().filter(|line| line.starts_with('>')).collect();
     assert_eq!(marked.len(), 1, "{first:#?}");
-    assert!(marked[0].contains("Write: report.pdf"));
+    assert!(marked[0].contains("put report.pdf"));
     // Space pauses and resumes; Esc clears a filter and keeps a row selected.
     view.key(Key::Char(' '));
     assert!(screen(&view, 120, 30).join("\n").contains("Paused"));
@@ -833,12 +845,12 @@ fn the_first_row_is_selected_and_keys_do_what_they_say() {
     assert!(
         filtered
             .iter()
-            .any(|line| line.starts_with('>') && line.contains("Run: cargo test"))
+            .any(|line| line.starts_with('>') && line.contains("cargo test"))
     );
     view.key(Key::Esc);
     let cleared = screen(&view, 120, 30).join("\n");
     assert!(
-        cleared.contains("Write: report.pdf") && !cleared.contains("Filter:"),
+        cleared.contains("put report.pdf") && !cleared.contains("Filter:"),
         "{cleared}"
     );
 }
@@ -951,6 +963,188 @@ fn a_fill_refused_part_way_through_a_plan_says_what_ran_first() {
         "{inspector}"
     );
     assert!(!inspector.contains("did not run"), "{inspector}");
+}
+
+#[test]
+fn each_call_shows_its_kind_and_its_command_as_typed() {
+    let dashboard = Dashboard::new("host");
+    let ok = || Response::Ok(json!({}));
+    let failing = json!({"argv": ["sh", "-c", "echo went wrong >&2; exit 1"], "exit_code": 1});
+    run(
+        &dashboard,
+        owner(),
+        "exec",
+        failing.clone(),
+        failing,
+        ok(),
+        None,
+    );
+    let network = json!({"argv": ["curl", "-sSI", "https://example.com"], "network": true,
+                         "writes": ["out dir"], "exit_code": 0});
+    run(
+        &dashboard,
+        owner(),
+        "exec",
+        network.clone(),
+        network,
+        ok(),
+        None,
+    );
+    let labels = json!({"gog_args": ["--account", "owner@example.com", "gmail", "labels", "list"]});
+    let unconnected = Response::Error {
+        exit: Exit::Failed,
+        code: "account_required".into(),
+        message: "connect an account first".into(),
+        details: Value::Null,
+    };
+    run(
+        &dashboard,
+        owner(),
+        "google",
+        labels,
+        json!({}),
+        unconnected,
+        None,
+    );
+    let search = json!({"action": "search", "args": ["--", "the code"]});
+    run(
+        &dashboard,
+        owner(),
+        "messages",
+        search,
+        json!({"action": "messages.search"}),
+        ok(),
+        None,
+    );
+    run(
+        &dashboard,
+        owner(),
+        "file_get",
+        json!({"remote_path": "notes.txt"}),
+        json!({"path": "notes.txt", "size": 10}),
+        ok(),
+        None,
+    );
+    let observe = json!({"command": "observe", "session": "s1"});
+    let observed = json!({"command": "observe", "session": "s1hash"});
+    run(
+        &dashboard,
+        owner(),
+        "browser",
+        observe,
+        observed,
+        ok(),
+        None,
+    );
+    let rows: Vec<(String, String, String)> = board(&dashboard)
+        .tasks
+        .iter()
+        .rev()
+        .map(|task| {
+            let call = &task.calls[0];
+            (
+                call.kind.clone(),
+                call.command.clone(),
+                call.outcome.short(),
+            )
+        })
+        .collect();
+    let row = |kind: &str, command: &str, result: &str| {
+        (kind.to_string(), command.to_string(), result.to_string())
+    };
+    assert_eq!(
+        rows,
+        [
+            row("exec", "sh -c 'echo went wrong >&2; exit 1'", "exit 1"),
+            row(
+                "exec",
+                "--network --write 'out dir' curl -sSI https://example.com",
+                "ok · exit 0"
+            ),
+            row(
+                "google",
+                "--account owner@example.com gmail labels list",
+                "failed · account required"
+            ),
+            // Never the search.
+            row("messages", "search", "ok"),
+            row("file", "get notes.txt", "ok · 10 B"),
+            row("browser", "observe", "ok"),
+        ]
+    );
+}
+
+/// A host that starts again shows what its log holds of the calls before.
+#[test]
+fn a_board_starts_with_the_calls_the_audit_log_holds() {
+    let record = |caller: &str, agent: Option<&str>, op: &str, args: Value, outcome: &str| {
+        let mut record =
+            crate::audit::record(caller, agent.map(str::to_string), op, "allow", outcome);
+        record.time = "2026-10-22T14:00:00Z".into();
+        record.args = args;
+        record.hash = "ab".repeat(32);
+        record
+    };
+    let hash = crate::browser::host::hash_of("s");
+    let records = [
+        record(
+            "host-key",
+            None,
+            "exec",
+            json!({"argv": ["ls"], "exit_code": 0}),
+            "ok",
+        ),
+        record(
+            "host-key",
+            None,
+            "browser",
+            json!({"command": "open", "session": hash, "origin": "https://example.com", "path": "/"}),
+            "ok",
+        ),
+        record(
+            "device-key",
+            None,
+            "browser",
+            json!({"command": "close", "session": hash}),
+            "ok",
+        ),
+        record(
+            "agent-key-0123456789",
+            Some("agent-1"),
+            "exec",
+            json!({"argv": ["cargo", "test"]}),
+            "gatekeeper_denied",
+        ),
+    ];
+    let dashboard = Dashboard::new("host");
+    dashboard.restore(
+        records
+            .iter()
+            .filter_map(|record| recorded(record, "host-key"))
+            .collect(),
+    );
+    let lines = screen(&view_of(&dashboard, false), 120, 20);
+    let at = |text: &str| {
+        lines
+            .iter()
+            .position(|line| line.contains(text))
+            .unwrap_or_else(|| panic!("{text}: {lines:#?}"))
+    };
+    let local = jiff::Timestamp::from_second(1_792_677_600)
+        .unwrap()
+        .to_zoned(jiff::tz::TimeZone::system())
+        .strftime("%H:%M:%S")
+        .to_string();
+    assert!(lines[at("exec      ls")].contains(&local), "{lines:#?}");
+    assert!(lines[at("exec      ls")].contains("you (local)"));
+    assert!(lines[at("open https://example.com/")].contains("ok"));
+    // The session's close, under its open.
+    assert_eq!(at("browser     close"), at("open https://example.com/") + 1);
+    let refused = &lines[at("cargo test")];
+    assert!(
+        refused.contains("agent agent-ke") && refused.contains("refused · outside your"),
+        "{refused}"
+    );
 }
 
 #[test]
