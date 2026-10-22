@@ -8,16 +8,40 @@ use std::time::Duration;
 /// What the agent should do after a failure, with stable numeric exit codes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Exit {
-    /// The operation failed; read the error.
     Failed,
-    /// The command line is wrong, or the host is unknown or ambiguous; fix the command.
     Usage,
-    /// The host could not be reached and nothing was sent; retry later.
     Unreachable,
-    /// Refused; don't retry.
     Denied,
-    /// The connection was lost after the request was sent; check before resending.
     Unknown,
+}
+
+impl Exit {
+    pub const ALL: [Exit; 5] = [
+        Exit::Failed,
+        Exit::Usage,
+        Exit::Unreachable,
+        Exit::Denied,
+        Exit::Unknown,
+    ];
+
+    /// What the agent should do, as `latch help --json` tells it.
+    pub fn meaning(self) -> &'static str {
+        match self {
+            Exit::Failed => "The operation failed; read the error.",
+            Exit::Usage => {
+                "The command line is wrong, or the host is unknown or ambiguous; fix the command."
+            }
+            Exit::Unreachable => {
+                "The host could not be reached, or could not judge the call, and nothing ran. Its message says what fixes it: often a retry later."
+            }
+            Exit::Denied => {
+                "Refused; don't retry. The one exception is gatekeeper_denied with reason not_covered: ask the owner in your Plow chat, naming exactly what you will do, and retry once they agree."
+            }
+            Exit::Unknown => {
+                "The connection was lost after the request was sent; check before resending."
+            }
+        }
+    }
 }
 
 /// Numeric codes shared by the process exit and the wire protocol.
