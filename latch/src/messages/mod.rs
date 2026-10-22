@@ -8,6 +8,8 @@
 //! call (times resolved on the host's clock, handles made canonical) and
 //! judges and runs that plan.
 
+#[cfg(target_os = "macos")]
+pub mod access;
 pub mod host;
 
 #[cfg(target_os = "macos")]

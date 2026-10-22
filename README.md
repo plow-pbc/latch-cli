@@ -36,8 +36,10 @@ packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
 
 Update by rerunning the commands above, adding `--clobber` to `gh release download` so
-the download replaces the one already there. State and versioned plugins stay in place;
-restart an existing `latch serve` intentionally when ready to use the new binary.
+the download replaces the one already there. State and versioned plugins stay in place.
+A host `latch serve` or `serve -d` started is stopped and started again with the new
+latch, with what it was given; one run with `serve --foreground` keeps the old binary
+until you restart it.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
 No Homebrew tap is included.
 
@@ -106,6 +108,13 @@ No Homebrew tap is included.
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
   to the host's log (`latch logs`), never to stdout. On a
   host, each event names the connection's caller key and the operation.
+- Connectors are off until you turn them on, per host: on the host, with
+  its `latch serve` running, `latch plugins enable google` (on macOS also
+  `messages` and `contacts`) runs the connector's setup and enables it only
+  if that succeeds. `latch plugins disable NAME` refuses new calls at once
+  and returns once running ones finish. `latch plugins list` shows each
+  one's state; agents may list, never enable or disable. A call to a
+  connector that is off gets `not_enabled` (exit 4) with the enable command.
 - The host's audit log is sealed: each record is encrypted with the host's
   audit key, kept with its other secrets. `latch audit show` prints every
   record in full, each command as it ran; `latch audit verify` checks the

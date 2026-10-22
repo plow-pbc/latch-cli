@@ -74,8 +74,10 @@ pub async fn plan(workers: &WorkerSetup, op: &str, args: &Value) -> Result<Value
 /// Runs one planned call (`plan`'s request) for a caller the gatekeeper
 /// allowed. `home` is the owner's home folder, whose Messages and address
 /// book are read: Messages and the address book for `messages`, the
-/// address book alone for `contacts`.
-pub async fn run(workers: &WorkerSetup, home: &Path, op: &str, args: &Value) -> Done {
+/// address book alone for `contacts`. Without `names` (Contacts is not
+/// enabled), a `messages` call's worker never sees the address book, and
+/// its answer says why names are missing.
+pub async fn run(workers: &WorkerSetup, home: &Path, names: bool, op: &str, args: &Value) -> Done {
     let action = args["action"].as_str().unwrap_or(op);
     let mut audit = audit(op, action, &args["args"], &args["plan"]);
     let [messages, address_book] = folders(home);
@@ -90,9 +92,16 @@ pub async fn run(workers: &WorkerSetup, home: &Path, op: &str, args: &Value) -> 
     if let Some(region) = region().await {
         argv.splice(0..0, ["--region".to_string(), region]);
     }
-    let result = read(workers, &reads(op, home), &argv).await;
+    let mut reads = reads(op, home);
+    if !names {
+        reads.retain(|folder| *folder != address_book);
+    }
+    let result = read(workers, &reads, &argv).await;
     match result {
-        Ok(answer) => {
+        Ok(mut answer) => {
+            if !names {
+                answer["names_unavailable"] = json!("contacts_not_enabled");
+            }
             audit["result"] = json!({
                 "count": answer["count"],
                 "unreadable": answer["unreadable"],

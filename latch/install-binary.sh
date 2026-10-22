@@ -6,6 +6,12 @@
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
 #
+# A managed host on the state directory (one `latch serve` or `serve -d`
+# started) runs the latch being replaced: when the version changes, it is
+# stopped with `latch stop` first and started again with the new latch,
+# with what it was last given (`serve -d --again`), once everything is in
+# place. A host run with `serve --foreground` is left alone.
+#
 # On macOS a release's latch is inside Plow Latch.app (the `latch` beside
 # this script leads into it). Then the whole app goes to ~/Applications,
 # replacing an older one at the same path, so it keeps its identity and its
@@ -41,6 +47,8 @@ set -eu
 
 say() { printf 'install-binary.sh: %s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
+# One word for the shell, whatever it holds.
+quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [path/to/latch]"
 bin_dir="$HOME/.local/bin"
@@ -97,9 +105,38 @@ elif [ -z "$browsers" ]; then
 fi
 [ -f "$src" ] && [ -x "$src" ] || die "$src is not an executable file"
 
+dest="$bin_dir/latch"
+
+# 0. A managed host running the latch being replaced is stopped first; only
+# a stop it confirms counts, and a failed one changes nothing. From then on
+# until it runs again, however this script ends, the command that starts it
+# is said, and said again on a failure.
+restart_host=""
+tmp=""
+on_exit() {
+  ended=$?
+  rm -rf ${tmp:+"$tmp"}
+  if [ "$ended" -ne 0 ] && [ -n "$restart_host" ]; then
+    say "the host on $state_dir is stopped; start it again with: $restart_host" >&2
+  fi
+}
+trap on_exit EXIT
+if [ -x "$dest" ] && [ "$("$dest" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ]; then
+  case "$("$dest" --state-dir "$state_dir" status --local 2>/dev/null)" in
+    *'"managed":true'*)
+      stopped=$("$dest" --state-dir "$state_dir" stop) || die "could not stop the host on $state_dir (see above); nothing was changed"
+      case "$stopped" in
+        *'"stopped":true'*)
+          restart_host="$(quote "$dest") --state-dir $(quote "$state_dir") serve -d --again"
+          say "stopped the host on $state_dir; it starts again with the new latch once the install is done (or: $restart_host)"
+          ;;
+      esac
+      ;;
+  esac
+fi
+
 # 1. The binary. Copy next to the target, then rename, so a running latch is
 # never overwritten in place. cksum, unlike cmp, is on every system.
-dest="$bin_dir/latch"
 # On macOS, the app bundle the binary (or the link to it) sits in, if any.
 app=""
 if [ "$(uname -s)" = Darwin ]; then
@@ -205,7 +242,6 @@ else
   (umask 077 && mkdir -p "$state_dir")
   mkdir -p "$gog_dir"
   tmp=$(mktemp -d "$gog_dir/.download.XXXXXX")
-  trap 'rm -rf ${tmp:+"$tmp"}' EXIT
   curl -fsSL --proto '=https' -o "$tmp/gog.tar.gz" "$url" || die "could not download $url"
   # Only the one file, written by this script, so the archive chooses no
   # path, owner or mode.
@@ -267,6 +303,14 @@ fi
 # 5. The browser engines.
 if [ -n "$browsers" ]; then
   sh "$(dirname "$0")/browser-engines.sh" --state-dir "$state_dir" $browsers
+fi
+
+# 6. The host stopped in step 0, started again by the new latch.
+if [ -n "$restart_host" ]; then
+  "$dest" --state-dir "$state_dir" serve -d --again > /dev/null ||
+    die "the new latch did not start the host again (see above)"
+  restart_host=""
+  say "started the host on $state_dir again with the new latch"
 fi
 
 say "done"
