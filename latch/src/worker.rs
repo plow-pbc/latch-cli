@@ -20,6 +20,9 @@
 //!   gog JSON, download metadata and file bytes from its private call folder;
 //! - `probe`: confines itself and exits 0, so the host knows at startup
 //!   that the sandbox can be installed;
+//! - `access CONNECTOR PATH` (macOS): one line saying whether the
+//!   connector's stores in PATH can be opened, that is whether the host has
+//!   Full Disk Access for them;
 //! - on any failure of the worker itself: a last line
 //!   `{"worker_error": {"code": ..., "message": ...}}` on stderr and exit 125
 //!   (the code tools like `env` use for "the wrapper failed, not the
@@ -252,6 +255,55 @@ impl WorkerSetup {
             .unwrap_or_else(|| error("sandbox_failed", &sandbox::startup_error(&stderr))))
     }
 
+    /// Runs `latch worker access CONNECTOR -- FOLDER` in a worker that writes nowhere
+    /// and may read only FOLDER, which it alone does not hide.
+    #[cfg(target_os = "macos")]
+    pub async fn access(
+        &self,
+        connector: crate::plugins::Connector,
+        folder: &Path,
+    ) -> Result<crate::messages::access::Access, WorkerError> {
+        // Hidden paths are kept both as named and where they really are.
+        let real = folder
+            .canonicalize()
+            .unwrap_or_else(|_| folder.to_path_buf());
+        let restricted = WorkerSetup {
+            areas: Vec::new(),
+            reads: vec![folder.to_path_buf()],
+            hidden: self
+                .hidden
+                .iter()
+                .filter(|hidden| !hidden.starts_with(folder) && !hidden.starts_with(&real))
+                .cloned()
+                .collect(),
+            state_folders: StateFolders::none(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
+        };
+        let mut command = restricted.command(Path::new("/"))?;
+        command
+            .arg("access")
+            .arg(connector.name())
+            .arg("--")
+            .arg(folder)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let output = command
+            .output()
+            .await
+            .map_err(|err| error("worker_failed", &err.to_string()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(worker_error(&stderr).unwrap_or_else(|| {
+                error("worker_failed", "the worker stopped without saying why")
+            }));
+        }
+        serde_json::from_slice(&output.stdout)
+            .map_err(|_| error("worker_failed", "invalid worker output"))
+    }
+
     /// Starts `latch worker exec [--workdir DIR] -- ARGV…`. The program runs
     /// in a process group of its own, so a timeout can stop it together with
     /// every process it started. It dies with this host, however the host
@@ -440,6 +492,19 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         }
         // Confined, which is all a probe has to show.
         WorkerAction::Probe => return ExitCode::SUCCESS,
+        #[cfg(target_os = "macos")]
+        WorkerAction::Access { connector, path } => {
+            let connector = match crate::plugins::Connector::named(connector) {
+                Ok(connector) => connector,
+                Err(failure) => return fail(&failure.code, &failure.message),
+            };
+            let access = crate::messages::access::probe(connector, path);
+            println!(
+                "{}",
+                serde_json::to_string(&access).expect("access serializes")
+            );
+            return ExitCode::SUCCESS;
+        }
         WorkerAction::Messages { program, args } => {
             // The reader replaces this process and keeps its sandbox.
             let err = std::process::Command::new(program).args(args).exec();

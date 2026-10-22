@@ -14,6 +14,13 @@ goes into its own version folder beside the old one.
 Google worker reads and runs its own gog folder, read-only, while `exec` and
 file workers can neither read nor run anything under the state directory.
 
+Google is off on a host until its owner runs `latch plugins enable google`
+there, with `latch serve` running: the setup checks that gog is installed
+and that Plow has a Google account connected for this host to use. Until
+then every Google call gets `not_enabled`. `latch plugins disable google`
+only stops this host asking Plow for Google credentials; nothing is revoked
+at Google or Plow, and other hosts keep their access.
+
 The host checks gog's sha256 against the pin before every run and refuses a
 gog that does not match (`gog_unverified`). Every Google call gets a unique OS
 temp folder with mode 700, granted only to its worker. The host state

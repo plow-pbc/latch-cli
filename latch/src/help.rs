@@ -834,6 +834,35 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "plugins.list",
+        output: "`plugins`: each connector's `name` and `state` (enabled, disabled or needs_setup); one not enabled has a `reason` and the owner's `enable` command.",
+        effect: ReadOnly,
+        owner_only: false,
+        connector: None,
+        examples: &[ex("List this host's connectors", &["plugins", "list"])],
+    },
+    Entry {
+        id: "plugins.enable",
+        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do.",
+        effect: Repeatable(
+            "runs the connector's setup and, if it succeeds, turns it on for this host",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Turn Google on here", &["plugins", "enable", "google"])],
+    },
+    Entry {
+        id: "plugins.disable",
+        output: "The connector's `state`, disabled, and `waited_for`: how many running calls it waited for.",
+        effect: Repeatable("turns the connector off for this host; nothing is revoked"),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Turn Google off here",
+            &["plugins", "disable", "google"],
+        )],
+    },
+    Entry {
         id: "audit.show",
         output: "`records`: every record of this machine's host, opened with the key, each with its `id`; with --follow, one record per line, then each new one.",
         effect: ReadOnly,
