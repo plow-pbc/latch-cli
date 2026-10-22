@@ -930,6 +930,12 @@ async fn serve_operation(
             let running =
                 crate::plugins::Connector::of_op(op).map(|connector| host.plugins.start(connector));
             let not_enabled = matches!(running, Some(Err(_)));
+            // A messages call reads the address book for names only while
+            // Contacts is enabled too, held the same way.
+            let names = (op == "messages")
+                .then(|| crate::plugins::Connector::of_op("contacts"))
+                .flatten()
+                .and_then(|contacts| host.plugins.start(contacts).ok());
             // A messages or contacts call is judged, and then run, as one
             // effective request: the reader's reading of the caller's words
             // and any cursor's filters. One the reader refuses is not judged.
@@ -1039,8 +1045,14 @@ async fn serve_operation(
                         .await
                     }
                     "messages" | "contacts" => {
-                        crate::messages::host::run(&host.workers, &host.home, op, &request.args)
-                            .await
+                        crate::messages::host::run(
+                            &host.workers,
+                            &host.home,
+                            op != "messages" || names.is_some(),
+                            op,
+                            &request.args,
+                        )
+                        .await
                     }
                     "browser" => match &gate {
                         Ok(gate) => {
@@ -1133,6 +1145,7 @@ async fn serve_operation(
                 });
             }
             drop(running);
+            drop(names);
             response
         }
     };

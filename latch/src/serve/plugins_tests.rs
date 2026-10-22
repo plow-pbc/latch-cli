@@ -383,11 +383,34 @@ async fn messages_and_contacts_are_enabled_only_once_the_host_can_open_their_sto
     assert_eq!(access(&enable("contacts").await), "unavailable");
     std::fs::write(source.join("AddressBook-v22.abcddb"), "a synthetic store").unwrap();
     std::fs::write(book.join("AddressBook-v22.abcddb"), "a synthetic store").unwrap();
+    // A file in Sources holds no store, as the reader sees it.
+    std::fs::write(book.join("Sources/.DS_Store"), "not a source").unwrap();
     mode(&source.join("AddressBook-v22.abcddb"), 0o000);
     let answer = enable("contacts").await;
     mode(&source.join("AddressBook-v22.abcddb"), 0o600);
     assert_eq!(access(&answer), "not_granted");
     assert_eq!(ok(enable("contacts").await)["access"], "granted");
+}
+
+/// Names come from the address book, which is Contacts': a Messages call
+/// shows them only while Contacts is enabled too.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn messages_show_contact_names_only_while_contacts_is_enabled() {
+    let t = start(covered()).await;
+    t.with_messages();
+    let search = json!({"action": "search", "args": ["--", "code"]});
+    let named = ok(t.local_call("messages", search.clone()).await);
+    assert_eq!(
+        named["messages"][0]["from"]["name"], "Ann Example",
+        "{named}"
+    );
+
+    ok(plugins(&t, "disable", "contacts").await);
+    let unnamed = ok(t.local_call("messages", search).await);
+    assert_eq!(unnamed["count"], 1, "{unnamed}");
+    assert_eq!(unnamed["names_unavailable"], "contacts_not_enabled");
+    assert!(!unnamed.to_string().contains("Ann Example"), "{unnamed}");
 }
 
 #[cfg(target_os = "macos")]

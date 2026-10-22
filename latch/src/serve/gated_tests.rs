@@ -1139,7 +1139,7 @@ impl TestHost {
     /// The owner's Messages and address book, from the synthetic fixtures,
     /// and the reader installed where a host looks for it.
     #[cfg(target_os = "macos")]
-    fn with_messages(&self) {
+    pub(super) fn with_messages(&self) {
         let sqlite = |sql: &str, db: &Path| {
             std::fs::create_dir_all(db.parent().unwrap()).unwrap();
             let mut child = std::process::Command::new("/usr/bin/sqlite3")
