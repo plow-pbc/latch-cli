@@ -120,7 +120,7 @@ async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
             output.exit
         }
         Err(failure) => {
-            eprintln!("{}", failure.to_json());
+            report(&failure);
             failure.exit.into()
         }
     };
@@ -167,18 +167,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             }
         }
         Command::Login(args) => {
-            let output = match login::run(&state, args).await {
-                Ok(output) => output,
-                // A person at a terminal reads the sentence; a pipe gets the JSON.
-                Err(failure) if term::stderr_is_terminal() => {
-                    eprintln!("{}", failure.message);
-                    return Ok(Printed {
-                        text: String::new(),
-                        exit: failure.exit.into(),
-                    });
-                }
-                Err(failure) => return Err(failure),
-            };
+            let output = login::run(&state, args).await?;
             // A person at a terminal reads one line; a pipe gets the JSON.
             if !term::stdout_is_terminal() {
                 return to_json(output);
@@ -297,8 +286,12 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                     exit,
                 });
             }
+            // A clean stop prints nothing: the host's output was its log.
             served?;
-            to_json(json!({}))
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
         }
         Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
             unreachable!("handled in main")
@@ -349,6 +342,27 @@ fn usage_error(err: clap::Error) -> ExitCode {
         message.push_str("\n\nPut the command after `--`: latch exec --host H -- <cmd> <args>");
     }
     let failure = Failure::usage("usage", message);
-    eprintln!("{}", failure.to_json());
+    report(&failure);
     Exit::Usage.into()
+}
+
+/// Puts a failure on stderr: for a person at a terminal its message, a
+/// sentence, then any details it carries (a stopped plan's steps, a request
+/// id) as JSON; for a pipe the JSON error, so agents and scripts read its
+/// code.
+fn report(failure: &Failure) {
+    if !term::stderr_is_terminal() {
+        eprintln!("{}", failure.to_json());
+        return;
+    }
+    eprintln!("{}", failure.message);
+    let has_details = match &failure.details {
+        Value::Null => false,
+        Value::Object(details) => !details.is_empty(),
+        _ => true,
+    };
+    if has_details {
+        let details = serde_json::to_string_pretty(&failure.details).expect("details serialize");
+        eprintln!("{details}");
+    }
 }

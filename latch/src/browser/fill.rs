@@ -845,11 +845,24 @@ async fn release_and_set(
             let set = json!({"op": "set_value", "target": target["ref"], "value": piece,
                              "secret": suggest::secret_field(&meta, label)});
             let answer = step(session, set, audit).await?;
-            if answer["held"] != true {
+            // A value split across boxes must land whole in each one.
+            let dropped = answer["dropped_breaks"] == true;
+            if answer["held"] != true || dropped && boxes.len() > 1 {
                 return Err(Failure::failed(
                     "needs_owner",
                     "the page would not keep the value latch set; this site needs the owner (handoff)".into(),
                 ));
+            }
+            // Worth fixing in the vault, though the fill went through.
+            if dropped {
+                let fields = audit
+                    .entry("dropped_line_breaks")
+                    .or_insert_with(|| json!([]));
+                if let Some(fields) = fields.as_array_mut()
+                    && !fields.iter().any(|f| f == label)
+                {
+                    fields.push(json!(label));
+                }
             }
         }
     }
