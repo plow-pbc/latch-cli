@@ -1,0 +1,89 @@
+name: mac-tests
+
+# The full macOS suite, with clippy for the macOS-only code Linux never
+# compiles, the Messages reader's tests and the app bundle. By hand on any
+# branch: `gh workflow run mac-tests --ref BRANCH` tests that branch's head,
+# and its checks show on that commit. A merge to main runs it as one job;
+# the release runs it beside its build and makes its draft only if it passes.
+# Each shard pays about 1.5 minutes of setup (toolchain, caches, clippy,
+# build, browsers, test build) for about 16.5 minutes of tests in all: two
+# shards finish in 10.5 minutes instead of 18 for about 2 more Mac minutes,
+# worth it only where someone waits.
+run-name: Mac tests (${{ inputs.ref || github.ref_name }})
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit, branch or tag to test (default: the ref this runs on)"
+        type: string
+        default: ''
+      shards:
+        description: Jobs to split the suite across, 1 or 2
+        type: number
+        default: 2
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
+      shards:
+        type: number
+        default: 2
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shards == 1 && '[1]' || '[1, 2]') }}
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: latch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - run: rustup toolchain install
+      - if: matrix.shard == 1
+        run: python3 scripts/test-test-shard.py
+      # Main's runs keep this cache warm for every branch.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+          shared-key: mac-macos-15
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.shard == 1 }}
+      - if: matrix.shard == 1
+        run: cargo fmt --check && cargo clippy --all-targets --locked --features fake-gog -- -D warnings
+      - uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/cft
+          key: cft-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/camoufox
+          key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
+      - run: cargo build --locked
+      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
+      # fake-gog: the test-only gog stand-in the return scenario reads mail with.
+      - run: python3 scripts/test-shard.py ${{ matrix.shard }} ${{ inputs.shards == 1 && 1 || 2 }} --features fake-gog
+      - if: matrix.shard == 1
+        run: LATCH_FUZZ_ITERATIONS=50000 swift test
+        working-directory: latch/messages-reader
+      - if: matrix.shard == 1
+        run: |
+          app="$RUNNER_TEMP/Plow Latch.app"
+          sh ../scripts/macos-app-bundle.sh 0.0.0 target/debug/latch "$app"
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          "$app/Contents/MacOS/latch" --version
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-tests-${{ matrix.shard }}
+          path: .dev/ci/*.json
+          if-no-files-found: error
