@@ -184,6 +184,30 @@ fn latch_at_a_terminal(
     (code, shown.join().unwrap(), stdout)
 }
 
+/// What a failed command put on stderr (or a terminal showed), which must
+/// be exactly one JSON error line whose `exit` is the process's exit code.
+fn one_error_line(stderr: &str, code: Option<i32>) -> Value {
+    let stderr = stderr.replace("\r\n", "\n");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    let error: Value = serde_json::from_str(lines[0]).unwrap_or_else(|_| panic!("{stderr}"));
+    assert_eq!(
+        error["error"]["exit"].as_i64(),
+        code.map(i64::from),
+        "{stderr}"
+    );
+    error
+}
+
+/// The JSON error line a person's terminal ended with, after whatever the
+/// command asked there (its last question unanswered, on the same line).
+fn last_error_line(shown: &str) -> Value {
+    let at = shown
+        .rfind("{\"error\"")
+        .unwrap_or_else(|| panic!("{shown}"));
+    serde_json::from_str(shown[at..].trim_end()).unwrap_or_else(|_| panic!("{shown}"))
+}
+
 /// Plow's answer to `GET /v1/agents/me`.
 fn me(name: &str) -> (u16, Value) {
     let agent = json!({"uid": "0123456789abcdef0123456789abcdef", "name": name});
@@ -639,56 +663,167 @@ fn a_name_clash_at_a_terminal_asks_for_another_name_until_one_is_free_or_none_is
     ];
     let (code, shown, _) = latch_at_a_terminal(&state, &args, "n\n\n", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
+    let error = last_error_line(&shown);
+    let message = error["error"]["message"].as_str().unwrap();
     assert!(
-        shown.contains("`latch login --token-file FILE --name OTHER`"),
-        "{shown}"
+        message.contains("`latch login --token-file FILE --name OTHER`"),
+        "{message}"
     );
     assert!(
-        shown
+        message
             .contains(r"`latch login --token-file FILE --name 'Ada'\''s Mac'` again at a terminal"),
-        "{shown}"
+        "{message}"
     );
     assert!(!state.join("config.json").exists());
     assert_eq!(server.join().unwrap().len(), 2);
 }
 
 #[test]
-fn a_login_that_knows_no_plow_says_so_in_a_sentence_at_a_terminal_and_json_piped() {
+fn a_login_that_knows_no_plow_says_so_in_the_same_json_at_a_terminal_and_piped() {
     let dir = test_dir();
     let state = dir.path().join("state");
 
     let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
-    let sentence = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co";
-    assert!(shown.contains(sentence), "{shown}");
-    assert!(!shown.contains("\"error\""), "{shown}");
+    let at_terminal = one_error_line(&shown, code);
 
     let piped = latch(&state, &["login"], &[]);
     assert_eq!(piped.status.code(), Some(2), "{piped:?}");
-    let error: Value = serde_json::from_slice(&piped.stderr).unwrap();
+    let error = one_error_line(&String::from_utf8_lossy(&piped.stderr), Some(2));
     assert_eq!(error["error"]["code"], "not_configured");
+    assert_eq!(at_terminal, error);
     assert!(!state.join("config.json").exists());
 }
 
-#[test]
-fn any_command_fails_in_a_sentence_at_a_terminal_and_in_json_piped() {
+/// Every regular command `help --json` lists, as an argument list that gets
+/// past argument parsing: its words, then each positional input and each
+/// required flag, with its first choice or `1`.
+fn regular_commands() -> Vec<Vec<String>> {
     let dir = test_dir();
-    let state = dir.path().join("state");
-    for args in [&["status"][..], &["exec", "--host", "h", "ls"][..]] {
-        let (code, shown, _) = latch_at_a_terminal(&state, args, "", false, &[]);
-        assert!(matches!(code, Some(1..=4)), "{args:?}: {shown}");
-        assert!(!shown.contains("\"error\""), "{args:?}: {shown}");
-        assert!(!shown.trim().is_empty(), "{args:?}");
+    let help = latch(&dir.path().join("none"), &["help", "--json"], &[]);
+    let help: Value = serde_json::from_slice(&help.stdout).unwrap();
+    let human = ["setup", "dashboard", "serve", "help", "skill"];
+    let mut commands = Vec::new();
+    for action in help["actions"].as_array().unwrap() {
+        let id = action["id"].as_str().unwrap();
+        if human.contains(&id) {
+            continue;
+        }
+        let (mut args, mut after) = (Vec::new(), Vec::new());
+        match id.strip_prefix("google.") {
+            Some(gog) => {
+                args.push("google".to_string());
+                after.extend(gog.split('.').map(String::from));
+            }
+            None => args.extend(id.split('.').map(String::from)),
+        }
+        for input in action["inputs"].as_array().unwrap() {
+            if input["required"] != true && input["flag"].is_string() {
+                continue;
+            }
+            let value = input["choices"][0].as_str().unwrap_or("1").to_string();
+            match input["flag"].as_str() {
+                // `-o, --output`: the long one.
+                Some(flag) => args.extend([flag.rsplit(", ").next().unwrap().to_string(), value]),
+                None if input["after_separator"] == true => after.push(value),
+                None => args.push(value),
+            }
+        }
+        if !after.is_empty() {
+            args.push("--".to_string());
+            args.extend(after);
+        }
+        commands.push(args);
+    }
+    commands
+}
 
-        let piped = latch(&state, args, &[]);
-        assert_eq!(piped.status.code(), code, "{args:?}");
-        let error: Value = serde_json::from_slice(&piped.stderr).unwrap();
-        assert!(error["error"]["code"].is_string(), "{args:?}: {error}");
+/// A state folder of a newer latch's format, which every command refuses
+/// before doing anything, and in which a newer build is known.
+fn refused_state(dir: &Path) -> PathBuf {
+    let state = dir.join("state");
+    fs::create_dir_all(&state).unwrap();
+    let marker = json!({"format": 999_999, "written_by": "latch 99"});
+    fs::write(state.join("latch.json"), marker.to_string()).unwrap();
+    let checked = json!({"checked_at": "2026-10-22T08:00:00Z",
+        "latest": {"tag": "v0.1.0-99999999", "build": 99_999_999}, "failures": 0,
+        "failed_at": null, "noticed_at": null});
+    fs::write(state.join("update.json"), checked.to_string()).unwrap();
+    state
+}
+
+#[test]
+fn every_regular_command_fails_in_one_json_line_at_a_terminal_and_piped() {
+    let dir = test_dir();
+    let state = refused_state(dir.path());
+    let commands = regular_commands();
+    assert!(commands.len() > 50, "{commands:?}");
+    for args in &commands {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let piped = latch(&state, &args, &[]);
+        assert!(piped.stdout.is_empty(), "{args:?}: {piped:?}");
+        let error = one_error_line(&String::from_utf8_lossy(&piped.stderr), piped.status.code());
+        assert_eq!(error["error"]["code"], "state_format", "{args:?}: {error}");
+
+        // At a terminal, stdout and stderr both: the same one line.
+        let (code, shown, _) = latch_at_a_terminal(&state, &args, "", true, &[]);
+        assert_eq!(code, piped.status.code(), "{args:?}: {shown}");
+        assert_eq!(one_error_line(&shown, code), error, "{args:?}");
     }
 }
 
 #[test]
-fn a_failure_with_details_shows_them_at_a_terminal_too() {
+fn bad_arguments_exit_2_in_one_json_line_for_every_command() {
+    let dir = test_dir();
+    let help = latch(&dir.path().join("none"), &["help", "--json"], &[]);
+    let help: Value = serde_json::from_slice(&help.stdout).unwrap();
+    let mut words: Vec<Vec<&str>> = help["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| {
+            let id = action["id"].as_str().unwrap();
+            let words = if id.starts_with("google.") {
+                "google"
+            } else {
+                id
+            };
+            words.split('.').collect()
+        })
+        .collect();
+    words.dedup();
+    for mut args in words {
+        args.push("--no-such-flag");
+        let output = latch(&dir.path().join("none"), &args, &[]);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        assert_eq!(error["error"]["code"], "usage", "{args:?}: {error}");
+    }
+}
+
+#[test]
+fn help_lists_every_error_code_with_its_exit() {
+    let dir = test_dir();
+    let help = latch(&dir.path().join("none"), &["help", "--json"], &[]);
+    let help: Value = serde_json::from_slice(&help.stdout).unwrap();
+    let codes = help["error_codes"].as_array().unwrap();
+    for (code, exit) in [("usage", 2), ("state_format", 1), ("host_offline", 3)] {
+        assert!(
+            codes.contains(&json!({"code": code, "exit": exit})),
+            "{code}: {codes:?}"
+        );
+    }
+    let exits: Vec<&Value> = help["exit_codes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|exit| &exit["code"])
+        .collect();
+    assert!(codes.iter().all(|code| exits.contains(&&code["exit"])));
+}
+
+#[test]
+fn a_failure_with_details_carries_them_in_its_line_at_a_terminal_too() {
     let (dir, state, _) = owner_host();
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
@@ -709,12 +844,13 @@ fn a_failure_with_details_shows_them_at_a_terminal_too() {
     let env = [("EDITOR", editor.as_path())];
     let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &env);
     assert_eq!(code, Some(4), "{shown}");
+    let error = one_error_line(&shown, code);
+    let message = error["error"]["message"].as_str().unwrap();
     assert!(
-        shown.contains("the rules changed since they were read"),
-        "{shown}"
+        message.contains("the rules changed since they were read"),
+        "{message}"
     );
-    assert!(shown.contains("\"revision\""), "{shown}");
-    assert!(!shown.contains("\"error\""), "{shown}");
+    assert!(error["error"]["revision"].is_string(), "{error}");
 }
 
 /// A login by text: Plow gives a code, the phone texts it at once, and
@@ -914,10 +1050,9 @@ fn help_says_what_is_allowed_and_how_to_pass_a_command() {
     let missing = latch(&state, &["exec", "--host", "pi", "ls", "-la"], &[]);
     assert_eq!(missing.status.code(), Some(2));
     let error: Value = serde_json::from_slice(&missing.stderr).unwrap();
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("latch exec --host H -- <cmd> <args>"),
-        "{message}"
+    assert_eq!(
+        error["error"]["next"],
+        "latch exec --host H -- <cmd> <args>"
     );
 
     let exec_help = latch(&state, &["exec", "--help"], &[]);
@@ -2189,7 +2324,7 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
 }
 
 #[test]
-fn latch_trace_shows_iroh_on_stderr_inside_each_host_operation() {
+fn latch_trace_goes_to_the_state_folder_and_a_hosts_log_never_to_a_commands_stderr() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -2218,12 +2353,29 @@ fn latch_trace_shows_iroh_on_stderr_inside_each_host_operation() {
     let mut host_log = String::new();
     log.read_to_string(&mut host_log).unwrap();
 
-    // The client's stdout is still only its JSON; iroh's events are on stderr.
+    // The client's stdout is still only its JSON, its stderr empty; iroh's
+    // events are in its state folder.
     assert_eq!(exec.status.code(), Some(0), "{exec:?}");
     let result: Value = serde_json::from_slice(&exec.stdout).unwrap();
     assert_eq!(result["stdout"], "hi\n");
-    let stderr = String::from_utf8_lossy(&exec.stderr);
-    assert!(stderr.contains(" iroh::"), "{stderr}");
+    assert!(exec.stderr.is_empty(), "{exec:?}");
+    let traced = fs::read_to_string(agent.join("trace.log")).unwrap();
+    assert!(traced.contains(" iroh::"), "{traced}");
+
+    // A traced command that fails: one error line, at a terminal and piped.
+    let args = ["exec", "--host", "nowhere", "--", "true"];
+    let trace = [("LATCH_TRACE", Path::new("trace"))];
+    let mut env = agent_env.to_vec();
+    env.extend(trace);
+    let failed = latch(&agent, &args, &env);
+    let error = one_error_line(
+        &String::from_utf8_lossy(&failed.stderr),
+        failed.status.code(),
+    );
+    assert_eq!(error["error"]["code"], "unknown_host", "{error}");
+    let (code, shown, _) = latch_at_a_terminal(&agent, &args, "", true, &env);
+    assert_eq!(one_error_line(&shown, code), error);
+    assert!(fs::read_to_string(agent.join("trace.log")).unwrap().len() > traced.len());
     // On the host, the operation's span closes inside its connection's.
     let closed = host_log
         .lines()

@@ -2,8 +2,8 @@
 //!
 //! `main` parses the command line, runs one command, and applies the output
 //! contract every command shares: on success one JSON object on stdout and
-//! exit 0; on failure `{"error": {"code", "message"}}` on stderr and an exit
-//! code from the table in `failure.rs`.
+//! exit 0; on failure one `{"error": {"code", "message", "next", "exit"}}`
+//! line on stderr and that exit code, from the table in `failure.rs`.
 
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -119,7 +119,14 @@ fn main() -> ExitCode {
         }
         command => command,
     };
-    let notice = !matches!(command, Command::Update(_));
+    // Only the human commands still say a newer build is out: a regular
+    // command's stderr is its error line alone, and `status --local` carries
+    // the same fact.
+    let notice = match &command {
+        Command::Dashboard => true,
+        Command::Serve(args) => !args.detach && !args.foreground,
+        _ => false,
+    };
     let state_dir = cli.state_dir.clone();
     let exit = run_async(cli.state_dir, command);
     if notice && let Ok(state) = StateDir::new(state_dir) {
@@ -157,9 +164,10 @@ struct Printed {
 
 /// Runs one command and returns its JSON output.
 async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Failure> {
-    trace::init()?;
     let state = StateDir::new(state_dir)?;
     state.check_format()?;
+    let foreground = matches!(&command, Command::Serve(args) if args.foreground);
+    trace::init(&state, foreground)?;
     match command {
         Command::Login(args) if args.events => {
             // Every ending is a line too; the failure still goes to stderr.
@@ -403,34 +411,19 @@ fn usage_error(err: clap::Error) -> ExitCode {
         let _ = err.print();
         return ExitCode::SUCCESS;
     }
-    let mut message = err.to_string().trim_end().to_string();
+    let message = err.to_string().trim_end().to_string();
+    let mut failure = Failure::usage("usage", message);
     // `latch exec --host h ls -la` (no `--`): say how to pass a command.
     let exec = std::env::args().skip(1).any(|word| word == "exec");
     if exec && err.kind() == ErrorKind::UnknownArgument {
-        message.push_str("\n\nPut the command after `--`: latch exec --host H -- <cmd> <args>");
+        failure.next = Some("latch exec --host H -- <cmd> <args>".into());
     }
-    let failure = Failure::usage("usage", message);
     report(&failure);
     Exit::Usage.into()
 }
 
-/// Puts a failure on stderr: for a person at a terminal its message, a
-/// sentence, then any details it carries (a stopped plan's steps, a request
-/// id) as JSON; for a pipe the JSON error, so agents and scripts read its
-/// code.
+/// Puts a failure on stderr as its one JSON error line, whether a person
+/// or a program reads it.
 fn report(failure: &Failure) {
-    if !term::stderr_is_terminal() {
-        eprintln!("{}", failure.to_json());
-        return;
-    }
-    eprintln!("{}", failure.message);
-    let has_details = match &failure.details {
-        Value::Null => false,
-        Value::Object(details) => !details.is_empty(),
-        _ => true,
-    };
-    if has_details {
-        let details = serde_json::to_string_pretty(&failure.details).expect("details serialize");
-        eprintln!("{details}");
-    }
+    eprintln!("{}", failure.to_json());
 }

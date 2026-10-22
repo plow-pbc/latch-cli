@@ -6,8 +6,10 @@ description: Reach the files, programs, Google accounts, browser and messages on
 # latch
 
 latch runs a command on one of your owner's machines (a *host*) and prints
-one JSON object: on stdout when it worked, as `{"error": {"code",
-"message"}}` on stderr when it did not, with an exit code you can branch on.
+one JSON object: on stdout when it worked, as one `{"error": {"code",
+"message", "next", "exit"}}` line on stderr when it did not (`next` only
+when there is a next step), with an exit code you can branch on. Branch on
+`code`; `latch help --json` lists every code with its exit.
 
 ## Start
 

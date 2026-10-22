@@ -1079,6 +1079,13 @@ pub fn run(args: HelpArgs) -> ExitCode {
                     meaning: exit.meaning(),
                 })
                 .collect(),
+            error_codes: crate::failure::CODES
+                .iter()
+                .map(|(code, exit)| ErrorCodeHelp {
+                    code,
+                    exit: u8::from(*exit),
+                })
+                .collect(),
             actions: listed,
         };
         println!("{}", serde_json::to_string(&help).expect("help serializes"));
@@ -1159,6 +1166,8 @@ fn entry(id: &str) -> &'static Entry {
 struct Help {
     version: &'static str,
     exit_codes: Vec<ExitCodeHelp>,
+    /// Every error code, with the exit it comes with.
+    error_codes: Vec<ErrorCodeHelp>,
     actions: Vec<Action>,
 }
 
@@ -1166,6 +1175,12 @@ struct Help {
 struct ExitCodeHelp {
     code: u8,
     meaning: &'static str,
+}
+
+#[derive(Serialize)]
+struct ErrorCodeHelp {
+    code: &'static str,
+    exit: u8,
 }
 
 #[derive(Serialize)]

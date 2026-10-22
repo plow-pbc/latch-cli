@@ -141,8 +141,9 @@ No Homebrew tap is included.
   own machines are unaffected.
 - A connection problem (`host_unreachable`, a slow call): set
   `LATCH_TRACE=iroh=debug,latch=info` on the client, the host or both, to
-  see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
-  to the host's log (`latch logs`), never to stdout. On a
+  see iroh's connection events (the filter syntax is `RUST_LOG`'s). A
+  command's go to `trace.log` in its state folder, the host's to its log
+  (`latch logs`); never to stdout. On a
   host, each event names the connection's caller key and the operation.
 - Connectors are off until you turn them on, per host: on the host, with
   or without its `latch serve` running, `latch plugins enable google` (on
