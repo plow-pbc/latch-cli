@@ -99,19 +99,17 @@ latch status --pretty   # the same for a person, with key art to compare between
 latch status --local    # only this machine: state folder, login, serve, shares. Works offline
 ```
 
-## 3. Choose what to share, then serve
+## 3. Serve this machine
 
-Pick a folder for callers to work in, save it, and serve:
+Exec and file calls need no shared-folder setup:
 
 ```sh
-latch shares set ~/code/my-project
-latch shares          # {"shares":["/Users/you/code/my-project"]}
 latch serve
 ```
 
-`latch serve` runs in the foreground with a live dashboard; each call shows up
-as a row. Ctrl-C stops it. Leave it running in its own terminal. (`latch serve
-FOLDER…` shares those folders this time instead of the saved ones.)
+`latch serve` shows a live dashboard; each call shows up as a row. Ctrl-C
+stops the host. Leave it running in its own terminal, or use `latch serve -d`
+to start it detached and `latch stop` to stop it.
 
 What a caller from one of your machines can reach:
 
@@ -121,15 +119,11 @@ What a caller from one of your machines can reach:
   state or, on macOS, `~/Library` (its Caches excepted); anything else is
   refused (`bad_path`, exit 4). A put replaces the file only once all of it
   has arrived, and keeps the old file's permissions.
-- `exec` starts in the first shared folder.
-
-> **Never share your home folder (or `/`).** latch does not stop you: `latch
-> shares set ~` is accepted without a warning. Then every caller, including
-> agents you allow, can change or delete anything in it: your SSH keys,
-> shell profile, browser profiles, other credentials. Share a project folder.
-
-`latch shares set` replaces the saved list. A running `latch serve` keeps its
-folders until you restart it.
+- **Exec:** reads home and system files, with the same hidden places as file
+  calls. It writes only repeated `--write PATH` grants, private temp and
+  existing plain tool-cache folders. IP networking is off unless `--network`
+  is given. Workdir defaults to the first write folder, otherwise home;
+  `--workdir` overrides it.
 
 ## 4. Call the host from another of your machines
 
@@ -164,7 +158,7 @@ Your settings (`rules`, `vault`, `shares`) are never judged. Set
 
 ```sh
 latch exec --host my-mac -- ls -la
-latch exec --host my-mac -- sh -c 'pwd; uname -s'
+latch exec --host my-mac --write '~/code/my-project' -- sh -c 'pwd; uname -s'
 # {"exit_code":0,"stdout":"/Users/you/code/my-project\nDarwin\n",…}
 ```
 

@@ -1303,7 +1303,7 @@ fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
         ("state", "area/state-link"),
         ("area/peer", "area/peer-link"),
     ] {
-        for relative in ["serve.sock", "nested/other.sock"] {
+        for relative in ["serve-v2.sock", "nested/other.sock"] {
             let socket = root.join(state).join(relative);
             let listener = UnixListener::bind(&socket).unwrap();
             assert!(

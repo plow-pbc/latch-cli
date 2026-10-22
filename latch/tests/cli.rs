@@ -2771,7 +2771,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &share, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve.sock").exists() {
+    while !host.join("serve-v2.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -2958,7 +2958,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve.sock")).unwrap();
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v2.sock")).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -2986,7 +2986,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     google_enabled(&host);
     let _serve = serving(&host, &share, &relay);
     assert_eq!(
-        fs::metadata(host.join("serve.sock"))
+        fs::metadata(host.join("serve-v2.sock"))
             .unwrap()
             .permissions()
             .mode()
@@ -3392,7 +3392,7 @@ impl Bench {
     }
 
     /// The owner's `latch exec --timeout TIMEOUT -- sh -c SCRIPT`, running.
-    fn exec(&self, timeout: &str, script: &str) -> std::process::Child {
+    fn exec(&self, state: &Path, timeout: &str, script: &str) -> std::process::Child {
         let args = [
             "exec",
             "--host",
@@ -3406,7 +3406,7 @@ impl Bench {
             "-c",
             script,
         ];
-        latch_command(&self.owner, &args, &[])
+        latch_command(state, &args, &[])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -3455,7 +3455,7 @@ impl Bench {
 fn a_host_killed_mid_exec_takes_its_program_along_and_its_next_start_sweeps_the_leftovers() {
     let bench = Bench::new();
     let mut serve = bench.serve();
-    let mut client = bench.exec("60", TICKING);
+    let mut client = bench.exec(&bench.owner, "60", TICKING);
     bench.started();
     serve.0.kill().unwrap();
     serve.0.wait().unwrap();
@@ -3474,7 +3474,7 @@ fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
     let bench = Bench::new();
     let serve = bench.serve();
     let pid = serve.0.id() as libc::pid_t;
-    let client = bench.exec("2", TICKING);
+    let client = bench.exec(&bench.owner, "2", TICKING);
     bench.started();
     // SAFETY: signals our own child.
     unsafe { libc::kill(pid, libc::SIGSTOP) };
@@ -3497,7 +3497,7 @@ fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
 fn an_exec_cut_off_by_a_host_stop_is_audited_and_leaves_no_temp_folder() {
     let bench = Bench::new();
     let serve = bench.serve();
-    let client = bench.exec("60", TICKING);
+    let client = bench.exec(&bench.owner, "60", TICKING);
     bench.started();
     // Stops the host with SIGTERM, as a service manager does.
     drop(serve);
@@ -3518,27 +3518,7 @@ fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
         let bench = Bench::new();
         let serve = bench.serve();
         let state = if local { &bench.host } else { &bench.owner };
-        let mut client = latch_command(
-            state,
-            &[
-                "exec",
-                "--host",
-                "host",
-                "--timeout",
-                "120",
-                "--write",
-                bench.share.to_str().unwrap(),
-                "--",
-                "sh",
-                "-c",
-                TICKING,
-            ],
-            &[],
-        )
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+        let mut client = bench.exec(state, "120", TICKING);
         bench.started();
         client.kill().unwrap();
         client.wait().unwrap();
@@ -3567,23 +3547,11 @@ fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
 fn a_local_socket_exec_finishes_and_is_audited_before_the_host_stops() {
     let bench = Bench::new();
     let serve = bench.serve();
-    let client = latch_command(
+    let client = bench.exec(
         &bench.host,
-        &[
-            "exec",
-            "--write",
-            bench.share.to_str().unwrap(),
-            "--",
-            "sh",
-            "-c",
-            "echo started > tick; sleep 2; echo done > finished",
-        ],
-        &[],
-    )
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .spawn()
-    .unwrap();
+        "60",
+        "echo started > tick; sleep 2; echo done > finished",
+    );
     bench.started();
     drop(serve);
     assert_eq!(
@@ -3906,12 +3874,12 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     assert_eq!(hello["ok"]["pid"], started["pid"], "{hello}");
     assert_eq!(hello["ok"]["attached"], false);
     assert!(registered(&host));
-    // A real read through it, naming the file under the host's home.
+    // A real read through it, in the explicitly requested working folder.
     fs::write(share.join("note.txt"), "hi").unwrap();
     let read = local_operation(
         &host,
         "exec",
-        json!({"argv": ["cat", share.join("note.txt")], "timeout": 10}),
+        json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
     );
     assert_eq!(read["ok"]["stdout"], "hi", "{read}");
 
@@ -3953,7 +3921,7 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     let read = local_operation(
         &host,
         "exec",
-        json!({"argv": ["cat", share.join("note.txt")], "timeout": 10}),
+        json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
     );
     assert_eq!(read["ok"]["stdout"], "hi", "{read}");
     let stopped: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
@@ -3972,11 +3940,7 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
         .iter()
         .find(|record| record["op"] == "exec")
         .unwrap();
-    assert_eq!(
-        exec["args"]["argv"],
-        json!(["cat", share.join("note.txt")]),
-        "{exec}"
-    );
+    assert_eq!(exec["args"]["argv"], json!(["cat", "note.txt"]), "{exec}");
 }
 
 #[test]
@@ -4220,7 +4184,7 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve.sock")).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v2.sock")).unwrap();
     thread::spawn(move || {
         let mut held = Vec::new();
         for connection in listener.incoming() {

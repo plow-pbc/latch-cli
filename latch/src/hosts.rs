@@ -26,7 +26,8 @@ pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Fa
     let config = state.require_login()?;
     if asked.as_deref() == Some(config.peer.name.as_str())
         || (asked.is_none()
-            && (config.peer.relay_url.is_some() || state.path.join("serve.sock").exists()))
+            && (config.peer.relay_url.is_some()
+                || crate::transport::local_socket_path(&state.path).exists()))
     {
         return Ok(Peer {
             this_machine: true,
