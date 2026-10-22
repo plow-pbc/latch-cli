@@ -495,8 +495,9 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     let message = error["error"]["message"].as_str().unwrap();
     assert!(
         message.contains("`latch login --token-file FILE --name OTHER`")
-            && message
-                .contains("`latch login --token-file FILE` again at a terminal to replace it"),
+            && message.contains(&format!(
+                "`latch login --token-file FILE --name {hostname}` again at a terminal to replace it"
+            )),
         "{message}"
     );
     assert!(!state.join("config.json").exists());
@@ -602,7 +603,9 @@ fn a_name_clash_at_a_terminal_asks_for_another_name_until_one_is_free_or_none_is
     assert!(!requests.iter().any(|r| r.starts_with("DELETE ")));
 
     // No, then no name: the login ends, saying what to run next.
-    let (api_url, server) = fake_plow(vec![(409, json!({})), (200, json!({"data": [holder]}))]);
+    // The suggested retry keeps the name asked for, quoted for the shell.
+    let quoted = peer(json!("c".repeat(64)), "Ada's Mac", "device", Value::Null);
+    let (api_url, server) = fake_plow(vec![(409, json!({})), (200, json!({"data": [quoted]}))]);
     let state = dir.path().join("state-2");
     let args = [
         "login",
@@ -611,11 +614,19 @@ fn a_name_clash_at_a_terminal_asks_for_another_name_until_one_is_free_or_none_is
         "--token-file",
         owner,
         "--name",
-        "mac",
+        "Ada's Mac",
     ];
     let (code, shown, _) = latch_at_a_terminal(&state, &args, "n\n\n", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
-    assert!(shown.contains("--name OTHER"), "{shown}");
+    assert!(
+        shown.contains("`latch login --token-file FILE --name OTHER`"),
+        "{shown}"
+    );
+    assert!(
+        shown
+            .contains(r"`latch login --token-file FILE --name 'Ada'\''s Mac'` again at a terminal"),
+        "{shown}"
+    );
     assert!(!state.join("config.json").exists());
     assert_eq!(server.join().unwrap().len(), 2);
 }

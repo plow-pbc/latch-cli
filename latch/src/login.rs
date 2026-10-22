@@ -339,8 +339,9 @@ async fn clash(plow: &Plow, mut registration: Registration, rerun: &str) -> Resu
     let taken = || {
         let message = format!(
             "a machine named {name:?} already exists (last seen {last_seen}); run \
-             `{rerun} --name OTHER` to use another name, or `{rerun}` again at a \
-             terminal to replace it (no second text needed)"
+             `{rerun} --name OTHER` to use another name, or `{rerun} --name {}` again at a \
+             terminal to replace it (no second text needed)",
+            shell_quoted(&name)
         );
         Failure::usage("conflict", message)
     };
@@ -363,6 +364,17 @@ async fn clash(plow: &Plow, mut registration: Registration, rerun: &str) -> Resu
             Err(failure) if failure.code == "conflict" => eprintln!("{other:?} is taken too."),
             result => return result,
         }
+    }
+}
+
+/// `word` as a shell reads it back: as it is when it holds only safe
+/// characters, else in single quotes (a quote inside written `'\''`).
+fn shell_quoted(word: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "-._/:@%+=,".contains(c);
+    if !word.is_empty() && word.chars().all(safe) {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
     }
 }
 
@@ -477,6 +489,13 @@ mod tests {
             Some(Duration::from_millis(500))
         );
         assert_eq!(before_giving_up(Duration::from_secs(600), second), None);
+    }
+
+    #[test]
+    fn a_name_is_quoted_for_the_shell_only_when_it_needs_it() {
+        assert_eq!(shell_quoted("mac-2"), "mac-2");
+        assert_eq!(shell_quoted("Ada's Mac"), r"'Ada'\''s Mac'");
+        assert_eq!(shell_quoted(""), "''");
     }
 
     #[test]

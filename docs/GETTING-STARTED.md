@@ -85,7 +85,8 @@ under its name. `n` or Enter asks `New name for this machine:` and finishes
 under the name you type, asking again if that one is taken too; an empty name
 stops the login. Either way you don't text again. Without a terminal to ask
 at, the login stops with `conflict` and says what to run: `latch login --name
-OTHER`, or `latch login` again at a terminal to replace the old machine.
+OTHER`, or `latch login --name NAME` (the name you asked for) again at a
+terminal to replace the old machine.
 `latch devices` lists your machines.
 
 **What you see:** a QR code, then
