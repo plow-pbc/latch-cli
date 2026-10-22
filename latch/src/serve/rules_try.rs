@@ -94,7 +94,9 @@ async fn preview(
     // The answer shows the action as the judge was shown it; the record
     // keeps it as the audit keeps the real call's.
     let gated = gate::gated(&request.op, &request.args);
-    let action = gated.as_ref().map(judged_action);
+    let action = gated
+        .as_ref()
+        .map(|gated| judged_action(&request.op, gated));
     if let Some(gated) = gated {
         audit.insert("action".into(), gated.audit);
     }
@@ -162,12 +164,16 @@ async fn preview(
     (result, judged)
 }
 
-/// What the judge was shown, an exec's stdin masked as the audit keeps it
-/// (its size and sha256); its secret values were never in it.
-fn judged_action(gated: &gate::Gated) -> Value {
+/// What the judge was shown, masked as the audit keeps the same request:
+/// an exec's stdin as its size and sha256, a messages or contacts plan
+/// without a contacts page's position; secret values were never in it.
+fn judged_action(op: &str, gated: &gate::Gated) -> Value {
     let mut action: Value = serde_json::from_str(gated.action.get()).expect("an action is JSON");
     if let Some(stdin) = action["stdin"].as_str() {
         action["stdin"] = crate::exec::stdin_audit(stdin.as_bytes());
+    }
+    if action.get("arguments").is_some() {
+        action["arguments"] = crate::messages::host::kept_plan(op, &action["arguments"]);
     }
     action
 }

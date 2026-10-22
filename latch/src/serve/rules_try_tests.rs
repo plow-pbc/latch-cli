@@ -403,3 +403,48 @@ async fn the_answer_shows_the_action_as_the_judge_saw_it() {
             .contains("See you at 6.")
     );
 }
+
+/// A contacts page's cursor holds the name the page before ended on: the
+/// preview shows its plan as the audit keeps it, without that name.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_previewed_contacts_page_does_not_show_where_the_last_page_ended() {
+    let t = start(chat_with(always_covered)).await;
+    t.with_messages();
+    let device = t.caller("device").await;
+    let first = json!({"action": "search", "args": ["--limit", "1", "--", "a"]});
+    let (listed, _) = t.call(&device, "contacts", first).await;
+    let Response::Ok(first) = listed else {
+        panic!("{listed:?}")
+    };
+    assert_eq!(first["people"][0]["name"], "Ann Example");
+    let next = first["next"].as_str().unwrap().to_string();
+
+    let page = json!({"action": "search", "args": ["--cursor", next.clone()]});
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("contacts", page, Some("Juno"), None),
+        )
+        .await;
+    let tried = answer(response);
+    // The judge saw the page's whole plan; the answer masks its position.
+    let judged = t.plow.world.lock().unwrap().asked.last().unwrap()["proposed_action"].clone();
+    assert_eq!(judged["arguments"]["after"]["key"], "Ann Example");
+    let shown = &tried["request"]["action"];
+    assert_eq!(shown["operation"], "contacts.search");
+    assert_eq!(shown["arguments"]["after"]["key"], "[name]");
+    assert_eq!(
+        shown["arguments"]["after"]["id"],
+        judged["arguments"]["after"]["id"]
+    );
+    let text = tried.to_string();
+    assert!(
+        !text.contains("Ann Example") && !text.contains(&next),
+        "{text}"
+    );
+    let record = t.audit().into_iter().last().unwrap();
+    assert_eq!(record["op"], "rules_try");
+    assert_eq!(record["args"]["action"]["plan"]["after"]["key"], "[name]");
+}
