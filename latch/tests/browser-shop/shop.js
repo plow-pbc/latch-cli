@@ -17,6 +17,15 @@ const CATALOG = [
   { id: 'pasta', name: 'Spaghetti 500g', cat: 'pantry', price: 1.99, sizes: [] },
   { id: 'oats', name: 'Rolled Oats 1kg', cat: 'pantry', price: 3.49, sizes: [] },
 ];
+// The past order the return pages show: two identical white tank lines
+// among the rest.
+const ORDER = { number: 'A1001', placed: 'October 16, 2026', lines: [
+  { line: 1, name: 'White tank (M)', price: 18.0 },
+  { line: 2, name: 'White tank (M)', price: 18.0 },
+  { line: 3, name: 'Oxford shirt (L)', price: 54.0 },
+  { line: 4, name: 'Wool socks', price: 12.0 },
+  { line: 5, name: 'Canvas belt', price: 29.0 },
+] };
 const PER_PAGE = 4;
 const money = (n) => `$${n.toFixed(2)}`;
 const store = {

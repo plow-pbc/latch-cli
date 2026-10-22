@@ -10,7 +10,7 @@ use std::thread;
 
 use serde_json::{Value, json};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
 #[path = "support/shop_server.rs"]
 mod shop_server;
 
@@ -1426,6 +1426,8 @@ struct LiveState {
     peers: Vec<(Value, String)>,
     /// Request lines and their bearers, in order.
     seen: Vec<(String, Option<String>)>,
+    /// The token minted for the one connected Google account, if any.
+    google: Option<String>,
 }
 
 impl LivePlow {
@@ -1442,6 +1444,7 @@ impl LivePlow {
                 agent: "agent-credential".to_string(),
                 peers: Vec::new(),
                 seen: Vec::new(),
+                google: None,
             })),
         };
         let serving = plow.clone();
@@ -1520,7 +1523,17 @@ impl LivePlow {
         }
         match (method, path) {
             ("POST", "/v1/connectors/gmail/access-token") => {
-                (200, json!({"data": {"accounts": []}}))
+                let accounts: Vec<Value> = state
+                    .google
+                    .iter()
+                    .map(|token| {
+                        json!({"account": "owner@example.com", "access_token": token,
+                               "is_default": true,
+                               "capabilities": {"mail_read": true, "mail_write": true,
+                                                "calendar_read": true, "calendar_write": true}})
+                    })
+                    .collect();
+                (200, json!({"data": {"accounts": accounts}}))
             }
             ("POST", "/v1/latch/peers") => {
                 let sent: Value = serde_json::from_slice(&request.body).unwrap();
@@ -1591,17 +1604,20 @@ impl LivePlow {
                                  "sender": {"type": "member", "display_name": "Owner", "role": "owner"}}],
                        "has_more": false}),
             ),
-            // A browser click's risk is asked the same way: low.
+            // A browser click's risk is asked the same way: low, but for a
+            // return's submit, which can't be undone, as a real judge sees it.
             ("POST", "/v1/decisions")
                 if kind == "device"
                     && serde_json::from_slice::<Value>(&request.body).unwrap_or_default()
                         ["questions"]["risky"]
                         .is_object() =>
             {
+                let submit = String::from_utf8_lossy(&request.body).contains("Submit return");
+                let risk = if submit { 0.9 } else { 0.05 };
                 (
                     200,
                     json!({"id": "req_test", "model": "typesafe/jev-1.13",
-                           "answers": {"risky": {"type": "noul", "noul": 0.05}},
+                           "answers": {"risky": {"type": "noul", "noul": risk}},
                            "usage": {"input_tokens": 1, "output_tokens": 0}}),
                 )
             }
@@ -4651,9 +4667,10 @@ fn audit_show_follow_sleeps_while_the_log_is_quiet() {
 }
 
 /// A host's state given the pinned browser engines the tests installed
-/// (`just cft`), local pages allowed, and the Messages reader.
-#[cfg(target_os = "macos")]
-fn browser_and_messages_host(host: &Path) {
+/// (`just cft`, or `LATCH_CFT_STATE`) and local pages allowed; returns its
+/// plugins folder, for the connectors a test adds.
+#[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
+fn browser_host(host: &Path) -> PathBuf {
     let installed = std::env::var_os("LATCH_CFT_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
@@ -4666,6 +4683,13 @@ fn browser_and_messages_host(host: &Path) {
         }
     }
     fs::write(host.join("host.json"), r#"{"allow_local_browsing": true}"#).unwrap();
+    plugins
+}
+
+/// `browser_host`, with the Messages reader.
+#[cfg(target_os = "macos")]
+fn browser_and_messages_host(host: &Path) {
+    let plugins = browser_host(host);
     let reader = plugins
         .join("messages")
         .join(env!("CARGO_PKG_VERSION"))
@@ -5026,6 +5050,240 @@ fn a_linux_latch_has_no_messages_or_contacts() {
             .any(|id| id.starts_with("messages") || id.starts_with("contacts")),
         "{ids:?}"
     );
+}
+
+/// The owner's local agent finds an order in their email, opens it, and
+/// returns three of its items, each chosen in a plan of its own under one
+/// task: every plan is judged and allowed, and the shop gets exactly those
+/// items and reasons. Over `serve.sock` as `owner_on_host`, with the fake
+/// gog (feature `fake-gog`) answering the made-up mailbox. With `live`,
+/// the host's judge is the real decision model.
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "linux-browser-tests")
+))]
+fn an_owner_returns_items_from_an_emailed_order(live: bool) {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let (shop, returns) = shop_server::serve_shop_recording();
+    plow.state.lock().unwrap().google = Some(format!("shop={shop}"));
+
+    // The pinned engines, and this test build as the host's gog.
+    let plugins = browser_host(&host);
+    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
+    let gog = plugins.join("gog").join(pin["version"].as_str().unwrap());
+    fs::create_dir_all(&gog).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    fs::write(
+        host.join("plugins.json"),
+        r#"{"google": {"state": "enabled"}}"#,
+    )
+    .unwrap();
+    if live {
+        let key = std::env::var_os("LATCH_TEST_JEV_KEY")
+            .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
+        fs::copy(key, host.join("jev.key")).unwrap();
+        fs::create_dir_all(host.join("browser")).unwrap();
+        fs::write(host.join("browser/model.json"), r#"{"provider": "jev"}"#).unwrap();
+    }
+    let mut command = serve_command(&host, &[&share], &relay);
+    command.arg("--headless-browsers");
+    let (serve, mut log, _) = serving_with(command);
+    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    until_serving(&host, &serve);
+
+    // As the owner's agent on the host: this state, no --host.
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let answer = serde_json::from_slice::<Value>(printed).unwrap_or(Value::Null);
+        println!("latch {args:?}: {answer}");
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {answer}");
+        answer
+    };
+    let refs = |page: &Value, role: &str, name: &str| -> Vec<String> {
+        page["elements"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|e| e["role"] == role && e["name"] == name)
+            .map(|e| e["ref"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Search the email, read the order's message, take its link.
+    let found = run(&["google", "--", "gmail", "search", "order A1001 shipped"]);
+    let thread = found["items"][0]["id"].as_str().unwrap().to_string();
+    let read = run(&["google", "--", "gmail", "get", &thread]);
+    let body = read["result"]["body"].as_str().unwrap();
+    let link = body
+        .split_whitespace()
+        .find(|word| word.starts_with("http"))
+        .unwrap()
+        .to_string();
+
+    // Go to the order and start the return.
+    let task = "Return the two white tanks and the Oxford shirt from order A1001";
+    let opened = run(&["browser", "open", "--task", task, &link]);
+    let session = opened["session"].as_str().unwrap().to_string();
+    let on = |args: &[&str]| {
+        let mut all = vec!["browser", "--session", session.as_str()];
+        all.extend(args);
+        run(&all)
+    };
+    let page = on(&["observe"]);
+    let start = refs(&page, "link", "Start a return").remove(0);
+    on(&["do", &format!("click {start} -> path: /return.html")]);
+
+    // One item a plan, each the first one not yet added.
+    let picks = [
+        ("White tank (M)", "Too small"),
+        ("White tank (M)", "Too small"),
+        ("Oxford shirt (L)", "Not as described"),
+    ];
+    // Each judged plan's ops, in order, as the audit shows them, and how
+    // it ended.
+    let mut plans = vec![(vec!["click"], "ok")];
+    for (count, (item, reason)) in picks.into_iter().enumerate() {
+        let added = match count {
+            0 => "Review return (1 item)".to_string(),
+            n => format!("Review return ({} items)", n + 1),
+        };
+        let page = on(&["observe"]);
+        let reason_box = refs(&page, "combobox", "Reason").remove(0);
+        let button = refs(&page, "button", "Return this item").remove(0);
+        let done = on(&[
+            "do",
+            &format!("select {reason_box} \"{reason}\""),
+            &format!("click {button} -> text: {added}"),
+        ]);
+        // The click's check saw the return grow by this item.
+        assert_eq!(done["steps"][1]["outcome"], "checked", "{item}: {done}");
+        plans.push((vec!["select", "click"], "ok"));
+    }
+    let page = on(&["observe"]);
+    let review = refs(&page, "link", "Review return (3 items)").remove(0);
+    on(&[
+        "do",
+        &format!("click {review} -> path: /return-review.html"),
+    ]);
+    let page = on(&["observe"]);
+    let submit = refs(&page, "button", "Submit return").remove(0);
+    plans.push((vec!["click"], "ok"));
+    // Submitting can't be undone: a judge that weighs the click's risk may
+    // stop it for a confirmation, which the agent then carries out.
+    let submitting = format!("click {submit} -> path: /returns");
+    let mut all = vec!["browser", "--session", session.as_str(), "do", &submitting];
+    let submitted = latch(&host, &all, &[]);
+    let mut confirmed = None;
+    println!(
+        "latch {all:?}: {}",
+        String::from_utf8_lossy(&submitted.stdout)
+    );
+    if !submitted.status.success() {
+        let stop: Value = serde_json::from_slice(&submitted.stderr).unwrap();
+        println!("submit stopped: {stop}");
+        let error = &stop["error"];
+        assert_eq!(error["code"], "confirm_needed", "{stop}");
+        let id = error["confirmation"]["id"]
+            .as_str()
+            .or_else(|| error["stop"]["confirmation"]["id"].as_str())
+            .unwrap_or_else(|| panic!("no confirmation in {stop}"))
+            .to_string();
+        all.truncate(3);
+        all.extend(["do", "--confirm", &id]);
+        run(&all);
+        plans.push((vec!["click"], "confirm_needed"));
+        confirmed = Some(id);
+    } else {
+        plans.push((vec!["click"], "ok"));
+    }
+    on(&["close"]);
+    drop(serve);
+
+    // The shop got exactly those items and reasons, once.
+    let returns = returns.lock().unwrap().clone();
+    assert_eq!(returns.len(), 1, "{returns:?}");
+    let form: Vec<(String, String)> = url::form_urlencoded::parse(returns[0].as_bytes())
+        .into_owned()
+        .collect();
+    assert!(form.contains(&("order".into(), "A1001".into())), "{form:?}");
+    let items: Value =
+        serde_json::from_str(&form.iter().find(|(name, _)| name == "items").unwrap().1).unwrap();
+    assert_eq!(
+        items,
+        json!([
+            {"line": 1, "name": "White tank (M)", "reason": "Too small"},
+            {"line": 2, "name": "White tank (M)", "reason": "Too small"},
+            {"line": 3, "name": "Oxford shirt (L)", "reason": "Not as described"},
+        ])
+    );
+
+    // Every plan was judged and allowed, as the owner on this host, and
+    // the audit keeps each plan's steps.
+    let records = audit_records(&host);
+    // A plan that carries out a confirmation is the plan it confirms,
+    // judged when it stopped; it is not judged again.
+    let (confirming, plan_records): (Vec<&Value>, Vec<&Value>) = records
+        .iter()
+        .filter(|r| r["op"] == "browser" && r["args"]["command"] == "do")
+        .partition(|r| r["args"]["confirmation"].is_string());
+    match &confirmed {
+        Some(id) => {
+            assert_eq!(confirming.len(), 1, "{records:#?}");
+            assert_eq!(confirming[0]["args"]["confirmation"], *id);
+            assert_eq!(confirming[0]["outcome"], "ok", "{}", confirming[0]);
+        }
+        None => assert!(confirming.is_empty(), "{records:#?}"),
+    }
+    assert_eq!(plan_records.len(), plans.len(), "{records:#?}");
+    for (record, (ops, outcome)) in plan_records.iter().zip(&plans) {
+        println!("plan audit: {}", record["args"]);
+        assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
+        assert_eq!(record["args"]["gate"]["verdict"], "allow", "{record}");
+        assert_eq!(record["outcome"], *outcome, "{record}");
+        let sent: Vec<&str> = record["args"]["step_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step["op"].as_str().unwrap())
+            .collect();
+        assert_eq!(&sent, ops, "{record}");
+    }
+    let google: Vec<&Value> = records.iter().filter(|r| r["op"] == "google").collect();
+    assert_eq!(google.len(), 2, "{records:#?}");
+    for record in google {
+        assert_eq!(record["gate"]["verdict"], "allow", "{record}");
+    }
+}
+
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "linux-browser-tests")
+))]
+#[test]
+fn the_owner_returns_items_from_an_emailed_order() {
+    an_owner_returns_items_from_an_emailed_order(false);
+}
+
+/// The same return through the real decision model, which must allow
+/// every plan (a regression for a return whose later items were refused).
+#[cfg(all(
+    feature = "fake-gog",
+    feature = "live-model",
+    any(target_os = "macos", feature = "linux-browser-tests")
+))]
+#[test]
+fn the_owner_returns_items_from_an_emailed_order_through_the_real_judge() {
+    an_owner_returns_items_from_an_emailed_order(true);
 }
 
 #[cfg(any(target_os = "macos", feature = "systemd-tests"))]

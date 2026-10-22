@@ -94,6 +94,11 @@ jobs:
           else
             binary='latch/target/musl-${{ matrix.arch }}/release/latch'
           fi
+          # The test-only gog stand-in never ships: its marker is in no binary.
+          if grep -aqF latch-fake-gog-test-only "$binary"; then
+            echo "$binary was built with the fake-gog test feature" >&2
+            exit 1
+          fi
           sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
           tar -xzf "dist/latch-$VERSION-${{ matrix.target }}.tar.gz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/latch" --version

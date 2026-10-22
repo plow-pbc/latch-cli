@@ -118,7 +118,7 @@ jobs:
           shared-key: mac-${{ matrix.runner }}
           save-if: ${{ matrix.shard == 1 }}
       - if: matrix.shard == 1
-        run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings
+        run: cargo fmt --check && cargo clippy --all-targets --locked --features fake-gog -- -D warnings
       - uses: actions/cache@v4
         if: hashFiles('latch/src/browser/cft.json') != ''
         with:
@@ -132,7 +132,8 @@ jobs:
       - run: cargo build --locked
       - if: hashFiles('latch/src/browser/cft.json') != ''
         run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
-      - run: python3 ../.ci-tools/latch/scripts/test-shard.py ${{ matrix.shard }} ${{ matrix.count }}
+      # fake-gog: the test-only gog stand-in the return scenario reads mail with.
+      - run: python3 ../.ci-tools/latch/scripts/test-shard.py ${{ matrix.shard }} ${{ matrix.count }} --features fake-gog
       - uses: actions/upload-artifact@v4
         if: always()
         with:
