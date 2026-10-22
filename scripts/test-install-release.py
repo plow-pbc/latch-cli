@@ -43,13 +43,22 @@ fi
                     tar.addfile(info, io.BytesIO(data))
             digest = "0" * 64 if corrupt else hashlib.sha256(archive.read_bytes()).hexdigest()
             (root / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n")
-            (tools / "gh").write_text('''#!/bin/sh
-if [ "$1 $2" = "release view" ]; then echo v0.1.0; exit; fi
+            # curl, serving the release from FIXTURE as releases.plow.co would.
+            (tools / "curl").write_text('''#!/bin/sh
+out=""
+url=""
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = --dir ]; then shift; destination=$1; fi
-  shift
+  case "$1" in
+    -o | --proto) [ "$1" = -o ] && out=$2; shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
 done
-cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
+case "$url" in
+  https://releases.plow.co/latch-cli/latest.json) echo '{"tag":"v0.1.0","build":1}' ;;
+  https://releases.plow.co/latch-cli/releases/v0.1.0/*) cp "$FIXTURE/${url##*/}" "$out" ;;
+  *) exit 22 ;;
+esac
 ''')
             (tools / "uname").write_text(
                 f'#!/bin/sh\ncase "$1" in -s) echo {system};; -m) echo {machine};; esac\n'

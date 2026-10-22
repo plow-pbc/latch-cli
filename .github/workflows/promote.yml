@@ -1,0 +1,74 @@
+name: promote
+# Publishing a release's draft makes it the newest: this writes
+# releases.plow.co/latch-cli/install.sh, then latest.json (which names the
+# newest release), signed, last, and has CloudFront drop its copies of both. The
+# release's own files were uploaded by the release workflow and are not
+# touched. Publishing the draft is the approval. It runs in the release
+# environment, the only place its key and upload role are available.
+run-name: Promote ${{ github.event.release.tag_name }}
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 10
+    # The stable keys are shared: two promotions must not interleave.
+    concurrency: latch-promote
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      RELEASES: s3://releases.plow.co/latch-cli
+    steps:
+      # The tag reaches the shell only through env, and must be exactly a
+      # release's: v<version>-<build>.
+      - name: Read the tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-([0-9]+)$ ]]; then
+            echo "not a release tag: $TAG" >&2
+            exit 1
+          fi
+          echo "build=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+      - name: Load the release key
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          LATCH_MINISIGN_SECRET_KEY: op://terraform/latch-cli release signing key/secret_key
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_LATCH_RELEASE_ROLE_ARN }}
+          aws-region: us-west-2
+      # Promote only what the release workflow uploaded and signed: its
+      # SHA256SUMS signed with this key, and its install.sh as listed there.
+      - name: Check the release
+        shell: bash
+        env:
+          BUILD: ${{ steps.tag.outputs.build }}
+        run: |
+          sudo apt-get install -y minisign
+          key="$RUNNER_TEMP/minisign.key"
+          (umask 077 && printf '%s\n' "$LATCH_MINISIGN_SECRET_KEY" > "$key")
+          minisign -R -s "$key" -p "$RUNNER_TEMP/minisign.pub"
+          for file in SHA256SUMS SHA256SUMS.minisig install.sh; do
+            aws s3 cp "$RELEASES/releases/$TAG/$file" "$file"
+          done
+          minisign -V -p "$RUNNER_TEMP/minisign.pub" -m SHA256SUMS | grep -Fx "Trusted comment: latch $TAG"
+          grep -E '  install\.sh$' SHA256SUMS | sha256sum -c
+          printf '{"tag":"%s","build":%s}\n' "$TAG" "$BUILD" > latest.json
+          minisign -S -s "$key" -m latest.json -t "latch $TAG"
+          rm "$key"
+      # latest.json last: until it names this release, nothing installs it.
+      - name: Promote
+        run: |
+          aws s3 cp install.sh "$RELEASES/install.sh" --cache-control no-cache --content-type text/x-shellscript
+          aws s3 cp latest.json.minisig "$RELEASES/latest.json.minisig" --cache-control no-cache
+          aws s3 cp latest.json "$RELEASES/latest.json" --cache-control no-cache --content-type application/json
+          aws cloudfront create-invalidation --distribution-id '${{ vars.AWS_LATCH_RELEASES_DISTRIBUTION_ID }}' \
+            --paths /latch-cli/install.sh /latch-cli/latest.json /latch-cli/latest.json.minisig
