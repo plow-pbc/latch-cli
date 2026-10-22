@@ -1,6 +1,7 @@
 //! `latch setup`: one pass, at a terminal, through what a new machine
 //! needs: a login, Google, on macOS Messages and Contacts, and a running
-//! host. It is thin: every step runs an existing latch command (and says
+//! host. None of the steps before the last needs a host running; the last
+//! offers to start one. It is thin: every step runs an existing latch command (and says
 //! which), so a person can do any step by hand later. Each step first looks
 //! whether it is done already and then skips it, so setup can be run again
 //! at any time. Skipping or failing a step never stops the next one.
@@ -19,7 +20,7 @@ use serde_json::Value;
 use crate::state::StateDir;
 use crate::term;
 
-/// How often, and how long, the Full Disk Access step asks the host again.
+/// How often, and how long, the Full Disk Access step checks again.
 #[cfg(target_os = "macos")]
 const RECHECK_EVERY: Duration = Duration::from_secs(2);
 #[cfg(target_os = "macos")]
@@ -136,29 +137,6 @@ impl Setup {
         false
     }
 
-    /// Whether this machine's host answers, starting it with `serve -d` if
-    /// not: `--again` once a host ran here, so it keeps the flags its owner
-    /// gave it (`--deny-exec`). Steps that change a connector need it.
-    fn host(&mut self) -> bool {
-        if self.local()["serve"]["ready"] == true {
-            return true;
-        }
-        let ran_before = StateDir::new(self.state_dir.clone())
-            .is_ok_and(|state| state.path.join(crate::managed::ARGS_FILE).exists());
-        let args: &[&str] = if ran_before {
-            &["serve", "-d", "--again"]
-        } else {
-            &["serve", "-d"]
-        };
-        let command = format!("latch {}", args.join(" "));
-        step("Start latch", &command);
-        let started = self.latch(args);
-        if !started.ok {
-            failed(&started.json, &command);
-        }
-        started.ok
-    }
-
     /// A connector's state: as the host lists it when it runs, else as it
     /// last saved it in the state folder's plugins.json.
     fn plugin_state(&self, name: &str) -> Option<String> {
@@ -187,9 +165,6 @@ impl Setup {
             say("Skipped; later: `latch plugins enable google`.");
             return;
         }
-        if !self.host() {
-            return;
-        }
         step("Connect Google", "latch plugins enable google");
         let enabled = self.latch(&["plugins", "enable", "google"]);
         if enabled.ok {
@@ -199,9 +174,9 @@ impl Setup {
         }
     }
 
-    /// Step 3: Messages and Contacts: Full Disk Access for the app the host runs
-    /// in, checked by the host itself again and again while the owner turns
-    /// it on, so neither Enter nor a restart is needed.
+    /// Step 3: Messages and Contacts: Full Disk Access for the app the host
+    /// runs in, checked as that app again and again while the owner turns it
+    /// on, so neither Enter nor a restart is needed.
     #[cfg(target_os = "macos")]
     fn messages_and_contacts(&mut self) {
         let names = ["messages", "contacts"];
@@ -218,9 +193,6 @@ impl Setup {
             .yes("Enable Messages and Contacts on this Mac? [y/N] ", false)
         {
             say("Skipped; later: `latch plugins enable messages` (and contacts).");
-            return;
-        }
-        if !self.host() {
             return;
         }
         let mut shown = false;
@@ -262,18 +234,34 @@ impl Setup {
         }
     }
 
-    /// Step 4: a running host.
+    /// Step 4, last: a running host, if the owner wants one now. `--again`
+    /// once a host ran here, so it keeps the flags its owner gave it
+    /// (`--deny-exec`).
     fn start(&mut self) {
         if self.local()["serve"]["ready"] == true {
             done("latch is running.");
             return;
         }
         if !self.input().yes("Start latch now? [Y/n] ", true) {
-            say("Not started; later: `latch serve -d`.");
+            say(
+                "Not started; later: `latch serve`, or `latch serve -d` to run it in the background.",
+            );
             return;
         }
-        if self.host() {
+        let ran_before = StateDir::new(self.state_dir.clone())
+            .is_ok_and(|state| state.path.join(crate::managed::ARGS_FILE).exists());
+        let args: &[&str] = if ran_before {
+            &["serve", "-d", "--again"]
+        } else {
+            &["serve", "-d"]
+        };
+        let command = format!("latch {}", args.join(" "));
+        step("Start latch", &command);
+        let started = self.latch(args);
+        if started.ok {
             done("latch is running.");
+        } else {
+            failed(&started.json, &command);
         }
     }
 }

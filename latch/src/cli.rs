@@ -196,8 +196,9 @@ pub enum Command {
     /// Print SKILL.md, which teaches an agent how to use latch
     Skill,
     /// Set this machine up, at a terminal: log in, connect Google, on a Mac
-    /// turn on Messages and Contacts, and start latch. Each step runs a latch
-    /// command and is skipped once done, so it can be run again any time
+    /// turn on Messages and Contacts, all with no host running, then offer to
+    /// start latch. Each step runs a latch command and is skipped once done,
+    /// so it can be run again any time
     Setup,
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
@@ -205,6 +206,14 @@ pub enum Command {
     /// Internal: the process a host starts for each browser session
     #[command(hide = true)]
     BrowserWorker(BrowserWorkerArgs),
+    /// Internal: Messages' or Contacts' Full Disk Access check, run as the
+    /// app's own job when no host runs: `access` and `reason`, as JSON
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    AccessCheck {
+        /// messages or contacts
+        name: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -686,11 +695,11 @@ pub enum PluginsCommand {
         #[arg(long, env = "LATCH_HOST")]
         host: Option<String>,
     },
-    /// Run NAME's setup on this machine's running host; NAME is enabled only
-    /// if it succeeds (owner only)
+    /// Run NAME's setup for this machine's host, running or not; NAME is
+    /// enabled only if it succeeds (owner only)
     Enable { name: String },
-    /// Turn NAME off on this machine's running host: new calls are refused
-    /// at once, and this returns once the running ones have finished (owner only)
+    /// Turn NAME off on this machine's host: a running one refuses new calls
+    /// at once, and this returns once its running ones have finished (owner only)
     Disable { name: String },
 }
 

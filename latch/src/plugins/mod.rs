@@ -1,13 +1,14 @@
 //! The connectors that ship inside latch (Google; on macOS, Messages and
 //! Contacts), each turned on per host by its owner. `latch plugins enable
-//! NAME` runs the connector's setup on the running host, and the connector
-//! counts as enabled only once that setup succeeds. Until then, and from
-//! the moment `disable` starts, its operations get `not_enabled` before
-//! anything is judged or any worker starts.
+//! NAME` runs the connector's setup on the running host, or in the command
+//! itself when no host runs, and the connector counts as enabled only once
+//! that setup succeeds. Until then, and from the moment `disable` starts,
+//! its operations get `not_enabled` before anything is judged or any worker
+//! starts.
 //!
-//! Which connectors are on is the host's alone: it keeps them in
-//! `<state-dir>/plugins.json` and is the only writer. The browser is core,
-//! like exec and files, and never a plugin.
+//! Which connectors are on is kept in `<state-dir>/plugins.json`, written
+//! by the running host, or by the command when none runs. The browser is
+//! core, like exec and files, and never a plugin.
 
 pub mod client;
 pub mod host;

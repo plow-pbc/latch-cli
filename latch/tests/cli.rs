@@ -2323,7 +2323,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(before["protocol"], 2);
     assert_eq!(
         before["serve"],
-        json!({"running": false, "ready": false, "managed": false, "attached": false,
+        json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
                "state": "stopped", "pid": null, "blocked": null})
     );
     assert_eq!(before["last_error"], Value::Null);
@@ -2340,7 +2340,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let up = local(&host);
     assert_eq!(
         up["serve"],
-        json!({"running": true, "ready": true, "managed": false, "attached": false,
+        json!({"running": true, "ready": true, "configuring": false, "managed": false, "attached": false,
                "state": "serving", "pid": pid, "blocked": null})
     );
     drop(serve);
@@ -3907,6 +3907,245 @@ fn an_attached_serve_whose_host_fails_says_why_and_leaves_nothing_running() {
     assert!(!registered(&host));
 }
 
+/// `latch setup` itself, with no host running: Google (this test build as
+/// gog) and, on macOS, Messages and Contacts (Full Disk Access checked by
+/// a one-shot launchd job of this latch, whose answer the test gives) are
+/// set up, the owner declines to start latch, and the host started
+/// afterwards has them all.
+#[cfg(feature = "fake-gog")]
+#[test]
+fn setup_sets_up_every_connector_with_no_host_running() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    // Whatever setup does, no host it starts outlives the test.
+    #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+    let _managed = Managed(host.clone());
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
+    let gog = host
+        .join("plugins/gog")
+        .join(pin["version"].as_str().unwrap());
+    fs::create_dir_all(&gog).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+
+    let env = [("LATCH_TEST_ACCESS", Path::new("granted"))];
+    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &env);
+    // Google: yes; on macOS, Messages and Contacts: yes; start latch: no.
+    let typed: &[u8] = if cfg!(target_os = "macos") {
+        b"y\ny\nn\n"
+    } else {
+        b"y\nn\n"
+    };
+    typing.write_all(typed).unwrap();
+    let all = shows(&shown, "Done. Run `latch setup` again any time.");
+    assert!(setup.wait().unwrap().success(), "{all}");
+    let mut done = vec![
+        "✓ Google is connected.",
+        "Not started; later: `latch serve`",
+    ];
+    if cfg!(target_os = "macos") {
+        done.extend(["✓ Messages is on", "✓ Contacts is on"]);
+    }
+    for line in done {
+        assert!(all.contains(line), "{line}: {all}");
+    }
+    assert!(!all.contains('✗'), "{all}");
+    assert_eq!(local_serve(&host)["running"], false, "never started");
+    #[cfg(target_os = "macos")]
+    assert!(!access_job_registered(&host), "the check's job outlived it");
+
+    let enabled = |listed: &Output| {
+        let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        let plugins = listed["plugins"].as_array().unwrap().clone();
+        assert!(!plugins.is_empty(), "{listed}");
+        plugins.iter().all(|plugin| plugin["state"] == "enabled")
+    };
+    let _serve = serving(&host, &relay);
+    assert!(
+        enabled(&latch(&host, &["plugins", "list"], &[])),
+        "the host's"
+    );
+}
+
+/// A `latch serve` that holds the state folder but answers no socket this
+/// latch knows (another latch version, still running) is named as the
+/// problem, and its connectors are not changed behind its back.
+#[test]
+fn plugins_with_a_host_this_latch_cannot_reach_say_so() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(host.join("serve.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    fs::write(
+        host.join("serve.lock"),
+        "latch serve (pid 4242, /old/latch)\n",
+    )
+    .unwrap();
+    // It says it serves, on a socket this latch does not use.
+    fs::write(
+        host.join("serve.json"),
+        r#"{"state": "serving", "pid": 4242, "run": "old", "since": "2026-10-21T21:51:26Z"}"#,
+    )
+    .unwrap();
+    for args in [
+        ["plugins", "enable", "google"],
+        ["plugins", "disable", "google"],
+    ] {
+        let output = latch(&host, &args, &[]);
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(3), "{error}");
+        assert_eq!(error["error"]["code"], "other_version", "{error}");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("pid 4242"),
+            "{error}"
+        );
+    }
+    assert!(!host.join("plugins.json").exists());
+    drop(lock);
+}
+
+/// Two offline `plugins` commands on one state folder take turns: the
+/// second waits while the first holds the folder, and saves only after it
+/// lets go, so neither undoes the other.
+#[test]
+fn offline_plugin_commands_on_one_state_folder_take_turns() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let saved = || fs::read_to_string(host.join("plugins.json")).unwrap();
+    fs::write(
+        host.join("plugins.json"),
+        r#"{"google": {"state": "enabled"}}"#,
+    )
+    .unwrap();
+    // An `enable` in the middle of its setup, as its lock says.
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(host.join("serve.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    fs::write(
+        host.join("serve.lock"),
+        "latch plugins enable messages (pid 4242, /latch)\n",
+    )
+    .unwrap();
+    let mut disable = latch_command(&host, &["plugins", "disable", "google"], &[])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    thread::sleep(std::time::Duration::from_secs(2));
+    assert!(disable.try_wait().unwrap().is_none(), "it waits its turn");
+    assert!(saved().contains("google"), "{}", saved());
+    // Meanwhile no host runs: the folder is only busy.
+    let serve = local_serve(&host);
+    assert_eq!(serve["running"], false, "{serve}");
+    assert_eq!(serve["configuring"], true, "{serve}");
+    assert_ne!(serve["state"], "starting", "{serve}");
+    let started = std::time::Instant::now();
+    let stop = latch(&host, &["stop"], &[]);
+    assert_eq!(stop.status.code(), Some(0), "{stop:?}");
+    let stop: Value = serde_json::from_slice(&stop.stdout).unwrap();
+    assert_eq!(stop["stopped"], false, "{stop}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let start = latch(&host, &["serve", "-d"], &[]);
+    let refused: Value = serde_json::from_slice(&start.stderr).unwrap();
+    assert_eq!(refused["error"]["code"], "state_busy", "{refused}");
+    drop(lock);
+    let done = disable.wait_with_output().unwrap();
+    assert!(done.status.success(), "{done:?}");
+    assert!(!saved().contains("google"), "{}", saved());
+    // What a real one writes while it holds the folder.
+    let holder = fs::read_to_string(host.join("serve.lock")).unwrap();
+    assert!(
+        holder.starts_with("latch plugins disable google (pid "),
+        "{holder}"
+    );
+    assert_eq!(local_serve(&host)["configuring"], false);
+}
+
+/// Whether launchd still has the one-shot Full Disk Access check's job.
+#[cfg(target_os = "macos")]
+fn access_job_registered(state: &Path) -> bool {
+    use sha2::Digest;
+    let real = state.canonicalize().unwrap();
+    let hash = sha2::Sha256::digest(real.as_os_str().as_encoded_bytes());
+    let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    // SAFETY: getuid cannot fail.
+    let job = format!(
+        "gui/{}/co.plow.latch.access.{}",
+        unsafe { libc::getuid() },
+        &hex[..16]
+    );
+    let print = Command::new("launchctl").args(["print", &job]).output();
+    print.unwrap().status.success()
+}
+
+/// With no host running, Messages' setup checks Full Disk Access from a
+/// launchd job of latch's own, not from the terminal: refused there, it
+/// names this latch to grant and needs no restart; answered, it saves the
+/// setting the next host reads.
+#[cfg(target_os = "macos")]
+#[test]
+fn messages_setup_with_no_host_running_checks_from_a_job_of_its_own() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let home = dir.path().join("home");
+    messages_home(&home);
+    let messages = home.join("Library/Messages");
+    let enable = |env: &[(&str, &Path)]| {
+        let output = latch(&host, &["plugins", "enable", "messages"], env);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap();
+        println!("latch plugins enable messages: {json}");
+        (output.status.code(), json)
+    };
+
+    fs::set_permissions(&messages, fs::Permissions::from_mode(0o000)).unwrap();
+    let (code, error) = enable(&[("HOME", home.as_path())]);
+    fs::set_permissions(&messages, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(code, Some(1), "{error}");
+    assert_eq!(error["error"]["access"], "not_granted");
+    assert_eq!(
+        error["error"]["grant"],
+        Path::new(env!("CARGO_BIN_EXE_latch"))
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(!message.contains("restart"), "{message}");
+    assert!(!access_job_registered(&host));
+
+    let (code, enabled) = enable(&[("LATCH_TEST_ACCESS", Path::new("granted"))]);
+    assert_eq!(code, Some(0), "{enabled}");
+    assert_eq!(enabled["state"], "enabled");
+    let saved: Value =
+        serde_json::from_str(&fs::read_to_string(host.join("plugins.json")).unwrap()).unwrap();
+    assert_eq!(saved["messages"]["state"], "enabled", "{saved}");
+    assert_eq!(local_serve(&host)["running"], false);
+}
+
 /// A managed host's state folder: `latch stop` when the test ends, passing
 /// or not, so no host and no service outlives it.
 #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
@@ -4092,7 +4331,7 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
 /// way a shell starts it: Ctrl-C typed there interrupts it, and closing
 /// the terminal hangs it up. Returns the process and the terminal's side
 /// we type into and read.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn at_its_own_terminal(
     state: &Path,
     args: &[&str],
@@ -4168,7 +4407,7 @@ fn at_its_own_terminal(
 }
 
 /// Reads what the terminal shows until it has shown `text`.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     let mut all = String::new();
     while !all.contains(text) {
@@ -4753,9 +4992,21 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
         (output.status.code(), json)
     };
 
+    // With no host running, the command runs the setup and saves it
+    // itself: this test installs no gog.
     let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
+    assert_eq!(code, Some(1));
+    assert_eq!(error["error"]["code"], "gog_not_configured");
+    let saved: Value =
+        serde_json::from_str(&fs::read_to_string(host.join("plugins.json")).unwrap()).unwrap();
+    assert_eq!(saved["google"]["state"], "needs_setup", "{saved}");
+    // Listing still needs the host.
+    let (code, error) = run(&host, &["plugins", "list", "--host", "host"], &[]);
     assert_eq!(code, Some(3));
     assert_eq!(error["error"]["code"], "serve_required");
+    let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
+    assert_eq!(code, Some(0));
+    assert_eq!(disabled["state"], "disabled");
 
     let _serve = serving(&host, &relay);
     let (code, listed) = run(&host, &["plugins", "list"], &[]);

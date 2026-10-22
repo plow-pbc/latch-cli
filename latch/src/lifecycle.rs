@@ -2,7 +2,9 @@
 //! this machine (`status --local`, `events`): `latch serve` writes each step
 //! of its life to `serve.json`, and whether it still runs is whether it
 //! still holds `serve.lock`. A serve that was killed or crashed never wrote
-//! its last step; its released lock says so.
+//! its last step; its released lock says so. With no host running, an
+//! offline `latch plugins enable/disable` holds the lock while it changes
+//! the connectors (`CONFIGURING`): that is no host, only a busy folder.
 
 use std::fs::{self, File};
 use std::path::Path;
@@ -49,12 +51,17 @@ struct Written {
     attached: bool,
 }
 
+/// How `serve.lock` begins while a `latch plugins` command holds it.
+pub const CONFIGURING: &str = "latch plugins ";
+
 /// The host now: its step, and, while one runs or last ran, its process and
 /// run. A serve that has just locked the folder has no run yet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Host {
     /// A `latch serve` holds the state folder.
     pub running: bool,
+    /// No host does: a `latch plugins` command holds it for a moment.
+    pub configuring: bool,
     pub state: Phase,
     pub pid: Option<u32>,
     pub run: Option<String>,
@@ -104,7 +111,11 @@ pub fn record(
 /// What the host on `state_dir` is doing now. Reads only; works on a folder
 /// that never served, or does not exist.
 pub fn now(state_dir: &Path) -> Host {
-    let running = holds_lock(state_dir);
+    let held = holds_lock(state_dir);
+    let configuring = held
+        && fs::read_to_string(state_dir.join("serve.lock"))
+            .is_ok_and(|holder| holder.starts_with(CONFIGURING));
+    let running = held && !configuring;
     let written = fs::read(state_dir.join("serve.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Written>(&bytes).ok());
@@ -120,6 +131,7 @@ pub fn now(state_dir: &Path) -> Host {
         };
         return Host {
             running,
+            configuring,
             state,
             pid: if running { holder } else { None },
             run: None,
@@ -142,6 +154,7 @@ pub fn now(state_dir: &Path) -> Host {
     };
     Host {
         running,
+        configuring,
         state,
         pid: running.then_some(written.pid),
         run: Some(written.run),
@@ -216,6 +229,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let stopped = Host {
             running: false,
+            configuring: false,
             state: Phase::Stopped,
             pid: None,
             run: None,
