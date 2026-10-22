@@ -410,12 +410,12 @@ fn signal_name(signal: i32) -> String {
 }
 
 /// The worker refused or failed before the program ran: a refusal by the
-/// sandbox (or a workdir outside the areas) is a denial, anything else a
-/// failure. There is no execution result.
+/// sandbox (or a workdir outside the areas, or a host sharing no folders)
+/// is a denial, anything else a failure. There is no execution result.
 fn refused(error: WorkerError, audit_args: Value) -> Done {
     let refusal = matches!(
         error.code.as_str(),
-        "sandbox_denied" | "workdir_outside_areas"
+        "sandbox_denied" | "workdir_outside_areas" | "no_folders"
     );
     if !refusal {
         return Done::failed(&error.code, error.message, audit_args);

@@ -753,6 +753,33 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "audit.show",
+        output: "`records`: every record of this machine's host, opened with the key, each with its `id`.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Read the audit", &["audit", "show"])],
+    },
+    Entry {
+        id: "audit.verify",
+        output: "How many `records` the chain holds and the `last` one's hash, checked without the key.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Check the audit's chain", &["audit", "verify"])],
+    },
+    Entry {
+        id: "audit.rotate-key",
+        output: "The `current` key and every key kept; a running `latch serve` uses the new one once restarted.",
+        effect: Once("makes a new audit key for new records; old records keep theirs"),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Seal new records under a new key",
+            &["audit", "rotate-key"],
+        )],
+    },
+    Entry {
         id: "events",
         output: "JSON lines: a snapshot of the host, then with --follow each change.",
         effect: ReadOnly,

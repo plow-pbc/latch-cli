@@ -151,7 +151,12 @@ stderr with its exit code either way.
 `fill` takes values from the host's vault without the agent ever seeing
 one, into the elements the agent maps or latch suggested; `observe` shows
 the items that fit, what the page asks for and latch's suggestions.
-[VAULT.md](VAULT.md) has the rules.
+[VAULT.md](VAULT.md) has the rules. A field that does not keep the value
+latch set stops the fill (`needs_owner`), with one exception: a stored
+value with a line break (an import can leave one) fills a single-line
+field without it, as a paste would, and the audit names the field under
+`dropped_line_breaks` so the owner can fix it in the vault. A value split
+across boxes must land whole.
 
 `open` answers the new session's id, once: 128 random bits, never derived
 from the profile (`--profile` defaults to `default`). Every other session
