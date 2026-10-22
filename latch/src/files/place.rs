@@ -207,7 +207,6 @@ mod tests {
         fs::create_dir(home.join(".latch")).unwrap();
         let workers = WorkerSetup {
             hidden: crate::sandbox::never_readable(&home),
-            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: home.join(".latch"),
             home,
             areas: vec![],

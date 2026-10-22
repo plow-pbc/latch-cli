@@ -41,8 +41,7 @@ use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
 use crate::log::{self, log};
 use crate::plow::{Identity, Plow};
-use crate::state::{self, Config, StateDir};
-use crate::state_folders::StateFolders;
+use crate::state::{Config, StateDir};
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
@@ -238,15 +237,7 @@ async fn run_locked(
                 "the host's home folder cannot be resolved".into(),
             )
         })?;
-    let cache = home.join("Library/Caches");
-    let roots: Vec<PathBuf> = std::iter::once(&home)
-        .chain(cfg!(target_os = "macos").then_some(&cache))
-        .chain(&areas)
-        .chain(&reads)
-        .cloned()
-        .collect();
     let workers = WorkerSetup {
-        state_folders: StateFolders::new(&roots, &state_dir, &hidden),
         home,
         areas,
         reads,
@@ -734,12 +725,10 @@ pub fn allowed_reads(
         if holds_library(&real, home) {
             return Err(refuse("bad_folder", HOLDS_LIBRARY.to_string()));
         }
-        let in_state = real.ancestors().find(|dir| state::is_state_folder(dir));
         let hidden = hidden.iter().map(PathBuf::as_path).chain([state_dir]);
         let never = hidden
             .map(|never| never.canonicalize().unwrap_or(never.to_path_buf()))
-            .find(|never| real.starts_with(never))
-            .or(in_state.map(Path::to_path_buf));
+            .find(|never| real.starts_with(never));
         if let Some(never) = never {
             let why = format!(
                 "{} holds credentials or latch's own state, which no caller may ever read",
@@ -1530,30 +1519,6 @@ mod tests {
             assert_eq!(failure.code, "never_readable", "{path}");
         }
         assert_eq!(allowed("missing").unwrap_err().code, "bad_folder");
-    }
-
-    #[test]
-    fn an_opt_in_inside_another_state_folder_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        for path in ["share/a/peer/sub", "share/b", "share/d/old"] {
-            std::fs::create_dir_all(root.join(path)).unwrap();
-        }
-        let marker = r#"{"format": 1, "written_by": "test"}"#;
-        std::fs::write(root.join("share/a/peer/latch.json"), marker).unwrap();
-        // Made before the marker: a key and a Plow login, no latch.json.
-        std::fs::write(root.join("share/d/old/key"), "k").unwrap();
-        std::fs::write(root.join("share/d/old/plow-token"), "t").unwrap();
-        // A key alone is anyone's.
-        std::fs::write(root.join("share/b/key"), "k").unwrap();
-
-        let state = root.join("own-state");
-        for path in ["share/a/peer/sub", "share/d/old"] {
-            let inside = allowed_reads(&[root.join(path)], None, &[], &state);
-            assert_eq!(inside.unwrap_err().code, "never_readable", "{path}");
-        }
-        let beside = allowed_reads(&[root.join("share/b")], None, &[], &state);
-        assert_eq!(beside.unwrap(), [root.join("share/b")]);
     }
 
     #[test]

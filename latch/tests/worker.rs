@@ -918,6 +918,21 @@ fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
 /// A home-readable exec with explicit writable roots, using real sandbox code.
 fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
     let home = dir.join("area").canonicalize().unwrap();
+    // Resolve macOS's Python shim before confinement; xcrun's own cache is
+    // unrelated to the command's private TMPDIR.
+    let python = Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(python.status.success());
+    let python = std::path::PathBuf::from(String::from_utf8(python.stdout).unwrap().trim());
+    let path = std::env::join_paths(
+        python
+            .parent()
+            .into_iter()
+            .chain(HOST_PATH.split(':').map(Path::new)),
+    )
+    .unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
         .args(["worker", "--home"])
@@ -931,7 +946,7 @@ fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
         .arg("--hidden")
         .arg(home.join(".latch"))
         .arg("--tmpdir")
-        .arg(dir.join("tmp"));
+        .arg(dir.join("tmp").canonicalize().unwrap());
     if cfg!(target_os = "macos") {
         command
             .arg("--hidden")
@@ -946,8 +961,9 @@ fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
         .args(["exec", "--", "/bin/sh", "-c", script])
         .current_dir(&home)
         .env_clear()
-        .env("PATH", HOST_PATH)
+        .env("PATH", path)
         .env("HOME", &home)
+        .env("TMPDIR", dir.join("tmp").canonicalize().unwrap())
         .output()
         .unwrap()
 }
@@ -1050,5 +1066,120 @@ fn declared_exec_cannot_read_its_hosts_process_arguments() {
     for network in [false, true] {
         let output = declared_exec(dir.path(), network, &script);
         assert!(output.status.success(), "{output:?}");
+    }
+}
+
+#[test]
+fn a_networked_exec_resolves_a_hostname() {
+    // External DNS is the only part of this check that needs an online host.
+    use std::net::ToSocketAddrs;
+    if ("example.com", 80).to_socket_addrs().is_err() {
+        eprintln!("host DNS unavailable: hostname check not run");
+        return;
+    }
+    let dir = declared_setup();
+    let output = declared_exec(
+        dir.path(),
+        true,
+        "python3 -c 'import socket; assert socket.getaddrinfo(\"example.com\", 80); print(\"hostname resolved\")'",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"hostname resolved\n");
+}
+
+#[test]
+fn an_offline_exec_supports_unnamed_unix_sockets_and_asyncio() {
+    let dir = declared_setup();
+    let output = declared_exec(
+        dir.path(),
+        false,
+        r#"python3 -c '
+import asyncio, socket
+with socket.socket(socket.AF_UNIX): pass
+with socket.socketpair()[0]: pass
+async def main():
+    await asyncio.sleep(0)
+asyncio.run(main())
+print("offline IPC works")
+' && node -e 'require("child_process").execFileSync("/bin/echo", ["child process works"], {stdio: "pipe"})'"#,
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"offline IPC works\n");
+}
+
+#[test]
+fn a_networked_exec_can_use_unix_sockets_in_its_own_temp() {
+    let dir = declared_setup();
+    let output = declared_exec(
+        dir.path(),
+        true,
+        r#"python3 -c '
+import os, socket
+path = os.environ["TMPDIR"] + "/ipc.sock"
+with socket.socket(socket.AF_UNIX) as server, socket.socket(socket.AF_UNIX) as client:
+    server.bind(path)
+    server.listen(1)
+    client.connect(path)
+    peer, _ = server.accept()
+    with peer:
+        client.sendall(b"private IPC")
+        assert peer.recv(32) == b"private IPC"
+print("private temp socket works")
+'"#,
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"private temp socket works\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn host_datagram_and_abstract_unix_sockets_are_blocked() {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixDatagram, UnixListener};
+    let dir = declared_setup();
+    let path = dir.path().join("area/datagram.sock");
+    let datagram = UnixDatagram::bind(&path).unwrap();
+    datagram.set_nonblocking(true).unwrap();
+    let name = format!(
+        "latch-ipc-test-{}",
+        dir.path().file_name().unwrap().to_str().unwrap()
+    );
+    let abstract_socket =
+        UnixListener::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+    abstract_socket.set_nonblocking(true).unwrap();
+    let path = path.canonicalize().unwrap();
+    for network in [false, true] {
+        for (kind, address) in [
+            ("SOCK_DGRAM", format!("b'{}'", path.display())),
+            ("SOCK_STREAM", format!("b'\\0{name}'")),
+        ] {
+            let send = if kind == "SOCK_DGRAM" {
+                format!("s.sendto(b'blocked', {address})")
+            } else {
+                format!("s.connect({address})")
+            };
+            let script = format!(
+                "python3 -c \"import errno, socket
+s=socket.socket(socket.AF_UNIX, socket.{kind})
+try:
+    {send}
+except OSError as e:
+    assert e.errno in (errno.EACCES, errno.EPERM, errno.ECONNREFUSED), e
+    print('host blocked')
+else:
+    raise AssertionError('reached host')\""
+            );
+            let output = declared_exec(dir.path(), network, &script);
+            assert!(output.status.success(), "{kind}: {output:?}");
+            assert_eq!(output.stdout, b"host blocked\n");
+        }
+        assert_eq!(
+            datagram.recv(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            abstract_socket.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 }

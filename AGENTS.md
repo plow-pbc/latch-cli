@@ -125,11 +125,13 @@ macOS, from `latch/`:
 just test    # just cft, cargo fmt --check, cargo clippy --locked --all-targets -- -D warnings, cargo test --locked
 ```
 
-Linux, from the repo root, in the sandbox latch runs under (`latch-linux-gates:local` is `rust:alpine` plus `musl-dev` and `bubblewrap`):
+Linux, from the repo root, in the sandbox latch runs under (the image includes the compiler, bubblewrap and test programs):
 
 ```bash
+docker build --platform linux/arm64 -t latch-linux-gates:local -f latch/docker/Dockerfile.gates latch/docker
 docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL \
-  --security-opt=no-new-privileges=true --security-opt seccomp=$PWD/latch/docker/seccomp.json \
+  --security-opt=no-new-privileges=true --security-opt=systempaths=unconfined \
+  --security-opt seccomp=$PWD/latch/docker/seccomp.json \
   -v $PWD:/repo -w /repo/latch -e HOME=/tmp -e RUSTUP_HOME=/usr/local/rustup \
   -e CARGO_HOME=/repo/latch/target/cargo-home -e CARGO_TARGET_DIR=/repo/latch/target/linux-check \
   latch-linux-gates:local \
