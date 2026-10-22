@@ -174,6 +174,8 @@ pub(super) fn parse(bytes: &[u8]) -> Vec<Key> {
             [0x1b, b'[' | b'O', b'C', ..] => (Some(Key::Right), 3),
             [0x1b, b'[' | b'O', b'D', ..] => (Some(Key::Left), 3),
             [0x1b, b'[' | b'O', b'F', ..] => (Some(Key::End), 3),
+            [0x1b, b'[' | b'O', b'H', ..] => (Some(Key::Home), 3),
+            [0x1b, b'[', b'1' | b'7', b'~', ..] => (Some(Key::Home), 4),
             [0x1b, b'[', b'4' | b'8', b'~', ..] => (Some(Key::End), 4),
             [0x1b, b'[', ..] => (None, 2),
             [0x1b, ..] => (Some(Key::Esc), 1),

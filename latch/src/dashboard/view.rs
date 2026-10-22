@@ -27,6 +27,7 @@ pub enum Key {
     Enter,
     Tab,
     Esc,
+    Home,
     End,
     Backspace,
     Char(char),
@@ -151,22 +152,22 @@ impl View {
         }
         let items = self.items();
         let selectable: Vec<Sel> = items.iter().filter_map(|item| item.sel).collect();
+        self.selected = current(self.selected, &items);
         let at = self
             .selected
             .and_then(|sel| selectable.iter().position(|s| *s == sel));
         match key {
             Key::Up => {
-                self.selected = match at {
-                    Some(at) => selectable.get(at.saturating_sub(1)).copied(),
-                    None => selectable.first().copied(),
+                if let Some(at) = at {
+                    self.selected = Some(selectable[at.saturating_sub(1)]);
                 }
             }
             Key::Down => {
-                self.selected = match at {
-                    Some(at) => selectable.get(at + 1).or(selectable.get(at)).copied(),
-                    None => selectable.first().copied(),
+                if let Some(at) = at {
+                    self.selected = Some(selectable[(at + 1).min(selectable.len() - 1)]);
                 }
             }
+            Key::Home => self.selected = selectable.first().copied(),
             Key::Right => {
                 if let Some(sel) = self.selected
                     && items
@@ -194,11 +195,13 @@ impl View {
                 }
             }
             Key::Char(' ') => {
-                if self.frozen.is_none() {
-                    self.frozen = Some(self.board.clone());
+                self.frozen = match self.frozen {
+                    Some(_) => None,
+                    None => Some(self.board.clone()),
                 }
             }
             Key::End => self.frozen = None,
+            Key::Esc => self.filter.clear(),
             Key::Char('/') => self.typing = Some(self.filter.clone()),
             Key::Char('r') => self.problems = !self.problems,
             Key::Char('q') => return Asked::Detach,
@@ -333,7 +336,14 @@ impl View {
         let plain = |text: &str| text.to_string();
         type Painted<'a> = (String, &'a dyn Fn(&str) -> String);
         let mut shown: Vec<Painted> = Vec::new();
-        if wide {
+        if let Some(gone) = self.gone {
+            // Nothing the host last said of itself holds now.
+            let last = board.updated.unwrap_or(gone);
+            shown.push((
+                format!("{host} | Host disconnected; last update {}", clock(last)),
+                &alert,
+            ));
+        } else if wide {
             shown.push((format!("{host} | {serving} | {directory}"), &bold));
             let mut second = connectors;
             second.push(socket);
@@ -344,13 +354,6 @@ impl View {
             if !connectors.is_empty() {
                 shown.push((connectors.join(" | "), &plain));
             }
-        }
-        if let Some(gone) = self.gone {
-            let last = board.updated.unwrap_or(gone);
-            shown.push((
-                format!("Host disconnected; last update {}", clock(last)),
-                &alert,
-            ));
         }
         if let Some(notice) = &self.notice {
             shown.push((notice.clone(), &alert));
@@ -396,8 +399,9 @@ impl View {
         let room = height.saturating_sub(lines.len() + footer.len());
         let items = self.items();
         let mut rows: Vec<(bool, Vec<String>)> = Vec::new();
+        let current = current(self.selected, &items);
         for item in &items {
-            let selected = item.sel.is_some() && item.sel == self.selected;
+            let selected = item.sel.is_some() && item.sel == current;
             rows.push((selected, layout.row(item, selected)));
         }
         if items.is_empty() {
@@ -408,12 +412,16 @@ impl View {
         let mut start = 0;
         if let Some(at) = selected_at {
             let mut used: usize = rows[..=at].iter().map(|(_, row)| row.len()).sum();
-            while used > room && start < at {
+            // One line goes to saying there is more above.
+            while used + usize::from(start > 0) > room && start < at {
                 used -= rows[start].1.len();
                 start += 1;
             }
         }
         let mut body = Vec::new();
+        if start > 0 {
+            body.push(paint::fg("   … more above; Home goes to the top", DIM));
+        }
         for (_, row) in &rows[start..] {
             let left = room.saturating_sub(body.len());
             if row.len() > left {
@@ -521,6 +529,15 @@ impl View {
         lines.extend(footer);
         lines
     }
+}
+
+/// What is selected: `selected` while it is on the list, else the first
+/// row, so there always is one to act on.
+fn current(selected: Option<Sel>, items: &[Item]) -> Option<Sel> {
+    let on_list = |sel: &Sel| items.iter().any(|item| item.sel == Some(*sel));
+    selected
+        .filter(on_list)
+        .or_else(|| items.iter().find_map(|item| item.sel))
 }
 
 /// A task, and the call selected in it, or the one that says how it is

@@ -320,7 +320,6 @@ fn what_was_dropped_is_said_never_implied_complete() {
     assert_eq!(shown.tasks[0].dropped, 1);
 
     let mut view = view_of(&dashboard, false);
-    view.key(Key::Down);
     view.key(Key::Right);
     let lines = screen(&view, 120, 400);
     assert!(
@@ -390,7 +389,6 @@ fn at_120_columns_each_column_is_its_own_and_a_plan_unfolds() {
 
     // Selecting the session and unfolding it, then its plan: the steps in
     // order, the one that stopped saying why.
-    view.key(Key::Down);
     view.key(Key::Down);
     view.key(Key::Right);
     view.key(Key::Down);
@@ -465,7 +463,6 @@ fn at_80_columns_the_caller_goes_under_the_title_and_a_refusal_wraps_whole() {
 #[test]
 fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
     let mut view = view_of(&busy(), false);
-    view.key(Key::Down);
     view.key(Key::Enter);
     let steps = screen(&view, 80, 40).join("\n");
     assert!(
@@ -507,7 +504,6 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
 fn new_work_never_moves_the_selection_and_a_pause_holds_the_screen() {
     let dashboard = busy();
     let mut view = view_of(&dashboard, false);
-    view.key(Key::Down);
     view.key(Key::Down);
     let selected = view.selected().unwrap();
     let request = json!({"argv": ["ls"]});
@@ -573,11 +569,18 @@ fn a_host_that_went_away_is_never_shown_as_live() {
     view.gone = Some(jiff::Timestamp::now());
     let lines = screen(&view, 80, 24);
     assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("Host disconnected; last update ")),
+        lines[0].starts_with("HOST workstation | Host disconnected; last update "),
         "{lines:#?}"
     );
+    // Nothing the host said of itself while it ran is shown as still so.
+    let all = lines.join("\n");
+    for live in [
+        "Serving since",
+        "Directory: connected",
+        "Local socket: listening",
+    ] {
+        assert!(!all.contains(live), "{all}");
+    }
 }
 
 #[test]
@@ -699,7 +702,6 @@ fn a_running_plan_shows_its_step_as_each_one_ends() {
 
     // Its details: two done, the third still to come.
     let mut view = view_of(&dashboard, false);
-    view.key(Key::Down);
     view.key(Key::Right);
     for _ in 0..3 {
         view.key(Key::Down);
@@ -786,7 +788,6 @@ fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
         None,
     );
     let mut view = view_of(&dashboard, false);
-    view.key(Key::Down);
     // Its title wraps onto more lines than the 80 by 12 screen has room.
     let lines = screen(&view, 80, 12);
     assert_eq!(lines.len(), 12);
@@ -810,4 +811,117 @@ fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
     view.key(Key::Enter);
     let details = screen(&view, 80, 60).join("\n");
     assert!(details.contains("word59"), "{details}");
+}
+
+#[test]
+fn the_first_row_is_selected_and_keys_do_what_they_say() {
+    let mut view = view_of(&busy(), false);
+    let first = screen(&view, 120, 30);
+    let marked: Vec<&String> = first.iter().filter(|line| line.starts_with('>')).collect();
+    assert_eq!(marked.len(), 1, "{first:#?}");
+    assert!(marked[0].contains("Write: report.pdf"));
+    // Space pauses and resumes; Esc clears a filter and keeps a row selected.
+    view.key(Key::Char(' '));
+    assert!(screen(&view, 120, 30).join("\n").contains("Paused"));
+    view.key(Key::Char(' '));
+    assert!(!screen(&view, 120, 30).join("\n").contains("Paused"));
+    for key in [
+        Key::Char('/'),
+        Key::Char('c'),
+        Key::Char('a'),
+        Key::Char('r'),
+        Key::Enter,
+    ] {
+        view.key(key);
+    }
+    let filtered = screen(&view, 120, 30);
+    assert!(
+        filtered
+            .iter()
+            .any(|line| line.starts_with('>') && line.contains("Run: cargo test"))
+    );
+    view.key(Key::Esc);
+    let cleared = screen(&view, 120, 30).join("\n");
+    assert!(
+        cleared.contains("Write: report.pdf") && !cleared.contains("Filter:"),
+        "{cleared}"
+    );
+}
+
+#[test]
+fn rows_hidden_above_are_said_and_home_goes_back_to_them() {
+    let dashboard = Dashboard::new("host", None);
+    for n in 0..12 {
+        let request = json!({"argv": ["echo", format!("call {n}")]});
+        let audit = json!({"argv": ["echo", format!("call {n}")], "exit_code": 0});
+        run(
+            &dashboard,
+            owner(),
+            "exec",
+            request,
+            audit,
+            Response::Ok(json!({})),
+            None,
+        );
+    }
+    let mut view = view_of(&dashboard, false);
+    for _ in 0..11 {
+        view.key(Key::Down);
+    }
+    let bottom = screen(&view, 80, 16);
+    assert!(
+        bottom
+            .iter()
+            .any(|line| line.contains("… more above; Home goes to the top")),
+        "{bottom:#?}"
+    );
+    assert!(
+        bottom
+            .iter()
+            .any(|line| line.starts_with('>') && line.contains("call 0")),
+        "{bottom:#?}"
+    );
+    view.key(Key::Home);
+    let top = screen(&view, 80, 16);
+    assert!(
+        top.iter()
+            .any(|line| line.starts_with('>') && line.contains("call 11")),
+        "{top:#?}"
+    );
+    assert!(!top.iter().any(|line| line.contains("more above")));
+}
+
+#[test]
+fn a_browser_call_shows_the_judgment_its_own_record_holds() {
+    let dashboard = Dashboard::new("host", None);
+    let plan = json!({"command": "do", "session": "s",
+        "plan": {"steps": [{"literal": {"op": "click", "ref": "e7"},
+                            "check": {"kind": "path", "value": "/nowhere.html"}}]}});
+    let audit = json!({"command": "do", "session": "x", "origin": "http://127.0.0.1:5", "path": "/search.html",
+        "gate": {"caller": "owner_device", "rule": "allowed when within instructions >= 0.50",
+                 "p": {"COVERED": 0.9, "NOT_COVERED": 0.05, "FORBIDDEN": 0.05}},
+        "step_outcomes": [{"step": 1, "outcome": "stopped", "code": "check_not_met"}],
+        "stop": {"step": 1, "code": "check_not_met"}});
+    let stopped = Response::Error {
+        exit: Exit::Failed,
+        code: "check_not_met".into(),
+        message: "step 1's check did not hold within 10s".into(),
+        details: json!({"page": {"url": "http://127.0.0.1:5/cart.html?id=7"}}),
+    };
+    run(&dashboard, owner(), "browser", plan, audit, stopped, None);
+    let call = board(&dashboard).tasks[0].calls[0].clone();
+    assert_eq!(call.title, "click e7 -> path: /nowhere.html");
+    assert_eq!(
+        call.detail.page.as_deref(),
+        Some("http://127.0.0.1:5/cart.html"),
+        "where it stopped, no query"
+    );
+    let mut view = view_of(&dashboard, false);
+    view.key(Key::Enter);
+    view.key(Key::Tab);
+    let decision = screen(&view, 100, 30).join("\n");
+    assert!(
+        decision.contains("Judge P: within instructions 0.90"),
+        "{decision}"
+    );
 }

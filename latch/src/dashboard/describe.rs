@@ -69,8 +69,25 @@ pub fn finished(
             Some(message.clone()),
         ),
     };
-    let page = match (audit["origin"].as_str(), audit["path"].as_str()) {
-        (Some(origin), path) => Some(format!("{origin}{}", path.unwrap_or_default())),
+    // A plan that stopped answers with the page as it ended, where it
+    // stopped; else the page the audit names. Never its query.
+    let ended = match response {
+        Response::Error { details, .. } => details["page"]["url"].as_str(),
+        Response::Ok(_) => None,
+    };
+    let page = match (
+        ended.and_then(|url| url::Url::parse(url).ok()),
+        audit["origin"].as_str(),
+    ) {
+        (Some(url), _) => Some(format!(
+            "{}{}",
+            url.origin().ascii_serialization(),
+            url.path()
+        )),
+        (None, Some(origin)) => Some(format!(
+            "{origin}{}",
+            audit["path"].as_str().unwrap_or_default()
+        )),
         _ => None,
     };
     let site = audit["origin"]
@@ -85,7 +102,10 @@ pub fn finished(
             code,
             message,
             audit_id: audit_id.map(str::to_string),
-            gate: gate.cloned(),
+            // The browser judges its own steps: its record is in the audit's.
+            gate: gate
+                .or(audit.get("gate").filter(|gate| gate.is_object()))
+                .cloned(),
             request: crate::redact::shown(op, audit),
         },
         title,
@@ -248,7 +268,11 @@ fn step_words(step: &Value) -> String {
         words.push(format!("{text:?}"));
     }
     if let Some(check) = step["check"]["value"].as_str() {
-        words.push(format!("-> {check}"));
+        // A sentence is its own words; a typed check says its kind.
+        match step["check"]["kind"].as_str() {
+            Some("sentence") | None => words.push(format!("-> {check}")),
+            Some(kind) => words.push(format!("-> {kind}: {check}")),
+        }
     }
     words.join(" ")
 }

@@ -5055,6 +5055,12 @@ fn q_in_an_attached_serve_leaves_its_host_running_and_shows_the_call() {
     shows(&shown, "Done - exit 0");
 
     terminal.write_all(b"q").unwrap();
+    // It says how to stop the host it left running, in a line.
+    let stop = format!(
+        "latch --state-dir {} stop",
+        host.canonicalize().unwrap().display()
+    );
+    shows(&shown, &stop);
     assert!(exits_within(&mut serve, 20).success());
     thread::sleep(std::time::Duration::from_secs(1));
     assert_eq!(
