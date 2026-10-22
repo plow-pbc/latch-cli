@@ -3311,6 +3311,7 @@ fn a_local_socket_call_reads_no_secret_of_the_state_folder() {
     let host = owner_host_on(&plow, dir.path());
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
+    google_enabled(&host);
     let _serve = serving(&host, &share, &relay);
     // The client's secret store refuses, as the Keychain does inside a
     // sandbox: its key and Plow login can't be read. The running host has
@@ -3334,7 +3335,26 @@ fn a_local_socket_call_reads_no_secret_of_the_state_folder() {
         ],
         &[],
     );
+    let disabled = latch(&host, &["plugins", "disable", "google"], &[]);
+    let link = latch(
+        &host,
+        &[
+            "vault",
+            "link",
+            "--page",
+            "https://example.invalid/",
+            "--kind",
+            "note",
+            "--title",
+            "keyless",
+        ],
+        &[],
+    );
     locked(0o600);
+    assert!(disabled.status.success(), "{disabled:?}");
+    let link: Value = serde_json::from_slice(&link.stdout).unwrap_or_else(|_| panic!("{link:?}"));
+    let url = link["url"].as_str().unwrap();
+    assert!(url.starts_with("https://example.invalid/#h="), "{link}");
     assert!(exec.status.success(), "{exec:?}");
     let answer: Value = serde_json::from_slice(&exec.stdout).unwrap();
     assert_eq!(answer["stdout"], "no secrets\n");

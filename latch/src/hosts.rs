@@ -15,7 +15,7 @@ use crate::state::StateDir;
 pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failure> {
     Ok(match asked {
         None => true,
-        Some(name) => state.require_login()?.peer.name == name,
+        Some(name) => state.require_config()?.peer.name == name,
     })
 }
 
