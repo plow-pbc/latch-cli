@@ -37,7 +37,6 @@ use tokio::process::{Child, ChildStdout, Command};
 
 use crate::cli::{WorkerAction, WorkerArgs};
 use crate::sandbox::{self, Policy};
-use crate::state_folders::StateFolders;
 
 /// What every worker a host starts is allowed: the host's areas and the
 /// owner's read-only opt-ins, minus its state directory and the hidden paths.
@@ -46,8 +45,6 @@ pub struct WorkerSetup {
     pub areas: Vec<PathBuf>,
     pub reads: Vec<PathBuf>,
     pub hidden: Vec<PathBuf>,
-    /// Other latch state folders in the areas and reads, hidden like `hidden`.
-    pub state_folders: StateFolders,
     pub state_dir: PathBuf,
     /// The latch binary each worker runs: the host's own.
     pub program: PathBuf,
@@ -150,7 +147,6 @@ impl WorkerSetup {
             areas: vec![folder.to_path_buf()],
             reads: vec![],
             hidden: self.hidden.clone(),
-            state_folders: StateFolders::none(),
             state_dir: self.state_dir.clone(),
             program: self.program.clone(),
         };
@@ -225,19 +221,12 @@ impl WorkerSetup {
         with_stdin: bool,
         kill_after: u64,
     ) -> Result<Child, WorkerError> {
-        let caches =
-            crate::exec::caches(self).map_err(|failure| error(&failure.code, &failure.message))?;
+        let caches = crate::exec::caches(self);
         let restricted = WorkerSetup {
             home: self.home.clone(),
             areas: args.writes.iter().cloned().chain(caches).collect(),
             reads: vec![self.home.clone()],
-            hidden: self
-                .hidden
-                .iter()
-                .cloned()
-                .chain(self.state_folders.now())
-                .collect(),
-            state_folders: StateFolders::none(),
+            hidden: self.hidden.clone(),
             state_dir: self.state_dir.clone(),
             program: self.program.clone(),
         };
@@ -290,8 +279,7 @@ impl WorkerSetup {
         for read in &self.reads {
             command.arg("--read").arg(read);
         }
-        // Looked for again now: a state folder may have been made since.
-        for hidden in self.hidden.iter().chain(&self.state_folders.now()) {
+        for hidden in &self.hidden {
             command.arg("--hidden").arg(hidden);
         }
         command.arg("--denied").arg(&self.state_dir);

@@ -169,7 +169,6 @@ fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
 
 fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Result<(), Failure> {
     let hidden = path.starts_with(&workers.state_dir)
-        || path.ancestors().any(crate::state::is_state_folder)
         || workers.hidden.iter().any(|hidden| {
             let hidden = hidden.canonicalize().unwrap_or_else(|_| hidden.clone());
             let cache = cfg!(target_os = "macos")
@@ -184,10 +183,9 @@ fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Result<(), Fai
     Ok(())
 }
 
-/// Writable tool caches, prepared only after the command has been allowed.
-pub(crate) fn caches(workers: &WorkerSetup) -> Result<Vec<PathBuf>, Failure> {
-    let mut paths = Vec::new();
-    for name in [
+/// Only existing, plain cache directories receive implicit write access.
+pub(crate) fn caches(workers: &WorkerSetup) -> Vec<PathBuf> {
+    [
         ".cache",
         ".npm",
         ".cargo/registry",
@@ -196,36 +194,15 @@ pub(crate) fn caches(workers: &WorkerSetup) -> Result<Vec<PathBuf>, Failure> {
     ]
     .into_iter()
     .chain(cfg!(target_os = "macos").then_some("Library/Caches"))
-    {
-        let path = workers.home.join(name);
-        check_path(workers, &path, true)?;
-        cache_dir(&workers.home, name).map_err(|_| {
-            Failure::failed("cache_failed", "could not prepare a tool cache".into())
-        })?;
-        paths.push(path);
-    }
-    for name in [".package-cache", ".package-cache-mutate"] {
-        let path = workers.home.join(".cargo").join(name);
-        check_path(workers, &path, true)?;
-        let prepare = || -> std::io::Result<()> {
-            let folder = cache_dir(&workers.home, ".cargo")?;
-            let name = std::ffi::CString::new(name).unwrap();
-            let file = open_at(
-                &folder,
-                &name,
-                libc::O_WRONLY | libc::O_CREAT | libc::O_NONBLOCK,
-            )?;
-            if !file.metadata()?.is_file() {
-                return Err(std::io::Error::other("cache lock is not a regular file"));
-            }
-            Ok(())
-        };
-        prepare().map_err(|_| {
-            Failure::failed("cache_failed", "could not prepare a tool cache lock".into())
-        })?;
-        paths.push(path);
-    }
-    Ok(paths)
+    .map(|name| workers.home.join(name))
+    .filter(|path| {
+        check_path(workers, path, true).is_ok()
+            && path
+                .ancestors()
+                .take_while(|p| *p != workers.home)
+                .all(|p| std::fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir()))
+    })
+    .collect()
 }
 
 /// `exec`: runs `args.argv` and returns its result. If `cut_off` finishes
@@ -285,11 +262,16 @@ pub async fn run(
 }
 
 fn create_write_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("no parent folder"))?;
-    let folder = open_dir(parent)?;
+    let folder = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(parent)?;
     if crate::sandbox::opened_path(&folder)? != parent {
         return Err(std::io::Error::other(
             "the write parent changed after judgment",
@@ -301,63 +283,12 @@ fn create_write_dir(path: &Path) -> std::io::Result<()> {
             .as_bytes(),
     )
     .map_err(std::io::Error::other)?;
-    mkdir_at(&folder, &name)
-}
-
-fn open_dir(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(path)
-}
-
-/// Walk from an open home directory without following cache aliases or swapped parents.
-fn cache_dir(home: &Path, name: &str) -> std::io::Result<std::fs::File> {
-    let mut folder = open_dir(home)?;
-    for name in name.split('/') {
-        let name = std::ffi::CString::new(name).unwrap();
-        if let Err(error) = mkdir_at(&folder, &name)
-            && error.kind() != std::io::ErrorKind::AlreadyExists
-        {
-            return Err(error);
-        }
-        folder = open_at(&folder, &name, libc::O_RDONLY | libc::O_DIRECTORY)?;
-    }
-    Ok(folder)
-}
-
-fn mkdir_at(folder: &std::fs::File, name: &std::ffi::CStr) -> std::io::Result<()> {
-    use std::os::fd::AsRawFd;
     // SAFETY: the file owns a live directory descriptor and name is one NUL-
     // terminated component. Anchoring mkdirat there cannot follow a swapped parent.
     if unsafe { libc::mkdirat(folder.as_raw_fd(), name.as_ptr(), 0o777) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
-}
-
-fn open_at(
-    folder: &std::fs::File,
-    name: &std::ffi::CStr,
-    flags: libc::c_int,
-) -> std::io::Result<std::fs::File> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    // SAFETY: folder is live and name is NUL-terminated. NOFOLLOW prevents alias
-    // traversal; a successful descriptor is transferred exactly once into File.
-    let fd = unsafe {
-        libc::openat(
-            folder.as_raw_fd(),
-            name.as_ptr(),
-            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: openat just returned this owned descriptor; no other File owns it.
-    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 /// What the audit keeps of an exec's stdin: its size and sha256, never
@@ -746,7 +677,6 @@ mod tests {
             areas: vec![dir.path().to_path_buf()],
             reads: vec![],
             hidden: vec![],
-            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: dir.path().join("state"),
             program,
         };
@@ -851,9 +781,16 @@ mod tests {
     async fn declared_projects_support_cargo_build_and_npm_install() {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         std::fs::create_dir_all(&parent).unwrap();
-        let dir = tempfile::tempdir_in(parent).unwrap();
-        let root = dir.path().canonicalize().unwrap();
         let home = std::env::home_dir().unwrap().canonicalize().unwrap();
+        // A gate container can mount the repository outside its HOME (/tmp).
+        let parent = parent.canonicalize().unwrap();
+        let dir = tempfile::tempdir_in(if parent.starts_with(&home) {
+            &parent
+        } else {
+            &home
+        })
+        .unwrap();
+        let root = dir.path().canonicalize().unwrap();
         let state = root.join("state");
         std::fs::create_dir(&state).unwrap();
         let binary = std::env::current_exe().unwrap();
@@ -862,7 +799,6 @@ mod tests {
             areas: vec![],
             reads: vec![],
             hidden: crate::sandbox::never_readable(&home),
-            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: state,
             program: binary.parent().unwrap().parent().unwrap().join("latch"),
         };
@@ -890,6 +826,7 @@ mod tests {
                 vec![
                     "/usr/bin/env".to_string(),
                     format!("RUSTUP_HOME={}", rustup.display()),
+                    format!("CARGO_HOME={}", rust.join("cache").display()),
                     "cargo".into(),
                     "build".into(),
                     "--offline".into(),
@@ -898,6 +835,8 @@ mod tests {
             (
                 &node,
                 vec![
+                    "/usr/bin/env".into(),
+                    format!("npm_config_cache={}", node.join("cache").display()),
                     "npm".into(),
                     "install".into(),
                     "--ignore-scripts".into(),

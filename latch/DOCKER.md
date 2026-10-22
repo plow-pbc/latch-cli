@@ -1,7 +1,8 @@
 # Running a latch host in Docker
 
 Use an image containing latch, non-setuid bubblewrap, CA certificates, and the
-programs your host needs. Install these while building the image, then run latch
+programs your host needs, on a kernel with Landlock ABI 9 or newer.
+Install these while building the image, then run latch
 as a non-root user. The state and the shared folders must be writable by that user.
 The normal latch login still applies.
 
@@ -28,9 +29,11 @@ own PID namespace; file and Google workers have no `/proc`. All workers get a mi
 `/dev` and their permitted writable folders. Exec and file workers see the
 container's system folders (`/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, `/opt`,
 `/var/lib`). Exec reads home except latch state, writes only its declared paths,
-tool caches and temp, and has no IP network without `--network`; host Unix
-sockets stay blocked even with it. Linux exec refuses AF_UNIX socket creation,
-including private filesystem sockets; anonymous socket pairs work online.
+existing plain tool-cache directories and temp, and has no IP network without
+`--network`. Missing caches and cache aliases are skipped; latch creates none.
+Landlock restricts pathname Unix sockets to private temp and abstract sockets to
+this worker's domain. Unnamed Unix sockets and socketpairs work offline too;
+host daemon sockets stay blocked with or without `--network`.
 File workers still use the shared folders and read-only `--allow-read` paths.
 Exec also gets a private empty `/tmp`, `/run` and `TMPDIR`. A volume
 mounted elsewhere in the container is visible to workers only if it is shared

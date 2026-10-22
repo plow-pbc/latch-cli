@@ -40,7 +40,6 @@ mod secrets;
 mod serve;
 mod shares;
 mod state;
-mod state_folders;
 mod status;
 mod term;
 mod trace;
