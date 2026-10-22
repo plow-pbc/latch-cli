@@ -34,11 +34,21 @@ Linux hosting needs bubblewrap and usable user namespaces; setup explains missin
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
 
-Update by rerunning the commands above (`curl -O` replaces the `install.sh`
-already there). State and versioned plugins stay in place.
-A host `serve -d` started is stopped and started again with the new latch, with what
-it was given. One running in a terminal (`latch serve`, or `serve --foreground`) is
-stopped, and the update says to run `latch serve` there again.
+Update with `latch update`: it installs the newest build, or `latch update TAG`
+that build (also how to go back to an older one); `latch update --check` only
+says whether a newer one is out. It checks the release's `SHA256SUMS` against
+latch's release signing key and the archive against it (on macOS, also that
+the app is signed by Plow), then runs the release's own `install-binary.sh`
+into the folder latch runs from. State and versioned plugins stay in place,
+and the browser engines installed are brought up to date. A host `serve -d`
+started is stopped and started again with the new latch, with what it was
+given. One running in a terminal (`latch serve`, or `serve --foreground`) is
+stopped, and the update says to run `latch serve` there again. Only the owner
+updates: an agent's login is refused.
+A running host looks for a newer build once a day: `latch status --local`
+shows it as `update`, the dashboard as a line under the header, and a command
+at a terminal says so on stderr once a day. `LATCH_NO_UPDATE_CHECK=1` turns
+the looking and the notices off.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
 No Homebrew tap is included.
 

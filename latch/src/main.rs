@@ -49,6 +49,7 @@ mod term;
 mod trace;
 mod transfer;
 mod transport;
+mod update;
 mod vault;
 mod watch;
 mod wire;
@@ -118,7 +119,13 @@ fn main() -> ExitCode {
         }
         command => command,
     };
-    run_async(cli.state_dir, command)
+    let notice = !matches!(command, Command::Update(_));
+    let state_dir = cli.state_dir.clone();
+    let exit = run_async(cli.state_dir, command);
+    if notice && let Ok(state) = StateDir::new(state_dir) {
+        update::notice(&state.path);
+    }
+    exit
 }
 
 #[tokio::main]
@@ -242,6 +249,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Plugins(args) => to_json(plugins::client::run(&state, args).await?),
+        Command::Update(args) => to_json(update::run(&state, args).await?),
         // Its lines, printed as they come, are its whole output.
         Command::Audit(cli::AuditArgs {
             action: cli::AuditAction::Show { follow: true },
