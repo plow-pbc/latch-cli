@@ -906,7 +906,13 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
     )
     .unwrap();
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
-    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
+    let t = start_with(
+        fake::serve(World::default()),
+        provider,
+        DenyExec::default(),
+        None,
+    )
+    .await;
     let device = t.caller("device").await;
     let run = |argv: &[&str]| json!({"argv": argv, "workdir": null, "timeout": 30});
     let ordinary = [
