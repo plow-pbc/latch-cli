@@ -13,6 +13,17 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def seed_gog(setup, state):
+    """gog already in `state`, as `setup`'s pin names it: nothing to download."""
+    gog = state / "plugins/gog/1.0/gog"
+    gog.parent.mkdir(parents=True, exist_ok=True)
+    gog.write_bytes(b"local-gog-fixture")
+    pin = setup / "src/google/pin.json"
+    pin.parent.mkdir(parents=True, exist_ok=True)
+    pin.write_text(json.dumps({
+        "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest()}, indent=2))
+
+
 class BinaryInstall(unittest.TestCase):
     def install(self, custom=False, source="last", no_args=False):
         parent = ROOT / ".dev/tests"
@@ -29,12 +40,7 @@ class BinaryInstall(unittest.TestCase):
             binary.chmod(0o755)
             home = root / "home"
             state = home / ".latch" if no_args else root / "state"
-            gog = state / "plugins/gog/1.0/gog"
-            gog.parent.mkdir(parents=True)
-            gog.write_bytes(b"local-gog-fixture")
-            (setup / "src/google/pin.json").write_text(json.dumps({
-                "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest(),
-            }, indent=2))
+            seed_gog(setup, state)
             tools = root / "tools"
             tools.mkdir()
             uname = tools / "uname"
@@ -101,12 +107,7 @@ class BinaryInstall(unittest.TestCase):
             (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
             home = root / "home"
             state = root / "state"
-            gog = state / "plugins/gog/1.0/gog"
-            gog.parent.mkdir(parents=True)
-            gog.write_bytes(b"local-gog-fixture")
-            (setup / "src/google/pin.json").write_text(json.dumps({
-                "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest(),
-            }, indent=2))
+            seed_gog(setup, state)
             # Chrome for Testing already in place, so nothing is downloaded.
             cft_pin = '{\n  "version": "1.0"\n}\n'
             (setup / "src/browser/cft.json").write_text(cft_pin)
@@ -200,11 +201,7 @@ class BrowserEngines(unittest.TestCase):
         shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
         tool(setup, "latch", "echo installed-fixture\n")
         state = self.root / "state"
-        gog = state / "plugins/gog/1.0/gog"
-        gog.parent.mkdir(parents=True, exist_ok=True)
-        gog.write_bytes(b"local-gog-fixture")
-        (setup / "src/google/pin.json").write_text(json.dumps({
-            "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest()}, indent=2))
+        seed_gog(setup, state)
         chosen = self.root / "chosen"
         chosen.unlink(missing_ok=True)
         tool(setup, "browser-engines.sh", f'shift 2\necho "$@" > "{chosen}"\n')
@@ -323,11 +320,7 @@ esac; done
         (setup / "src/google").mkdir(parents=True)
         shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
         tool(setup, "latch", "echo installed-fixture\n")
-        gog = state / "plugins/gog/1.0/gog"
-        gog.parent.mkdir(parents=True)
-        gog.write_bytes(b"local-gog-fixture")
-        (setup / "src/google/pin.json").write_text(json.dumps({
-            "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest()}, indent=2))
+        seed_gog(setup, state)
         installed = subprocess.run(
             ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state), "--no-browser",
              str(setup / "latch")], env=env, capture_output=True, text=True)

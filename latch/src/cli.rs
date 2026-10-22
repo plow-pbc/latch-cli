@@ -75,8 +75,9 @@ Agents:
   what fixes it: often a retry later, but a host out of Plow credits fails
   until the host's account owner adds them. A browser step's
   model_unavailable (exit 1) is the same decision model, for a click's risk,
-  a goal or a sentence check: that step sent nothing, and nothing gets
-  around it. Earlier steps of the same plan may have run; its `steps` say.";
+  a goal or a sentence check, and nothing gets around it. Before retrying,
+  read the answer's `steps` and `trail`, the failed step's included: earlier
+  steps, and a goal's earlier actions, may already have run.";
 
 /// What `latch browser do --help` adds after its options: the short form
 /// by example. BROWSER.md shows the same examples.
@@ -400,17 +401,9 @@ pub enum BrowserCommand {
     /// engine into this machine's state directory (after `install.sh
     /// --no-browser`, say). An agent's browser call never downloads one
     Setup {
-        #[arg(long, value_enum, default_value_t = SetupEngine::Chrome)]
-        engine: SetupEngine,
+        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
+        engine: EngineArg,
     },
-}
-
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
-pub enum SetupEngine {
-    /// Chrome for Testing
-    Chrome,
-    /// Camoufox (macOS)
-    Camoufox,
 }
 
 #[derive(Subcommand, Debug)]
@@ -426,7 +419,10 @@ pub enum ProfileCommand {
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum EngineArg {
+    /// Chrome for Testing
+    #[value(name = "chrome")]
     Cft,
+    /// Camoufox (macOS)
     Camoufox,
 }
 

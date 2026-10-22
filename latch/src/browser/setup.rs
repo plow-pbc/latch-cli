@@ -14,7 +14,7 @@ use std::process::Command;
 use serde_json::{Value, json};
 
 use super::engine::{CAMOUFOX, CFT};
-use crate::cli::SetupEngine;
+use crate::cli::EngineArg;
 use crate::failure::{Exit, Failure};
 use crate::state::StateDir;
 
@@ -44,7 +44,7 @@ const FILES: [(&str, &[u8]); 7] = [
     ),
 ];
 
-pub fn run(state: &StateDir, engine: SetupEngine) -> Result<Value, Failure> {
+pub fn run(state: &StateDir, engine: EngineArg) -> Result<Value, Failure> {
     if let Some(config) = state.load_config()?
         && config.peer.kind == "agent"
     {
@@ -57,16 +57,16 @@ pub fn run(state: &StateDir, engine: SetupEngine) -> Result<Value, Failure> {
         ));
     }
     let name = match engine {
-        SetupEngine::Chrome => "chrome",
-        SetupEngine::Camoufox => "camoufox",
+        EngineArg::Cft => "chrome",
+        EngineArg::Camoufox => "camoufox",
     };
     install(&state.path, name)?;
     let (version, folder) = match engine {
-        SetupEngine::Chrome => {
+        EngineArg::Cft => {
             CFT.verified(&state.path)?;
             (&CFT.version, CFT.folder(&state.path))
         }
-        SetupEngine::Camoufox => {
+        EngineArg::Camoufox => {
             CAMOUFOX.verified(&state.path)?;
             (&CAMOUFOX.version, CAMOUFOX.folder(&state.path))
         }
