@@ -78,10 +78,6 @@ pub async fn plan(workers: &WorkerSetup, op: &str, args: &Value) -> Result<Value
 pub async fn run(workers: &WorkerSetup, home: &Path, op: &str, args: &Value) -> Done {
     let action = args["action"].as_str().unwrap_or(op);
     let mut audit = audit(op, action, &args["args"], &args["plan"]);
-    if !args["plan"].is_object() {
-        let failure = Failure::usage("bad_request", "the call was never planned".to_string());
-        return refused(failure, audit);
-    }
     let [messages, address_book] = folders(home);
     let mut argv = vec![
         "--store".to_string(),

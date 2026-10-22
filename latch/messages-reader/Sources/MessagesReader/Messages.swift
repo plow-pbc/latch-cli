@@ -222,25 +222,32 @@ struct Context {
         // The newest rows, read oldest first; the next page is older.
         let sql = messageColumns + " where " + conditions.joined(separator: " and ")
             + " order by m.date desc, m.ROWID desc limit ?"
+        var answer = try messagePage(sql, params)
+        answer.rows.reverse()
+        return answer
+    }
+
+    /// Up to `limit` messages from `sql` (newest first, its last parameter
+    /// the limit), and where the next, older page starts.
+    func messagePage(_ sql: String, _ params: [Param]) throws -> Answer {
         var answer = Answer("messages")
         var unreadable = 0
-        var oldest: (Int64, Int64)?
+        var last: (Int64, Int64)?
         try store.query(sql, params + [.int(Int64(call.limit + 1))]) { row in
             if answer.rows.count == call.limit {
-                answer.next = cursor(oldest!.0, oldest!.1)
+                answer.next = cursor(last!.0, last!.1)
                 return false
             }
             let (object, failed) = messageRow(row)
             guard answer.add(object) else {
-                answer.next = oldest.map { cursor($0.0, $0.1) } ?? call.cursor
+                answer.next = last.map { cursor($0.0, $0.1) } ?? call.cursor
                 return false
             }
             if failed { unreadable += 1 }
-            oldest = (row.int(7), row.int(0))
+            last = (row.int(7), row.int(0))
             return true
         }
-        if store.interrupted { answer.next = oldest.map { cursor($0.0, $0.1) } ?? call.cursor }
-        answer.rows.reverse()
+        if store.interrupted { answer.next = last.map { cursor($0.0, $0.1) } ?? call.cursor }
         answer.extra["unreadable"] = unreadable
         return answer
     }
@@ -354,26 +361,7 @@ struct Context {
         }
         let sql = messageColumns + " where " + conditions.joined(separator: " and ")
             + " order by m.date desc, m.ROWID desc limit ?"
-        var answer = Answer("messages")
-        var unreadable = 0
-        var last: (Int64, Int64)?
-        try store.query(sql, params + [.int(Int64(call.limit + 1))]) { row in
-            if answer.rows.count == call.limit {
-                answer.next = cursor(last!.0, last!.1)
-                return false
-            }
-            let (object, failed) = messageRow(row)
-            guard answer.add(object) else {
-                answer.next = last.map { cursor($0.0, $0.1) } ?? call.cursor
-                return false
-            }
-            if failed { unreadable += 1 }
-            last = (row.int(7), row.int(0))
-            return true
-        }
-        if store.interrupted { answer.next = last.map { cursor($0.0, $0.1) } ?? call.cursor }
-        answer.extra["unreadable"] = unreadable
-        return answer
+        return try messagePage(sql, params)
     }
 }
 
