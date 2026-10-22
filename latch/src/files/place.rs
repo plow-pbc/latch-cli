@@ -20,17 +20,24 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::exec::{check_path, resolve};
+use crate::exec::{check_path, is_hidden, resolve};
 use crate::failure::{Exit, Failure};
 use crate::sandbox::opened_path;
 use crate::worker::WorkerSetup;
 
-/// The file a get of `remote` reads.
+/// The file a get of `remote` reads: in home, or a system file exec can
+/// read too (the worker's sandbox limits it to those), never a hidden one.
 pub fn source(remote: &str, workers: &WorkerSetup) -> Result<PathBuf, Failure> {
     let path = resolve(&workers.home, Path::new(remote))?;
-    check_path(workers, &path, false)?;
+    if path.starts_with(&workers.home) {
+        check_path(workers, &path, false)?;
+    } else if is_hidden(workers, &path) {
+        let message = format!("{remote} is latch state or a hidden path");
+        return Err(Failure::new(Exit::Denied, "bad_path", message));
+    }
     Ok(path)
 }
 
@@ -100,7 +107,13 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
         0o666,
     )
     .map_err(failed)?;
-    let written = File::open(staged)
+    // A file it replaces keeps its permissions: a 0600 key stays 0600, a
+    // script stays executable.
+    let kept = mode_of(&dir, name.as_bytes())
+        .map(|mode| file.set_permissions(std::fs::Permissions::from_mode(mode)))
+        .transpose();
+    let written = kept
+        .and_then(|_| File::open(staged))
         .and_then(|mut staged| io::copy(&mut staged, &mut file))
         .and_then(|_| file.sync_all())
         .and_then(|()| rename(&dir, &temp, name.as_bytes()));
@@ -109,6 +122,28 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
         return Err(failed(err));
     }
     Ok(())
+}
+
+/// The permission bits of the regular file `name` in `dir`, if there is
+/// one (a link there is not followed).
+// `mode_t` is a u16 on macOS and a u32 on Linux.
+#[allow(clippy::unnecessary_cast)]
+fn mode_of(dir: &File, name: &[u8]) -> Option<u32> {
+    let name = c_name(name).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `name` is NUL-terminated and outlives the call, `dir` is open,
+    // and fstatat fills `stat` when it returns 0.
+    let found = unsafe {
+        libc::fstatat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0;
+    // SAFETY: fstatat succeeded, so `stat` is initialized.
+    let stat = found.then(|| unsafe { stat.assume_init() })?;
+    (stat.st_mode & libc::S_IFMT == libc::S_IFREG).then_some(stat.st_mode as u32 & 0o7777)
 }
 
 fn changed(folder: &Path) -> Failure {
@@ -225,6 +260,11 @@ mod tests {
             source("~/.latch/key", &workers).unwrap_err().code,
             "bad_path"
         );
+        // Outside home, a system file is a get's too, as exec can read it.
+        assert_eq!(
+            source("/etc/hosts", &workers).unwrap(),
+            PathBuf::from("/etc/hosts").canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -258,8 +298,12 @@ mod tests {
         fs::create_dir(home.join("docs")).unwrap();
         fs::write(home.join("docs/a.txt"), "old").unwrap();
         let path = destination("~/docs/a.txt", None, &workers).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         place(&staged(dir.path(), b"new"), &path, &workers).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+        // It keeps the file's permissions.
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600);
         let names: Vec<_> = fs::read_dir(home.join("docs")).unwrap().flatten().collect();
         assert_eq!(names.len(), 1, "{names:?}");
         // A staged file that is gone fails, and the old file stays.

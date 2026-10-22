@@ -1970,15 +1970,15 @@ fn a_host_sharing_no_folders_still_runs_exec_and_files_under_home() {
     assert_eq!(executed.status.code(), Some(0), "{executed:?}");
     let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
     assert_eq!(result["exit_code"], 0);
-    // Files are under home: one outside it is refused, one in it goes.
-    let outside = latch(
+    // A get reads what exec can (home and the system's files), and a put
+    // goes under home.
+    let system = latch(
         &owner,
         &["file", "get", "--host", "host", "/etc/hosts", into],
         &[],
     );
-    assert_eq!(outside.status.code(), Some(4), "{outside:?}");
-    let error: Value = serde_json::from_slice(&outside.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "bad_path", "{error}");
+    assert_eq!(system.status.code(), Some(0), "{system:?}");
+    assert_eq!(fs::read(into).unwrap(), fs::read("/etc/hosts").unwrap());
     let local_file = dir.path().join("note.txt");
     fs::write(&local_file, "hi").unwrap();
     let local_file = local_file.to_str().unwrap();
@@ -2000,7 +2000,6 @@ fn a_host_sharing_no_folders_still_runs_exec_and_files_under_home() {
     let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
     drop(serve);
-    assert!(!Path::new(into).exists(), "nothing was fetched");
     let asked_judge = plow
         .seen()
         .iter()

@@ -886,7 +886,7 @@ pub struct HostArg {
 pub enum FileCommand {
     /// Copy a file from the host to this machine
     Get {
-        /// The file on the host, inside its home folder: absolute, `~/…` (quote it so this shell leaves the `~` alone), or relative to home. Never latch's state or, on macOS, ~/Library (its Caches excepted)
+        /// The file on the host, in its home folder or a system file exec can read too: absolute, `~/…` (quote it so this shell leaves the `~` alone), or relative to home. Never latch's state or, on macOS, ~/Library (its Caches excepted)
         remote_path: String,
         /// Where to write it on this machine [default: the remote file's name, in the current directory]
         local_dest: Option<PathBuf>,
@@ -897,7 +897,7 @@ pub enum FileCommand {
     Put {
         /// The file on this machine to send
         local_path: PathBuf,
-        /// Where it goes on the host, inside its home folder: absolute, `~/…` (quoted), or relative to home. An existing folder gets the file inside it, under its own name, as with `cp`. The judge sees the resolved path; the old file stays until the new one is complete
+        /// Where it goes on the host, inside its home folder: absolute, `~/…` (quoted), or relative to home. An existing folder gets the file inside it, under its own name, as with `cp`. The judge sees the resolved path; the old file stays until the new one is complete, and the new one keeps its permissions
         remote_path: String,
         #[command(flatten)]
         host: HostArg,

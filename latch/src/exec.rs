@@ -167,8 +167,10 @@ pub(crate) fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
     ))
 }
 
-pub(crate) fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Result<(), Failure> {
-    let hidden = path.starts_with(&workers.state_dir)
+/// Whether `path` (resolved) is latch state or a hidden path, where no
+/// worker reads or writes.
+pub(crate) fn is_hidden(workers: &WorkerSetup, path: &Path) -> bool {
+    path.starts_with(&workers.state_dir)
         || path.ancestors().any(crate::state::is_state_folder)
         || workers.hidden.iter().any(|hidden| {
             let hidden = hidden.canonicalize().unwrap_or_else(|_| hidden.clone());
@@ -176,7 +178,11 @@ pub(crate) fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Res
                 && hidden == workers.home.join("Library")
                 && path.starts_with(workers.home.join("Library/Caches"));
             path.starts_with(hidden) && !cache
-        });
+        })
+}
+
+pub(crate) fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Result<(), Failure> {
+    let hidden = is_hidden(workers, path);
     if !path.starts_with(&workers.home) || (write && path == workers.home) || hidden {
         return Err(Failure::new(crate::failure::Exit::Denied, "bad_path",
             "the path must be inside the host's home and outside hidden state; home itself cannot be a write target".into()));

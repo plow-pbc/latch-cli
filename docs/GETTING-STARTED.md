@@ -131,10 +131,12 @@ FOLDER…` shares those folders this time instead of the saved ones.)
 
 What a caller from one of your machines can reach:
 
-- **Files:** `file get` and `file put` work anywhere in your home folder
-  except latch's own state and, on macOS, `~/Library` (its Caches excepted);
-  a path outside home is refused (`bad_path`, exit 4). A put replaces the
-  file only once all of it has arrived.
+- **Files:** `file get` reads what exec can: your home folder and the
+  system's own files (`latch file get --host mac /etc/hosts` works). `file
+  put` writes anywhere in your home folder. Neither touches latch's own
+  state or, on macOS, `~/Library` (its Caches excepted); anything else is
+  refused (`bad_path`, exit 4). A put replaces the file only once all of it
+  has arrived, and keeps the old file's permissions.
 - `exec` starts in the first shared folder.
 
 > **Never share your home folder (or `/`).** latch does not stop you: `latch
