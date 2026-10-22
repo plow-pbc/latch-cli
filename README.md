@@ -33,6 +33,13 @@ on a machine its owner trusts, over Plow's directory.
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
   to stderr, or to `serve.log` under the dashboard, never to stdout. On a
   host, each event names the connection's caller key and the operation.
+- Connectors are off until you turn them on, per host: on the host, with
+  its `latch serve` running, `latch plugins enable google` (on macOS also
+  `messages` and `contacts`) runs the connector's setup and enables it only
+  if that succeeds. `latch plugins disable NAME` refuses new calls at once
+  and returns once running ones finish. `latch plugins list` shows each
+  one's state; agents may list, never enable or disable. A call to a
+  connector that is off gets `not_enabled` (exit 4) with the enable command.
 - `latch shares set ~/work` saves the folders a `latch serve` named none
   shares. `latch status --local`, `latch events --follow` and
   `latch login --events` are for an app: see [latch/APP.md](latch/APP.md).

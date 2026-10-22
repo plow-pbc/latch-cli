@@ -256,7 +256,7 @@ impl StateDir {
 
 /// Writes a file only its owner can read. Skips the write when the file
 /// already holds exactly these bytes, so a repeated `login` changes nothing.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if fs::read(path).is_ok_and(|current| current == bytes) {
         return Ok(());
     }

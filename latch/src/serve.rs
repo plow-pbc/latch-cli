@@ -65,6 +65,8 @@ struct Host {
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
     binary: Binary,
+    /// The connectors its owner turned on, and their running operations.
+    plugins: crate::plugins::Plugins,
 }
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
@@ -260,6 +262,8 @@ async fn run_host(
     );
     let audit = AuditLog::open(state.path.join("audit.ndjson"))?;
     log(&format!("audit log verified: {} records", audit.len()));
+    let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let plugins = crate::plugins::Plugins::load(state, &home)?;
     let names: Vec<String> = workers
         .areas
         .iter()
@@ -334,6 +338,7 @@ async fn run_host(
         deny_exec,
         gatekeeper,
         binary,
+        plugins,
     });
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(&state.path, Phase::Serving, None)?;
@@ -680,8 +685,14 @@ async fn serve_operation(
             // A worker started now would run the new latch under this old
             // host: nothing runs, and nothing is judged.
             let upgraded = host.binary.replaced();
+            // Nor for a connector its owner has not enabled. One that is
+            // counts as running until its answer is audited, so `disable`
+            // waits for it.
+            let running =
+                crate::plugins::Connector::of_op(op).map(|connector| host.plugins.start(connector));
+            let not_enabled = matches!(running, Some(Err(_)));
             let gated = gate::gated(op, &request.args, &host.workers.areas[0])
-                .filter(|_| !denied_exec && !upgraded);
+                .filter(|_| !denied_exec && !upgraded && !not_enabled);
             let unjudgeable = match (&gate, &gated) {
                 (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
@@ -713,6 +724,12 @@ async fn serve_operation(
             let done = if upgraded {
                 let failure = host_upgraded();
                 Done::failed(&failure.code, failure.message, Value::Null)
+            } else if let Some(Err(failure)) = &running {
+                Done {
+                    response: Response::error(failure),
+                    audit_args: Value::Null,
+                    outcome: failure.code.clone(),
+                }
             } else if let Some(refused) = refused {
                 refused
             } else {
@@ -776,6 +793,16 @@ async fn serve_operation(
                             outcome: failure.code.clone(),
                         },
                     },
+                    "plugins" => {
+                        crate::plugins::host::run(
+                            &host.plugins,
+                            &host.workers,
+                            &host.plow,
+                            local,
+                            &request.args,
+                        )
+                        .await
+                    }
                     "google" => {
                         crate::google::host::run(
                             &host.workers,
@@ -822,10 +849,12 @@ async fn serve_operation(
             record.gate = judgment
                 .map(|judgment| judgment.gate)
                 .or_else(|| local.then(|| serde_json::json!({"caller":"owner_on_host"})));
-            match host.append(record).await {
+            let response = match host.append(record).await {
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed("audit_failed", message),
-            }
+            };
+            drop(running);
+            response
         }
     };
     answer(&mut send, &response).await;
@@ -1103,6 +1132,8 @@ fn describe_paths(connection: &Connection) -> String {
 
 #[cfg(test)]
 mod gated_tests;
+#[cfg(test)]
+mod plugins_tests;
 
 #[cfg(test)]
 mod tests {

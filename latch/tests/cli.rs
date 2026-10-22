@@ -1303,6 +1303,15 @@ impl Drop for Serving {
     }
 }
 
+/// The owner of `host` has turned Google on there.
+fn google_enabled(host: &Path) {
+    fs::write(
+        host.join("plugins.json"),
+        r#"{"google": {"state": "enabled"}}"#,
+    )
+    .unwrap();
+}
+
 /// `latch serve` on `host`'s state, sharing `share`, through the local
 /// relay, once it has registered that relay with Plow.
 fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
@@ -2342,6 +2351,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     let host = owner_host_on(&plow, dir.path());
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
+    google_enabled(&host);
     let _serve = serving(&host, &share, &relay);
     assert_eq!(
         fs::metadata(host.join("serve.sock"))
@@ -2454,6 +2464,7 @@ fn local_socket_full_plow_outage_refuses_gated_work_but_config_still_works() {
     let host = owner_host_on(&plow, dir.path());
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
+    google_enabled(&host);
     let _serve = serving(&host, &share, &relay);
     plow.stop();
     for args in [
@@ -2512,6 +2523,7 @@ fn local_socket_model_only_outage_refuses_with_plow_still_available() {
     let host = owner_host_on(&plow, dir.path());
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
+    google_enabled(&host);
     let _serve = serving(&host, &share, &relay);
     plow.state.lock().unwrap().model_down = true;
     for args in [
@@ -2626,4 +2638,167 @@ fn local_socket_browser_open_observe_close_uses_one_host_and_owner_audit() {
             record["args"]["command"], record["gate"]["caller"], gate
         );
     }
+}
+
+#[test]
+fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_host() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
+        let output = latch(state, args, env);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap();
+        println!(
+            "{}: latch {}: {json}",
+            state.file_name().unwrap().display(),
+            args.join(" ")
+        );
+        (output.status.code(), json)
+    };
+
+    let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
+    assert_eq!(code, Some(3));
+    assert_eq!(error["error"]["code"], "serve_required");
+
+    let _serve = serving(&host, &share, &relay);
+    let (code, listed) = run(&host, &["plugins", "list"], &[]);
+    assert_eq!(code, Some(0));
+    let names: Vec<&str> = listed["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|plugin| plugin["name"].as_str().unwrap())
+        .collect();
+    let expected: &[&str] = if cfg!(target_os = "macos") {
+        &["google", "messages", "contacts"]
+    } else {
+        &["google"]
+    };
+    assert_eq!(names, expected, "never the browser");
+    assert_eq!(listed["plugins"][0]["state"], "disabled");
+    let (code, agents) = run(&agent, &["plugins", "list", "--host", "host"], &agent_env);
+    assert_eq!(code, Some(0));
+    assert_eq!(agents["plugins"], listed["plugins"]);
+
+    for command in ["enable", "disable"] {
+        let (code, error) = run(&agent, &["plugins", command, "google"], &agent_env);
+        assert_eq!(code, Some(4));
+        assert_eq!(error["error"]["code"], "owner_only");
+    }
+    let (code, error) = run(
+        &agent,
+        &["google", "--host", "host", "--", "accounts"],
+        &agent_env,
+    );
+    assert_eq!(code, Some(4));
+    assert_eq!(error["error"]["code"], "not_enabled");
+    assert_eq!(error["error"]["enable"], "latch plugins enable google");
+
+    // This Plow has no Google account connected: setup fails, so it stays off.
+    let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
+    assert_eq!(code, Some(1));
+    assert_eq!(error["error"]["code"], "gog_not_configured");
+    let (_, listed) = run(&host, &["plugins", "list"], &[]);
+    assert_eq!(listed["plugins"][0]["state"], "needs_setup");
+    let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
+    assert_eq!(code, Some(0));
+    assert_eq!(disabled["waited_for"], 0);
+    assert_eq!(
+        plow.state.lock().unwrap().decisions.len(),
+        0,
+        "never judged"
+    );
+}
+
+/// The Messages setup asks the running host, whose Full Disk Access is what
+/// counts, never the terminal that runs `plugins enable`. Each side here
+/// has a home of its own, readable for one and not for the other.
+#[cfg(target_os = "macos")]
+#[test]
+fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    let (host_home, terminal_home) = (
+        dir.path().join("host-home"),
+        dir.path().join("terminal-home"),
+    );
+    let readable = |home: &Path, yes: bool| {
+        let messages = home.join("Library/Messages");
+        fs::create_dir_all(&messages).unwrap();
+        let mode = if yes { 0o700 } else { 0o000 };
+        fs::set_permissions(&messages, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let enable = || {
+        let output = latch(
+            &host,
+            &["plugins", "enable", "messages"],
+            &[("HOME", terminal_home.as_path())],
+        );
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap();
+        println!("latch plugins enable messages: {json}");
+        (output.status.code(), json)
+    };
+    let serve_at = |home: &Path| {
+        let mut command = serve_command(&host, &[&share], &relay);
+        command.env("HOME", home);
+        let (serve, log, _) = serving_with(command);
+        thread::spawn(move || {
+            for line in log.lines().map_while(Result::ok) {
+                if line.contains("plugins:") {
+                    println!("{line}");
+                }
+            }
+        });
+        serve
+    };
+
+    readable(&host_home, false);
+    readable(&terminal_home, true);
+    let serve = serve_at(&host_home);
+    let (code, error) = enable();
+    assert_eq!(code, Some(1));
+    assert_eq!(error["error"]["code"], "needs_setup");
+    assert_eq!(error["error"]["access"], "not_granted");
+    assert_eq!(
+        error["error"]["grant"],
+        Path::new(env!("CARGO_BIN_EXE_latch"))
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    drop(serve);
+
+    readable(&host_home, true);
+    readable(&terminal_home, false);
+    let _serve = serve_at(&host_home);
+    let (code, enabled) = enable();
+    readable(&terminal_home, true);
+    assert_eq!(code, Some(0), "{enabled}");
+    assert_eq!(enabled["access"], "granted");
+    assert_eq!(enabled["state"], "enabled");
 }

@@ -121,6 +121,9 @@ pub enum Command {
     /// The owner's standing rules for agents on a host, which the host's
     /// gatekeeper reads at every judgment (owner devices only)
     Rules(RulesArgs),
+    /// The connectors on a host: list them; on the host itself, its owner
+    /// turns one on (running its setup) or off
+    Plugins(PluginsArgs),
     /// The folders `latch serve` shares when it is named none: show them, or set them
     Shares(SharesArgs),
     /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
@@ -575,6 +578,28 @@ pub struct RulesArgs {
     pub command: RulesCommand,
 }
 
+#[derive(Args, Debug)]
+pub struct PluginsArgs {
+    #[command(subcommand)]
+    pub command: PluginsCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PluginsCommand {
+    /// Every connector: enabled, disabled or needs_setup, with the reason
+    List {
+        /// Name of the host to ask
+        #[arg(long, env = "LATCH_HOST")]
+        host: Option<String>,
+    },
+    /// Run NAME's setup on this machine's running host; NAME is enabled only
+    /// if it succeeds (owner only)
+    Enable { name: String },
+    /// Turn NAME off on this machine's running host: new calls are refused
+    /// at once, and this returns once the running ones have finished (owner only)
+    Disable { name: String },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum RulesCommand {
     /// Replace the rules with TEXT, or with the text of --file F (- reads stdin)
@@ -656,6 +681,10 @@ pub enum WorkerAction {
     /// Confine itself, as every worker does, then exit: the host's startup
     /// check that the sandbox can really be installed
     Probe,
+    /// Print whether PATH can be listed, as this host sees it: the Messages
+    /// and Contacts setups' Full Disk Access check
+    #[cfg(target_os = "macos")]
+    Access { path: PathBuf },
     /// Become ARGV, run from WORKDIR (inside an area)
     Exec {
         #[arg(long)]

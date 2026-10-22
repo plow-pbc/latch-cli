@@ -44,11 +44,11 @@ fn a_chat(decide: fake::Decide) -> World {
     world
 }
 
-struct TestHost {
-    host: Arc<Host>,
-    plow: FakePlow,
+pub(super) struct TestHost {
+    pub(super) host: Arc<Host>,
+    pub(super) plow: FakePlow,
     area: PathBuf,
-    state: PathBuf,
+    pub(super) state: PathBuf,
     /// What the host watches as its own binary: a stand-in, so a test can
     /// replace it without touching the workers' real one.
     binary: PathBuf,
@@ -56,12 +56,12 @@ struct TestHost {
 }
 
 /// The latch binary cargo builds beside this test binary: the workers'.
-fn latch_binary() -> PathBuf {
+pub(super) fn latch_binary() -> PathBuf {
     let deps = std::env::current_exe().unwrap();
     deps.parent().unwrap().parent().unwrap().join("latch")
 }
 
-async fn start(world: World) -> TestHost {
+pub(super) async fn start(world: World) -> TestHost {
     start_denying(world, DenyExec::default()).await
 }
 
@@ -73,7 +73,7 @@ async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
 }
 
 /// A host on `plow`, its gatekeeper asking `provider`.
-async fn start_with(
+pub(super) async fn start_with(
     plow: FakePlow,
     provider: Arc<dyn model::Provider>,
     deny_exec: DenyExec,
@@ -88,6 +88,15 @@ async fn start_with(
     std::fs::write(area.join("notes.txt"), "the notes' own words").unwrap();
     let binary = root.join("latch");
     std::fs::write(&binary, "the latch this host started from").unwrap();
+    // Its owner has turned Google on; Messages and Contacts look in a home
+    // of the test's own.
+    std::fs::write(
+        state.join("plugins.json"),
+        r#"{"google": {"state": "enabled"}}"#,
+    )
+    .unwrap();
+    let home = root.join("home");
+    std::fs::create_dir(&home).unwrap();
     let endpoint = Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
@@ -114,6 +123,13 @@ async fn start_with(
         gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
         deny_exec,
         binary: Binary::at(&binary).unwrap(),
+        plugins: crate::plugins::Plugins::load(
+            &crate::state::StateDir {
+                path: state.clone(),
+            },
+            &home,
+        )
+        .unwrap(),
     });
     let serving = host.clone();
     tokio::spawn(async move {
@@ -133,7 +149,7 @@ async fn start_with(
 
 impl TestHost {
     /// A caller Plow knows as an agent (with its uid) or a device.
-    async fn caller(&self, kind: &str) -> Endpoint {
+    pub(super) async fn caller(&self, kind: &str) -> Endpoint {
         let client = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
             .bind()
@@ -154,7 +170,12 @@ impl TestHost {
 
     /// Sends one operation and returns the host's first answer, and
     /// whatever else came back on the stream.
-    async fn call(&self, client: &Endpoint, op: &str, args: Value) -> (Response, Vec<u8>) {
+    pub(super) async fn call(
+        &self,
+        client: &Endpoint,
+        op: &str,
+        args: Value,
+    ) -> (Response, Vec<u8>) {
         let connection = client
             .connect(self.host.endpoint.addr(), wire::ALPN)
             .await
@@ -174,7 +195,24 @@ impl TestHost {
         (serde_json::from_slice(&answer).unwrap(), rest)
     }
 
-    fn audit(&self) -> Vec<Value> {
+    /// Sends one operation over the host's private socket, as the owner at
+    /// the host does, and returns its answer.
+    pub(super) async fn local_call(&self, op: &str, args: Value) -> Response {
+        let (mine, hosts) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(serve_local(self.host.clone(), hosts));
+        let (mut recv, mut send) = mine.into_split();
+        let request = Request {
+            op: op.into(),
+            args,
+            chat: None,
+        };
+        wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
+            .await
+            .unwrap();
+        serde_json::from_slice(&wire::read_frame(&mut recv).await.unwrap()).unwrap()
+    }
+
+    pub(super) fn audit(&self) -> Vec<Value> {
         std::fs::read_to_string(self.state.join("audit.ndjson"))
             .unwrap()
             .lines()
@@ -183,7 +221,7 @@ impl TestHost {
             .collect()
     }
 
-    fn judged(&self) -> usize {
+    pub(super) fn judged(&self) -> usize {
         self.plow.saw("POST /v1/decisions")
     }
 }
@@ -192,7 +230,7 @@ fn exec(script: &str) -> Value {
     json!({"argv": ["/bin/sh", "-c", script], "workdir": null, "timeout": 10})
 }
 
-fn refusal(response: &Response) -> (Exit, &str, &Value) {
+pub(super) fn refusal(response: &Response) -> (Exit, &str, &Value) {
     match response {
         Response::Error {
             exit,
@@ -327,7 +365,7 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     }
 }
 
-fn always_covered(_: &Value) -> Option<[f64; 3]> {
+pub(super) fn always_covered(_: &Value) -> Option<[f64; 3]> {
     Some([0.9, 0.08, 0.02])
 }
 

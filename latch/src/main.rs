@@ -27,9 +27,12 @@ mod lifecycle;
 mod log;
 mod login;
 mod logo;
+#[cfg(target_os = "macos")]
+mod messages;
 mod model;
 mod paint;
 mod plow;
+mod plugins;
 mod sandbox;
 mod serve;
 mod shares;
@@ -215,6 +218,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         }
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
+        Command::Plugins(args) => to_json(plugins::client::run(&state, args).await?),
         Command::Shares(args) => to_json(shares::run(&state, args.action)?),
         // Its lines, printed as they come, are its whole output.
         Command::Events(args) => {

@@ -20,6 +20,8 @@
 //!   gog JSON, download metadata and file bytes from its private call folder;
 //! - `probe`: confines itself and exits 0, so the host knows at startup
 //!   that the sandbox can be installed;
+//! - `access PATH` (macOS): one line saying whether PATH can be listed,
+//!   that is whether the host has Full Disk Access for it;
 //! - on any failure of the worker itself: a last line
 //!   `{"worker_error": {"code": ..., "message": ...}}` on stderr and exit 125
 //!   (the code tools like `env` use for "the wrapper failed, not the
@@ -197,6 +199,41 @@ impl WorkerSetup {
             .unwrap_or_else(|| error("sandbox_failed", &sandbox::startup_error(&stderr))))
     }
 
+    /// Runs `latch worker access -- FOLDER` in a worker with no areas: it
+    /// writes nowhere, and reads what a file worker may.
+    #[cfg(target_os = "macos")]
+    pub async fn access(
+        &self,
+        folder: &Path,
+    ) -> Result<crate::messages::access::Access, WorkerError> {
+        let restricted = WorkerSetup {
+            areas: Vec::new(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
+        };
+        let mut command = restricted.command(Path::new("/"))?;
+        command
+            .arg("access")
+            .arg("--")
+            .arg(folder)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let output = command
+            .output()
+            .await
+            .map_err(|err| error("worker_failed", &err.to_string()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(worker_error(&stderr).unwrap_or_else(|| {
+                error("worker_failed", "the worker stopped without saying why")
+            }));
+        }
+        serde_json::from_slice(&output.stdout)
+            .map_err(|_| error("worker_failed", "invalid worker output"))
+    }
+
     /// Starts `latch worker exec [--workdir DIR] -- ARGV…`. The program runs
     /// in a process group of its own, so a timeout can stop it together with
     /// every process it started.
@@ -327,6 +364,15 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         }
         // Confined, which is all a probe has to show.
         WorkerAction::Probe => return ExitCode::SUCCESS,
+        #[cfg(target_os = "macos")]
+        WorkerAction::Access { path } => {
+            let access = crate::messages::access::probe(path);
+            println!(
+                "{}",
+                serde_json::to_string(&access).expect("access serializes")
+            );
+            return ExitCode::SUCCESS;
+        }
         WorkerAction::Read { path } => read(path),
         WorkerAction::Write { size, name, path } => write(path, name.as_deref(), *size),
         WorkerAction::Exec { workdir, argv } => {
