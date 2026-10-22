@@ -42,7 +42,10 @@ answer:
 
 Every item is tagged with its `"account"`. Mail is newest first, calendar
 soonest first. `accounts` has one row per account asked, `status` `ok`,
-`empty` or `failed` (with a fixed `reason`, such as `needs_reauth`). latch
+`empty`, `failed` (with a fixed `reason`, such as `needs_reauth`) or
+`skipped` (reason `no_access`: the owner connected that account without
+this kind of access, e.g. Gmail but not Calendar; ask them to reconnect it
+in Plow if they want it read). latch
 exits 0 when at least one account answered, even if others failed, and 1
 when none did. **Report a failed account rather than reading it as an
 absence**: "no mail from Dana" is only true for the accounts that answered.
@@ -120,8 +123,9 @@ thread.
 ## Timed creates are conflict-checked
 
 A `calendar create` with timed `--from`/`--to` is first checked against the
-owner's busy time: every calendar they show, on every connected account,
-read-only ones included, plus the calendar being booked. If the slot is busy,
+owner's busy time: every calendar they show, on every connected account
+with Calendar access, read-only ones included, plus the calendar being
+booked. If the slot is busy,
 or the check could not cover every account, latch exits 4 with code
 `calendar_conflict` and `details`: `busy` (spans per account, times only, no
 titles), `unchecked` (accounts that could not be checked) and
