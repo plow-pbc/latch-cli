@@ -242,11 +242,11 @@ jobs:
         run: |
           aws s3 cp dist "s3://releases.plow.co/latch-cli/releases/$VERSION/" --recursive \
             --cache-control 'public, max-age=31536000, immutable'
-      # Push the tag only after every build is signed and verified. A person
-      # publishes the draft after checking the signed builds.
+      # A draft on the built commit, with no tag yet: this job's token may not
+      # push one (GitHub refuses it when workflows changed). The tag is made
+      # when a person publishes the draft after checking the signed builds,
+      # which also starts the promote workflow.
       - name: Create draft release
         run: |
-          git tag "$VERSION" "$GITHUB_SHA"
-          git push origin "refs/tags/$VERSION"
-          gh release create "$VERSION" dist/* --draft --verify-tag --title "$TITLE" \
+          gh release create "$VERSION" dist/* --draft --target "$GITHUB_SHA" --title "$TITLE" \
             --notes "Built from \`$REF_NAME\` @ \`$GITHUB_SHA\`."
