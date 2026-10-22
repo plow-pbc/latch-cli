@@ -153,6 +153,13 @@ fn reap(pid: libc::pid_t) -> std::io::Result<std::process::ExitStatus> {
     }
 }
 
+/// Blocks until the host `watch` watches has exited: `true`. `false` if
+/// the watch broke, and there is nothing more to wait for.
+#[cfg(target_os = "macos")]
+pub fn wait_for_host(watch: HostWatch) -> bool {
+    platform::wait_for_host(watch)
+}
+
 /// Ends this process as `status` says another ended: with the same exit
 /// code, or killed by the same signal.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -287,6 +294,24 @@ mod platform {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    pub fn wait_for_host(watch: HostWatch) -> bool {
+        let HostWatch(queue) = watch;
+        loop {
+            // SAFETY: zeroed is a valid `kevent` to receive into.
+            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            // SAFETY: no changes in, room for one event out, no time limit.
+            let got = unsafe {
+                libc::kevent(queue, std::ptr::null(), 0, &mut event, 1, std::ptr::null())
+            };
+            if got == 1 {
+                return true;
+            }
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return false;
+            }
+        }
     }
 
     pub fn supervise(watch: HostWatch, kill_after: Option<u64>) -> Result<(), String> {

@@ -598,6 +598,29 @@ mod tests {
         parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
     }
     #[test]
+    fn a_forward_is_judged_once_like_a_send() {
+        for args in [
+            vec!["gmail", "send", "--to", "a@example.com", "--body", "hi"],
+            vec![
+                "gmail",
+                "forward",
+                "m1",
+                "--to",
+                "a@example.com",
+                "--note",
+                "fyi",
+            ],
+            vec!["gmail", "drafts", "forward", "m1", "--to", "a@example.com"],
+        ] {
+            let parsed = plan(&args).unwrap();
+            assert!(!parsed.read_only() && !parsed.fanout(), "{args:?}");
+            let request = serde_json::json!({"gog_args": args, "account": []});
+            let gated = crate::gate::gated("google", &request, Path::new("/")).unwrap();
+            assert!(gated.once, "{args:?}");
+        }
+    }
+
+    #[test]
     fn bulk_and_tracking_flags_cannot_expand_a_named_message_action() {
         for args in [
             vec!["gmail", "archive", "message", "--thread"],

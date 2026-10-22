@@ -1,15 +1,17 @@
 //! The state directory of one latch instance (`--state-dir`, default
-//! `~/.latch`). Everything in it is readable by this user only:
+//! `~/.latch`). Everything in it is readable by this user only. A latch
+//! signed for the Keychain keeps the three secrets marked * there instead of
+//! in files (see `secrets.rs`):
 //!
-//! - `key`: this peer's ed25519 secret key, as hex. It never leaves the machine.
-//! - `plow-token`: the Plow credential `login --token-file` was given (a
+//! - `key`*: this peer's ed25519 secret key, as hex. It never leaves the machine.
+//! - `plow-token`*: the Plow credential `login --token-file` was given (a
 //!   host's owner token). An agent's own credential is not copied here; see
 //!   `credential.rs`.
 //! - `config.json`: the Plow API URL and this peer's record as Plow returned it.
 //! - `audit.ndjson`, on a host: its audit log (see `audit.rs`).
 //! - `serve.log`, on a host: what `latch serve` logs while its dashboard
 //!   has the terminal.
-//! - `vault.json` and `vault.key`, on a host: the vault and its custody key
+//! - `vault.json` and `vault.key`*, on a host: the vault and its custody key
 //!   (see `vault/store.rs`).
 //! - `jev.key`, on a dev host only: the key for the jev model provider
 //!   (see `model.rs`).
@@ -29,7 +31,7 @@
 
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use iroh::SecretKey;
@@ -37,6 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::failure::Failure;
 use crate::plow::Peer;
+use crate::secrets::{Secret, Secrets};
 
 /// What `login` remembers for later commands.
 #[derive(Serialize, Deserialize, Debug)]
@@ -157,36 +160,37 @@ impl StateDir {
         Err(Failure::failed("state_format", message))
     }
 
+    /// Where this folder keeps its secrets (see `secrets.rs`).
+    pub fn secrets(&self) -> Result<Secrets, Failure> {
+        Secrets::open(&self.path)
+    }
+
     /// Loads this peer's key, generating and saving it on first use.
     /// Returns the key and whether it was just created.
     pub fn load_or_create_key(&self) -> Result<(SecretKey, bool), Failure> {
-        let path = self.path.join("key");
         let key = SecretKey::generate();
-        // `create_new` refuses to open a file that already exists, so an
-        // identity is never overwritten, even if two logins race.
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path);
-        match file {
-            Ok(mut file) => {
-                let hex = to_hex(&key.to_bytes());
-                file.write_all(hex.as_bytes())
-                    .map_err(|err| self.io_failure(&path, err))?;
-                Ok((key, true))
-            }
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok((self.load_key()?, false)),
-            Err(err) => Err(self.io_failure(&path, err)),
+        let hex = to_hex(&key.to_bytes());
+        if self.secrets()?.create(Secret::Key, hex.as_bytes())? {
+            Ok((key, true))
+        } else {
+            Ok((self.load_key()?, false))
         }
     }
 
     pub fn load_key(&self) -> Result<SecretKey, Failure> {
-        let path = self.path.join("key");
-        let text = self.read(&path)?;
+        let Some(bytes) = self.secrets()?.read(Secret::Key)? else {
+            let message = format!(
+                "{} has no key; run `latch login` first",
+                self.path.display()
+            );
+            return Err(Failure::failed("state_io", message));
+        };
         // `SecretKey` parses itself from the hex we wrote.
-        text.trim().parse().map_err(|_| {
-            let message = format!("{} does not hold a valid key", path.display());
+        let parsed = String::from_utf8(bytes)
+            .ok()
+            .and_then(|text| text.trim().parse().ok());
+        parsed.ok_or_else(|| {
+            let message = format!("{}: its key is not a valid key", self.path.display());
             Failure::failed("bad_state", message)
         })
     }
@@ -236,16 +240,18 @@ impl StateDir {
 
     /// The token saved by `login --token-file`, if there is one.
     pub fn load_token(&self) -> Result<Option<String>, Failure> {
-        let path = self.path.join("plow-token");
-        if !path.exists() {
+        let Some(bytes) = self.secrets()?.read(Secret::PlowToken)? else {
             return Ok(None);
-        }
-        Ok(Some(self.read(&path)?.trim().to_string()))
+        };
+        let text = String::from_utf8(bytes).map_err(|_| {
+            let message = format!("{}: its Plow token is not text", self.path.display());
+            Failure::failed("bad_state", message)
+        })?;
+        Ok(Some(text.trim().to_string()))
     }
 
     pub fn save_token(&self, token: &str) -> Result<(), Failure> {
-        let path = self.path.join("plow-token");
-        write_private(&path, token.as_bytes()).map_err(|err| self.io_failure(&path, err))
+        self.secrets()?.write(Secret::PlowToken, token.as_bytes())
     }
 
     /// The saved config, or `None` before the first successful `login`.
@@ -271,7 +277,7 @@ impl StateDir {
 
     /// Like `load_config`, for commands that need a completed `login`. Also
     /// checks that the key on disk is the one Plow registered, so a replaced
-    /// or restored key file is caught here rather than at a host.
+    /// or restored key is caught here rather than at a host.
     pub fn require_login(&self) -> Result<Config, Failure> {
         let Some(config) = self.load_config()? else {
             let message = format!(
@@ -282,7 +288,7 @@ impl StateDir {
         };
         if self.load_key()?.public().to_string() != config.peer.key {
             let message = format!(
-                "{}: the key file does not match the key this instance registered with Plow",
+                "{}: the key does not match the key this instance registered with Plow",
                 self.path.display()
             );
             return Err(Failure::failed("key_mismatch", message));
@@ -299,22 +305,25 @@ impl StateDir {
     }
 }
 
-/// Writes a file only its owner can read. Skips the write when the file
+/// Writes a file only its owner can read, atomically: into a temporary
+/// file of this write's own beside it (0600), synced, then renamed over it,
+/// so concurrent writers never share one. Skips the write when the file
 /// already holds exactly these bytes, so a repeated `login` changes nothing.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if fs::read(path).is_ok_and(|current| current == bytes) {
         return Ok(());
     }
-    // `mode` only applies when the file is created; `set_permissions` covers
-    // a file that already existed with looser permissions.
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty());
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(".");
+    let mut temp = tempfile::Builder::new()
+        .prefix(&name)
+        .suffix(".tmp")
+        .tempfile_in(dir.unwrap_or(Path::new(".")))?;
+    temp.write_all(bytes)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|err| err.error)?;
+    Ok(())
 }
 
 /// Bytes as lowercase hex, two characters per byte.
@@ -382,6 +391,34 @@ mod tests {
             assert!(refused.message.contains("9.9.9"), "{}", refused.message);
             assert_eq!(fs::read_to_string(&marker).unwrap(), other);
         }
+    }
+
+    #[test]
+    fn two_writers_at_once_each_leave_a_whole_file() {
+        let dir = test_dir();
+        let path = dir.path().join("config.json");
+        // Big enough that one writer's bytes can land amid the other's.
+        let contents = [vec![b'a'; 1 << 20], vec![b'b'; 1 << 20]];
+        std::thread::scope(|scope| {
+            for bytes in &contents {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        write_private(path, bytes).unwrap();
+                        let _ = fs::remove_file(path);
+                    }
+                });
+            }
+            scope.spawn(|| {
+                for _ in 0..500 {
+                    if let Ok(read) = fs::read(&path) {
+                        assert!(contents.contains(&read), "a mixed or partial file");
+                    }
+                }
+            });
+        });
+        let names: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert!(names.len() <= 1, "a temporary file was left: {names:?}");
     }
 
     #[test]

@@ -337,6 +337,9 @@ async fn run_host(
     ));
 
     // Clients dial us through our relay, so register only once we have one.
+    if let Some(dashboard) = &dashboard {
+        dashboard.step("connecting to the relay…");
+    }
     if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
         .await
         .is_err()
@@ -344,6 +347,9 @@ async fn run_host(
         endpoint.close().await;
         let message = "no iroh relay connection within 15 seconds".to_string();
         return Err(Failure::failed("relay_unreachable", message));
+    }
+    if let Some(dashboard) = &dashboard {
+        dashboard.step("registering with Plow…");
     }
     let terminate = signal(SignalKind::terminate())
         .map_err(|err| Failure::failed("signal", format!("cannot listen for SIGTERM: {err}")))?;
@@ -426,14 +432,23 @@ async fn run_host(
             }
         }
     };
+    let step = |step: &str| {
+        if let Some(dashboard) = &host.dashboard {
+            dashboard.step(&format!("stopping: {step}…"));
+        }
+    };
+    step("finishing the operations running");
     shut_down(&host, moved.is_none().then_some(heartbeat), connections).await;
     // Every browser closes, however the host stopped.
+    step("closing browsers");
     host.browsers.close_all().await;
     // A name that moved is not ours any more: there is nothing of ours to
     // take offline.
     if moved.is_none() {
+        step("telling Plow this host is offline");
         go_offline(&host.plow, &endpoint.id().to_string()).await;
     }
+    step("closing connections");
     endpoint.close().await;
     log("stopped");
     moved.or(accept_failure).map_or(Ok(()), Err)

@@ -69,6 +69,14 @@ fn fake_plow(answers: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<Stri
 }
 
 /// Test state lives under the repo's gitignored `.dev/`, like every dev run.
+/// The latch under test: this build's, or the one `LATCH_TEST_BIN` names
+/// (the signed Keychain build, for the `--ignored` tests at the end).
+fn latch_bin() -> PathBuf {
+    std::env::var_os("LATCH_TEST_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_latch")))
+}
+
 fn test_dir() -> tempfile::TempDir {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
@@ -82,7 +90,7 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 }
 
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    let mut command = Command::new(latch_bin());
     command
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
@@ -108,6 +116,7 @@ fn latch_at_a_terminal(
     args: &[&str],
     typed: &str,
     stdout_at_the_terminal: bool,
+    env: &[(&str, &Path)],
 ) -> (Option<i32>, String, String) {
     use std::os::fd::FromRawFd;
     let (mut main, mut side) = (0, 0);
@@ -120,7 +129,7 @@ fn latch_at_a_terminal(
     let opened = unsafe { libc::openpty(&mut main, &mut side, name, settings, size) };
     assert_eq!(opened, 0);
     let (mut main, side) = unsafe { (fs::File::from_raw_fd(main), fs::File::from_raw_fd(side)) };
-    let mut command = latch_command(state, args, &[]);
+    let mut command = latch_command(state, args, env);
     command
         .stdin(side.try_clone().unwrap())
         .stderr(side.try_clone().unwrap())
@@ -508,7 +517,7 @@ fn a_name_clash_stops_a_login_at_a_terminal_too() {
     ];
 
     // Even a person ready to say yes is not asked to replace the machine.
-    let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false);
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
     // A person reads the sentence, not the JSON.
     assert!(!shown.contains("\"conflict\""), "{shown}");
@@ -523,7 +532,7 @@ fn a_login_that_knows_no_plow_says_so_in_a_sentence_at_a_terminal_and_json_piped
     let dir = test_dir();
     let state = dir.path().join("state");
 
-    let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", false);
+    let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
     let sentence = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co";
     assert!(shown.contains(sentence), "{shown}");
@@ -549,13 +558,46 @@ fn plow_texted_at_once() -> (String, thread::JoinHandle<Vec<String>>) {
 }
 
 #[test]
+fn a_login_by_text_stops_at_plows_refusal_and_retries_a_slow_down() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let dir = test_dir();
+
+    // A refusal (4xx) ends the login: asking again would be refused again.
+    let (api_url, server) = fake_plow(vec![
+        (200, activation.clone()),
+        (403, json!({"detail": "forbidden"})),
+    ]);
+    let state = dir.path().join("refused");
+    let args = ["login", "--api-url", &api_url, "--name", "mac", "--events"];
+    let output = latch(&state, &args, &[]);
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let lines = String::from_utf8(output.stdout).unwrap();
+    assert!(lines.contains(r#""code":"plow_denied""#), "{lines}");
+    assert_eq!(server.join().unwrap().len(), 2, "one ask, no retry");
+
+    // 429 is Plow asking us to slow down: the login asks again.
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (429, json!({"detail": "slow down"})),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ]);
+    let state = dir.path().join("slowed");
+    let args = ["login", "--api-url", &api_url, "--name", "mac", "--events"];
+    let output = latch(&state, &args, &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(server.join().unwrap().len(), 4);
+}
+
+#[test]
 fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
     let (api_url, server) = plow_texted_at_once();
     let dir = test_dir();
     let state = dir.path().join("state");
     let args = ["login", "--api-url", &api_url, "--name", "mac"];
 
-    let (code, shown, _) = latch_at_a_terminal(&state, &args, "", true);
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "", true, &[]);
     assert_eq!(code, Some(0), "{shown}");
     // Every row of the QR code, and the link under it, open Messages.
     let link = "sms:+14155550100?&body=TRY12";
@@ -572,13 +614,21 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
         shown.contains(&format!("{opens}{link}\x1b]8;;\x1b\\")),
         "{shown}"
     );
-    // Then one line to read, and one when it is done: no JSON.
+    // Then what to do, that it is waiting, and one line when it is done:
+    // no JSON.
     let said: Vec<&str> = rows
         .iter()
         .filter(|row| !row.contains(&opens))
         .copied()
         .collect();
-    assert_eq!(said, ["Text TRY12 to +1 415-555-0100", "Logged in as mac."]);
+    assert_eq!(
+        said,
+        [
+            "Text TRY12 to +1 415-555-0100",
+            "Waiting for your text…",
+            "Logged in as mac."
+        ]
+    );
     assert_eq!(server.join().unwrap().len(), 3);
 }
 
@@ -589,7 +639,7 @@ fn a_login_by_text_piped_still_prints_its_json() {
     let state = dir.path().join("state");
     let args = ["login", "--api-url", &api_url, "--name", "mac"];
 
-    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", false);
+    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", false, &[]);
     assert_eq!(code, Some(0), "{shown}");
     assert!(shown.contains("Text TRY12 to +1 415-555-0100"), "{shown}");
     assert!(!shown.contains("Logged in as"), "{shown}");
@@ -735,7 +785,7 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
     let dir = test_dir();
     let state = dir.path().join("none");
     let run = |timeout: &str| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+        let mut command = Command::new(latch_bin());
         command
             .env_remove("PLOW_TOKEN_FILE")
             .arg("--state-dir")
@@ -1369,7 +1419,7 @@ fn until_serving(host: &Path, serve: &Serving) {
 }
 
 fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    let mut command = Command::new(latch_bin());
     command
         .args([
             "--state-dir",
@@ -1739,29 +1789,11 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let dir = test_dir();
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
-    let owner_token = dir.path().join("owner.token");
-    fs::write(&owner_token, "owner-login\n").unwrap();
+    let (host, owner) = host_and_owner(&plow, dir.path());
     let agent_token = dir.path().join("agent.token");
     fs::write(&agent_token, "agent-credential\n").unwrap();
-    let (host, owner, agent) = (
-        dir.path().join("host"),
-        dir.path().join("owner"),
-        dir.path().join("agent"),
-    );
+    let agent = dir.path().join("agent");
     let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
-    for (state, name) in [(&host, "host"), (&owner, "owner-mac")] {
-        let token = owner_token.to_str().unwrap();
-        let args = [
-            "login",
-            "--api-url",
-            &plow.url,
-            "--token-file",
-            token,
-            "--name",
-            name,
-        ];
-        assert_eq!(latch(state, &args, &[]).status.code(), Some(0), "{name}");
-    }
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     let serve = serving(&host, &share, &relay);
@@ -2286,6 +2318,28 @@ fn shutdown_exec_cases() {
             .expect("the exec is audited");
         assert_eq!(exec["outcome"], outcome, "{what}: {exec}");
     }
+}
+
+#[test]
+fn a_dashboard_host_that_fails_says_why_in_its_log_not_on_its_terminal() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    // No relay answers there: the host gives up after its dashboard has
+    // taken the terminal.
+    let relay = [("LATCH_TEST_RELAY_URL", Path::new("http://127.0.0.1:9/"))];
+    let args = ["serve", share.to_str().unwrap()];
+    let (code, shown, _) = latch_at_a_terminal(&host, &args, "", true, &relay);
+    assert!(
+        shown.contains("\x1b[?1049h"),
+        "the dashboard was shown: {shown}"
+    );
+    assert_eq!(code, Some(1), "{shown}");
+    assert!(!shown.contains("relay_unreachable"), "{shown}");
+    let log = fs::read_to_string(host.join("serve.log")).unwrap();
+    assert!(log.contains("relay_unreachable"), "{log}");
 }
 
 #[test]
@@ -2869,6 +2923,112 @@ fn local_socket_browser_open_observe_close_uses_one_host_and_owner_audit() {
             record["args"]["command"], record["gate"]["caller"], gate
         );
     }
+}
+
+/// The state files a latch keeps its secrets in when it has no Keychain.
+const SECRET_FILES: [&str; 3] = ["key", "plow-token", "vault.key"];
+
+fn secret_files_in(state: &Path) -> Vec<&'static str> {
+    SECRET_FILES
+        .into_iter()
+        .filter(|file| state.join(file).exists())
+        .collect()
+}
+
+/// `latch vault add` a login titled `title`, its password typed in.
+fn vault_add(owner: &Path, title: &str) {
+    let mut add = latch_command(
+        owner,
+        &[
+            "vault",
+            "add",
+            "--host",
+            "host",
+            "--kind",
+            "login",
+            "--title",
+            title,
+            "--site",
+            "shop.example",
+            "--field",
+            "username=ada",
+        ],
+        &[],
+    )
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+    add.stdin
+        .take()
+        .unwrap()
+        .write_all(b"made-up-pass-5521\n")
+        .unwrap();
+    let added = add.wait_with_output().unwrap();
+    assert_eq!(added.status.code(), Some(0), "{added:?}");
+}
+
+/// The titles `latch vault list` shows on the host.
+fn vault_titles(owner: &Path) -> Vec<String> {
+    let list = latch(owner, &["vault", "list", "--host", "host"], &[]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let listed: Value = serde_json::from_slice(&list.stdout).unwrap();
+    let items = listed["items"].as_array().cloned().unwrap_or_default();
+    items
+        .iter()
+        .map(|item| item["title"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A host and an owner device, logged in to `plow` by the latch `bin`.
+fn host_and_owner(plow: &LivePlow, dir: &Path) -> (PathBuf, PathBuf) {
+    let owner_token = dir.join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let (host, owner) = (dir.join("host"), dir.join("owner"));
+    for (state, name) in [(&host, "host"), (&owner, "owner-mac")] {
+        let args = [
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            owner_token.to_str().unwrap(),
+            "--name",
+            name,
+        ];
+        let login = latch(state, &args, &[]);
+        assert_eq!(login.status.code(), Some(0), "{name}: {login:?}");
+    }
+    (host, owner)
+}
+
+#[test]
+#[ignore = "needs a latch signed for the Keychain in LATCH_TEST_BIN; the keychain workflow runs it"]
+fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let (host, owner) = host_and_owner(&plow, dir.path());
+    let serve = serving(&host, &share, &relay);
+    vault_add(&owner, "Shop");
+    assert_eq!(vault_titles(&owner), ["Shop"]);
+    drop(serve);
+
+    for state in [&host, &owner] {
+        assert_eq!(
+            secret_files_in(state),
+            Vec::<&str>::new(),
+            "{}",
+            state.display()
+        );
+    }
+    assert!(host.join("vault.json").exists());
+    // The same identity, login and vault on the next start.
+    let serve = serving(&host, &share, &relay);
+    assert_eq!(vault_titles(&owner), ["Shop"]);
+    drop(serve);
 }
 
 /// A host sharing `share`, with its exec temp folders made in `tmp`, and

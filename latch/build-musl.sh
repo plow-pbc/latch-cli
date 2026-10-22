@@ -5,9 +5,10 @@
 #   ./build-musl.sh amd64|arm64    ->  target/musl-<arch>/release/latch
 #
 # It ends by running the fresh binary's `--help` in the same container.
-# LATCH_BUILD_STATE_DIR, LATCH_BUILD_API_URL and LATCH_BUILD_CHANNEL, if
-# set, are passed through to bake them into the build (see `src/cli.rs`). The
-# container has no git, so the commit `--version` names is taken here.
+# LATCH_BUILD_STATE_DIR, LATCH_BUILD_API_URL, LATCH_BUILD_CHANNEL and
+# LATCH_BUILD_NUMBER, if set, are passed through to bake them into the build
+# (see `src/cli.rs`). The container has no git, so the commit `--version`
+# names is taken here.
 #
 # Alpine's Rust targets musl and links statically by default, so the binary
 # runs on any Linux (Debian, Alpine, ...) without a matching libc.
@@ -24,7 +25,7 @@ docker run --rm --platform "linux/$arch" \
   -v "$PWD:/src" -w /src \
   -e CARGO_HOME=/src/target/cargo-home \
   -e CARGO_TARGET_DIR="/src/target/musl-$arch" \
-  -e LATCH_BUILD_STATE_DIR -e LATCH_BUILD_API_URL -e LATCH_BUILD_CHANNEL -e LATCH_BUILD_COMMIT \
+  -e LATCH_BUILD_STATE_DIR -e LATCH_BUILD_API_URL -e LATCH_BUILD_CHANNEL -e LATCH_BUILD_NUMBER -e LATCH_BUILD_COMMIT \
   "$image" \
   sh -c 'apk add --no-cache musl-dev >/dev/null && cargo build --release --locked &&
     "$CARGO_TARGET_DIR/release/latch" status --help >/dev/null'

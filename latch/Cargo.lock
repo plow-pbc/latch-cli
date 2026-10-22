@@ -1922,6 +1922,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "clap",
+ "core-foundation",
  "csv",
  "iroh",
  "iroh-relay",
@@ -1933,6 +1934,7 @@ dependencies = [
  "rand",
  "reqwest",
  "seccompiler",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "sha2",

@@ -9,7 +9,7 @@ command -v gh >/dev/null || { echo 'install GitHub CLI and run gh auth login fir
 if [ "$version" = latest ]; then
   version=$(gh release view --repo plow-pbc/latch-cli --json tagName --jq .tagName)
 fi
-printf '%s\n' "$version" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || { echo 'expected a release tag such as v0.1.0-build.202610211830, or latest' >&2; exit 1; }
+printf '%s\n' "$version" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || { echo 'expected a release tag such as v0.1.0-1327, or latest' >&2; exit 1; }
 case "$(uname -s)/$(uname -m)" in
   Darwin/arm64) target=aarch64-apple-darwin ;;
   Darwin/x86_64) target=x86_64-apple-darwin ;;
@@ -34,6 +34,9 @@ tar -xzf "$archive"
 setup="$tmp/latch-$version-$target"
 cd "$caller"
 echo 'Binary defaults to ~/.local/bin (override with --bin-dir); gog uses ~/.latch/plugins (override with --state-dir).'
+if [ "$(uname -s)" = Darwin ]; then
+  echo 'On macOS latch lives in ~/Applications/Plow Latch.app; ~/.local/bin/latch links to it.'
+fi
 echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
 sh "$setup/install.sh" "$@" "$setup/latch"
 "$setup/latch" --version
