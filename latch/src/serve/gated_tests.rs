@@ -85,7 +85,11 @@ async fn start_with(
     let root = dir.path().canonicalize().unwrap();
     let (area, state) = (root.join("area"), root.join("state"));
     std::fs::create_dir(&area).unwrap();
-    std::fs::create_dir(&state).unwrap();
+    crate::state::StateDir {
+        path: state.clone(),
+    }
+    .create()
+    .unwrap();
     std::fs::write(area.join("notes.txt"), "the notes' own words").unwrap();
     let binary = root.join("latch");
     std::fs::write(&binary, "the latch this host started from").unwrap();
