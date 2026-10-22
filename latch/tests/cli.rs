@@ -5107,7 +5107,10 @@ fn audit_show_follow_sleeps_while_the_log_is_quiet() {
 /// A host's state given the pinned browser engines the tests installed
 /// (`just cft`, or `LATCH_CFT_STATE`) and local pages allowed; returns its
 /// plugins folder, for the connectors a test adds.
-#[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
+#[cfg(any(
+    target_os = "macos",
+    all(feature = "linux-browser-tests", feature = "fake-gog")
+))]
 fn browser_host(host: &Path) -> PathBuf {
     let installed = std::env::var_os("LATCH_CFT_STATE")
         .map(PathBuf::from)

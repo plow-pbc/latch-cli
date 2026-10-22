@@ -158,6 +158,10 @@ jobs:
         with:
           path: .dev/cft-state/plugins/cft
           key: cft-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/camoufox
+          key: camoufox-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json') }}
       # Until latch installs its own AppArmor profile for the browser's
       # bwrap: Ubuntu's bwrap profile, which install-binary.sh loads where
       # unprivileged user namespaces are restricted, denies Chrome's sandbox
@@ -167,7 +171,7 @@ jobs:
       # Into target/, where the tests were built, so the paths compiled into
       # them hold.
       - run: cargo nextest list --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite > /dev/null
-      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome target/debug/latch
+      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
       - run: cargo nextest run --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --partition hash:${{ matrix.part }}/4 --test-threads 6 --no-fail-fast
 
   linux-static:
