@@ -156,7 +156,10 @@ jobs:
         shell: bash
         run: |
           app="unpacked/$NAME/$LATCH_APP_NAME.app"
-          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/latch.zip"
+          # The whole folder, so the Messages reader beside the app is
+          # notarized too. Only the app can carry a stapled ticket; Gatekeeper
+          # finds the reader's online.
+          ditto -c -k --keepParent "unpacked/$NAME" "$RUNNER_TEMP/latch.zip"
           xcrun notarytool submit "$RUNNER_TEMP/latch.zip" --keychain-profile latch-notary \
             --keychain "$KEYCHAIN_PATH" --wait --timeout 30m --output-format json | tee "$RUNNER_TEMP/notary.json"
           id=$(jq -r .id "$RUNNER_TEMP/notary.json")
@@ -189,9 +192,11 @@ jobs:
           entitlements=$(codesign -d --entitlements - --xml "$app" 2>/dev/null | plutil -convert xml1 -o - -)
           echo "$entitlements"
           grep -F "<string>$LATCH_TEAM_ID.co.plow.latch</string>" <<< "$entitlements"
-          assessment=$(spctl --assess -vvv --type execute "$app" 2>&1)
-          echo "$assessment"
-          grep -Fx 'source=Notarized Developer ID' <<< "$assessment"
+          for program in "$app" "unpacked/$NAME/latch-messages"; do
+            assessment=$(spctl --assess -vvv --type execute "$program" 2>&1)
+            echo "$assessment"
+            grep -Fx 'source=Notarized Developer ID' <<< "$assessment"
+          done
           "unpacked/$NAME/latch" --version
           tar -czf "dist/$NAME.tar.gz" -C unpacked "$NAME"
       - uses: actions/upload-artifact@v4
