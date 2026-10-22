@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Weekly deals — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+// "Show more deals" is broken: clicking it changes nothing.
+main.innerHTML = `<h1>Weekly deals</h1><ul class="products">${["oat3", "pasta"].map((id) => productRow(byId(id))).join("")}</ul>
+<p><button type="button" id="more">Show more deals</button></p>`;
+document.getElementById("more").onclick = () => {};
+</script></body></html>

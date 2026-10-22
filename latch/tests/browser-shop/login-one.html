@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Sign in — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+// A one-page sign-in with no autofill tokens: the email, then the password,
+// and one submit button.
+main.innerHTML = `<h1>Sign in</h1><form id="f" onsubmit="return false">
+<label>Email <input type="email" id="email"></label>
+<label>Password <input type="password" id="pw"></label>
+<p><button type="submit" id="go">Sign in</button></p></form>`;
+document.getElementById("go").onclick = () => {
+  const email = document.getElementById("email").value;
+  if (!email || document.getElementById("pw").value.length < 6) return;
+  store.set("user", {email}); location.href = qs("next") || "account.html";
+};
+</script></body></html>

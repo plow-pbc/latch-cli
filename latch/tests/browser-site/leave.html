@@ -1,0 +1,17 @@
+<!doctype html><title>latch leave test</title>
+<!-- A link and two forms, leading to the page named in ?to=: one by its
+     action, one only by its submit button's formaction. -->
+<p><a id="go">Go there</a></p>
+<form id="send" method="get">
+  <input name="q" aria-label="Search"> <button>Send</button>
+</form>
+<form id="split" method="get">
+  <input name="f" aria-label="Find"> <button id="find">Find</button>
+</form>
+<script>
+  const to = new URLSearchParams(location.search).get('to');
+  document.getElementById('go').href = to;
+  document.getElementById('send').action = to;
+  document.getElementById('split').action = location.pathname;
+  document.getElementById('find').setAttribute('formaction', to);
+</script>

@@ -1,8 +1,45 @@
 # The Rust CLI's checks; live Google evidence uses the documented test identities.
-test:
+test: cft
     cargo fmt --check
     cargo clippy --locked --all-targets -- -D warnings
     cargo test --locked
+
+# The real-engine browser tests again, headed: each session a real window,
+# behind the owner's. Their focus checks (the engine never becomes the
+# front app) mean something only here. Not part of the gate: windows appear.
+[macos]
+test-headed: cft
+    cargo test --locked --features headed-tests browser::tests
+
+# The driver conformance checks on one engine (cft or camoufox; cft only
+# on Linux arm64), each a test that passes or fails by name: the
+# real-engine browser tests, run against that engine's driver.
+[macos]
+conformance engine: cft
+    cargo test --locked -- --test-threads=1 "::{{engine}}::"
+
+# On Linux, the engine is the one install.sh put in LATCH_CFT_STATE.
+[linux]
+conformance engine:
+    cargo test --locked --features linux-browser-tests -- --test-threads=1 "::{{engine}}::"
+
+# The pinned engines, Chrome for Testing and Camoufox, where the browser
+# tests look for them. HOME keeps install.sh's copy of latch out of the real
+# ~/.local/bin.
+[macos]
+cft:
+    cargo build --locked
+    HOME="$PWD/../.dev/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
+
+# On Linux, install.sh puts a host's engine in place; the real-engine tests
+# (`just conformance cft`) find it through LATCH_CFT_STATE.
+[linux]
+cft:
+
+# The browser tests that call the decision model (jev) for real; the key
+# file is copied into each test's own state directory, never printed.
+test-model key:
+    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model browser::tests::steps::live
 
 # A headless host judging exec on rules alone, on jev 1.14 (synthetic
 # chats only).
@@ -14,6 +51,19 @@ gatekeeper-live key:
 gatekeeper-replay key out:
     LATCH_TEST_JEV_KEY="{{key}}" LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live -- --nocapture
 
+# The plan suite (tests/browser-shop) on the decision model, through the dev
+# Plow stack the host in `host_state` is logged in to; each run, with its
+# metrics (scripts/plan-metrics.py), is kept under `out`; the profile is on
+# `engine` (cft or camoufox).
+plan-suite host_state out engine="cft":
+    status=0; LATCH_SUITE_ENGINE="{{engine}}" LATCH_SUITE_HOST_STATE="{{host_state}}" LATCH_SUITE_OUT="{{out}}" cargo test --locked --bin latch the_plan_suite_on_the_decision_model -- --ignored --nocapture || status=$?; run="$(ls -d "{{out}}"/2*/ | sort | tail -1)"; python3 scripts/plan-metrics.py "$run/audit.ndjson" > "$run/metrics.json"; exit $status
+
+# A shopping task with every agent command through the gatekeeper, on jev
+# through the dev Plow stack the host in `host_state` is logged in to, with a
+# synthetic chat: its judge calls, cost and added time, kept under `out`.
+gated-shopping host_state out:
+    LATCH_GATE_HOST_STATE="{{host_state}}" LATCH_GATE_OUT="{{out}}" cargo test --locked --bin latch a_gated_shopping_task_on_the_decision_model -- --ignored --nocapture
+
 # The phone page (phone/): iroh for the browser plus the shim, into phone/dist.
 phone:
     phone/build.sh
@@ -24,3 +74,10 @@ phone:
 phone-serve port="8731" bind="127.0.0.1":
     python3 -m http.server {{port}} --bind {{bind}} --directory phone/dist
 
+# The phone link end to end against a running HOST on this machine: saved
+# from WebKit as an iPhone, used by a browser login on the host, and looked
+# for in the host's and client's files. Needs LATCH, CLIENT_STATE,
+# HOST_STATE and HOST_LOG (see phone/e2e/run.sh). Not a gate: it needs the
+# live host and its relay.
+phone-e2e host: phone
+    phone/e2e/run.sh {{host}}
