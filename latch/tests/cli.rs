@@ -3917,6 +3917,9 @@ fn setup_sets_up_every_connector_with_no_host_running() {
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
+    // Whatever setup does, no host it starts outlives the test.
+    #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+    let _managed = Managed(host.clone());
     plow.state.lock().unwrap().google = Some("google-token".into());
     let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
     let gog = host
