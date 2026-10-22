@@ -205,7 +205,7 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
                 Transfer::Into(path) => receive(&link.connection, &request, &path).await,
                 Transfer::From(mut upload) => send(&link.connection, &request, &mut upload).await,
             };
-            link.close().await;
+            link.close();
             result
         }
     }
@@ -540,7 +540,7 @@ async fn fetch_final(
     };
     let link = dial::connect(state, host).await?;
     let got = receive(&link.connection, &fetch, path).await;
-    link.close().await;
+    link.close();
     got
 }
 

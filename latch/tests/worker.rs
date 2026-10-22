@@ -906,8 +906,13 @@ fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
 
     let dir = setup();
     let root = dir.path().canonicalize().unwrap();
-    fs::create_dir(root.join("state/nested")).unwrap();
-    std::os::unix::fs::symlink(root.join("state"), root.join("area/state-link")).unwrap();
+    for (state, alias) in [
+        ("state", "area/state-link"),
+        ("area/peer", "area/peer-link"),
+    ] {
+        fs::create_dir_all(root.join(state).join("nested")).unwrap();
+        std::os::unix::fs::symlink(root.join(state), root.join(alias)).unwrap();
+    }
     let program = root.join("area/connect");
     let compiled = Command::new("rustc")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unix-connect.rs"))
@@ -921,8 +926,8 @@ fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
     let run = |socket: &Path| {
         Command::new(env!("CARGO_BIN_EXE_latch"))
             .args([
-                "worker", "--area", "..", "--denied", "../state", "--tmpdir", "../tmp", "exec",
-                "--",
+                "worker", "--area", "..", "--denied", "../state", "--hidden", "peer", "--tmpdir",
+                "../tmp", "exec", "--",
             ])
             .arg(&program)
             .arg(socket)
@@ -934,32 +939,39 @@ fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
     // The probe works, and outbound Unix sockets outside state stay usable.
     let outside = run(&allowed);
     assert!(outside.status.success(), "{outside:?}");
-    for relative in ["serve.sock", "nested/other.sock"] {
-        let socket = root.join("state").join(relative);
-        let listener = UnixListener::bind(&socket).unwrap();
-        assert!(
-            Command::new(&program)
-                .arg(&socket)
-                .status()
-                .unwrap()
-                .success()
-        );
-        for path in [socket, root.join("area/state-link").join(relative)] {
-            let denied = run(&path);
+    for (state, alias) in [
+        ("state", "area/state-link"),
+        ("area/peer", "area/peer-link"),
+    ] {
+        for relative in ["serve.sock", "nested/other.sock"] {
+            let socket = root.join(state).join(relative);
+            let listener = UnixListener::bind(&socket).unwrap();
             assert!(
-                !denied.status.success(),
-                "worker connected to {}: {denied:?}",
-                path.display()
+                Command::new(&program)
+                    .arg(&socket)
+                    .status()
+                    .unwrap()
+                    .success()
             );
-            assert!(
-                String::from_utf8_lossy(&denied.stderr).contains(if cfg!(target_os = "macos") {
-                    "PermissionDenied"
-                } else {
-                    "NotFound"
-                }),
-                "{denied:?}"
-            );
+            for path in [socket, root.join(alias).join(relative)] {
+                let denied = run(&path);
+                assert!(
+                    !denied.status.success(),
+                    "worker connected to {}: {denied:?}",
+                    path.display()
+                );
+                assert!(
+                    String::from_utf8_lossy(&denied.stderr).contains(
+                        if cfg!(target_os = "macos") {
+                            "PermissionDenied"
+                        } else {
+                            "NotFound"
+                        }
+                    ),
+                    "{denied:?}"
+                );
+            }
+            drop(listener);
         }
-        drop(listener);
     }
 }

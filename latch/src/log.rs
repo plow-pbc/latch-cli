@@ -45,6 +45,11 @@ impl Write for Sink {
     }
 }
 
+/// Whether log lines go to the file `to_file` named, not to stderr.
+pub fn in_file() -> bool {
+    FILE.get().is_some()
+}
+
 /// Sends every later log line to `path` (appending), not to stderr.
 pub fn to_file(path: &Path) -> std::io::Result<()> {
     let file = std::fs::OpenOptions::new()

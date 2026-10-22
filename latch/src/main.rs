@@ -36,6 +36,7 @@ mod paint;
 mod plow;
 mod plugins;
 mod sandbox;
+mod secrets;
 mod serve;
 mod shares;
 mod state;
@@ -106,7 +107,7 @@ fn main() -> ExitCode {
 
 #[tokio::main]
 async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
-    match run(state_dir, command).await {
+    let exit = match run(state_dir, command).await {
         Ok(output) => {
             if !output.text.is_empty() {
                 println!("{}", output.text);
@@ -117,7 +118,9 @@ async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
             eprintln!("{}", failure.to_json());
             failure.exit.into()
         }
-    }
+    };
+    dial::closed().await;
+    exit
 }
 
 /// What a command prints on stdout (JSON, `status --pretty`'s card, or
@@ -264,7 +267,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             let dashboard = !args.no_dashboard && term::stdout_is_terminal() && !term::no_color();
             paint::set_color(dashboard);
             let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
-            serve::run(
+            let served = serve::run(
                 &state,
                 &args.folders,
                 &args.allow_read,
@@ -272,7 +275,24 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 args.headless_browsers,
                 deny_exec,
             )
-            .await?;
+            .await;
+            // Once the dashboard has had the terminal, it may take no
+            // output: how the host ended goes to serve.log, and the exit
+            // code says it, so stopping never waits on the terminal.
+            if log::in_file() {
+                let exit = match served {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(failure) => {
+                        log::log(&format!("serve ended: {}", failure.to_json()));
+                        failure.exit.into()
+                    }
+                };
+                return Ok(Printed {
+                    text: String::new(),
+                    exit,
+                });
+            }
+            served?;
             to_json(json!({}))
         }
         Command::Worker(_) | Command::BrowserWorker(_) => unreachable!("handled in main"),

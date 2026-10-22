@@ -143,7 +143,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             };
             let link = dial::connect(state, host).await?;
             let result = import(&link.connection, &file).await;
-            link.close().await;
+            link.close();
             result
         }
     }
