@@ -108,16 +108,15 @@ fi
 dest="$bin_dir/latch"
 
 # 0. A managed host running the latch being replaced is stopped first; only
-# a stop it confirms counts, and a failed one changes nothing. From then on
-# until it runs again, however this script ends, the command that starts it
-# is said, and said again on a failure.
+# a stop it confirms counts, and a failed one changes nothing. If anything
+# fails before it runs again, show the command for one explicit start.
 restart_host=""
 tmp=""
 on_exit() {
   ended=$?
   rm -rf ${tmp:+"$tmp"}
   if [ "$ended" -ne 0 ] && [ -n "$restart_host" ]; then
-    say "the host on $state_dir is stopped; start it again with: $restart_host" >&2
+    say "the host on $state_dir is stopped; start once with: $restart_host (plus any --deny-exec or --headless-browsers flags you need)" >&2
   fi
 }
 trap on_exit EXIT
@@ -127,8 +126,8 @@ if [ -x "$dest" ] && [ "$("$dest" --version 2>/dev/null)" != "$("$src" --version
       stopped=$("$dest" --state-dir "$state_dir" stop) || die "could not stop the host on $state_dir (see above); nothing was changed"
       case "$stopped" in
         *'"stopped":true'*)
-          restart_host="$(quote "$dest") --state-dir $(quote "$state_dir") serve -d --again"
-          say "stopped the host on $state_dir; it starts again with the new latch once the install is done (or: $restart_host)"
+          restart_host="$(quote "$dest") --state-dir $(quote "$state_dir") serve -d"
+          say "stopped the host on $state_dir; it starts again with the new latch once the install is done"
           ;;
       esac
       ;;

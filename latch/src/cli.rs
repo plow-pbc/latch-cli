@@ -29,7 +29,7 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
 }
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
-/// 03:45 UTC, local build, protocol plow/latch/1)`, or for a release build
+/// 03:45 UTC, local build, protocol plow/latch/2)`, or for a release build
 /// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
 /// came from (see `build.rs`), the protocol it speaks to peers and, for a
 /// build with baked-in defaults, those, so it is obvious which build this is.
@@ -177,8 +177,6 @@ pub enum Command {
     /// The connectors on a host: list them; on the host itself, its owner
     /// turns one on (running its setup) or off
     Plugins(PluginsArgs),
-    /// The folders `latch serve` shares when it is named none, and its --allow-read paths: show them, or set them
-    Shares(SharesArgs),
     /// This machine's host audit log: its records in full, its chain checked without the key, or a new key
     Audit(AuditArgs),
     /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
@@ -751,6 +749,15 @@ pub struct WorkerArgs {
     /// The host's state directory, which the worker may never touch
     #[arg(long)]
     pub denied: PathBuf,
+    /// The home folder readable by an exec worker
+    #[arg(long)]
+    pub home: Option<PathBuf>,
+    /// Permit outbound IP networking
+    #[arg(long)]
+    pub network: bool,
+    /// Authenticate startup failures; removed before Linux's inner worker starts
+    #[arg(long, hide = true)]
+    pub error_token: Option<String>,
     /// An exec worker's own temp folder (its `TMPDIR`), which it may read and write
     #[arg(long)]
     pub tmpdir: Option<PathBuf>,
@@ -769,13 +776,10 @@ pub struct WorkerArgs {
 pub enum WorkerAction {
     /// Send a file's size and bytes to stdout
     Read { path: PathBuf },
-    /// Write exactly SIZE bytes from stdin to a file, atomically
+    /// Write exactly SIZE bytes from stdin to a new file in its temp folder
     Write {
         #[arg(long)]
         size: u64,
-        /// The file's name, used if PATH is a folder
-        #[arg(long)]
-        name: Option<String>,
         path: PathBuf,
     },
     /// Run the pinned Google CLI
@@ -853,24 +857,6 @@ pub enum AuditAction {
 }
 
 #[derive(Args, Debug)]
-pub struct SharesArgs {
-    #[command(subcommand)]
-    pub action: Option<SharesAction>,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum SharesAction {
-    /// Replace the saved folders and --allow-read paths; a running `latch serve` keeps its own until restarted
-    Set {
-        #[arg(value_name = "FOLDER", required = true)]
-        folders: Vec<PathBuf>,
-        /// A file or folder callers may also read, never write (repeatable; see `latch serve --help`)
-        #[arg(long, value_name = "PATH")]
-        allow_read: Vec<PathBuf>,
-    },
-}
-
-#[derive(Args, Debug)]
 pub struct FollowArgs {
     /// Keep printing what is added, until stopped
     #[arg(long, short)]
@@ -883,29 +869,21 @@ pub struct StatusArgs {
     #[arg(long)]
     pub pretty: bool,
     /// Only this machine's own latch, asking no one: state folder, login,
-    /// whether a host serves it, version, saved shares and --allow-read paths. Works offline and before login
+    /// whether a host serves it and version. Works offline and before login
     #[arg(long, conflicts_with = "pretty")]
     pub local: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
-    /// Folders to share: callers may read and write inside these (the first is where `exec` starts) [default: the ones `latch shares set` saved, with its --allow-read paths]
-    #[arg(value_name = "FOLDER")]
-    pub folders: Vec<PathBuf>,
-
-    /// A file or folder outside the shares that callers may also read, never write, e.g. ~/.rustup (repeatable; needs FOLDERs). Refused inside the never-readable places below
-    #[arg(long, value_name = "PATH", requires = "folders")]
-    pub allow_read: Vec<PathBuf>,
-
     /// Start the host and return once it answers, printing it as JSON; it
     /// runs until `latch stop`
     #[arg(short = 'd', long, conflicts_with = "foreground")]
     pub detach: bool,
 
-    /// With -d: start the host with the folders and flags the last `latch
+    /// With -d: start the host with the flags the last `latch
     /// serve` on this state folder was given, as an upgrade restarts it
-    #[arg(long, requires = "detach", conflicts_with_all = ["folders", "headless_browsers", "deny_exec"])]
+    #[arg(long, requires = "detach", conflicts_with_all = ["headless_browsers", "deny_exec"])]
     pub again: bool,
 
     /// Run the host in this process, with no service manager and no
@@ -932,23 +910,21 @@ pub struct ServeArgs {
 
 /// What `latch serve --help` adds after the options.
 const SERVE_HELP: &str = "\
-What callers can reach (`exec`'s programs and `file get`/`file put` alike):
-  Read and write: the shared folders, and an exec call's own temp folder.
-  Read only: each --allow-read path, and the system's own files: programs,
-  libraries, developer tools, Homebrew, certificates. Nothing else: not the
-  rest of your home folder, not other projects.
-  Never, even inside a shared or --allow-read folder: ~/.ssh, ~/.gnupg,
-  keychains, browser profiles, Mail, Messages, Calendars, Contacts, macOS's
-  privacy settings (TCC), latch's state (this host's, ~/.latch, and any
-  other state folder in the shares, even one made while the host runs),
-  ~/.aws, ~/.config/gcloud, ~/.azure, ~/.kube, ~/.docker/config.json,
-  ~/.netrc, ~/.npmrc, ~/.git-credentials and ~/.config/gh. An --allow-read
-  inside one of these is refused.
-  Your home folder, its Library, and the folders above them (/Users, /)
-  can be neither shared nor named with --allow-read: name the folders in it
-  you need.
-  exec runs with HOME set to the first shared folder. Tools kept in your home
-  folder (~/.rustup and ~/.cargo, nvm, pyenv) need --allow-read.";
+What callers can reach (each exec and file call is judged):
+  Read: your home folder and system files (programs, libraries, developer
+  tools and certificates). No shared-folder setup is needed.
+  Hidden: ~/.latch, this host's state directory, and on macOS ~/Library
+  except ~/Library/Caches. Other home content, including credential dotfiles
+  such as ~/.ssh, is readable: the gatekeeper judges the requested use.
+  exec writes only its repeated --write PATH grants, its private temp and
+  existing plain tool-cache folders. Missing or symlinked caches are skipped,
+  never created. HOME is your home; workdir defaults to the first --write
+  folder, otherwise home. Quote '~' in host path fields.
+  exec has no IP network unless --network is given. Host Unix sockets are
+  blocked even with --network (macOS permits the system DNS resolver).
+  file get reads readable paths; file put writes its judged destination.
+  The judge and audit see argv, workdir, writes and network. Never put
+  credentials in argv: judgment goes to Plow's remote decision service.";
 
 /// What a bare `--deny-exec` stands for. An agent uid is hex, so it is
 /// never this.
@@ -990,7 +966,7 @@ pub struct HostArg {
 pub enum FileCommand {
     /// Copy a file from the host to this machine
     Get {
-        /// The file on the host: absolute, or relative to the host's first shared folder. Inside a shared folder or one of the host's --allow-read paths, or one of the system's own files (see `latch serve --help`)
+        /// The file on the host, in its home folder or a system file exec can read too: absolute, `~/…` (quote it so this shell leaves the `~` alone), or relative to home. Never latch's state or, on macOS, ~/Library (its Caches excepted)
         remote_path: String,
         /// Where to write it on this machine [default: the remote file's name, in the current directory]
         local_dest: Option<PathBuf>,
@@ -1001,7 +977,7 @@ pub enum FileCommand {
     Put {
         /// The file on this machine to send
         local_path: PathBuf,
-        /// Where it goes on the host, inside one of its shared folders: absolute, or relative to the first. An existing folder gets the file inside it, under its own name, as with `cp`
+        /// Where it goes on the host, inside its home folder: absolute, `~/…` (quoted), or relative to home. An existing folder gets the file inside it, under its own name, as with `cp`. The judge sees the resolved path; the old file stays until the new one is complete, and the new one keeps its permissions
         remote_path: String,
         #[command(flatten)]
         host: HostArg,
@@ -1174,6 +1150,21 @@ Input:
     EOF
   For bigger input, `latch file put` a file and read that.
 
+Secrets:
+  Use --secret-env NAME=VALUE for credentials, rather than program arguments.
+  Values reach only the final program's environment after confinement. The
+  remote judge and audit see names and lengths; program output is returned as-is.
+  Quoting protects shell syntax, but a program can interpret environment
+  values as code. *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and
+  GIT_CONFIG_* can run hidden instructions; the judge sees their names and
+  weighs that behavior against the owner's request. These are not extra denied names.
+  Native environment support is preferable. For an embedded argument, quote
+  the variable in a shell script; latch itself never expands argv:
+    latch exec --host pi --secret-env TOKEN=VALUE --network -- sh -c 'curl -H \"Authorization: Bearer $TOKEN\" https://api.example.com'
+  The option is visible in the calling machine's process list and may enter
+  shell history; shell-expanded arguments are visible on the trusted host.
+  HOME, PATH, TMPDIR, LATCH_*, LD_* and DYLD_* are reserved names.
+
 Example:
   latch exec --host pi -- sh -c 'uname -a; ls'";
 
@@ -1183,9 +1174,21 @@ pub struct ExecArgs {
     #[command(flatten)]
     pub host: HostArg,
 
-    /// Directory to run in, inside one of the host's areas [default: the first area]
+    /// Directory inside the host's home [default: first write folder, otherwise home]
     #[arg(long, value_name = "DIR")]
     pub workdir: Option<String>,
+
+    /// File or folder the command may write (repeatable); otherwise only temp and caches are writable
+    #[arg(long = "write", value_name = "PATH")]
+    pub writes: Vec<String>,
+
+    /// Allow outbound IP networking; host Unix sockets stay blocked
+    #[arg(long)]
+    pub network: bool,
+
+    /// Set a secret environment value; its value is omitted from judgment and audit (repeatable)
+    #[arg(long = "secret-env", value_name = "NAME=VALUE")]
+    pub secret_env: Vec<String>,
 
     /// Seconds before the program and everything it started are killed (1 to 600)
     #[arg(long, default_value_t = 60, value_name = "SECS",
@@ -1241,15 +1244,14 @@ mod tests {
 
     #[test]
     fn deny_exec_takes_its_agent_only_after_an_equals_sign() {
-        let bare = serve(&["/a", "--deny-exec", "/b"]);
-        assert_eq!(bare.folders, [PathBuf::from("/a"), PathBuf::from("/b")]);
+        let bare = serve(&["--deny-exec"]);
         assert_eq!(bare.deny_exec, [EVERY_AGENT]);
 
-        let some = serve(&["/a", "--deny-exec=ab12", "--deny-exec=cd34"]);
-        assert_eq!(some.folders, [PathBuf::from("/a")]);
+        let some = serve(&["--deny-exec=ab12", "--deny-exec=cd34"]);
         assert_eq!(some.deny_exec, ["ab12", "cd34"]);
 
-        assert!(serve(&["/a"]).deny_exec.is_empty());
+        assert!(serve(&[]).deny_exec.is_empty());
+        assert!(Cli::try_parse_from(["latch", "serve", "--deny-exec", "ab12"]).is_err());
     }
     #[test]
     fn google_requires_the_separator_and_leaves_gog_flags_alone() {

@@ -61,6 +61,7 @@ const RULES_OF_JUDGMENT: [&str; 5] = [
     "Each message shows how long ago it was sent. An old request may still stand if the owner meant it to keep applying; otherwise it is not a request to act now.",
     "Rules on the host are the owner's standing limits; a chat message does not lift a host rule's prohibition.",
 ];
+const EXEC_PERMISSIONS: &str = "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what the owner asked. The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except Caches. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions.";
 /// Added to the rules of judgment when the owner is the caller.
 const OWNER_CALLS: &str = "The caller is the owner, at one of their own machines: the proposed action is the owner's own request. Judge only whether the owner's rules on this host forbid it; if a rule plausibly applies, choose FORBIDDEN.";
 /// Added to the rules of judgment only when the judge sees host rules: a
@@ -316,7 +317,7 @@ fn unavailable(why: &str) -> Failure {
         Exit::Unreachable,
         "gatekeeper_unavailable",
         format!(
-            "The gatekeeper could not judge this, so it did not run: {why}. The owner's settings commands (rules, vault, shares) still work."
+            "The gatekeeper could not judge this, so it did not run: {why}. The owner's settings commands (rules, vault) still work."
         ),
     )
 }
@@ -420,17 +421,19 @@ fn state(
         .conversation
         .as_ref()
         .is_some_and(|c| c.more_before || shown < c.messages.len());
+    let mut rules_of_judgment = RULES_OF_JUDGMENT.to_vec();
+    if intent.owner {
+        rules_of_judgment.push(OWNER_CALLS);
+    }
+    if !rules.is_empty() {
+        rules_of_judgment.push(RULES_NAME_TASKS);
+    }
+    if serde_json::from_str::<Value>(action.get()).is_ok_and(|action| action["operation"] == "exec")
+    {
+        rules_of_judgment.push(EXEC_PERMISSIONS);
+    }
     let state = State {
-        rules_of_judgment: [
-            &RULES_OF_JUDGMENT[..],
-            if intent.owner { &[OWNER_CALLS] } else { &[] },
-            if rules.is_empty() {
-                &[]
-            } else {
-                &[RULES_NAME_TASKS]
-            },
-        ]
-        .concat(),
+        rules_of_judgment,
         now: clock,
         conversation,
         owner_rules: if rules.is_empty() {

@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use clap::Parser;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::net::UnixStream;
@@ -48,8 +49,39 @@ const READY_WITHIN: Duration = Duration::from_secs(60);
 const STOP_WITHIN: Duration = Duration::from_secs(40);
 /// How long a host that is up has to answer one question on its socket.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
-/// The folders and flags the last start gave the host, for `serve -d --again`.
+/// The flags the last start gave the host, for `serve -d --again`.
 const ARGS_FILE: &str = "serve-args.json";
+
+#[cfg(test)]
+mod saved_flags_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_saved_flags_require_one_explicit_start() {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let flags = vec!["--headless-browsers".to_string(), "--deny-exec".to_string()];
+        save_given(dir.path(), &flags).unwrap();
+        assert_eq!(given_before(dir.path()).unwrap(), flags);
+        for flags in [
+            vec!["/old/folder"],
+            vec!["--allow-read=/old/refs"],
+            vec!["--unknown"],
+        ] {
+            let flags: Vec<_> = flags.into_iter().map(str::to_string).collect();
+            save_given(dir.path(), &flags).unwrap();
+            let error = given_before(dir.path()).unwrap_err();
+            assert!(error.message.contains("latch serve -d"), "{error:?}");
+            assert!(error.message.contains("--deny-exec"), "{error:?}");
+            assert!(error.message.contains("--headless-browsers"), "{error:?}");
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join(ARGS_FILE)).unwrap(),
+                json!(flags).to_string()
+            );
+        }
+    }
+}
 
 /// `latch serve -d`: the host, started and answering.
 pub async fn start(state: &StateDir, args: &ServeArgs) -> Result<Value, Failure> {
@@ -135,7 +167,7 @@ async fn launch(
     let given = if args.again {
         given_before(&dir)?
     } else {
-        let given = given_now(args)?;
+        let given = given_now(args);
         save_given(&dir, &given)?;
         given
     };
@@ -168,9 +200,8 @@ async fn launch(
     }
 }
 
-/// What `args` give the host after `serve --foreground`: its flags, then
-/// its folders, each path absolute.
-fn given_now(args: &ServeArgs) -> Result<Vec<String>, Failure> {
+/// What `args` give the host after `serve --foreground`.
+fn given_now(args: &ServeArgs) -> Vec<String> {
     let mut given = Vec::new();
     if args.headless_browsers {
         given.push("--headless-browsers".to_string());
@@ -181,26 +212,7 @@ fn given_now(args: &ServeArgs) -> Result<Vec<String>, Failure> {
             agent => format!("--deny-exec={agent}"),
         });
     }
-    // The host checks each one; made absolute here, where a relative one
-    // means something.
-    for path in &args.allow_read {
-        let path = std::path::absolute(path).map_err(|err| io_failure(path, err))?;
-        given.push(format!("--allow-read={}", text(&path)?));
-    }
-    // Named folders are checked here, where a relative one means something.
-    if !args.folders.is_empty() {
-        for folder in crate::serve::shared_folders(&args.folders, std::env::home_dir().as_deref())?
-        {
-            given.push(text(&folder)?);
-        }
-    }
-    Ok(given)
-}
-
-fn text(path: &Path) -> Result<String, Failure> {
-    path.to_str()
-        .map(str::to_string)
-        .ok_or_else(|| Failure::usage("bad_path", format!("{} is not valid UTF-8", path.display())))
+    given
 }
 
 /// Keeps `given` for a later `serve -d --again`.
@@ -223,12 +235,22 @@ fn given_before(dir: &Path) -> Result<Vec<String>, Failure> {
         }
         Err(err) => return Err(io_failure(&path, err)),
     };
-    serde_json::from_str(&text).map_err(|_| {
-        Failure::failed(
-            "state_io",
-            format!("{} is not a list of arguments", path.display()),
+    let invalid = || {
+        Failure::usage(
+            "bad_serve_args",
+            "saved host flags are not supported; start once with `latch serve -d` plus any \
+         `--deny-exec` or `--headless-browsers` flags you need"
+                .to_string(),
         )
-    })
+    };
+    let given: Vec<String> = serde_json::from_str(&text).map_err(|_| invalid())?;
+    crate::cli::Cli::try_parse_from(
+        ["latch", "serve", "--foreground"]
+            .into_iter()
+            .chain(given.iter().map(String::as_str)),
+    )
+    .map_err(|_| invalid())?;
+    Ok(given)
 }
 
 /// Waits until the host just started answers on its socket, or says why

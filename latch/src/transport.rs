@@ -144,8 +144,13 @@ impl AsyncRead for RecvStream {
     }
 }
 
+/// Incompatible local receivers have separate endpoints, just as remote ALPNs do.
+pub fn local_socket_path(state: &Path) -> PathBuf {
+    state.join(format!("serve-v{}.sock", crate::wire::protocol()))
+}
+
 pub async fn connect_local(state: &Path) -> Result<UnixStream, Failure> {
-    UnixStream::connect(state.join("serve.sock")).await.map_err(|err| {
+    UnixStream::connect(local_socket_path(state)).await.map_err(|err| {
         if matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) {
             Failure::new(Exit::Unreachable, "serve_required", "this machine needs a live receiver; start `latch serve` on this state folder, then retry".into())
         } else {
@@ -161,7 +166,7 @@ pub struct LocalSocket {
 }
 impl LocalSocket {
     pub fn bind(state: &Path) -> Result<Self, Failure> {
-        let path = state.join("serve.sock");
+        let path = local_socket_path(state);
         let io = |err| Failure::failed("local_socket", format!("{}: {err}", path.display()));
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -180,5 +185,25 @@ impl LocalSocket {
 impl Drop for LocalSocket {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_new_client_refuses_an_unversioned_local_receiver() {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let old = std::os::unix::net::UnixListener::bind(dir.path().join("serve.sock")).unwrap();
+        old.set_nonblocking(true).unwrap();
+        let failure = connect_local(dir.path()).await.unwrap_err();
+        assert_eq!(failure.code, "serve_required");
+        assert_eq!(old.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        let current = LocalSocket::bind(dir.path()).unwrap();
+        let _client = connect_local(dir.path()).await.unwrap();
+        let _accepted = current.listener.accept().await.unwrap();
     }
 }

@@ -51,6 +51,24 @@ fn worker(dir: &Path, extra: &[&str], action: &[&str], path: &str, stdin: &[u8])
     child.wait_with_output().unwrap()
 }
 
+/// Every exec starts with a private frame, even when it has no secrets.
+fn exec_worker(command: &mut Command) -> Output {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let header = br#"{"secret_env":{},"error_token":"test-startup-token"}"#;
+    if let Some(mut input) = child.stdin.take() {
+        // A deliberately refused sandbox can close its input before setup.
+        let _ = input
+            .write_all(&(header.len() as u32).to_be_bytes())
+            .and_then(|()| input.write_all(header));
+    }
+    child.wait_with_output().unwrap()
+}
+
 /// The code a worker reports for a path the sandbox keeps from it: Linux
 /// leaves it out of the worker's view, macOS refuses it.
 fn hidden_code() -> &'static str {
@@ -71,6 +89,23 @@ fn code(output: &Output) -> String {
         "a worker that fails exits 125"
     );
     last["worker_error"]["code"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn an_exec_requires_a_complete_private_header() {
+    let dir = setup();
+    for input in [b"".as_slice(), b"\0\0", b"\0\0\0\x01x"] {
+        let output = worker(
+            dir.path(),
+            &["--tmpdir", "../tmp"],
+            &["exec"],
+            "/bin/echo",
+            input,
+        );
+        assert!(!output.status.success(), "{output:?}");
+        assert_eq!(code(&output), "bad_request", "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -108,10 +143,11 @@ fn the_sandbox_reads_the_area_and_opt_ins_and_writes_only_the_area() {
     assert!(opted_in.status.success(), "{opted_in:?}");
     assert_eq!(opted_in.stdout, b"{\"size\":5}\nother");
 
-    // The state folder, directly or through a link, stays hidden.
-    for path in ["link", "../state/secret"] {
+    // An unresolved link is refused; direct state access stays hidden.
+    for (path, expected) in [("link", "io_error"), ("../state/secret", hidden_code())] {
         let refused = worker(dir.path(), &[], &["read"], path, b"");
-        assert_eq!(code(&refused), hidden_code(), "reading {path}");
+        assert_eq!(code(&refused), expected, "reading {path}");
+        assert!(refused.stdout.is_empty(), "{refused:?}");
     }
     // Writes outside the area are refused, opted in or not (Linux: a
     // read-only view).
@@ -133,52 +169,50 @@ fn missing_files_and_hidden_paths_report_the_operating_system_error() {
     let root = dir.path().canonicalize().unwrap();
     std::os::unix::fs::symlink(root.join("outside/missing"), root.join("area/dangling")).unwrap();
     std::os::unix::fs::symlink(root.join("area/missing"), root.join("area/inside-link")).unwrap();
-    for path in ["missing", "inside-link", "missing-dir/file"] {
+    // A symlink still in the worker's resolved path is refused before its
+    // target is looked up, whether that target is hidden or missing.
+    for (path, expected) in [
+        ("missing", "not_found"),
+        ("inside-link", "io_error"),
+        ("missing-dir/file", "not_found"),
+        ("../outside/missing", "not_found"),
+        ("dangling", "io_error"),
+        ("../state/missing", "not_found"),
+    ] {
         let output = worker(dir.path(), &[], &["read"], path, b"");
-        assert_eq!(code(&output), "not_found", "{path}");
-    }
-    for path in ["../outside/missing", "dangling", "../state/missing"] {
-        let output = worker(dir.path(), &[], &["read"], path, b"");
-        assert_eq!(code(&output), "not_found", "{path}");
+        assert_eq!(code(&output), expected, "{path}");
+        assert!(output.stdout.is_empty(), "{output:?}");
     }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn a_write_is_all_or_nothing() {
+fn a_write_worker_stages_a_new_file_in_its_temp_folder() {
     let dir = setup();
-    let area = dir.path().join("area");
-    fs::write(area.join("keep.txt"), "old contents").unwrap();
-
+    let tmp = dir.path().join("tmp").canonicalize().unwrap();
+    let tmpdir = tmp.to_str().unwrap();
+    let upload = tmp.join("upload");
+    let staged = |size: &str, bytes: &[u8]| {
+        worker(
+            dir.path(),
+            &["--tmpdir", tmpdir],
+            &["write", "--size", size],
+            upload.to_str().unwrap(),
+            bytes,
+        )
+    };
     // The transfer breaks off: 3 of the 10 promised bytes arrive.
-    let short = worker(
-        dir.path(),
-        &[],
-        &["write", "--size", "10"],
-        "keep.txt",
-        b"new",
-    );
+    let short = staged("10", b"new");
     assert_eq!(code(&short), "transfer_incomplete");
-    assert_eq!(fs::read(area.join("keep.txt")).unwrap(), b"old contents");
-
-    // All bytes arrive: the new contents replace the old in one step.
-    let full = worker(
-        dir.path(),
-        &[],
-        &["write", "--size", "12"],
-        "keep.txt",
-        b"new contents",
-    );
-    assert!(full.status.success());
-    assert_eq!(fs::read(area.join("keep.txt")).unwrap(), b"new contents");
-
-    // No temporary file is left behind either way.
-    let mut names: Vec<String> = fs::read_dir(&area)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    assert_eq!(names, ["inside.txt", "keep.txt", "link"]);
+    fs::remove_file(&upload).unwrap();
+    // All bytes arrive.
+    let full = staged("12", b"new contents");
+    assert!(full.status.success(), "{full:?}");
+    assert_eq!(fs::read(&upload).unwrap(), b"new contents");
+    // A name already there is never written over (nor a link at it followed).
+    let again = staged("1", b"x");
+    assert!(!again.status.success(), "{again:?}");
+    assert_eq!(fs::read(&upload).unwrap(), b"new contents");
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -186,16 +220,16 @@ fn a_write_is_all_or_nothing() {
 fn an_exec_worker_runs_programs_inside_the_sandbox() {
     let dir = setup();
     let exec = |argv: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args([
-                "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp",
-                "exec", "--",
-            ])
-            .args(argv)
-            .current_dir(dir.path().join("area"))
-            .env_clear()
-            .output()
-            .unwrap()
+        exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args([
+                    "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp",
+                    "exec", "--",
+                ])
+                .args(argv)
+                .current_dir(dir.path().join("area"))
+                .env_clear(),
+        )
     };
     let pipe = exec(&["/bin/sh", "-c", "echo hello | tr a-z A-Z"]);
     assert!(pipe.status.success(), "{pipe:?}");
@@ -221,25 +255,25 @@ fn an_exec_worker_runs_programs_inside_the_sandbox() {
 #[test]
 fn an_exec_cannot_kill_its_supervisor() {
     let dir = setup();
-    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .args([
-            "worker",
-            "--area",
-            "../area",
-            "--denied",
-            "../state",
-            "--tmpdir",
-            "../tmp",
-            "exec",
-            "--",
-            "/bin/sh",
-            "-c",
-            "if kill -KILL \"$PPID\" 2>/dev/null; then echo escaped; else echo protected; fi",
-        ])
-        .current_dir(dir.path().join("area"))
-        .env_clear()
-        .output()
-        .unwrap();
+    let output = exec_worker(
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args([
+                "worker",
+                "--area",
+                "../area",
+                "--denied",
+                "../state",
+                "--tmpdir",
+                "../tmp",
+                "exec",
+                "--",
+                "/bin/sh",
+                "-c",
+                "if kill -KILL \"$PPID\" 2>/dev/null; then echo escaped; else echo protected; fi",
+            ])
+            .current_dir(dir.path().join("area"))
+            .env_clear(),
+    );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"protected\n", "{output:?}");
 }
@@ -252,15 +286,15 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
     fs::create_dir(&rules).unwrap();
     fs::write(rules.join("host.txt"), "Never send email.").unwrap();
     let exec = |script: &str| {
-        Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args([
-                "worker", "--area", "..", "--denied", "../state", "--tmpdir", "../tmp", "exec",
-                "--", "/bin/sh", "-c", script,
-            ])
-            .current_dir(dir.path().join("area"))
-            .env_clear()
-            .output()
-            .unwrap()
+        exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args([
+                    "worker", "--area", "..", "--denied", "../state", "--tmpdir", "../tmp", "exec",
+                    "--", "/bin/sh", "-c", script,
+                ])
+                .current_dir(dir.path().join("area"))
+                .env_clear(),
+        )
     };
     for script in [
         "cat ../state/rules/host.txt",
@@ -311,20 +345,20 @@ fn a_workdir_outside_the_areas_is_refused() {
     let real = dir.path().canonicalize().unwrap();
     let area = real.join("area");
     for workdir in [real.join("outside"), real.join("state")] {
-        let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args(["worker", "--area"])
-            .arg(&area)
-            .arg("--denied")
-            .arg(real.join("state"))
-            .arg("--tmpdir")
-            .arg(real.join("tmp"))
-            .args(["exec", "--workdir"])
-            .arg(&workdir)
-            .args(["--", "/bin/pwd"])
-            .current_dir(&area)
-            .env_clear()
-            .output()
-            .unwrap();
+        let output = exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args(["worker", "--area"])
+                .arg(&area)
+                .arg("--denied")
+                .arg(real.join("state"))
+                .arg("--tmpdir")
+                .arg(real.join("tmp"))
+                .args(["exec", "--workdir"])
+                .arg(&workdir)
+                .args(["--", "/bin/pwd"])
+                .current_dir(&area)
+                .env_clear(),
+        );
         assert!(output.stdout.is_empty());
         // An exec worker sees the whole filesystem, so latch's own check
         // refuses a workdir outside the areas, on Linux as on macOS.
@@ -368,9 +402,10 @@ fn an_area_can_contain_state_but_cannot_read_or_write_it() {
     let inside = worker(dir.path(), &["--area", ".."], &["read"], "inside.txt", b"");
     assert!(inside.status.success(), "{inside:?}");
     assert_eq!(inside.stdout, b"{\"size\":6}\ninside");
-    for path in ["../state/secret", "link"] {
+    for (path, expected) in [("../state/secret", "not_found"), ("link", "io_error")] {
         let hidden = worker(dir.path(), &["--area", ".."], &["read"], path, b"");
-        assert_eq!(code(&hidden), "not_found", "{path}");
+        assert_eq!(code(&hidden), expected, "{path}");
+        assert!(hidden.stdout.is_empty(), "{hidden:?}");
     }
     let write = worker(
         dir.path(),
@@ -424,7 +459,7 @@ fn a_worker_confines_itself_before_starting_threads() {
     assert_eq!(fs::read(dir.path().join("area/new.txt")).unwrap(), b"x");
 }
 
-/// `latch serve <area>` with no login, run with a seccomp filter
+/// `latch serve` with no login, run with a seccomp filter
 /// (installed in the child before it starts) that makes `syscall` fail with
 /// EPERM when `rules` match. Without the filter it stops at the login check.
 #[cfg(target_os = "linux")]
@@ -433,13 +468,12 @@ fn serve_with_denied(rules: Option<(i64, Vec<seccompiler::SeccompRule>)>) -> Out
 
     let dir = setup();
     let state = tempfile::tempdir_in(dir.path()).unwrap();
-    let area = dir.path().join("area").canonicalize().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
         .args(["serve", "--foreground", "--state-dir"])
         .arg(state.path())
-        .arg(area)
         .env_clear()
+        .env("HOME", dir.path())
         .env("LATCH_TEST_LOOPBACK", "1");
     if let Some((syscall, conditions)) = rules {
         let filter: seccompiler::BpfProgram = seccompiler::SeccompFilter::new(
@@ -504,15 +538,15 @@ fn exec_preserves_signals_and_does_not_confuse_them_with_exit_codes() {
         ("exit 139", Some(139), None),
         ("kill -SEGV $$", None, Some(libc::SIGSEGV)),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args([
-                "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp",
-                "exec", "--", "/bin/sh", "-c", script,
-            ])
-            .current_dir(dir.path().join("area"))
-            .env_clear()
-            .output()
-            .unwrap();
+        let output = exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args([
+                    "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp",
+                    "exec", "--", "/bin/sh", "-c", script,
+                ])
+                .current_dir(dir.path().join("area"))
+                .env_clear(),
+        );
         assert_eq!(output.status.code(), code, "{output:?}");
         assert_eq!(output.status.signal(), signal, "{output:?}");
     }
@@ -529,21 +563,21 @@ fn an_exec_worker_writes_only_its_own_temp_folder_outside_the_areas() {
     // The refused write is in a subshell: how a shell exits when a
     // redirection fails differs (bash 1, dash 2).
     let script = r#"echo x > "$TMPDIR/t" && cat "$TMPDIR/t"; (echo y > "$0/stolen") 2>/dev/null && echo stolen; exit 0"#;
-    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .arg("worker")
-        .arg("--area")
-        .arg(real.join("area"))
-        .arg("--denied")
-        .arg(real.join("state"))
-        .arg("--tmpdir")
-        .arg(mine.path().canonicalize().unwrap())
-        .args(["exec", "--", "/bin/sh", "-c", script])
-        .arg(other.path().canonicalize().unwrap())
-        .current_dir(real.join("area"))
-        .env_clear()
-        .env("TMPDIR", mine.path().canonicalize().unwrap())
-        .output()
-        .unwrap();
+    let output = exec_worker(
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .arg("worker")
+            .arg("--area")
+            .arg(real.join("area"))
+            .arg("--denied")
+            .arg(real.join("state"))
+            .arg("--tmpdir")
+            .arg(mine.path().canonicalize().unwrap())
+            .args(["exec", "--", "/bin/sh", "-c", script])
+            .arg(other.path().canonicalize().unwrap())
+            .current_dir(real.join("area"))
+            .env_clear()
+            .env("TMPDIR", mine.path().canonicalize().unwrap()),
+    );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"x\n", "{output:?}");
     if cfg!(target_os = "macos") {
@@ -586,19 +620,19 @@ fn exec_reads_and_writes_only_areas_never_state_or_latch() {
         cat */.state/secret 2>/dev/null
         true
     "#;
-    let output = Command::new(&latch)
-        .arg("worker")
-        .arg("--area")
-        .arg(&area)
-        .arg("--denied")
-        .arg(area.join("keep/.state"))
-        .arg("--tmpdir")
-        .arg(real.join("tmp"))
-        .args(["exec", "--", "/bin/sh", "-c", script])
-        .current_dir(&area)
-        .env_clear()
-        .output()
-        .unwrap();
+    let output = exec_worker(
+        Command::new(&latch)
+            .arg("worker")
+            .arg("--area")
+            .arg(&area)
+            .arg("--denied")
+            .arg(area.join("keep/.state"))
+            .arg("--tmpdir")
+            .arg(real.join("tmp"))
+            .args(["exec", "--", "/bin/sh", "-c", script])
+            .current_dir(&area)
+            .env_clear(),
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{output:?}");
     assert!(stdout.contains("inside read-inside-ok"), "{stdout}");
@@ -618,34 +652,83 @@ fn exec_reads_and_writes_only_areas_never_state_or_latch() {
     assert!(!area.join("keep/.state/config.json").exists());
 }
 
+/// A get's worker, as a host starts it: home readable, less latch's state
+/// and (macOS) ~/Library apart from its Caches, and nothing writable.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn a_write_to_a_folder_lands_inside_it_under_its_own_name() {
+fn a_read_worker_reads_home_but_not_what_is_hidden() {
     let dir = setup();
-    fs::create_dir(dir.path().join("area/docs")).unwrap();
-    let into = worker(
-        dir.path(),
-        &[],
-        &["write", "--size", "2", "--name", "notes.txt"],
-        "docs",
-        b"hi",
-    );
-    assert!(into.status.success(), "{into:?}");
-    assert!(String::from_utf8_lossy(&into.stdout).contains("\"path\":\"docs/notes.txt\""));
-    assert_eq!(
-        fs::read(dir.path().join("area/docs/notes.txt")).unwrap(),
-        b"hi"
-    );
-    // A name that is a path of its own is not used.
-    let sneaky = worker(
-        dir.path(),
-        &[],
-        &["write", "--size", "1", "--name", "../x", "--"],
-        "docs",
-        b"x",
-    );
-    assert!(!sneaky.status.success(), "{sneaky:?}");
-    assert!(!dir.path().join("area/x").exists());
+    let home = dir.path().join("area").canonicalize().unwrap();
+    for (path, text) in [
+        (".ssh/config", "Host example"),
+        (".latch/key", "made-up key"),
+        ("Library/Messages/chat.db", "made-up chat"),
+        ("Library/Caches/tool/cache", "made-up cache"),
+    ] {
+        fs::create_dir_all(home.join(path).parent().unwrap()).unwrap();
+        fs::write(home.join(path), text).unwrap();
+    }
+    let read = |path: &str| {
+        let home = home.to_str().unwrap();
+        let mut args = vec![
+            "worker", "--home", home, "--read", home, "--denied", "../state",
+        ];
+        let hidden = [home.to_string() + "/.latch", home.to_string() + "/Library"];
+        let hidden: Vec<&str> = hidden.iter().map(String::as_str).collect();
+        let shown = if cfg!(target_os = "macos") {
+            &hidden[..]
+        } else {
+            &hidden[..1]
+        };
+        for path in shown {
+            args.extend(["--hidden", path]);
+        }
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args(&args)
+            .args(["read", "--", &format!("{home}/{path}")])
+            .current_dir(dir.path().join("area"))
+            .env_clear()
+            .output()
+            .unwrap()
+    };
+    let ssh = read(".ssh/config");
+    assert!(ssh.status.success(), "{ssh:?}");
+    assert!(String::from_utf8_lossy(&ssh.stdout).ends_with("Host example"));
+    assert_eq!(code(&read(".latch/key")), hidden_code());
+    if cfg!(target_os = "macos") {
+        assert_eq!(code(&read("Library/Messages/chat.db")), hidden_code());
+        let cache = read("Library/Caches/tool/cache");
+        assert!(cache.status.success(), "{cache:?}");
+    }
+    // Nothing outside home, either.
+    assert!(!read("../outside/other.txt").status.success());
+}
+
+#[test]
+fn a_read_refuses_a_symlink_swapped_in_after_resolution_before_sending_bytes() {
+    for component in 0..3 {
+        let dir = setup();
+        let area = dir.path().join("area").canonicalize().unwrap();
+        let path = area.join("tree/inner/note.txt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "judged bytes").unwrap();
+        let resolved = path.canonicalize().unwrap();
+        let target = resolved.ancestors().nth(component).unwrap();
+        let replacement = area.join("replacement");
+        let file = match component {
+            0 => replacement.clone(),
+            1 => replacement.join("note.txt"),
+            _ => replacement.join("inner/note.txt"),
+        };
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, "unjudged bytes").unwrap();
+        fs::rename(target, target.with_file_name("saved")).unwrap();
+        std::os::unix::fs::symlink(&replacement, target).unwrap();
+
+        let read = worker(dir.path(), &[], &["read"], resolved.to_str().unwrap(), b"");
+        assert!(!read.status.success(), "component {component}: {read:?}");
+        assert!(read.stdout.is_empty(), "component {component}: {read:?}");
+    }
 }
 
 /// The `PATH` a host gives exec's programs.
@@ -655,17 +738,17 @@ const HOST_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbi
 /// area, with HOME there too, and `extra` worker flags.
 fn exec_script(dir: &Path, extra: &[&str], script: &str) -> Output {
     let real = dir.canonicalize().unwrap();
-    Command::new(env!("CARGO_BIN_EXE_latch"))
-        .args(["worker", "--area", "../area", "--denied", "../state"])
-        .args(extra)
-        .args(["--tmpdir", "../tmp", "exec", "--", "/bin/sh", "-c", script])
-        .current_dir(real.join("area"))
-        .env_clear()
-        .env("PATH", HOST_PATH)
-        .env("HOME", real.join("area"))
-        .env("TMPDIR", real.join("tmp"))
-        .output()
-        .unwrap()
+    exec_worker(
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args(["worker", "--area", "../area", "--denied", "../state"])
+            .args(extra)
+            .args(["--tmpdir", "../tmp", "exec", "--", "/bin/sh", "-c", script])
+            .current_dir(real.join("area"))
+            .env_clear()
+            .env("PATH", HOST_PATH)
+            .env("HOME", real.join("area"))
+            .env("TMPDIR", real.join("tmp")),
+    )
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -901,6 +984,346 @@ fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
     assert_eq!(output.stdout, b"made\n", "{output:?}");
 }
 
+/// A home-readable exec with explicit writable roots, using real sandbox code.
+fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
+    let home = dir.join("area").canonicalize().unwrap();
+    // Resolve macOS's Python shim before confinement; xcrun's own cache is
+    // unrelated to the command's private TMPDIR.
+    let python = Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(python.status.success());
+    let python = std::path::PathBuf::from(String::from_utf8(python.stdout).unwrap().trim());
+    let path = std::env::join_paths(
+        python
+            .parent()
+            .into_iter()
+            .chain(HOST_PATH.split(':').map(Path::new)),
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    command
+        .args(["worker", "--home"])
+        .arg(&home)
+        .arg("--read")
+        .arg(&home)
+        .arg("--area")
+        .arg(home.join("project"))
+        .arg("--denied")
+        .arg(home.join(".latch"))
+        .arg("--hidden")
+        .arg(home.join(".latch"))
+        .arg("--tmpdir")
+        .arg(dir.join("tmp").canonicalize().unwrap());
+    if cfg!(target_os = "macos") {
+        command.arg("--hidden").arg(home.join("Library"));
+        if home.join("Library/Caches").is_dir() {
+            command.arg("--area").arg(home.join("Library/Caches"));
+        }
+    }
+    if network {
+        command.arg("--network");
+    }
+    exec_worker(
+        command
+            .args(["exec", "--", "/bin/sh", "-c", script])
+            .current_dir(&home)
+            .env_clear()
+            .env("PATH", path)
+            .env("HOME", &home)
+            .env("TMPDIR", dir.join("tmp").canonicalize().unwrap()),
+    )
+}
+
+fn declared_setup() -> tempfile::TempDir {
+    let dir = setup();
+    for name in ["project", ".ssh", ".latch", "Library/Caches"] {
+        fs::create_dir_all(dir.path().join("area").join(name)).unwrap();
+    }
+    fs::write(dir.path().join("area/.ssh/config"), "readable-dotfile").unwrap();
+    fs::write(dir.path().join("area/.latch/private"), "hidden-state").unwrap();
+    fs::write(dir.path().join("area/Library/private"), "hidden-library").unwrap();
+    dir
+}
+
+#[test]
+fn declared_exec_reads_home_and_confines_writes_and_hidden_data() {
+    let dir = declared_setup();
+    let output = declared_exec(
+        dir.path(),
+        false,
+        r#"
+        cat .ssh/config
+        cat .latch/private 2>/dev/null
+        cat Library/private 2>/dev/null
+        echo denied > undeclared
+        echo denied > .latch/undeclared
+        echo allowed > project/result
+        echo cache > Library/Caches/result
+        true
+    "#,
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("readable-dotfile"));
+    assert!(!stdout.contains("hidden-state"));
+    if cfg!(target_os = "macos") {
+        assert!(!stdout.contains("hidden-library"));
+        assert_eq!(
+            fs::read(dir.path().join("area/Library/Caches/result")).unwrap(),
+            b"cache\n"
+        );
+    }
+    assert!(!dir.path().join("area/undeclared").exists());
+    assert!(!dir.path().join("area/.latch/undeclared").exists());
+    assert_eq!(
+        fs::read(dir.path().join("area/project/result")).unwrap(),
+        b"allowed\n"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn exec_runs_without_a_library_cache_and_does_not_follow_a_cache_alias() {
+    let dir = declared_setup();
+    let caches = dir.path().join("area/Library/Caches");
+    fs::remove_dir(&caches).unwrap();
+    let run = || {
+        declared_exec(
+            dir.path(),
+            false,
+            "cat .ssh/config; cat Library/private Library/Caches/Library/private 2>/dev/null; true",
+        )
+    };
+    let output = run();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"readable-dotfile");
+    assert!(!caches.exists());
+    std::os::unix::fs::symlink("..", &caches).unwrap();
+    let output = run();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"readable-dotfile");
+}
+
+#[test]
+fn declared_exec_needs_network_and_cannot_use_a_host_unix_socket() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::os::unix::net::UnixListener;
+    let dir = declared_setup();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let script = format!("curl -fsS --connect-timeout 1 --max-time 2 http://{address}/");
+    let offline = declared_exec(dir.path(), false, &script);
+    assert!(!offline.status.success(), "offline connected: {offline:?}");
+    let serving = std::thread::spawn(move || {
+        let (mut connection, _) = listener.accept().unwrap();
+        let mut request = [0; 2048];
+        assert!(connection.read(&mut request).unwrap() > 0);
+        connection
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nnetwork")
+            .unwrap();
+    });
+    let online = declared_exec(dir.path(), true, &script);
+    assert!(online.status.success(), "online: {online:?}");
+    assert_eq!(online.stdout, b"network");
+    serving.join().unwrap();
+    let path = dir.path().join("area/daemon.sock");
+    let unix = UnixListener::bind(&path).unwrap();
+    unix.set_nonblocking(true).unwrap();
+    let script = format!(
+        "curl -fsS --max-time 1 --unix-socket '{}' http://localhost/",
+        path.display()
+    );
+    for network in [false, true] {
+        let output = declared_exec(dir.path(), network, &script);
+        assert!(
+            !output.status.success(),
+            "Unix socket connected: {output:?}"
+        );
+        assert_eq!(
+            unix.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn declared_exec_cannot_read_its_hosts_process_arguments() {
+    let dir = declared_setup();
+    let script = format!("test ! -r /proc/{}/cmdline", std::process::id());
+    for network in [false, true] {
+        let output = declared_exec(dir.path(), network, &script);
+        assert!(output.status.success(), "{output:?}");
+    }
+}
+
+#[test]
+fn a_networked_exec_resolves_a_hostname() {
+    let dir = declared_setup();
+    let output = declared_exec(
+        dir.path(),
+        true,
+        "python3 -c 'import socket, sys; assert socket.getaddrinfo(\"localhost\", 80); s=socket.socket(socket.AF_UNIX) if sys.platform == \"darwin\" else None; s.connect(\"/private/var/run/mDNSResponder\") if s else None; print(\"hostname resolved\")'",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"hostname resolved\n");
+}
+
+#[test]
+fn an_offline_exec_supports_unnamed_unix_sockets_and_asyncio() {
+    let dir = declared_setup();
+    let output = declared_exec(
+        dir.path(),
+        false,
+        r#"python3 -c '
+import asyncio, socket
+left, right = socket.socketpair()
+with left, right:
+    left.sendall(b"IPC")
+    assert right.recv(3) == b"IPC"
+async def main():
+    await asyncio.sleep(0)
+asyncio.run(main())
+print("offline IPC works")
+' && node -e 'require("child_process").execFileSync("/bin/echo", ["child process works"], {stdio: "pipe"})'"#,
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"offline IPC works\n");
+}
+
+#[test]
+fn a_networked_exec_can_use_unix_sockets_in_its_own_temp() {
+    let dir = declared_setup();
+    let output = declared_exec(
+        dir.path(),
+        true,
+        r#"python3 -c '
+import os, socket
+path = os.environ["TMPDIR"] + "/ipc.sock"
+with socket.socket(socket.AF_UNIX) as server, socket.socket(socket.AF_UNIX) as client:
+    server.bind(path)
+    server.listen(1)
+    client.connect(path)
+    peer, _ = server.accept()
+    with peer:
+        client.sendall(b"private IPC")
+        assert peer.recv(32) == b"private IPC"
+print("private temp socket works")
+'"#,
+    );
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: this version query takes null/zero arguments and writes no memory.
+        let abi = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, 0, 0, 1) };
+        if abi < 9 {
+            assert!(!output.status.success(), "{output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("PermissionError"),
+                "{output:?}"
+            );
+            return;
+        }
+    }
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"private temp socket works\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn host_datagram_and_abstract_unix_sockets_are_blocked() {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixDatagram, UnixListener};
+    let dir = declared_setup();
+    let path = dir.path().join("area/datagram.sock");
+    let datagram = UnixDatagram::bind(&path).unwrap();
+    datagram.set_nonblocking(true).unwrap();
+    let name = format!(
+        "latch-ipc-test-{}",
+        dir.path().file_name().unwrap().to_str().unwrap()
+    );
+    let abstract_socket =
+        UnixListener::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+    abstract_socket.set_nonblocking(true).unwrap();
+    let path = path.canonicalize().unwrap();
+    for network in [false, true] {
+        for (kind, address) in [
+            ("SOCK_DGRAM", format!("b'{}'", path.display())),
+            ("SOCK_STREAM", format!("b'\\0{name}'")),
+        ] {
+            let send = if kind == "SOCK_DGRAM" {
+                format!("s.sendto(b'blocked', {address})")
+            } else {
+                format!("s.connect({address})")
+            };
+            let script = format!(
+                "python3 -c \"import errno, socket
+try:
+    s=socket.socket(socket.AF_UNIX, socket.{kind})
+    {send}
+except OSError as e:
+    assert e.errno in (errno.EACCES, errno.EPERM, errno.ECONNREFUSED), e
+    print('host blocked')
+else:
+    raise AssertionError('reached host')\""
+            );
+            let output = declared_exec(dir.path(), network, &script);
+            assert!(output.status.success(), "{kind}: {output:?}");
+            assert_eq!(output.stdout, b"host blocked\n");
+        }
+        let script = format!(
+            "python3 -c \"import errno, socket
+try:
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    with left, right:
+        left.sendto(b'blocked', b'{}')
+except OSError as e:
+    assert e.errno in (errno.EACCES, errno.EPERM), e
+    print('datagram relay blocked')
+else:
+    raise AssertionError('reached host via datagram pair')\"",
+            path.display()
+        );
+        let output = declared_exec(dir.path(), network, &script);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"datagram relay blocked\n");
+        let script = format!(
+            "python3 -c \"import errno, socket
+for kind in (socket.SOCK_STREAM, socket.SOCK_SEQPACKET):
+    left, right = socket.socketpair(socket.AF_UNIX, kind)
+    with left, right:
+        try:
+            left.connect(b'{}')
+        except OSError:
+            pass
+        else:
+            raise AssertionError('redirected a connected pair')
+        try:
+            left.sendto(b'own pair', b'{}')
+        except OSError as e:
+            assert e.errno == errno.EISCONN, e
+            left.sendall(b'own pair')
+        assert right.recv(32) == b'own pair'
+print('connected pairs stay private')\"",
+            path.display(),
+            path.display()
+        );
+        let output = declared_exec(dir.path(), network, &script);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"connected pairs stay private\n");
+        assert_eq!(
+            datagram.recv(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            abstract_socket.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
@@ -930,26 +1353,26 @@ fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
     let allowed = root.join("area/allowed.sock");
     let _allowed = UnixListener::bind(&allowed).unwrap();
     let run = |socket: &Path| {
-        Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args([
-                "worker", "--area", "..", "--denied", "../state", "--hidden", "peer", "--tmpdir",
-                "../tmp", "exec", "--",
-            ])
-            .arg(&program)
-            .arg(socket)
-            .current_dir(root.join("area"))
-            .env_clear()
-            .output()
-            .unwrap()
+        exec_worker(
+            Command::new(env!("CARGO_BIN_EXE_latch"))
+                .args([
+                    "worker", "--area", "..", "--denied", "../state", "--hidden", "peer",
+                    "--tmpdir", "../tmp", "exec", "--",
+                ])
+                .arg(&program)
+                .arg(socket)
+                .current_dir(root.join("area"))
+                .env_clear(),
+        )
     };
-    // The probe works, and outbound Unix sockets outside state stay usable.
+    // Host Unix sockets stay blocked even outside state.
     let outside = run(&allowed);
-    assert!(outside.status.success(), "{outside:?}");
+    assert!(!outside.status.success(), "{outside:?}");
     for (state, alias) in [
         ("state", "area/state-link"),
         ("area/peer", "area/peer-link"),
     ] {
-        for relative in ["serve.sock", "nested/other.sock"] {
+        for relative in ["serve-v2.sock", "nested/other.sock"] {
             let socket = root.join(state).join(relative);
             let listener = UnixListener::bind(&socket).unwrap();
             assert!(
@@ -966,14 +1389,10 @@ fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
                     "worker connected to {}: {denied:?}",
                     path.display()
                 );
+                let stderr = String::from_utf8_lossy(&denied.stderr);
                 assert!(
-                    String::from_utf8_lossy(&denied.stderr).contains(
-                        if cfg!(target_os = "macos") {
-                            "PermissionDenied"
-                        } else {
-                            "NotFound"
-                        }
-                    ),
+                    stderr.contains("PermissionDenied")
+                        || (cfg!(target_os = "linux") && stderr.contains("NotFound")),
                     "{denied:?}"
                 );
             }

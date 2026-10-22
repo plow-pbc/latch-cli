@@ -50,9 +50,6 @@ pub struct LocalStatus {
     /// This machine's identity, or `null` before it logged in.
     pub peer: Option<Me>,
     pub serve: Serve,
-    pub shares: Vec<PathBuf>,
-    /// What `latch shares set --allow-read` saved: readable, never written.
-    pub allow_read: Vec<PathBuf>,
     /// Why the host last stopped, when it stopped by a failure.
     pub last_error: Option<Problem>,
 }
@@ -86,7 +83,6 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         key: config.peer.key,
         kind: config.peer.kind,
     });
-    let saved = state.load_shares()?;
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
     Ok(LocalStatus {
         state_dir: dir.clone(),
@@ -100,8 +96,6 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
             state: host.state,
             pid: host.pid,
         },
-        shares: saved.folders,
-        allow_read: saved.allow_read,
         last_error: host.error,
     })
 }

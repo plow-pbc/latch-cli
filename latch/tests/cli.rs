@@ -116,6 +116,7 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
     let mut command = latch_process();
     command
+        .env("HOME", state.parent().unwrap())
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
         .env_remove("PLOW_API_BASE")
@@ -853,15 +854,9 @@ fn a_login_by_text_piped_still_prints_its_json() {
 #[test]
 fn serving_before_any_login_says_to_log_in() {
     let dir = test_dir();
-    let area = dir.path().join("shared");
-    fs::create_dir(&area).unwrap();
     let state = dir.path().join("never-logged-in");
 
-    let output = latch(
-        &state,
-        &["serve", "--foreground", area.to_str().unwrap()],
-        &[],
-    );
+    let output = latch(&state, &["serve", "--foreground"], &[]);
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -931,6 +926,28 @@ fn help_says_what_is_allowed_and_how_to_pass_a_command() {
         text.contains("256 KiB") && text.contains("stdin is empty") && text.contains("exit_code"),
         "{text}"
     );
+}
+
+#[test]
+fn secret_env_validation_never_echoes_the_value() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let marker = "cli-private-marker-68fb";
+    for argument in [
+        format!("LD_PRELOAD={marker}"),
+        format!("BAD-NAME={marker}"),
+        marker.to_string(),
+    ] {
+        let output = latch(
+            &state,
+            &["exec", "--secret-env", &argument, "--", "true"],
+            &[],
+        );
+        assert!(!output.status.success());
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "bad_secret_env");
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(marker));
+    }
 }
 
 #[test]
@@ -1740,21 +1757,14 @@ fn google_enabled(host: &Path) {
     .unwrap();
 }
 
-/// `latch serve` on `host`'s state, sharing `share`, through the local
-/// relay, once it has registered that relay with Plow.
-fn serving(host: &Path, share: &Path, relay: &str) -> Serving {
-    serving_folders(host, &[share], relay, &[]).0
+/// `latch serve` on `host`'s state through the local relay, once registered.
+fn serving(host: &Path, relay: &str) -> Serving {
+    serving_with_env(host, relay, &[]).0
 }
 
-/// `serving`, sharing `shares` (none: the saved ones), with `env` added to
-/// its environment. Also returns the log lines up to its registration.
-fn serving_folders(
-    host: &Path,
-    shares: &[&Path],
-    relay: &str,
-    env: &[(&str, &Path)],
-) -> (Serving, Vec<String>) {
-    let mut command = serve_command(host, shares, relay);
+/// `serving` with `env` added. Also returns the startup log lines.
+fn serving_with_env(host: &Path, relay: &str, env: &[(&str, &Path)]) -> (Serving, Vec<String>) {
+    let mut command = serve_command(host, relay);
     command.envs(env.iter().copied());
     let (serve, log, lines) = serving_with(command);
     thread::spawn(move || {
@@ -1786,16 +1796,16 @@ fn until_serving(host: &Path, serve: &Serving) {
     }
 }
 
-fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
+fn serve_command(host: &Path, relay: &str) -> Command {
     let mut command = latch_process();
     command
+        .env("HOME", host.parent().unwrap())
         .args([
             "--state-dir",
             host.to_str().unwrap(),
             "serve",
             "--foreground",
         ])
-        .args(shares)
         .env("LATCH_TEST_RELAY_URL", relay)
         .env_remove("LATCH_HOST")
         .env_remove("LATCH_TRACE");
@@ -1836,10 +1846,8 @@ fn a_plain_serve_stopped_cleanly_prints_nothing_on_stdout() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let host = owner_host_on(&plow, dir.path());
-    let mut command = serve_command(&host, &[&share], &relay);
+    let mut command = serve_command(&host, &relay);
     command.stdout(std::process::Stdio::piped());
     let (mut serve, mut log, _) = serving_with(command);
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
@@ -1933,9 +1941,7 @@ fn serve_log_says_its_commands_hide_credentials_only_best_effort() {
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
-    let (serve, lines) = serving_folders(&host, &[&share], &relay, &[]);
+    let (serve, lines) = serving_with_env(&host, &relay, &[]);
     drop(serve);
     let note = lines
         .iter()
@@ -1948,190 +1954,7 @@ fn serve_log_says_its_commands_hide_credentials_only_best_effort() {
 }
 
 #[test]
-fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
-    let plow = LivePlow::start();
-    let (_relay, relay) = local_relay();
-    let dir = test_dir();
-    let host = owner_host_on(&plow, dir.path());
-    let (saved, named) = (dir.path().join("saved"), dir.path().join("named"));
-    fs::create_dir(&saved).unwrap();
-    fs::create_dir(&named).unwrap();
-
-    let none = latch(&host, &["shares"], &[]);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&none.stdout).unwrap(),
-        json!({"shares": [], "allow_read": []})
-    );
-    let missing = latch(
-        &host,
-        &["shares", "set", dir.path().join("gone").to_str().unwrap()],
-        &[],
-    );
-    assert_eq!(missing.status.code(), Some(2), "{missing:?}");
-    // A path inside credentials, or the home folder that holds its
-    // Library, can never be opted in to; another folder can.
-    let home = dir.path().join("home");
-    let refs = dir.path().join("refs");
-    fs::create_dir_all(home.join(".ssh")).unwrap();
-    fs::create_dir_all(&refs).unwrap();
-    fs::write(home.join(".ssh/config"), "Host *").unwrap();
-    let opt_in = |path: &Path| {
-        let args = ["shares", "set", saved.to_str().unwrap(), "--allow-read"];
-        latch(
-            &host,
-            &[&args[..], &[path.to_str().unwrap()]].concat(),
-            &[("HOME", &home)],
-        )
-    };
-    let refused = opt_in(&home.join(".ssh/config"));
-    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("never_readable"));
-    let refused = opt_in(&home);
-    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("Library"));
-    let set = opt_in(&refs);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
-    let real = saved.canonicalize().unwrap();
-    let refs = refs.canonicalize().unwrap();
-    let shown = latch(&host, &["shares"], &[]);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&shown.stdout).unwrap(),
-        json!({"shares": [real], "allow_read": [refs]})
-    );
-    let local = latch(&host, &["status", "--local"], &[]);
-    let local = serde_json::from_slice::<Value>(&local.stdout).unwrap();
-    assert_eq!(local["allow_read"], json!([refs]));
-
-    let sharing = |lines: &[String]| {
-        lines
-            .iter()
-            .find_map(|line| {
-                line.split_once("sharing: ")
-                    .map(|(_, rest)| rest.to_string())
-            })
-            .unwrap()
-    };
-    let reading = |lines: &[String]| {
-        lines
-            .iter()
-            .find_map(|line| line.split_once("also readable, never written: "))
-            .map(|(_, rest)| rest.to_string())
-    };
-    let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
-    drop(serve);
-    assert_eq!(sharing(&lines), real.display().to_string());
-    assert_eq!(reading(&lines), Some(refs.display().to_string()));
-    // Named folders win, and bring no saved opt-ins with them.
-    let (serve, lines) = serving_folders(&host, &[&named], &relay, &[]);
-    drop(serve);
-    assert_eq!(
-        sharing(&lines),
-        named.canonicalize().unwrap().display().to_string()
-    );
-    assert_eq!(reading(&lines), None);
-}
-
-#[test]
-fn another_latch_state_folder_inside_a_share_stays_hidden() {
-    let plow = LivePlow::start();
-    let (_relay, relay) = local_relay();
-    let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
-    fs::write(share.join("notes.txt"), "notes").unwrap();
-    let existing = share.join("existing");
-    fs::create_dir(&existing).unwrap();
-    let host = owner_host_on(&plow, dir.path());
-    // Another peer's state, logged in for real, nested in the share.
-    let owner_token = dir.path().join("owner.token");
-    let nested = share.join("projects/peer");
-    let args = [
-        "login",
-        "--api-url",
-        &plow.url,
-        "--token-file",
-        owner_token.to_str().unwrap(),
-        "--name",
-        "peer",
-    ];
-    let login = latch(&nested, &args, &[]);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    // And one from before latch marked its folders: a key and a login.
-    let old = share.join("old-state");
-    fs::create_dir(&old).unwrap();
-    fs::copy(nested.join("key"), old.join("key")).unwrap();
-    fs::copy(nested.join("plow-token"), old.join("plow-token")).unwrap();
-    let agent_token = dir.path().join("agent.token");
-    fs::write(&agent_token, "agent-credential\n").unwrap();
-    let agent = dir.path().join("agent");
-    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
-    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-
-    let (serve, lines) = serving_folders(&host, &[&share], &relay, &[]);
-    for folder in [&nested, &old] {
-        let folder = folder.canonicalize().unwrap().display().to_string();
-        let line = format!("hidden latch state folder: {folder}");
-        assert!(lines.iter().any(|seen| seen.ends_with(&line)), "{lines:?}");
-    }
-    let exec = |script: &str| {
-        let exec = latch(
-            &agent,
-            &["exec", "--host", "host", "--", "/bin/sh", "-c", script],
-            &agent_env,
-        );
-        assert_eq!(exec.status.code(), Some(0), "{exec:?}");
-        let result: Value = serde_json::from_slice(&exec.stdout).unwrap();
-        result["stdout"].as_str().unwrap().to_string()
-    };
-    let get = |path: &str| {
-        let copy = dir.path().join("copied");
-        let args = [
-            "file",
-            "get",
-            "--host",
-            "host",
-            path,
-            copy.to_str().unwrap(),
-        ];
-        let get = latch(&agent, &args, &agent_env);
-        assert_ne!(get.status.code(), Some(0), "{get:?}");
-        assert!(!copy.exists());
-    };
-    let stdout = exec(
-        "cat notes.txt; cat projects/peer/key projects/peer/plow-token; \
-         ls projects/peer; cat old-state/key old-state/plow-token; true",
-    );
-    assert_eq!(stdout, "notes");
-    get("projects/peer/key");
-
-    // Made while the host runs: a new peer's state, and a login copied
-    // into a folder that was there all along.
-    let args = [
-        "login",
-        "--api-url",
-        &plow.url,
-        "--token-file",
-        owner_token.to_str().unwrap(),
-        "--name",
-        "later",
-    ];
-    let login = latch(&share.join("later"), &args, &[]);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    fs::copy(nested.join("key"), existing.join("key")).unwrap();
-    fs::copy(nested.join("plow-token"), existing.join("plow-token")).unwrap();
-    let stdout = exec(
-        "cat notes.txt; cat later/key later/plow-token; ls later; \
-         cat existing/key existing/plow-token; true",
-    );
-    assert_eq!(stdout, "notes");
-    get("later/plow-token");
-    get("existing/key");
-    drop(serve);
-}
-
-#[test]
-fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
+fn a_host_runs_exec_and_files_under_home() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -2155,64 +1978,55 @@ fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
-    // No folders named and none saved: it serves anyway, and says so.
-    let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
-    assert!(
-        lines.iter().any(|line| line.contains(
-            "Sharing no folders — browser and Google only. Add some with `latch shares set ~/code`"
-        )),
-        "{lines:?}"
-    );
+    // The host uses the test's own home, where its files go.
+    let home = dir.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let (serve, _) = serving_with_env(&host, &relay, &[("HOME", &home)]);
     let local = latch(&host, &["status", "--local"], &[]);
     let local: Value = serde_json::from_slice(&local.stdout).unwrap();
-    assert_eq!(local["shares"], json!([]));
     assert_eq!(local["serve"]["state"], "serving");
 
-    let refused = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
-        let output = latch(state, args, env);
-        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
-        let error = serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"].clone();
-        assert_eq!(error["code"], "no_folders", "{args:?}");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .contains("latch shares set ~/code"),
-            "{error}"
-        );
-    };
     let into = dir.path().join("hosts");
     let into = into.to_str().unwrap();
-    refused(&owner, &["exec", "--host", "host", "--", "true"], &[]);
-    refused(
+    let executed = latch(&owner, &["exec", "--host", "host", "--", "true"], &[]);
+    assert_eq!(executed.status.code(), Some(0), "{executed:?}");
+    let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0);
+    // A get reads what exec can (home and the system's files), and a put
+    // goes under home.
+    let system = latch(
         &owner,
         &["file", "get", "--host", "host", "/etc/hosts", into],
         &[],
     );
+    assert_eq!(system.status.code(), Some(0), "{system:?}");
+    assert_eq!(fs::read(into).unwrap(), fs::read("/etc/hosts").unwrap());
     let local_file = dir.path().join("note.txt");
     fs::write(&local_file, "hi").unwrap();
     let local_file = local_file.to_str().unwrap();
-    refused(
+    let put = latch(
         &owner,
-        &["file", "put", "--host", "host", local_file, "note.txt"],
+        &["file", "put", "--host", "host", local_file, "~/note.txt"],
         &[],
     );
-    // An agent's exec is refused the same way, before anything is judged.
-    refused(
+    assert_eq!(put.status.code(), Some(0), "{put:?}");
+    assert_eq!(fs::read_to_string(home.join("note.txt")).unwrap(), "hi");
+    // Agent exec still needs the gatekeeper.
+    let refused_exec = latch(
         &agent,
         &["exec", "--host", "host", "--", "true"],
         &agent_env,
     );
+    assert_eq!(refused_exec.status.code(), Some(0), "{refused_exec:?}");
     // What needs no folder still works: here, the owner's rules.
     let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
     drop(serve);
-    assert!(!Path::new(into).exists(), "nothing was fetched");
     let asked_judge = plow
         .seen()
         .iter()
         .any(|(line, _)| line.contains("/v1/decisions"));
-    assert!(!asked_judge, "{:?}", plow.seen());
+    assert!(asked_judge, "{:?}", plow.seen());
 }
 
 #[test]
@@ -2220,8 +2034,6 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let owner_token = dir.path().join("owner.token");
     fs::write(&owner_token, "owner-login\n").unwrap();
     let agent_token = dir.path().join("agent.token");
@@ -2242,7 +2054,7 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
-    let serve = serving(&host, &share, &relay);
+    let serve = serving(&host, &relay);
     let exec = |word: &str| {
         latch(
             &agent,
@@ -2277,8 +2089,6 @@ fn latch_trace_shows_iroh_on_stderr_inside_each_host_operation() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let host = owner_host_on(&plow, dir.path());
     let agent_token = dir.path().join("agent.token");
     fs::write(&agent_token, "agent-credential\n").unwrap();
@@ -2288,7 +2098,7 @@ fn latch_trace_shows_iroh_on_stderr_inside_each_host_operation() {
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     let filter = "iroh=debug,latch=info";
 
-    let mut traced = serve_command(&host, &[&share], &relay);
+    let mut traced = serve_command(&host, &relay);
     traced.env("LATCH_TRACE", filter);
     let (serve, mut log, _) = serving_with(traced);
     until_serving(&host, &serve);
@@ -2336,8 +2146,6 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let (host, owner) = host_and_owner(&plow, dir.path());
     let agent_token = dir.path().join("agent.token");
     fs::write(&agent_token, "agent-credential\n").unwrap();
@@ -2345,7 +2153,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let serve = serving(&host, &share, &relay);
+    let serve = serving(&host, &relay);
 
     let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
         let output = latch(state, args, env);
@@ -2512,25 +2320,21 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let before = local(&never);
     assert!(!never.exists(), "status --local made the state folder");
     assert_eq!(before["peer"], Value::Null);
-    assert_eq!(before["protocol"], 1);
+    assert_eq!(before["protocol"], 2);
     assert_eq!(
         before["serve"],
         json!({"running": false, "ready": false, "managed": false, "state": "stopped", "pid": null})
     );
-    assert_eq!(before["shares"], json!([]));
-    assert_eq!(before["allow_read"], json!([]));
     assert_eq!(before["last_error"], Value::Null);
 
     let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let logged_in = local(&host);
     assert_eq!(logged_in["peer"]["name"], "host");
     assert_eq!(logged_in["peer"]["kind"], "device");
     assert_eq!(logged_in["serve"]["running"], false);
     let asked = plow.seen().len();
 
-    let serve = serving(&host, &share, &relay);
+    let serve = serving(&host, &relay);
     let pid = serve.0.id();
     let up = local(&host);
     assert_eq!(
@@ -2542,7 +2346,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(stopped["serve"]["state"], "stopped");
     assert_eq!(stopped["last_error"], Value::Null);
 
-    let mut killed = serving(&host, &share, &relay);
+    let mut killed = serving(&host, &relay);
     killed.0.kill().unwrap();
     killed.0.wait().unwrap();
     let ended = local(&host);
@@ -2618,8 +2422,6 @@ fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_rest
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let laptop = dir.path().join("laptop");
     let token = dir.path().join("owner.token");
     let args = [
@@ -2648,7 +2450,7 @@ fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_rest
     assert_eq!(snapshot["host"], json!({"state": "stopped"}));
     assert_eq!(snapshot["activity"], json!([]));
 
-    let serve = serving(&host, &share, &relay);
+    let serve = serving(&host, &relay);
     let mut step = events.next();
     while step["state"] != "serving" {
         assert_eq!(step["type"], "host", "{step}");
@@ -2686,7 +2488,7 @@ fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_rest
 
     // The host restarted: the old cursor gets a reset and a fresh snapshot.
     drop(serve);
-    let _serve = serving(&host, &share, &relay);
+    let _serve = serving(&host, &relay);
     let after_restart = Events::start(&host, &["--follow", "--after", &cursor]);
     assert_eq!(after_restart.next(), json!({"type": "reset"}));
     let fresh = after_restart.next();
@@ -2813,9 +2615,11 @@ fn shutdown_exec_cases() {
         ];
         assert_eq!(latch(&client, &args, &[]).status.code(), Some(0));
 
-        let mut serve = serving(&host, &share, &relay);
+        let mut serve = serving(&host, &relay);
         let running = thread::spawn(move || {
-            let args = ["exec", "--host", "host", "--", "sh", "-c", script];
+            let args = [
+                "exec", "--host", "host", "--write", "share", "--", "sh", "-c", script,
+            ];
             latch(&client, &args, &[])
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -2875,10 +2679,8 @@ fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapsho
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
 
-    let serve = serving(&host, &share, &relay);
+    let serve = serving(&host, &relay);
     let events = Events::start(&host, &["--follow"]);
     let first = events.next();
     assert_eq!(first["host"]["state"], "serving", "{first}");
@@ -2899,7 +2701,7 @@ fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapsho
         (stopped["type"].clone(), stopped["state"].clone()),
         (json!("host"), json!("stopped"))
     );
-    let _serve = serving(&host, &share, &relay);
+    let _serve = serving(&host, &relay);
     assert_eq!(events.next(), json!({"type": "reset"}));
     let fresh = events.next();
     assert_eq!(fresh["type"], "snapshot", "{fresh}");
@@ -3012,9 +2814,9 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     let host = owner_host_on(&plow, dir.path());
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
-    let _serve = serving(&host, &share, &relay);
+    let _serve = serving(&host, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve.sock").exists() {
+    while !host.join("serve-v2.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -3201,7 +3003,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve.sock")).unwrap();
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v2.sock")).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -3227,9 +3029,9 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
     google_enabled(&host);
-    let _serve = serving(&host, &share, &relay);
+    let _serve = serving(&host, &relay);
     assert_eq!(
-        fs::metadata(host.join("serve.sock"))
+        fs::metadata(host.join("serve-v2.sock"))
             .unwrap()
             .permissions()
             .mode()
@@ -3365,7 +3167,7 @@ fn local_socket_outages_refuse_gated_work_but_config_still_works() {
         let share = dir.path().join("share");
         fs::create_dir(&share).unwrap();
         google_enabled(&host);
-        let _serve = serving(&host, &share, &relay);
+        let _serve = serving(&host, &relay);
         if plow_down {
             plow.stop();
         } else {
@@ -3394,8 +3196,6 @@ fn local_socket_outages_refuse_gated_work_but_config_still_works() {
         for args in [
             vec!["rules", "set", "Config stays available."],
             vec!["vault", "list"],
-            vec!["shares"],
-            vec!["shares", "set", share.to_str().unwrap()],
         ] {
             let output = latch(&host, &args, &[]);
             assert!(output.status.success(), "{case}: {output:?}");
@@ -3434,7 +3234,7 @@ fn a_local_socket_call_the_judge_forbids_does_not_run() {
     let host = owner_host_on(&plow, dir.path());
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
-    let _serve = serving(&host, &share, &relay);
+    let _serve = serving(&host, &relay);
     plow.state.lock().unwrap().forbidden = true;
     let target = share.join("must-not-exist");
     let source = dir.path().join("source.txt");
@@ -3474,15 +3274,13 @@ fn local_socket_browser_open_observe_close_uses_one_host_and_owner_audit() {
     let (_runtime, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let installed = std::env::var_os("LATCH_CFT_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
     let plugins = installed.canonicalize().unwrap().join("plugins");
     std::os::unix::fs::symlink(plugins, host.join("plugins")).unwrap();
     fs::write(host.join("host.json"), r#"{"allow_local_browsing":true}"#).unwrap();
-    let mut command = serve_command(&host, &[&share], &relay);
+    let mut command = serve_command(&host, &relay);
     command.arg("--headless-browsers");
     let (serve, log, _) = serving_with(command);
     let logging = thread::spawn(move || log.lines().map(Result::unwrap).collect::<Vec<_>>());
@@ -3627,7 +3425,7 @@ fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
     let (host, owner) = host_and_owner(&plow, dir.path());
-    let serve = serving(&host, &share, &relay);
+    let serve = serving(&host, &relay);
     vault_add(&owner, "Shop");
     assert_eq!(vault_titles(&owner), ["Shop"]);
     drop(serve);
@@ -3642,7 +3440,7 @@ fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
     }
     assert!(host.join("vault.json").exists());
     // The same identity, login and vault on the next start.
-    let serve = serving(&host, &share, &relay);
+    let serve = serving(&host, &relay);
     assert_eq!(vault_titles(&owner), ["Shop"]);
     drop(serve);
 }
@@ -3700,23 +3498,25 @@ impl Bench {
 
     fn serve(&self) -> Serving {
         let env = [("TMPDIR", self.tmp.as_path())];
-        serving_folders(&self.host, &[&self.share], &self.relay, &env).0
+        serving_with_env(&self.host, &self.relay, &env).0
     }
 
     /// The owner's `latch exec --timeout TIMEOUT -- sh -c SCRIPT`, running.
-    fn exec(&self, timeout: &str, script: &str) -> std::process::Child {
+    fn exec(&self, state: &Path, timeout: &str, script: &str) -> std::process::Child {
         let args = [
             "exec",
             "--host",
             "host",
             "--timeout",
             timeout,
+            "--write",
+            self.share.to_str().unwrap(),
             "--",
             "sh",
             "-c",
             script,
         ];
-        latch_command(&self.owner, &args, &[])
+        latch_command(state, &args, &[])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -3765,7 +3565,7 @@ impl Bench {
 fn a_host_killed_mid_exec_takes_its_program_along_and_its_next_start_sweeps_the_leftovers() {
     let bench = Bench::new();
     let mut serve = bench.serve();
-    let mut client = bench.exec("60", TICKING);
+    let mut client = bench.exec(&bench.owner, "60", TICKING);
     bench.started();
     serve.0.kill().unwrap();
     serve.0.wait().unwrap();
@@ -3784,7 +3584,7 @@ fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
     let bench = Bench::new();
     let serve = bench.serve();
     let pid = serve.0.id() as libc::pid_t;
-    let client = bench.exec("2", TICKING);
+    let client = bench.exec(&bench.owner, "2", TICKING);
     bench.started();
     // SAFETY: signals our own child.
     unsafe { libc::kill(pid, libc::SIGSTOP) };
@@ -3807,7 +3607,7 @@ fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
 fn an_exec_cut_off_by_a_host_stop_is_audited_and_leaves_no_temp_folder() {
     let bench = Bench::new();
     let serve = bench.serve();
-    let client = bench.exec("60", TICKING);
+    let client = bench.exec(&bench.owner, "60", TICKING);
     bench.started();
     // Stops the host with SIGTERM, as a service manager does.
     drop(serve);
@@ -3828,25 +3628,7 @@ fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
         let bench = Bench::new();
         let serve = bench.serve();
         let state = if local { &bench.host } else { &bench.owner };
-        let mut client = latch_command(
-            state,
-            &[
-                "exec",
-                "--host",
-                "host",
-                "--timeout",
-                "120",
-                "--",
-                "sh",
-                "-c",
-                TICKING,
-            ],
-            &[],
-        )
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+        let mut client = bench.exec(state, "120", TICKING);
         bench.started();
         client.kill().unwrap();
         client.wait().unwrap();
@@ -3875,21 +3657,11 @@ fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
 fn a_local_socket_exec_finishes_and_is_audited_before_the_host_stops() {
     let bench = Bench::new();
     let serve = bench.serve();
-    let client = latch_command(
+    let client = bench.exec(
         &bench.host,
-        &[
-            "exec",
-            "--",
-            "sh",
-            "-c",
-            "echo started > tick; sleep 2; echo done > finished",
-        ],
-        &[],
-    )
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .spawn()
-    .unwrap();
+        "60",
+        "echo started > tick; sleep 2; echo done > finished",
+    );
     bench.started();
     drop(serve);
     assert_eq!(
@@ -3983,7 +3755,7 @@ fn messages_and_contacts_answer_from_a_hosts_messages_and_address_book() {
         .join("latch-messages");
     fs::create_dir_all(reader.parent().unwrap()).unwrap();
     fs::copy(messages_reader(), &reader).unwrap();
-    let (_serve, _) = serving_folders(&host, &[&share], &relay, &[("HOME", &home)]);
+    let (_serve, _) = serving_with_env(&host, &relay, &[("HOME", &home)]);
     // Off until the owner at the host enables each: then its setup opens
     // the synthetic stores this host reads.
     let off = latch(&owner, &["messages", "chats", "--host", "host"], &[]);
@@ -4114,11 +3886,9 @@ fn an_attached_serve_whose_host_fails_says_why_and_leaves_nothing_running() {
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
     let _managed = Managed(host.clone());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     // No relay answers there: the host gives up before it ever serves.
     let relay = [("LATCH_TEST_RELAY_URL", Path::new("http://127.0.0.1:9/"))];
-    let args = ["serve", share.to_str().unwrap()];
+    let args = ["serve"];
     let (code, shown, _) = latch_at_a_terminal(&host, &args, "", true, &relay);
     assert_eq!(code, Some(1), "{shown}");
     assert!(
@@ -4205,7 +3975,11 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     let relay = Path::new(&relay);
     let env = [("LATCH_TEST_RELAY_URL", relay)];
 
-    let started = latch(&host, &["serve", "-d", share.to_str().unwrap()], &env);
+    let started = latch(
+        &host,
+        &["serve", "-d", "--deny-exec", "--headless-browsers"],
+        &env,
+    );
     assert_eq!(started.status.code(), Some(0), "{started:?}");
     let started: Value = serde_json::from_slice(&started.stdout).unwrap();
     // Ready means the socket answers, the moment `-d` returns.
@@ -4213,12 +3987,12 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     assert_eq!(hello["ok"]["pid"], started["pid"], "{hello}");
     assert_eq!(hello["ok"]["attached"], false);
     assert!(registered(&host));
-    // A real call through it: the host shares what `-d` named.
+    // A real read through it, in the explicitly requested working folder.
     fs::write(share.join("note.txt"), "hi").unwrap();
     let read = local_operation(
         &host,
         "exec",
-        json!({"argv": ["cat", "note.txt"], "timeout": 10}),
+        json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
     );
     assert_eq!(read["ok"]["stdout"], "hi", "{read}");
 
@@ -4254,14 +4028,13 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     assert_eq!(twice["stopped"], false);
     assert_eq!(local_serve(&host)["managed"], false);
 
-    // Started again with what it was given, as an upgrade restarts it: the
-    // same share, though `--again` names none.
+    // Started again with what it was given, as an upgrade restarts it.
     let restarted = latch(&host, &["serve", "-d", "--again"], &env);
     assert_eq!(restarted.status.code(), Some(0), "{restarted:?}");
     let read = local_operation(
         &host,
         "exec",
-        json!({"argv": ["cat", "note.txt"], "timeout": 10}),
+        json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
     );
     assert_eq!(read["ok"]["stdout"], "hi", "{read}");
     let stopped: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
@@ -4270,6 +4043,7 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
 
     let log = fs::read_to_string(host.join("serve.log")).unwrap();
     assert!(log.contains("stopping: asked to by `latch stop`"), "{log}");
+    assert_eq!(log.matches("exec: refused to every agent").count(), 2);
     let logs = latch(&host, &["logs"], &[]);
     assert_eq!(String::from_utf8_lossy(&logs.stdout), log);
     let audit = latch(&host, &["audit", "show"], &[]);
@@ -4291,9 +4065,25 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
     let error: Value = serde_json::from_slice(&again.stderr).unwrap();
     assert_eq!(error["error"]["code"], "nothing_to_start_again");
     assert_eq!(local_serve(&state)["running"], false);
-    // --again takes nothing else: what it starts with is what was given.
-    let named = latch(&state, &["serve", "-d", "--again", "/tmp"], &[]);
+    // --again preserves the flags rather than accepting replacements.
+    let named = latch(&state, &["serve", "-d", "--again", "--deny-exec"], &[]);
     assert_eq!(named.status.code(), Some(2), "{named:?}");
+
+    fs::write(
+        state.join("serve-args.json"),
+        r#"["/old/folder","--deny-exec"]"#,
+    )
+    .unwrap();
+    let again = latch(&state, &["serve", "-d", "--again"], &[]);
+    assert_eq!(again.status.code(), Some(2), "{again:?}");
+    let error: Value = serde_json::from_slice(&again.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "bad_serve_args", "{error}");
+    println!("saved flags refused: {error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    for instruction in ["latch serve -d", "--deny-exec", "--headless-browsers"] {
+        assert!(message.contains(instruction), "{error}");
+    }
+    assert_eq!(local_serve(&state)["running"], false);
 }
 
 /// `latch ARGS` on a terminal of its own, as its controlling terminal, the
@@ -4409,21 +4199,17 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
     let _managed = Managed(host.clone());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let relay = Path::new(&relay);
     let env = [("LATCH_TEST_RELAY_URL", relay)];
-    let folder = share.to_str().unwrap();
 
     // Ctrl-C at the serve's terminal stops the host.
-    let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve", folder], &env);
+    let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
     shows(&shown, "Ctrl-C stops the host");
     assert_eq!(local_serve(&host)["state"], "serving");
     let hello = local_operation(&host, "host_hello", json!({}));
     assert_eq!(hello["ok"]["attached"], true, "{hello}");
     // A second attached serve is refused and pointed at the dashboard.
-    let (mut second, _second_terminal, second_shown) =
-        at_its_own_terminal(&host, &["serve", folder], &env);
+    let (mut second, _second_terminal, second_shown) = at_its_own_terminal(&host, &["serve"], &env);
     // At a terminal, in a sentence.
     let refusal = shows(&second_shown, "latch dashboard");
     assert!(refusal.contains("already served by a host"), "{refusal}");
@@ -4444,7 +4230,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
     assert!(!registered(&host), "Ctrl-C left the service registered");
 
     // The terminal going away stops it too.
-    let (mut serve, terminal, shown) = at_its_own_terminal(&host, &["serve", folder], &env);
+    let (mut serve, terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
     shows(&shown, "Ctrl-C stops the host");
     drop(terminal);
     drop(shown);
@@ -4457,7 +4243,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
 
     // Even a serve that is killed outright takes its host with it: the
     // host's lifetime is the connection, which the kernel closes.
-    let (mut serve, _terminal, shown) = at_its_own_terminal(&host, &["serve", folder], &env);
+    let (mut serve, _terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
     shows(&shown, "Ctrl-C stops the host");
     serve.kill().unwrap();
     serve.wait().unwrap();
@@ -4489,12 +4275,9 @@ fn an_attached_serve_that_ends_late_leaves_a_host_that_took_over_alone() {
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
     let _managed = Managed(host.clone());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let env = [("LATCH_TEST_RELAY_URL", Path::new(&relay))];
 
-    let (mut serve, mut terminal, shown) =
-        at_its_own_terminal(&host, &["serve", share.to_str().unwrap()], &env);
+    let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
     shows(&shown, "Ctrl-C stops the host");
     // The attached serve's cleanup waits for the start/stop lock, held
     // here while its host stops and another takes the folder over.
@@ -4502,7 +4285,7 @@ fn an_attached_serve_that_ends_late_leaves_a_host_that_took_over_alone() {
     launching.lock().unwrap();
     terminal.write_all(b"\x03").unwrap();
     assert!(eventually(45, || local_serve(&host)["running"] == false));
-    let replacement = serving(&host, &share, &relay);
+    let replacement = serving(&host, &relay);
     drop(launching);
     assert!(exits_within(&mut serve, 45).success());
     let hello = local_operation(&host, "host_hello", json!({}));
@@ -4524,7 +4307,7 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve.sock")).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v2.sock")).unwrap();
     thread::spawn(move || {
         let mut held = Vec::new();
         for connection in listener.incoming() {
@@ -4547,10 +4330,8 @@ fn stop_reaches_a_foreground_host_that_is_still_starting() {
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let mut serve = Serving(
-        serve_command(&host, &[&share], &relay)
+        serve_command(&host, &relay)
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap(),
@@ -4715,7 +4496,7 @@ fn an_agent_signs_in_with_a_code_texted_to_the_owner() {
     fs::create_dir(&share).unwrap();
     messages_home(&home);
     browser_and_messages_host(&host);
-    let mut command = serve_command(&host, &[&share], &relay);
+    let mut command = serve_command(&host, &relay);
     command.arg("--headless-browsers").env("HOME", &home);
     let (serve, mut log, _) = serving_with(command);
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
@@ -4829,8 +4610,6 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let host = owner_host_on(&plow, dir.path());
     let agent_token = dir.path().join("agent.token");
     fs::write(&agent_token, "agent-credential\n").unwrap();
@@ -4858,7 +4637,7 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     assert_eq!(code, Some(3));
     assert_eq!(error["error"]["code"], "serve_required");
 
-    let _serve = serving(&host, &share, &relay);
+    let _serve = serving(&host, &relay);
     let (code, listed) = run(&host, &["plugins", "list"], &[]);
     assert_eq!(code, Some(0));
     let names: Vec<&str> = listed["plugins"]
@@ -4911,8 +4690,7 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
 /// The Messages setup asks the running host, whose Full Disk Access is what
 /// counts, never the terminal that runs `plugins enable`. Each side here
 /// has a home of its own, readable for one and not for the other. A host
-/// that can read Messages still keeps it from exec and file workers, even
-/// with the folder shared.
+/// that can read Messages still keeps it from exec and file workers.
 #[cfg(target_os = "macos")]
 #[test]
 fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
@@ -4920,8 +4698,6 @@ fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let host = owner_host_on(&plow, dir.path());
     let (host_home, terminal_home) = (
         dir.path().join("host-home"),
@@ -4951,8 +4727,7 @@ fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
         (output.status.code(), json)
     };
     let serve_at = |home: &Path| {
-        let messages = home.join("Library/Messages");
-        let mut command = serve_command(&host, &[&share, &messages], &relay);
+        let mut command = serve_command(&host, &relay);
         command.env("HOME", home);
         let (serve, log, _) = serving_with(command);
         thread::spawn(move || {
@@ -5008,7 +4783,8 @@ fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
     let get = latch(&host, &["file", "get", store, copy.to_str().unwrap()], &[]);
     let error: Value = serde_json::from_slice(&get.stderr).unwrap();
     println!("latch file get chat.db: {error}");
-    assert_eq!(error["error"]["code"], "sandbox_denied");
+    assert_eq!(get.status.code(), Some(4), "{get:?}");
+    assert_eq!(error["error"]["code"], "bad_path");
     assert!(!copy.exists());
 }
 
@@ -5067,8 +4843,6 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let (shop, returns) = shop_server::serve_shop_recording();
     plow.state.lock().unwrap().google = Some(format!("shop={shop}"));
 
@@ -5090,7 +4864,7 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
         fs::create_dir_all(host.join("browser")).unwrap();
         fs::write(host.join("browser/model.json"), r#"{"provider": "jev"}"#).unwrap();
     }
-    let mut command = serve_command(&host, &[&share], &relay);
+    let mut command = serve_command(&host, &relay);
     command.arg("--headless-browsers");
     let (serve, mut log, _) = serving_with(command);
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));

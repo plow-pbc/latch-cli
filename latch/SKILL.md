@@ -29,9 +29,23 @@ one JSON object: on stdout when it worked, as `{"error": {"code",
 
 ## What you can reach
 
-- `latch exec --host H -- PROGRAM ARGS…` runs a program in the host's
-  sandbox, inside the folders the owner shared.
-- `latch file get` / `latch file put` copy files to and from those folders.
+- `latch exec --host H --write '~/code/app' --network -- npm install`
+  runs a program in the host's sandbox. Home and system files are readable;
+  writes need repeated `--write PATH` grants. Private temp and existing plain
+  tool-cache folders are writable too; missing or aliased caches are skipped.
+  IP network is off unless `--network`. Workdir defaults to the first write
+  folder, otherwise home; `--workdir` overrides it. Host Unix sockets stay
+  blocked even with network (macOS allows its system DNS resolver).
+- `latch file get` reads a readable host path; `latch file put` writes only
+  its judged destination. Exec and file need no shared-folder setup.
+- Hidden for both: `~/.latch`, the host's own state directory, and on macOS
+  `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
+  are readable; the gatekeeper judges their use. Writes must stay inside
+  home, outside hidden places, and cannot grant home itself.
+- Quote host paths beginning with `~`: latch expands them on the host.
+  Program argv after `--` stays literal. The judge is remote: argv,
+  workdir, writes and network go to Plow and into the sealed audit. Keep
+  credentials out of argv.
 - `latch google --host H -- COMMAND…` runs an allowed Google command
   (`latch google --help` lists them).
 - `latch browser …` drives a real browser on the host: `open` a session
@@ -55,6 +69,34 @@ Messages, it is two steps, each judged:
 Use the code for that sign-in only. On a Linux latch, which has no
 `messages`, or if the host can't read Messages, hand the session to the
 owner: `latch browser handoff --reason 2fa`.
+
+## Credentials in exec
+
+Use repeatable `--secret-env NAME=VALUE` for credentials instead of putting
+them in the program's arguments. The value goes to the host over the worker's
+private channel and enters only the final program's environment after
+confinement. The remote judge and audit receive names and lengths, never
+values; ordinary argv is sent to the remote judge without redaction.
+
+Prefer a program's native environment support:
+
+```sh
+latch exec --host H --secret-env GITHUB_TOKEN="$GITHUB_TOKEN" --network -- gh pr list
+```
+
+For a value inside an argument, use a shell with a quoted variable, e.g.
+`sh -c 'curl -H "Authorization: Bearer $TOKEN" https://api.example.com'`.
+Latch does not expand `${NAME}` in argv. Quoting keeps a value from being
+re-parsed as shell syntax; the receiving program can still interpret it as code.
+Variables such as `GIT_SSH_COMMAND`, `NODE_OPTIONS`, `BASH_ENV`,
+`PYTHONSTARTUP` and `GIT_CONFIG_*` can run hidden instructions or load code.
+The judge sees each name and is told to weigh that behavior against the owner's
+request; these names are not an additional deny list. Use secret env for
+credentials, and do not evaluate their values as code.
+Program stdout/stderr are returned as-is and can disclose a value. The CLI
+option itself is visible on the calling machine and may enter shell history;
+shell-expanded arguments are visible in the trusted host's process list.
+`HOME`, `PATH`, `TMPDIR`, `LATCH_*`, `LD_*` and `DYLD_*` are refused.
 
 ## The gatekeeper judges your calls
 
