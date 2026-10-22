@@ -38,9 +38,11 @@ Update with `latch update`: it installs the newest build, or `latch update TAG`
 that build (also how to go back to an older one); `latch update --check` only
 says whether a newer one is out. It checks the release's `SHA256SUMS` against
 latch's release signing key and the archive against it (on macOS, also that
-the app is signed by Plow), then runs the release's own `install-binary.sh`
-into the folder latch runs from. State and versioned plugins stay in place,
-and the browser engines installed are brought up to date. A host `serve -d`
+the app is signed by Plow), then runs the release's own `install-binary.sh`:
+on Linux into the folder latch runs from, on macOS replacing the whole
+`Plow Latch.app` in `~/Applications` (see [macOS](latch/MACOS.md)). State
+and versioned plugins stay in place, and the browser engines installed are
+brought up to date. A host `serve -d`
 started is stopped and started again with the new latch, with what it was
 given. One running in a terminal (`latch serve`, or `serve --foreground`) is
 stopped, and the update says to run `latch serve` there again. Only the owner
