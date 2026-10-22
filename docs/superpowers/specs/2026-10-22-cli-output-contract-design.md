@@ -32,7 +32,7 @@ One sentence: **every command returns JSON, except the human commands (`setup`, 
 - Humans get richer views in the human commands instead (§2.4). The dashboard grows into the human view of status, connectors, rules and the audit over time.
 
 ### 2.4 Human commands
-- `setup`, interactive `login`, and the dashboard (attached `serve`, `dashboard`) are for people and are never JSON. Nothing blocks an agent from running them; they just aren't a machine interface. `help`, `--help`, `skill` and bare `latch` (its logo and help) are text by nature.
+- `setup`, interactive `login`, the dashboard (attached `serve`, `dashboard`) and `rules edit` (it opens the person's editor) are for people and are never JSON. Nothing blocks an agent from running them; they just aren't a machine interface. `help`, `--help`, `skill` and bare `latch` (its logo and help) are text by nature.
 - Their machine equivalents are regular JSON commands: setup's steps (`plugins enable …`, `status`), `login --events` (JSON lines as today: `code` carrying the link and expiry, `waiting`, `verified`, `expired`, `error`), `serve -d` / `serve --foreground`, and the audit (`audit show [-f]`, `events --follow`) in place of the dashboard.
 - Without a terminal, a human command exits 2 with JSON `no_terminal` (the code the dashboard already uses), whose `next` names its machine equivalent. For `setup`, which has no single equivalent, `next` names the first step not yet done (e.g. `latch login --events`, then `latch plugins enable messages`), or `latch status` when everything is done. Only interaction needs a terminal: `login` with an agent credential or an existing login still works non-interactively as today, returning JSON.
 - latch invoking itself (e.g. `setup` running its steps) parses its children's JSON.
@@ -110,7 +110,7 @@ Done when: for `events`, `events --follow`, `audit show -f`, `logs`, `logs -f` a
 ### Chunk 1d: Human commands
 Implements: §2.4
 Interfaces: consumes 1a's error shape and 1b's JSON commands · produces `no_terminal` for every human command and `setup` driving its steps through their JSON
-Done when: `setup`, interactive `login`, attached `serve` and `dashboard` each exit 2 with `no_terminal` and a `next` naming the machine equivalent when run without a terminal; `login` with an agent credential or an existing login succeeds without a terminal and returns JSON; `setup` still completes in a terminal, with its steps' JSON parsed rather than printed.
+Done when: `setup`, interactive `login`, attached `serve`, `dashboard` and `rules edit` each exit 2 with `no_terminal` and a `next` naming the machine equivalent when run without a terminal; `login` with an agent credential or an existing login succeeds without a terminal and returns JSON; `setup` still completes in a terminal, with its steps' JSON parsed rather than printed.
 
 ### Chunk 2: Copy pass — proposal
 Implements: §3, §3.1
