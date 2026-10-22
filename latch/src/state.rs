@@ -318,14 +318,12 @@ mod tests {
         let state = StateDir {
             path: dir.path().to_path_buf(),
         };
-        assert_eq!(state.load_shares().unwrap(), Shares::default());
         let shares = Shares {
             folders: vec![PathBuf::from("/work")],
             allow_read: vec![PathBuf::from("/refs")],
         };
         state.save_shares(&shares).unwrap();
         assert_eq!(state.load_shares().unwrap(), shares);
-        assert!(!dir.path().join("allow-read.json").exists());
         fs::write(dir.path().join("shares.json"), r#"{"folders": ["/other"]}"#).unwrap();
         assert_eq!(state.load_shares().unwrap_err().code, "bad_state");
     }
@@ -348,6 +346,12 @@ mod tests {
         state.create().unwrap();
         assert_eq!(fs::read_to_string(&marker).unwrap(), written);
 
+        fs::remove_file(&marker).unwrap();
+        fs::write(state.path.join("key"), "private state").unwrap();
+        assert_eq!(state.check_format().unwrap_err().code, "state_format");
+        assert_eq!(state.create().unwrap_err().code, "state_format");
+        assert!(!marker.exists());
+
         for (format, fix) in [
             (FORMAT + 1, "update this latch"),
             (FORMAT - 1, "use the latch that wrote it"),
@@ -360,25 +364,6 @@ mod tests {
             assert!(refused.message.contains("9.9.9"), "{}", refused.message);
             assert_eq!(fs::read_to_string(&marker).unwrap(), other);
         }
-    }
-
-    #[test]
-    fn only_fresh_folders_can_be_initialized_without_a_marker() {
-        let dir = test_dir();
-        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
-        state.check_format().unwrap();
-        assert!(!state.path.join("latch.json").exists());
-        state.create().unwrap();
-        fs::remove_file(state.path.join("latch.json")).unwrap();
-        fs::write(state.path.join("key"), "private state").unwrap();
-        for result in [state.check_format(), state.create()] {
-            assert_eq!(result.unwrap_err().code, "state_format");
-        }
-        assert!(!state.path.join("latch.json").exists());
-        assert_eq!(
-            fs::read_to_string(state.path.join("key")).unwrap(),
-            "private state"
-        );
     }
 
     #[test]

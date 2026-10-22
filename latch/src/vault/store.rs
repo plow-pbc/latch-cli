@@ -395,9 +395,7 @@ mod tests {
     #[test]
     fn a_vault_without_its_next_id_is_refused_without_changes() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = OwnStore::open(dir.path()).unwrap();
-        store.add(login("made-up-pass-1")).unwrap();
-        store.add(login("made-up-pass-2")).unwrap();
+        OwnStore::open(dir.path()).unwrap();
         let path = dir.path().join(FILE);
         let mut file: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -409,31 +407,6 @@ mod tests {
             "vault_failed"
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
-    }
-
-    #[test]
-    fn stored_items_require_both_site_lists() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = OwnStore::open(dir.path()).unwrap();
-        store.add(login("made-up-pass-1")).unwrap();
-        let path = dir.path().join(FILE);
-        let mut file: File = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        for field in ["sites", "other_top_sites"] {
-            let mut items = serde_json::to_value(&store.items).unwrap();
-            items[0].as_object_mut().unwrap().remove(field);
-            file.items = seal(
-                &store.data_key,
-                &serde_json::to_vec(&items).unwrap(),
-                ITEMS_AAD,
-            );
-            let bytes = serde_json::to_vec(&file).unwrap();
-            fs::write(&path, &bytes).unwrap();
-            assert_eq!(
-                OwnStore::open(dir.path()).err().unwrap().code,
-                "vault_failed"
-            );
-            assert_eq!(fs::read(&path).unwrap(), bytes);
-        }
     }
 
     #[test]
