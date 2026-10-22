@@ -888,9 +888,11 @@ mod tests {
         serde_json::from_value(json!({
             "accounts": [
                 { "account": "me@example.com", "access_token": "test-placeholder",
+                  "is_default": true,
                   "capabilities": { "mail_read": true, "mail_write": true,
                                     "calendar_read": true, "calendar_write": true } },
                 { "account": "work@example.com", "access_token": "test-placeholder",
+                  "is_default": false,
                   "capabilities": { "mail_read": true, "mail_write": true,
                                     "calendar_read": false, "calendar_write": false } },
             ],
@@ -905,12 +907,6 @@ mod tests {
         assert!(can_read(me, "calendar.events") && can_read(me, "gmail.search"));
         assert!(!can_read(work, "calendar.events") && !can_read(work, "calendar.freebusy"));
         assert!(can_read(work, "gmail.search"));
-        // A Plow that sends no capabilities grants everything, as before.
-        let older: Tokens = serde_json::from_value(json!({
-            "accounts": [{ "account": "me@example.com", "access_token": "test-placeholder" }],
-        }))
-        .unwrap();
-        assert!(can_read(&older.accounts[0], "calendar.events"));
     }
 
     #[test]
@@ -935,7 +931,10 @@ mod tests {
     #[test]
     fn an_unavailable_connected_account_still_requires_account_selection() {
         let tokens: Tokens = serde_json::from_value(json!({
-            "accounts": [{ "account": "healthy@example.com", "access_token": "test-placeholder" }],
+            "accounts": [{ "account": "healthy@example.com", "access_token": "test-placeholder",
+                           "is_default": true,
+                           "capabilities": { "mail_read": true, "mail_write": true,
+                                             "calendar_read": true, "calendar_write": true } }],
             "degraded": [{ "account": "expired@example.com", "reason": "needs_reauth" }],
         }))
         .unwrap();

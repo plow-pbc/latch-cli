@@ -3,14 +3,14 @@
 //! them as text; where they come from is a [`RulesSource`]'s business.
 
 use std::fs::{self, File};
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use crate::failure::{Exit, Failure};
-use crate::state::to_hex;
+use crate::state::{to_hex, write_private};
 
 /// The owner's rules that apply to one agent.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -302,23 +302,10 @@ impl RulesDir {
         }
     }
 
-    /// Writes `name` whole: into `<name>.tmp`, then renamed over it.
+    /// Writes `name` whole (see `state::write_private`).
     fn replace(&self, name: &str, text: &str) -> Result<(), Failure> {
         let path = self.dir.join(name);
-        let temporary = self.dir.join(format!("{name}.tmp"));
-        let written = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temporary)
-            .and_then(|mut file| {
-                file.write_all(text.as_bytes())?;
-                file.sync_all()
-            });
-        written
-            .and_then(|()| fs::rename(&temporary, &path))
-            .map_err(|err| self.failure(&path, err))
+        write_private(&path, text.as_bytes()).map_err(|err| self.failure(&path, err))
     }
 
     fn remove(&self, name: &str) -> Result<(), Failure> {

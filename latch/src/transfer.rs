@@ -111,9 +111,16 @@ async fn send(
     };
     let (done, sha256) = upload(connection, &request, file, size).await?;
     check_same(&done, &sha256)?;
+    let path = done["path"].as_str().ok_or_else(|| {
+        Failure::new(
+            Exit::Unknown,
+            "bad_response",
+            "the host's answer did not say where the file was put".to_string(),
+        )
+    })?;
     Ok(json!({
         // Where the host put it: inside `remote_path` if that is a folder.
-        "path": done["path"].as_str().unwrap_or(remote_path),
+        "path": path,
         "size": size,
         "sha256": sha256,
         "audit_id": done["audit_id"],
