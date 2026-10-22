@@ -164,7 +164,8 @@ impl Gatekeeper {
     pub async fn judge(&self, caller: Caller<'_>, action: &RawValue) -> Judgment {
         let started = Instant::now();
         // The rule this judgment is held to, so its record shows it.
-        let mut gate = json!({"caller": caller.kind(), "rule": RULE});
+        let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);
+        let mut gate = json!({"caller": caller.kind(), "rule": rule(owner)});
         let verdict = self.decide(caller, action, &mut gate).await;
         gate["verdict"] = json!(match &verdict {
             Ok(()) => "allow",
@@ -289,7 +290,13 @@ const OWNER_RULES: &str = "See them with `latch rules show` and change them with
 
 /// What `verdict` allows, in the words the dashboard shows the
 /// probabilities in.
-const RULE: &str = "allowed when within instructions >= 0.50";
+fn rule(owner: bool) -> &'static str {
+    if owner {
+        "refused when forbidden >= within instructions"
+    } else {
+        "allowed when within instructions >= 0.50"
+    }
+}
 
 /// The verdict for the model's probabilities. An owner's call is judged
 /// only against this host's rules (no chat is read): it is refused only

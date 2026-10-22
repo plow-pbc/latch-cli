@@ -985,3 +985,39 @@ fn nothing_typed_queried_or_sent_as_a_terminal_command_reaches_the_screen() {
     view.key(Key::Enter);
     screen(&view, 80, 30);
 }
+
+#[test]
+fn the_decision_tab_shows_the_owners_rule_for_an_owners_call() {
+    let dashboard = Dashboard::new("host", None);
+    let gate = json!({"caller": "owner_on_host",
+        "rule": "refused when forbidden >= within instructions",
+        "p": {"COVERED": 0.3, "NOT_COVERED": 0.3, "FORBIDDEN": 0.4}});
+    let request = json!({"argv": ["rm", "-rf", "build"]});
+    let refused = denied(
+        "gatekeeper_denied",
+        "The gatekeeper judged that this host's rules forbid this.",
+        json!({"reason": "owner_said_no"}),
+    );
+    run(
+        &dashboard,
+        owner(),
+        "exec",
+        request.clone(),
+        request,
+        refused,
+        Some(gate),
+    );
+    let mut view = view_of(&dashboard, false);
+    view.key(Key::Enter);
+    view.key(Key::Tab);
+    let decision = screen(&view, 100, 30).join("\n");
+    assert!(
+        decision.contains("Refused - owner said no")
+            || decision.contains("REFUSED - owner said no"),
+        "{decision}"
+    );
+    assert!(
+        decision.contains("Decision rule: refused when forbidden >= within instructions"),
+        "{decision}"
+    );
+}
