@@ -44,7 +44,9 @@ fn folder(state_dir: &Path, session: &str) -> PathBuf {
 fn lost(err: std::io::Error) -> Failure {
     Failure::failed(
         "journal_failed",
-        format!("the request could not be journaled, so nothing was sent: {err}"),
+        format!(
+            "the request could not be journaled ({err}); a step of it may already have run: read its history (`latch browser do --history R`) before sending it again"
+        ),
     )
 }
 

@@ -26,6 +26,8 @@ pub struct World {
     pub messages: HashMap<String, Vec<Value>>,
     /// A path answered with HTTP 500.
     pub broken: Option<String>,
+    /// Holds a path's answer until the test releases it.
+    pub paused: Option<(String, Arc<std::sync::atomic::AtomicBool>)>,
     /// `GET /v1/latch/peers/{key}`'s answer, by key.
     pub callers: HashMap<String, Value>,
     pub decide: Option<Decide>,
@@ -51,6 +53,13 @@ impl World {
 
     fn answer(&mut self, method: &str, target: &str, body: &[u8]) -> (u16, Value) {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        if let Some((paused, released)) = &self.paused
+            && paused == path
+        {
+            while !released.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
         if self.broken.as_deref() == Some(path) {
             return (500, json!({"detail": "broken"}));
         }

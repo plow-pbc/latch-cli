@@ -39,11 +39,16 @@ use tokio::process::{Child, ChildStdout, Command};
 
 use crate::cli::{WorkerAction, WorkerArgs};
 use crate::sandbox::{self, Policy};
+use crate::state_folders::StateFolders;
 
-/// What every worker a host starts is allowed: the host's areas, minus its
-/// state directory.
+/// What every worker a host starts is allowed: the host's areas and the
+/// owner's read-only opt-ins, minus its state directory and the hidden paths.
 pub struct WorkerSetup {
     pub areas: Vec<PathBuf>,
+    pub reads: Vec<PathBuf>,
+    pub hidden: Vec<PathBuf>,
+    /// Other latch state folders in the areas and reads, hidden like `hidden`.
+    pub state_folders: StateFolders,
     pub state_dir: PathBuf,
     /// The latch binary each worker runs: the host's own.
     pub program: PathBuf,
@@ -138,6 +143,9 @@ impl WorkerSetup {
     ) -> Result<(Running, serde_json::Value), WorkerError> {
         let restricted = WorkerSetup {
             areas: vec![folder.to_path_buf()],
+            reads: vec![],
+            hidden: self.hidden.clone(),
+            state_folders: StateFolders::none(),
             state_dir: self.state_dir.clone(),
             program: self.program.clone(),
         };
@@ -199,15 +207,27 @@ impl WorkerSetup {
             .unwrap_or_else(|| error("sandbox_failed", &sandbox::startup_error(&stderr))))
     }
 
-    /// Runs `latch worker access -- FOLDER` in a worker with no areas: it
-    /// writes nowhere, and reads what a file worker may.
+    /// Runs `latch worker access -- FOLDER` in a worker that writes nowhere
+    /// and may read only FOLDER, which it alone does not hide.
     #[cfg(target_os = "macos")]
     pub async fn access(
         &self,
         folder: &Path,
     ) -> Result<crate::messages::access::Access, WorkerError> {
+        // Hidden paths are kept both as named and where they really are.
+        let real = folder
+            .canonicalize()
+            .unwrap_or_else(|_| folder.to_path_buf());
         let restricted = WorkerSetup {
             areas: Vec::new(),
+            reads: vec![folder.to_path_buf()],
+            hidden: self
+                .hidden
+                .iter()
+                .filter(|hidden| !hidden.starts_with(folder) && !hidden.starts_with(&real))
+                .cloned()
+                .collect(),
+            state_folders: StateFolders::none(),
             state_dir: self.state_dir.clone(),
             program: self.program.clone(),
         };
@@ -236,7 +256,9 @@ impl WorkerSetup {
 
     /// Starts `latch worker exec [--workdir DIR] -- ARGV…`. The program runs
     /// in a process group of its own, so a timeout can stop it together with
-    /// every process it started.
+    /// every process it started. It dies with this host, however the host
+    /// ends, and the worker kills it `kill_after` seconds in whatever the
+    /// host does (see `sandbox::supervise`).
     /// `tmpdir` becomes the program's `TMPDIR`.
     pub fn start_exec(
         &self,
@@ -244,12 +266,20 @@ impl WorkerSetup {
         tmpdir: &Path,
         argv: &[String],
         with_stdin: bool,
+        kill_after: u64,
     ) -> Result<Child, WorkerError> {
         let Some(first_area) = self.areas.first() else {
             return Err(error("no_areas", "this host shares no folders"));
         };
         let mut command = self.command(first_area)?;
-        command.arg("--tmpdir").arg(tmpdir).arg("exec");
+        command
+            .arg("--tmpdir")
+            .arg(tmpdir)
+            .arg("--kill-after")
+            .arg(kill_after.to_string())
+            .arg("exec");
+        #[cfg(target_os = "linux")]
+        die_with_host(&mut command);
         if let Some(workdir) = workdir {
             command.arg("--workdir").arg(workdir);
         }
@@ -271,13 +301,20 @@ impl WorkerSetup {
             .map_err(|err| error("worker_failed", &err.to_string()))
     }
 
-    /// `latch worker --area … --denied …`, run from the first area with an
-    /// empty environment apart from `PATH` and `HOME`.
+    /// `latch worker --area … --read … --hidden … --denied …`, run from the
+    /// first area with an empty environment apart from `PATH` and `HOME`.
     fn command(&self, first_area: &Path) -> Result<Command, WorkerError> {
         let mut command = Command::new(&self.program);
         command.arg("worker");
         for area in &self.areas {
             command.arg("--area").arg(area);
+        }
+        for read in &self.reads {
+            command.arg("--read").arg(read);
+        }
+        // Looked for again now: a state folder may have been made since.
+        for hidden in self.hidden.iter().chain(&self.state_folders.now()) {
+            command.arg("--hidden").arg(hidden);
         }
         command.arg("--denied").arg(&self.state_dir);
         command
@@ -289,12 +326,37 @@ impl WorkerSetup {
     }
 }
 
+/// On Linux, the kernel kills the worker the moment this host's thread that
+/// started it ends: tokio's worker threads, which start workers, end only
+/// with the host. bubblewrap (`--die-with-parent`) then kills the sandbox
+/// and the program in it.
+#[cfg(target_os = "linux")]
+fn die_with_host(command: &mut Command) {
+    let host = std::process::id() as libc::pid_t;
+    // SAFETY: pre_exec is needed to set Linux's parent-death signal in the
+    // child. The closure uses only scalar syscalls and allocation-free OS error
+    // constructors, with no Rust locks or allocation between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // The host died before that took hold: we were handed on.
+            if libc::getppid() != host {
+                return Err(io::Error::from_raw_os_error(libc::ESRCH));
+            }
+            Ok(())
+        });
+    }
+}
+
 impl Drop for Running {
     fn drop(&mut self) {
         if let Some(pid) = self.child.id() {
             // Workers lead their own process group. Cancellation must also
             // stop gog, which may otherwise finish a write after we time out.
-            // SAFETY: killpg sends a signal and touches no Rust memory.
+            // SAFETY: std's child kill cannot reach descendants. The live worker
+            // leads the group we created; killpg takes only scalar arguments.
             unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
         }
     }
@@ -339,19 +401,32 @@ fn error(code: &str, message: &str) -> WorkerError {
     }
 }
 
-/// The worker process itself (`latch worker …`). Confines itself first.
+/// The worker process itself (`latch worker …`). Only the workload is confined;
+/// its supervisor stays outside the sandbox.
 pub fn run(args: WorkerArgs) -> ExitCode {
     let policy = Policy {
         areas: args.areas,
+        reads: args.reads,
+        hidden: args.hidden,
         state_dir: args.denied,
         exec: matches!(args.action, WorkerAction::Exec { .. }),
         tmpdir: args.tmpdir,
+        kill_after: args.kill_after,
         program: match &args.action {
             WorkerAction::Google { program } => Some(program.clone()),
             _ => None,
         },
         break_for_test: args.break_sandbox_for_test,
     };
+    if policy.exec {
+        let host = match sandbox::watch_host() {
+            Ok(host) => host,
+            Err(message) => return fail("host_gone", &message),
+        };
+        if let Err(message) = sandbox::supervise(host, policy.kill_after) {
+            return fail("sandbox_failed", &message);
+        }
+    }
     if let Err(message) = sandbox::confine(&policy) {
         return fail("sandbox_failed", &message);
     }
@@ -391,19 +466,32 @@ pub fn run(args: WorkerArgs) -> ExitCode {
 fn exec(areas: &[PathBuf], workdir: Option<&Path>, argv: &[String]) -> ExitCode {
     if let Some(dir) = workdir {
         // The real directory, symlinks resolved; it must be inside an area.
-        // A directory the sandbox will not even let us look up (as Seatbelt
-        // does for most paths outside the areas) is outside the areas too,
-        // so every system reports the same code.
+        // One the sandbox will not even let us look up (Seatbelt refuses it,
+        // Linux's view lacks it) is judged by the nearest folder above it
+        // that we can, so every system reports the same code.
         let outside = || {
             let message = format!("{} is not inside the host's areas", dir.display());
             fail("workdir_outside_areas", &message)
         };
+        let inside = |real: &Path| areas.iter().any(|area| real.starts_with(area));
         let real = match dir.canonicalize() {
             Ok(real) => real,
-            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => return outside(),
-            Err(err) => return fail(io_code(&err), &format!("{}: {err}", dir.display())),
+            Err(err) => {
+                let seen = dir.ancestors().skip(1).find_map(|above| {
+                    let above = if above.as_os_str().is_empty() {
+                        Path::new(".")
+                    } else {
+                        above
+                    };
+                    above.canonicalize().ok()
+                });
+                if seen.is_some_and(|above| inside(&above)) {
+                    return fail(io_code(&err), &format!("{}: {err}", dir.display()));
+                }
+                return outside();
+            }
         };
-        if !areas.iter().any(|area| real.starts_with(area)) {
+        if !inside(&real) {
             return outside();
         }
         if let Err(err) = std::env::set_current_dir(&real) {

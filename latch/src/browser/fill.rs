@@ -830,7 +830,7 @@ async fn release_and_set(
     for field in &fields {
         let label = field["field"].as_str().unwrap_or_default();
         let boxes: Vec<Value> = field["boxes"].as_array().cloned().unwrap_or_default();
-        let value = release(browsers, item, label)?;
+        let value = release(item, label)?;
         let value = shaped(label, value, &boxes[0])?;
         let pieces = split(&value, &boxes).ok_or_else(|| {
             Failure::failed(
@@ -857,16 +857,30 @@ async fn release_and_set(
 }
 
 /// One value out of the vault: a field, or for a login's `otp` the current
-/// TOTP code, computed here from the stored key.
-fn release(browsers: &Browsers, item: &Item, label: &str) -> Result<String, Failure> {
+/// TOTP code, computed here from the stored key. Read from `item` as it
+/// was loaded, never from the vault again: an edit since then, which the
+/// confirmation never saw, gives none of its values to this fill.
+fn release(item: &Item, label: &str) -> Result<String, Failure> {
+    let missing = || {
+        Failure::usage(
+            "no_such_field",
+            format!(
+                "item {} has no field {label:?}; list it to see its fields",
+                item.id
+            ),
+        )
+    };
     if label == "otp" && item.meta().kind == "login" {
-        let key = browsers
-            .vault
-            .with(|store| store.release(&item.id, classify::TOTP))?;
-        let params = totp::Params::parse(&key).map_err(|why| Failure::failed("bad_item", why))?;
+        let key = item
+            .raw
+            .login
+            .as_ref()
+            .and_then(|login| login.totp.as_deref());
+        let key = key.filter(|key| !key.is_empty()).ok_or_else(missing)?;
+        let params = totp::Params::parse(key).map_err(|why| Failure::failed("bad_item", why))?;
         return Ok(params.current());
     }
-    browsers.vault.with(|store| store.release(&item.id, label))
+    classify::read(&item.raw, label).ok_or_else(missing)
 }
 
 /// A date reshaped to the field's own format (its placeholder or length,
@@ -926,6 +940,29 @@ fn split(value: &str, boxes: &[Value]) -> Option<Vec<String>> {
 mod tests {
     use super::*;
     use crate::vault::item::{Custom, LOGIN, Raw};
+
+    /// Values come from the item as loaded: one no vault holds any more,
+    /// or holds edited, still gives its own.
+    #[test]
+    fn a_fill_releases_the_values_of_the_item_it_loaded() {
+        let values = [
+            ("username", "ada@example.com"),
+            ("password", "made-up-pass-31c9"),
+            ("totp", "JBSWY3DPEHPK3PXP"),
+        ]
+        .map(|(label, value)| (label.to_string(), value.to_string()));
+        let item = Item {
+            id: "v9".into(),
+            revision: 3,
+            sites: vec!["example.com".into()],
+            other_top_sites: vec![],
+            raw: Raw::from_labels(LOGIN, "Example", &values).unwrap(),
+        };
+        assert_eq!(release(&item, "password").unwrap(), "made-up-pass-31c9");
+        let code = release(&item, "otp").unwrap();
+        assert!(code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(release(&item, "notes").unwrap_err().code, "no_such_field");
+    }
 
     #[test]
     fn only_a_username_fill_goes_on_to_the_password_stage() {

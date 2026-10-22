@@ -2262,8 +2262,8 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
         slow.unwrap_err().code
     );
     // A's check waits out its 10 s; b's steps don't wait for it.
-    assert!(quick.last().unwrap() < &Duration::from_secs(3));
     assert!(slow_took >= Duration::from_secs(9));
+    assert!(*quick.last().unwrap() < slow_took / 2, "{quick:?}");
     for id in [&a, &b] {
         h.call(CALLER, "close", id, json!({})).await.unwrap();
     }

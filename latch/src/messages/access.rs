@@ -42,6 +42,13 @@ pub fn folder(connector: Connector, home: &Path) -> PathBuf {
 
 /// Asks a worker whether it can list `folder`.
 pub async fn check(workers: &WorkerSetup, folder: &Path) -> Access {
+    // The worker's sandbox is built around the folder, so it must exist.
+    if !folder.exists() {
+        return Access {
+            status: Status::Unavailable,
+            reason: format!("{} does not exist", folder.display()),
+        };
+    }
     workers.access(folder).await.unwrap_or_else(|err| Access {
         status: Status::Unavailable,
         reason: format!("the access check could not run: {}", err.message),
