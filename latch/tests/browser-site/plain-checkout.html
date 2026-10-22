@@ -1,0 +1,10 @@
+<!doctype html><title>latch unmarked checkout test</title>
+<!-- A checkout whose card fields carry no autofill tokens at all; posts to
+     /pay. -->
+<h1>Checkout</h1>
+<form method="post" action="pay">
+  <p><label>Card number <input name="cc-number"></label></p>
+  <p><label>Expiry <input name="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>CVV <input name="cc-csc" maxlength="4"></label></p>
+  <p><button type="submit">Pay</button></p>
+</form>

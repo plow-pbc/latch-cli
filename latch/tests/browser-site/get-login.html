@@ -1,0 +1,26 @@
+<!doctype html><title>latch GET login test</title>
+<!-- Three sign-in forms a browser would send by GET, the password in the
+     address: one that says GET, one that posts but whose button says
+     formmethod=get, and one that states no method at all; and a memo,
+     whose line breaks the browser sends as CRLF. latch stops each request;
+     nothing reaches /welcome. -->
+<h1>Sign in</h1>
+<form method="get" action="welcome">
+  <p><label>Email <input type="email" name="email"></label></p>
+  <p><label>Password <input type="password" name="password"></label></p>
+  <p><button type="submit">Sign in</button></p>
+</form>
+<form method="post" action="welcome">
+  <p><label>Work email <input type="email" name="email"></label></p>
+  <p><label>Work password <input type="password" name="password"></label></p>
+  <p><button type="submit" formmethod="get">Sign in at work</button></p>
+</form>
+<form action="welcome">
+  <p><label>Other email <input type="email" name="email"></label></p>
+  <p><label>Other password <input type="password" name="password"></label></p>
+  <p><button type="submit">Sign in elsewhere</button></p>
+</form>
+<form action="welcome">
+  <p><label>Memo <textarea name="memo"></textarea></label></p>
+  <p><button type="submit">Send memo</button></p>
+</form>

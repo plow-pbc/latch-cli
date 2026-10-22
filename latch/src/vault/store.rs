@@ -15,6 +15,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
 use super::classify;
 use super::item::{Item, Meta};
 use crate::failure::{Exit, Failure};
@@ -35,8 +36,9 @@ pub trait Backend: Send {
     /// The whole item, values included, for the vault's own edits (an
     /// import updating a changed password); never handed to an agent.
     fn item(&self, id: &str) -> Option<Item>;
-    /// Exactly one value: the field `label` of item `id`.
-    #[allow(dead_code)] // the browser's fills call it
+    /// Exactly one value: the field `label` of item `id`. Tests only: a
+    /// fill reads its values from the item it loaded (`browser::fill`).
+    #[cfg(test)]
     fn release(&self, id: &str, label: &str) -> Result<String, Failure>;
     /// Compares secrets without handing them out: which of `password` and
     /// `totp` differ from the item's.
@@ -277,6 +279,7 @@ impl Backend for OwnStore {
         self.items.iter().find(|item| item.id == id).cloned()
     }
 
+    #[cfg(test)]
     fn release(&self, id: &str, label: &str) -> Result<String, Failure> {
         let item = &self.items[self.find(id)?];
         // An authenticator key is no form field: the vault computes codes

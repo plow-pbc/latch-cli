@@ -1928,6 +1928,7 @@ dependencies = [
  "iroh-relay",
  "jiff",
  "libc",
+ "objc2",
  "psl",
  "qrcode",
  "rand",

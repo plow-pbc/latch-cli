@@ -176,7 +176,6 @@ fn exit_with_status(status: std::process::ExitStatus) -> ! {
 /// (read-write) and its engine's plugin folder (read-only); its scratch
 /// folder; a private `/tmp`; and the outbound network. No areas.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)] // the browser worker confines itself with it
 pub struct BrowserView {
     pub state_dir: PathBuf,
     pub profile: PathBuf,
@@ -187,7 +186,6 @@ pub struct BrowserView {
 /// Confines a browser worker as `confine` does other workers, to `view`.
 /// The engine's own sandbox runs inside it, in namespaces of its own.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)] // the browser worker confines itself with it
 pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
     platform::confine_browser(view)
 }
