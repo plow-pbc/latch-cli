@@ -15,7 +15,8 @@ spec.loader.exec_module(runner)
 
 
 def plan(*argv, where="macos"):
-    args = runner.argparse.Namespace(suites=list(argv), linux=False, shard=None, ci=False, dry_run=True)
+    args = runner.argparse.Namespace(suites=list(argv), linux=False, shard=None, ci=False, dry_run=True,
+                                     build_archive=None, from_archive=None)
     with mock.patch.object(runner, "where_we_are", return_value=where):
         return runner.plan(args)
 
@@ -159,7 +160,8 @@ class Plans(unittest.TestCase):
             self.assertNotIn("lifecycle", suites)
             self.assertIn("systemd user session", dict(not_here)["lifecycle"])
             for argv, ci in ((["lifecycle"], False), ([], True)):
-                args = runner.argparse.Namespace(suites=argv, linux=False, shard=None, ci=ci, dry_run=True)
+                args = runner.argparse.Namespace(suites=argv, linux=False, shard=None, ci=ci, dry_run=True,
+                                                 build_archive=None, from_archive=None)
                 with mock.patch.object(runner, "where_we_are", return_value="linux"), \
                         self.assertRaises(SystemExit) as refused:
                     runner.plan(args)
@@ -194,6 +196,39 @@ class Plans(unittest.TestCase):
             plan(where="container")
         self.assertEqual(stopped.exception.code, 127)
         self.assertIn("cargo is not installed", said.getvalue())
+
+    def test_the_shared_build_lints_and_archives_once_and_shards_test_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "tests.tar.zst"
+            build = [name for name, *_ in runner.steps("linux", runner.GATE["linux"], True, None,
+                                                       ("out", archive))]
+            self.assertEqual(build, ["fmt", "clippy", "build"])
+            shard = runner.steps("linux", runner.GATE["linux"], True, (1, 4), ("in", archive))
+            names = [name for name, *_ in shard]
+            self.assertNotIn("build", names)
+            self.assertNotIn("clippy", names)
+            rust = next(command for name, _, command, _ in shard if name == "rust")
+            self.assertIn("--archive-file", rust)
+            self.assertEqual(rust[rust.index("--extract-to") + 1], str(runner.LATCH))
+            self.assertIn("hash:1/4", rust)
+            self.assertNotIn("--features", rust)
+            # The build job has no bubblewrap or systemd session, and needs neither.
+            def which(tool):
+                return None if tool == "bwrap" else f"/usr/bin/{tool}"
+            with mock.patch.object(runner.shutil, "which", side_effect=which), \
+                    mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=1)), \
+                    mock.patch.object(runner, "where_we_are", return_value="linux"):
+                args = runner.argparse.Namespace(suites=[], linux=False, shard=None, ci=True, dry_run=True,
+                                                 build_archive=str(archive), from_archive=None)
+                self.assertIn("lifecycle", runner.plan(args)[1])
+            with mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"), \
+                    mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=0)):
+                args = runner.argparse.Namespace(suites=[], linux=False, shard="1/4", ci=True, dry_run=True,
+                                                 build_archive=None, from_archive=str(archive))
+                with mock.patch.object(runner, "where_we_are", return_value="linux"), \
+                        self.assertRaises(SystemExit) as refused:
+                    runner.plan(args)
+                self.assertIn("no archive at", str(refused.exception))
 
     def test_the_container_is_linux_arm64_on_any_host(self):
         for machine in ("x86_64", "arm64"):
