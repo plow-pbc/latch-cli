@@ -1,15 +1,12 @@
 name: mac-tests
 
 # The macOS gate (`just test`): clippy for the macOS-only code Linux never
-# compiles, the Messages reader's tests, the app bundle, and the tests
-# only macOS can answer. By hand on any
-# branch: `gh workflow run mac-tests --ref BRANCH` tests that branch's head,
-# and its checks show on that commit. A merge to main runs it as one job;
-# the release runs it beside its build and makes its draft only if it passes.
-# Each shard pays about 1.5 minutes of setup (toolchain, caches, clippy,
-# build, browsers, test build) for about 16.5 minutes of tests in all: two
-# shards finish in 10.5 minutes instead of 18 for about 2 more Mac minutes,
-# worth it only where someone waits.
+# compiles, the Messages reader's tests, the app bundle, and the tests only
+# macOS can answer. By hand on any branch: `gh workflow run mac-tests --ref
+# BRANCH` tests that branch's head, and its checks show on that commit. A
+# merge to main runs it as one job; the release runs it beside its build and
+# makes its draft only if it passes. Two shards took 5.5 and 6.9 minutes on
+# test-runner's first run.
 run-name: Mac tests (${{ inputs.ref || github.ref_name }})
 on:
   workflow_dispatch:
