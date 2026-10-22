@@ -114,16 +114,9 @@ pub(super) async fn judge(
         "judged".into(),
         serde_json::to_value(&action).expect("an action serializes"),
     );
-    let (verdict, record) = judgment(gate, action).await;
-    audit.insert("gate".into(), record);
-    verdict
-}
-
-/// Judges `action`, and gives the judgment's `gate` object for the
-/// record of whatever was judged.
-pub(super) async fn judgment(gate: Gate<'_>, action: Action) -> (Result<(), Failure>, Value) {
     let judgment = gate.judge(&action).await;
-    (judgment.verdict, judgment.gate)
+    audit.insert("gate".into(), judgment.gate);
+    judgment.verdict
 }
 
 /// A URL as the site rules read it: outside tests, itself.

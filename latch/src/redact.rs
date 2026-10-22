@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 pub const NOTE: &str = "credential-looking values in commands are hidden, best effort: some can slip through; `latch audit show` has them in full";
 
 /// An operation's audit details as shown to people: an exec's argv, and
-/// the steps of a browser plan the gatekeeper judged, with
+/// everything of a browser action the gatekeeper judged, with
 /// credential-looking values hidden; the rest as it is.
 pub fn shown(op: &str, args: &Value) -> Value {
     let mut shown = args.clone();
@@ -19,25 +19,21 @@ pub fn shown(op: &str, args: &Value) -> Value {
         shown["argv"] = json!(argv(&words));
     }
     if op == "browser"
-        && let Some(steps) = shown["judged"]["steps"].as_array_mut()
+        && let Some(judged) = shown.get_mut("judged")
     {
-        for step in steps.iter_mut().filter_map(|step| step.as_object_mut()) {
-            for text in step.values_mut() {
-                hide_in(text);
-            }
-        }
+        hide_in(judged);
     }
     shown
 }
 
-/// Hides the credential-looking words of `text`, a string or the strings
-/// of an object (a step's named values).
-fn hide_in(text: &mut Value) {
-    match text {
+/// Hides the credential-looking words of every string in `value`.
+fn hide_in(value: &mut Value) {
+    match value {
         Value::String(words) => {
             let split: Vec<String> = words.split_whitespace().map(str::to_string).collect();
             *words = argv(&split).join(" ");
         }
+        Value::Array(values) => values.iter_mut().for_each(hide_in),
         Value::Object(values) => values.values_mut().for_each(hide_in),
         _ => {}
     }
@@ -360,6 +356,13 @@ mod shown_tests {
         );
         assert_eq!(steps[2]["step"], "click e9");
         assert_eq!(display["command"], "do");
+        // Anything else the judge saw is hidden the same way.
+        let audit = json!({"command": "do", "judged": {"kind": "browser_plan",
+            "facts": {"header": "Authorization: Bearer fact-credential-77"},
+            "sites": ["https://u:site-credential-88@shop.example/"]}});
+        let display = shown("browser", &audit).to_string();
+        assert!(!display.contains("fact-credential-77"), "{display}");
+        assert!(!display.contains("site-credential-88"), "{display}");
     }
 
     #[test]

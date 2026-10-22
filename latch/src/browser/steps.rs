@@ -699,8 +699,9 @@ impl<'a> Run<'a> {
         };
         let site = judged::site(self.browsers, self.entry).await?;
         let action = judged::fill(self.browsers, args, site, false);
-        let (verdict, record) = judged::judgment(gate, action).await;
-        match verdict {
+        let judgment = gate.judge(&action).await;
+        let record = judgment.gate;
+        match judgment.verdict {
             Ok(()) => {
                 self.judgment = Some(record);
                 Ok(())

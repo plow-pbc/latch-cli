@@ -446,7 +446,11 @@ async fn a_repeated_google_change_is_judged_afresh_with_no_history() {
     for state in &asked {
         assert!(state.get("already_done_by_agent").is_none(), "{state}");
     }
-    assert_eq!(asked[1], asked[2], "the second send is judged as the first");
+    assert_eq!(
+        asked[1]["proposed_action"], asked[2]["proposed_action"],
+        "the second send is judged as the first"
+    );
+    assert_eq!(asked[2]["proposed_action"]["command"], send["gog_args"]);
 }
 
 #[tokio::test]
