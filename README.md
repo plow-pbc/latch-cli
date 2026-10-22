@@ -45,12 +45,15 @@ No Homebrew tap is included.
 
 ## For agents
 
-- **Log in with your own credential.** `latch login` with no flags finds a
-  Plow agent's own credential (`$PLOW_AGENT_TOKEN`, the token file, or
-  `$PLOW_API_BASE`'s proxy) and registers under the agent's name in Plow.
-  Never use a device login copied from one of the owner's machines: a device
-  login is the owner acting, and hosts judge it as the owner's own request,
-  not against what the owner asked the agent for.
+- **On the host itself, just run latch.** An agent on a machine that runs
+  `latch serve` uses latch there with no `--host` and no login of its own,
+  as the owner (see [On the host itself](#on-the-host-itself)).
+- **From another machine, log in with your own credential.** `latch login`
+  with no flags finds a Plow agent's own credential (`$PLOW_AGENT_TOKEN`,
+  the token file, or `$PLOW_API_BASE`'s proxy) and registers under the
+  agent's name in Plow. Never copy a device login (a machine's state
+  folder or its token) onto another machine: hosts would take it for the
+  owner's own request, not judge it against what the owner asked the agent.
 - **Denied, ask, retry.** A host's gatekeeper lets an agent do what the owner
   asked for, in their Plow chat with that agent or in the host's rules. A
   refusal is exit 4, `gatekeeper_denied`:

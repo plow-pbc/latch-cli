@@ -63,10 +63,12 @@ fn version_line(package: &str, number: Option<&str>, about: &str) -> String {
 /// What `latch --help` adds after the commands: how an agent uses latch.
 const AGENT_HELP: &str = "\
 Agents:
-  Log in with your own Plow agent credential (`latch login` finds it). Never
-  use a device login copied from one of the owner's machines: that is the
-  owner acting, and hosts judge it as the owner's own request, not against
-  what the owner asked you for.
+  On a machine that runs `latch serve`, just run latch commands, with no
+  --host: they reach this host as its owner. From another machine, log in
+  with your own Plow agent credential (`latch login` finds it). Never copy
+  a device login (a machine's state folder or its token) onto another
+  machine: hosts would take it for the owner's own request, not judge it
+  against what the owner asked you for.
 
   Exit 4 means denied. A host's gatekeeper refusal, gatekeeper_denied with
   reason not_covered, is the one to retry: ask the owner in your Plow chat,

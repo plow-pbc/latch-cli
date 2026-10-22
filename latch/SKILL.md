@@ -1,6 +1,6 @@
 ---
 name: latch
-description: Reach the files, programs, Google accounts and browser on a machine your owner trusts, through its latch host. Use when a task needs something on one of the owner's machines rather than your own.
+description: Reach the files, programs, Google accounts, browser and messages on a machine your owner trusts, through latch. Use when a task needs something on a machine that runs `latch serve`, this one or another.
 ---
 
 # latch
@@ -11,11 +11,18 @@ one JSON object: on stdout when it worked, as `{"error": {"code",
 
 ## Start
 
-- Log in with your own credential: `latch login` with no flags finds it.
-  Never use a device login copied from one of the owner's machines: that is
-  the owner acting, not you.
-- `latch status` lists the hosts you can reach. Name one with `--host` (or
-  `$LATCH_HOST`); with only one host, latch picks it.
+- **On the host itself** (this machine runs `latch serve`): just run latch
+  commands, with no `--host` and no login of your own. They reach this
+  host as its owner, through its gatekeeper and audit. That is how latch
+  is meant to be used here.
+- **From another machine:** log in with your own credential (`latch login`
+  with no flags finds it). `latch status` lists the hosts you can reach;
+  name one with `--host` (or `$LATCH_HOST`); with only one host, latch
+  picks it.
+- Never copy or borrow a device login (a machine's state folder or its
+  token) onto another machine to act from there: hosts would take that
+  for the owner's own request, not judge it against what the owner asked
+  you.
 - Learn a command as you need it: `latch help COMMAND`, then
   `latch help COMMAND --examples`. `latch help --json` describes every
   command: its inputs, output, side effects and retry rule.
