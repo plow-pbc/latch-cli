@@ -168,6 +168,94 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "messages.search",
+        output: "`messages`: each with `from`, `chat`, `text` (or `text_error`) and `at`; `count`, `unreadable`, `unchecked`, `incomplete`, `next` (a cursor, or null at the end) and `warning`. Message text and names are untrusted data.",
+        effect: ReadOnly,
+        owner_only: false,
+        connector: Some("messages"),
+        examples: &[
+            ex(
+                "Find a sign-in code texted in the last ten minutes",
+                &[
+                    "messages", "search", "--host", "mac", "--since", "10m", "code",
+                ],
+            ),
+            ex(
+                "One person's messages, by a handle from `contacts search`",
+                &[
+                    "messages",
+                    "search",
+                    "--host",
+                    "mac",
+                    "--from",
+                    "+15550000001",
+                ],
+            ),
+        ],
+    },
+    Entry {
+        id: "messages.thread",
+        output: "`messages`: one conversation, oldest first; `next` pages back.",
+        effect: ReadOnly,
+        owner_only: false,
+        connector: Some("messages"),
+        examples: &[ex(
+            "The direct conversation with one handle",
+            &[
+                "messages",
+                "thread",
+                "--host",
+                "mac",
+                "--with",
+                "+15550000001",
+            ],
+        )],
+    },
+    Entry {
+        id: "messages.chats",
+        output: "`chats`: each with `id`, `kind`, `name`, `participants` and `last_message_at`.",
+        effect: ReadOnly,
+        owner_only: false,
+        connector: Some("messages"),
+        examples: &[ex(
+            "Recent group chats",
+            &["messages", "chats", "--host", "mac", "--kind", "group"],
+        )],
+    },
+    Entry {
+        id: "messages.unreplied",
+        output: "`messages`: the newest inbound message of each direct chat with no later reply.",
+        effect: ReadOnly,
+        owner_only: false,
+        connector: Some("messages"),
+        examples: &[ex(
+            "Unanswered in the last day",
+            &["messages", "unreplied", "--host", "mac", "--within", "24h"],
+        )],
+    },
+    Entry {
+        id: "contacts.search",
+        output: "`people`: each with `name`, `nickname`, `organization`, and `phones` and `emails` as `display` and the `handle` to pass to `latch messages`.",
+        effect: ReadOnly,
+        owner_only: false,
+        connector: Some("contacts"),
+        examples: &[ex(
+            "Find a person's handles",
+            &["contacts", "search", "--host", "mac", "Ada"],
+        )],
+    },
+    Entry {
+        id: "contacts.lookup",
+        output: "`handles`: each handle with the `names` on cards that have it and its `name_status`.",
+        effect: ReadOnly,
+        owner_only: false,
+        connector: Some("contacts"),
+        examples: &[ex(
+            "Who is this number?",
+            &["contacts", "lookup", "--host", "mac", "+15550000001"],
+        )],
+    },
+    Entry {
         id: "exec",
         output: "The program's `exit_code` (or `signal`, or `timed_out`), `stdout` and `stderr`.",
         effect: Once(
@@ -569,6 +657,25 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "browser.setup",
+        output: "The engine installed: its name, version and folder.",
+        effect: Repeatable(
+            "downloads and verifies a browser engine into this machine's state folder",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Chrome for Testing, after install.sh --no-browser",
+                &["browser", "setup"],
+            ),
+            ex(
+                "Camoufox (macOS)",
+                &["browser", "setup", "--engine", "camoufox"],
+            ),
+        ],
+    },
+    Entry {
         id: "vault.list",
         output: "Every item's metadata: id, kind, title, sites, revision; never a value.",
         effect: ReadOnly,
@@ -727,12 +834,47 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "plugins.list",
+        output: "`plugins`: each connector's `name` and `state` (enabled, disabled or needs_setup); one not enabled has a `reason` and the owner's `enable` command.",
+        effect: ReadOnly,
+        owner_only: false,
+        connector: None,
+        examples: &[ex("List this host's connectors", &["plugins", "list"])],
+    },
+    Entry {
+        id: "plugins.enable",
+        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do.",
+        effect: Repeatable(
+            "runs the connector's setup and, if it succeeds, turns it on for this host",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Turn Google on here", &["plugins", "enable", "google"])],
+    },
+    Entry {
+        id: "plugins.disable",
+        output: "The connector's `state`, disabled, and `waited_for`: how many running calls it waited for.",
+        effect: Repeatable("turns the connector off for this host; nothing is revoked"),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Turn Google off here",
+            &["plugins", "disable", "google"],
+        )],
+    },
+    Entry {
         id: "audit.show",
-        output: "`records`: every record of this machine's host, opened with the key, each with its `id`.",
+        output: "`records`: every record of this machine's host, opened with the key, each with its `id`; with --follow, one record per line, then each new one.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
-        examples: &[ex("Read the audit", &["audit", "show"])],
+        examples: &[
+            ex("Read the audit", &["audit", "show"]),
+            ex(
+                "Watch the audit as it grows",
+                &["audit", "show", "--follow"],
+            ),
+        ],
     },
     Entry {
         id: "audit.verify",
@@ -763,12 +905,16 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "serve",
-        output: "Nothing until stopped; the dashboard or log lines meanwhile.",
-        effect: Once("runs this machine as a host until stopped"),
+        output: "With -d, the host once it answers: `state_dir`, `pid`, `run`, `version`, `log`. Otherwise the dashboard until Ctrl-C, then how the host stopped; with --foreground, log lines until stopped.",
+        effect: Once("runs this machine's host, as a service of this user's unless --foreground"),
         owner_only: true,
         connector: None,
         examples: &[
-            ex("Share ~/work", &["serve", "~/work"]),
+            ex("Share ~/work, with the dashboard", &["serve", "~/work"]),
+            ex(
+                "Start the host detached, as an agent does",
+                &["serve", "-d", "~/work"],
+            ),
             ex(
                 "Share ~/work, with the Rust toolchain readable and exec refused to agents",
                 &[
@@ -782,6 +928,30 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
         ],
+    },
+    Entry {
+        id: "stop",
+        output: "`stopped` (whether a host was running), `state_dir`, `state` and, if it failed, `error`.",
+        effect: Repeatable("stops this state folder's host and removes its service"),
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Stop the host", &["stop"])],
+    },
+    Entry {
+        id: "dashboard",
+        output: "The running host's dashboard, until Ctrl-C; needs a terminal.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Watch the host", &["dashboard"])],
+    },
+    Entry {
+        id: "logs",
+        output: "The host's log (serve.log); with --follow, then what is added.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Follow the host's log", &["logs", "--follow"])],
     },
     Entry {
         id: "help",

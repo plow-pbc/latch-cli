@@ -20,6 +20,9 @@
 //!   gog JSON, download metadata and file bytes from its private call folder;
 //! - `probe`: confines itself and exits 0, so the host knows at startup
 //!   that the sandbox can be installed;
+//! - `access CONNECTOR PATH` (macOS): one line saying whether the
+//!   connector's stores in PATH can be opened, that is whether the host has
+//!   Full Disk Access for them;
 //! - on any failure of the worker itself: a last line
 //!   `{"worker_error": {"code": ..., "message": ...}}` on stderr and exit 125
 //!   (the code tools like `env` use for "the wrapper failed, not the
@@ -197,6 +200,48 @@ impl WorkerSetup {
 }
 
 impl WorkerSetup {
+    /// Starts the Messages reader `program` with `args`, confined to read
+    /// only `reads` (the Messages and address book folders), lifted out of
+    /// the folders no worker may read; with no network and nowhere to write.
+    pub fn messages(
+        &self,
+        program: &Path,
+        reads: &[PathBuf],
+        args: &[String],
+    ) -> Result<Child, WorkerError> {
+        // Compared where they really are: the hidden list holds a link's
+        // target as well as the link.
+        let real = |path: &PathBuf| path.canonicalize().unwrap_or_else(|_| path.clone());
+        let lifted: Vec<PathBuf> = reads.iter().map(real).collect();
+        let restricted = WorkerSetup {
+            areas: vec![],
+            reads: reads.to_vec(),
+            hidden: self
+                .hidden
+                .iter()
+                .filter(|hidden| !lifted.iter().any(|read| read.starts_with(real(hidden))))
+                .cloned()
+                .collect(),
+            home: self.home.clone(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
+        };
+        let mut command = restricted.command(Path::new("/"))?;
+        command
+            .arg("messages")
+            .arg(program)
+            .arg("--")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true);
+        command
+            .spawn()
+            .map_err(|err| error("worker_failed", &err.to_string()))
+    }
+
     /// Runs a throwaway worker that only confines itself, with the policy a
     /// file worker gets (areas, the state directory denied, no network), and
     /// exits. `Ok` if the sandbox could be installed.
@@ -218,6 +263,55 @@ impl WorkerSetup {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(worker_error(&stderr)
             .unwrap_or_else(|| error("sandbox_failed", &sandbox::startup_error(&stderr))))
+    }
+
+    /// Runs `latch worker access CONNECTOR -- FOLDER` in a worker that writes nowhere
+    /// and may read only FOLDER, which it alone does not hide.
+    #[cfg(target_os = "macos")]
+    pub async fn access(
+        &self,
+        connector: crate::plugins::Connector,
+        folder: &Path,
+    ) -> Result<crate::messages::access::Access, WorkerError> {
+        // Hidden paths are kept both as named and where they really are.
+        let real = folder
+            .canonicalize()
+            .unwrap_or_else(|_| folder.to_path_buf());
+        let restricted = WorkerSetup {
+            areas: Vec::new(),
+            reads: vec![folder.to_path_buf()],
+            hidden: self
+                .hidden
+                .iter()
+                .filter(|hidden| !folder.starts_with(hidden) && !real.starts_with(hidden))
+                .cloned()
+                .collect(),
+            home: self.home.clone(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
+        };
+        let mut command = restricted.command(Path::new("/"))?;
+        command
+            .arg("access")
+            .arg(connector.name())
+            .arg("--")
+            .arg(folder)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let output = command
+            .output()
+            .await
+            .map_err(|err| error("worker_failed", &err.to_string()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(worker_error(&stderr).unwrap_or_else(|| {
+                error("worker_failed", "the worker stopped without saying why")
+            }));
+        }
+        serde_json::from_slice(&output.stdout)
+            .map_err(|_| error("worker_failed", "invalid worker output"))
     }
 
     /// Starts `latch worker exec [--workdir DIR] -- ARGV…`. The program runs
@@ -402,11 +496,13 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         state_dir: args.denied,
         exec: matches!(args.action, WorkerAction::Exec { .. }),
         home: args.home,
-        network: args.network,
+        network: args.network || matches!(args.action, WorkerAction::Google { .. }),
         tmpdir: args.tmpdir,
         kill_after: args.kill_after,
         program: match &args.action {
-            WorkerAction::Google { program } => Some(program.clone()),
+            WorkerAction::Google { program } | WorkerAction::Messages { program, .. } => {
+                Some(program.clone())
+            }
             _ => None,
         },
         break_for_test: args.break_sandbox_for_test,
@@ -432,6 +528,24 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         }
         // Confined, which is all a probe has to show.
         WorkerAction::Probe => return ExitCode::SUCCESS,
+        #[cfg(target_os = "macos")]
+        WorkerAction::Access { connector, path } => {
+            let connector = match crate::plugins::Connector::named(connector) {
+                Ok(connector) => connector,
+                Err(failure) => return fail(&failure.code, &failure.message),
+            };
+            let access = crate::messages::access::probe(connector, path);
+            println!(
+                "{}",
+                serde_json::to_string(&access).expect("access serializes")
+            );
+            return ExitCode::SUCCESS;
+        }
+        WorkerAction::Messages { program, args } => {
+            // The reader replaces this process and keeps its sandbox.
+            let err = std::process::Command::new(program).args(args).exec();
+            return fail(io_code(&err), &format!("{}: {err}", program.display()));
+        }
         WorkerAction::Read { path } => read(path),
         WorkerAction::Write { size, path } => write(path, *size),
         WorkerAction::Exec { workdir, argv } => {

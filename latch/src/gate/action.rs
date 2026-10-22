@@ -1,8 +1,6 @@
 //! What the judge is shown of a caller's exec, file or Google operation,
 //! and what the audit keeps of one the judge refused.
 
-use std::path::Path;
-
 use serde::Serialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
@@ -53,14 +51,15 @@ struct Action<'a> {
     command: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     accounts: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arguments: Option<&'a Value>,
 }
 
 /// `op` with `args` as the judge sees it, if the gatekeeper judges `op`.
-/// An exec without a working folder runs in `first_area`, if the host
-/// shares one. An exec's stdin
+/// An exec's paths are normalized before judgment. Its stdin
 /// may be the program itself (`sh`, `python -`), so the judge reads it
 /// too; the audit keeps only its size and sha256.
-pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated> {
+pub fn gated(op: &str, args: &Value) -> Option<Gated> {
     let mut unjudgeable = None;
     let stdin = match op {
         "exec" => judged_stdin(&args["stdin"]).unwrap_or_else(|failure| {
@@ -69,8 +68,13 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
         }),
         _ => None,
     };
+    // A connector's action is judged by its stable id: `messages.search`.
+    let operation = match op {
+        "messages" | "contacts" => format!("{op}.{}", args["action"].as_str().unwrap_or("unknown")),
+        _ => op.to_string(),
+    };
     let none = Action {
-        operation: op,
+        operation: &operation,
         argv: None,
         stdin: None,
         working_folder: None,
@@ -81,16 +85,15 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
         file_name: None,
         command: None,
         accounts: None,
+        arguments: None,
     };
-    let first_area = first_area.map(Path::to_string_lossy);
     let mut once = false;
     let (action, audit) = match op {
         "exec" => {
-            let folder = args["workdir"].as_str().or(first_area.as_deref());
             let action = Action {
                 argv: Some(&args["argv"]),
                 stdin: stdin.as_deref(),
-                working_folder: folder,
+                working_folder: args["workdir"].as_str(),
                 writes: Some(&args["writes"]),
                 network: Some(&args["network"]),
                 ..none
@@ -132,6 +135,18 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
             let command = crate::google::policy::command_prefix(&words);
             once = crate::google::policy::parse(&words).map_or(true, |plan| !plan.read_only());
             (action, json!({"command": command}))
+        }
+        // Reads, judged on their effective request (the host's plan: every
+        // filter resolved, a cursor's included); the audit keeps it and the
+        // caller's words, and the host adds the answer's counts, never its rows.
+        "messages" | "contacts" => {
+            let action = Action {
+                arguments: Some(&args["plan"]),
+                ..none
+            };
+            let name = args["action"].as_str().unwrap_or("unknown");
+            let audit = crate::messages::host::audit(op, name, &args["args"], &args["plan"]);
+            (action, audit)
         }
         _ => return None,
     };

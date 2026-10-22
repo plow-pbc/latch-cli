@@ -33,6 +33,10 @@ pub struct World {
     pub decide: Option<Decide>,
     /// Every state the decision route was asked about, in order.
     pub asked: Vec<Value>,
+    /// The owner's connected Google accounts, each given a made-up token.
+    pub google_accounts: Vec<String>,
+    /// The Google token route holds its answer while this is set.
+    pub google_paused: bool,
 }
 
 impl World {
@@ -82,6 +86,17 @@ impl World {
                            "probabilities": {"COVERED": c, "NOT_COVERED": n, "FORBIDDEN": f}}},
                        "usage": {"input_tokens": 1000, "output_tokens": 0, "cost": 0.0001}}),
             );
+        }
+        if method == "POST" && path == "/v1/connectors/gmail/access-token" {
+            let accounts: Vec<Value> = self
+                .google_accounts
+                .iter()
+                .map(|account| {
+                    json!({"account": account, "access_token": "made-up-token",
+                           "capabilities": {"mail_read": true, "calendar_read": true}})
+                })
+                .collect();
+            return (200, json!({"data": {"accounts": accounts}}));
         }
         if let Some(identity) = path
             .strip_prefix("/v1/latch/peers/")
@@ -162,6 +177,7 @@ impl World {
 /// A running synthetic Plow: its URL, its world (which a test may change
 /// between calls), the requests it saw, as "METHOD /path?query", and each
 /// request's `Authorization` headers, in the same order.
+#[derive(Clone)]
 pub struct FakePlow {
     pub url: String,
     pub world: Arc<Mutex<World>>,
@@ -221,6 +237,9 @@ pub fn serve(world: World) -> FakePlow {
             let (method, target) = (words.next().unwrap(), words.next().unwrap());
             log.lock().unwrap().push(format!("{method} {target}"));
             auth_log.lock().unwrap().push(authorization);
+            while target.contains("access-token") && shared.lock().unwrap().google_paused {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             let (status, answer) = shared.lock().unwrap().answer(method, target, &body);
             let answer = answer.to_string();
             let _ = write!(

@@ -9,7 +9,8 @@ mod place;
 
 use std::path::Path;
 
-use iroh::endpoint::{RecvStream, SendStream, VarInt};
+use crate::transport::{RecvStream, SendStream};
+use iroh::endpoint::VarInt;
 use serde_json::{Value, json};
 
 use place::{destination, source};

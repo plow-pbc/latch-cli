@@ -5,7 +5,7 @@ licensed), the release pinned in `src/google/pin.json`. latch downloads it,
 it does not ship it: `install.sh` fetches the release for the machine's OS and
 architecture, checks the binary's sha256 against the pin, and puts it in the
 state directory's plugins folder, `<state-dir>/plugins/gog/<version>/gog`
-(`~/.latch/plugins/…` by default; `sh install.sh --state-dir DIR latch` for
+(`~/.latch/plugins/…` by default; `sh install-binary.sh --state-dir DIR latch` for
 another state directory). The host looks for it there and nowhere else. Run
 `install.sh` again after a latch upgrade that changes the pin; the new gog
 goes into its own version folder beside the old one.
@@ -13,6 +13,13 @@ goes into its own version folder beside the old one.
 `plugins/` is the only part of the state directory a worker may see: the
 Google worker reads and runs its own gog folder, read-only, while `exec` and
 file workers can neither read nor run anything under the state directory.
+
+Google is off on a host until its owner runs `latch plugins enable google`
+there, with `latch serve` running: the setup checks that gog is installed
+and that Plow has a Google account connected for this host to use. Until
+then every Google call gets `not_enabled`. `latch plugins disable google`
+only stops this host asking Plow for Google credentials; nothing is revoked
+at Google or Plow, and other hosts keep their access.
 
 The host checks gog's sha256 against the pin before every run and refuses a
 gog that does not match (`gog_unverified`). Every Google call gets a unique OS

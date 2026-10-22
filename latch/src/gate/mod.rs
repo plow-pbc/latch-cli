@@ -120,6 +120,8 @@ pub enum Caller<'a> {
     /// The owner, at one of their own machines: judged against the host's
     /// rules and the request itself.
     Owner,
+    /// The owner using the private socket on this host.
+    OwnerOnHost,
     /// An agent, by its verified Plow uid, in the chat it named: judged
     /// against the owner's chat and rules.
     Agent { uid: &'a str, chat: Option<&'a str> },
@@ -129,7 +131,7 @@ impl Caller<'_> {
     /// Whose history and turns these are: the agent's uid, or the owner's.
     fn key(&self) -> &str {
         match self {
-            Caller::Owner => "owner",
+            Caller::Owner | Caller::OwnerOnHost => "owner",
             Caller::Agent { uid, .. } => uid,
         }
     }
@@ -138,6 +140,7 @@ impl Caller<'_> {
     fn kind(&self) -> &'static str {
         match self {
             Caller::Owner => "owner_device",
+            Caller::OwnerOnHost => "owner_on_host",
             Caller::Agent { .. } => "agent",
         }
     }
@@ -238,7 +241,7 @@ impl Gatekeeper {
         gate: &mut Value,
     ) -> Result<(), Failure> {
         let conversation = match caller {
-            Caller::Owner => None,
+            Caller::Owner | Caller::OwnerOnHost => None,
             Caller::Agent { uid, chat } => chat::read(&self.plow, uid, chat).await?,
         };
         // The owner's key is no agent uid: only the host's rules apply.
@@ -247,7 +250,7 @@ impl Gatekeeper {
             .rules(caller.key())
             .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")))?;
         let intent = Intent {
-            owner: matches!(caller, Caller::Owner),
+            owner: matches!(caller, Caller::Owner | Caller::OwnerOnHost),
             conversation,
             rules,
         };

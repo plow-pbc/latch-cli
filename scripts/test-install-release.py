@@ -8,7 +8,7 @@ import tarfile
 import tempfile
 import unittest
 
-INSTALLER = Path(__file__).resolve().parents[1] / "install-release.sh"
+INSTALLER = Path(__file__).resolve().parents[1] / "install.sh"
 
 
 class ReleaseInstall(unittest.TestCase):
@@ -26,7 +26,7 @@ class ReleaseInstall(unittest.TestCase):
             folder = f"latch-v0.1.0-{target}"
             with tarfile.open(archive, "w:gz") as tar:
                 for name, body in {
-                    "install.sh": '''#!/bin/sh
+                    "install-binary.sh": '''#!/bin/sh
 printf '%s\\n' "$@" > "$RESULT"
 mkdir -p "$2"
 touch "$2/setup-marker"
@@ -61,7 +61,7 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
             if relative_bin:
                 options += ["--bin-dir", "apps/team tools"]
             result = subprocess.run(
-                ["sh", str(INSTALLER), release, *options],
+                ["sh", str(INSTALLER), *([release] if release else []), *options],
                 cwd=caller,
                 env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
                      "FIXTURE": str(root), "RESULT": str(result_file)},
@@ -96,6 +96,9 @@ cp "$FIXTURE"/*.tar.gz "$FIXTURE/SHA256SUMS" "$destination/"
 
     def test_latest_installs_the_newest_published_release(self):
         self.run_install("Darwin", "arm64", "aarch64-apple-darwin", release="latest")
+
+    def test_no_tag_installs_the_newest_published_release(self):
+        self.run_install("Darwin", "arm64", "aarch64-apple-darwin", release=None)
 
     def test_relative_bin_directory_survives_download_cleanup(self):
         self.run_install("Darwin", "arm64", "aarch64-apple-darwin", relative_bin=True)

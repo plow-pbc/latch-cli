@@ -44,11 +44,14 @@ fn a_chat(decide: fake::Decide) -> World {
     world
 }
 
-struct TestHost {
-    host: Arc<Host>,
-    plow: FakePlow,
+pub(super) struct TestHost {
+    pub(super) host: Arc<Host>,
+    pub(super) plow: FakePlow,
     area: PathBuf,
-    state: PathBuf,
+    pub(super) state: PathBuf,
+    /// The owner's home folder, as `messages` and `contacts` read it (macOS).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    home: PathBuf,
     /// What the host watches as its own binary: a stand-in, so a test can
     /// replace it without touching the workers' real one.
     binary: PathBuf,
@@ -56,12 +59,12 @@ struct TestHost {
 }
 
 /// The latch binary cargo builds beside this test binary: the workers'.
-fn latch_binary() -> PathBuf {
+pub(super) fn latch_binary() -> PathBuf {
     let deps = std::env::current_exe().unwrap();
     deps.parent().unwrap().parent().unwrap().join("latch")
 }
 
-async fn start(world: World) -> TestHost {
+pub(super) async fn start(world: World) -> TestHost {
     start_denying(world, DenyExec::default()).await
 }
 
@@ -69,26 +72,37 @@ async fn start(world: World) -> TestHost {
 async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
     let fake = fake::serve(world);
     let provider = model::Plow::new(&fake.url, "made-up-login".into()).with_model(gate::MODEL);
-    start_with(fake, Arc::new(provider), deny_exec, None).await
+    start_with(fake, Arc::new(provider), deny_exec).await
 }
 
 /// A host on `plow`, its gatekeeper asking `provider`.
-async fn start_with(
+pub(super) async fn start_with(
     plow: FakePlow,
     provider: Arc<dyn model::Provider>,
     deny_exec: DenyExec,
-    dashboard: Option<Dashboard>,
 ) -> TestHost {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     std::fs::create_dir_all(&parent).unwrap();
     let dir = tempfile::tempdir_in(parent).unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (area, state) = (root.join("area"), root.join("state"));
-    std::fs::create_dir(&area).unwrap();
-    std::fs::create_dir(&state).unwrap();
+    let home = root.join("home");
+    let (area, state) = (home.join("area"), root.join("state"));
+    std::fs::create_dir_all(&area).unwrap();
+    crate::state::StateDir {
+        path: state.clone(),
+    }
+    .create()
+    .unwrap();
     std::fs::write(area.join("notes.txt"), "the notes' own words").unwrap();
     let binary = root.join("latch");
     std::fs::write(&binary, "the latch this host started from").unwrap();
+    // Its owner has turned its connectors on.
+    let enabled = if cfg!(target_os = "macos") {
+        r#"{"google": {"state": "enabled"}, "messages": {"state": "enabled"}, "contacts": {"state": "enabled"}}"#
+    } else {
+        r#"{"google": {"state": "enabled"}}"#
+    };
+    std::fs::write(state.join("plugins.json"), enabled).unwrap();
     let endpoint = Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
@@ -102,12 +116,13 @@ async fn start_with(
         audit: Arc::new(Mutex::new(
             AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
         )),
-        dashboard,
+        dashboard: Dashboard::new("test-host", None),
+        lifetime: super::Lifetime::new(false),
         workers: WorkerSetup {
-            home: root.clone(),
+            home: home.clone(),
             areas: vec![area.clone()],
             reads: vec![],
-            hidden: crate::sandbox::never_readable(&root),
+            hidden: crate::sandbox::never_readable(&home),
             state_dir: state.clone(),
             program: latch_binary(),
         },
@@ -118,6 +133,14 @@ async fn start_with(
         gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
         deny_exec,
         binary: Binary::at(&binary).unwrap(),
+        plugins: crate::plugins::Plugins::load(
+            &crate::state::StateDir {
+                path: state.clone(),
+            },
+            &home,
+        )
+        .unwrap(),
+        home: home.clone(),
         stopping: tokio::sync::watch::Sender::new(Stopping::No),
     });
     let serving = host.clone();
@@ -131,6 +154,7 @@ async fn start_with(
         plow,
         area,
         state,
+        home,
         binary,
         _dir: dir,
     }
@@ -138,7 +162,7 @@ async fn start_with(
 
 impl TestHost {
     /// A caller Plow knows as an agent (with its uid) or a device.
-    async fn caller(&self, kind: &str) -> Endpoint {
+    pub(super) async fn caller(&self, kind: &str) -> Endpoint {
         let client = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
             .bind()
@@ -159,7 +183,12 @@ impl TestHost {
 
     /// Sends one operation and returns the host's first answer, and
     /// whatever else came back on the stream.
-    async fn call(&self, client: &Endpoint, op: &str, args: Value) -> (Response, Vec<u8>) {
+    pub(super) async fn call(
+        &self,
+        client: &Endpoint,
+        op: &str,
+        args: Value,
+    ) -> (Response, Vec<u8>) {
         let connection = client
             .connect(self.host.endpoint.addr(), wire::ALPN)
             .await
@@ -179,8 +208,25 @@ impl TestHost {
         (serde_json::from_slice(&answer).unwrap(), rest)
     }
 
+    /// Sends one operation over the host's private socket, as the owner at
+    /// the host does, and returns its answer.
+    pub(super) async fn local_call(&self, op: &str, args: Value) -> Response {
+        let (mine, hosts) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(serve_local(self.host.clone(), hosts));
+        let (mut recv, mut send) = mine.into_split();
+        let request = Request {
+            op: op.into(),
+            args,
+            chat: None,
+        };
+        wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
+            .await
+            .unwrap();
+        serde_json::from_slice(&wire::read_frame(&mut recv).await.unwrap()).unwrap()
+    }
+
     /// The audit's records, opened with the key, connections left out.
-    fn audit(&self) -> Vec<Value> {
+    pub(super) fn audit(&self) -> Vec<Value> {
         self.audit_text()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -234,7 +280,7 @@ impl TestHost {
         (first, last)
     }
 
-    fn judged(&self) -> usize {
+    pub(super) fn judged(&self) -> usize {
         self.plow.saw("POST /v1/decisions")
     }
 }
@@ -243,7 +289,7 @@ fn exec(script: &str) -> Value {
     json!({"argv": ["/bin/sh", "-c", script], "writes": ["area"], "timeout": 10})
 }
 
-fn refusal(response: &Response) -> (Exit, &str, &Value) {
+pub(super) fn refusal(response: &Response) -> (Exit, &str, &Value) {
     match response {
         Response::Error {
             exit,
@@ -270,7 +316,6 @@ async fn an_operation_is_audited_before_dashboard_name_lookup() {
         plow,
         Arc::new(provider),
         DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]),
-        Some(Dashboard::start("test-host", None)),
     )
     .await;
     let agent = t.caller("agent").await;
@@ -287,7 +332,6 @@ async fn an_operation_is_audited_before_dashboard_name_lookup() {
     };
     let ((answer, _), (requested, records)) =
         tokio::join!(t.call(&agent, "exec", exec("touch made")), during_lookup);
-    t.host.dashboard.as_ref().unwrap().stop();
     assert!(requested.is_ok(), "the dashboard never asked for the name");
     assert_eq!(refusal(&answer).1, "exec_denied");
     assert!(!t.area.join("made").exists());
@@ -418,7 +462,7 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     }
 }
 
-fn always_covered(_: &Value) -> Option<[f64; 3]> {
+pub(super) fn always_covered(_: &Value) -> Option<[f64; 3]> {
     Some([0.9, 0.08, 0.02])
 }
 
@@ -536,7 +580,8 @@ async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() 
     let names = std::fs::read_dir(&t.area).unwrap().count();
     assert_eq!(names, 2, "only notes.txt and upload.txt");
     // A hidden destination is refused before anything is judged.
-    let (first, _) = t.put(&agent, "state/key", 1, b"x").await;
+    let key = t.state.join("key");
+    let (first, _) = t.put(&agent, key.to_str().unwrap(), 1, b"x").await;
     let (exit, code, _) = refusal(&first);
     assert_eq!((exit, code), (Exit::Denied, "bad_path"));
     assert_eq!(t.judged(), 2);
@@ -547,7 +592,7 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;
     // A dotfile outside any shared folder: readable, judged at its path.
-    let home = t.state.parent().unwrap();
+    let home = &t.host.workers.home;
     std::fs::create_dir(home.join(".ssh")).unwrap();
     std::fs::write(home.join(".ssh/config"), "Host example").unwrap();
     let (answer, bytes) = t
@@ -561,7 +606,8 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
     // The host's state, and a link into it, are refused before judging.
     std::fs::write(t.state.join("key"), "made-up key").unwrap();
     std::os::unix::fs::symlink(t.state.join("key"), home.join("key-link")).unwrap();
-    for hidden in ["~/state/key", "~/key-link"] {
+    let key = t.state.join("key");
+    for hidden in [key.to_str().unwrap(), "~/key-link"] {
         let (answer, _) = t
             .call(&agent, "file_get", json!({"remote_path": hidden}))
             .await;
@@ -1082,13 +1128,7 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
     model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
 
-    let t = start_with(
-        fake::serve(World::default()),
-        provider,
-        DenyExec::default(),
-        None,
-    )
-    .await;
+    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
     assert_eq!(refusal(&answer).1, "no_intent", "neither chat nor rules");
@@ -1154,13 +1194,7 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
     let setup = tempfile::tempdir().unwrap();
     model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
-    let t = start_with(
-        fake::serve(World::default()),
-        provider,
-        DenyExec::default(),
-        None,
-    )
-    .await;
+    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let device = t.caller("device").await;
     let run = |argv: &[&str]| json!({"argv": argv, "workdir": null, "timeout": 30});
     let ordinary = [
@@ -1178,9 +1212,7 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
     let set = json!({"command": "set", "text": "Never delete or remove any file on this host."});
     let (answer, _) = t.call(&device, "rules", set).await;
     assert!(matches!(answer, Response::Ok(_)), "rules set: {answer:?}");
-    let removal = gate::gated("exec", &removal, Some(t.area.as_path()))
-        .unwrap()
-        .action;
+    let removal = gate::gated("exec", &removal).unwrap().action;
     let mut removals = Vec::new();
     for _ in 0..3 {
         let judged = t.host.gatekeeper.judge(Caller::Owner, &removal).await;
@@ -1317,6 +1349,470 @@ async fn a_stalled_audit_write_holds_up_no_other_caller() {
     assert!(appending.await.unwrap().is_ok());
     stall.join().unwrap();
     assert_eq!(t.audit()[0]["op"], "exec");
+}
+
+/// The Messages reader, built from `messages-reader/` once per test run.
+#[cfg(target_os = "macos")]
+fn messages_reader() -> PathBuf {
+    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("messages-reader");
+            let swift = |extra: &[&str]| {
+                let output = std::process::Command::new("swift")
+                    .args([
+                        "build",
+                        "--package-path",
+                        package.to_str().unwrap(),
+                        "--product",
+                        "latch-messages",
+                    ])
+                    .args(extra)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8(output.stdout).unwrap()
+            };
+            swift(&[]);
+            PathBuf::from(swift(&["--show-bin-path"]).trim()).join("latch-messages")
+        })
+        .clone()
+}
+
+impl TestHost {
+    /// The owner's Messages and address book, from the synthetic fixtures,
+    /// and the reader installed where a host looks for it.
+    #[cfg(target_os = "macos")]
+    pub(super) fn with_messages(&self) {
+        let sqlite = |sql: &str, db: &Path| {
+            std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+            let mut child = std::process::Command::new("/usr/bin/sqlite3")
+                .arg(db)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            std::io::Write::write_all(child.stdin.as_mut().unwrap(), sql.as_bytes()).unwrap();
+            drop(child.stdin.take());
+            assert!(child.wait().unwrap().success());
+        };
+        let [messages, book] = crate::messages::host::folders(&self.home);
+        sqlite(
+            include_str!("../../tests/messages/chat.sql"),
+            &messages.join("chat.db"),
+        );
+        sqlite(
+            include_str!("../../tests/messages/addressbook.sql"),
+            &book.join("AddressBook-v22.abcddb"),
+        );
+        let reader = crate::messages::host::reader(&self.state);
+        std::fs::create_dir_all(reader.parent().unwrap()).unwrap();
+        std::fs::copy(messages_reader(), &reader).unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
+    let t = start(a_chat(always_covered)).await;
+    t.with_messages();
+    let agent = t.caller("agent").await;
+
+    let search = json!({"action": "search", "args": ["--", "code"]});
+    let (answer, _) = t.call(&agent, "messages", search).await;
+    let Response::Ok(found) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(found["count"], 1);
+    assert_eq!(found["messages"][0]["text"], "Your code is 482913");
+    assert_eq!(
+        found["messages"][0]["from"]["name"], "Ann Example",
+        "{found}"
+    );
+    assert!(
+        found["warning"]
+            .as_str()
+            .unwrap()
+            .contains("untrusted historical data")
+    );
+
+    let (answer, _) = t
+        .call(
+            &agent,
+            "contacts",
+            json!({"action": "search", "args": ["--", "sample"]}),
+        )
+        .await;
+    let Response::Ok(people) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(people["people"][0]["name"], "Robert Sample");
+    assert_eq!(people["people"][0]["nickname"], "Bo");
+    assert_eq!(people["people"][0]["emails"][0]["handle"], "bo@example.com");
+
+    let (answer, _) = t
+        .call(
+            &agent,
+            "messages",
+            json!({"action": "thread", "args": ["--with", "(555) 000-0001"]}),
+        )
+        .await;
+    let Response::Ok(thread) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(thread["count"], 3);
+
+    // Each call was judged, on its effective request.
+    assert_eq!(t.judged(), 3);
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    assert_eq!(
+        asked[0]["proposed_action"],
+        json!({"operation": "messages.search", "arguments":
+            {"command": "search", "limit": 50, "oldest_first": false, "phrase": "code"}})
+    );
+    assert_eq!(asked[1]["proposed_action"]["operation"], "contacts.search");
+    assert_eq!(asked[1]["proposed_action"]["arguments"]["text"], "sample");
+    assert_eq!(
+        asked[2]["proposed_action"]["arguments"]["with"],
+        "+15550000001"
+    );
+
+    // The audit keeps the action, its words and the counts; no row.
+    let records = t.audit();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["op"], "messages");
+    assert_eq!(records[0]["decision"], "allow");
+    assert_eq!(records[0]["args"]["action"], "messages.search");
+    assert_eq!(records[0]["args"]["result"]["count"], 1);
+    assert_eq!(records[2]["args"]["result"]["count"], 3);
+
+    // A later page of contacts: its cursor holds the last name the page
+    // before gave, which neither the audit nor the log keeps.
+    let first = json!({"action": "search", "args": ["--limit", "1", "--", "a"]});
+    let (answer, _) = t.call(&agent, "contacts", first).await;
+    let Response::Ok(first) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(first["people"][0]["name"], "Ann Example");
+    let next = first["next"].as_str().unwrap().to_string();
+    let page = json!({"action": "search", "args": ["--cursor", next.clone()]});
+    let (answer, _) = t.call(&agent, "contacts", page).await;
+    let Response::Ok(second) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(second["people"][0]["name"], "Robert Sample");
+    let paged = &t.audit()[4]["args"];
+    assert_eq!(paged["args"], json!(["--cursor", "[cursor]"]));
+    assert_eq!(paged["plan"]["after"]["key"], "[name]");
+
+    let records = t.audit();
+    // The audit as it reads, opened (on disk it is sealed).
+    let audit = serde_json::to_string(&records).unwrap();
+    // What the host logged: every line this test process logged.
+    let log = crate::log::captured().join("\n");
+    assert!(log.contains("messages:"), "{log}");
+    for record in &records {
+        let (target, result) = dashboard::describe(
+            record["op"].as_str().unwrap(),
+            &record["args"],
+            record["outcome"].as_str().unwrap(),
+            Duration::ZERO,
+        );
+        assert!(result.contains("rows"), "{result}");
+        assert!(!target.contains("482913") && !result.contains("482913"));
+    }
+    // Nothing the reader returned: no body, no code, no name, no handle it found.
+    for returned in [
+        "482913",
+        "Your code",
+        "Super Duper",
+        "lunch?",
+        "Ann Example",
+        "Robert Sample",
+        "Sample & Co",
+        "Dinner",
+        next.as_str(),
+    ] {
+        assert!(!audit.contains(returned), "{returned} in the audit");
+        assert!(!log.contains(returned), "{returned} in serve.log");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_refused_messages_read_reads_nothing() {
+    let t = start(a_chat(covered_after_a_yes)).await;
+    // The reader plans the call (reading nothing of the owner's), and the
+    // judge refuses it: the owner's Messages and address book are never
+    // opened, so the answer is the refusal and the audit holds no result.
+    t.with_messages();
+    let agent = t.caller("agent").await;
+    let (answer, _) = t
+        .call(&agent, "messages", json!({"action": "search", "args": []}))
+        .await;
+    assert_eq!(refusal(&answer).1, "gatekeeper_denied");
+    let (answer, _) = t
+        .call(
+            &agent,
+            "contacts",
+            json!({"action": "lookup", "args": ["--", "+15550000001"]}),
+        )
+        .await;
+    assert_eq!(refusal(&answer).1, "gatekeeper_denied");
+    assert_eq!(t.judged(), 2);
+    let records = t.audit();
+    assert!(
+        records
+            .iter()
+            .all(|record| record["decision"] == "deny" && record["args"].get("result").is_none())
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn an_exec_cannot_read_the_messages_or_address_book_its_host_reads() {
+    let t = start(a_chat(always_covered)).await;
+    t.with_messages();
+    let agent = t.caller("agent").await;
+    let [messages, book] = crate::messages::host::folders(&t.home);
+    for path in [
+        messages.join("chat.db"),
+        book.join("AddressBook-v22.abcddb"),
+    ] {
+        let (answer, _) = t
+            .call(&agent, "exec", exec(&format!("cat '{}'", path.display())))
+            .await;
+        let Response::Ok(result) = answer else {
+            panic!("{answer:?}")
+        };
+        assert_ne!(result["exit_code"], 0, "{}", path.display());
+        assert!(
+            result["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("Operation not permitted"),
+            "{result}"
+        );
+    }
+    // The messages worker, beside it, reads them.
+    let (answer, _) = t
+        .call(&agent, "messages", json!({"action": "chats", "args": []}))
+        .await;
+    let Response::Ok(chats) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(chats["count"], 3);
+}
+
+/// A cursor as the reader writes one (base64url of its JSON), made up: a
+/// thread page naming no conversation.
+#[cfg(target_os = "macos")]
+fn forged_cursor() -> String {
+    let cursor = json!({"command": "thread", "key": "1", "id": 1,
+                        "filters": {"from": [], "oldestFirst": false, "handles": []}})
+    .to_string();
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let bytes = cursor.as_bytes();
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().fold(0u32, |n, b| n << 8 | *b as u32) << (8 * (3 - chunk.len()));
+        for i in 0..=chunk.len() {
+            out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_later_page_is_judged_on_the_filters_its_cursor_carries() {
+    let t = start(a_chat(always_covered)).await;
+    t.with_messages();
+    let agent = t.caller("agent").await;
+    let first = json!({"action": "search", "args": ["--from", "(555) 000-0001", "--limit", "1"]});
+    let (answer, _) = t.call(&agent, "messages", first).await;
+    let Response::Ok(first) = answer else {
+        panic!("{answer:?}")
+    };
+    let next = first["next"].as_str().unwrap().to_string();
+    let page = json!({"action": "search", "args": ["--cursor", next]});
+    let (answer, _) = t.call(&agent, "messages", page).await;
+    let Response::Ok(second) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(second["messages"][0]["id"], 301);
+    // The judge saw the page's whole request, not an opaque token.
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let page = &asked[1]["proposed_action"]["arguments"];
+    assert_eq!(page["from"], json!(["+15550000001"]), "{page}");
+    assert_eq!(page["after"]["id"], 103, "{page}");
+    assert_eq!(page["limit"], 50);
+    assert_eq!(t.audit()[1]["args"]["plan"], *page);
+
+    // A cursor that names no conversation is refused before anyone judges it.
+    let forged = json!({"action": "thread", "args": ["--cursor", forged_cursor()]});
+    let (answer, _) = t.call(&agent, "messages", forged).await;
+    let (exit, code, _) = refusal(&answer);
+    assert_eq!((exit, code), (Exit::Usage, "usage"));
+    assert_eq!(t.judged(), 2);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn messages_and_contacts_are_judged_for_the_owner_and_agents_and_refused_in_an_outage() {
+    let t = start(a_chat(the_owners_request)).await;
+    t.with_messages();
+    let (device, agent) = (t.caller("device").await, t.caller("agent").await);
+    let calls = [
+        (
+            "messages",
+            json!({"action": "search", "args": ["--", "code"]}),
+        ),
+        (
+            "contacts",
+            json!({"action": "lookup", "args": ["--", "+15550000001"]}),
+        ),
+    ];
+    for (op, args) in &calls {
+        // The owner's own request is covered; the agent's, unasked, is not.
+        let (answer, _) = t.call(&device, op, args.clone()).await;
+        assert!(matches!(answer, Response::Ok(_)), "{op}: {answer:?}");
+        let (answer, _) = t.call(&agent, op, args.clone()).await;
+        assert_eq!(refusal(&answer).1, "gatekeeper_denied", "{op}");
+    }
+    assert_eq!(t.judged(), 4);
+    let records = t.audit();
+    for (index, record) in records.iter().enumerate() {
+        let (caller, decision) = if index % 2 == 0 {
+            ("owner_device", "allow")
+        } else {
+            ("agent", "deny")
+        };
+        assert_eq!(record["gate"]["caller"], caller, "{record}");
+        assert_eq!(record["decision"], decision, "{record}");
+        assert_eq!(record["args"].get("result").is_some(), decision == "allow");
+    }
+
+    // With the judge down, nobody reads.
+    let down = start(a_chat(down)).await;
+    down.with_messages();
+    let (device, agent) = (down.caller("device").await, down.caller("agent").await);
+    for (op, args) in &calls {
+        for caller in [&device, &agent] {
+            let (answer, _) = down.call(caller, op, args.clone()).await;
+            let (exit, code, _) = refusal(&answer);
+            assert_eq!(
+                (exit, code),
+                (Exit::Unreachable, "gatekeeper_unavailable"),
+                "{op}"
+            );
+        }
+    }
+    assert!(
+        down.audit()
+            .iter()
+            .all(|r| r["args"].get("result").is_none())
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_contacts_worker_cannot_read_messages() {
+    let t = start(a_chat(always_covered)).await;
+    t.with_messages();
+    let [messages, book] = crate::messages::host::folders(&t.home);
+    let argv: Vec<String> = vec![
+        "--store".into(),
+        messages.join("chat.db").display().to_string(),
+        "--addressbook".into(),
+        book.display().to_string(),
+        "chats".into(),
+    ];
+    let workers = &t.host.workers;
+    let contacts = crate::messages::host::reads("contacts", &t.home);
+    let refused = crate::messages::host::read(workers, &contacts, &argv)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "messages_not_granted");
+    let messages_reads = crate::messages::host::reads("messages", &t.home);
+    let read = crate::messages::host::read(workers, &messages_reads, &argv)
+        .await
+        .unwrap();
+    assert_eq!(read["count"], 3);
+    // The contacts call itself reads the address book.
+    let agent = t.caller("agent").await;
+    let search = json!({"action": "search", "args": ["--", "ann"]});
+    let (answer, _) = t.call(&agent, "contacts", search).await;
+    let Response::Ok(people) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(people["count"], 1);
+}
+
+#[tokio::test]
+async fn local_vault_edits_reach_a_running_hosts_release_path() {
+    use crate::vault::store::Backend;
+    use tokio::io::AsyncWriteExt;
+    let t = start(a_chat(always_covered)).await;
+    let state = crate::state::StateDir {
+        path: t.state.clone(),
+    };
+    state.create().unwrap();
+    let key = state.load_or_create_key().unwrap().0.public().to_string();
+    state
+        .save_config(&crate::state::Config {
+            api_url: "http://127.0.0.1:9".into(),
+            peer: serde_json::from_value(
+                json!({"key": key, "name": "host", "kind": "device", "relay_url": null}),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    assert!(
+        t.host
+            .vault
+            .with(|store| Ok(store.list()))
+            .unwrap()
+            .is_empty()
+    );
+    let mut child = tokio::process::Command::new(latch_binary())
+        .arg("--state-dir")
+        .arg(&t.state)
+        .args([
+            "vault",
+            "add",
+            "--kind",
+            "login",
+            "--title",
+            "the owner",
+            "--site",
+            "example.com",
+        ])
+        .env_remove("LATCH_HOST")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"synthetic-fill-value\n")
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    assert!(output.status.success(), "local add failed");
+    assert_eq!(
+        t.host
+            .vault
+            .with(|store| store.release("v1", "password"))
+            .unwrap(),
+        "synthetic-fill-value"
+    );
 }
 
 #[tokio::test]

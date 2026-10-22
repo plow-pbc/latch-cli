@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use iroh::endpoint::{RecvStream, SendStream};
+use crate::transport::{RecvStream, SendStream};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -652,7 +652,7 @@ fn check_size(value: &Value) -> Result<(), Failure> {
 /// The gog to run: the copy install.sh puts in the state directory's
 /// plugins folder, in a folder named for the pinned `version`, so a latch
 /// with a new pin never picks up the old gog. There is no other place.
-fn gog_program(state_dir: &Path, version: &str) -> Result<PathBuf, Failure> {
+pub(crate) fn gog_program(state_dir: &Path, version: &str) -> Result<PathBuf, Failure> {
     let path = state_dir.join("plugins/gog").join(version).join("gog");
     if path.exists() {
         return Ok(path);
