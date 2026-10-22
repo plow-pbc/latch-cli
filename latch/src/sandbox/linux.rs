@@ -83,6 +83,7 @@ fn launch(policy: &Policy) -> Result<(), Error> {
     }
     command.args([
         "--unshare-user",
+        "--disable-userns",
         "--unshare-pid",
         "--unshare-ipc",
         "--cap-drop",
