@@ -69,7 +69,7 @@ pub(super) async fn start(world: World) -> TestHost {
 }
 
 /// A host whose owner denies exec as `deny_exec` says.
-async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
+pub(super) async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
     let fake = fake::serve(world);
     let provider = model::Plow::new(&fake.url, "made-up-login".into()).with_model(gate::MODEL);
     start_with(fake, Arc::new(provider), deny_exec).await

@@ -48,7 +48,7 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
 }
 
 /// Only the owner's own devices may read or change the rules.
-fn owner_only(kind: &str) -> Result<(), Failure> {
+pub(crate) fn owner_only(kind: &str) -> Result<(), Failure> {
     if kind == "device" {
         return Ok(());
     }
@@ -57,6 +57,15 @@ fn owner_only(kind: &str) -> Result<(), Failure> {
         "owner_only",
         "the rules take commands from the owner's own devices only".into(),
     ))
+}
+
+/// The agent `from` names, resolved as `--from` is for every rules
+/// command: its uid, and its current name in Plow.
+pub async fn agent(plow: &Plow, from: &str) -> Result<(String, Option<String>), Failure> {
+    let account = Account::read(plow).await?;
+    let uid = account.resolve(from, false)?;
+    let name = account.name(&uid);
+    Ok((uid, name))
 }
 
 async fn set(
