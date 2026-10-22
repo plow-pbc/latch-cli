@@ -4259,7 +4259,7 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
 /// way a shell starts it: Ctrl-C typed there interrupts it, and closing
 /// the terminal hangs it up. Returns the process and the terminal's side
 /// we type into and read.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn at_its_own_terminal(
     state: &Path,
     args: &[&str],
@@ -4335,7 +4335,7 @@ fn at_its_own_terminal(
 }
 
 /// Reads what the terminal shows until it has shown `text`.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     let mut all = String::new();
     while !all.contains(text) {
