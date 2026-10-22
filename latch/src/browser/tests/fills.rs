@@ -2360,10 +2360,18 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
 
 async fn no_vault_value_goes_into_an_editable_region(engine: &str) {
     const NAME: &str = "Ada-e7c1";
+    const LAST: &str = "Lovelace-3b9d";
     let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let identity = vault
-        .with(|s| s.add(item(IDENTITY, "Home", &[], &[("first name", NAME)])))
+        .with(|s| {
+            s.add(item(
+                IDENTITY,
+                "Home",
+                &[],
+                &[("first name", NAME), ("last name", LAST)],
+            ))
+        })
         .unwrap();
     let local = format!("http://127.0.0.1:{}", site());
     let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
@@ -2388,11 +2396,28 @@ async fn no_vault_value_goes_into_an_editable_region(engine: &str) {
         );
         assert_eq!(refused.code, "bad_target");
     }
+    // A textarea the first field's input handler makes editable after the
+    // fill was checked: the second value is refused at the field itself.
+    let first = find(&page, "textbox", "First name");
+    let last = find(&page, "textbox", "Last name");
+    let (refused, _) = h
+        .fill(json!({"item": identity.item,
+                     "fields": [["first name", [first]], ["last name", [last]]]}))
+        .await;
+    let refused = refused.unwrap_err();
+    println!(
+        "a field made editable mid-fill: {} ({})",
+        refused.code, refused.message
+    );
+    assert_eq!(refused.code, "fill_refused");
+    assert!(refused.message.contains("editable"), "{}", refused.message);
     // Nothing went in: neither the page's text nor its elements show it.
     let text = h.text().await;
     let observed = h.call("observe", json!({})).await.unwrap();
-    assert!(!text.contains(NAME) && !observed.to_string().contains(NAME));
-    assert!(!h.shown.join("\n").contains(NAME));
+    for value in [NAME, LAST] {
+        assert!(!text.contains(value) && !observed.to_string().contains(value));
+        assert!(!h.shown.join("\n").contains(value));
+    }
     h.call("close", json!({})).await.unwrap();
 }
 

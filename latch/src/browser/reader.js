@@ -328,6 +328,9 @@
     if (!el) return { refused: 'the field is gone' };
     if (expected !== token) return { refused: 'the document was replaced' };
     if ((self.origin === 'null' ? 'opaque' : self.origin) !== origin) return { refused: 'the origin changed' };
+    // Checked again here: the page can make a field editable after the
+    // fill was checked, e.g. from an earlier field's input handler.
+    if (el.isContentEditable) return { refused: 'the field became an editable region' };
     if (!setValue(el, value)) return { refused: 'no option matches' };
     if (value) filled.add(el); else filled.delete(el);
     const held = el.localName === 'select' ? true : current(el) === value;
