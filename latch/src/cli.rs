@@ -63,7 +63,8 @@ Agents:
   what fixes it: often a retry later, but a host out of Plow credits fails
   until the host's account owner adds them. A browser step's
   model_unavailable (exit 1) is the same decision model, for a click's risk,
-  a goal or a sentence check; nothing was sent, and nothing gets around it.";
+  a goal or a sentence check: that step sent nothing, and nothing gets
+  around it. Earlier steps of the same plan may have run; its `steps` say.";
 
 /// What `latch browser do --help` adds after its options: the short form
 /// by example. BROWSER.md shows the same examples.
