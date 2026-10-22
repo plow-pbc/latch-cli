@@ -22,6 +22,7 @@ mod files;
 mod gate;
 mod google;
 mod heartbeat;
+mod help;
 mod hosts;
 mod input;
 mod keyart;
@@ -95,6 +96,12 @@ fn main() -> ExitCode {
                     failure.exit.into()
                 }
             };
+        }
+        // Help is in latch itself: no state folder, no host.
+        Command::Help(args) => return help::run(args),
+        Command::Skill => {
+            print!("{}", help::skill());
+            return ExitCode::SUCCESS;
         }
         command => command,
     };
@@ -290,7 +297,9 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             served?;
             to_json(json!({}))
         }
-        Command::Worker(_) | Command::BrowserWorker(_) => unreachable!("handled in main"),
+        Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
+            unreachable!("handled in main")
+        }
     }
 }
 

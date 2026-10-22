@@ -746,6 +746,77 @@ fn help_says_what_is_allowed_and_how_to_pass_a_command() {
 }
 
 #[test]
+fn help_and_skill_need_no_login_and_carry_this_version() {
+    let dir = test_dir();
+    let state = dir.path().join("none");
+    let version = latch(&state, &["--version"], &[]);
+    let version = String::from_utf8(version.stdout).unwrap();
+    let version = version.trim().strip_prefix("latch ").unwrap();
+
+    let help = latch(&state, &["help", "--json"], &[]);
+    assert_eq!(help.status.code(), Some(0), "{help:?}");
+    let help: Value = serde_json::from_slice(&help.stdout).unwrap();
+    assert_eq!(help["version"], version);
+    let exec = help["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["id"] == "exec")
+        .unwrap();
+    assert!(
+        exec["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|input| { input["flag"] == "--timeout" && input["default"] == "60" })
+    );
+
+    let examples = latch(&state, &["help", "browser", "open", "--examples"], &[]);
+    let text = String::from_utf8(examples.stdout).unwrap();
+    assert!(
+        text.contains("latch browser --host mac open https://shop.example/"),
+        "{text}"
+    );
+
+    let unknown = latch(&state, &["help", "nope"], &[]);
+    assert_eq!(unknown.status.code(), Some(2));
+
+    // gog's commands are found the same way, from the grammar latch checks
+    // them against; one it refuses is not there.
+    let search = latch(
+        &state,
+        &["help", "google", "gmail", "search", "--json"],
+        &[],
+    );
+    assert_eq!(search.status.code(), Some(0), "{search:?}");
+    let search: Value = serde_json::from_slice(&search.stdout).unwrap();
+    let ids: Vec<_> = search["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| &a["id"])
+        .collect();
+    assert_eq!(ids, ["google.gmail.search"]);
+    assert_eq!(search["actions"][0]["side_effects"], Value::Null);
+    let send = latch(&state, &["help", "google", "gmail", "send"], &[]);
+    let text = String::from_utf8(send.stdout).unwrap();
+    assert!(
+        text.contains("Side effects:") && text.contains("--to VALUE"),
+        "{text}"
+    );
+    let watch = latch(&state, &["help", "google", "gmail", "watch"], &[]);
+    assert_eq!(watch.status.code(), Some(2));
+
+    let skill = latch(&state, &["skill"], &[]);
+    let text = String::from_utf8(skill.stdout).unwrap();
+    assert!(text.starts_with("---\nname: latch\n"), "{text}");
+    assert!(
+        text.contains(&format!("  version: \"{version}\"\n---\n")),
+        "{text}"
+    );
+}
+
+#[test]
 fn status_shows_this_machine_once_as_plow_lists_it() {
     let relay = json!("https://relay.example/");
     let (url, server) = fake_plow(vec![(
