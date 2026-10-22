@@ -573,6 +573,17 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
                         "confirm_conflict": false, "inputs": []});
     t.call(&device, "google", google).await;
     assert_eq!(t.judged(), 4, "exec, file get, file put and google");
+    // A browser open is judged too, before any engine starts.
+    let open = json!({"command": "open", "profile": "default", "url": "https://example.com/"});
+    t.call(&device, "browser", open).await;
+    assert_eq!(t.judged(), 5, "and the browser's open");
+    let browsed = t.audit().pop().unwrap();
+    assert_eq!(browsed["op"], "browser");
+    // The browser keeps its judgment with its arguments.
+    assert_eq!(
+        browsed["args"]["gate"]["caller"], "owner_device",
+        "{browsed}"
+    );
 
     // Judged as the owner's own request, sent just now: no agent's chat.
     let asked = t.plow.world.lock().unwrap().asked.clone();
@@ -811,19 +822,8 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_rules_alone_allow_tests_and_nothing_else() {
-    use std::os::unix::fs::PermissionsExt;
-    let key = std::env::var_os("LATCH_TEST_JEV_KEY")
-        .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
     let setup = tempfile::tempdir().unwrap();
-    let path = setup.path().join(model::JEV_KEY_FILE);
-    std::fs::copy(key, &path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    std::fs::create_dir_all(setup.path().join("browser")).unwrap();
-    std::fs::write(
-        setup.path().join(model::MODEL_FILE),
-        r#"{"provider": "jev"}"#,
-    )
-    .unwrap();
+    model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
 
     let t = start_with(
@@ -895,21 +895,16 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
-    use std::os::unix::fs::PermissionsExt;
-    let key = std::env::var_os("LATCH_TEST_JEV_KEY")
-        .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
     let setup = tempfile::tempdir().unwrap();
-    let path = setup.path().join(model::JEV_KEY_FILE);
-    std::fs::copy(key, &path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    std::fs::create_dir_all(setup.path().join("browser")).unwrap();
-    std::fs::write(
-        setup.path().join(model::MODEL_FILE),
-        r#"{"provider": "jev"}"#,
-    )
-    .unwrap();
+    model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
-    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
+    let t = start_with(
+        fake::serve(World::default()),
+        provider,
+        DenyExec::default(),
+        None,
+    )
+    .await;
     let device = t.caller("device").await;
     let run = |argv: &[&str]| json!({"argv": argv, "workdir": null, "timeout": 30});
     let ordinary = [
@@ -927,7 +922,9 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
     let set = json!({"command": "set", "text": "Never delete or remove any file on this host."});
     let (answer, _) = t.call(&device, "rules", set).await;
     assert!(matches!(answer, Response::Ok(_)), "rules set: {answer:?}");
-    let removal = gate::gated("exec", &removal, &t.area).unwrap().action;
+    let removal = gate::gated("exec", &removal, Some(t.area.as_path()))
+        .unwrap()
+        .action;
     let mut removals = Vec::new();
     for _ in 0..3 {
         let judged = t.host.gatekeeper.judge(Caller::Owner, &removal).await;

@@ -341,14 +341,7 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[ex(
             "Capture the page",
-            &[
-                "browser",
-                "--host",
-                "mac",
-                "screenshot",
-                "--output",
-                "page.png",
-            ],
+            &["browser", "--host", "mac", "screenshot", "page.png"],
         )],
     },
     Entry {

@@ -978,14 +978,11 @@ async fn serve_operation(
                     }
                     "browser" => match &gate {
                         Ok(gate) => {
-                            // The browser judges agents' steps itself; an
-                            // owner's device drives it unjudged, as before.
-                            let gate = (identity.kind != "device").then_some(*gate);
                             crate::browser::host::run(
                                 &host.browsers,
                                 caller,
                                 &identity.kind,
-                                gate,
+                                Some(*gate),
                                 request.args,
                                 &mut send,
                                 &mut recv,

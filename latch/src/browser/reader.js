@@ -240,8 +240,9 @@
     const form = el.form || el.closest('form');
     const r = role(el);
     return {
-      tag: ['input', 'textarea', 'select'].includes(el.localName) ? el.localName
-        : el.isContentEditable ? 'editable' : el.localName,
+      // Editable first: a textarea made contenteditable takes its value as
+      // text too, which its name and the page's text show.
+      tag: el.isContentEditable ? 'editable' : el.localName,
       type: el.localName === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '',
       autocomplete: el.getAttribute('autocomplete') || '',
       form: form ? [...document.forms].indexOf(form) : -1,
@@ -327,6 +328,9 @@
     if (!el) return { refused: 'the field is gone' };
     if (expected !== token) return { refused: 'the document was replaced' };
     if ((self.origin === 'null' ? 'opaque' : self.origin) !== origin) return { refused: 'the origin changed' };
+    // Checked again here: the page can make a field editable after the
+    // fill was checked, e.g. from an earlier field's input handler.
+    if (el.isContentEditable) return { refused: 'the field became an editable region' };
     if (!setValue(el, value)) return { refused: 'no option matches' };
     if (value) filled.add(el); else filled.delete(el);
     if (el.localName === 'select' || current(el) === value) return { held: true };

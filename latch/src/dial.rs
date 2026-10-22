@@ -44,6 +44,19 @@ pub struct Link {
 
 /// Dials `host` over iroh. Failure here means nothing was sent: exit 3.
 pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
+    // Plow already knows the host is offline: say so now, rather than spend
+    // the connect timeout finding out.
+    if host.online == Some(false) {
+        let seen = match &host.last_seen_at {
+            Some(at) => format!(", last seen {at}"),
+            None => String::new(),
+        };
+        let message = format!(
+            "host {:?} is offline{seen}; nothing was sent. Start `latch serve` there",
+            host.name
+        );
+        return Err(Failure::new(Exit::Unreachable, "host_offline", message));
+    }
     let (id, relay) = host_address(host)?;
     let key = state.load_key()?;
     // A state directory is one peer with one key, so the one that runs
@@ -265,6 +278,32 @@ pub fn lost(connection: &Connection, sent: bool) -> Failure {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[tokio::test]
+    async fn a_host_plow_lists_offline_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let host = Peer {
+            key: "c".repeat(64),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: Some("https://relay.example/".into()),
+            last_seen_at: Some("2026-10-22T01:00:00Z".into()),
+            online: Some(false),
+            this_machine: false,
+        };
+        let started = Instant::now();
+        let failure = connect(&state, &host).await.err().unwrap();
+        assert_eq!(failure.code, "host_offline");
+        assert!(
+            failure.message.contains("2026-10-22T01:00:00Z"),
+            "{}",
+            failure.message
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[tokio::test]
     async fn closing_is_quick_and_the_host_hears_it() {
