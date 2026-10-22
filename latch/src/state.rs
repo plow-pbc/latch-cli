@@ -26,8 +26,6 @@
 //! - `allow-read.json`: the paths it lets callers read besides, a file of
 //!   its own so that a latch from before `--allow-read`, rewriting
 //!   `shares.json`, leaves them alone.
-//! - `secrets.lock`: held while a Keychain latch moves secret files in (see
-//!   `secrets.rs`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
 //!

@@ -8,18 +8,15 @@
 //! state folder, as before. The build decides, by its own signature; there
 //! is no setting.
 //!
-//! A Keychain build never writes a secret file. If the Keychain refuses, the
-//! command fails and says so. It does move secret files it finds (a folder
-//! from before, or from a dev build) into the Keychain: it writes each,
-//! reads it back and compares, and deletes the files only once every one is
-//! confirmed. A move that is cut short leaves all the files, and the next
-//! start picks it up.
+//! A Keychain build never writes a secret file, and never reads one either:
+//! secret files a dev build left are not its own. If the Keychain refuses,
+//! the command fails and says so.
 //!
 //! An item is filed under the state folder's real path, so another folder
 //! on the same Mac, or a copy of this one, never shares its identity.
 
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -39,23 +36,6 @@ pub enum Secret {
 }
 
 impl Secret {
-    const ALL: [Secret; 4] = [
-        Secret::Key,
-        Secret::PlowToken,
-        Secret::VaultKey,
-        Secret::AuditKeys,
-    ];
-
-    /// The temporary files a write of it may have left behind: today's
-    /// writer's, and for the vault key the one before it used.
-    fn temps(self) -> Vec<String> {
-        let mut temps = vec![format!("{}.tmp", self.file())];
-        if self == Secret::VaultKey {
-            temps.push("vault.tmp".into());
-        }
-        temps
-    }
-
     /// The file it is kept in by a build without the Keychain.
     pub fn file(self) -> &'static str {
         match self {
@@ -66,10 +46,6 @@ impl Secret {
         }
     }
 }
-
-/// The file a move into the Keychain, and a first save of a secret file,
-/// hold locked, in the state folder.
-const MOVE_LOCK: &str = "secrets.lock";
 
 /// A Keychain-like store of named items: the real Keychain, or the tests'.
 trait Store: Send + Sync {
@@ -89,24 +65,11 @@ pub struct Secrets {
 
 impl Secrets {
     /// The secrets of the state folder `dir`, where this build keeps them.
-    /// A Keychain build first moves any secret files there.
     pub fn open(dir: &Path) -> Result<Secrets, Failure> {
-        match platform::keychain()? {
-            None => Ok(Secrets {
-                dir: dir.to_path_buf(),
-                keychain: None,
-            }),
-            Some(store) => Secrets::in_store(dir, store),
-        }
-    }
-
-    fn in_store(dir: &Path, store: Box<dyn Store>) -> Result<Secrets, Failure> {
-        let secrets = Secrets {
+        Ok(Secrets {
             dir: dir.to_path_buf(),
-            keychain: Some(store),
-        };
-        secrets.move_files_in()?;
-        Ok(secrets)
+            keychain: platform::keychain()?,
+        })
     }
 
     pub fn read(&self, secret: Secret) -> Result<Option<Vec<u8>>, Failure> {
@@ -138,116 +101,25 @@ impl Secrets {
     /// is kept. An identity is never overwritten, even if two logins race.
     pub fn create(&self, secret: Secret, bytes: &[u8]) -> Result<bool, Failure> {
         let Some(store) = &self.keychain else {
-            // Under the lock, so two first saves never race; written whole
-            // (temporary file, renamed), so one cut short leaves no part
-            // of a secret where the next start would read it.
-            let _lock = self.lock()?;
             let path = self.dir.join(secret.file());
-            if path.exists() {
-                return Ok(false);
-            }
-            return write_private(&path, bytes)
-                .map(|()| true)
-                .map_err(|err| io_failure(&path, err));
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path);
+            return match file {
+                Ok(mut file) => file
+                    .write_all(bytes)
+                    .and_then(|()| file.sync_all())
+                    .map(|()| true)
+                    .map_err(|err| io_failure(&path, err)),
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(false),
+                Err(err) => Err(io_failure(&path, err)),
+            };
         };
         store
             .add(&self.account(secret), bytes)
             .map_err(|why| self.refused("save", secret, &why))
-    }
-
-    /// Moves the secret files into the store: writes each, reads it back
-    /// and compares, and only once every one is confirmed deletes the
-    /// files, and any temporary copies a write left beside them. Anything
-    /// short of that leaves every file in place.
-    fn move_files_in(&self) -> Result<(), Failure> {
-        let store = self.keychain.as_deref().expect("moves only into a store");
-        let on_disk = |secret: Secret| {
-            let mut names = secret.temps();
-            names.insert(0, secret.file().to_string());
-            names
-                .into_iter()
-                .map(|name| self.dir.join(name))
-                .filter(|path| path.exists())
-                .collect::<Vec<PathBuf>>()
-        };
-        if Secret::ALL.iter().all(|secret| on_disk(*secret).is_empty()) {
-            return Ok(());
-        }
-        // One move at a time per folder. A mover that waited reads the
-        // files only now, so it never puts back a secret another one has
-        // already moved, and maybe a login has since replaced.
-        let _lock = self.lock()?;
-        let mut confirmed = Vec::new();
-        let mut moved = 0;
-        for secret in Secret::ALL {
-            let path = self.dir.join(secret.file());
-            let account = self.account(secret);
-            let bytes = match fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(err) if err.kind() == ErrorKind::NotFound => {
-                    // A temporary copy with no file beside it may be the
-                    // only copy left: it goes only if the store has the
-                    // secret already.
-                    let left = on_disk(secret);
-                    if left.is_empty() {
-                        continue;
-                    }
-                    let stored = store
-                        .get(&account)
-                        .map_err(|why| self.refused("read", secret, &why))?;
-                    if stored.is_none() {
-                        let message = format!(
-                            "{} is there but {} is not: it may be the only copy of that \
-                             secret. Rename it to {} or delete it, then run latch again; \
-                             nothing was moved",
-                            left[0].display(),
-                            secret.file(),
-                            secret.file()
-                        );
-                        return Err(Failure::failed("keychain_failed", message));
-                    }
-                    confirmed.extend(left);
-                    continue;
-                }
-                Err(err) => return Err(io_failure(&path, err)),
-            };
-            // Until its file is gone the file is the secret: a copy already
-            // in the store is from a move cut short, and is replaced.
-            store
-                .set(&account, &bytes)
-                .map_err(|why| self.refused("save", secret, &why))?;
-            moved += 1;
-            test_stop_after(moved);
-            let back = store
-                .get(&account)
-                .map_err(|why| self.refused("read", secret, &why))?;
-            if back.as_deref() != Some(&bytes[..]) {
-                let message = format!(
-                    "{} did not read back from the Keychain as written; every secret file was kept",
-                    secret.file()
-                );
-                return Err(Failure::failed("keychain_failed", message));
-            }
-            confirmed.extend(on_disk(secret));
-        }
-        for path in confirmed {
-            fs::remove_file(&path).map_err(|err| io_failure(&path, err))?;
-        }
-        Ok(())
-    }
-
-    /// Takes the folder's secrets lock until the returned file is dropped.
-    fn lock(&self) -> Result<fs::File, Failure> {
-        let path = self.dir.join(MOVE_LOCK);
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|err| io_failure(&path, err))?;
-        file.lock().map_err(|err| io_failure(&path, err))?;
-        Ok(file)
     }
 
     /// The item's account: the state folder's real path and the file name.
@@ -266,21 +138,6 @@ impl Secrets {
         Failure::failed("keychain_failed", message)
     }
 }
-
-/// Test only, in debug builds: `LATCH_TEST_STOP_MOVE_AFTER=N` ends the
-/// process right after the Nth secret is written to the Keychain during a
-/// move, as a kill there would, so a test can show the next start picks
-/// the move up. A release build has no such hook.
-#[cfg(debug_assertions)]
-fn test_stop_after(written: usize) {
-    let stop = std::env::var("LATCH_TEST_STOP_MOVE_AFTER").ok();
-    if stop.and_then(|n| n.parse().ok()) == Some(written) {
-        std::process::exit(75);
-    }
-}
-
-#[cfg(not(debug_assertions))]
-fn test_stop_after(_written: usize) {}
 
 fn io_failure(path: &Path, err: std::io::Error) -> Failure {
     Failure::failed("state_io", format!("{}: {err}", path.display()))
@@ -546,23 +403,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// The tests' Keychain: items in memory, shared by its clones, that can
-    /// be told to fail its Nth write or to read back something else.
+    /// be told to fail its Nth write.
     #[derive(Clone, Default)]
     struct Memory {
         items: Arc<Mutex<HashMap<String, Vec<u8>>>>,
         writes: Arc<AtomicUsize>,
         fail_write: Option<usize>,
-        garble_reads: bool,
     }
 
     impl Store for Memory {
         fn get(&self, account: &str) -> Result<Option<Vec<u8>>, String> {
-            let found = self.items.lock().unwrap().get(account).cloned();
-            Ok(if self.garble_reads {
-                found.map(|_| b"something else".to_vec())
-            } else {
-                found
-            })
+            Ok(self.items.lock().unwrap().get(account).cloned())
         }
 
         fn add(&self, account: &str, bytes: &[u8]) -> Result<bool, String> {
@@ -586,32 +437,10 @@ mod tests {
     }
 
     fn in_memory(dir: &Path, memory: &Memory) -> Result<Secrets, Failure> {
-        Secrets::in_store(dir, Box::new(memory.clone()))
-    }
-
-    fn files(dir: &Path) -> Secrets {
-        Secrets {
+        Ok(Secrets {
             dir: dir.to_path_buf(),
-            keychain: None,
-        }
-    }
-
-    fn secret_files(dir: &Path) -> Vec<&'static str> {
-        Secret::ALL
-            .iter()
-            .map(|secret| secret.file())
-            .filter(|file| dir.join(file).exists())
-            .collect()
-    }
-
-    /// A folder as a file build leaves it: all three secrets as files.
-    fn folder_with_files() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let on_disk = files(dir.path());
-        on_disk.write(Secret::Key, b"key-hex").unwrap();
-        on_disk.write(Secret::PlowToken, b"plow-login").unwrap();
-        on_disk.write(Secret::VaultKey, b"vault-hex").unwrap();
-        dir
+            keychain: Some(Box::new(memory.clone())),
+        })
     }
 
     #[test]
@@ -647,153 +476,12 @@ mod tests {
     }
 
     #[test]
-    fn secret_files_move_into_the_keychain_and_are_then_removed() {
-        let dir = folder_with_files();
-        let memory = Memory::default();
-        let secrets = in_memory(dir.path(), &memory).unwrap();
-        assert_eq!(secret_files(dir.path()), Vec::<&str>::new());
-        assert_eq!(secrets.read(Secret::Key).unwrap().unwrap(), b"key-hex");
-        assert_eq!(
-            secrets.read(Secret::PlowToken).unwrap().unwrap(),
-            b"plow-login"
-        );
-        assert_eq!(
-            secrets.read(Secret::VaultKey).unwrap().unwrap(),
-            b"vault-hex"
-        );
-        // Filed under the folder's real path, so a copy elsewhere shares none.
-        let real = fs::canonicalize(dir.path()).unwrap();
-        assert!(
-            memory
-                .items
-                .lock()
-                .unwrap()
-                .contains_key(&format!("{}/key", real.display()))
-        );
-    }
-
-    #[test]
-    fn a_move_cut_short_keeps_the_rest_and_the_next_start_finishes_it() {
-        let dir = folder_with_files();
-        // The second write fails after the key's was confirmed: every file
-        // stays until all three are, and nothing is lost.
-        let failing = Memory {
-            fail_write: Some(2),
-            ..Memory::default()
-        };
-        let refused = in_memory(dir.path(), &failing).err().unwrap();
-        assert_eq!(refused.code, "keychain_failed");
-        assert_eq!(secret_files(dir.path()), ["key", "plow-token", "vault.key"]);
-
-        let memory = Memory {
-            items: failing.items.clone(),
-            ..Memory::default()
-        };
-        let secrets = in_memory(dir.path(), &memory).unwrap();
-        assert_eq!(secret_files(dir.path()), Vec::<&str>::new());
-        assert_eq!(secrets.read(Secret::Key).unwrap().unwrap(), b"key-hex");
-        assert_eq!(
-            secrets.read(Secret::PlowToken).unwrap().unwrap(),
-            b"plow-login"
-        );
-        assert_eq!(
-            secrets.read(Secret::VaultKey).unwrap().unwrap(),
-            b"vault-hex"
-        );
-    }
-
-    #[test]
-    fn a_second_mover_waits_and_puts_back_nothing_the_first_moved() {
-        let dir = folder_with_files();
-        let memory = Memory::default();
-        // Another process is moving this folder's files: it holds the lock.
-        let held = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(dir.path().join(MOVE_LOCK))
-            .unwrap();
-        held.lock().unwrap();
-        let waiting = std::thread::spawn({
-            let (dir, memory) = (dir.path().to_path_buf(), memory.clone());
-            move || in_memory(&dir, &memory).map(|_| ())
-        });
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        assert!(!waiting.is_finished(), "a move waits for the folder's lock");
-
-        // The other finishes its move, then a login replaces the token.
-        let other = files(dir.path());
-        for secret in Secret::ALL {
-            let path = dir.path().join(secret.file());
-            let Ok(bytes) = fs::read(&path) else {
-                continue;
-            };
-            memory.set(&other.account(secret), &bytes).unwrap();
-            fs::remove_file(path).unwrap();
-        }
-        memory
-            .set(&other.account(Secret::PlowToken), b"new-login")
-            .unwrap();
-        drop(held);
-
-        waiting.join().unwrap().unwrap();
-        assert_eq!(
-            memory
-                .get(&other.account(Secret::PlowToken))
-                .unwrap()
-                .unwrap(),
-            b"new-login"
-        );
-    }
-
-    #[test]
-    fn a_move_leaves_no_temporary_copy_of_a_secret_behind() {
-        let dir = folder_with_files();
-        // A write cut short before its rename, beside the file it was for,
-        // and the one before this writer's naming left for the vault key.
-        fs::write(dir.path().join("plow-token.tmp"), b"pending-login").unwrap();
-        fs::write(dir.path().join("vault.tmp"), b"vault-hex").unwrap();
-        let memory = Memory::default();
-        in_memory(dir.path(), &memory).unwrap();
-        let mut left: Vec<String> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        left.sort();
-        assert_eq!(left, [MOVE_LOCK]);
-    }
-
-    #[test]
-    fn a_temporary_copy_with_no_secret_anywhere_else_is_kept_and_the_move_stops() {
+    fn a_keychain_build_never_reads_secret_files_a_dev_build_left() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("plow-token.tmp"), b"only-copy").unwrap();
-        let memory = Memory::default();
-        let refused = in_memory(dir.path(), &memory).err().unwrap();
-        assert_eq!(refused.code, "keychain_failed");
-        assert!(refused.message.contains("only copy"), "{}", refused.message);
-        assert_eq!(
-            fs::read(dir.path().join("plow-token.tmp")).unwrap(),
-            b"only-copy"
-        );
-
-        // Once the Keychain holds the token, the copy is a leftover.
-        memory
-            .set(&files(dir.path()).account(Secret::PlowToken), b"only-copy")
-            .unwrap();
-        in_memory(dir.path(), &memory).unwrap();
-        assert!(!dir.path().join("plow-token.tmp").exists());
-    }
-
-    #[test]
-    fn a_file_whose_copy_does_not_read_back_is_kept() {
-        let dir = folder_with_files();
-        let garbling = Memory {
-            garble_reads: true,
-            ..Memory::default()
-        };
-        let refused = in_memory(dir.path(), &garbling).err().unwrap();
-        assert_eq!(refused.code, "keychain_failed");
-        assert_eq!(secret_files(dir.path()), ["key", "plow-token", "vault.key"]);
+        fs::write(dir.path().join("key"), b"dev-key").unwrap();
+        let secrets = in_memory(dir.path(), &Memory::default()).unwrap();
+        assert_eq!(secrets.read(Secret::Key).unwrap(), None);
+        assert_eq!(fs::read(dir.path().join("key")).unwrap(), b"dev-key");
     }
 
     #[test]
