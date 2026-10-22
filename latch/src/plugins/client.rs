@@ -14,6 +14,7 @@ use crate::cli::{PluginsArgs, PluginsCommand};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
 use crate::hosts;
+use crate::lifecycle;
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
 use crate::wire::Request;
@@ -57,7 +58,7 @@ async fn without_a_host(state: &StateDir, args: &Value) -> Result<Value, Failure
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
     let command = args["command"].as_str().unwrap_or_default();
     let connector = Connector::named(args["name"].as_str().unwrap_or_default())?;
-    let who = format!("latch plugins {command} {}", connector.name());
+    let who = format!("{}{command} {}", lifecycle::CONFIGURING, connector.name());
     // Another `plugins` command lets go once it is done; a host never does.
     let serving = |holder: &str| holder.starts_with("latch serve");
     let _held = match crate::serve::hold_state(&dir, &who, HOLD_WITHIN, |h| !serving(h))? {

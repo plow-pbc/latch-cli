@@ -161,7 +161,14 @@ async fn launch(
             "another `latch serve` or `latch stop` on this state folder did not finish".to_string();
         return Err(Failure::failed("launch_busy", message));
     };
-    if lifecycle::holds_lock(&dir) {
+    let host = lifecycle::now(&dir);
+    if host.configuring {
+        let message = "a `latch plugins` command is changing this state folder's connectors; \
+                       start latch once it finishes"
+            .to_string();
+        return Err(Failure::failed("state_busy", message));
+    }
+    if host.running {
         return Err(already_serving(&dir).await);
     }
     let given = if args.again {

@@ -2323,7 +2323,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(before["protocol"], 2);
     assert_eq!(
         before["serve"],
-        json!({"running": false, "ready": false, "managed": false, "state": "stopped", "pid": null})
+        json!({"running": false, "ready": false, "configuring": false, "managed": false, "state": "stopped", "pid": null})
     );
     assert_eq!(before["last_error"], Value::Null);
 
@@ -2339,7 +2339,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let up = local(&host);
     assert_eq!(
         up["serve"],
-        json!({"running": true, "ready": true, "managed": false, "state": "serving", "pid": pid})
+        json!({"running": true, "ready": true, "configuring": false, "managed": false, "state": "serving", "pid": pid})
     );
     drop(serve);
     let stopped = local(&host);
@@ -4042,10 +4042,31 @@ fn offline_plugin_commands_on_one_state_folder_take_turns() {
     thread::sleep(std::time::Duration::from_secs(2));
     assert!(disable.try_wait().unwrap().is_none(), "it waits its turn");
     assert!(saved().contains("google"), "{}", saved());
+    // Meanwhile no host runs: the folder is only busy.
+    let serve = local_serve(&host);
+    assert_eq!(serve["running"], false, "{serve}");
+    assert_eq!(serve["configuring"], true, "{serve}");
+    assert_ne!(serve["state"], "starting", "{serve}");
+    let started = std::time::Instant::now();
+    let stop = latch(&host, &["stop"], &[]);
+    assert_eq!(stop.status.code(), Some(0), "{stop:?}");
+    let stop: Value = serde_json::from_slice(&stop.stdout).unwrap();
+    assert_eq!(stop["stopped"], false, "{stop}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let start = latch(&host, &["serve", "-d"], &[]);
+    let refused: Value = serde_json::from_slice(&start.stderr).unwrap();
+    assert_eq!(refused["error"]["code"], "state_busy", "{refused}");
     drop(lock);
     let done = disable.wait_with_output().unwrap();
     assert!(done.status.success(), "{done:?}");
     assert!(!saved().contains("google"), "{}", saved());
+    // What a real one writes while it holds the folder.
+    let holder = fs::read_to_string(host.join("serve.lock")).unwrap();
+    assert!(
+        holder.starts_with("latch plugins disable google (pid "),
+        "{holder}"
+    );
+    assert_eq!(local_serve(&host)["configuring"], false);
 }
 
 /// Whether launchd still has the one-shot Full Disk Access check's job.

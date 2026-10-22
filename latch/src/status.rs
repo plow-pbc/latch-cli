@@ -67,6 +67,8 @@ pub struct Serve {
     pub running: bool,
     /// It is online and accepting callers.
     pub ready: bool,
+    /// No host runs; a `latch plugins` command is changing the connectors.
+    pub configuring: bool,
     /// It runs as this user's service, as `latch serve` and `serve -d`
     /// start it, rather than in the foreground (`serve --foreground`).
     pub managed: bool,
@@ -92,6 +94,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         serve: Serve {
             running: host.running,
             ready: host.state == Phase::Serving,
+            configuring: host.configuring,
             managed: host.running && crate::managed::Service::new(&dir).registered(),
             state: host.state,
             pid: host.pid,
