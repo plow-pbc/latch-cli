@@ -10,7 +10,7 @@
 <script>
   const cross = new URLSearchParams(location.search).get('cross');
   let added = 0;
-  setInterval(() => {
+  const addFrame = () => {
     const frame = document.createElement('iframe');
     frame.width = 10;
     frame.height = 10;
@@ -19,5 +19,9 @@
     frame.src = 'http://localhost:' + cross + '/cross.html?' + added;
     document.body.appendChild(frame);
     document.getElementById('out').textContent = 'frames added: ' + ++added;
-  }, 15);
+  };
+  // A finite burst overlaps the initial load. Continuous overlapping
+  // frame loads can otherwise keep the page's load event pending forever.
+  for (let i = 0; i < 3; i++) addFrame();
+  window.addEventListener('load', () => setInterval(addFrame, 15), {once: true});
 </script>

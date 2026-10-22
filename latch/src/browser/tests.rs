@@ -228,6 +228,12 @@ fn helper_of(pid: u32) -> u32 {
 /// returns the port. Each connection gets its own thread: a browser opens
 /// connections it may not use at once.
 fn serve(pages: Vec<(String, Vec<u8>)>) -> u16 {
+    serve_delayed(pages, Duration::ZERO)
+}
+
+/// Keeps the response open after its scripts can run, to exercise loading
+/// while subframes attach, including when their responses are slow too.
+fn serve_delayed(pages: Vec<(String, Vec<u8>)>, delay: Duration) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let pages = Arc::new(pages);
@@ -251,7 +257,10 @@ fn serve(pages: Vec<(String, Vec<u8>)>) -> u16 {
                     body.len()
                 );
                 let _ = socket.write_all(head.as_bytes());
-                let _ = socket.write_all(body);
+                let (start, end) = body.split_at(body.len().saturating_sub(1));
+                let _ = socket.write_all(start);
+                std::thread::sleep(delay);
+                let _ = socket.write_all(end);
             });
         }
     });
@@ -1133,9 +1142,24 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
     )
     .await
     .unwrap();
-    let url = test_site().replace("frames.html", "churn.html");
+    let pages_port = serve_delayed(
+        vec![(
+            "/churn.html".into(),
+            include_bytes!("../../tests/browser-site/churn.html").to_vec(),
+        )],
+        Duration::from_millis(200),
+    );
+    let cross_port = serve_delayed(
+        vec![(
+            "/cross.html".into(),
+            include_bytes!("../../tests/browser-site/cross.html").to_vec(),
+        )],
+        Duration::from_millis(200),
+    );
+    let url = format!("http://127.0.0.1:{pages_port}/churn.html?cross={cross_port}");
     let mut slowest = Duration::ZERO;
     for round in 0..3 {
+        let mut added_on_open = 0;
         // Each load, and each reading after it, while cross-site frames
         // attach and go away underneath. The first call that fails ends
         // the test: the ones after it would only wait out their time.
@@ -1157,7 +1181,23 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
                     failure.message
                 );
             }
+            if n == 0 {
+                let added = session
+                    .call(json!({"op": "eval", "script": "added"}))
+                    .await
+                    .unwrap()
+                    .result;
+                added_on_open = added["value"].as_u64().unwrap();
+            }
         }
+        let page = session
+            .call(json!({"op": "eval", "script": "({state: document.readyState, added})"}))
+            .await
+            .unwrap()
+            .result;
+        println!("round {round}: {}", page["value"]);
+        assert_eq!(page["value"]["state"], "complete");
+        assert!(page["value"]["added"].as_u64().unwrap() > added_on_open);
     }
     println!("slowest call: {slowest:?}");
     let text = session.call(json!({"op": "text"})).await.unwrap().result;
