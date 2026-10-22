@@ -371,6 +371,7 @@ conformance!(
     a_browser_that_leaves_calls_unanswered_is_closed,
     a_busy_browser_dies_with_its_host,
     a_dialog_that_opens_between_calls_is_refused_at_once,
+    typing_that_opens_a_dialog_returns_without_waiting_on_the_page,
     a_dialog_in_one_session_does_not_hold_another_sessions_download,
     a_download_heard_before_another_sessions_dialog_does_not_wait_on_it,
     back_into_a_reserved_site_is_refused_after_a_return_visit,
@@ -1445,6 +1446,43 @@ async fn a_dialog_that_opens_between_calls_is_refused_at_once(engine: &str) {
         assert_eq!(refused.code, "dialog_open", "{op}: {}", refused.message);
         assert!(took < Duration::from_secs(5), "{op} took {took:?}");
     }
+    session
+        .call(json!({"op": "dialog", "accept": true}))
+        .await
+        .unwrap();
+    session.call(json!({"op": "observe"})).await.unwrap();
+    session.close().await.unwrap();
+}
+
+async fn typing_that_opens_a_dialog_returns_without_waiting_on_the_page(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["typing-dialog"]);
+    let port = serve(vec![(
+        "/".into(),
+        br#"<!doctype html><label>Name <input oninput="alert('typed')"></label>"#.to_vec(),
+    )]);
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        "typing-dialog",
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
+    let page = session
+        .call(json!({"op": "open", "url": format!("http://127.0.0.1:{port}/")}))
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let typed = session
+        .call(json!({"op": "act", "action": "type", "target": find(&page.result, "textbox", "Name"), "text": "Ada"}))
+        .await;
+    let took = started.elapsed();
+    let typed = typed.unwrap().result;
+    println!("typing: {typed} after {took:?}");
+    assert_eq!(typed["blocked_by_dialog"], true);
+    assert_eq!(typed["events"][0]["message"], "typed");
+    assert!(took < Duration::from_secs(5), "typing took {took:?}");
     session
         .call(json!({"op": "dialog", "accept": true}))
         .await
