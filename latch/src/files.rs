@@ -12,7 +12,7 @@ use std::path::Path;
 use iroh::endpoint::{RecvStream, SendStream, VarInt};
 use serde_json::{Value, json};
 
-pub use place::{Places, destination};
+use place::{destination, source};
 
 use crate::serve::Done;
 use crate::wire::{self, Response};
@@ -23,7 +23,7 @@ pub async fn get(workers: &WorkerSetup, args: &Value, send: &mut SendStream) -> 
     let Some(path) = args["remote_path"].as_str() else {
         return bad_arguments();
     };
-    let (mut worker, first) = match workers.start("read", None, None, Path::new(path)).await {
+    let (mut worker, first) = match workers.start_read(Path::new(path)).await {
         Ok(started) => started,
         Err(error) => return refused(path, error),
     };
@@ -48,29 +48,32 @@ pub async fn get(workers: &WorkerSetup, args: &Value, send: &mut SendStream) -> 
     }
 }
 
-/// Resolves a put's `remote_path` in `args` to the path it will write
-/// (`destination`), before it is judged, so the judge and the audit see
-/// that path. Answers the refusal if there is none.
-pub fn resolve_put(args: &mut Value, places: Option<&Places>) -> Option<Done> {
+/// Resolves a get's or put's `remote_path` in `args` to the host path it
+/// reads or writes (`source`, `destination`), before it is judged, so the
+/// judge and the audit see that path. Answers the refusal if there is none.
+pub fn resolve(op: &str, args: &mut Value, workers: &WorkerSetup) -> Option<Done> {
     let remote = args["remote_path"].as_str()?.to_string();
-    let Some(places) = places else {
-        let message = "this host has no home folder to put files in".to_string();
-        return Some(Done::failed("no_home", message, json!({ "path": remote })));
+    let resolved = match op {
+        "file_get" => source(&remote, workers),
+        "file_put" => destination(&remote, args["name"].as_str(), workers),
+        _ => return None,
     };
-    match destination(&remote, args["name"].as_str(), places) {
-        Ok(path) => match path.to_str() {
-            Some(path) => {
-                args["remote_path"] = json!(path);
-                None
-            }
-            None => Some(Done::failed(
-                "bad_path",
-                format!("{} is not UTF-8", path.display()),
-                json!({ "path": remote }),
-            )),
-        },
-        Err(refusal) => Some(refused(&remote, refusal.into())),
-    }
+    let path = match resolved {
+        Ok(path) => path,
+        Err(failure) => {
+            return Some(Done {
+                response: Response::error(&failure),
+                audit_args: json!({ "path": remote }),
+                outcome: failure.code,
+            });
+        }
+    };
+    let Some(path) = path.to_str() else {
+        let message = format!("{} is not UTF-8", path.display());
+        return Some(Done::failed("bad_path", message, json!({ "path": remote })));
+    };
+    args["remote_path"] = json!(path);
+    None
 }
 
 /// `file_put`: the client's bytes go to the worker, which writes them into
@@ -78,7 +81,6 @@ pub fn resolve_put(args: &mut Value, places: Option<&Places>) -> Option<Done> {
 /// to `remote_path`, which `destination` resolved before the put was judged.
 pub async fn put(
     workers: &WorkerSetup,
-    places: &Places,
     args: &Value,
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -95,8 +97,7 @@ pub async fn put(
         Ok(dir) => dir.join("upload"),
         Err(err) => return Done::failed("tmpdir_failed", err.to_string(), json!({ "path": path })),
     };
-    let tmpdir = staged.parent();
-    let (mut worker, first) = match workers.start("write", Some(size), tmpdir, &staged).await {
+    let (mut worker, first) = match workers.start_write(size, &staged).await {
         Ok(started) => started,
         Err(error) => return refused(path, error),
     };
@@ -115,9 +116,13 @@ pub async fn put(
     let copied = wire::copy(recv, &mut stdin, size).await;
     drop(stdin);
     match (copied, worker.finish().await) {
-        (Ok(sha256), Ok(())) => match place::place(&staged, Path::new(path), places) {
+        (Ok(sha256), Ok(())) => match place::place(&staged, Path::new(path), workers) {
             Ok(()) => moved(path, size, sha256),
-            Err(refusal) => refused(path, refusal.into()),
+            Err(failure) => Done {
+                response: Response::error(&failure),
+                audit_args: json!({ "path": path }),
+                outcome: failure.code,
+            },
         },
         (_, Err(error)) => Done::failed(&error.code, error.message, json!({ "path": path })),
         (Err(_), Ok(())) => lost(path),
@@ -134,16 +139,11 @@ fn moved(path: &str, size: u64, sha256: String) -> Done {
     }
 }
 
-/// The worker refused before any bytes moved, or the host would not place
-/// them. A sandbox refusal, a host sharing no folders, or a destination
-/// outside home, hidden or changed since it was checked, is a denial
-/// (exit 4); anything else is a failure (exit 1).
+/// The worker refused before any bytes moved. A sandbox refusal is a
+/// denial (exit 4); anything else is a failure (exit 1).
 fn refused(path: &str, error: WorkerError) -> Done {
     let audit_args = json!({ "path": path });
-    if matches!(
-        error.code.as_str(),
-        "sandbox_denied" | "no_folders" | "outside_home" | "hidden_path" | "destination_changed"
-    ) {
+    if error.code == "sandbox_denied" {
         return Done {
             response: Response::Error {
                 exit: crate::failure::Exit::Denied,

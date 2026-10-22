@@ -56,8 +56,6 @@ struct Host {
     /// The live view, when `serve` shows one (see `dashboard.rs`).
     dashboard: Option<Dashboard>,
     workers: WorkerSetup,
-    /// Where a put may land; `None` with no home folder.
-    places: Option<files::Places>,
     /// Open browser sessions, one per profile.
     browsers: crate::browser::host::Browsers,
     /// The host's vault, shared by every engine and profile.
@@ -402,7 +400,6 @@ async fn run_host(
     let host = Arc::new(Host {
         plow,
         audit: Arc::new(Mutex::new(audit)),
-        places: files::Places::here(&workers.state_dir),
         workers,
         dashboard,
         browsers,
@@ -647,8 +644,7 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
 }
 
 /// What a host sharing no folders says in its log and on its dashboard.
-pub const SHARING_NONE: &str =
-    "Sharing no folders — exec reads home. Files: `latch shares set ~/code`; restart serve.";
+pub const SHARING_NONE: &str = "Sharing no folders — exec and file work under home.";
 
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
@@ -862,12 +858,8 @@ async fn serve_operation(
         let response = failed("bad_request", "the request frame is not valid".to_string());
         return answer(&mut send, &response).await;
     };
-    // A put's destination is resolved before anything is judged.
-    let unplaced = if request.op == "file_put" {
-        files::resolve_put(&mut request.args, host.places.as_ref())
-    } else {
-        None
-    };
+    // A file's host path is resolved before anything is judged.
+    let unplaced = files::resolve(&request.op, &mut request.args, &host.workers);
     let op = request.op.as_str();
     let exec_permissions = (op == "exec").then(|| {
         json!({
@@ -915,17 +907,10 @@ async fn serve_operation(
             } else {
                 (None, None)
             };
-            // File copies still need a shared folder; exec uses per-call permissions.
-            let unshared = host.workers.areas.is_empty() && matches!(op, "file_get" | "file_put");
             let first_area = host.workers.areas.first().map(PathBuf::as_path);
-            let gated = gate::gated(op, &request.args, first_area)
-                .filter(|_| {
-                    !denied_exec
-                        && !upgraded
-                        && !unshared
-                        && exec_failure.is_none()
-                        && unplaced.is_none()
-                });
+            let gated = gate::gated(op, &request.args, first_area).filter(|_| {
+                !denied_exec && !upgraded && exec_failure.is_none() && unplaced.is_none()
+            });
             let unjudgeable = match (&gate, &gated) {
                 (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
@@ -971,11 +956,7 @@ async fn serve_operation(
                 match op {
                     "file_get" => files::get(&host.workers, &request.args, &mut send).await,
                     "file_put" => {
-                        let places = host
-                            .places
-                            .as_ref()
-                            .expect("resolve_put refuses without one");
-                        files::put(&host.workers, places, &request.args, &mut send, &mut recv).await
+                        files::put(&host.workers, &request.args, &mut send, &mut recv).await
                     }
                     "exec" if denied_exec => Done {
                         response: Response::Error {

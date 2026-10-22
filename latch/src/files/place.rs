@@ -1,150 +1,76 @@
-//! Where a `file put` lands, and putting it there.
+//! The host paths of `file get` and `file put`, and putting an upload in
+//! place.
 //!
-//! `destination` resolves the caller's path on the host before the put is
-//! judged: `~` expanded, symlinks resolved, a folder given the file's name,
-//! and the result refused if it is not under home or is in a hidden place.
-//! The judge and the audit see that path.
+//! `source` and `destination` resolve the caller's path on the host before
+//! the call is judged, as exec's paths are (`exec::resolve`, `check_path`):
+//! `~` expanded, symlinks resolved, refused if it is not under home or is
+//! hidden; a put's folder is given the file's name. The judge and the
+//! audit see that path.
 //!
-//! `place` moves the bytes the confined worker staged into it, outside the
-//! sandbox. It opens the destination's folder once, checks that handle is
-//! still the folder that was judged, and then works only relative to it: a
-//! staging file beside the destination, written and synced, then renamed
-//! over it. A folder swapped for a symlink after judging cannot redirect
-//! the write, and a put that breaks off leaves the old file as it was.
+//! `place` moves the bytes the confined worker staged to the destination,
+//! outside the sandbox. It opens the destination's folder once (refusing a
+//! symlink there), checks that handle is still the folder that was judged
+//! and passes the checks again, then works only relative to it: a staging
+//! file beside the destination, written and synced, then renamed over it.
+//! A folder swapped for a symlink after judging cannot redirect the write,
+//! and a put that breaks off leaves the old file as it was.
 
 use std::ffi::CString;
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
-use crate::state;
+use crate::exec::{check_path, resolve};
+use crate::failure::{Exit, Failure};
+use crate::sandbox::opened_path;
+use crate::worker::WorkerSetup;
 
-/// Why a destination is refused, as a code and a message for the caller.
-#[derive(Debug)]
-pub struct Refused {
-    pub code: &'static str,
-    pub message: String,
+/// The file a get of `remote` reads.
+pub fn source(remote: &str, workers: &WorkerSetup) -> Result<PathBuf, Failure> {
+    let path = resolve(&workers.home, Path::new(remote))?;
+    check_path(workers, &path, false)?;
+    Ok(path)
 }
 
-impl From<Refused> for crate::worker::WorkerError {
-    fn from(refused: Refused) -> Self {
-        crate::worker::WorkerError {
-            code: refused.code.to_string(),
-            message: refused.message,
-        }
-    }
-}
-
-fn refused(code: &'static str, message: impl Into<String>) -> Refused {
-    Refused {
-        code,
-        message: message.into(),
-    }
-}
-
-/// What a put may never land in, besides everything outside `home`.
-pub struct Places {
-    /// The home folder, symlinks resolved.
-    pub home: PathBuf,
-    /// The host's own state folder; any other latch state folder is found
-    /// by looking.
-    pub state_dir: PathBuf,
-}
-
-impl Places {
-    /// This user's home and the host's state folder, resolved now; `None`
-    /// with no home folder.
-    pub fn here(state_dir: &Path) -> Option<Places> {
-        Some(Places {
-            home: std::env::home_dir()?.canonicalize().ok()?,
-            state_dir: state_dir.to_path_buf(),
-        })
-    }
-
-    /// Why `path` (symlinks resolved) is not a place a put may write, if
-    /// it is not: outside home, home itself, `~/.latch`, any latch state
-    /// folder, or on macOS `~/Library` apart from `~/Library/Caches`.
-    pub fn check(&self, path: &Path) -> Result<(), Refused> {
-        let home = &self.home;
-        if !path.starts_with(home) || path == home {
-            return Err(refused(
-                "outside_home",
-                format!("{} is not inside the home folder", path.display()),
-            ));
-        }
-        let library = home.join("Library");
-        let hidden = path.starts_with(home.join(".latch"))
-            || path.starts_with(&self.state_dir)
-            || cfg!(target_os = "macos")
-                && path.starts_with(&library)
-                && !path.starts_with(library.join("Caches"))
-            || path
-                .ancestors()
-                .take_while(|dir| *dir != home.as_path())
-                .any(state::is_state_folder);
-        if hidden {
-            return Err(refused(
-                "hidden_path",
-                format!("{} is in a place latch never writes", path.display()),
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// The path a put of the client's file `name` to `remote` writes. `remote`
-/// may start with `~`; a relative one is under home.
-pub fn destination(remote: &str, name: Option<&str>, places: &Places) -> Result<PathBuf, Refused> {
-    let home = &places.home;
-    let asked = match remote.strip_prefix('~') {
-        Some("") => home.clone(),
-        Some(rest) if rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
-        _ if Path::new(remote).is_absolute() => PathBuf::from(remote),
-        _ => home.join(remote),
-    };
+/// The file a put of the client's file `name` to `remote` writes.
+pub fn destination(
+    remote: &str,
+    name: Option<&str>,
+    workers: &WorkerSetup,
+) -> Result<PathBuf, Failure> {
+    let mut path = resolve(&workers.home, Path::new(remote))?;
     // A folder takes the file under its own name, as `cp` does.
-    let asked = if asked.is_dir() {
+    if path.is_dir() {
         let plain = name.filter(|name| Path::new(name).file_name() == Some(name.as_ref()));
         let Some(name) = plain else {
-            return Err(refused(
+            return Err(Failure::failed(
                 "is_a_directory",
                 format!("{remote} is a folder, and the file has no plain name to go under"),
             ));
         };
-        asked.join(name)
-    } else {
-        asked
-    };
-    let (Some(parent), Some(Component::Normal(file))) =
-        (asked.parent(), asked.components().next_back())
-    else {
-        return Err(refused("bad_path", format!("{remote} names no file")));
-    };
-    let parent = parent
-        .canonicalize()
-        .map_err(|_| refused("not_found", format!("{}: no such folder", parent.display())))?;
-    let path = parent.join(file);
-    if path.is_dir() {
-        return Err(refused(
-            "is_a_directory",
-            format!("{} is a folder", path.display()),
-        ));
+        path.push(name);
+        if path.is_dir() {
+            let message = format!("{} is a folder", path.display());
+            return Err(Failure::failed("is_a_directory", message));
+        }
     }
-    places.check(&path)?;
+    if !path.parent().is_some_and(Path::is_dir) {
+        let message = format!("{remote}: no folder to put it in");
+        return Err(Failure::failed("not_found", message));
+    }
+    check_path(workers, &path, true)?;
     Ok(path)
 }
 
 /// Moves the file at `staged` to `path`, which `destination` resolved.
-pub fn place(staged: &Path, path: &Path, places: &Places) -> Result<(), Refused> {
+pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Failure> {
     let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
-        return Err(refused(
-            "bad_path",
-            format!("{} names no file", path.display()),
-        ));
+        let message = format!("{} names no file", path.display());
+        return Err(Failure::failed("bad_path", message));
     };
-    let failed = |err: io::Error| refused("io_error", format!("{}: {err}", path.display()));
+    let failed = |err: io::Error| Failure::failed("io_error", format!("{}: {err}", path.display()));
     // `O_NOFOLLOW`: a folder that became a symlink is not opened at all.
     let dir = open(
         None,
@@ -155,10 +81,10 @@ pub fn place(staged: &Path, path: &Path, places: &Places) -> Result<(), Refused>
     .map_err(|_| changed(folder))?;
     // A folder above it swapped for a symlink would still be followed:
     // the handle must be the folder that was judged, and pass again.
-    if fd_path(&dir).map_err(failed)? != folder {
+    if opened_path(&dir).map_err(failed)? != folder {
         return Err(changed(folder));
     }
-    places.check(path)?;
+    check_path(workers, path, true)?;
 
     let temp = format!(
         ".{}.latch-{}-{:08x}.part",
@@ -185,8 +111,9 @@ pub fn place(staged: &Path, path: &Path, places: &Places) -> Result<(), Refused>
     Ok(())
 }
 
-fn changed(folder: &Path) -> Refused {
-    refused(
+fn changed(folder: &Path) -> Failure {
+    Failure::new(
+        Exit::Denied,
         "destination_changed",
         format!(
             "{} changed after the put was checked; nothing was written",
@@ -232,42 +159,27 @@ fn unlink(dir: &File, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// The path the kernel has for the folder `dir` is open on.
-#[cfg(target_os = "macos")]
-fn fd_path(dir: &File) -> io::Result<PathBuf> {
-    use std::os::unix::ffi::OsStringExt;
-    let mut buffer = vec![0u8; libc::PATH_MAX as usize];
-    // SAFETY: F_GETPATH writes at most PATH_MAX bytes, NUL-terminated, into
-    // the buffer, which is that long.
-    if unsafe { libc::fcntl(dir.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
-    buffer.truncate(end);
-    Ok(PathBuf::from(std::ffi::OsString::from_vec(buffer)))
-}
-
-#[cfg(target_os = "linux")]
-fn fd_path(dir: &File) -> io::Result<PathBuf> {
-    std::fs::read_link(format!("/proc/self/fd/{}", dir.as_raw_fd()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
 
-    /// A home folder of its own, symlinks resolved, with a latch state
-    /// folder in it.
-    fn home() -> (tempfile::TempDir, Places) {
+    /// A home folder of its own, symlinks resolved, with latch's state
+    /// folder in it, as a host's workers see it.
+    fn home() -> (tempfile::TempDir, WorkerSetup) {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().canonicalize().unwrap();
         fs::create_dir(home.join(".latch")).unwrap();
-        let places = Places {
+        let workers = WorkerSetup {
+            hidden: crate::sandbox::never_readable(&home),
+            state_folders: crate::state_folders::StateFolders::none(),
             state_dir: home.join(".latch"),
             home,
+            areas: vec![],
+            reads: vec![],
+            program: PathBuf::from("/nonexistent"),
         };
-        (dir, places)
+        (dir, workers)
     }
 
     fn staged(dir: &Path, bytes: &[u8]) -> PathBuf {
@@ -278,67 +190,80 @@ mod tests {
 
     #[test]
     fn a_destination_is_resolved_on_the_host_before_judging() {
-        let (_dir, places) = home();
-        let home = &places.home;
+        let (_dir, workers) = home();
+        let home = &workers.home;
         fs::create_dir_all(home.join("docs")).unwrap();
         std::os::unix::fs::symlink(home.join("docs"), home.join("linked")).unwrap();
-        let resolve = |remote: &str| destination(remote, Some("report.pdf"), &places);
+        let resolve = |remote: &str| destination(remote, Some("report.pdf"), &workers);
         assert_eq!(resolve("~/docs/a.txt").unwrap(), home.join("docs/a.txt"));
         assert_eq!(resolve("docs/a.txt").unwrap(), home.join("docs/a.txt"));
         // A folder takes the file's name; a symlinked folder is resolved.
         assert_eq!(resolve("~/docs").unwrap(), home.join("docs/report.pdf"));
         assert_eq!(resolve("~/linked/a.txt").unwrap(), home.join("docs/a.txt"));
-        let code = |remote: &str| resolve(remote).unwrap_err().code;
-        assert_eq!(code("~/.latch/key"), "hidden_path");
-        assert_eq!(code("~/linked/../.latch/key"), "hidden_path");
-        assert_eq!(code("/etc/hosts"), "outside_home");
-        assert_eq!(code("~/missing/a.txt"), "not_found");
+        let refused = |remote: &str| {
+            let failure = resolve(remote).unwrap_err();
+            (failure.exit, failure.code)
+        };
+        for hidden in ["~/.latch/key", "~/linked/../.latch/key", "/etc/hosts"] {
+            assert_eq!(
+                refused(hidden),
+                (Exit::Denied, "bad_path".into()),
+                "{hidden}"
+            );
+        }
+        assert_eq!(refused("~/missing/a.txt").1, "not_found");
         // A folder with no plain name for the file is not guessed at.
+        let sneaky = destination("~/docs", Some("../x"), &workers).unwrap_err();
+        assert_eq!(sneaky.code, "is_a_directory");
+        // A get resolves the same way, and refuses the same places.
+        fs::write(home.join("docs/a.txt"), "a").unwrap();
         assert_eq!(
-            destination("~/docs", Some("../x"), &places)
-                .unwrap_err()
-                .code,
-            "is_a_directory"
+            source("~/linked/a.txt", &workers).unwrap(),
+            home.join("docs/a.txt")
+        );
+        assert_eq!(
+            source("~/.latch/key", &workers).unwrap_err().code,
+            "bad_path"
         );
     }
 
     #[test]
     fn a_folder_swapped_for_a_symlink_after_judging_gets_nothing() {
-        let (dir, places) = home();
-        let home = &places.home;
+        let (dir, workers) = home();
+        let home = &workers.home;
         fs::create_dir(home.join("docs")).unwrap();
-        let path = destination("~/docs/key", None, &places).unwrap();
+        let path = destination("~/docs/key", None, &workers).unwrap();
         // After judging: the folder becomes a link into the state folder.
         fs::rename(home.join("docs"), home.join("docs-moved")).unwrap();
         std::os::unix::fs::symlink(home.join(".latch"), home.join("docs")).unwrap();
         let staged = staged(dir.path(), b"not a key");
-        let refused = place(&staged, &path, &places).unwrap_err();
+        let refused = place(&staged, &path, &workers).unwrap_err();
         assert_eq!(refused.code, "destination_changed", "{refused:?}");
         assert_eq!(fs::read_dir(home.join(".latch")).unwrap().count(), 0);
         // A folder above it swapped is caught by the handle's own path.
         fs::create_dir_all(home.join("a/b")).unwrap();
-        let path = destination("~/a/b/key", None, &places).unwrap();
+        let path = destination("~/a/b/key", None, &workers).unwrap();
         fs::create_dir(home.join(".latch/b")).unwrap();
         fs::rename(home.join("a"), home.join("a-moved")).unwrap();
         std::os::unix::fs::symlink(home.join(".latch"), home.join("a")).unwrap();
-        let refused = place(&staged, &path, &places).unwrap_err();
+        let refused = place(&staged, &path, &workers).unwrap_err();
         assert_eq!(refused.code, "destination_changed", "{refused:?}");
         assert_eq!(fs::read_dir(home.join(".latch/b")).unwrap().count(), 0);
     }
 
     #[test]
     fn a_put_replaces_the_file_whole_and_leaves_no_staging_file() {
-        let (dir, places) = home();
-        let home = &places.home;
+        let (dir, workers) = home();
+        let home = &workers.home;
         fs::create_dir(home.join("docs")).unwrap();
         fs::write(home.join("docs/a.txt"), "old").unwrap();
-        let path = destination("~/docs/a.txt", None, &places).unwrap();
-        place(&staged(dir.path(), b"new"), &path, &places).unwrap();
+        let path = destination("~/docs/a.txt", None, &workers).unwrap();
+        place(&staged(dir.path(), b"new"), &path, &workers).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "new");
         let names: Vec<_> = fs::read_dir(home.join("docs")).unwrap().flatten().collect();
         assert_eq!(names.len(), 1, "{names:?}");
         // A staged file that is gone fails, and the old file stays.
-        let refused = place(&dir.path().join("gone"), &path, &places).unwrap_err();
+        let refused = place(&dir.path().join("gone"), &path, &workers).unwrap_err();
         assert_eq!(refused.code, "io_error");
         assert_eq!(fs::read_to_string(&path).unwrap(), "new");
         assert_eq!(fs::read_dir(home.join("docs")).unwrap().count(), 1);
@@ -347,16 +272,12 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn on_macos_library_is_hidden_but_its_caches_are_not() {
-        let (_dir, places) = home();
-        let home = &places.home;
+        let (_dir, workers) = home();
+        let home = &workers.home;
         fs::create_dir_all(home.join("Library/Caches")).unwrap();
         fs::create_dir_all(home.join("Library/Messages")).unwrap();
-        let code = |remote: &str| {
-            destination(remote, None, &places)
-                .map(|_| "ok")
-                .unwrap_or_else(|r| r.code)
-        };
-        assert_eq!(code("~/Library/Messages/chat.db"), "hidden_path");
-        assert_eq!(code("~/Library/Caches/x"), "ok");
+        let put = |remote: &str| destination(remote, None, &workers).map_err(|f| f.code);
+        assert_eq!(put("~/Library/Messages/chat.db").unwrap_err(), "bad_path");
+        assert!(put("~/Library/Caches/x").is_ok());
     }
 }

@@ -136,7 +136,7 @@ pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<PreparedExec, F
     Ok(PreparedExec(args))
 }
 
-fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
+pub(crate) fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
     let path = match path.strip_prefix("~") {
         Ok(rest) => home.join(rest),
         Err(_) if path.is_relative() => home.join(path),
@@ -167,7 +167,7 @@ fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
     ))
 }
 
-fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Result<(), Failure> {
+pub(crate) fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Result<(), Failure> {
     let hidden = path.starts_with(&workers.state_dir)
         || path.ancestors().any(crate::state::is_state_folder)
         || workers.hidden.iter().any(|hidden| {

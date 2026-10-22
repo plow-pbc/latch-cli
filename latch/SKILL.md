@@ -24,7 +24,9 @@ one JSON object: on stdout when it worked, as `{"error": {"code",
 
 - `latch exec --host H -- PROGRAM ARGS…` runs a program in the host's
   sandbox, inside the folders the owner shared.
-- `latch file get` / `latch file put` copy files to and from those folders.
+- `latch file get` / `latch file put` copy a file from or to the host's
+  home folder (`'~/…'`, quoted, or a path relative to home); latch's state
+  and, on macOS, `~/Library` (its Caches excepted) are refused.
 - `latch google --host H -- COMMAND…` runs an allowed Google command
   (`latch google --help` lists them).
 - `latch browser …` drives a real browser on the host: `open` a session

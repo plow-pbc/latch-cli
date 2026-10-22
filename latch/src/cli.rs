@@ -886,7 +886,7 @@ pub struct HostArg {
 pub enum FileCommand {
     /// Copy a file from the host to this machine
     Get {
-        /// The file on the host: absolute, or relative to the host's first shared folder. Inside a shared folder or one of the host's --allow-read paths, or one of the system's own files (see `latch serve --help`)
+        /// The file on the host, inside its home folder: absolute, `~/…` (quote it so this shell leaves the `~` alone), or relative to home. Never latch's state or, on macOS, ~/Library (its Caches excepted)
         remote_path: String,
         /// Where to write it on this machine [default: the remote file's name, in the current directory]
         local_dest: Option<PathBuf>,
@@ -897,7 +897,7 @@ pub enum FileCommand {
     Put {
         /// The file on this machine to send
         local_path: PathBuf,
-        /// Where it goes on the host, inside one of its shared folders: absolute, or relative to the first. An existing folder gets the file inside it, under its own name, as with `cp`
+        /// Where it goes on the host, inside its home folder: absolute, `~/…` (quoted), or relative to home. An existing folder gets the file inside it, under its own name, as with `cp`. The judge sees the resolved path; the old file stays until the new one is complete
         remote_path: String,
         #[command(flatten)]
         host: HostArg,

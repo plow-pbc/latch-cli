@@ -8,7 +8,8 @@
 //! its write paths and IP access are granted per call. Host Unix sockets
 //! remain inaccessible. File workers use the shared areas and read-only
 //! opt-ins; Google workers read only their call folder and runtime files.
-//! Hidden paths stay out of reach, with Library/Caches an exec exception.
+//! Hidden paths stay out of reach, with Library/Caches an exception for
+//! workers that read home (exec, file get).
 //! A file worker gets no network; Google workers may reach out. Google
 //! can execute only its pinned binary; neither can send Apple Events. The
 //! kernel resolves every path (symlinks included) before checking it, so a
@@ -612,11 +613,10 @@ mod platform {
         let mut hidden = Vec::new();
         for path in policy.hidden.iter().filter(|path| path.exists()) {
             let path = real(path)?;
-            let filter = if policy.exec
-                && policy
-                    .home
-                    .as_ref()
-                    .is_some_and(|home| path == home.join("Library"))
+            let filter = if policy
+                .home
+                .as_ref()
+                .is_some_and(|home| path == home.join("Library"))
             {
                 format!(
                     "(require-all (subpath {}) (require-not (subpath {})))",

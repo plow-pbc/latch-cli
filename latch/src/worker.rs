@@ -81,11 +81,6 @@ pub fn worker_error(stderr: &str) -> Option<WorkerError> {
 /// Nothing else from the host's environment is passed on.
 /// Homebrew's folders first, as in a macOS user's shell; they do not exist
 /// on Linux and cost nothing there.
-/// Why `exec` and `file` refuse on a host that shares no folders. Such an
-/// exec does not run in a scratch folder instead: the owner shared nothing
-/// to run programs against.
-const NO_FOLDERS: &str = "this host shares no folders; the owner can add some with \
-    `latch shares set ~/code` and restart `latch serve`";
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// A started worker: its stdout (for the first line and any file bytes)
@@ -96,46 +91,65 @@ pub struct Running {
 }
 
 impl WorkerSetup {
-    /// Starts `latch worker [--tmpdir DIR] <action> [--size N] <path>` and
-    /// waits for its first line: `{"size": N}` for `read`, `{"ready": true}`
-    /// for `write`, which writes only into its `tmpdir`. Returns the running
-    /// worker and that line, or the worker's error.
-    pub async fn start(
+    /// Starts a worker that reads `path`, which the host resolved: home
+    /// readable, less the hidden paths and every latch state folder, and
+    /// nothing writable. Its first line is `{"size": N}`.
+    pub async fn start_read(
         &self,
-        action: &str,
-        size: Option<u64>,
-        tmpdir: Option<&Path>,
         path: &Path,
     ) -> Result<(Running, serde_json::Value), WorkerError> {
-        let Some(first_area) = self.areas.first() else {
-            return Err(error("no_folders", NO_FOLDERS));
+        let reader = WorkerSetup {
+            home: self.home.clone(),
+            areas: vec![],
+            reads: vec![self.home.clone()],
+            hidden: self
+                .hidden
+                .iter()
+                .cloned()
+                .chain(self.state_folders.now())
+                .collect(),
+            state_folders: StateFolders::none(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
         };
-        let mut command = self.command(first_area)?;
-        if let Some(tmpdir) = tmpdir {
-            command.arg("--tmpdir").arg(tmpdir);
-        }
-        command.arg(action);
-        if let Some(size) = size {
-            command.arg("--size").arg(size.to_string());
-        }
+        let mut command = reader.command(&self.home)?;
         // `--` so a path starting with `-` is never read as a flag.
-        command.arg("--").arg(path);
         command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|err| error("worker_failed", &err.to_string()))?;
+            .arg("--home")
+            .arg(&self.home)
+            .arg("read")
+            .arg("--")
+            .arg(path);
+        first_line(command).await
+    }
 
-        let stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
-        let mut running = Running { child, stdout };
-        match running.line().await {
-            Ok(first) => Ok((running, first)),
-            Err(_) => Err(running.failure().await),
-        }
+    /// Starts a worker that writes `size` bytes from its stdin to `staged`,
+    /// a new file in this call's own temp folder, the one place it may
+    /// write. Its first line is `{"ready": true}`.
+    pub async fn start_write(
+        &self,
+        size: u64,
+        staged: &Path,
+    ) -> Result<(Running, serde_json::Value), WorkerError> {
+        let tmpdir = staged
+            .parent()
+            .ok_or_else(|| error("bad_path", "no temp folder"))?;
+        let writer = WorkerSetup {
+            home: self.home.clone(),
+            areas: vec![],
+            reads: vec![],
+            hidden: self.hidden.clone(),
+            state_folders: StateFolders::none(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
+        };
+        let mut command = writer.command(tmpdir)?;
+        command
+            .arg("--tmpdir")
+            .arg(tmpdir)
+            .args(["write", "--size", &size.to_string(), "--"])
+            .arg(staged);
+        first_line(command).await
     }
 
     /// Uses the same launcher, narrowed to one disposable call folder.
@@ -302,6 +316,26 @@ impl WorkerSetup {
             .env("HOME", first_area)
             .current_dir(first_area);
         Ok(command)
+    }
+}
+
+/// Starts a file worker and waits for its first line. Returns the running
+/// worker and that line, or the worker's error.
+async fn first_line(mut command: Command) -> Result<(Running, serde_json::Value), WorkerError> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|err| error("worker_failed", &err.to_string()))?;
+    let stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
+    let mut running = Running { child, stdout };
+    match running.line().await {
+        Ok(first) => Ok((running, first)),
+        Err(_) => Err(running.failure().await),
     }
 }
 

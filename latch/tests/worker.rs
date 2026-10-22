@@ -610,6 +610,58 @@ fn exec_reads_and_writes_only_areas_never_state_or_latch() {
     assert!(!area.join("keep/.state/config.json").exists());
 }
 
+/// A get's worker, as a host starts it: home readable, less latch's state
+/// and (macOS) ~/Library apart from its Caches, and nothing writable.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn a_read_worker_reads_home_but_not_what_is_hidden() {
+    let dir = setup();
+    let home = dir.path().join("area").canonicalize().unwrap();
+    for (path, text) in [
+        (".ssh/config", "Host example"),
+        (".latch/key", "made-up key"),
+        ("Library/Messages/chat.db", "made-up chat"),
+        ("Library/Caches/tool/cache", "made-up cache"),
+    ] {
+        fs::create_dir_all(home.join(path).parent().unwrap()).unwrap();
+        fs::write(home.join(path), text).unwrap();
+    }
+    let read = |path: &str| {
+        let home = home.to_str().unwrap();
+        let mut args = vec![
+            "worker", "--home", home, "--read", home, "--denied", "../state",
+        ];
+        let hidden = [home.to_string() + "/.latch", home.to_string() + "/Library"];
+        let hidden: Vec<&str> = hidden.iter().map(String::as_str).collect();
+        let shown = if cfg!(target_os = "macos") {
+            &hidden[..]
+        } else {
+            &hidden[..1]
+        };
+        for path in shown {
+            args.extend(["--hidden", path]);
+        }
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args(&args)
+            .args(["read", "--", &format!("{home}/{path}")])
+            .current_dir(dir.path().join("area"))
+            .env_clear()
+            .output()
+            .unwrap()
+    };
+    let ssh = read(".ssh/config");
+    assert!(ssh.status.success(), "{ssh:?}");
+    assert!(String::from_utf8_lossy(&ssh.stdout).ends_with("Host example"));
+    assert_eq!(code(&read(".latch/key")), hidden_code());
+    if cfg!(target_os = "macos") {
+        assert_eq!(code(&read("Library/Messages/chat.db")), hidden_code());
+        let cache = read("Library/Caches/tool/cache");
+        assert!(cache.status.success(), "{cache:?}");
+    }
+    // Nothing outside home, either.
+    assert!(!read("../outside/other.txt").status.success());
+}
+
 /// The `PATH` a host gives exec's programs.
 const HOST_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 

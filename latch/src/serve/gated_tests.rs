@@ -103,11 +103,6 @@ async fn start_with(
             AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
         )),
         dashboard,
-        // The test's own folder is the home a put lands in.
-        places: Some(crate::files::Places {
-            home: root.clone(),
-            state_dir: state.clone(),
-        }),
         workers: WorkerSetup {
             home: root.clone(),
             areas: vec![area.clone()],
@@ -320,13 +315,13 @@ async fn a_refused_operation_runs_nothing_and_returns_nothing() {
     assert!(!t.area.join("made").exists(), "the program never ran");
 
     let (answer, rest) = t
-        .call(&agent, "file_get", json!({"remote_path": "notes.txt"}))
+        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
         .await;
     assert_eq!(refusal(&answer).1, "gatekeeper_denied");
     assert!(rest.is_empty(), "no bytes of the file");
     assert!(!format!("{answer:?}").contains("own words"));
 
-    let put = json!({"remote_path": "new.txt", "size": 5, "name": "new.txt"});
+    let put = json!({"remote_path": "area/new.txt", "size": 5, "name": "new.txt"});
     let (answer, _) = t.call(&agent, "file_put", put).await;
     assert_eq!(refusal(&answer).1, "gatekeeper_denied");
     assert!(!t.area.join("new.txt").exists());
@@ -362,7 +357,7 @@ async fn a_judge_that_cannot_answer_runs_nothing() {
     assert_eq!((exit, code), (Exit::Unreachable, "gatekeeper_unavailable"));
     assert!(!t.area.join("made").exists());
     let (answer, rest) = t
-        .call(&agent, "file_get", json!({"remote_path": "notes.txt"}))
+        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
         .await;
     assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
     assert!(rest.is_empty());
@@ -544,8 +539,37 @@ async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() 
     // A hidden destination is refused before anything is judged.
     let (first, _) = t.put(&agent, "state/key", 1, b"x").await;
     let (exit, code, _) = refusal(&first);
-    assert_eq!((exit, code), (Exit::Denied, "hidden_path"));
+    assert_eq!((exit, code), (Exit::Denied, "bad_path"));
     assert_eq!(t.judged(), 2);
+}
+
+#[tokio::test]
+async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    // A dotfile outside any shared folder: readable, judged at its path.
+    let home = t.state.parent().unwrap();
+    std::fs::create_dir(home.join(".ssh")).unwrap();
+    std::fs::write(home.join(".ssh/config"), "Host example").unwrap();
+    let (answer, bytes) = t
+        .call(&agent, "file_get", json!({"remote_path": "~/.ssh/config"}))
+        .await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert!(bytes.starts_with(b"Host example"), "{bytes:?}");
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let shown = home.join(".ssh/config").display().to_string();
+    assert!(asked[0].to_string().contains(&shown), "{}", asked[0]);
+    // The host's state, and a link into it, are refused before judging.
+    std::fs::write(t.state.join("key"), "made-up key").unwrap();
+    std::os::unix::fs::symlink(t.state.join("key"), home.join("key-link")).unwrap();
+    for hidden in ["~/state/key", "~/key-link"] {
+        let (answer, _) = t
+            .call(&agent, "file_get", json!({"remote_path": hidden}))
+            .await;
+        let (exit, code, _) = refusal(&answer);
+        assert_eq!((exit, code), (Exit::Denied, "bad_path"), "{hidden}");
+    }
+    assert_eq!(t.judged(), 1);
 }
 
 #[tokio::test]
@@ -583,7 +607,7 @@ async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
     assert!(t.audit()[0].get("gate").is_none());
     // Other operations are still judged.
     let (answer, _) = t
-        .call(&agent, "file_get", json!({"remote_path": "notes.txt"}))
+        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
         .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert_eq!(t.judged(), 1);
@@ -786,10 +810,14 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert!(t.area.join("made").exists());
     let (answer, _) = t
-        .call(&device, "file_get", json!({"remote_path": "notes.txt"}))
+        .call(
+            &device,
+            "file_get",
+            json!({"remote_path": "area/notes.txt"}),
+        )
         .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
-    let put = json!({"remote_path": "new.txt", "size": 0, "name": "new.txt"});
+    let put = json!({"remote_path": "area/new.txt", "size": 0, "name": "new.txt"});
     t.call(&device, "file_put", put).await;
     let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": [],
                         "confirm_conflict": false, "inputs": []});
