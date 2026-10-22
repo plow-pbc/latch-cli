@@ -749,6 +749,10 @@ pub struct BrowserWorkerArgs {
     /// `allow_local_browsing` in host.json)
     #[arg(long)]
     pub allow_local_browsing: bool,
+    /// Linux: run Chrome without its own sandbox, which this host's AppArmor
+    /// keeps from starting (`sandbox::page_isolation_off`)
+    #[arg(long)]
+    pub page_isolation_off: bool,
 }
 
 /// Arguments the host gives a worker (see `worker.rs`).

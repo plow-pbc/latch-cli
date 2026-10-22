@@ -236,6 +236,27 @@ pub fn check() -> Result<(), String> {
     platform::check()
 }
 
+/// Whether this host runs Chrome without its own sandbox, inside latch's
+/// worker sandbox only: where AppArmor restricts unprivileged user
+/// namespaces (Ubuntu 23.10 and later) and Ubuntu's bwrap profile is in
+/// force, that profile denies every program bwrap starts the capabilities
+/// Chrome's sandbox needs, so Chrome would not start. Web pages there are
+/// not isolated from one another, nor from the browser process; latch's
+/// bubblewrap and seccomp still confine all of them. The profile is in
+/// force when the restriction is on and bwrap can run at all, which is
+/// what its file in /etc/apparmor.d stands for (the installer copies it
+/// there once it has loaded).
+pub fn page_isolation_off() -> bool {
+    cfg!(target_os = "linux")
+        && std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .is_ok_and(|setting| setting.trim() == "1")
+        && Path::new("/etc/apparmor.d/bwrap-userns-restrict").is_file()
+}
+
+/// What the browser answers and `status --local` say where
+/// `page_isolation_off`.
+pub const PAGE_ISOLATION_OFF: &str = "page isolation off on this host";
+
 pub fn name() -> &'static str {
     if cfg!(target_os = "linux") {
         "bubblewrap + seccomp"
