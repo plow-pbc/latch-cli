@@ -78,7 +78,7 @@ jobs:
           key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
       - run: cargo build --locked
       - if: hashFiles('latch/src/browser/cft.json') != ''
-        run: HOME="$RUNNER_TEMP/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox target/debug/latch
+        run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
       - run: python3 ../.ci-tools/latch/scripts/test-shard.py ${{ matrix.shard }} ${{ matrix.count }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -119,7 +119,7 @@ jobs:
           path: .dev/cft-state/plugins/camoufox
           key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
       - if: runner.os == 'macOS'
-        run: cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install.sh --state-dir ../.dev/cft-state --with-camoufox target/debug/latch
+        run: cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
       - run: cargo test --locked
 
   linux-static:

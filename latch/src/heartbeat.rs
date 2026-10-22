@@ -31,7 +31,7 @@ pub async fn run(
     endpoint: Endpoint,
     state: StateDir,
     mut config: Config,
-    dashboard: Option<Dashboard>,
+    dashboard: Dashboard,
 ) -> Failure {
     let mut addresses = endpoint.watch_addr();
     let mut failures = 0;
@@ -45,9 +45,7 @@ pub async fn run(
         let (registered, wait) = match plow.register(&registration).await {
             Ok(peer) => {
                 failures = 0;
-                if let Some(dashboard) = &dashboard {
-                    dashboard.heartbeat();
-                }
+                dashboard.heartbeat();
                 let wait = with_jitter(HEARTBEAT);
                 let relay = relay_url.as_deref().unwrap_or("none");
                 log(&format!(

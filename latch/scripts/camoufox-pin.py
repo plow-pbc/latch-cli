@@ -3,7 +3,7 @@
     python3 scripts/camoufox-pin.py
 
 For each macOS build in the pin, downloads Camoufox and Node, checks their
-sha256 against the pin, and sets them up as `install.sh --with-camoufox`
+sha256 against the pin, and sets them up as `install.sh --browser camoufox`
 does (Camoufox with `ditto` and its version.json, Node with `tar`, the
 runtime from `camoufox/` with `npm ci`, for that build's CPU), then takes
 the tree hash of each part, which latch checks before every launch

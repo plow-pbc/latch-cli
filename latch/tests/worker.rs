@@ -436,7 +436,7 @@ fn serve_with_denied(rules: Option<(i64, Vec<seccompiler::SeccompRule>)>) -> Out
     let area = dir.path().join("area").canonicalize().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
-        .args(["serve", "--no-dashboard", "--state-dir"])
+        .args(["serve", "--foreground", "--state-dir"])
         .arg(state.path())
         .arg(area)
         .env_clear();

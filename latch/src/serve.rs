@@ -40,13 +40,14 @@ use crate::gate::rules::RuleFiles;
 use crate::gate::{self, Caller, Gate, Gatekeeper};
 use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
-use crate::log::{self, log};
+use crate::log::log;
 use crate::plow::{Identity, Plow};
 use crate::state::{self, Config, StateDir};
 use crate::state_folders::StateFolders;
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
+use control::Lifetime;
 
 /// What every connection handler shares. `Arc` lets many tasks hold the
 /// same `Host`; the `Mutex` lets one task at a time append to the log.
@@ -54,8 +55,11 @@ struct Host {
     plow: Plow,
     /// Also held by the blocking thread that appends (see `Host::append`).
     audit: Arc<Mutex<AuditLog>>,
-    /// The live view, when `serve` shows one (see `dashboard.rs`).
-    dashboard: Option<Dashboard>,
+    /// The board viewers of this host watch (see `dashboard.rs`).
+    dashboard: Dashboard,
+    /// Whose life this host's is, and how it is asked to stop (see
+    /// `serve/control.rs`).
+    lifetime: Lifetime,
     workers: WorkerSetup,
     /// Open browser sessions, one per profile.
     browsers: crate::browser::host::Browsers,
@@ -153,17 +157,17 @@ impl Done {
 /// How long the host waits for a relay connection when it starts.
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Runs the host until it is asked to stop. With `show_dashboard`, a live
-/// view takes the terminal and the log goes to `serve.log` in the state
-/// directory; the terminal is given back however the host stops.
-/// With `headless_browsers`, every browser session runs with no window.
+/// Runs the host until it is asked to stop. With `headless_browsers`,
+/// every browser session runs with no window. An `attached` host stops
+/// when the `latch serve` that started it goes away (see
+/// `serve/control.rs`).
 pub async fn run(
     state: &StateDir,
     folders: &[PathBuf],
     allow_read: &[PathBuf],
-    show_dashboard: bool,
     headless_browsers: bool,
     deny_exec: DenyExec,
+    attached: bool,
 ) -> Result<(), Failure> {
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
@@ -188,9 +192,9 @@ pub async fn run(
         state,
         folders,
         allow_read,
-        show_dashboard,
         headless_browsers,
         deny_exec,
+        attached,
         state_dir,
     )
     .await;
@@ -212,9 +216,9 @@ async fn run_locked(
     state: &StateDir,
     folders: &[PathBuf],
     allow_read: &[PathBuf],
-    show_dashboard: bool,
     headless_browsers: bool,
     deny_exec: DenyExec,
+    attached: bool,
     state_dir: PathBuf,
 ) -> Result<(), Failure> {
     let program = std::env::current_exe()
@@ -253,39 +257,26 @@ async fn run_locked(
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
     exec::sweep_tmpdirs();
     let config = state.require_login()?;
-    let dashboard = if show_dashboard {
-        let path = state.path.join("serve.log");
-        log::to_file(&path)
-            .map_err(|err| Failure::failed("log_file", format!("{}: {err}", path.display())))?;
-        let note = workers.areas.is_empty().then_some(SHARING_NONE);
-        Some(Dashboard::start(&config.peer.name, note))
-    } else {
-        None
-    };
-    let result = run_host(
+    run_host(
         state,
         config,
         workers,
-        dashboard.clone(),
         headless_browsers,
         rules,
         deny_exec,
+        Lifetime::new(attached),
     )
-    .await;
-    if let Some(dashboard) = &dashboard {
-        dashboard.stop();
-    }
-    result
+    .await
 }
 
 async fn run_host(
     state: &StateDir,
     config: Config,
     workers: WorkerSetup,
-    dashboard: Option<Dashboard>,
     headless_browsers: bool,
     rules: RuleFiles,
     deny_exec: DenyExec,
+    lifetime: Lifetime,
 ) -> Result<(), Failure> {
     let binary = Binary::at(&workers.program)?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
@@ -350,9 +341,11 @@ async fn run_host(
     ));
 
     // Clients dial us through our relay, so register only once we have one.
-    if let Some(dashboard) = &dashboard {
-        dashboard.step("connecting to the relay…");
-    }
+    let dashboard = Dashboard::new(
+        &config.peer.name,
+        workers.areas.is_empty().then_some(SHARING_NONE),
+    );
+    dashboard.step("connecting to the relay…");
     if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
         .await
         .is_err()
@@ -361,9 +354,7 @@ async fn run_host(
         let message = "no iroh relay connection within 15 seconds".to_string();
         return Err(Failure::failed("relay_unreachable", message));
     }
-    if let Some(dashboard) = &dashboard {
-        dashboard.step("registering with Plow…");
-    }
+    dashboard.step("registering with Plow…");
     let terminate = signal(SignalKind::terminate())
         .map_err(|err| Failure::failed("signal", format!("cannot listen for SIGTERM: {err}")))?;
     let name = config.peer.name.clone();
@@ -380,14 +371,13 @@ async fn run_host(
         vault.clone(),
         headless_browsers,
     );
-    if let Some(dashboard) = &dashboard {
-        browsers.show_on(dashboard.clone());
-    }
+    browsers.show_on(dashboard.clone());
     let host = Arc::new(Host {
         plow,
         audit: Arc::new(Mutex::new(audit)),
         workers,
         dashboard,
+        lifetime,
         browsers,
         vault,
         endpoint: endpoint.clone(),
@@ -401,6 +391,7 @@ async fn run_host(
     });
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(&state.path, Phase::Serving, None)?;
+    control::await_holder(&host);
     let mut heartbeat = tokio::spawn(heartbeat::run(
         host.plow.clone(),
         endpoint.clone(),
@@ -438,6 +429,7 @@ async fn run_host(
                 log("stopping: signal received");
                 break None;
             }
+            () = host.lifetime.stop.notified() => break None,
             // The heartbeat only ends when Plow gave our name to another
             // key.
             ended = &mut heartbeat => {
@@ -448,9 +440,7 @@ async fn run_host(
         }
     };
     let step = |step: &str| {
-        if let Some(dashboard) = &host.dashboard {
-            dashboard.step(&format!("stopping: {step}…"));
-        }
+        host.dashboard.step(&format!("stopping: {step}…"));
     };
     step("finishing the operations running");
     shut_down(&host, moved.is_none().then_some(heartbeat), connections).await;
@@ -870,13 +860,38 @@ async fn serve_operation(
     mut recv: crate::transport::RecvStream,
     cut_off: impl std::future::Future<Output = &'static str>,
 ) {
-    let Ok(json) = wire::read_frame(&mut recv).await else {
+    let Some(request) = read_request(&mut send, &mut recv).await else {
         return;
     };
-    let Ok(mut request) = serde_json::from_slice::<Request>(&json) else {
-        let response = failed("bad_request", "the request frame is not valid".to_string());
-        return answer(&mut send, &response).await;
-    };
+    serve_request(host, caller, local, request, send, recv, cut_off).await;
+}
+
+/// The operation's request frame. A frame that is not one is answered
+/// `bad_request`; then, as when the stream ends first, there is none.
+async fn read_request(
+    send: &mut (impl tokio::io::AsyncWrite + Unpin),
+    recv: &mut (impl tokio::io::AsyncRead + Unpin),
+) -> Option<Request> {
+    let json = wire::read_frame(recv).await.ok()?;
+    match serde_json::from_slice::<Request>(&json) {
+        Ok(request) => Some(request),
+        Err(_) => {
+            let response = failed("bad_request", "the request frame is not valid".to_string());
+            answer(send, &response).await;
+            None
+        }
+    }
+}
+
+async fn serve_request(
+    host: &Host,
+    caller: &str,
+    local: bool,
+    mut request: Request,
+    mut send: crate::transport::SendStream,
+    mut recv: crate::transport::RecvStream,
+    cut_off: impl std::future::Future<Output = &'static str>,
+) {
     let op = request.op.as_str();
     tracing::Span::current().record("op", display(op));
     let started = Instant::now();
@@ -1113,12 +1128,8 @@ async fn serve_operation(
                 done.outcome,
                 crate::redact::shown(op, &done.audit_args)
             ));
-            let dashboard = host.dashboard.as_ref().map(|dashboard| {
-                (
-                    dashboard,
-                    dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed()),
-                )
-            });
+            let (target, result) =
+                dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed());
             let mut record = audit::record(
                 caller,
                 identity.agent_uid.clone(),
@@ -1134,16 +1145,14 @@ async fn serve_operation(
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed("audit_failed", message),
             };
-            if let Some((dashboard, (target, result))) = dashboard {
-                dashboard.call(Row {
-                    at: jiff::Timestamp::now(),
-                    caller: host.shown_name(&identity).await,
-                    op: op.to_string(),
-                    target,
-                    result,
-                    refused: decision == "deny",
-                });
-            }
+            host.dashboard.call(Row {
+                at: jiff::Timestamp::now(),
+                caller: host.shown_name(&identity).await,
+                op: op.to_string(),
+                target,
+                result,
+                refused: decision == "deny",
+            });
             drop(running);
             drop(names);
             response
@@ -1154,16 +1163,23 @@ async fn serve_operation(
 
 /// Local callers are trusted by the private socket, never by a request field.
 async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
+    let (mut recv, mut send) = socket.into_split();
+    let Some(request) = read_request(&mut send, &mut recv).await else {
+        return;
+    };
+    if control::OPS.contains(&request.op.as_str()) {
+        return control::serve(&host, &request, send, recv).await;
+    }
     let caller = host.endpoint.id().to_string();
     log(&format!(
         "connect: {caller}: owner_on_host over Unix socket"
     ));
-    let (recv, send) = socket.into_split();
     let operation = tracing::info_span!("operation", op = Empty);
-    serve_operation(
+    serve_request(
         &host,
         &caller,
         true,
+        request,
         crate::transport::SendStream::Local(Some(send)),
         crate::transport::RecvStream::Local(recv),
         async {
@@ -1221,22 +1237,20 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
             "vault_link: phone {caller}: {decision}: {} {}",
             done.outcome, done.audit_args
         ));
-        if let Some(dashboard) = &host.dashboard {
-            let (target, result) = dashboard::describe(
-                "vault_link",
-                &done.audit_args,
-                &done.outcome,
-                started.elapsed(),
-            );
-            dashboard.call(Row {
-                at: jiff::Timestamp::now(),
-                caller: "phone link".to_string(),
-                op: "vault_link".to_string(),
-                target,
-                result,
-                refused: decision == "deny",
-            });
-        }
+        let (target, result) = dashboard::describe(
+            "vault_link",
+            &done.audit_args,
+            &done.outcome,
+            started.elapsed(),
+        );
+        host.dashboard.call(Row {
+            at: jiff::Timestamp::now(),
+            caller: "phone link".to_string(),
+            op: "vault_link".to_string(),
+            target,
+            result,
+            refused: decision == "deny",
+        });
         let mut record = audit::record(caller, None, "vault_link", decision, &done.outcome);
         record.args = done.audit_args;
         let response = match host.append(record).await {
@@ -1380,18 +1394,16 @@ impl Host {
         identity.name.clone()
     }
 
-    /// A refused caller as a plain dashboard row, if there is a dashboard.
+    /// A refused caller as a plain dashboard row.
     fn show_refusal(&self, caller: &str, op: &str, code: &str) {
-        if let Some(dashboard) = &self.dashboard {
-            dashboard.call(Row {
-                at: jiff::Timestamp::now(),
-                caller: format!("{}…", &caller[..8.min(caller.len())]),
-                op: op.to_string(),
-                target: String::new(),
-                result: format!("refused: {code}"),
-                refused: true,
-            });
-        }
+        self.dashboard.call(Row {
+            at: jiff::Timestamp::now(),
+            caller: format!("{}…", &caller[..8.min(caller.len())]),
+            op: op.to_string(),
+            target: String::new(),
+            result: format!("refused: {code}"),
+            refused: true,
+        });
     }
 
     /// Appends to the audit log and returns the record's hash, once the
@@ -1442,6 +1454,7 @@ fn describe_paths(connection: &Connection) -> String {
     paths.join(", ")
 }
 
+mod control;
 #[cfg(test)]
 mod gated_tests;
 #[cfg(test)]
