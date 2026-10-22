@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tarfile
 import termios
 import threading
 import unittest
@@ -298,6 +299,43 @@ class HostUpgrade(unittest.TestCase):
         self.assertNotIn("is stopped", result.stderr)
         self.assertIn("latch 0.1.0 (2)", subprocess.check_output([str(dest), "--version"], text=True))
 
+    def test_a_mac_host_is_found_through_the_app_without_a_link_to_it(self):
+        """On macOS the app is what gets replaced: its host is stopped and
+        started again even when no latch is in the bin folder (the link is
+        in another one, or none is)."""
+        log = self.log()
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        directory = tempfile.TemporaryDirectory(dir=parent)
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        state = root / "state"
+        home = root / "home"
+        setup, _, tools = fixture(root, state, "", system="Darwin", machine="arm64")
+        (setup / "latch").unlink()
+        app = setup / "Plow Latch.app/Contents/MacOS"
+        app.mkdir(parents=True)
+        (app / "latch").write_text(fake_latch("0.1.0 (2)", log))
+        (app / "latch").chmod(0o755)
+        (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
+        # Chrome for Testing already in place, so nothing is downloaded.
+        cft_pin = '{\n  "version": "1.0"\n}\n'
+        (setup / "src/browser").mkdir(parents=True)
+        (setup / "src/browser/cft.json").write_text(cft_pin)
+        (state / "plugins/cft/1.0").mkdir(parents=True)
+        (state / "plugins/cft/1.0/manifest.json").write_text(cft_pin)
+        old = home / "Applications/Plow Latch.app/Contents/MacOS/latch"
+        old.parent.mkdir(parents=True)
+        old.write_text(fake_latch("0.1.0 (1)", log))
+        old.chmod(0o755)
+        env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
+        result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                                 str(setup / "latch")], cwd=root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.read_text().splitlines(),
+                         ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
+        self.assertIn("latch 0.1.0 (2)", subprocess.check_output([str(old), "--version"], text=True))
+
     def test_a_failed_stop_changes_nothing(self):
         log = self.log()
         old = fake_latch("0.1.0 (1)", log)
@@ -524,6 +562,86 @@ cp "{archive}" "$out"
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn("nothing installed", bad.stderr)
         self.assertFalse((state / "plugins/cft/1.0.0/manifest.json").exists())
+
+    def test_camoufox_installs_each_platform_and_refuses_an_unpinned_archive(self):
+        for system, machine, key in [("Linux", "aarch64", "linux_arm64"),
+                                     ("Linux", "x86_64", "linux_x64"),
+                                     ("Darwin", "arm64", "mac_arm64"),
+                                     ("Darwin", "x86_64", "mac_x64")]:
+            with self.subTest(platform=key), tempfile.TemporaryDirectory(dir=self.root) as folder:
+                root = Path(folder)
+                setup = root / "setup"
+                (setup / "src/browser").mkdir(parents=True)
+                for name in ["browser-engines.sh", "install-packages.sh"]:
+                    shutil.copyfile(ROOT / "latch" / name, setup / name)
+                shutil.copytree(ROOT / "latch/camoufox", setup / "camoufox")
+                archive = root / "camoufox.zip"
+                executable = "camoufox-bin" if system == "Linux" else "Camoufox.app/Contents/MacOS/camoufox"
+                with zipfile.ZipFile(archive, "w") as zipped:
+                    zipped.writestr(executable, "pinned-camoufox-fixture")
+                # A Node stand-in records npm's arguments without running packages.
+                node = root / "node-fixture/bin"
+                node.mkdir(parents=True)
+                npm = root / "npm-called"
+                tool(node, "node", f'echo "$*" > "{npm}"\nmkdir node_modules\n')
+                node_archive = root / "node.tar.gz"
+                with tarfile.open(node_archive, "w:gz") as tar:
+                    tar.add(node.parent, arcname="node-fixture")
+                build = {
+                    "camoufox": {"url": "https://example.invalid/camoufox.zip",
+                                  "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()},
+                    "node": {"url": "https://example.invalid/node.tar.gz", "folder": "node-fixture",
+                             "sha256": hashlib.sha256(node_archive.read_bytes()).hexdigest()},
+                }
+                pin = setup / "src/browser/camoufox.json"
+                pin.write_text(json.dumps({"version": "1.0-beta.1", "builds": {key: build}}, indent=2))
+                tools = root / "tools"
+                tools.mkdir()
+                tool(tools, "uname", f'case "$1" in -s) echo {system};; -m) echo {machine};; esac\n')
+                tool(tools, "ldconfig", "printf '%s\\n' 'libgtk-3.so.0 ready' 'libasound.so.2 ready' 'libX11-xcb.so.1 ready' 'libdbus-1.so.3 ready'\n")
+                tool(tools, "Xvfb", "exit 0\n")
+                tool(tools, "ditto", 'exec unzip -q "$3" -d "$4"\n')
+                tool(tools, "curl", f"""out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2;; --proto) shift 2;; -*) shift;; *) url=$1; shift;; esac; done
+case "$url" in
+  https://example.invalid/camoufox.zip) cp "{archive}" "$out" ;;
+  https://example.invalid/node.tar.gz) cp "{node_archive}" "$out" ;;
+  *) exit 22 ;;
+esac
+""")
+                packages = root / "packages"
+                if key == "linux_arm64":
+                    tool(tools, "ldconfig", "exit 0\n")
+                    tool(tools, "id", "echo 1000\n")
+                    tool(tools, "apt-cache", "exit 0\n")
+                    tool(tools, "apt-get", f'echo "$*" >> "{packages}"\n')
+                    tool(tools, "sudo", f'echo sudo >> "{packages}"\nexec "$@"\n')
+                state = root / "state"
+                env = {**os.environ, "HOME": str(root / "home"), "PATH": f"{tools}:{os.environ['PATH']}"}
+                command = ["sh", str(setup / "browser-engines.sh"), "--state-dir", str(state), "camoufox"]
+                first = subprocess.run(command, env=env, capture_output=True, text=True)
+                self.assertEqual(first.returncode, 0, first.stderr)
+                if key == "linux_arm64":
+                    self.assertEqual(packages.read_text().splitlines().count("sudo"), 1)
+                    self.assertIn("libgtk-3-0t64 libasound2t64 libx11-xcb1 libdbus-1-3", packages.read_text())
+                installed = state / "plugins/camoufox/1.0-beta.1"
+                self.assertEqual((installed / "camoufox" / executable).read_text(), "pinned-camoufox-fixture")
+                self.assertEqual((installed / "camoufox/version.json").read_text(),
+                                 '{"version":"1.0","build":"beta.1"}')
+                self.assertEqual((installed / "manifest.json").read_bytes(), pin.read_bytes())
+                self.assertIn("ci --ignore-scripts --omit=dev --no-audit --no-fund", npm.read_text())
+                self.assertFalse((root / "home/.cache/camoufox").exists())
+                self.assertEqual(list(installed.glob(".download.*")), [])
+                again = subprocess.run(command, env=env, capture_output=True, text=True)
+                self.assertEqual(again.returncode, 0, again.stderr)
+                self.assertIn("already installed", again.stdout)
+                shutil.rmtree(state)
+                archive.write_bytes(b"not the pinned archive")
+                bad = subprocess.run(command, env=env, capture_output=True, text=True)
+                self.assertNotEqual(bad.returncode, 0)
+                self.assertIn("not the pinned", bad.stderr)
+                self.assertFalse((installed / "manifest.json").exists())
+                self.assertEqual(list(installed.glob(".download.*")), [])
 
     def test_a_linux_install_without_bubblewrap_installs_it_as_root(self):
         setup = self.root / "setup"

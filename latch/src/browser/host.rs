@@ -835,6 +835,12 @@ async fn open_judged(
             if let Some(object) = result.as_object_mut() {
                 object.insert("session".into(), json!(id));
                 object.insert("engine".into(), json!(super::engine::named(engine)));
+                if crate::sandbox::page_isolation_off() {
+                    object.insert(
+                        "page_isolation".into(),
+                        json!(crate::sandbox::PAGE_ISOLATION_OFF),
+                    );
+                }
             }
             Ok((result, bytes))
         }

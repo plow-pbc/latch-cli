@@ -1,0 +1,15 @@
+# nextest runs each test in a process of its own, so the browser tests'
+# in-process limits (browser/tests.rs) need saying here too: at most six
+# drive a real engine at once, and the two that keep a browser busy run
+# alone.
+
+[test-groups]
+engines = { max-threads = 6 }
+
+[[profile.default.overrides]]
+filter = 'test(/::frames_that_come_and_go_while_a_page_loads_break_no_call$/) | test(/::a_login_goes_on_to_its_password_stage_in_one_pause$/)'
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+filter = 'test(/^browser::tests::/)'
+test-group = 'engines'

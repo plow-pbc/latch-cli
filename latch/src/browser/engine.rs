@@ -79,13 +79,15 @@ pub struct CamoufoxPin {
     pub version: String,
     pub driver_contract: u32,
     pub builds: BTreeMap<String, CamoufoxBuild>,
-    /// The operating system the fingerprint claims: always the host's own.
-    pub os: String,
+    /// The operating system the fingerprint claims, independent of the build.
+    pub fingerprint_os: String,
     pub capabilities: Vec<String>,
 }
 
 #[derive(Deserialize)]
 pub struct CamoufoxBuild {
+    /// The program inside the unpacked Camoufox folder.
+    pub executable: String,
     pub camoufox: Download,
     pub node: Download,
     /// `tree_hash` of the installed runtime folder.
@@ -139,7 +141,7 @@ impl CamoufoxPin {
             node: root.join("node/bin/node"),
             runtime: root.join("runtime"),
             install: root.join("camoufox"),
-            executable: root.join("camoufox/Camoufox.app/Contents/MacOS/camoufox"),
+            executable: root.join("camoufox").join(&build.executable),
         };
         if !root.join("manifest.json").is_file() {
             return Err(not_installed(&self.engine, &self.version, &root));
@@ -174,9 +176,11 @@ impl CamoufoxPin {
 }
 
 /// Launch arguments that would undo what latch relies on: Chrome's own
-/// sandbox, the private pipe as the only control channel, a headed window
-/// unless the host asks for none (`serve --headless-browsers`, which latch
-/// adds itself), and no password store. A recipe carrying one is never used.
+/// sandbox (unless the host cannot run it, `sandbox::page_isolation_off`,
+/// where latch adds `--no-sandbox` itself), the private pipe as the only
+/// control channel, a headed window unless the host asks for none (`serve
+/// --headless-browsers`, which latch adds itself), and no password store. A
+/// recipe carrying one is never used.
 const FORBIDDEN: &[&str] = &[
     "--no-sandbox",
     "--disable-gpu-sandbox",
@@ -194,6 +198,7 @@ pub fn platform() -> Option<&'static str> {
         ("macos", "aarch64") => Some("mac_arm64"),
         ("macos", "x86_64") => Some("mac_x64"),
         ("linux", "aarch64") => Some("linux_arm64"),
+        ("linux", "x86_64") => Some("linux_x64"),
         _ => None,
     }
 }
@@ -412,15 +417,6 @@ mod tests {
     #[test]
     fn a_changed_camoufox_part_is_refused_before_launch() {
         let state = tempfile::tempdir().unwrap();
-        // Camoufox is pinned for macOS only, so Linux arm64 has no build either.
-        if platform()
-            .and_then(|key| CAMOUFOX.builds.get(key))
-            .is_none()
-        {
-            let none = CAMOUFOX.verified(state.path()).err().unwrap();
-            assert_eq!(none.code, "unsupported_platform");
-            return;
-        }
         let missing = CAMOUFOX.verified(state.path()).err().unwrap();
         assert_eq!(missing.code, "engine_not_installed");
         assert_eq!(
@@ -438,19 +434,18 @@ mod tests {
             (Exit::Denied, "engine_unverified")
         );
         assert!(changed.message.contains("camoufox"), "{}", changed.message);
-        // The fingerprint claims the host's own OS.
-        assert_eq!(CAMOUFOX.os, "macos");
+        // The fingerprint choice is independent of the host OS.
+        assert_eq!(CAMOUFOX.fingerprint_os, "macos");
     }
 
     #[test]
     fn a_changed_build_is_refused_before_launch() {
         let state = tempfile::tempdir().unwrap();
-        let Some(key) = platform() else {
+        let Some(build) = platform().and_then(|key| CFT.builds.get(key)) else {
             let none = CFT.verified(state.path()).err().unwrap();
             assert_eq!(none.code, "unsupported_platform");
             return;
         };
-        let build = &CFT.builds[key];
         let root = CFT.folder(state.path()).join(&build.folder);
         let missing = CFT.verified(state.path()).err().unwrap();
         assert_eq!(missing.code, "engine_not_installed");

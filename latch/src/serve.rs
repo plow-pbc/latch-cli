@@ -358,6 +358,7 @@ async fn run_host(
     });
     watch_binary(&host, BINARY_CHECK_EVERY);
     sweep_browsers(&host);
+    crate::update::watch(&state.path, &host.dashboard);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(
         &state.path,

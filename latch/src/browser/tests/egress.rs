@@ -248,6 +248,7 @@ async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
         super::HEADLESS,
         None,
         &proxy,
+        false,
     )
     .unwrap();
     browser.begin("k1").unwrap();

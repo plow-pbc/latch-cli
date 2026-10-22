@@ -5,11 +5,10 @@ on a machine its owner trusts, over Plow's directory.
 
 ## Install
 
-Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
-(`gh auth login`). This installs the newest published release:
+This installs the newest release from `releases.plow.co`:
 
 ```sh
-gh release download --repo plow-pbc/latch-cli --pattern install.sh && sh install.sh
+curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 export PATH="$HOME/.local/bin:$PATH"
 latch --version
 ```
@@ -35,11 +34,21 @@ Linux hosting needs bubblewrap and usable user namespaces; setup explains missin
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
 
-Update by rerunning the commands above, adding `--clobber` to `gh release download` so
-the download replaces the one already there. State and versioned plugins stay in place.
-A host `serve -d` started is stopped and started again with the new latch, with what
-it was given. One running in a terminal (`latch serve`, or `serve --foreground`) is
-stopped, and the update says to run `latch serve` there again.
+Update with `latch update`: it installs the newest build, or `latch update TAG`
+that build (also how to go back to an older one); `latch update --check` only
+says whether a newer one is out. It checks the release's `SHA256SUMS` against
+latch's release signing key and the archive against it (on macOS, also that
+the app is signed by Plow), then runs the release's own `install-binary.sh`
+into the folder latch runs from. State and versioned plugins stay in place,
+and the browser engines installed are brought up to date. A host `serve -d`
+started is stopped and started again with the new latch, with what it was
+given. One running in a terminal (`latch serve`, or `serve --foreground`) is
+stopped, and the update says to run `latch serve` there again. Only the owner
+updates: an agent's login is refused.
+A running host looks for a newer build once a day: `latch status --local`
+shows it as `update`, the dashboard as a line under the header, and a command
+at a terminal says so on stderr once a day. `LATCH_NO_UPDATE_CHECK=1` turns
+the looking and the notices off.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
 No Homebrew tap is included.
 
@@ -99,12 +108,13 @@ No Homebrew tap is included.
 - `latch login` names a machine after its hostname; `--name` picks another.
   If another of your machines holds the name, the login asks at a terminal
   whether to replace it or which name to use instead; elsewhere it stops and
-  says what to run. `latch logout` stops this state folder's host and deletes
+  says what to run. `latch logout` stops this state folder's host, takes
+  this machine out of your Plow account and signs out its login, and deletes
   its key and Plow token from the Keychain or its files; the vault and audit
   log read as before after the next `latch login`. `latch logout --purge`
-  also deletes the vault and audit keys and the state folder itself. The
-  machine stays listed in Plow until `latch devices remove` from another
-  machine.
+  also deletes the vault and audit keys and the state folder itself. If Plow
+  can't be reached, logout still deletes locally and says the machine is
+  still listed: `latch devices remove` from another machine takes it out.
 - Exec and file calls need no shared-folder setup. They read home and the
   system's files (programs, libraries, developer tools and certificates),
   except `~/.latch`, this host's state directory, and on macOS `~/Library`

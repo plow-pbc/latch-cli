@@ -115,12 +115,14 @@ fn die_with_host() -> Result<(), Failure> {
 /// becomes bubblewrap and never returns; the copy inside returns once its
 /// filter is on.
 #[cfg(target_os = "linux")]
-fn confine(state_dir: &Path, profile: &Path, scratch: &Path) -> Result<(), Failure> {
+fn confine(state_dir: &Path, engine: &str, profile: &Path, scratch: &Path) -> Result<(), Failure> {
     let state_dir = state_dir.canonicalize().map_err(cft::io_failure)?;
     let view = crate::sandbox::BrowserView {
         profile: profile.canonicalize().map_err(cft::io_failure)?,
-        // Camoufox is pinned for macOS only, so CfT is the one engine here.
-        plugin: CFT.folder(&state_dir),
+        plugin: match engine {
+            "camoufox" => CAMOUFOX.folder(&state_dir),
+            _ => CFT.folder(&state_dir),
+        },
         scratch: scratch.canonicalize().map_err(cft::io_failure)?,
         state_dir,
     };
@@ -138,9 +140,10 @@ pub fn run(
     headless: bool,
     private_display: bool,
     local: bool,
+    page_isolation_off: bool,
 ) -> ExitCode {
     #[cfg(target_os = "linux")]
-    if let Err(failure) = confine(state_dir, profile, scratch) {
+    if let Err(failure) = confine(state_dir, engine, profile, scratch) {
         answer(&mut io::stdout().lock(), Response::error(&failure), None);
         return ExitCode::FAILURE;
     }
@@ -190,8 +193,15 @@ pub fn run(
                 serve(ready, browser, idle, call_limit, local)
             }
             "cft" => {
-                let browser =
-                    Cft::launch(&state_dir, &profile, &scratch, headless, display, &proxy)?;
+                let browser = Cft::launch(
+                    &state_dir,
+                    &profile,
+                    &scratch,
+                    headless,
+                    display,
+                    &proxy,
+                    page_isolation_off,
+                )?;
                 let ready = json!({
                     "engine": CFT.engine,
                     "version": CFT.version,

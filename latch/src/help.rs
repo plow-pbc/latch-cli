@@ -91,9 +91,9 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "logout",
-        output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged` and `state_dir`.",
+        output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name` and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`.",
         effect: Repeatable(
-            "stops this state folder's host and deletes its key and Plow token; with --purge also its vault and audit keys and the folder itself",
+            "stops this state folder's host, takes this machine out of the Plow account and signs out its login, and deletes its key and Plow token; with --purge also its vault and audit keys and the folder itself",
         ),
         owner_only: false,
         connector: None,
@@ -697,10 +697,7 @@ const ENTRIES: &[Entry] = &[
                 "Chrome for Testing, after install.sh --no-browser",
                 &["browser", "setup"],
             ),
-            ex(
-                "Camoufox (macOS)",
-                &["browser", "setup", "--engine", "camoufox"],
-            ),
+            ex("Camoufox", &["browser", "setup", "--engine", "camoufox"]),
         ],
     },
     Entry {
@@ -922,6 +919,20 @@ const ENTRIES: &[Entry] = &[
             ex("Start the host with its dashboard", &["serve"]),
             ex("Start the host detached", &["serve", "-d"]),
             ex("Refuse exec to agents", &["serve", "--deny-exec"]),
+        ],
+    },
+    Entry {
+        id: "update",
+        output: "`updated` and the build installed (`to`), or with --check `current`, `latest` and `available`.",
+        effect: Repeatable(
+            "installs another latch build on this machine and restarts a `serve -d` host on it",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex("Install the newest build", &["update"]),
+            ex("See whether a newer build is out", &["update", "--check"]),
+            ex("Go back to an earlier build", &["update", "v0.1.0-1327"]),
         ],
     },
     Entry {

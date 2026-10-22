@@ -15,7 +15,8 @@
         "folder": "node-v24.21.0-darwin-arm64",
         "tree_sha256": "a9f59a913e22c8f050a49116d0b6632c82dbc47d2f2f59259393a51a0a82f611"
       },
-      "runtime_tree_sha256": "b7cb0dc75f253dfd7cdf2ad4e0be7ecf8d7fa113c72457ed3ee52ca6ad61d930"
+      "runtime_tree_sha256": "b7cb0dc75f253dfd7cdf2ad4e0be7ecf8d7fa113c72457ed3ee52ca6ad61d930",
+      "executable": "Camoufox.app/Contents/MacOS/camoufox"
     },
     "mac_x64": {
       "camoufox": {
@@ -29,10 +30,45 @@
         "folder": "node-v24.21.0-darwin-x64",
         "tree_sha256": "48e291f88ed36af8b9053da318afeb3dd47928ce68da6b7ac3b8543a4dee05ee"
       },
-      "runtime_tree_sha256": "bfe79aa42a3954da9abfa11093800d786fa91b25318cf68d82a0206124591e7e"
+      "runtime_tree_sha256": "bfe79aa42a3954da9abfa11093800d786fa91b25318cf68d82a0206124591e7e",
+      "executable": "Camoufox.app/Contents/MacOS/camoufox"
+    },
+    "linux_arm64": {
+      "camoufox": {
+        "url": "https://github.com/daijro/camoufox/releases/download/v152.0.4-beta.30/camoufox-152.0.4-beta.30-lin.arm64.zip",
+        "sha256": "60447260af8bebdb0ec3f2aa72f687b879e5598367303de2e3fdbc7a5be8c124",
+        "tree_sha256": "8013809db91584eaa61e11fd780cecb8249a8b873ca8d83f18488b3da2dd8eab"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.gz",
+        "sha256": "724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5",
+        "folder": "node-v24.21.0-linux-arm64",
+        "tree_sha256": "bc87bd8efe0da3f440014e930f769d460d6ef66c23c4e6c16e78abc7f7870670"
+      },
+      "runtime_tree_sha256": "75daae5b38aec96a6a78cbc1f6fb06d19eebc1e35d806cdeaa8ca3077848cfcc",
+      "executable": "camoufox-bin"
+    },
+    "linux_x64": {
+      "camoufox": {
+        "url": "https://github.com/daijro/camoufox/releases/download/v152.0.4-beta.30/camoufox-152.0.4-beta.30-lin.x86_64.zip",
+        "sha256": "5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672",
+        "tree_sha256": "9ea7beb2bc3c18dc018981598a36f46c2a2a10370a46d18bddfd280c369031d2"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz",
+        "sha256": "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff",
+        "folder": "node-v24.21.0-linux-x64",
+        "tree_sha256": "515f82bf914640ac912ddfe89d01346b98e20253225459ed2442c7dedbf56475"
+      },
+      "runtime_tree_sha256": "9b5b16698ba5574a9ce75699c2c4e1a90f9dac234e6910321c051f0e58dc9fca",
+      "executable": "camoufox-bin"
     }
   },
-  "os": "macos",
-  "capabilities": ["eval", "upload", "downloads"],
-  "licence": "Camoufox (https://camoufox.com), built from Firefox: Mozilla Public License 2.0. Node.js: MIT and others (https://github.com/nodejs/node/blob/main/LICENSE). Playwright: Apache-2.0. camoufox-js: MIT. Downloaded at install time with --with-camoufox, never shipped with latch."
+  "capabilities": [
+    "eval",
+    "upload",
+    "downloads"
+  ],
+  "licence": "Camoufox (https://camoufox.com), built from Firefox: Mozilla Public License 2.0. Node.js: MIT and others (https://github.com/nodejs/node/blob/main/LICENSE). Playwright: Apache-2.0. camoufox-js: MIT. Downloaded at install time with --with-camoufox, never shipped with latch.",
+  "fingerprint_os": "macos"
 }

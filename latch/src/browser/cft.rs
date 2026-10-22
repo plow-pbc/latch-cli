@@ -125,7 +125,9 @@ pub struct Cft {
 
 impl Cft {
     /// Starts the engine on the session's profile in folder `profile`; with
-    /// `headless`, in Chrome's headless mode, with no window.
+    /// `headless`, in Chrome's headless mode, with no window; with
+    /// `page_isolation_off`, without Chrome's own sandbox, which the host
+    /// cannot run (`sandbox::page_isolation_off`).
     pub fn launch(
         state_dir: &Path,
         profile: &Path,
@@ -133,6 +135,7 @@ impl Cft {
         headless: bool,
         display: Option<&str>,
         proxy: &str,
+        page_isolation_off: bool,
     ) -> Result<Self, Failure> {
         if CFT.driver_contract != driver::CONTRACT {
             return Err(Failure::failed(
@@ -159,6 +162,7 @@ impl Cft {
             headless,
             display,
             proxy,
+            page_isolation_off,
             &chrome_reads,
             &chrome_writes,
         )?;
@@ -1748,6 +1752,7 @@ fn start(
     headless: bool,
     display: Option<&str>,
     proxy: &str,
+    page_isolation_off: bool,
     reads: &impl AsRawFd,
     writes: &impl AsRawFd,
 ) -> Result<Child, Failure> {
@@ -1762,6 +1767,11 @@ fn start(
     // recipe may never carry it; only the host's setting adds it here.
     if headless {
         command.arg("--headless");
+    }
+    // Likewise only on the host's word: where its AppArmor keeps Chrome's
+    // sandbox from starting, Chrome runs in latch's alone.
+    if page_isolation_off {
+        command.arg("--no-sandbox");
     }
     // Every request through the worker's proxy, loopback ones too (Chrome
     // sends those direct unless told not to), and WebRTC with it.

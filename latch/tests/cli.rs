@@ -1317,6 +1317,51 @@ fn an_agent_gets_owner_only_for_browser_setup_and_nothing_is_downloaded() {
 }
 
 #[test]
+fn an_agent_gets_owner_only_for_update_and_nothing_is_installed() {
+    let (dir, token, server) = logged_in_agent(vec![]);
+    server.join().unwrap();
+    let state = dir.path().join("state");
+    for args in [
+        &["update"][..],
+        &["update", "--check"],
+        &["update", "v0.1.0-1"],
+    ] {
+        let output = latch(&state, args, &[("PLOW_TOKEN_FILE", token.as_path())]);
+        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "owner_only");
+    }
+    assert!(!dir.path().join(".local").exists());
+}
+
+/// A newer build the host found shows in `status --local`, and a piped
+/// command prints nothing beyond its JSON. This latch is a local build,
+/// which is never behind.
+#[test]
+fn status_says_what_the_host_found_and_a_pipe_hears_nothing_more() {
+    let (_dir, state, _key) = owner_host();
+    let output = latch(&state, &["status", "--local"], &[]);
+    assert!(output.status.success(), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        status["update"],
+        json!({"available": false, "build": null, "checked_at": null})
+    );
+    let checked = json!({"checked_at": "2026-10-22T08:00:00Z",
+        "latest": {"tag": "v0.1.0-99999", "build": 99999}, "failures": 0,
+        "failed_at": null, "noticed_at": null});
+    fs::write(state.join("update.json"), checked.to_string()).unwrap();
+    let output = latch(&state, &["status", "--local"], &[]);
+    assert!(output.status.success(), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        status["update"],
+        json!({"available": false, "build": 99999, "checked_at": "2026-10-22T08:00:00Z"})
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
 fn an_older_plaintext_audit_is_left_alone_and_a_sealed_one_starts_beside_it() {
     let (_dir, state, _key) = owner_host();
     let old = "{\"op\":\"exec\",\"caller\":\"older-latch\"}\n";
@@ -1609,6 +1654,16 @@ impl LivePlow {
                 }
             }
             ("POST", path) if path.ends_with("/offline") => (200, json!({})),
+            // Logging out: this login's machines go, and the login with them.
+            ("DELETE", "/v1/latch/peers/self") if kind == "device" => {
+                let (removed, kept) = std::mem::take(&mut state.peers)
+                    .into_iter()
+                    .partition(|(_, credential)| *credential == token);
+                state.peers = kept;
+                state.owner = format!("{token}-revoked");
+                let removed: Vec<Value> = removed.into_iter().map(|(peer, _)| peer).collect();
+                (200, json!({"data": removed}))
+            }
             // What the host's gatekeeper reads, on the owner's login: the
             // agent's one chat, where the owner asked for it, and a judge
             // that agrees.
@@ -3546,6 +3601,22 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
     );
     assert_eq!(out["stopped"], true, "{out}");
     assert!(eventually(10, || serve.0.try_wait().unwrap().is_some()));
+    // Plow took the machine out of the account and revoked its login.
+    assert_eq!(
+        out["device"],
+        json!({"name": "host", "removed": true}),
+        "{out}"
+    );
+    let seen = plow.seen();
+    let removal = seen
+        .iter()
+        .find(|(line, _)| line.starts_with("DELETE /v1/latch/peers/self "));
+    assert_eq!(
+        removal.and_then(|(_, bearer)| bearer.as_deref()),
+        Some("owner-login"),
+        "{seen:?}"
+    );
+    assert!(plow.state.lock().unwrap().peers.is_empty());
     assert_eq!(secret_files_in(&host), ["vault.key", "audit.keys"]);
     // Logged out as far as setup and an app can tell: no peer, and
     // anything needing the login says to log in.
@@ -3557,8 +3628,10 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
     let error: Value = serde_json::from_slice(&shown.stderr).unwrap();
     assert_eq!(error["error"]["code"], "not_logged_in", "{error}");
 
-    // Logged in again, the vault and the audit log read as before.
+    // Logged in again, on a new login, the vault and the audit log read as before.
+    plow.state.lock().unwrap().owner = "owner-login-2".to_string();
     let token = dir.path().join("owner.token");
+    fs::write(&token, "owner-login-2\n").unwrap();
     let args = [
         "login",
         "--api-url",
@@ -3588,6 +3661,36 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
         (&json!(true), &json!(true))
     );
     assert!(!host.exists());
+}
+
+#[test]
+fn logout_without_plow_still_deletes_the_login_and_says_the_machine_is_still_listed() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    plow.stop();
+
+    let out = logout(&host, &[]);
+
+    assert_eq!(
+        out["removed"],
+        json!(["key", "plow-token", "config.json"]),
+        "{out}"
+    );
+    assert_eq!(secret_files_in(&host), Vec::<&str>::new());
+    let device = &out["device"];
+    assert_eq!(
+        (&device["name"], &device["removed"]),
+        (&json!("host"), &json!(false)),
+        "{out}"
+    );
+    assert_eq!(device["error"]["code"], "plow_unreachable", "{out}");
+    assert_eq!(
+        device["next"],
+        "`latch devices remove host` on another of your machines"
+    );
+    // Nothing is left to take out of Plow the next time.
+    assert_eq!(logout(&host, &[])["device"], Value::Null);
 }
 
 #[test]
@@ -5049,7 +5152,10 @@ fn audit_show_follow_sleeps_while_the_log_is_quiet() {
 /// A host's state given the pinned browser engines the tests installed
 /// (`just cft`, or `LATCH_CFT_STATE`) and local pages allowed; returns its
 /// plugins folder, for the connectors a test adds.
-#[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
+#[cfg(any(
+    target_os = "macos",
+    all(feature = "linux-browser-tests", feature = "fake-gog")
+))]
 fn browser_host(host: &Path) -> PathBuf {
     let installed = std::env::var_os("LATCH_CFT_STATE")
         .map(PathBuf::from)

@@ -35,13 +35,13 @@ run `python3 scripts/cft-pin.py VERSION` on a Mac and put its output in
 
 ## Camoufox, the second engine
 
-`install.sh --browser camoufox` (macOS), or `latch browser setup --engine
+`install.sh --browser camoufox` (macOS and Linux arm64/x86_64), or `latch browser setup --engine
 camoufox` later, installs Camoufox, pinned in
 `src/browser/camoufox.json` with the runtime latch drives it through, into
-`<state-dir>/plugins/camoufox/<version>/`, about 1 GB:
+`<state-dir>/plugins/camoufox/<version>/`, about 1 GB on macOS and 1.5 GB on Linux:
 
 - `camoufox/`: the Camoufox build (zip sha256-checked, unpacked with
-  `ditto`) and the `version.json` camoufox-js reads;
+  `ditto` on macOS, `unzip` on Linux) and the `version.json` camoufox-js reads;
 - `node/`: the pinned Node (tarball sha256-checked);
 - `runtime/`: the helper's package from `camoufox/` (Playwright below 1.63
   and camoufox-js, exactly as `package-lock.json` pins them), installed
@@ -50,7 +50,8 @@ camoufox` later, installs Camoufox, pinned in
   package downloads anything unchecked.
 
 Before every launch latch checks each part's tree hash against the pin.
-`python3 scripts/camoufox-pin.py` prints them for every pinned Mac build.
+`python3 scripts/camoufox-pin.py` prints them for both architectures of
+the host's OS.
 
 The driver (`src/browser/camoufox.rs`) runs latch's helper,
 `camoufox/helper.mjs` (built into latch, written into the session's
@@ -59,10 +60,11 @@ JSON lines over its stdio and drives Camoufox through Playwright, which
 reaches it over its own pipe (`-juggler-pipe`), never a port. latch's page
 reader runs in Camoufox's isolated world; the agent's `eval` in the page's
 own world (Camoufox's `mw:`). Each session gets a fingerprint of its own,
-made at launch with the host's OS and kept in its profile (`camoufox.json`,
-0600) for as long as the session lasts: a site sees the same device for
-the whole task, and a new one the next. Camoufox ships with password
-saving and form autofill off; its uBlock add-on is left out.
+made at launch (the pin currently claims macOS on every host) and kept in
+its profile (`camoufox.json`, 0600) for as long as the session lasts: a
+site sees the same device for the whole task, and a new one the next.
+Camoufox ships with password saving and form autofill off; its uBlock
+add-on is left out.
 
 `open` runs on Chrome for Testing unless it names Camoufox:
 
@@ -661,8 +663,8 @@ A separate macOS user for engines is the later hardening.
 
 A Linux browser worker confines itself in bubblewrap before it starts
 Xvfb or the engine, and Chrome's own sandbox runs inside that, in user,
-PID and network namespaces of its own with its seccomp filters on (no
-`--no-sandbox`, ever). The runtime sees:
+PID and network namespaces of its own with its seccomp filters on. The
+one exception is Ubuntu 23.10 and later (below). The runtime sees:
 
 - the system files the engine and display need, read-only (`/usr`, the
   loader cache, fonts, name resolution, certificates, the time zone and
@@ -678,6 +680,20 @@ PID and network namespaces of its own with its seccomp filters on (no
 
 It sees no areas. The worker's environment is still only `PATH`, and the
 engine's the four variables above (and `DISPLAY`).
+
+### Ubuntu 23.10 and later: page isolation off
+
+Where AppArmor restricts unprivileged user namespaces
+(`kernel.apparmor_restrict_unprivileged_userns` is 1) and Ubuntu's
+`bwrap-userns-restrict` profile is in force, which `install.sh` loads
+there, every program bwrap starts runs under that profile's `unpriv_bwrap`,
+which denies the capabilities Chrome's sandbox needs: Chrome would stop
+with "No usable sandbox". On such a host, and only there, latch starts
+Chrome with `--no-sandbox` inside its own bubblewrap and seccomp: web
+pages are no longer isolated from one another or from the browser
+process, but latch's sandbox still confines them all, as above. The
+`open` answer and `latch status --local` say so as `"page_isolation":
+"page isolation off on this host"`. Camoufox runs as everywhere else.
 
 ## Tests
 
@@ -717,14 +733,19 @@ through Plow, are built only with `--features live-model`, which `just
 gatekeeper` runs.
 
 On Linux they are built only with `--features linux-browser-tests` (the
-gate's containers have no engine), against the CfT install-binary.sh put in
-`LATCH_CFT_STATE`. There the sandbox checks look at the user namespaces and
+gate's containers have no engine), against the engines installed in
+`LATCH_CFT_STATE`. Linux CI caches both engines and builds their tests once
+into a debug nextest archive, shared by four partitions. `just conformance
+camoufox` runs that engine's checks on a Linux host.
+Missing GTK3/audio/X11/DBus libraries join the installer's root package
+step; browser, Node and helper files stay inside the state folder.
+There the sandbox checks look at the user namespaces and
 seccomp mode of the engine's processes, exec's view of the network at
 `/proc/net`, and the front-app checks have no front app to watch.
 
 These real-engine tests are also the driver conformance runner: each runs
 once per engine, as `browser::tests::cft::NAME` and
-`browser::tests::camoufox::NAME`, Camoufox on macOS only (and the same
+`browser::tests::camoufox::NAME`, Camoufox on both platforms (and the same
 under `fills` and `steps`).
 `just conformance camoufox` runs one engine's checks; a new engine joins by
 one line in the `conformance!` macro.
