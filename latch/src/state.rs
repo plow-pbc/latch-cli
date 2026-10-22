@@ -275,17 +275,24 @@ impl StateDir {
         write_private(&path, text.as_bytes()).map_err(|err| self.io_failure(&path, err))
     }
 
-    /// Like `load_config`, for commands that need a completed `login`. Also
-    /// checks that the key on disk is the one Plow registered, so a replaced
-    /// or restored key is caught here rather than at a host.
-    pub fn require_login(&self) -> Result<Config, Failure> {
-        let Some(config) = self.load_config()? else {
+    /// Like `load_config`, for commands that need a completed `login`. Reads
+    /// no secret: a call to this machine's own host over its socket needs
+    /// none.
+    pub fn require_config(&self) -> Result<Config, Failure> {
+        self.load_config()?.ok_or_else(|| {
             let message = format!(
                 "{} is not logged in; run `latch login` first",
                 self.path.display()
             );
-            return Err(Failure::usage("not_logged_in", message));
-        };
+            Failure::usage("not_logged_in", message)
+        })
+    }
+
+    /// `require_config`, and checks that the key on disk is the one Plow
+    /// registered, so a replaced or restored key is caught here rather than
+    /// at a host.
+    pub fn require_login(&self) -> Result<Config, Failure> {
+        let config = self.require_config()?;
         if self.load_key()?.public().to_string() != config.peer.key {
             let message = format!(
                 "{}: the key does not match the key this instance registered with Plow",

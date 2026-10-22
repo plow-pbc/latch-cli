@@ -85,7 +85,9 @@ No Homebrew tap is included.
   in the terminal's own process, logging to stderr, for CI, tests and
   containers.
 - `latch login` names a machine after its hostname; `--name` picks another.
-  If another of your machines holds the name, the login stops and says so.
+  If another of your machines holds the name, the login asks at a terminal
+  whether to replace it or which name to use instead; elsewhere it stops and
+  says what to run.
 - Exec and file calls need no shared-folder setup. They read home and the
   system's files (programs, libraries, developer tools and certificates),
   except `~/.latch`, this host's state directory, and on macOS `~/Library`
