@@ -99,8 +99,8 @@ jobs:
       - run: cargo test --locked
 
   # The real-engine browser tests, on Linux arm64 (where Chrome for Testing
-  # is pinned): built once into a nextest archive, which three jobs run a
-  # third each of, with every test the browser feature compiles in, and
+  # is pinned): built once into a nextest archive, which five jobs run a
+  # fifth each of, with every test the browser feature compiles in, and
   # fake-gog's return scenario, as on the Mac. The linux job above runs the
   # rest on x86_64.
   browser-build:
@@ -136,7 +136,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3]
+        part: [1, 2, 3, 4, 5]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     defaults:
@@ -168,7 +168,7 @@ jobs:
       # them hold.
       - run: cargo nextest list --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite > /dev/null
       - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome target/debug/latch
-      - run: cargo nextest run --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --partition hash:${{ matrix.part }}/3 --no-fail-fast
+      - run: cargo nextest run --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --partition hash:${{ matrix.part }}/5 --no-fail-fast
 
   linux-static:
     needs: changes
