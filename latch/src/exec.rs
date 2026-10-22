@@ -95,7 +95,7 @@ pub fn parse_secret_env(values: &[String]) -> Result<BTreeMap<String, String>, F
 }
 
 fn bad_secret_env() -> Failure {
-    Failure::failed("bad_secret_env", "use distinct NAME=VALUE entries with valid environment names; HOME, PATH, TMPDIR, LATCH_*, LD_* and DYLD_* are reserved".into())
+    Failure::usage("bad_secret_env", "use distinct NAME=VALUE entries with valid environment names; HOME, PATH, TMPDIR, LATCH_*, LD_* and DYLD_* are reserved".into())
 }
 
 pub(crate) fn validate_secret_env(secrets: &BTreeMap<String, String>) -> Result<(), Failure> {
@@ -138,7 +138,7 @@ fn default_timeout() -> u64 {
 
 /// Resolves host path fields before judgment, without creating anything.
 pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<PreparedExec, Failure> {
-    let bad = |message: &str| Failure::failed("bad_request", message.to_string());
+    let bad = |message: &str| Failure::usage("bad_request", message.to_string());
     if !value.is_object() {
         return Err(bad("exec arguments must be an object"));
     }
@@ -811,7 +811,7 @@ mod tests {
                 let Response::Error { exit, code, .. } = done.response else {
                     panic!("{field} case {case} was accepted");
                 };
-                assert_eq!((exit, code.as_str()), (Exit::Failed, "bad_request"));
+                assert_eq!((exit, code.as_str()), (Exit::Usage, "bad_request"));
                 assert_eq!(done.audit_args, Value::Null);
             }
         }

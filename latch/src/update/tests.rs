@@ -138,8 +138,10 @@ impl World {
         let folder = made.join(&name);
         std::fs::create_dir_all(&folder).unwrap();
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho installing\n",
-            self.installed().display()
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho installing\n\
+             [ -e '{}' ] && {{ echo 'cannot replace latch' >&2; exit 1; }}\nexit 0\n",
+            self.installed().display(),
+            self.failing().display()
         );
         std::fs::write(folder.join("install-binary.sh"), script).unwrap();
         std::fs::write(folder.join("latch"), format!("build {build}\n")).unwrap();
@@ -174,6 +176,15 @@ impl World {
         let bytes = serde_json::to_vec(release).unwrap();
         self.put("latest.json.minisig", self.key.sign(&bytes));
         self.put("latest.json", bytes);
+    }
+
+    /// While this file exists, the stand-in installer fails.
+    fn failing(&self) -> PathBuf {
+        self.dir.path().join("fail-install")
+    }
+
+    fn trace_log(&self) -> String {
+        std::fs::read_to_string(self.state.path.join(crate::trace::FILE)).unwrap_or_default()
     }
 
     fn arguments(&self) -> Option<Vec<String>> {
@@ -297,6 +308,62 @@ async fn a_corrupted_archive_fails_before_anything_is_replaced() {
         .unwrap_err();
     assert_eq!(failure.code, "bad_download", "{}", failure.message);
     assert_eq!(world.arguments(), None);
+}
+
+/// What tar and the installer print goes to trace.log, never this
+/// command's stdout or stderr, whether they succeed or fail.
+#[tokio::test]
+async fn what_tar_and_the_installer_print_goes_to_trace_log() {
+    let world = World::new();
+    let release = world.release(1328);
+    world.latest(&release);
+    std::fs::write(world.failing(), "").unwrap();
+    let failure = update(&world.state, &world.source(), Some(1327), None, None, false)
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "install_failed", "{}", failure.message);
+    assert!(failure.message.contains("trace.log"), "{}", failure.message);
+    let traced = world.trace_log();
+    assert!(
+        traced.contains("installing\ncannot replace latch\n"),
+        "{traced}"
+    );
+
+    std::fs::remove_file(world.failing()).unwrap();
+    update(&world.state, &world.source(), Some(1327), None, None, false)
+        .await
+        .unwrap();
+    assert!(
+        world.trace_log().ends_with("installing\n"),
+        "{}",
+        world.trace_log()
+    );
+
+    // An archive its sums list, but no archive: tar's complaint goes there too.
+    let name = format!(
+        "releases/v0.1.0-1329/latch-v0.1.0-1329-{}.tar.gz",
+        target().unwrap()
+    );
+    let release = world.release(1329);
+    world.latest(&release);
+    let garbage = b"not a tarball".to_vec();
+    let sums = format!(
+        "{}  {}\n",
+        to_hex(&Sha256::digest(&garbage)),
+        name.rsplit('/').next().unwrap()
+    );
+    world.put(&name, garbage);
+    world.put(
+        "releases/v0.1.0-1329/SHA256SUMS.minisig",
+        world.key.sign(sums.as_bytes()),
+    );
+    world.put("releases/v0.1.0-1329/SHA256SUMS", sums.into_bytes());
+    let before = world.trace_log().len();
+    let failure = update(&world.state, &world.source(), Some(1328), None, None, false)
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "bad_download", "{}", failure.message);
+    assert!(world.trace_log().len() > before, "tar said nothing");
 }
 
 #[tokio::test]

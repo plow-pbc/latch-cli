@@ -184,7 +184,7 @@ pub fn shot(
     // Its owner is the request's: a missing or foreign request reads as none.
     history(state_dir, session, caller, request, false)?;
     let missing = || {
-        Failure::failed(
+        Failure::usage(
             "no_such_shot",
             format!("request {request} has no screenshot {shot:?}"),
         )
@@ -210,7 +210,7 @@ pub fn history(
     running: bool,
 ) -> Result<Value, Failure> {
     let missing = || {
-        Failure::failed(
+        Failure::usage(
             "no_such_request",
             format!("this session has no request {request}"),
         )

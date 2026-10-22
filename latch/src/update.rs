@@ -280,18 +280,27 @@ async fn install(
     let unpacked = tempfile::tempdir().map_err(|err| io_failure("a download folder", err))?;
     let path = unpacked.path().join(format!("{name}.tar.gz"));
     std::fs::write(&path, &archive).map_err(|err| io_failure(&path.display().to_string(), err))?;
+    // What tar and the installer print is for the owner, in trace.log: this
+    // command's stdout is its JSON, its stderr only its error line.
+    let log = crate::trace::file(state)?;
+    let (out, err) = crate::trace::output(&log)?;
     let untar = tokio::process::Command::new("tar")
         .arg("-xzf")
         .arg(&path)
         .arg("-C")
         .arg(unpacked.path())
+        .stdout(out)
+        .stderr(err)
         .status()
         .await
         .map_err(|err| io_failure("tar", err))?;
     if !untar.success() {
         return Err(Failure::failed(
             "bad_download",
-            format!("{name}.tar.gz could not be unpacked"),
+            format!(
+                "{name}.tar.gz could not be unpacked; tar's output is in {}",
+                state.path.join(crate::trace::FILE).display()
+            ),
         ));
     }
     let setup = unpacked.path().join(&name);
@@ -299,7 +308,7 @@ async fn install(
         signer.check(&setup.join("Plow Latch.app")).await?;
     }
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
-    // Its progress is for the owner; this command's stdout is its JSON.
+    let (out, err) = crate::trace::output(&log)?;
     let mut installer = tokio::process::Command::new("sh");
     installer
         .arg(setup.join("install-binary.sh"))
@@ -313,14 +322,16 @@ async fn install(
         .args(engines(&dir))
         .arg(setup.join("latch"))
         .stdin(Stdio::null())
-        .stdout(std::io::stderr())
+        .stdout(out)
+        .stderr(err)
         .status()
         .await
         .map_err(|err| io_failure("install-binary.sh", err))?;
     if !installed.success() {
         let message = format!(
-            "{}'s install-binary.sh failed (see above); what it says it left in place is in place",
-            release.tag
+            "{}'s install-binary.sh failed; its output, and what it says it left in place, is in {}",
+            release.tag,
+            state.path.join(crate::trace::FILE).display()
         );
         return Err(Failure::failed("install_failed", message));
     }

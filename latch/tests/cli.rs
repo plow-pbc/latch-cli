@@ -801,6 +801,33 @@ fn bad_arguments_exit_2_in_one_json_line_for_every_command() {
     }
 }
 
+/// Values latch rejects by their form or by what they name, before any
+/// work: the same exit as a bad flag.
+#[test]
+fn a_value_latch_rejects_exits_2_in_one_json_line() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let missing = dir.path().join("missing.js");
+    let missing = missing.to_str().unwrap();
+    for (args, code) in [
+        (
+            &["exec", "--secret-env", "LD_PRELOAD=x", "--", "true"][..],
+            "bad_secret_env",
+        ),
+        (
+            &["vault", "add", "--kind", "nope", "--title", "x"],
+            "bad_item",
+        ),
+        (&["browser", "eval", "--script-file", missing], "local_file"),
+        (&["browser", "upload", "e1", missing], "local_file"),
+    ] {
+        let output = latch(&state, args, &[]);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
+    }
+}
+
 #[test]
 fn help_lists_every_error_code_with_its_exit() {
     let dir = test_dir();

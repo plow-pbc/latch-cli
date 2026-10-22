@@ -4,10 +4,11 @@
 //! A command's events go to `trace.log` in its state folder, so its stderr
 //! stays its one error line; a foreground host's go to its stderr, which is
 //! its log. Never to stdout, which carries the JSON. The audit log is not
-//! affected.
+//! affected. The installers a command runs write to `trace.log` too.
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
+use std::process::Stdio;
 use std::sync::Mutex;
 
 use tracing_subscriber::EnvFilter;
@@ -39,14 +40,30 @@ pub fn init(state: &StateDir, to_stderr: bool) -> Result<(), Failure> {
         events.with_writer(std::io::stderr).init();
         return Ok(());
     }
+    events.with_writer(Mutex::new(file(state)?)).init();
+    Ok(())
+}
+
+/// `trace.log` in `state`, opened to append, made (with the folder) if
+/// missing.
+pub fn file(state: &StateDir) -> Result<File, Failure> {
     state.create()?;
     let path = state.path.join(FILE);
-    let file = OpenOptions::new()
+    OpenOptions::new()
         .append(true)
         .create(true)
         .mode(0o600)
         .open(&path)
-        .map_err(|err| Failure::failed("state_io", format!("{}: {err}", path.display())))?;
-    events.with_writer(Mutex::new(file)).init();
-    Ok(())
+        .map_err(|err| Failure::failed("state_io", format!("{}: {err}", path.display())))
+}
+
+/// Where a program a command runs writes, stdout and stderr both: `log`,
+/// `trace.log` as `file` opened it.
+pub fn output(log: &File) -> Result<(Stdio, Stdio), Failure> {
+    let copy = || {
+        log.try_clone()
+            .map(Stdio::from)
+            .map_err(|err| Failure::failed("state_io", format!("{FILE}: {err}")))
+    };
+    Ok((copy()?, copy()?))
 }

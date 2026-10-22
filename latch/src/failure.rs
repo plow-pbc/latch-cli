@@ -148,9 +148,11 @@ pub const CODES: &[(&str, Exit)] = &[
     ("audit_io", Exit::Failed),
     ("audit_key", Exit::Failed),
     ("back_unknown", Exit::Failed),
+    ("bad_app_signature", Exit::Denied),
     ("bad_arguments", Exit::Usage),
     ("bad_command", Exit::Usage),
     ("bad_directory", Exit::Failed),
+    ("bad_download", Exit::Failed),
     ("bad_home", Exit::Failed),
     ("bad_host_settings", Exit::Failed),
     ("bad_import", Exit::Usage),
@@ -162,14 +164,17 @@ pub const CODES: &[(&str, Exit)] = &[
     ("bad_pick", Exit::Usage),
     ("bad_profile", Exit::Usage),
     ("bad_relay", Exit::Usage),
+    ("bad_release", Exit::Failed),
     ("bad_request", Exit::Failed),
     ("bad_request", Exit::Usage),
     ("bad_response", Exit::Failed),
     ("bad_response", Exit::Unknown),
     ("bad_rules", Exit::Usage),
-    ("bad_secret_env", Exit::Failed),
+    ("bad_secret_env", Exit::Usage),
     ("bad_serve_args", Exit::Usage),
+    ("bad_signature", Exit::Denied),
     ("bad_state", Exit::Failed),
+    ("bad_tag", Exit::Usage),
     ("bad_target", Exit::Denied),
     ("bad_target", Exit::Usage),
     ("bad_test_access", Exit::Usage),
@@ -177,10 +182,13 @@ pub const CODES: &[(&str, Exit)] = &[
     ("browser_gone", Exit::Failed),
     ("calendar_conflict", Exit::Denied),
     ("caller_denied", Exit::Denied),
+    ("check_not_met", Exit::Failed),
     ("checksum_mismatch", Exit::Failed),
     ("code_expired", Exit::Failed),
     ("confirm_needed", Exit::Denied),
+    ("confirm_needed", Exit::Usage),
     ("confirm_stale", Exit::Denied),
+    ("confirm_stale", Exit::Usage),
     ("confirmation_required", Exit::Usage),
     ("conflict", Exit::Usage),
     ("connection_lost", Exit::Failed),
@@ -206,6 +214,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("failed", Exit::Failed),
     ("file_too_large", Exit::Usage),
     ("fill_refused", Exit::Denied),
+    ("gatekeeper_denied", Exit::Denied),
     ("gatekeeper_unavailable", Exit::Unreachable),
     ("get_form", Exit::Denied),
     ("gog_not_configured", Exit::Failed),
@@ -225,6 +234,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("host_unreachable", Exit::Unreachable),
     ("host_upgraded", Exit::Failed),
     ("import_expired", Exit::Usage),
+    ("install_failed", Exit::Failed),
     ("invalid_request", Exit::Usage),
     ("io_error", Exit::Failed),
     ("iroh", Exit::Failed),
@@ -234,6 +244,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("keychain_failed", Exit::Failed),
     ("last_tab", Exit::Usage),
     ("launch_busy", Exit::Failed),
+    ("local_build", Exit::Failed),
     ("local_file", Exit::Failed),
     ("local_file", Exit::Usage),
     ("local_socket", Exit::Failed),
@@ -260,6 +271,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("no_handoff", Exit::Failed),
     ("no_history", Exit::Failed),
     ("no_host", Exit::Usage),
+    ("no_intent", Exit::Denied),
     ("no_session", Exit::Usage),
     ("no_state_dir", Exit::Usage),
     ("no_such_agent", Exit::Usage),
@@ -267,9 +279,10 @@ pub const CODES: &[(&str, Exit)] = &[
     ("no_such_download", Exit::Usage),
     ("no_such_field", Exit::Usage),
     ("no_such_item", Exit::Usage),
-    ("no_such_request", Exit::Failed),
+    ("no_such_release", Exit::Failed),
+    ("no_such_request", Exit::Usage),
     ("no_such_session", Exit::Failed),
-    ("no_such_shot", Exit::Failed),
+    ("no_such_shot", Exit::Usage),
     ("no_such_tab", Exit::Usage),
     ("no_such_target", Exit::Failed),
     ("no_terminal", Exit::Usage),
@@ -308,6 +321,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("reader_failed", Exit::Failed),
     ("reader_timeout", Exit::Failed),
     ("relay_unreachable", Exit::Failed),
+    ("releases_unreachable", Exit::Unreachable),
     ("removed_command", Exit::Usage),
     ("rules_io", Exit::Failed),
     ("rules_too_long", Exit::Usage),
@@ -344,6 +358,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("store_rejected", Exit::Failed),
     ("timeout", Exit::Failed),
     ("tmpdir_failed", Exit::Failed),
+    ("tool_failed", Exit::Failed),
     ("transfer_failed", Exit::Failed),
     ("transfer_failed", Exit::Unknown),
     ("transfer_incomplete", Exit::Failed),
@@ -354,6 +369,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("unsafe_output", Exit::Failed),
     ("unsupported_capability", Exit::Failed),
     ("unsupported_platform", Exit::Failed),
+    ("update_io", Exit::Failed),
     ("upload_failed", Exit::Failed),
     ("url_refused", Exit::Denied),
     ("usage", Exit::Usage),
@@ -372,58 +388,145 @@ pub const CODES: &[(&str, Exit)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
-    /// The codes this crate's source gives a failure, with their exits:
-    /// `Failure::usage("code"`, `Failure::failed("code"`, `Done::failed("code"`
-    /// and `Exit::Name, "code"`. Test code is left out.
+    /// The codes this crate's production source gives a failure, with their
+    /// exits: `Failure::usage("code"`, `Failure::failed("code"`,
+    /// `Done::failed("code"` and `Exit::Name, "code"`. Everything under
+    /// `#[cfg(test)]` is left out: the items it marks, and the files of the
+    /// modules it declares.
     fn named_in_source() -> Vec<(String, String)> {
-        let mut named = Vec::new();
-        let mut folders = vec![std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src"
-        ))];
+        let src = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut files = Vec::new();
+        let mut folders = vec![src.to_path_buf()];
         while let Some(folder) = folders.pop() {
             for entry in std::fs::read_dir(&folder).unwrap() {
                 let path = entry.unwrap().path();
-                let name = path.file_name().unwrap().to_string_lossy().to_string();
                 if path.is_dir() {
-                    if name != "tests" {
-                        folders.push(path);
+                    folders.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let mut production = Vec::new();
+        let mut test_only = Vec::new();
+        for path in &files {
+            let (text, declared) = without_tests(&std::fs::read_to_string(path).unwrap());
+            // `mod name;` in a.rs is a/name.rs; in main.rs or mod.rs, name.rs beside it.
+            let stem = path.file_stem().unwrap();
+            let folder = match stem.to_str() {
+                Some("main" | "mod") => path.parent().unwrap().to_path_buf(),
+                _ => path.with_extension(""),
+            };
+            test_only.extend(declared.iter().map(|name| folder.join(name)));
+            production.push((path, text));
+        }
+        let mut named = Vec::new();
+        for (path, text) in production {
+            let tested = test_only
+                .iter()
+                .any(|module| path.with_extension("") == *module || path.starts_with(module));
+            if tested || path.ends_with("failure.rs") {
+                continue;
+            }
+            for (call, exit) in [
+                ("Failure::usage(", "Usage"),
+                ("Failure::failed(", "Failed"),
+                ("Done::failed(", "Failed"),
+            ] {
+                for (at, _) in text.match_indices(call) {
+                    if let Some(code) = code_literal(&text[at + call.len()..]) {
+                        named.push((code, exit.to_string()));
                     }
+                }
+            }
+            for (at, _) in text.match_indices("Exit::") {
+                let rest = &text[at + "Exit::".len()..];
+                let exit: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .collect();
+                let Some(rest) = rest[exit.len()..].trim_start().strip_prefix(',') else {
                     continue;
-                }
-                if !name.ends_with(".rs") || name.ends_with("tests.rs") || name == "failure.rs" {
-                    continue;
-                }
-                let text = std::fs::read_to_string(&path).unwrap();
-                let text = text.split("#[cfg(test)]\nmod tests").next().unwrap();
-                for (call, exit) in [
-                    ("Failure::usage(", "Usage"),
-                    ("Failure::failed(", "Failed"),
-                    ("Done::failed(", "Failed"),
-                ] {
-                    for (at, _) in text.match_indices(call) {
-                        if let Some(code) = code_literal(&text[at + call.len()..]) {
-                            named.push((code, exit.to_string()));
-                        }
-                    }
-                }
-                for (at, _) in text.match_indices("Exit::") {
-                    let rest = &text[at + "Exit::".len()..];
-                    let exit: String = rest
-                        .chars()
-                        .take_while(|c| c.is_ascii_alphabetic())
-                        .collect();
-                    let Some(rest) = rest[exit.len()..].trim_start().strip_prefix(',') else {
-                        continue;
-                    };
-                    if let Some(code) = code_literal(rest) {
-                        named.push((code, exit));
-                    }
+                };
+                if let Some(code) = code_literal(rest) {
+                    named.push((code, exit));
                 }
             }
         }
         named
+    }
+
+    /// `text` without the items `#[cfg(test)]` marks, and the names of the
+    /// modules among them that live in files of their own (`mod name;`).
+    fn without_tests(text: &str) -> (String, Vec<String>) {
+        const MARK: &str = "#[cfg(test)]";
+        let (mut kept, mut declared) = (String::new(), Vec::new());
+        let mut rest = text;
+        while let Some(at) = rest.find(MARK) {
+            kept.push_str(&rest[..at]);
+            let item = &rest[at + MARK.len()..];
+            let end = item_end(item);
+            let words: Vec<&str> = item[..end].split_whitespace().collect();
+            if let [.., "mod", name] = words.as_slice() {
+                declared.push(name.trim_end_matches(';').to_string());
+            }
+            rest = &item[end..];
+        }
+        kept.push_str(rest);
+        (kept, declared)
+    }
+
+    /// Where the item `text` starts with ends: after its first `;` outside
+    /// any braces, or after the brace that closes its first block. String
+    /// and character literals and comments are stepped over, so the braces
+    /// in them don't count.
+    fn item_end(text: &str) -> usize {
+        let bytes = text.as_bytes();
+        let (mut at, mut depth) = (0, 0);
+        while at < bytes.len() {
+            match bytes[at] {
+                b'/' if bytes.get(at + 1) == Some(&b'/') => {
+                    at += text[at..].find('\n').unwrap_or(text.len() - at);
+                }
+                b'/' if bytes.get(at + 1) == Some(&b'*') => {
+                    at += text[at..].find("*/").map_or(text.len() - at, |end| end + 2);
+                    continue;
+                }
+                b'r' if matches!(bytes.get(at + 1), Some(b'"' | b'#'))
+                    && !bytes[at.saturating_sub(1)].is_ascii_alphanumeric() =>
+                {
+                    let hashes = text[at + 1..].bytes().take_while(|&b| b == b'#').count();
+                    let close = format!("\"{}", "#".repeat(hashes));
+                    let body = at + 2 + hashes;
+                    at = body + text[body..].find(&close).unwrap() + close.len();
+                    continue;
+                }
+                b'"' => {
+                    at += 1;
+                    while bytes[at] != b'"' {
+                        at += if bytes[at] == b'\\' { 2 } else { 1 };
+                    }
+                }
+                // A character literal ('x', '\n', '\u{7b}'), not a lifetime ('a).
+                b'\'' if bytes.get(at + 1) == Some(&b'\\') => {
+                    at += 2 + text[at + 2..].find('\'').unwrap();
+                }
+                b'\'' if bytes.get(at + 2) == Some(&b'\'') => at += 2,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return at + 1;
+                    }
+                }
+                b';' if depth == 0 => return at + 1,
+                _ => {}
+            }
+            at += 1;
+        }
+        text.len()
     }
 
     /// The string literal `text` starts with (after whitespace), if it reads
