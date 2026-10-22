@@ -231,23 +231,31 @@ agent runs; latch does not copy the credential into the state folder.
 **A new agent you run yourself** needs a *self-hosted* agent credential
 first, made on one of your free lines.
 
-1. Create it. The token is shown once; this writes it to a 0600 file and
-   prints only the agent's uid and name:
+1. Create it. This needs your own Plow login in the shell, made the way
+   Plow's account page makes one: Plow texts you a code, and the code buys a
+   login token. (latch keeps its own login where only latch reads it: in the
+   Keychain on a signed Mac.) The agent's token is shown once; this writes it
+   to a 0600 file and prints only the agent's uid and name:
 
    ```sh
-   T=$(cat ~/.latch/plow-token)    # your own login, from step 2
+   printf 'Your phone, as +15551234567: '; read -r P
+   curl -s -X POST https://api.plow.co/v1/auth/otp/request \
+     -H 'content-type: application/json' -d "{\"phone\":\"$P\"}" >/dev/null
+   printf 'The code Plow texted you: '; read -r C
+   T=$(curl -s -X POST https://api.plow.co/v1/auth/otp/verify \
+     -H 'content-type: application/json' -d "{\"phone\":\"$P\",\"code\":\"$C\"}" | jq -r .token)
    curl -s https://api.plow.co/v1/lines -H "Authorization: Bearer $T" | jq -c '.data[] | {uid, available}'
    umask 077
    curl -s -X POST https://api.plow.co/v1/agents -H "Authorization: Bearer $T" \
      -H 'content-type: application/json' \
      -d '{"line_uid":"LINE_UID","provider":"self_hosted","name":"my-agent"}' \
      | tee >(jq -r .token > ~/my-agent.token) | jq -c '.agent | {uid, name}'
-   unset T
    ```
 
    Treat `~/my-agent.token` like a password: it carries the agent's full Plow
-   scopes. To revoke it: `curl -X DELETE https://api.plow.co/v1/agents/AGENT_UID
-   -H "Authorization: Bearer $(cat ~/.latch/plow-token)"`.
+   scopes. To revoke it, with `$T` from above (or a new one made the same
+   way): `curl -X DELETE https://api.plow.co/v1/agents/AGENT_UID -H
+   "Authorization: Bearer $T"`. `$T` is your own login: `unset T` when done.
 
 2. Log it in, in its own state folder, with the token file and Plow's public
    address:
