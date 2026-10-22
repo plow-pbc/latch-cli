@@ -5,9 +5,10 @@ from a made-up phone. The same phone is the same local account each time.
 Never for production Plow; tokens stay in the state folder, never printed.
 No credential reaches the local stack but the one its texted code mints:
 latch gets none of the environment's, and a state folder logged in to
-another Plow is refused.
+another Plow is refused. The stack is dev_plow.py's unless --api/--twin
+name it, and is checked for before latch runs.
 
-    dev-login.py LATCH STATE API TWIN [--phone +1555…] [--name NAME]
+    dev-login.py LATCH STATE [--api URL] [--twin URL] [--phone +1555…] [--name NAME]
 """
 
 import argparse
@@ -16,6 +17,8 @@ import os
 import subprocess
 import sys
 import urllib.request
+
+import dev_plow
 
 # The environment latch takes a Plow credential or another Plow from.
 CREDENTIAL_ENV = ("PLOW_AGENT_TOKEN", "PLOW_TOKEN_FILE", "PLOW_API_BASE", "PLOW_API_URL")
@@ -45,11 +48,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("latch")
     parser.add_argument("state")
-    parser.add_argument("api")
-    parser.add_argument("twin")
+    parser.add_argument("--api")
+    parser.add_argument("--twin")
     parser.add_argument("--phone", default="+15550100201")
     parser.add_argument("--name", default="dev")
     args = parser.parse_args()
+    try:
+        api, api_from = (args.api, "--api") if args.api else dev_plow.address(dev_plow.API)
+        twin, twin_from = (args.twin, "--twin") if args.twin else dev_plow.address(dev_plow.TWIN)
+    except dev_plow.Unset as e:
+        print(e, file=sys.stderr)
+        return 2
+    args.api, args.twin = api, twin
+    for why in (dev_plow.unreachable("API", api, api_from, "/health"),
+                dev_plow.unreachable("Linq twin", twin, twin_from, "/")):
+        if why:
+            print(why, file=sys.stderr)
+            return 2
     saved = saved_api(args.state)
     if saved is not None and saved.rstrip("/") != args.api.rstrip("/"):
         print(f"{args.state} is logged in to {saved}, not {args.api}; nothing was sent. "
