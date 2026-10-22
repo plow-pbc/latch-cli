@@ -2424,40 +2424,6 @@ async fn back_into_a_reserved_site_is_refused_after_a_return_visit(engine: &str)
     session.close().await.unwrap();
 }
 
-/// Camoufox runs with the prefs that open every window a page opens
-/// (`window.open`, with features or without, or a `target=_blank` link) as a
-/// tab that loads in the background; Firefox keeps the ones that differ from
-/// its defaults in the profile's `prefs.js` as it quits. Whether a window
-/// then stays behind the owner's needs a screen to tell: Playwright keeps
-/// every page active, and Camoufox reports a made-up screen.
-#[tokio::test]
-async fn camoufox_runs_with_page_windows_as_background_tabs() {
-    let (_dir, state, _area) = test_state("camoufox", &["fox-tabs"]);
-    let session = Session::start_with(
-        &latch(),
-        &state,
-        "fox-tabs",
-        Duration::from_secs(120),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
-    session.close().await.unwrap();
-    let prefs = fs::read_to_string(profile::root(&state).join("fox-tabs/data/prefs.js")).unwrap();
-    if HEADLESS && cfg!(target_os = "macos") {
-        assert!(
-            prefs.contains(r#"user_pref("widget.macos.allow-native-select", false);"#),
-            "headless Firefox must disable native macOS select menus"
-        );
-    }
-    for pref in [
-        r#"user_pref("browser.link.open_newwindow.restriction", 0);"#,
-        r#"user_pref("browser.tabs.loadDivertedInBackground", true);"#,
-    ] {
-        assert!(prefs.contains(pref), "{pref} is not in force");
-    }
-}
-
 async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
     let (_dir, state, _area) = test_state(engine, &["b2b-turns"]);
     let frames = test_site();
@@ -2585,4 +2551,45 @@ async fn an_answer_shows_the_screen_and_observe_all_every_element(engine: &str) 
         .unwrap();
     assert_eq!(evaluated["value"], mine);
     h.call(CALLER, "close", &id, json!({})).await.unwrap();
+}
+
+/// Tagged `mac`: what macOS can answer differently from Linux (see
+/// `conformance!`).
+mod mac {
+    use super::*;
+
+    /// Camoufox runs with the prefs that open every window a page opens
+    /// (`window.open`, with features or without, or a `target=_blank` link) as a
+    /// tab that loads in the background; Firefox keeps the ones that differ from
+    /// its defaults in the profile's `prefs.js` as it quits. Whether a window
+    /// then stays behind the owner's needs a screen to tell: Playwright keeps
+    /// every page active, and Camoufox reports a made-up screen.
+    #[tokio::test]
+    async fn camoufox_runs_with_page_windows_as_background_tabs() {
+        let (_dir, state, _area) = test_state("camoufox", &["fox-tabs"]);
+        let session = Session::start_with(
+            &latch(),
+            &state,
+            "fox-tabs",
+            Duration::from_secs(120),
+            HEADLESS,
+        )
+        .await
+        .unwrap();
+        session.close().await.unwrap();
+        let prefs =
+            fs::read_to_string(profile::root(&state).join("fox-tabs/data/prefs.js")).unwrap();
+        if HEADLESS && cfg!(target_os = "macos") {
+            assert!(
+                prefs.contains(r#"user_pref("widget.macos.allow-native-select", false);"#),
+                "headless Firefox must disable native macOS select menus"
+            );
+        }
+        for pref in [
+            r#"user_pref("browser.link.open_newwindow.restriction", 0);"#,
+            r#"user_pref("browser.tabs.loadDivertedInBackground", true);"#,
+        ] {
+            assert!(prefs.contains(pref), "{pref} is not in force");
+        }
+    }
 }
