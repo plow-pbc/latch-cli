@@ -519,6 +519,28 @@ worth a retry later. The gatekeeper asks the same route, and its
 `gatekeeper_unavailable` says the same. No command asks the model only to
 report its health: a failure shows when something needs a decision.
 
+## For agents
+
+- **Already signed in?** Sessions on a profile share its logins: look
+  before signing in again.
+- **A hard block is not a challenge.** A challenge has something to click
+  or type (a CAPTCHA, "confirm you are human", a code prompt); a hard
+  block ("You have been blocked", "Access denied", a check that never
+  finishes) has nothing, and often loads like any page. Neither a retry
+  of the same URL nor a wait gets through it: stop and tell the owner.
+- **A click that fails is not a reason for `eval`.** A click or key `eval`
+  makes is not trusted (`isTrusted` false), which is what a site's bot
+  defenses look for. A `covered_target` names what is on top: click the
+  banner's or dialog's own button, as a person would.
+- **A filled value stays in the page.** Never copy one out, repeat it or
+  write it anywhere.
+- **A purchase, in order:** `open --reserve-site` the shop; sign in with
+  `fill` if it isn't; choose the items; at checkout `fill` the card and
+  click the order button, carrying out each confirmation they stop for
+  (the card always does) with `do --confirm C`; `screenshot` the confirmation page; `close`.
+- **Close the session when done.** One whose id is lost closes itself
+  after 30 idle minutes.
+
 ## Handoff and screenless hosts
 
 `handoff --reason captcha|2fa|passkey|signin [--within S]` hands the
