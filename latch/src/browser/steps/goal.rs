@@ -62,12 +62,6 @@ const STEP_WAITS: usize = 2;
 const WAIT: Duration = Duration::from_millis(1500);
 /// A chosen target needs at least this probability.
 const TARGET_P: f64 = 0.5;
-/// The risk a pass answered stands for the click's own risk decision only
-/// below this yes, and for a click only when the pass was this sure of its
-/// target: the question asked of "the click this pass would make" is then
-/// about that very element. Otherwise the element gets its own call.
-const PASS_SAFE_P: f64 = 0.3;
-const PASS_TARGET_P: f64 = 0.9;
 /// The most options one target question offers.
 const MAX_OFFERS: usize = 250;
 /// How long a typed check is polled after each action before the next
@@ -832,46 +826,10 @@ impl Run<'_> {
             }
 
             // 11. The action, judged for risk where it clicks or presses Enter.
-            let mut choice = choice_record(&decision, pick.as_ref());
-            let passed = passed_risk(&decision, &op, pick.as_ref()).map(|p| {
-                // What the pass saw its action act on, for the review to
-                // find again.
-                let seen = match (op.as_str(), chosen, &typed_into) {
-                    ("click", Some(t), _) => {
-                        let e = element(view, &t.at);
-                        json!({"target": {"role": e["role"], "name": e["name"], "row": e["row"]},
-                               "lines_sha256": e["lines_sha256"], "title": view["title"]})
-                    }
-                    ("press_enter", _, Some(typed)) => view["elements"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .find(|e| {
-                            e["kind"] == "text"
-                                && form_key(view, e["ref"].as_str().unwrap_or_default())
-                                    == typed.form
-                        })
-                        .map(|e| {
-                            json!({"target": e["enter"], "lines_sha256": e["enter_lines_sha256"],
-                                   "title": view["title"]})
-                        })
-                        .unwrap_or_default(),
-                    _ => Value::Null,
-                };
-                Passed { p, seen }
-            });
-            if let Some(p) = match op.as_str() {
-                "click" => decision.risky_click,
-                "press_enter" => decision.risky_enter,
-                _ => None,
-            } {
-                choice["risk_pass_p"] = json!(model::round(p));
-                choice["risk_from"] = json!(if passed.is_some() { "pass" } else { "own_call" });
-            }
-            self.choice = Some(choice);
+            self.choice = Some(choice_record(&decision, pick.as_ref()));
             let sent = match op.as_str() {
-                "click" => self.risky(n, &literal, false, passed).await,
-                "press_enter" => self.risky(n, &literal, true, passed).await,
+                "click" => self.risky(n, &literal, false).await,
+                "press_enter" => self.risky(n, &literal, true).await,
                 "navigate" => {
                     let url = chosen.map(|t| t.at.clone()).unwrap_or_default();
                     self.navigate(n, &url).await
@@ -1547,72 +1505,4 @@ fn form_of(elements: &[&Value]) -> Vec<Value> {
             candidate
         })
         .collect()
-}
-
-/// The risk the pass answered for its click or Enter, when it may stand
-/// for the action's own risk decision (`PASS_SAFE_P`, `PASS_TARGET_P`).
-fn passed_risk(decision: &Decision, op: &str, pick: Option<&Pick>) -> Option<f64> {
-    let p = match op {
-        "click" if pick.is_some_and(|pick| pick.p >= PASS_TARGET_P) => decision.risky_click?,
-        "press_enter" => decision.risky_enter?,
-        _ => return None,
-    };
-    (p < PASS_SAFE_P).then_some(p)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn decision(click: f64, enter: f64) -> Decision {
-        let pick = |id: &str| Pick {
-            id: id.into(),
-            p: 1.0,
-            likeliest: vec![(id.into(), 1.0)],
-        };
-        Decision {
-            status: "not_yet".into(),
-            status_p: 1.0,
-            evidence: None,
-            none_p: 1.0,
-            top_lines: Vec::new(),
-            operation: pick("click"),
-            click: None,
-            typed: None,
-            type_field: None,
-            select: None,
-            url: None,
-            bundle: None,
-            risky_click: Some(click),
-            risky_enter: Some(enter),
-            trimmed: None,
-        }
-    }
-
-    fn target(p: f64) -> Pick {
-        Pick {
-            id: "e1".into(),
-            p,
-            likeliest: vec![("e1".into(), p)],
-        }
-    }
-
-    #[test]
-    fn a_passs_risk_stands_only_when_low_and_of_a_sure_target() {
-        let low = decision(0.05, 0.05);
-        assert_eq!(passed_risk(&low, "click", Some(&target(0.95))), Some(0.05));
-        assert_eq!(passed_risk(&low, "press_enter", None), Some(0.05));
-        // A target the pass was not sure of: the risk may be of another
-        // element.
-        assert_eq!(passed_risk(&low, "click", Some(&target(0.8))), None);
-        // At or above the line, the element gets its own call.
-        let edge = decision(PASS_SAFE_P, 0.9);
-        assert_eq!(passed_risk(&edge, "click", Some(&target(1.0))), None);
-        assert_eq!(passed_risk(&edge, "press_enter", None), None);
-        // Nothing to stand for when the pass did not ask.
-        let mut unasked = low.clone();
-        unasked.risky_click = None;
-        assert_eq!(passed_risk(&unasked, "click", Some(&target(1.0))), None);
-        assert_eq!(passed_risk(&low, "type", Some(&target(1.0))), None);
-    }
 }

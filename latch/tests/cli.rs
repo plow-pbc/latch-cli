@@ -116,6 +116,7 @@ fn latch_at_a_terminal(
     args: &[&str],
     typed: &str,
     stdout_at_the_terminal: bool,
+    env: &[(&str, &Path)],
 ) -> (Option<i32>, String, String) {
     use std::os::fd::FromRawFd;
     let (mut main, mut side) = (0, 0);
@@ -128,7 +129,7 @@ fn latch_at_a_terminal(
     let opened = unsafe { libc::openpty(&mut main, &mut side, name, settings, size) };
     assert_eq!(opened, 0);
     let (mut main, side) = unsafe { (fs::File::from_raw_fd(main), fs::File::from_raw_fd(side)) };
-    let mut command = latch_command(state, args, &[]);
+    let mut command = latch_command(state, args, env);
     command
         .stdin(side.try_clone().unwrap())
         .stderr(side.try_clone().unwrap())
@@ -516,7 +517,7 @@ fn a_name_clash_stops_a_login_at_a_terminal_too() {
     ];
 
     // Even a person ready to say yes is not asked to replace the machine.
-    let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false);
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
     // A person reads the sentence, not the JSON.
     assert!(!shown.contains("\"conflict\""), "{shown}");
@@ -531,7 +532,7 @@ fn a_login_that_knows_no_plow_says_so_in_a_sentence_at_a_terminal_and_json_piped
     let dir = test_dir();
     let state = dir.path().join("state");
 
-    let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", false);
+    let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
     let sentence = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co";
     assert!(shown.contains(sentence), "{shown}");
@@ -557,13 +558,46 @@ fn plow_texted_at_once() -> (String, thread::JoinHandle<Vec<String>>) {
 }
 
 #[test]
+fn a_login_by_text_stops_at_plows_refusal_and_retries_a_slow_down() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let dir = test_dir();
+
+    // A refusal (4xx) ends the login: asking again would be refused again.
+    let (api_url, server) = fake_plow(vec![
+        (200, activation.clone()),
+        (403, json!({"detail": "forbidden"})),
+    ]);
+    let state = dir.path().join("refused");
+    let args = ["login", "--api-url", &api_url, "--name", "mac", "--events"];
+    let output = latch(&state, &args, &[]);
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let lines = String::from_utf8(output.stdout).unwrap();
+    assert!(lines.contains(r#""code":"plow_denied""#), "{lines}");
+    assert_eq!(server.join().unwrap().len(), 2, "one ask, no retry");
+
+    // 429 is Plow asking us to slow down: the login asks again.
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (429, json!({"detail": "slow down"})),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ]);
+    let state = dir.path().join("slowed");
+    let args = ["login", "--api-url", &api_url, "--name", "mac", "--events"];
+    let output = latch(&state, &args, &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(server.join().unwrap().len(), 4);
+}
+
+#[test]
 fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
     let (api_url, server) = plow_texted_at_once();
     let dir = test_dir();
     let state = dir.path().join("state");
     let args = ["login", "--api-url", &api_url, "--name", "mac"];
 
-    let (code, shown, _) = latch_at_a_terminal(&state, &args, "", true);
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "", true, &[]);
     assert_eq!(code, Some(0), "{shown}");
     // Every row of the QR code, and the link under it, open Messages.
     let link = "sms:+14155550100?&body=TRY12";
@@ -580,13 +614,21 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
         shown.contains(&format!("{opens}{link}\x1b]8;;\x1b\\")),
         "{shown}"
     );
-    // Then one line to read, and one when it is done: no JSON.
+    // Then what to do, that it is waiting, and one line when it is done:
+    // no JSON.
     let said: Vec<&str> = rows
         .iter()
         .filter(|row| !row.contains(&opens))
         .copied()
         .collect();
-    assert_eq!(said, ["Text TRY12 to +1 415-555-0100", "Logged in as mac."]);
+    assert_eq!(
+        said,
+        [
+            "Text TRY12 to +1 415-555-0100",
+            "Waiting for your text…",
+            "Logged in as mac."
+        ]
+    );
     assert_eq!(server.join().unwrap().len(), 3);
 }
 
@@ -597,7 +639,7 @@ fn a_login_by_text_piped_still_prints_its_json() {
     let state = dir.path().join("state");
     let args = ["login", "--api-url", &api_url, "--name", "mac"];
 
-    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", false);
+    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", false, &[]);
     assert_eq!(code, Some(0), "{shown}");
     assert!(shown.contains("Text TRY12 to +1 415-555-0100"), "{shown}");
     assert!(!shown.contains("Logged in as"), "{shown}");
@@ -2341,6 +2383,28 @@ fn shutdown_exec_cases() {
             .expect("the exec is audited");
         assert_eq!(exec["outcome"], outcome, "{what}: {exec}");
     }
+}
+
+#[test]
+fn a_dashboard_host_that_fails_says_why_in_its_log_not_on_its_terminal() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    // No relay answers there: the host gives up after its dashboard has
+    // taken the terminal.
+    let relay = [("LATCH_TEST_RELAY_URL", Path::new("http://127.0.0.1:9/"))];
+    let args = ["serve", share.to_str().unwrap()];
+    let (code, shown, _) = latch_at_a_terminal(&host, &args, "", true, &relay);
+    assert!(
+        shown.contains("\x1b[?1049h"),
+        "the dashboard was shown: {shown}"
+    );
+    assert_eq!(code, Some(1), "{shown}");
+    assert!(!shown.contains("relay_unreachable"), "{shown}");
+    let log = fs::read_to_string(host.join("serve.log")).unwrap();
+    assert!(log.contains("relay_unreachable"), "{log}");
 }
 
 #[test]

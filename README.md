@@ -6,8 +6,8 @@ on a machine its owner trusts, over Plow's directory.
 ## Install
 
 Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
-(`gh auth login`). Releases are tagged `v<version>-build.<UTC yyyymmddHHMM>`,
-e.g. `v0.1.0-build.202610211830`. This installs the newest published one; set
+(`gh auth login`). Releases are tagged `v<version>-<build>`, e.g. `v0.1.0-1327`, where the build
+number counts release runs; `latch --version` shows it as `0.1.0 (1327)`. This installs the newest published one; set
 `release` to a tag to pick another:
 
 ```sh
@@ -19,6 +19,8 @@ latch --version
 
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
+On macOS that is a link into `~/Applications/Plow Latch.app`, the signed app
+latch runs in (no window or Dock icon), which Full Disk Access is granted to.
 Pass `--bin-dir DIR` after the release tag to choose another binary directory.
 The archive's executable `install.sh` installs the adjacent `latch` with no
 arguments, accepts options before or after an explicit binary path, and shows
@@ -33,7 +35,7 @@ Update by rerunning the commands above; `install-release.sh latest` also
 resolves the newest published release itself. State and versioned plugins stay in place;
 restart an existing `latch serve` intentionally when ready to use the new binary.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
-No Homebrew tap or Mac app is included.
+No Homebrew tap is included.
 
 ## For agents
 
