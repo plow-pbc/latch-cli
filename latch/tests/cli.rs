@@ -2911,14 +2911,12 @@ fn registered(state: &Path) -> bool {
     }
 }
 
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 fn local_serve(state: &Path) -> Value {
     let output = latch(state, &["status", "--local"], &[]);
     serde_json::from_slice::<Value>(&output.stdout).unwrap()["serve"].clone()
 }
 
 /// Waits up to `limit` for `done`.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 fn eventually(limit: u64, mut done: impl FnMut() -> bool) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(limit);
     while std::time::Instant::now() < deadline {
@@ -3449,4 +3447,93 @@ fn a_local_socket_exec_stops_when_its_caller_disconnects() {
     assert_eq!(records[0]["outcome"], "caller_gone", "{records:?}");
     assert_eq!(records[0]["gate"]["caller"], "owner_on_host");
     assert_eq!(folders, Vec::<String>::new());
+}
+
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn an_attached_serve_that_ends_late_leaves_a_host_that_took_over_alone() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _managed = Managed(host.clone());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let env = [("LATCH_TEST_RELAY_URL", Path::new(&relay))];
+
+    let (mut serve, mut terminal, shown) =
+        at_its_own_terminal(&host, &["serve", share.to_str().unwrap()], &env);
+    shows(&shown, "Ctrl-C stops the host");
+    // The attached serve's cleanup waits for the start/stop lock, held
+    // here while its host stops and another takes the folder over.
+    let launching = fs::File::open(host.join("launch.lock")).unwrap();
+    launching.lock().unwrap();
+    terminal.write_all(b"\x03").unwrap();
+    assert!(eventually(45, || local_serve(&host)["running"] == false));
+    let replacement = serving(&host, &share, &relay);
+    drop(launching);
+    assert!(exits_within(&mut serve, 45).success());
+    let hello = local_operation(&host, "host_hello", json!({}));
+    assert_eq!(hello["ok"]["pid"], replacement.0.id(), "{hello}");
+    // And a stop meant for another host is refused by this one.
+    let stale = local_operation(&host, "host_stop", json!({"pid": 1}));
+    assert_eq!(stale["error"]["code"], "not_this_host", "{stale}");
+    assert_eq!(local_serve(&host)["state"], "serving");
+}
+
+#[test]
+fn stop_gives_up_on_a_host_that_never_answers() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // A host that holds the folder and takes connections, but never
+    // answers on them.
+    let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
+    write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
+    lock.lock().unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve.sock")).unwrap();
+    thread::spawn(move || {
+        let mut held = Vec::new();
+        for connection in listener.incoming() {
+            held.push(connection);
+        }
+    });
+    let started = std::time::Instant::now();
+    let stop = latch(&state, &["stop"], &[]);
+    assert_eq!(stop.status.code(), Some(1), "{stop:?}");
+    assert!(String::from_utf8_lossy(&stop.stderr).contains("stop_failed"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(50));
+    // The start/stop lock was let go.
+    let launching = fs::File::open(state.join("launch.lock")).unwrap();
+    launching.try_lock().unwrap();
+}
+
+#[test]
+fn stop_reaches_a_foreground_host_that_is_still_starting() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let mut serve = Serving(
+        serve_command(&host, &[&share], &relay)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut log = serve.0.stderr.take().unwrap();
+    assert!(eventually(20, || local_serve(&host)["running"] == true));
+    assert_eq!(local_serve(&host)["state"], "starting");
+    let stop = latch(&host, &["stop"], &[]);
+    assert_eq!(stop.status.code(), Some(0), "{stop:?}");
+    let stopped: Value = serde_json::from_slice(&stop.stdout).unwrap();
+    assert_eq!(stopped["stopped"], true);
+    assert!(serve.0.wait().unwrap().success());
+    let mut text = String::new();
+    log.read_to_string(&mut text).unwrap();
+    assert!(
+        text.contains("stopping: asked to by `latch stop`"),
+        "{text}"
+    );
 }

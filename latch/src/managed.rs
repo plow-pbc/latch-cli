@@ -44,11 +44,12 @@ const READY_WITHIN: Duration = Duration::from_secs(60);
 /// How long a stopping host has to let go of its state folder: its own
 /// shutdown is bounded well inside this.
 const STOP_WITHIN: Duration = Duration::from_secs(40);
+/// How long a host that is up has to answer one question on its socket.
+const ANSWER_WITHIN: Duration = Duration::from_secs(5);
 
 /// `latch serve -d`: the host, started and answering.
 pub async fn start(state: &StateDir, args: &ServeArgs) -> Result<Value, Failure> {
-    let dir = launch(state, args, false).await?;
-    let hello = ask(&dir, "host_hello").await?;
+    let (dir, hello) = launch(state, args, false).await?;
     Ok(
         json!({"state_dir": dir, "pid": hello["pid"], "run": hello["run"],
               "version": hello["version"], "log": dir.join("serve.log")}),
@@ -64,12 +65,14 @@ pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Value, Failure
             .to_string();
         return Err(Failure::usage("no_terminal", message));
     }
-    let dir = launch(state, args, true).await?;
-    let held = watch(&dir, "host_attach").await;
-    let (hello, boards) = match held {
-        Ok(held) => held,
+    let (dir, hello) = launch(state, args, true).await?;
+    // Only this host is ours to stop: by the time this serve cleans up,
+    // another may serve the folder.
+    let ours = hello["pid"].as_u64().map(|pid| pid as u32);
+    let boards = match watch(&dir, "host_attach").await {
+        Ok((_, boards)) => boards,
         Err(failure) => {
-            stop_dir(&dir).await?;
+            stop_dir(&dir, ours).await?;
             return Err(failure);
         }
     };
@@ -77,7 +80,7 @@ pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Value, Failure
     // The view is closed, so the connection that held the host is too:
     // the host is stopping. Wait for it, and remove its service.
     let _ = writeln!(std::io::stderr(), "latch: stopping the host…");
-    stop_dir(&dir).await
+    stop_dir(&dir, ours).await
 }
 
 /// `latch dashboard`: watches the running host until Ctrl-C.
@@ -99,13 +102,17 @@ pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
 /// `latch stop`.
 pub async fn stop(state: &StateDir) -> Result<Value, Failure> {
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
-    stop_dir(&dir).await
+    stop_dir(&dir, None).await
 }
 
 /// Starts the host on `state` as a service, `attached` or not, and waits
 /// until it answers. Refused while a host runs there. Returns the state
-/// folder's real path.
-async fn launch(state: &StateDir, args: &ServeArgs, attached: bool) -> Result<PathBuf, Failure> {
+/// folder's real path and the host's hello.
+async fn launch(
+    state: &StateDir,
+    args: &ServeArgs,
+    attached: bool,
+) -> Result<(PathBuf, Value), Failure> {
     state.require_login()?;
     let dir = state
         .path
@@ -158,7 +165,7 @@ async fn launch(state: &StateDir, args: &ServeArgs, attached: bool) -> Result<Pa
     let before = lifecycle::now(&dir).run;
     service.start(&argv)?;
     match ready(&dir, before.as_deref()).await {
-        Ok(()) => Ok(dir),
+        Ok(hello) => Ok((dir, hello)),
         Err(failure) => {
             service.remove()?;
             Err(failure)
@@ -167,12 +174,12 @@ async fn launch(state: &StateDir, args: &ServeArgs, attached: bool) -> Result<Pa
 }
 
 /// Waits until the host just started answers on its socket, or says why
-/// it stopped.
-async fn ready(dir: &Path, before: Option<&str>) -> Result<(), Failure> {
+/// it stopped; returns its hello.
+async fn ready(dir: &Path, before: Option<&str>) -> Result<Value, Failure> {
     let started = Instant::now();
     loop {
-        if ask(dir, "host_hello").await.is_ok() {
-            return Ok(());
+        if let Ok(hello) = ask(dir, "host_hello", json!({})).await {
+            return Ok(hello);
         }
         let host = lifecycle::now(dir);
         let ended = !host.running && matches!(host.state, Phase::Error | Phase::Stopped);
@@ -195,22 +202,42 @@ async fn ready(dir: &Path, before: Option<&str>) -> Result<(), Failure> {
 }
 
 /// Stops the host on `dir`, however it was started, and removes its
-/// service, so nothing starts it again.
-async fn stop_dir(dir: &Path) -> Result<Value, Failure> {
+/// service, so nothing starts it again. With `only`, only the host with
+/// that pid: one that took the folder over since is left alone.
+async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
     let _launching = launch_lock(dir)?;
-    let was = lifecycle::holds_lock(dir);
     let service = Service::new(dir);
-    // A host that answers stops itself; one that does not (still starting)
-    // is stopped by its service manager.
-    if !(was && ask(dir, "host_stop").await.is_ok()) {
-        service.remove()?;
+    let host = lifecycle::now(dir);
+    if host.running && only.is_some() && host.pid != only {
+        return Ok(json!({"stopped": false, "state_dir": dir, "state": host.state}));
     }
+    let was = host.running;
+    // The host holding the folder now, by pid: a later one is not stopped.
+    let mut target = host.pid;
+    let (mut asked, mut removed) = (false, false);
     let started = Instant::now();
-    while lifecycle::holds_lock(dir) {
+    loop {
+        let host = lifecycle::now(dir);
+        if !host.running {
+            break;
+        }
+        match (target, host.pid) {
+            (Some(target), Some(pid)) if target != pid => break,
+            (None, pid) => target = pid,
+            _ => {}
+        }
+        // A host that answers stops itself. One that does not yet (it is
+        // starting) is stopped by its service manager if it has one, and
+        // asked again until it answers.
+        if !asked && let Some(pid) = target {
+            asked = ask(dir, "host_stop", json!({"pid": pid})).await.is_ok();
+        }
+        if !asked && !removed {
+            service.remove()?;
+            removed = true;
+        }
         if started.elapsed() > STOP_WITHIN {
-            let pid = lifecycle::now(dir)
-                .pid
-                .map_or("?".to_string(), |pid| pid.to_string());
+            let pid = target.map_or("?".to_string(), |pid| pid.to_string());
             let message = format!(
                 "the host (pid {pid}) did not stop within {} seconds",
                 STOP_WITHIN.as_secs()
@@ -231,7 +258,7 @@ async fn already_serving(dir: &Path) -> Failure {
         "{} is already served by a host; `latch dashboard` shows it, `latch stop` stops it",
         dir.display()
     );
-    if let Ok(hello) = ask(dir, "host_hello").await {
+    if let Ok(hello) = ask(dir, "host_hello", json!({})).await {
         message = format!("{message} (pid {})", hello["pid"]);
         message.push_str(&mismatch(&hello));
     }
@@ -273,7 +300,7 @@ async fn watch(
     dir: &Path,
     op: &str,
 ) -> Result<(Value, tokio::sync::mpsc::Receiver<Board>), Failure> {
-    let (hello, mut socket) = request(dir, op).await?;
+    let (hello, mut socket) = request(dir, op, json!({})).await?;
     let (send, boards) = tokio::sync::mpsc::channel(4);
     tokio::spawn(async move {
         // This task holds the connection: it closes it once the view
@@ -298,17 +325,29 @@ async fn watch(
 }
 
 /// One question for the host on `dir` and its answer.
-async fn ask(dir: &Path, op: &str) -> Result<Value, Failure> {
-    request(dir, op).await.map(|(answer, _)| answer)
+async fn ask(dir: &Path, op: &str, args: Value) -> Result<Value, Failure> {
+    request(dir, op, args).await.map(|(answer, _)| answer)
 }
 
-/// Sends `op` to the host on `dir`; returns its first answer and the
-/// connection, for what the host sends next.
-async fn request(dir: &Path, op: &str) -> Result<(Value, UnixStream), Failure> {
+/// Sends `op` to the host on `dir`; returns its first answer, within
+/// `ANSWER_WITHIN`, and the connection, for what the host sends next.
+async fn request(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixStream), Failure> {
+    tokio::time::timeout(ANSWER_WITHIN, request_now(dir, op, args))
+        .await
+        .unwrap_or_else(|_| {
+            let message = format!(
+                "the host did not answer within {} seconds",
+                ANSWER_WITHIN.as_secs()
+            );
+            Err(Failure::new(Exit::Unreachable, "serve_required", message))
+        })
+}
+
+async fn request_now(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixStream), Failure> {
     let mut socket = transport::connect_local(dir).await?;
     let request = Request {
         op: op.to_string(),
-        args: json!({}),
+        args,
         chat: None,
     };
     let lost = |err: std::io::Error| {

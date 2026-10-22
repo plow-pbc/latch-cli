@@ -1091,7 +1091,7 @@ async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
         return;
     };
     if control::OPS.contains(&request.op.as_str()) {
-        return control::serve(&host, &request.op, send, recv).await;
+        return control::serve(&host, &request, send, recv).await;
     }
     let caller = host.endpoint.id().to_string();
     log(&format!(

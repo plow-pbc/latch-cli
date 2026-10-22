@@ -1,6 +1,6 @@
 //! What the host's local socket answers besides operations, for `latch
 //! serve`, `stop` and `dashboard` on this machine: who the host is
-//! (`host_hello`), stop (`host_stop`), and its board, for a viewer
+//! (`host_hello`), stop (`host_stop`, naming the host's pid), and its board, for a viewer
 //! (`host_watch`) or for the attached `latch serve` whose life the host
 //! shares (`host_attach`). The first answer is the usual `Response`; a
 //! watcher then gets the board as a frame of its own each time it changes.
@@ -23,7 +23,7 @@ use tokio::sync::Notify;
 use super::{Host, Stopping, answer, failed};
 use crate::lifecycle;
 use crate::log::log;
-use crate::wire::{self, Response};
+use crate::wire::{self, Request, Response};
 
 pub const OPS: [&str; 4] = ["host_hello", "host_stop", "host_watch", "host_attach"];
 
@@ -69,10 +69,16 @@ pub fn await_holder(host: &Arc<Host>) {
     });
 }
 
-pub async fn serve(host: &Host, op: &str, mut send: OwnedWriteHalf, recv: OwnedReadHalf) {
+pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, recv: OwnedReadHalf) {
     let hello = Response::Ok(hello(host));
-    match op {
+    match request.op.as_str() {
         "host_hello" => answer(&mut send, &hello).await,
+        // A stop names the host it is for, so it never stops another that
+        // took over the folder since it was sent.
+        "host_stop" if request.args["pid"].as_u64() != Some(std::process::id().into()) => {
+            let message = "this stop was for another host on this state folder".to_string();
+            answer(&mut send, &failed("not_this_host", message)).await;
+        }
         "host_stop" => {
             answer(&mut send, &hello).await;
             host.lifetime.stop("asked to by `latch stop`");
