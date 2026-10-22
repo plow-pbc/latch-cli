@@ -808,19 +808,8 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_rules_alone_allow_tests_and_nothing_else() {
-    use std::os::unix::fs::PermissionsExt;
-    let key = std::env::var_os("LATCH_TEST_JEV_KEY")
-        .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
     let setup = tempfile::tempdir().unwrap();
-    let path = setup.path().join(model::JEV_KEY_FILE);
-    std::fs::copy(key, &path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    std::fs::create_dir_all(setup.path().join("browser")).unwrap();
-    std::fs::write(
-        setup.path().join(model::MODEL_FILE),
-        r#"{"provider": "jev"}"#,
-    )
-    .unwrap();
+    model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
 
     let t = start_with(
@@ -892,19 +881,8 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
-    use std::os::unix::fs::PermissionsExt;
-    let key = std::env::var_os("LATCH_TEST_JEV_KEY")
-        .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
     let setup = tempfile::tempdir().unwrap();
-    let path = setup.path().join(model::JEV_KEY_FILE);
-    std::fs::copy(key, &path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    std::fs::create_dir_all(setup.path().join("browser")).unwrap();
-    std::fs::write(
-        setup.path().join(model::MODEL_FILE),
-        r#"{"provider": "jev"}"#,
-    )
-    .unwrap();
+    model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
     let t = start_with(
         fake::serve(World::default()),
