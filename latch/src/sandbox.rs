@@ -582,7 +582,7 @@ mod platform {
     const CODEX_NETWORK: &str = include_str!("sandbox/codex/seatbelt_network_policy.sbpl");
 
     /// For every kind, last: the state directory and the hidden paths can
-    /// be neither read nor written, state sockets never connected to, and
+    /// be neither read nor written, their sockets never connected to, and
     /// the running latch never written.
     /// Seatbelt matches paths, so renaming a folder above any of them would
     /// move it out of reach of these rules; directories above them inside a
@@ -617,6 +617,10 @@ mod platform {
             let path = real(path)?;
             rules.push(format!(
                 "(deny file-read* file-write* (subpath {}))",
+                quoted(&path)?
+            ));
+            rules.push(format!(
+                "(deny network-outbound (remote unix-socket (subpath {})))",
                 quoted(&path)?
             ));
             hidden.push(path);

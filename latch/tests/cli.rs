@@ -2224,6 +2224,9 @@ fn a_login_with_events_whose_code_expires_says_so_and_fails() {
     server.join().unwrap();
 }
 
+/// A host stopped (SIGTERM) while an exec runs: one that finishes within
+/// the host's wait is answered as usual; one that outlasts it is killed,
+/// with every process it started, and answered and audited `interrupted`.
 #[test]
 fn shutdown_exec_cases() {
     // (what, script, the client's exit, the audited outcome)
@@ -3210,25 +3213,51 @@ fn an_exec_cut_off_by_a_host_stop_is_audited_and_leaves_no_temp_folder() {
 
 #[test]
 fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
-    let bench = Bench::new();
-    let serve = bench.serve();
-    let mut client = bench.exec("120", TICKING);
-    bench.started();
-    client.kill().unwrap();
-    client.wait().unwrap();
-    // The host learns of it when the connection times out.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-    while bench.exec_records().is_empty() && std::time::Instant::now() < deadline {
-        thread::sleep(std::time::Duration::from_millis(200));
+    for (caller, local, wait) in [("owner_on_host", true, 5), ("owner_device", false, 90)] {
+        let bench = Bench::new();
+        let serve = bench.serve();
+        let state = if local { &bench.host } else { &bench.owner };
+        let mut client = latch_command(
+            state,
+            &[
+                "exec",
+                "--host",
+                "host",
+                "--timeout",
+                "120",
+                "--",
+                "sh",
+                "-c",
+                TICKING,
+            ],
+            &[],
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+        bench.started();
+        client.kill().unwrap();
+        client.wait().unwrap();
+        // Local EOF is immediate; a remote connection may need its idle timeout.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+        while bench.exec_records().is_empty() && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let records = bench.exec_records();
+        let stopped = bench.stopped_ticking();
+        let folders = bench.exec_folders();
+        drop(serve);
+        assert_eq!(records.len(), 1, "{caller}: {records:?}");
+        assert_eq!(
+            records[0]["outcome"], "caller_gone",
+            "{caller}: {records:?}"
+        );
+        assert_eq!(records[0]["gate"]["caller"], caller);
+        assert!(stopped, "{caller}: the program ran on without its caller");
+        assert_eq!(folders, Vec::<String>::new());
+        println!("{caller}: disconnected program stopped; audited caller_gone; no temp folders");
     }
-    let records = bench.exec_records();
-    let stopped = bench.stopped_ticking();
-    let folders = bench.exec_folders();
-    drop(serve);
-    assert_eq!(records.len(), 1, "{records:?}");
-    assert_eq!(records[0]["outcome"], "caller_gone", "{records:?}");
-    assert!(stopped, "the program ran on without its caller");
-    assert_eq!(folders, Vec::<String>::new());
 }
 
 #[test]
@@ -3263,31 +3292,4 @@ fn a_local_socket_exec_finishes_and_is_audited_before_the_host_stops() {
     assert_eq!(records[0]["gate"]["caller"], "owner_on_host");
     assert_eq!(records[0]["outcome"], "ok", "{records:?}");
     assert_eq!(bench.exec_folders(), Vec::<String>::new());
-}
-
-#[test]
-fn a_local_socket_exec_stops_when_its_caller_disconnects() {
-    let bench = Bench::new();
-    let serve = bench.serve();
-    let mut client = latch_command(&bench.host, &["exec", "--", "sh", "-c", TICKING], &[])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    bench.started();
-    client.kill().unwrap();
-    client.wait().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while bench.exec_records().is_empty() && std::time::Instant::now() < deadline {
-        thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let records = bench.exec_records();
-    let stopped = bench.stopped_ticking();
-    let folders = bench.exec_folders();
-    drop(serve);
-    assert!(stopped, "the local program ran on without its caller");
-    assert_eq!(records.len(), 1, "{records:?}");
-    assert_eq!(records[0]["outcome"], "caller_gone", "{records:?}");
-    assert_eq!(records[0]["gate"]["caller"], "owner_on_host");
-    assert_eq!(folders, Vec::<String>::new());
 }
