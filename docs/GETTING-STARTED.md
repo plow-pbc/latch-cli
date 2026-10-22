@@ -162,8 +162,13 @@ try it on one computer, give the caller its own state folder: `latch
 --state-dir ~/latch-laptop login …`, and the same `--state-dir` on every
 command after.
 
-Your own machines are you: their calls are never judged by the host's
-gatekeeper. Set `LATCH_HOST=my-mac` to leave out `--host`.
+Your own machines are you, and the host's gatekeeper judges their calls
+too: `exec`, `file` and `google` run only as your own request within your
+rules on that host, so they need the decision model (see 6). The browser's
+judged actions need it too: opening a new site, plans, vault fills, scripts,
+uploads and downloads (see [the browser gatekeeper](../latch/BROWSER.md#the-gatekeeper)).
+Your settings (`rules`, `vault`, `shares`) are never judged. Set
+`LATCH_HOST=my-mac` to leave out `--host`.
 
 **Run a program.** No shell is involved unless you run one. The JSON has
 `stdout`, `stderr` and `exit_code`:
@@ -210,8 +215,9 @@ against your rules on that host.
 
 > **Never copy a device login (a machine's state folder, or its
 > `plow-token`) to an agent.** That login is you: the host sees one of your
-> own machines, and the gatekeeper never checks the call against anything you
-> asked. A copied laptop state runs `exec` on your host unjudged.
+> own machines, and the gatekeeper judges the call as your own request, never
+> against what you asked that agent. A copied laptop state runs `exec` on your
+> host as if you had asked for it.
 
 **An agent already running on Plow** has its credential and Plow's address
 in its environment (`$PLOW_AGENT_TOKEN`, the file `$PLOW_TOKEN_FILE` or
@@ -313,9 +319,11 @@ sent".**
 - `outcome_unknown` (exit 5) is different: the connection dropped *after* the
   request was sent. Check whether it happened before you resend.
 
-**`gatekeeper_unavailable` (exit 3, an agent's call).** The host's
-gatekeeper couldn't reach its decision model, so the call was not run.
-Retrying runs it from the start.
+**`gatekeeper_unavailable` (exit 3).** The host's gatekeeper couldn't reach
+Plow or its decision model, whether an agent or one of your own machines
+made the call. The action needing that judgment was not run. Retrying starts
+the call again; for a browser plan, inspect its `steps` and `trail` first,
+since earlier actions may already have happened.
 
 **`model_unavailable` (exit 1, browser).** A browser step needed the decision
 model (a click's risk, a goal in words, a sentence check) and couldn't get it,
@@ -336,9 +344,11 @@ For either one, the message says why the model couldn't answer:
   credits.
 - "Plow's decision route answered HTTP 503; retry later": retry later.
 
-Your own machines need the model only for browser clicks, Enter and goals
-(`act click`, `do`); `exec`, `file`, `browser open`, `text` and
-`screenshot` work without it.
+Your own machines need the model for every judged call (`exec`, `file`,
+`google`) and the browser's judged actions, including `browser open` and
+`do`. Browser goals and sentence checks also need the model. Page reads
+(`text`, `screenshot`) in an existing session and your settings (`rules`,
+`vault`, `shares`) work without it.
 
 **`state_format` (exit 1): "… is in state format 2, set up by latch …; this
 latch … reads only format 1".** That state folder was set up by a newer latch

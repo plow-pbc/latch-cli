@@ -243,9 +243,9 @@ impl Account {
                 .any(|peer| peer.name == name && peer.kind == "device") =>
             {
                 Err(Failure::usage(
-                    "device_not_judged",
+                    "not_an_agent",
                     format!(
-                        "{name:?} is a device, and devices are never judged: rules are for agents"
+                        "{name:?} is a device: `--from` names an agent, and a device is judged on the rules for every agent"
                     ),
                 ))
             }
@@ -487,7 +487,7 @@ mod tests {
 
         assert_eq!(
             refusal(host.owner(set(Some("mac"), "five")).await),
-            (Exit::Usage, "device_not_judged".into())
+            (Exit::Usage, "not_an_agent".into())
         );
         assert_eq!(
             refusal(host.owner(set(Some("Carol"), "six")).await),
