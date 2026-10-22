@@ -312,10 +312,20 @@ impl<D: Driver> Core<D> {
         {
             return Err(refused("the document was replaced"));
         }
-        // A secret is guarded before it reaches the page.
-        if secret && !self.fill.guarded.iter().any(|v| v == value) {
-            self.fill.guarded.push(value.to_string());
-            self.driver.guard(&self.fill.guarded)?;
+        // A secret is guarded before it reaches the page, as stored and as
+        // a single-line field holds it, without its line breaks.
+        if secret {
+            let unbroken = value.replace(['\r', '\n'], "");
+            let mut added = false;
+            for form in [value.to_string(), unbroken] {
+                if !form.is_empty() && !self.fill.guarded.contains(&form) {
+                    self.fill.guarded.push(form);
+                    added = true;
+                }
+            }
+            if added {
+                self.driver.guard(&self.fill.guarded)?;
+            }
         }
         let (frame, snapshot, index, origin, token) = (
             target.frame.clone(),
@@ -347,7 +357,8 @@ impl<D: Driver> Core<D> {
         if let Some(why) = answer["refused"].as_str() {
             return Err(refused(why));
         }
-        Ok(json!({"held": answer["held"] == true}))
+        Ok(json!({"held": answer["held"] == true,
+                  "dropped_breaks": answer["dropped_breaks"] == true}))
     }
 
     /// Clicks the submit or `--press` button, as an agent's click would.

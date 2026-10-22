@@ -79,10 +79,14 @@ headed-tests = []
 # part of the gate, whose containers have no engine.
 linux-browser-tests = []
 
+[target.'cfg(target_os = "macos")'.dependencies]
 # A Camoufox handoff brings its app forward through AppKit
 # (`NSRunningApplication`); already in the tree through iroh.
-[target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
+# A signed macOS latch keeps its secrets in the data-protection Keychain
+# (src/secrets.rs); both crates are already in the tree through the TLS stack.
+core-foundation = "0.10.1"
+security-framework-sys = { version = "2.17.0", features = ["OSX_10_15"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "=0.5.0"

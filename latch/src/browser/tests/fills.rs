@@ -40,6 +40,7 @@ conformance!(
     requests_go_on_while_a_guard_outlives_its_call,
     a_filled_value_is_guarded_in_every_tab_and_from_screenshots,
     no_vault_value_goes_into_an_editable_region,
+    a_stored_password_with_a_line_break_fills_a_single_line_field,
 );
 
 /// `value` as an agent or the audit saw it, for the leak checks, less what
@@ -2177,6 +2178,9 @@ async fn a_filled_value_is_guarded_in_every_tab_and_from_screenshots(engine: &st
 
 async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
     const MEMO: &str = "made-up memo\nsecond line 5d2e";
+    // Its own value: one the other rows already guarded would be caught
+    // whatever this fill guards.
+    const BROKEN: &str = "made-up-broken-9k3m";
     let (_dir, state, _area) = test_state(engine, &["default"]);
     let vault = Vault::new(state.clone());
     let mut shop = item(
@@ -2193,6 +2197,20 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         linked_id: None,
     });
     let login = vault.with(|s| s.add(shop)).unwrap();
+    // A password with a line break, which its field holds without it.
+    let broken = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop with a line break",
+                &["shop.example"],
+                &[
+                    ("username", "ada@shop.example"),
+                    ("password", &format!("{BROKEN}\n")),
+                ],
+            ))
+        })
+        .unwrap();
     let local = format!("http://127.0.0.1:{}", site());
     let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
@@ -2206,23 +2224,34 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
             .unwrap()
     };
     // A form that says GET, one whose button says so, one that says
-    // nothing (a GET too), and a secret's line breaks, sent as CRLF.
-    let rows: [(&[(&str, &str)], &str); 4] = [
+    // nothing (a GET too), a secret's line breaks, sent as CRLF, and a
+    // password whose field dropped its line break.
+    // The item, its fields and their names, and the button.
+    type Row<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+    let rows: [Row; 5] = [
         (
+            &login.item,
             &[("username", "Email"), ("password", "Password")],
             "Sign in",
         ),
         (
+            &login.item,
             &[("username", "Work email"), ("password", "Work password")],
             "Sign in at work",
         ),
         (
+            &login.item,
             &[("username", "Other email"), ("password", "Other password")],
             "Sign in elsewhere",
         ),
-        (&[("memo", "Memo")], "Send memo"),
+        (&login.item, &[("memo", "Memo")], "Send memo"),
+        (
+            &broken.item,
+            &[("username", "Email"), ("password", "Password")],
+            "Sign in",
+        ),
     ];
-    for (fields, button) in rows {
+    for (item, fields, button) in rows {
         let page = open(&mut h).await;
         let fields: Vec<Value> = fields
             .iter()
@@ -2230,7 +2259,7 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
             .collect();
         let (refused, _) = h
             .fill(json!({
-                "item": login.item,
+                "item": item,
                 "fields": fields,
                 "press": find(&page, "button", button),
             }))
@@ -2269,7 +2298,7 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         "{seen}"
     );
     let everything = h.shown.join("\n");
-    for value in [PASSWORD, "second+line", "5d2e"] {
+    for value in [PASSWORD, BROKEN, "second+line", "5d2e"] {
         assert!(!everything.contains(value), "{value} was shown");
     }
     h.call("close", json!({})).await.unwrap();
@@ -2475,5 +2504,44 @@ async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {
     assert!(page.contains("password accepted"));
     let everything = h.shown.join("\n");
     assert!(!everything.contains(PASSWORD) && !everything.contains(OLD));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_stored_password_with_a_line_break_fills_a_single_line_field(engine: &str) {
+    // An import can leave a line break on a stored value; the field drops
+    // it, as it would from a paste, and holds the password.
+    let stored = format!("{PASSWORD}\n");
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", &stored)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers).await;
+
+    h.call("open", json!({"url": format!("{local}/login.html")}))
+        .await
+        .unwrap();
+    let (filled, audit) = h.login(&login.item).await;
+    println!("fill audit: {}", Value::Object(audit.clone()));
+    assert_eq!(filled.unwrap()["submitted"], true);
+    assert_eq!(audit["dropped_line_breaks"], json!(["password"]));
+    let page = h.text().await;
+    println!("after the fill: {page}");
+    assert!(page.contains("password accepted"));
+    assert!(!h.shown.join("\n").contains(PASSWORD));
     h.call("close", json!({})).await.ok();
 }

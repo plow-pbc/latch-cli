@@ -333,8 +333,14 @@
     if (el.isContentEditable) return { refused: 'the field became an editable region' };
     if (!setValue(el, value)) return { refused: 'no option matches' };
     if (value) filled.add(el); else filled.delete(el);
-    const held = el.localName === 'select' ? true : current(el) === value;
-    return { held };
+    if (el.localName === 'select' || current(el) === value) return { held: true };
+    // A single-line field drops line breaks, as it does from a paste: it
+    // holds the value less them, which is what a person would have got.
+    const unbroken = value.replace(/[\r\n]/g, '');
+    if (el.localName === 'input' && unbroken !== value && current(el) === unbroken) {
+      return { held: true, dropped_breaks: true };
+    }
+    return { held: false };
   };
 
   // How many filled elements still hold something.
@@ -390,43 +396,6 @@
   const regionOf = (around) => around.closest('dialog, [role=dialog], section, article, main')
     || around.closest('form') || document.body;
   const linesOf = (region) => (region ? region.innerText : '').split('\n').map((line) => clean(line, 160)).filter(Boolean).slice(0, 20);
-  // SHA-256 of a text, as hex: what binds a pass's judgment to the lines
-  // it was made on, which the page can't forge as it could a weak hash.
-  // The host checks it against the lines a review reads.
-  const K = [];
-  for (let n = 2, found = 0; found < 64; n++) {
-    let prime = true;
-    for (let d = 2; d * d <= n; d++) if (n % d === 0) { prime = false; break; }
-    if (prime) { K.push((Math.cbrt(n) % 1) * 2 ** 32 | 0); found++; }
-  }
-  const sha256 = (text) => {
-    const bytes = [...new TextEncoder().encode(text)];
-    const bits = bytes.length * 8;
-    bytes.push(0x80);
-    while (bytes.length % 64 !== 56) bytes.push(0);
-    for (let i = 7; i >= 0; i--) bytes.push(i > 3 ? 0 : (bits >>> (i * 8)) & 0xff);
-    const h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-    const rotr = (x, n) => (x >>> n) | (x << (32 - n));
-    const w = new Array(64);
-    for (let at = 0; at < bytes.length; at += 64) {
-      for (let i = 0; i < 16; i++) {
-        w[i] = (bytes[at + 4 * i] << 24) | (bytes[at + 4 * i + 1] << 16) | (bytes[at + 4 * i + 2] << 8) | bytes[at + 4 * i + 3];
-      }
-      for (let i = 16; i < 64; i++) {
-        const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
-        const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
-        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
-      }
-      let [a, b, c, d, e, f, g, k] = h;
-      for (let i = 0; i < 64; i++) {
-        const t1 = (k + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;
-        const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
-        [k, g, f, e, d, c, b, a] = [g, f, e, (d + t1) | 0, c, b, a, (t1 + t2) | 0];
-      }
-      [a, b, c, d, e, f, g, k].forEach((v, i) => { h[i] = (h[i] + v) | 0; });
-    }
-    return h.map((v) => (v >>> 0).toString(16).padStart(8, '0')).join('');
-  };
   const review = (snap, index, enter) => {
     const el = element(snap, index);
     if (!el) return null;
@@ -528,17 +497,8 @@
   // a click scrolls them into view first. A link that wraps onto several
   // lines is tried at the middle of each line, not of the box around them,
   // which may fall between its lines.
-  const viewOf = (snap) => {
-    // The lines of each part of the page, read once each.
-    const regions = new Map();
-    const linesKey = (around) => {
-      const region = regionOf(around);
-      if (!regions.has(region)) regions.set(region, sha256(linesOf(region).join('\n')));
-      return regions.get(region);
-    };
-    return (snaps.get(snap) || []).map((el) => view(el, linesKey));
-  };
-  const view = (el, linesKey) => {
+  const viewOf = (snap) => (snaps.get(snap) || []).map(view);
+  const view = (el) => {
     if (!el.isConnected) return { gone: true };
     const item = {
       kind: el.localName === 'select' ? 'select' : fileInput(el) ? 'file' : textLike(el) ? 'text' : 'other',
@@ -546,15 +506,6 @@
     if (el.localName === 'select') item.options = [...el.options].slice(0, 50).map((o) => clean(o.label, 80));
     const form = el.form || el.closest('form');
     if (form) item.form = [...document.forms].indexOf(form);
-    // The context a click on it, or Enter in a field, would be judged in,
-    // as the pass saw it: a risk the pass answered stands only while a
-    // review still finds the same.
-    item.lines_sha256 = linesKey(el);
-    if (item.kind === 'text') {
-      const { actsOn, around } = enterOn(el);
-      item.enter = actsOn;
-      item.enter_lines_sha256 = linesKey(around);
-    }
     if (covered(el)) item.covered = true;
     return item;
   };

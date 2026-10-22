@@ -69,6 +69,14 @@ fn fake_plow(answers: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<Stri
 }
 
 /// Test state lives under the repo's gitignored `.dev/`, like every dev run.
+/// The latch under test: this build's, or the one `LATCH_TEST_BIN` names
+/// (the signed Keychain build, for the `--ignored` tests at the end).
+fn latch_bin() -> PathBuf {
+    std::env::var_os("LATCH_TEST_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_latch")))
+}
+
 fn test_dir() -> tempfile::TempDir {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
@@ -82,7 +90,7 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 }
 
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    let mut command = Command::new(latch_bin());
     command
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
@@ -738,6 +746,77 @@ fn help_says_what_is_allowed_and_how_to_pass_a_command() {
 }
 
 #[test]
+fn help_and_skill_need_no_login_and_carry_this_version() {
+    let dir = test_dir();
+    let state = dir.path().join("none");
+    let version = latch(&state, &["--version"], &[]);
+    let version = String::from_utf8(version.stdout).unwrap();
+    let version = version.trim().strip_prefix("latch ").unwrap();
+
+    let help = latch(&state, &["help", "--json"], &[]);
+    assert_eq!(help.status.code(), Some(0), "{help:?}");
+    let help: Value = serde_json::from_slice(&help.stdout).unwrap();
+    assert_eq!(help["version"], version);
+    let exec = help["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["id"] == "exec")
+        .unwrap();
+    assert!(
+        exec["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|input| { input["flag"] == "--timeout" && input["default"] == "60" })
+    );
+
+    let examples = latch(&state, &["help", "browser", "open", "--examples"], &[]);
+    let text = String::from_utf8(examples.stdout).unwrap();
+    assert!(
+        text.contains("latch browser --host mac open https://shop.example/"),
+        "{text}"
+    );
+
+    let unknown = latch(&state, &["help", "nope"], &[]);
+    assert_eq!(unknown.status.code(), Some(2));
+
+    // gog's commands are found the same way, from the grammar latch checks
+    // them against; one it refuses is not there.
+    let search = latch(
+        &state,
+        &["help", "google", "gmail", "search", "--json"],
+        &[],
+    );
+    assert_eq!(search.status.code(), Some(0), "{search:?}");
+    let search: Value = serde_json::from_slice(&search.stdout).unwrap();
+    let ids: Vec<_> = search["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| &a["id"])
+        .collect();
+    assert_eq!(ids, ["google.gmail.search"]);
+    assert_eq!(search["actions"][0]["side_effects"], Value::Null);
+    let send = latch(&state, &["help", "google", "gmail", "send"], &[]);
+    let text = String::from_utf8(send.stdout).unwrap();
+    assert!(
+        text.contains("Side effects:") && text.contains("--to VALUE"),
+        "{text}"
+    );
+    let watch = latch(&state, &["help", "google", "gmail", "watch"], &[]);
+    assert_eq!(watch.status.code(), Some(2));
+
+    let skill = latch(&state, &["skill"], &[]);
+    let text = String::from_utf8(skill.stdout).unwrap();
+    assert!(text.starts_with("---\nname: latch\n"), "{text}");
+    assert!(
+        text.contains(&format!("  version: \"{version}\"\n---\n")),
+        "{text}"
+    );
+}
+
+#[test]
 fn status_shows_this_machine_once_as_plow_lists_it() {
     let relay = json!("https://relay.example/");
     let (url, server) = fake_plow(vec![(
@@ -791,7 +870,7 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
     let dir = test_dir();
     let state = dir.path().join("none");
     let run = |timeout: &str| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+        let mut command = Command::new(latch_bin());
         command
             .env_remove("PLOW_TOKEN_FILE")
             .arg("--state-dir")
@@ -861,6 +940,15 @@ fn owner_host() -> (tempfile::TempDir, PathBuf, String) {
         .to_string();
     server.join().unwrap();
     (dir, state, key)
+}
+
+/// The audit records of the host on `state`, opened with its key
+/// (`latch audit show`).
+fn audit_records(state: &Path) -> Vec<Value> {
+    let shown = latch(state, &["audit", "show"], &[]);
+    assert_eq!(shown.status.code(), Some(0), "{shown:?}");
+    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    shown["records"].as_array().cloned().unwrap_or_default()
 }
 
 /// Points `state`'s later Plow calls at `url`.
@@ -953,11 +1041,8 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
 
     // Every command is in the host's audit log, by this machine's key, with
     // revisions and never the text.
-    let log = fs::read_to_string(state.join("audit.ndjson")).unwrap();
-    let records: Vec<Value> = log
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
+    let records = audit_records(&state);
+    let log = Value::from(records.clone()).to_string();
     let commands: Vec<&str> = records
         .iter()
         .map(|r| r["args"]["command"].as_str().unwrap())
@@ -1012,9 +1097,34 @@ fn an_agent_gets_owner_only_for_rules_on_its_own_state() {
 }
 
 #[test]
+fn an_older_plaintext_audit_is_left_alone_and_a_sealed_one_starts_beside_it() {
+    let (_dir, state, _key) = owner_host();
+    let old = "{\"op\":\"exec\",\"caller\":\"older-latch\"}\n";
+    fs::write(state.join("audit.ndjson"), old).unwrap();
+
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let said = String::from_utf8_lossy(&set.stderr);
+    assert_eq!(said.lines().count(), 1, "{said}");
+    assert!(
+        said.contains("audit.ndjson is an older latch's plaintext audit log"),
+        "{said}"
+    );
+    assert!(said.contains("can be deleted"), "{said}");
+
+    // Neither read nor changed; the new record is in the sealed log.
+    assert_eq!(fs::read_to_string(state.join("audit.ndjson")).unwrap(), old);
+    let records = audit_records(&state);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["op"], "rules");
+    let sealed = fs::read_to_string(state.join("audit.sealed.ndjson")).unwrap();
+    assert!(!sealed.contains("Never send email") && !sealed.contains("rules"));
+}
+
+#[test]
 fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
     let (_dir, state, _key) = owner_host();
-    fs::write(state.join("audit.ndjson"), "not a record\n").unwrap();
+    fs::write(state.join("audit.sealed.ndjson"), "not a record\n").unwrap();
     let output = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -1027,7 +1137,7 @@ fn a_local_rules_command_on_an_audit_log_it_cannot_write_changes_nothing() {
     let (_dir, state, _key) = owner_host();
     let show = latch(&state, &["rules", "show"], &[]);
     assert_eq!(show.status.code(), Some(0), "{show:?}");
-    let log = state.join("audit.ndjson");
+    let log = state.join("audit.sealed.ndjson");
     fs::set_permissions(&log, std::os::unix::fs::PermissionsExt::from_mode(0o400)).unwrap();
     let output = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -1381,7 +1491,7 @@ fn until_serving(host: &Path, serve: &Serving) {
 }
 
 fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    let mut command = Command::new(latch_bin());
     command
         .args([
             "--state-dir",
@@ -1443,6 +1553,70 @@ fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
     let login = latch(&host, &args, &[]);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     host
+}
+
+#[test]
+fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
+    let (_dir, state, _key) = owner_host();
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let run = |args: &[&str]| -> (Option<i32>, Value) {
+        let output = latch(&state, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        (
+            output.status.code(),
+            serde_json::from_slice(printed).unwrap(),
+        )
+    };
+
+    let (code, rotated) = run(&["audit", "rotate-key"]);
+    assert_eq!(code, Some(0), "{rotated}");
+    assert_eq!(rotated["keys"], json!(["k1", "k2"]));
+    let show = latch(&state, &["rules", "show"], &[]);
+    assert_eq!(show.status.code(), Some(0), "{show:?}");
+    let (code, shown) = run(&["audit", "show"]);
+    assert_eq!(code, Some(0), "{shown}");
+    let commands: Vec<&str> = shown["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["args"]["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(commands, ["set", "show"]);
+
+    // Without the key the chain still checks; the records do not open.
+    fs::remove_file(state.join("audit.keys")).unwrap();
+    let (code, verified) = run(&["audit", "verify"]);
+    assert_eq!(code, Some(0), "{verified}");
+    assert_eq!(verified["records"], 2);
+    assert_eq!(verified["checked_without_the_key"], true);
+    let (code, refused) = run(&["audit", "show"]);
+    assert_eq!(code, Some(1), "{refused}");
+    assert_eq!(refused["error"]["code"], "audit_key");
+}
+
+#[test]
+fn serve_log_says_its_commands_hide_credentials_only_best_effort() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let (serve, lines) = serving_folders(&host, &[&share], &relay, &[]);
+    drop(serve);
+    let note = lines
+        .iter()
+        .find(|line| line.contains("commands in this log:"))
+        .expect("serve.log says how it shows commands");
+    assert!(
+        note.contains("best effort") && note.contains("latch audit show"),
+        "{note}"
+    );
 }
 
 #[test]
@@ -1629,6 +1803,91 @@ fn another_latch_state_folder_inside_a_share_stays_hidden() {
 }
 
 #[test]
+fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let owner = dir.path().join("owner");
+    let owner_token = dir.path().join("owner.token");
+    let login = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+        "--name",
+        "owner-mac",
+    ];
+    assert_eq!(latch(&owner, &login, &[]).status.code(), Some(0));
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+
+    // No folders named and none saved: it serves anyway, and says so.
+    let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
+    assert!(
+        lines.iter().any(|line| line.contains(
+            "Sharing no folders — browser and Google only. Add some with `latch shares set ~/code`"
+        )),
+        "{lines:?}"
+    );
+    let local = latch(&host, &["status", "--local"], &[]);
+    let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(local["shares"], json!([]));
+    assert_eq!(local["serve"]["state"], "serving");
+
+    let refused = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
+        let output = latch(state, args, env);
+        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
+        let error = serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"].clone();
+        assert_eq!(error["code"], "no_folders", "{args:?}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("latch shares set ~/code"),
+            "{error}"
+        );
+    };
+    let into = dir.path().join("hosts");
+    let into = into.to_str().unwrap();
+    refused(&owner, &["exec", "--host", "host", "--", "true"], &[]);
+    refused(
+        &owner,
+        &["file", "get", "--host", "host", "/etc/hosts", into],
+        &[],
+    );
+    let local_file = dir.path().join("note.txt");
+    fs::write(&local_file, "hi").unwrap();
+    let local_file = local_file.to_str().unwrap();
+    refused(
+        &owner,
+        &["file", "put", "--host", "host", local_file, "note.txt"],
+        &[],
+    );
+    // An agent's exec is refused the same way, before anything is judged.
+    refused(
+        &agent,
+        &["exec", "--host", "host", "--", "true"],
+        &agent_env,
+    );
+    // What needs no folder still works: here, the owner's rules.
+    let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
+    assert_eq!(shown.status.code(), Some(0), "{shown:?}");
+    drop(serve);
+    assert!(!Path::new(into).exists(), "nothing was fetched");
+    let asked_judge = plow
+        .seen()
+        .iter()
+        .any(|(line, _)| line.contains("/v1/decisions"));
+    assert!(!asked_judge, "{:?}", plow.seen());
+}
+
+#[test]
 fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
@@ -1751,29 +2010,11 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let dir = test_dir();
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
-    let owner_token = dir.path().join("owner.token");
-    fs::write(&owner_token, "owner-login\n").unwrap();
+    let (host, owner) = host_and_owner(&plow, dir.path());
     let agent_token = dir.path().join("agent.token");
     fs::write(&agent_token, "agent-credential\n").unwrap();
-    let (host, owner, agent) = (
-        dir.path().join("host"),
-        dir.path().join("owner"),
-        dir.path().join("agent"),
-    );
+    let agent = dir.path().join("agent");
     let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
-    for (state, name) in [(&host, "host"), (&owner, "owner-mac")] {
-        let token = owner_token.to_str().unwrap();
-        let args = [
-            "login",
-            "--api-url",
-            &plow.url,
-            "--token-file",
-            token,
-            "--name",
-            name,
-        ];
-        assert_eq!(latch(state, &args, &[]).status.code(), Some(0), "{name}");
-    }
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     let serve = serving(&host, &share, &relay);
@@ -1870,12 +2111,11 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     assert!(!owner.join("rules").exists() && !agent.join("rules").exists());
 
     // The host audited every command by revision, never by text.
-    let log = fs::read_to_string(host.join("audit.ndjson")).unwrap();
-    let records: Vec<Value> = log
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .filter(|record: &Value| record["op"] == "rules")
+    let records: Vec<Value> = audit_records(&host)
+        .into_iter()
+        .filter(|record| record["op"] == "rules")
         .collect();
+    let log = Value::from(records.clone()).to_string();
     let decisions: Vec<(&str, &str)> = records
         .iter()
         .map(|r| {
@@ -1911,7 +2151,7 @@ fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     let dir = test_dir();
     let state = dir.path().join("state");
     fs::create_dir(&state).unwrap();
-    let marker = r#"{"format": 2, "written_by": "0.2.0"}"#;
+    let marker = r#"{"format": 3, "written_by": "0.3.0"}"#;
     fs::write(state.join("latch.json"), marker).unwrap();
     // Not valid for this latch either way: a newer layout it would misread.
     fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
@@ -2293,10 +2533,8 @@ fn shutdown_exec_cases() {
                 "{what}: its child lives on"
             );
         }
-        let audit = fs::read_to_string(host.join("audit.ndjson")).unwrap();
-        let exec = audit
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        let exec = audit_records(&host)
+            .into_iter()
             .find(|record| record["op"] == "exec")
             .expect("the exec is audited");
         assert_eq!(exec["outcome"], outcome, "{what}: {exec}");
@@ -2370,6 +2608,112 @@ fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapsho
         );
     }
     assert!(events.close().success());
+}
+
+/// The state files a latch keeps its secrets in when it has no Keychain.
+const SECRET_FILES: [&str; 4] = ["key", "plow-token", "vault.key", "audit.keys"];
+
+fn secret_files_in(state: &Path) -> Vec<&'static str> {
+    SECRET_FILES
+        .into_iter()
+        .filter(|file| state.join(file).exists())
+        .collect()
+}
+
+/// `latch vault add` a login titled `title`, its password typed in.
+fn vault_add(owner: &Path, title: &str) {
+    let mut add = latch_command(
+        owner,
+        &[
+            "vault",
+            "add",
+            "--host",
+            "host",
+            "--kind",
+            "login",
+            "--title",
+            title,
+            "--site",
+            "shop.example",
+            "--field",
+            "username=ada",
+        ],
+        &[],
+    )
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+    add.stdin
+        .take()
+        .unwrap()
+        .write_all(b"made-up-pass-5521\n")
+        .unwrap();
+    let added = add.wait_with_output().unwrap();
+    assert_eq!(added.status.code(), Some(0), "{added:?}");
+}
+
+/// The titles `latch vault list` shows on the host.
+fn vault_titles(owner: &Path) -> Vec<String> {
+    let list = latch(owner, &["vault", "list", "--host", "host"], &[]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let listed: Value = serde_json::from_slice(&list.stdout).unwrap();
+    let items = listed["items"].as_array().cloned().unwrap_or_default();
+    items
+        .iter()
+        .map(|item| item["title"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A host and an owner device, logged in to `plow` by the latch `bin`.
+fn host_and_owner(plow: &LivePlow, dir: &Path) -> (PathBuf, PathBuf) {
+    let owner_token = dir.join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let (host, owner) = (dir.join("host"), dir.join("owner"));
+    for (state, name) in [(&host, "host"), (&owner, "owner-mac")] {
+        let args = [
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            owner_token.to_str().unwrap(),
+            "--name",
+            name,
+        ];
+        let login = latch(state, &args, &[]);
+        assert_eq!(login.status.code(), Some(0), "{name}: {login:?}");
+    }
+    (host, owner)
+}
+
+#[test]
+#[ignore = "needs a latch signed for the Keychain in LATCH_TEST_BIN; the keychain workflow runs it"]
+fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let (host, owner) = host_and_owner(&plow, dir.path());
+    let serve = serving(&host, &share, &relay);
+    vault_add(&owner, "Shop");
+    assert_eq!(vault_titles(&owner), ["Shop"]);
+    drop(serve);
+
+    for state in [&host, &owner] {
+        assert_eq!(
+            secret_files_in(state),
+            Vec::<&str>::new(),
+            "{}",
+            state.display()
+        );
+    }
+    assert!(host.join("vault.json").exists());
+    // The same identity, login and vault on the next start.
+    let serve = serving(&host, &share, &relay);
+    assert_eq!(vault_titles(&owner), ["Shop"]);
+    drop(serve);
 }
 
 /// A host sharing `share`, with its exec temp folders made in `tmp`, and
@@ -2479,10 +2823,8 @@ impl Bench {
 
     /// The host's audit records of `exec`.
     fn exec_records(&self) -> Vec<Value> {
-        fs::read_to_string(self.host.join("audit.ndjson"))
-            .unwrap_or_default()
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        audit_records(&self.host)
+            .into_iter()
             .filter(|record| record["op"] == "exec")
             .collect()
     }

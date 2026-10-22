@@ -60,6 +60,9 @@ with no folders, and the paths outside them it lets callers read
 
 - Folders named on the command line still win over the saved ones, and
   bring only their own `--allow-read` paths.
+- With none named and none saved, serve still starts, sharing no folders:
+  the browser and Google work, and `exec` and `file` refuse with
+  `no_folders` (exit 4).
 - A running serve keeps its folders until it is restarted.
 - Each folder and path must exist. Each is saved as its real, absolute path.
 - The home folder, its `Library` and the folders above them are refused,
@@ -91,6 +94,7 @@ no `events` behind.
 Activity entries:
 
 - Each entry is a verified audit record, without its arguments. Connections are recorded too, as `op: "connect"`.
+- The audit log is sealed on disk; `latch events` opens each record with the state folder's key, so the app never holds the key.
 - An entry's `id` is the record's hash, which is the `audit_id` the caller got back. It is stable across replays.
 
 Host lines:
