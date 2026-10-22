@@ -1175,6 +1175,10 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
     if HEADLESS {
         command.arg("--headless");
     }
+    // And where this host cannot run Chrome's own sandbox.
+    if crate::sandbox::page_isolation_off() {
+        command.arg("--page-isolation-off");
+    }
     let mut worker = command
         .env_clear()
         .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
@@ -1239,6 +1243,10 @@ async fn a_busy_browser_dies_with_its_host(engine: &str) {
         .arg("--allow-local-browsing");
     if HEADLESS {
         host.arg("--headless");
+    }
+    // And where this host cannot run Chrome's own sandbox.
+    if crate::sandbox::page_isolation_off() {
+        host.arg("--page-isolation-off");
     }
     let mut host = host
         .env_clear()
