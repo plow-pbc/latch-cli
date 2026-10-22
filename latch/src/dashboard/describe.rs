@@ -203,15 +203,6 @@ fn browser_title(request: &Value, audit: &Value) -> String {
                 more => format!("Plan: {}", more.join("; ")),
             }
         }
-        "tab" | "dialog" | "download" => {
-            let action = request["action"]
-                .as_str()
-                .or_else(|| request["sub"].as_str())
-                .unwrap_or_default();
-            format!("{} {action}", capitalized(command))
-                .trim()
-                .to_string()
-        }
         command => capitalized(command),
     }
 }
@@ -262,7 +253,7 @@ fn step_words(step: &Value) -> String {
     words.join(" ")
 }
 
-fn step_outcome(outcome: &Value) -> Option<Outcome> {
+pub(super) fn step_outcome(outcome: &Value) -> Option<Outcome> {
     match outcome["outcome"].as_str()? {
         "not_run" => None,
         "stopped" => {
@@ -378,7 +369,7 @@ fn stop_words(code: &str) -> String {
         .map_or_else(|| code.replace('_', " "), |(_, words)| words.to_string())
 }
 
-fn capitalized(word: &str) -> String {
+pub(super) fn capitalized(word: &str) -> String {
     let mut chars = word.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),

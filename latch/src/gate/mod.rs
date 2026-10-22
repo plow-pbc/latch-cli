@@ -207,8 +207,8 @@ impl Gatekeeper {
     /// Whether the owner asked for `action` by `caller`.
     pub async fn judge(&self, caller: Caller<'_>, action: &RawValue) -> Judgment {
         let started = Instant::now();
-        // The threshold this judgment was held to, so a record shows it.
-        let mut gate = json!({"caller": caller.kind(), "threshold": ALLOW_P});
+        // The rule this judgment is held to, so its record shows it.
+        let mut gate = json!({"caller": caller.kind(), "rule": RULE});
         let verdict = self.decide(caller, action, &mut gate).await;
         gate["verdict"] = json!(match &verdict {
             Ok(()) => "allow",
@@ -363,6 +363,10 @@ impl Gatekeeper {
 
 /// How the owner sees and changes the rules that judged their own call.
 const OWNER_RULES: &str = "See them with `latch rules show` and change them with `latch rules edit` (with `--host NAME` from another machine), then retry.";
+
+/// What `verdict` allows, in the words the dashboard shows the
+/// probabilities in.
+const RULE: &str = "allowed when within instructions >= 0.50";
 
 /// The verdict for the model's probabilities. An owner's call is judged
 /// only by the request and this host's rules (no chat is read), so its

@@ -227,6 +227,14 @@ impl Browsers {
         super::handoff::screen(self.headless)
     }
 
+    /// Shows on the dashboard that a plan in session `hash` finished one
+    /// step (`shown`, as its answer has it).
+    pub(super) fn progress(&self, hash: &str, shown: &Value) {
+        if let Some(dashboard) = &*self.dashboard.lock().expect("dashboard lock") {
+            dashboard.progress(hash, shown);
+        }
+    }
+
     /// Shows the pending handoffs in the log, and on the dashboard.
     pub(super) fn notice_handoffs(&self) {
         let lines: Vec<String> = super::handoff::pending(&self.state_dir)

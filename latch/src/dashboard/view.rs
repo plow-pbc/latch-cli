@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use jiff::{Timestamp, tz::TimeZone};
 use serde_json::Value;
 
+use super::describe::capitalized;
 use super::{Board, Call, Caller, Outcome, State, Task};
 use crate::paint::{self, DIM, FAINT, RED, VOLT};
 use crate::term;
@@ -39,12 +40,12 @@ pub enum Asked {
     Detach,
 }
 
-/// One thing on the list: a task, a call in a session, or a plan's step.
+/// What can be selected: a task, or a call in a session. A plan's steps
+/// show under their call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Sel {
     Task(u64),
     Call(u64, u64),
-    Step(u64, u64, usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -238,7 +239,7 @@ impl View {
                     fold: (!call.steps.is_empty()).then_some(open),
                 });
                 if open {
-                    self.steps(&mut items, task.id, call, 1);
+                    steps(&mut items, call, 1);
                 }
                 continue;
             }
@@ -270,7 +271,7 @@ impl View {
                     fold: (!call.steps.is_empty()).then_some(open),
                 });
                 if open {
-                    self.steps(&mut items, task.id, call, 2);
+                    steps(&mut items, call, 2);
                 }
             }
         }
@@ -278,20 +279,6 @@ impl View {
             items.push(note(0, "Earlier tasks unavailable"));
         }
         items
-    }
-
-    fn steps(&self, items: &mut Vec<Item>, task: u64, call: &Call, depth: usize) {
-        for (n, step) in call.steps.iter().enumerate() {
-            items.push(Item {
-                sel: Some(Sel::Step(task, call.id, n)),
-                depth,
-                at: None,
-                caller: None,
-                title: format!("{} {}", n + 1, step.title),
-                outcome: step.outcome.clone(),
-                fold: None,
-            });
-        }
     }
 
     /// The whole screen, `width` columns by `height` rows.
@@ -339,58 +326,66 @@ impl View {
             .iter()
             .map(|(name, state)| format!("{}: {state}", capitalized(name)))
             .collect();
-        let mut lines = Vec::new();
+        // Each line with how it is painted; wrapped before it is.
+        let bold = |text: &str| paint::bold(text, VOLT);
+        let alert = |text: &str| paint::bold(text, RED);
+        let dim = |text: &str| paint::fg(text, DIM);
+        let plain = |text: &str| text.to_string();
+        type Painted<'a> = (String, &'a dyn Fn(&str) -> String);
+        let mut shown: Vec<Painted> = Vec::new();
         if wide {
-            lines.push(paint::bold(
-                &format!("{host} | {serving} | {directory}"),
-                VOLT,
-            ));
-            let mut second = connectors.clone();
+            shown.push((format!("{host} | {serving} | {directory}"), &bold));
+            let mut second = connectors;
             second.push(socket);
-            lines.push(second.join(" | "));
+            shown.push((second.join(" | "), &plain));
         } else {
-            lines.push(paint::bold(&format!("{host} | {serving}"), VOLT));
-            lines.push(format!("{directory} | {socket}"));
+            shown.push((format!("{host} | {serving}"), &bold));
+            shown.push((format!("{directory} | {socket}"), &plain));
             if !connectors.is_empty() {
-                lines.push(connectors.join(" | "));
+                shown.push((connectors.join(" | "), &plain));
             }
         }
-        let mut more = Vec::new();
         if let Some(gone) = self.gone {
             let last = board.updated.unwrap_or(gone);
-            more.push(paint::bold(
-                &format!("Host disconnected; last update {}", clock(last)),
-                RED,
+            shown.push((
+                format!("Host disconnected; last update {}", clock(last)),
+                &alert,
             ));
         }
         if let Some(notice) = &self.notice {
-            more.push(paint::bold(notice, RED));
+            shown.push((notice.clone(), &alert));
         }
         if let Some(note) = &board.note {
-            more.push(paint::fg(note, DIM));
+            shown.push((note.clone(), &dim));
         }
         for handoff in &board.handoffs {
-            more.push(paint::bold(handoff, RED));
+            shown.push((handoff.clone(), &alert));
         }
         if self.frozen.is_some() {
-            more.push("Paused: new work is not shown; End resumes".to_string());
+            shown.push(("Paused: new work is not shown; End resumes".into(), &plain));
         }
-        match (&self.typing, self.filter.is_empty(), self.problems) {
-            (Some(typed), _, _) => {
-                more.push(format!("Filter: {typed}_  (Enter applies, Esc cancels)"))
-            }
-            (None, false, problems) => more.push(format!(
+        let filter = match (&self.typing, self.filter.is_empty(), self.problems) {
+            (Some(typed), _, _) => Some(format!("Filter: {typed}_  (Enter applies, Esc cancels)")),
+            (None, false, problems) => Some(format!(
                 "Filter: {}{}",
                 self.filter,
                 if problems { " | problems only" } else { "" }
             )),
-            (None, true, true) => more.push("Showing problems only (r shows all)".to_string()),
-            _ => {}
+            (None, true, true) => Some("Showing problems only (r shows all)".to_string()),
+            _ => None,
+        };
+        if let Some(filter) = filter {
+            shown.push((filter, &plain));
         }
-        for line in more {
-            lines.extend(wrap_painted(&line, width));
-        }
-        lines
+        shown
+            .into_iter()
+            .flat_map(|(text, paint)| {
+                wrap(&text, width)
+                    .into_iter()
+                    .map(|line| paint(&line))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     fn list(&self, width: usize, height: usize) -> Vec<String> {
@@ -420,7 +415,14 @@ impl View {
         }
         let mut body = Vec::new();
         for (_, row) in &rows[start..] {
-            if body.len() + row.len() > room {
+            let left = room.saturating_sub(body.len());
+            if row.len() > left {
+                // A row taller than what is left: as much as fits, and
+                // where the rest is, rather than nothing.
+                if left > 1 {
+                    body.extend(row[..left - 1].iter().cloned());
+                    body.push(paint::fg("   … more; Enter shows it all", DIM));
+                }
                 break;
             }
             body.extend(row.iter().cloned());
@@ -471,30 +473,22 @@ impl View {
             "Tab switch  Up/Down scroll  Esc back  q detach",
             DIM,
         )];
-        let Some((task, call, step)) = find(board, inspect.sel) else {
+        let Some((task, call)) = find(board, inspect.sel) else {
             let mut lines = vec!["This is no longer on the board.".to_string()];
             lines.extend(footer);
             return lines;
         };
-        let mut lines = Vec::new();
-        let title = match (call, step) {
-            (_, Some(step)) => step.title.clone(),
-            (Some(call), None) => call.title.clone(),
-            (None, None) => task.title.clone(),
-        };
-        let at = call.map_or(task.at(), |call| call.at);
-        lines.extend(wrap_painted(
-            &paint::bold(
-                &format!(
-                    "{} | {} | {}",
-                    term::one_line(&title),
-                    task.caller.label,
-                    clock(at)
-                ),
-                VOLT,
-            ),
-            width,
-        ));
+        let (title, at) = call.map_or((&task.title, task.at()), |call| (&call.title, call.at));
+        let heading = format!(
+            "{} | {} | {}",
+            term::one_line(title),
+            task.caller.label,
+            clock(at)
+        );
+        let mut lines: Vec<String> = wrap(&heading, width)
+            .iter()
+            .map(|line| paint::bold(line, VOLT))
+            .collect();
         let tab = |name: &str, this: Tab| {
             if inspect.tab == this {
                 format!("[{name}]")
@@ -509,8 +503,7 @@ impl View {
             tab("Request", Tab::Request)
         ));
         let body = match (inspect.tab, call) {
-            (Tab::Steps, Some(call)) => call_steps(task, call, step.map(|s| &s.outcome)),
-            (Tab::Steps, None) => session_calls(task),
+            (Tab::Steps, Some(call)) => call_steps(task, call),
             (Tab::Decision, Some(call)) => decision(task, call),
             (Tab::Request, Some(call)) => request(call),
             (_, None) => vec!["Select one of the session's calls for its details.".to_string()],
@@ -530,30 +523,25 @@ impl View {
     }
 }
 
-/// A task, call and step by their selection.
-fn find(board: &Board, sel: Sel) -> Option<(&Task, Option<&Call>, Option<&super::Step>)> {
-    let (task_id, call_id, step) = match sel {
-        Sel::Task(task) => (task, None, None),
-        Sel::Call(task, call) => (task, Some(call), None),
-        Sel::Step(task, call, step) => (task, Some(call), Some(step)),
+/// A task, and the call selected in it, or the one that says how it is
+/// going.
+fn find(board: &Board, sel: Sel) -> Option<(&Task, Option<&Call>)> {
+    let (task_id, call_id) = match sel {
+        Sel::Task(task) => (task, None),
+        Sel::Call(task, call) => (task, Some(call)),
     };
     let task = board.tasks.iter().find(|task| task.id == task_id)?;
     let call = match call_id {
         Some(id) => Some(task.calls.iter().find(|call| call.id == id)?),
-        None => task.lone(),
+        None => task.key_call(),
     };
-    let step = match (call, step) {
-        (Some(call), Some(n)) => Some(call.steps.get(n)?),
-        _ => None,
-    };
-    Some((task, call, step))
+    Some((task, call))
 }
 
 fn parent(sel: Sel) -> Option<Sel> {
     match sel {
         Sel::Task(_) => Some(sel),
         Sel::Call(task, _) => Some(Sel::Task(task)),
-        Sel::Step(task, call, _) => Some(Sel::Call(task, call)),
     }
 }
 
@@ -565,6 +553,21 @@ fn matches(task: &Task, filter: &str) -> bool {
             .calls
             .iter()
             .any(|call| has(&call.title) || call.steps.iter().any(|step| has(&step.title)))
+}
+
+/// A call's plan steps, in order, under it.
+fn steps(items: &mut Vec<Item>, call: &Call, depth: usize) {
+    for (n, step) in call.steps.iter().enumerate() {
+        items.push(Item {
+            sel: None,
+            depth,
+            at: None,
+            caller: None,
+            title: format!("{} {}", n + 1, step.title),
+            outcome: step.outcome.clone(),
+            fold: None,
+        });
+    }
 }
 
 fn note(depth: usize, text: &str) -> Item {
@@ -580,19 +583,8 @@ fn note(depth: usize, text: &str) -> Item {
 }
 
 /// The Steps tab of a call: how it ended and why, what it was, its steps.
-fn call_steps(task: &Task, call: &Call, step: Option<&Option<Outcome>>) -> Vec<String> {
-    let mut lines = Vec::new();
-    let outcome = match step {
-        Some(Some(outcome)) => outcome.clone(),
-        Some(None) => Outcome::new(State::Done, Some("not reached".into())),
-        None => call.outcome.clone(),
-    };
-    let ran = match outcome.state {
-        State::Refused => " This action did not run.",
-        State::Running => " It is still running.",
-        _ => "",
-    };
-    lines.push(format!("{}.{ran}", outcome.line().to_uppercase_first()));
+fn call_steps(task: &Task, call: &Call) -> Vec<String> {
+    let mut lines = vec![headline(&call.outcome)];
     let detail = &call.detail;
     if let Some(message) = &detail.message {
         lines.push(message.clone());
@@ -617,11 +609,17 @@ fn call_steps(task: &Task, call: &Call, step: Option<&Option<Outcome>>) -> Vec<S
     if !call.steps.is_empty() {
         lines.push(String::new());
         lines.push("Steps, in order:".to_string());
+        // A step with no outcome is still to come while the plan runs,
+        // and was never reached once it has ended.
+        let unresolved = match call.outcome.state {
+            State::Running => "pending",
+            _ => "not reached",
+        };
         for (n, step) in call.steps.iter().enumerate() {
             let how = step
                 .outcome
                 .as_ref()
-                .map_or("not reached".to_string(), Outcome::line);
+                .map_or(unresolved.to_string(), Outcome::line);
             lines.push(format!("  {} {} — {how}", n + 1, step.title));
         }
     }
@@ -633,44 +631,12 @@ fn call_steps(task: &Task, call: &Call, step: Option<&Option<Outcome>>) -> Vec<S
     lines
 }
 
-/// A session's calls, in order.
-fn session_calls(task: &Task) -> Vec<String> {
-    let mut lines = vec![format!("{}: {}", task.title, task.outcome().line())];
-    if let Some(session) = &task.session {
-        lines.push(format!("Browser session {session}"));
-    }
-    lines.push(format!(
-        "Caller: {} ({})",
-        task.caller.label, task.caller.detail
-    ));
-    lines.push(String::new());
-    if task.dropped > 0 {
-        lines.push("Earlier steps unavailable".to_string());
-    }
-    for call in &task.calls {
-        lines.push(format!(
-            "{}  {} — {}",
-            clock(call.at),
-            term::one_line(&call.title),
-            call.outcome.line()
-        ));
-    }
-    lines
-}
-
 /// The Decision tab: the gatekeeper's record of its judgment, as recorded.
 /// Scores are what the model gave, not reasons; no rule is quoted that the
 /// judge did not cite.
 fn decision(task: &Task, call: &Call) -> Vec<String> {
     let detail = &call.detail;
-    let mut lines = Vec::new();
-    let outcome = &call.outcome;
-    let ran = if outcome.state == State::Refused {
-        " This action did not run."
-    } else {
-        ""
-    };
-    lines.push(format!("{}.{ran}", outcome.line().to_uppercase_first()));
+    let mut lines = vec![headline(&call.outcome)];
     if let Some(message) = &detail.message {
         lines.push(message.clone());
     }
@@ -694,10 +660,10 @@ fn decision(task: &Task, call: &Call) -> Vec<String> {
     } else {
         lines.push("Judge P: no answer from the judge".to_string());
     }
-    lines.push(match gate["threshold"].as_f64() {
-        Some(threshold) => format!("Allow threshold: within instructions >= {threshold:.2}"),
-        None => "Allow threshold: not recorded".to_string(),
-    });
+    lines.push(format!(
+        "Decision rule: {}",
+        gate["rule"].as_str().unwrap_or("not recorded")
+    ));
     if let Some(model) = gate["model"].as_str() {
         lines.push(format!("Model: {model}"));
     }
@@ -838,10 +804,7 @@ impl Layout {
             Some(false) => ">",
             None => " ",
         };
-        let time = match item.sel {
-            Some(Sel::Step(..)) | None => String::new(),
-            _ => item.at.map(clock).unwrap_or_default(),
-        };
+        let time = item.at.map(clock).unwrap_or_default();
         let indent = "  ".repeat(item.depth);
         let task_width = self.task.saturating_sub(indent.len()).max(10);
         let mut titles: Vec<String> = wrap(&term::one_line(&item.title), task_width)
@@ -951,50 +914,18 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// A line that may hold color, wrapped as plain text when it is too wide.
-fn wrap_painted(line: &str, width: usize) -> Vec<String> {
-    let plain = strip(line);
-    if plain.chars().count() <= width {
-        return vec![line.to_string()];
-    }
-    wrap(&plain, width)
-}
-
-/// `text` without its color escapes.
-fn strip(text: &str) -> String {
-    let mut plain = String::new();
-    let mut escape = false;
-    for ch in text.chars() {
-        match (escape, ch) {
-            (false, '\u{1b}') => escape = true,
-            (true, 'm') => escape = false,
-            (true, _) => {}
-            (false, ch) => plain.push(ch),
-        }
-    }
-    plain
-}
-
-trait UpperFirst {
-    fn to_uppercase_first(&self) -> String;
-}
-
-impl UpperFirst for String {
-    fn to_uppercase_first(&self) -> String {
-        let mut words = self.splitn(2, " - ");
-        let state = words.next().unwrap_or_default().to_uppercase();
-        match words.next() {
-            Some(rest) => format!("{state} - {rest}"),
-            None => state,
-        }
-    }
-}
-
-fn capitalized(word: &str) -> String {
-    let mut chars = word.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
+/// `REFUSED - outside your instructions. This action did not run.`
+fn headline(outcome: &Outcome) -> String {
+    let line = outcome.line();
+    let (state, rest) = line
+        .split_once(" - ")
+        .map_or((line.as_str(), None), |(s, r)| (s, Some(r)));
+    let state = state.to_uppercase();
+    let line = rest.map_or(state.clone(), |rest| format!("{state} - {rest}"));
+    match outcome.state {
+        State::Refused => format!("{line}. This action did not run."),
+        State::Running => format!("{line}. It is still running."),
+        _ => format!("{line}."),
     }
 }
 

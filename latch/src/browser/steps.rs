@@ -719,6 +719,7 @@ impl Run<'_> {
     fn note_step(&mut self, shown: &Value) -> Result<(), Failure> {
         let mut record = shown.clone();
         record["t"] = json!("step");
+        self.browsers.progress(&self.entry.hash, shown);
         // The journal keeps what the answer shows; the audit, kinds only.
         self.journal.write(record)
     }

@@ -393,7 +393,7 @@ async fn run_host(
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(&state.path, Phase::Serving, None)?;
     host.dashboard.socket(true);
-    host.dashboard.connectors(host.plugins.health());
+    host.dashboard.connectors(host.plugins.enabled());
     host.dashboard.serving();
     control::await_holder(&host);
     let mut heartbeat = tokio::spawn(heartbeat::run(
@@ -1172,7 +1172,7 @@ async fn serve_request(
                 finished,
             );
             if op == "plugins" {
-                host.dashboard.connectors(host.plugins.health());
+                host.dashboard.connectors(host.plugins.enabled());
             }
             drop(running);
             drop(names);
@@ -1274,7 +1274,7 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
             label: "phone link".to_string(),
             detail: format!("the phone page of a vault link, key {caller}"),
         };
-        host.dashboard.call(phone, finished);
+        host.dashboard.once(phone, finished);
         let response = match appended {
             Ok(audit_id) => with_audit_id(done.response, audit_id),
             Err(message) => failed("audit_failed", message),
@@ -1423,7 +1423,7 @@ impl Host {
             detail: format!("key {caller}, not let in"),
         };
         self.dashboard
-            .call(shown, dashboard::refused(op, &denial.code, &denial.message));
+            .once(shown, dashboard::refused(op, &denial.code, &denial.message));
     }
 
     /// Who called, as the board shows them: the owner here or at one of

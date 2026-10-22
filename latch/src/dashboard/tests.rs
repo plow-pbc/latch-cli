@@ -62,8 +62,8 @@ fn busy() -> Dashboard {
     dashboard.directory(true);
     dashboard.socket(true);
     dashboard.connectors(vec![
-        ("messages".into(), "ready".into()),
-        ("google".into(), "connected".into()),
+        ("messages".into(), "enabled".into()),
+        ("google".into(), "disabled".into()),
     ]);
     run(
         &dashboard,
@@ -115,7 +115,8 @@ fn busy() -> Dashboard {
         },
         None,
     );
-    let gate = json!({"caller": "agent", "threshold": 0.5, "verdict": "not_covered",
+    let gate = json!({"caller": "agent", "rule": "allowed when within instructions >= 0.50",
+        "verdict": "not_covered",
         "p": {"COVERED": 0.21, "NOT_COVERED": 0.76, "FORBIDDEN": 0.03},
         "model": "jev-1.14", "source": "chat_and_rules",
         "rules": {"host": "aa".repeat(32), "agent": "bb".repeat(32)},
@@ -199,7 +200,6 @@ fn a_browser_session_groups_its_calls_and_a_plan_its_steps() {
     );
     let detail = &upload.calls[0].detail;
     assert!(detail.audit_id.as_deref().unwrap().starts_with("27ff057f"));
-    assert_eq!(detail.gate.as_ref().unwrap()["threshold"], 0.5);
 }
 
 #[test]
@@ -352,7 +352,7 @@ fn at_120_columns_each_column_is_its_own_and_a_plan_unfolds() {
     assert!(lines[0].ends_with("| Directory: connected"), "{}", lines[0]);
     assert_eq!(
         lines[1],
-        "Messages: ready | Google: connected | Local socket: listening"
+        "Messages: enabled | Google: disabled | Local socket: listening"
     );
     let heading = lines
         .iter()
@@ -423,7 +423,7 @@ fn at_80_columns_the_caller_goes_under_the_title_and_a_refusal_wraps_whole() {
         lines[0]
     );
     assert_eq!(lines[1], "Directory: connected | Local socket: listening");
-    assert_eq!(lines[2], "Messages: ready | Google: connected");
+    assert_eq!(lines[2], "Messages: enabled | Google: disabled");
     let heading = lines
         .iter()
         .find(|line| line.contains("TASK / STEP"))
@@ -485,7 +485,7 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
         decision.contains("Judge P: within instructions 0.21 | not covered 0.76 | forbidden 0.03"),
         "{decision}"
     );
-    assert!(decision.contains("Allow threshold: within instructions >= 0.50"));
+    assert!(decision.contains("Decision rule: allowed when within instructions >= 0.50"));
     assert!(
         decision
             .contains("Rules used: this host + this agent | revisions: aaaaaaaaaaaa, bbbbbbbbbbbb")
@@ -664,4 +664,150 @@ async fn q_detaches_and_an_attached_view_ends_with_its_host() {
     )
     .await;
     assert_eq!(ending, Ending::Closed);
+}
+
+/// The plan from `busy`, begun again in its session: running, its steps
+/// still to come.
+fn plan_in_session(dashboard: &Dashboard) -> CallId {
+    let plan = json!({"command": "do", "session": "the-session-id",
+        "plan": {"steps": [{"goal": "Open example.com"}, {"goal": "Find recent orders"},
+                           {"goal": "Open order details"}]}});
+    dashboard.begin(owner(), session("browser", &plan), begun("browser", &plan))
+}
+
+#[test]
+fn a_running_plan_shows_its_step_as_each_one_ends() {
+    let dashboard = busy();
+    plan_in_session(&dashboard);
+    let session = crate::browser::host::hash_of("the-session-id");
+    let task = |board: &Board| board.tasks.front().unwrap().clone();
+    assert_eq!(
+        task(&board(&dashboard)).outcome().line(),
+        "Running - step 1"
+    );
+    dashboard.progress(&session, &json!({"step": 1, "outcome": "checked"}));
+    dashboard.progress(&session, &json!({"step": 2, "outcome": "checked"}));
+    let running = task(&board(&dashboard));
+    assert_eq!(running.outcome().line(), "Running - step 3");
+    let plan = running.calls.last().unwrap();
+    let steps: Vec<String> = plan
+        .steps
+        .iter()
+        .map(|step| step.outcome.as_ref().map_or("-".into(), Outcome::line))
+        .collect();
+    assert_eq!(steps, ["Done", "Done", "-"]);
+
+    // Its details: two done, the third still to come.
+    let mut view = view_of(&dashboard, false);
+    view.key(Key::Down);
+    view.key(Key::Right);
+    for _ in 0..3 {
+        view.key(Key::Down);
+    }
+    view.key(Key::Enter);
+    let details = screen(&view, 100, 40).join("\n");
+    assert!(
+        details.contains("RUNNING - step 3. It is still running."),
+        "{details}"
+    );
+    assert!(
+        details.contains("3 Open order details — pending"),
+        "{details}"
+    );
+}
+
+#[test]
+fn a_session_shows_its_latest_plan_or_problem_not_just_its_last_call() {
+    let dashboard = busy();
+    let session_task = |dashboard: &Dashboard| {
+        board(dashboard)
+            .tasks
+            .into_iter()
+            .find(|task| task.session.is_some())
+            .unwrap()
+    };
+    // An observation that went fine after the stopped plan.
+    let observe = json!({"command": "observe", "session": "the-session-id"});
+    let hash = crate::browser::host::hash_of("the-session-id");
+    let observed = json!({"command": "observe", "session": hash});
+    run(
+        &dashboard,
+        owner(),
+        "browser",
+        observe,
+        observed,
+        Response::Ok(json!({})),
+        None,
+    );
+    assert_eq!(
+        session_task(&dashboard).outcome().line(),
+        "Stopped - step 3; 2 ran"
+    );
+
+    // A later plan that went through is what the session shows then.
+    let id = plan_in_session(&dashboard);
+    let plan = json!({"command": "do", "session": "the-session-id",
+        "plan": {"steps": [{"goal": "Open example.com"}, {"goal": "Find recent orders"},
+                           {"goal": "Open order details"}]}});
+    let done = json!({"command": "do", "session": hash, "step_outcomes": [
+        {"step": 1, "outcome": "checked"}, {"step": 2, "outcome": "checked"},
+        {"step": 3, "outcome": "checked"}]});
+    let ended = finished(
+        "browser",
+        &plan,
+        &done,
+        &Response::Ok(json!({})),
+        None,
+        None,
+        Duration::ZERO,
+    );
+    dashboard.end(id, owner(), ended);
+    assert_eq!(session_task(&dashboard).outcome().line(), "Done - 3 steps");
+}
+
+#[test]
+fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
+    let dashboard = Dashboard::new("host", None);
+    let long = "The owner said not to do this. ".repeat(20);
+    let refused = denied(
+        "gatekeeper_denied",
+        &long,
+        json!({"reason": "owner_said_no"}),
+    );
+    let words: Vec<String> = (0..60).map(|n| format!("word{n}")).collect();
+    let request = json!({"argv": words});
+    run(
+        &dashboard,
+        agent(),
+        "exec",
+        request.clone(),
+        request,
+        refused,
+        None,
+    );
+    let mut view = view_of(&dashboard, false);
+    view.key(Key::Down);
+    // Its title wraps onto more lines than the 80 by 12 screen has room.
+    let lines = screen(&view, 80, 12);
+    assert_eq!(lines.len(), 12);
+    assert!(
+        lines.iter().any(|line| line.starts_with('>')),
+        "the selected row shows: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("… more; Enter shows it all")),
+        "{lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("Refused - owner said no")),
+        "{lines:#?}"
+    );
+    // And all of it is in its details.
+    view.key(Key::Enter);
+    let details = screen(&view, 80, 60).join("\n");
+    assert!(details.contains("word59"), "{details}");
 }

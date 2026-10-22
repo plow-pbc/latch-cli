@@ -44,7 +44,7 @@ pub struct Board {
     pub directory: Option<bool>,
     /// Whether the host's local socket is listening.
     pub socket: Option<bool>,
-    /// Each connector this build has, and its state as last set up.
+    /// Each connector this build has, and whether its owner enabled it.
     pub connectors: Vec<(String, String)>,
     /// Pending browser handoffs, each a line of its own.
     pub handoffs: Vec<String>,
@@ -54,6 +54,9 @@ pub struct Board {
     pub dropped: bool,
     /// When the host last changed the board.
     pub updated: Option<Timestamp>,
+    /// The last id given to a task or call.
+    #[serde(skip)]
+    next: u64,
 }
 
 /// What one caller did: one call, or a browser session's calls.
@@ -225,109 +228,110 @@ impl Dashboard {
         self.change(|board| board.handoffs = lines);
     }
 
-    /// A call starting: shown running, in its session's task if it names
-    /// one, or as a task of its own.
+    /// A call starting, by `caller`: shown running, in its session's task
+    /// if it names one, or as a task of its own.
     pub fn begin(
         &self,
         caller: Caller,
         session: Option<String>,
         (title, steps): (String, Vec<Step>),
     ) -> CallId {
-        let mut id = CallId(0);
+        let mut id = 0;
         self.change(|board| {
-            id = CallId(next_id(board));
-            let call = Call {
-                id: id.0,
-                at: Timestamp::now(),
-                title: title.clone(),
-                outcome: Outcome::new(State::Running, None),
-                steps,
-                detail: Detail::default(),
-            };
-            board.add(caller, session, title, call);
+            board.next += 1;
+            id = board.next;
+            let outcome = Outcome::running(&steps);
+            board.add(
+                caller,
+                session,
+                Call {
+                    id,
+                    at: Timestamp::now(),
+                    title,
+                    outcome,
+                    steps,
+                    detail: Detail::default(),
+                },
+            );
         });
-        id
+        CallId(id)
+    }
+
+    /// One step of the plan running in browser session `session` finished,
+    /// as its answer shows it (`step`, `outcome`, `code`): at most once per
+    /// step, so a plan's updates are as many as its steps.
+    pub fn progress(&self, session: &str, shown: &Value) {
+        let Some(n) = shown["step"]
+            .as_u64()
+            .and_then(|n| (n as usize).checked_sub(1))
+        else {
+            return;
+        };
+        self.change(|board| {
+            let running = board
+                .tasks
+                .iter_mut()
+                .filter(|task| task.session.as_deref() == Some(session))
+                .flat_map(|task| task.calls.iter_mut())
+                .find(|call| call.outcome.state == State::Running && n < call.steps.len());
+            if let Some(call) = running {
+                call.steps[n].outcome = describe::step_outcome(shown);
+                call.outcome = Outcome::running(&call.steps);
+            }
+        });
     }
 
     /// The call `id` ended as `finished`, by `caller` as now known. An
     /// `open` names its session only now: its task becomes that session's.
     pub fn end(&self, id: CallId, caller: Caller, finished: Finished) {
-        self.change(|board| board.end(id.0, Some(caller), finished));
+        self.change(|board| board.end(id.0, caller, finished));
     }
 
-    /// A call that ended before it could begin (a caller refused at the
-    /// door, a phone link): one finished task.
-    pub fn call(&self, caller: Caller, finished: Finished) {
-        self.change(|board| {
-            let id = next_id(board);
-            let call = Call {
-                id,
-                at: Timestamp::now(),
-                title: finished.title.clone(),
-                outcome: Outcome::new(State::Running, None),
-                steps: Vec::new(),
-                detail: Detail::default(),
-            };
-            board.add(caller, None, finished.title.clone(), call);
-            board.end(id, None, finished);
-        });
+    /// A call that ended before it could run: a caller refused at the
+    /// door, a phone link's.
+    pub fn once(&self, caller: Caller, finished: Finished) {
+        let id = self.begin(caller.clone(), None, (finished.title.clone(), Vec::new()));
+        self.end(id, caller, finished);
     }
-}
-
-/// A fresh id for a task or call: one more than any on the board.
-fn next_id(board: &Board) -> u64 {
-    board
-        .tasks
-        .iter()
-        .flat_map(|task| std::iter::once(task.id).chain(task.calls.iter().map(|call| call.id)))
-        .max()
-        .map_or(1, |id| id + 1)
 }
 
 impl Board {
-    fn add(&mut self, caller: Caller, session: Option<String>, title: String, mut call: Call) {
+    fn add(&mut self, caller: Caller, session: Option<String>, call: Call) {
         let existing = session.as_ref().and_then(|session| {
             self.tasks
                 .iter()
                 .position(|task| task.session.as_ref() == Some(session))
         });
-        match existing {
-            Some(at) => {
-                let task = &mut self.tasks[at];
-                call.title = title;
-                task.calls.push(call);
-                if task.calls.len() > KEEP_CALLS {
-                    task.calls.remove(0);
-                    task.dropped += 1;
-                }
-                // A task with new work moves to the front.
-                let task = self.tasks.remove(at).expect("the task is there");
-                self.tasks.push_front(task);
-            }
-            None => {
-                let id = call.id + 1;
-                let task_title = match &session {
+        let Some(at) = existing else {
+            self.next += 1;
+            self.tasks.push_front(Task {
+                id: self.next,
+                title: match &session {
                     Some(session) => format!("Browser session {session}"),
-                    None => title.clone(),
-                };
-                call.title = title;
-                self.tasks.push_front(Task {
-                    id,
-                    session,
-                    title: task_title,
-                    caller,
-                    calls: vec![call],
-                    dropped: 0,
-                });
-                if self.tasks.len() > KEEP_TASKS {
-                    self.tasks.pop_back();
-                    self.dropped = true;
-                }
+                    None => call.title.clone(),
+                },
+                session,
+                caller,
+                calls: vec![call],
+                dropped: 0,
+            });
+            if self.tasks.len() > KEEP_TASKS {
+                self.tasks.pop_back();
+                self.dropped = true;
             }
+            return;
+        };
+        // A task with new work moves to the front.
+        let mut task = self.tasks.remove(at).expect("the task is there");
+        task.calls.push(call);
+        if task.calls.len() > KEEP_CALLS {
+            task.calls.remove(0);
+            task.dropped += 1;
         }
+        self.tasks.push_front(task);
     }
 
-    fn end(&mut self, id: u64, caller: Option<Caller>, finished: Finished) {
+    fn end(&mut self, id: u64, caller: Caller, finished: Finished) {
         let Some(task) = self
             .tasks
             .iter_mut()
@@ -335,26 +339,20 @@ impl Board {
         else {
             return;
         };
-        if let Some(caller) = caller {
-            task.caller = caller;
+        task.caller = caller;
+        if task.session.is_none() {
+            task.session = finished.session.clone();
         }
-        if task.session.is_none()
-            && let Some(session) = &finished.session
-        {
-            task.session = Some(session.clone());
-        }
-        if task.session.is_some() {
+        if task.session.is_none() {
+            task.title = finished.title.clone();
+        } else if let Some(label) = &finished.label {
             // A session's task is named by what the caller labelled it,
             // or the site it is on.
-            if let Some(label) = &finished.label {
-                task.title = label.clone();
-            } else if task.title.starts_with("Browser session")
-                && let Some(site) = &finished.site
-            {
-                task.title = format!("Browser session: {site}");
-            }
-        } else {
-            task.title = finished.title.clone();
+            task.title = label.clone();
+        } else if task.title.starts_with("Browser session ")
+            && let Some(site) = &finished.site
+        {
+            task.title = format!("Browser session: {site}");
         }
         let call = task
             .calls
@@ -368,20 +366,29 @@ impl Board {
     }
 }
 
+impl Outcome {
+    /// A call that runs: with steps, which one it is on.
+    fn running(steps: &[Step]) -> Outcome {
+        let on = steps.iter().position(|step| step.outcome.is_none());
+        Outcome::new(State::Running, on.map(|n| format!("step {}", n + 1)))
+    }
+}
+
 impl Task {
-    /// A task's result: its one call's, or for a session, its latest
-    /// call's, or `Running` while any call runs.
+    /// A task's result. A session's is what matters in it: a call still
+    /// running, else its latest plan or problem, so a later observation
+    /// that went fine never makes a stopped plan look done.
     pub fn outcome(&self) -> Outcome {
-        if self
-            .calls
-            .iter()
-            .any(|call| call.outcome.state == State::Running)
-        {
-            return Outcome::new(State::Running, None);
-        }
-        self.calls
-            .last()
+        self.key_call()
             .map_or(Outcome::new(State::Done, None), |call| call.outcome.clone())
+    }
+
+    /// The call that says how the task is going (see `outcome`).
+    pub fn key_call(&self) -> Option<&Call> {
+        let latest = |pick: &dyn Fn(&Call) -> bool| self.calls.iter().rev().find(|call| pick(call));
+        latest(&|call| call.outcome.state == State::Running)
+            .or_else(|| latest(&|call| !call.steps.is_empty() || call.outcome.problem()))
+            .or(self.calls.last())
     }
 
     pub fn at(&self) -> Timestamp {
