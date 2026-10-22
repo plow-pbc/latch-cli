@@ -73,6 +73,11 @@ No Homebrew tap is included.
 
 ## For hosts
 
+- `latch setup`, at a terminal, walks a machine through logging in,
+  connecting Google, on a Mac turning on Messages and Contacts, and
+  starting latch. Each step runs a latch command and says which, and is
+  skipped once done; run it again any time. The installer runs it at the
+  end when it has a terminal (`--non-interactive` skips it).
 - `latch serve` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing

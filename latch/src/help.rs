@@ -960,6 +960,19 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "setup",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so.",
+        effect: Repeatable(
+            "logs in, enables connectors and starts the host, as the owner answers; done steps are skipped",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Set up this machine, or finish setting it up",
+            &["setup"],
+        )],
+    },
+    Entry {
         id: "skill",
         output: "SKILL.md, for this version of latch.",
         effect: ReadOnly,

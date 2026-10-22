@@ -1,4 +1,5 @@
 """Run the packaged installer with local, hash-verified plugin fixtures."""
+import fcntl
 import hashlib
 import json
 import os
@@ -6,6 +7,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import termios
+import threading
 import unittest
 import zipfile
 
@@ -43,6 +46,15 @@ def fixture(root, state, binary_script, system="FixtureOS", machine="x86_64"):
     uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system};; -m) echo {machine};; esac\n')
     uname.chmod(0o755)
     return setup, binary, tools
+
+
+def drain(terminal):
+    """Reads a terminal's main side until its other side is closed."""
+    try:
+        while os.read(terminal, 4096):
+            pass
+    except OSError:
+        pass
 
 
 class BinaryInstall(unittest.TestCase):
@@ -97,6 +109,42 @@ class BinaryInstall(unittest.TestCase):
 
     def test_options_on_both_sides_of_the_binary(self):
         self.install(custom=True, source="middle")
+
+    def test_setup_runs_only_at_a_terminal_and_not_when_told_not_to(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        for at_terminal, extra, runs in [(False, [], False), (True, [], True),
+                                         (True, ["--non-interactive"], False)]:
+            with tempfile.TemporaryDirectory(dir=parent) as directory:
+                root = Path(directory)
+                state = root / "state"
+                called = root / "called"
+                setup, binary, tools = fixture(root, state,
+                                               f'#!/bin/sh\necho "$@" >> "{called}"\n')
+                env = {**os.environ, "HOME": str(root / "home"),
+                       "PATH": f"{tools}:{os.environ['PATH']}"}
+                args = ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                        "--no-browser", *extra, str(binary)]
+                if at_terminal:
+                    # A terminal of its own, as a person's: what /dev/tty opens.
+                    main, side = os.openpty()
+                    # Read what it shows, so it never waits on a full terminal.
+                    shown = threading.Thread(target=drain, args=(main,))
+                    shown.start()
+                    result = subprocess.run(
+                        args, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=side,
+                        stderr=side, start_new_session=True, timeout=60,
+                        preexec_fn=lambda: fcntl.ioctl(1, termios.TIOCSCTTY, 0))
+                    os.close(side)
+                    shown.join()
+                    os.close(main)
+                else:
+                    result = subprocess.run(args, cwd=root, env=env, capture_output=True,
+                                            stdin=subprocess.DEVNULL)
+                self.assertEqual(result.returncode, 0)
+                ran = called.read_text() if called.exists() else ""
+                self.assertEqual(ran, f"--state-dir {state} setup\n" if runs else "",
+                                 (at_terminal, extra))
 
     def test_macos_release_installs_the_app_and_updates_it_in_place(self):
         parent = ROOT / ".dev/tests"

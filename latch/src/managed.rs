@@ -50,7 +50,7 @@ const STOP_WITHIN: Duration = Duration::from_secs(40);
 /// How long a host that is up has to answer one question on its socket.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
 /// The flags the last start gave the host, for `serve -d --again`.
-const ARGS_FILE: &str = "serve-args.json";
+pub(crate) const ARGS_FILE: &str = "serve-args.json";
 
 #[cfg(test)]
 mod saved_flags_tests {

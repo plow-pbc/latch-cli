@@ -43,7 +43,7 @@ conformance engine:
 [macos]
 cft:
     cargo build --locked
-    HOME="$PWD/../.dev/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
+    HOME="$PWD/../.dev/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome --browser camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
 
 # On Linux, install-binary.sh puts a host's engine in place; the real-engine tests
 # (`just conformance cft`) find it through LATCH_CFT_STATE.

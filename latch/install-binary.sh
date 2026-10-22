@@ -1,7 +1,10 @@
 #!/bin/sh
 # Installs a latch binary you already have into ~/.local/bin, or --bin-dir.
 #
-#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [path/to/latch]
+#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive] [path/to/latch]
+#
+# At a terminal it ends by running `latch setup` (log in, connect Google,
+# and so on); --non-interactive, or no terminal, leaves that for later.
 #
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
@@ -50,11 +53,13 @@ die() { say "$*" >&2; exit 1; }
 # One word for the shell, whatever it holds.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [path/to/latch]"
+usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive] [path/to/latch]"
 bin_dir="$HOME/.local/bin"
 state_dir="$HOME/.latch"
 browsers=""
 no_browser=""
+non_interactive=""
+state_given=""
 src="$(dirname "$0")/latch"
 given_src=""
 while [ $# -gt 0 ]; do
@@ -76,6 +81,7 @@ while [ $# -gt 0 ]; do
     --state-dir)
       [ $# -ge 2 ] && [ -n "$2" ] || die "$usage"
       state_dir=$2
+      state_given=1
       shift 2
       ;;
     --browser)
@@ -87,6 +93,10 @@ while [ $# -gt 0 ]; do
       ;;
     --no-browser)
       no_browser=1
+      shift
+      ;;
+    --non-interactive)
+      non_interactive=1
       shift
       ;;
     -*) die "$usage" ;;
@@ -312,4 +322,18 @@ if [ -n "$restart_host" ]; then
   say "started the host on $state_dir again with the new latch"
 fi
 
+# At a terminal, `latch setup` takes it from here, reading the terminal
+# itself (this script's own stdin may be the download it came from).
+# Whatever happens in setup, the install is done.
+if [ -z "$non_interactive" ] && [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
+  say "running latch setup"
+  if [ -n "$state_given" ]; then
+    set -- --state-dir "$state_dir" setup
+  else
+    set -- setup
+  fi
+  "$dest" "$@" </dev/tty || say "setup did not finish; run \`latch setup\` any time"
+else
+  say "next: run \`latch setup\` to log in and set up the rest"
+fi
 say "done"
