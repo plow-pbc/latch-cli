@@ -12,13 +12,14 @@
 # appear before or after the path. --help prints usage without installing.
 #
 # A host on the state directory runs the latch being replaced: when the
-# version changes, it is stopped with `latch stop` first. One `serve -d` started is started
-# again with the new latch, with what it was last given (`serve -d
-# --again`), once everything is in place. One that runs in a terminal (an
-# attached `latch serve`, or `serve --foreground`) cannot be started again
-# in that terminal: the install says to run `latch serve` there again. A
-# host from yet another version, which no latch here can reach, is left
-# for its owner to stop, and the install says how.
+# version changes, the new latch stops it (`latch stop`) first. One
+# `serve -d` started is started again with the new latch, with what it was
+# last given (`serve -d --again`), once everything is in place. One that
+# runs in a terminal (an attached `latch serve`, or `serve --foreground`)
+# cannot be started again in that terminal: the install says to run `latch
+# serve` there again. A host the new latch cannot reach (one from an older
+# protocol) is left for its owner to stop; the install says how, and goes
+# on.
 #
 # On macOS a release's latch is inside Plow Latch.app (the `latch` beside
 # this script leads into it). Then the whole app goes to ~/Applications,
@@ -140,12 +141,14 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
+# The new latch asks and stops: the latch there may be too old to know
+# `stop`, or to reach a host of a latch older still.
 host=""
 if [ -x "$dest" ]; then
-  host=$("$dest" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
+  host=$("$src" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
   case "$host" in
-    # A host from yet another latch version: no latch here can reach it,
-    # so its owner is told how to stop it.
+    # A host this latch cannot reach: its owner is told how to stop it,
+    # and the install goes on.
     *'"other_version"'*)
       say "$(printf '%s\n' "$host" | sed -n 's/.*"blocked":{"code":"other_version","message":"\([^"]*\)"}.*/\1/p')"
       host=""
@@ -156,7 +159,7 @@ if [ -x "$dest" ]; then
 fi
 case "$host" in
   *'"running":true'*)
-    stopped=$("$dest" --state-dir "$state_dir" stop) || die "could not stop the host on $state_dir (see above); nothing was changed"
+    stopped=$("$src" --state-dir "$state_dir" stop) || die "could not stop the host on $state_dir (see above); nothing was changed"
     case "$stopped" in
       *'"stopped":true'*)
         case "$host" in
