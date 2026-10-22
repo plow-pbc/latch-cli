@@ -206,14 +206,7 @@ fn text(path: &Path) -> Result<String, Failure> {
 /// Keeps `given` for a later `serve -d --again`.
 fn save_given(dir: &Path, given: &[String]) -> Result<(), Failure> {
     let path = dir.join(ARGS_FILE);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|err| io_failure(&path, err))?;
-    file.write_all(json!(given).to_string().as_bytes())
+    crate::state::write_private(&path, json!(given).to_string().as_bytes())
         .map_err(|err| io_failure(&path, err))
 }
 

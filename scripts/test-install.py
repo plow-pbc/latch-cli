@@ -201,7 +201,7 @@ class HostUpgrade(unittest.TestCase):
     """A managed host running the latch being replaced is stopped first and
     started again with the new one."""
 
-    def upgrade(self, old, new, log):
+    def upgrade(self, old, new, log, engines_fail=False):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
         directory = tempfile.TemporaryDirectory(dir=parent)
@@ -209,6 +209,10 @@ class HostUpgrade(unittest.TestCase):
         root = Path(directory.name)
         state = root / "state"
         setup, binary, tools = fixture(root, state, new)
+        if engines_fail:
+            tool(setup, "browser-engines.sh", "exit 1\n")
+        self.recovery = (f"'{root}/home/.local/bin/latch' --state-dir '{state}' "
+                         "serve -d --again")
         dest = root / "home/.local/bin/latch"
         dest.parent.mkdir(parents=True)
         dest.write_text(old)
@@ -230,6 +234,8 @@ class HostUpgrade(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls, ["0.1.0 (1) stop", "0.1.0 (2) serve -d --again"])
         self.assertIn("started the host", result.stdout)
+        self.assertIn(self.recovery, result.stdout, "the stop says how to start it again")
+        self.assertNotIn("is stopped", result.stderr)
         self.assertIn("latch 0.1.0 (2)", subprocess.check_output([str(dest), "--version"], text=True))
 
     def test_a_failed_stop_changes_nothing(self):
@@ -246,8 +252,16 @@ class HostUpgrade(unittest.TestCase):
         new = fake_latch("0.1.0 (2)", log, start_ok=False)
         result, calls, _ = self.upgrade(fake_latch("0.1.0 (1)", log), new, log)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("latch serve -d --again", result.stderr)
+        self.assertIn(f"is stopped; start it again with: {self.recovery}", result.stderr)
         self.assertEqual(calls, ["0.1.0 (1) stop", "0.1.0 (2) serve -d --again"])
+
+    def test_a_later_step_that_fails_leaves_the_command_that_starts_the_host(self):
+        log = self.log()
+        result, calls, _ = self.upgrade(fake_latch("0.1.0 (1)", log), fake_latch("0.1.0 (2)", log),
+                                        log, engines_fail=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"is stopped; start it again with: {self.recovery}", result.stderr)
+        self.assertEqual(calls, ["0.1.0 (1) stop"])
 
     def test_no_managed_host_or_the_same_version_stops_nothing(self):
         for old_version, managed in [("0.1.0 (1)", False), ("0.1.0 (2)", True)]:

@@ -2341,7 +2341,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(before["protocol"], 1);
     assert_eq!(
         before["serve"],
-        json!({"running": false, "ready": false, "state": "stopped", "pid": null})
+        json!({"running": false, "ready": false, "managed": false, "state": "stopped", "pid": null})
     );
     assert_eq!(before["shares"], json!([]));
     assert_eq!(before["allow_read"], json!([]));
@@ -2361,7 +2361,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let up = local(&host);
     assert_eq!(
         up["serve"],
-        json!({"running": true, "ready": true, "state": "serving", "pid": pid})
+        json!({"running": true, "ready": true, "managed": false, "state": "serving", "pid": pid})
     );
     drop(serve);
     let stopped = local(&host);

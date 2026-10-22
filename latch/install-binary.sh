@@ -46,14 +46,9 @@
 set -eu
 
 say() { printf 'install-binary.sh: %s\n' "$*"; }
-die() {
-  say "$*" >&2
-  # After step 0 stopped the host, say how to start it again.
-  if [ -n "${restart_host:-}" ]; then
-    say "the host on $state_dir is stopped; \`latch serve -d --again\` starts it with what it was given" >&2
-  fi
-  exit 1
-}
+die() { say "$*" >&2; exit 1; }
+# One word for the shell, whatever it holds.
+quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [path/to/latch]"
 bin_dir="$HOME/.local/bin"
@@ -113,16 +108,27 @@ fi
 dest="$bin_dir/latch"
 
 # 0. A managed host running the latch being replaced is stopped first; only
-# a stop it confirms counts, and a failed one changes nothing.
+# a stop it confirms counts, and a failed one changes nothing. From then on
+# until it runs again, however this script ends, the command that starts it
+# is said, and said again on a failure.
 restart_host=""
+tmp=""
+on_exit() {
+  ended=$?
+  rm -rf ${tmp:+"$tmp"}
+  if [ "$ended" -ne 0 ] && [ -n "$restart_host" ]; then
+    say "the host on $state_dir is stopped; start it again with: $restart_host" >&2
+  fi
+}
+trap on_exit EXIT
 if [ -x "$dest" ] && [ "$("$dest" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ]; then
   case "$("$dest" --state-dir "$state_dir" status --local 2>/dev/null)" in
     *'"managed":true'*)
       stopped=$("$dest" --state-dir "$state_dir" stop) || die "could not stop the host on $state_dir (see above); nothing was changed"
       case "$stopped" in
         *'"stopped":true'*)
-          restart_host=1
-          say "stopped the host on $state_dir; it starts again with the new latch once the install is done"
+          restart_host="$(quote "$dest") --state-dir $(quote "$state_dir") serve -d --again"
+          say "stopped the host on $state_dir; it starts again with the new latch once the install is done (or: $restart_host)"
           ;;
       esac
       ;;
@@ -236,7 +242,6 @@ else
   (umask 077 && mkdir -p "$state_dir")
   mkdir -p "$gog_dir"
   tmp=$(mktemp -d "$gog_dir/.download.XXXXXX")
-  trap 'rm -rf ${tmp:+"$tmp"}' EXIT
   curl -fsSL --proto '=https' -o "$tmp/gog.tar.gz" "$url" || die "could not download $url"
   # Only the one file, written by this script, so the archive chooses no
   # path, owner or mode.
@@ -304,6 +309,7 @@ fi
 if [ -n "$restart_host" ]; then
   "$dest" --state-dir "$state_dir" serve -d --again > /dev/null ||
     die "the new latch did not start the host again (see above)"
+  restart_host=""
   say "started the host on $state_dir again with the new latch"
 fi
 
