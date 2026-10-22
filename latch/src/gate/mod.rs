@@ -401,7 +401,7 @@ fn unavailable(why: &str) -> Failure {
         Exit::Unreachable,
         "gatekeeper_unavailable",
         format!(
-            "The gatekeeper could not judge this, so it did not run: {why}. The owner's settings commands (rules, vault, shares) still work."
+            "The gatekeeper could not judge this, so it did not run: {why}. The owner's settings commands (rules, vault) still work."
         ),
     )
 }

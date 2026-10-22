@@ -6,8 +6,8 @@
 //! inside the writable paths and temp folder, never the host's state
 //! directory or the running latch. Exec reads home and the system's files;
 //! its write paths and IP access are granted per call. Host Unix sockets
-//! remain inaccessible. File workers use the shared areas and read-only
-//! opt-ins; Google workers read only their call folder and runtime files.
+//! remain inaccessible. File reads use the same home view; file writes
+//! use private staging. Google workers read only their call folder and runtime files.
 //! Hidden paths stay out of reach, with Library/Caches an exception for
 //! workers that read home (exec, file get).
 //! File and Messages workers get no network; Google workers may reach out.
@@ -34,8 +34,7 @@ use std::path::{Path, PathBuf};
 pub struct Policy {
     /// Directories the worker may read and write, with everything below them.
     pub areas: Vec<PathBuf>,
-    /// Files and folders a file or `exec` worker may also read, never write:
-    /// the owner's `--allow-read` opt-ins.
+    /// Files and folders the worker may read, never write.
     pub reads: Vec<PathBuf>,
     /// Paths no worker may read or write, even inside an area or an opt-in
     /// (`never_readable`). Those that do not exist are skipped.

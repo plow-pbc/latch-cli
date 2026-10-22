@@ -420,7 +420,7 @@ mod tests {
 
         /// The rules a judgment reads for `agent`.
         fn judged(&self, agent: &str) -> Rules {
-            RuleFiles::new(self.dir.path(), &[])
+            RuleFiles::new(self.dir.path())
                 .unwrap()
                 .rules(agent)
                 .unwrap()

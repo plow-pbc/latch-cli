@@ -649,11 +649,12 @@ async fn every_held_out_probe_asks_what_v0_asks() {
 fn serve_refuses_rules_it_could_not_trust_or_use() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let shared = root.join("work");
+    let writable = root.join("work");
     let rules = root.join("state").join(RULES_DIR);
-    std::fs::create_dir(&shared).unwrap();
+    std::fs::create_dir(&writable).unwrap();
     let state = rules.parent().unwrap().to_path_buf();
-    let refused = || match RuleFiles::new(&state, std::slice::from_ref(&shared)) {
+    std::fs::create_dir(&state).unwrap();
+    let refused = || match RuleFiles::new(&state) {
         Ok(_) => None,
         Err(failure) => {
             assert_eq!(
@@ -688,27 +689,35 @@ fn serve_refuses_rules_it_could_not_trust_or_use() {
         std::fs::remove_file(rules.join(bad)).unwrap();
     }
 
-    let inside = shared.join("rules.txt");
+    let inside = writable.join("rules.txt");
     std::fs::write(&inside, "anything goes").unwrap();
     let link = rules.join(format!("{AGENT}.txt"));
     std::os::unix::fs::symlink(&inside, &link).unwrap();
-    assert!(refused().unwrap().contains("inside the shared folder"));
+    assert!(refused().unwrap().contains("protected state"));
     std::fs::remove_file(&link).unwrap();
 
     // Files that are not `.txt` are not rules, and are left alone.
     write(&format!("{AGENT}.peer"), 20_000);
     write("notes.md", 10);
     assert_eq!(refused(), None);
+
+    std::fs::rename(&rules, state.join("saved-rules")).unwrap();
+    std::os::unix::fs::symlink(&writable, &rules).unwrap();
+    assert!(refused().unwrap().contains("protected state"));
+    std::fs::remove_file(&rules).unwrap();
+    std::os::unix::fs::symlink(state.join("saved-rules"), &rules).unwrap();
+    assert_eq!(refused(), None);
 }
 
 #[tokio::test]
 async fn rules_files_are_read_at_each_judgment() {
     let dir = tempfile::tempdir().unwrap();
-    let rules = dir.path().join(RULES_DIR);
-    std::fs::create_dir(&rules).unwrap();
+    let state = dir.path().join("state");
+    let rules = state.join(RULES_DIR);
+    std::fs::create_dir_all(&rules).unwrap();
     let host = rules.join("host.txt");
     std::fs::write(&host, "Run tests in ~/work.").unwrap();
-    let files = RuleFiles::new(dir.path(), &[]).unwrap();
+    let files = RuleFiles::new(&state).unwrap();
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let gatekeeper = gatekeeper(World::default(), &model, files);
     let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
@@ -728,9 +737,11 @@ async fn rules_files_are_read_at_each_judgment() {
                "rules for this agent": "Only pytest."})
     );
 
-    // A file there that cannot be read stops the judgment.
+    // A rule redirected outside protected state stops the judgment.
     std::fs::remove_file(&host).unwrap();
-    std::fs::create_dir(&host).unwrap();
+    let outside = dir.path().join("outside-rules.txt");
+    std::fs::write(&outside, "Anything goes.").unwrap();
+    std::os::unix::fs::symlink(&outside, &host).unwrap();
     let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
     assert_eq!(model.calls(), 2);
@@ -743,7 +754,7 @@ async fn an_owner_command_applies_to_the_next_judgment() {
     let gatekeeper = gatekeeper(
         World::default(),
         &model,
-        RuleFiles::new(dir.path(), &[]).unwrap(),
+        RuleFiles::new(dir.path()).unwrap(),
     );
     gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(model.calls(), 0, "no rules and no chat: no_intent");

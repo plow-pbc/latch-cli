@@ -44,8 +44,7 @@ use tokio::process::{Child, ChildStdout, Command};
 use crate::cli::{WorkerAction, WorkerArgs};
 use crate::sandbox::{self, Policy};
 
-/// What every worker a host starts is allowed: the host's areas and the
-/// owner's read-only opt-ins, minus its state directory and the hidden paths.
+/// The host's home and protected paths, with each call's read/write grants.
 pub struct WorkerSetup {
     pub home: PathBuf,
     pub areas: Vec<PathBuf>,

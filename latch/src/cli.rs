@@ -177,8 +177,6 @@ pub enum Command {
     /// The connectors on a host: list them; on the host itself, its owner
     /// turns one on (running its setup) or off
     Plugins(PluginsArgs),
-    /// The folders `latch serve` shares when it is named none, and its --allow-read paths: show them, or set them
-    Shares(SharesArgs),
     /// This machine's host audit log: its records in full, its chain checked without the key, or a new key
     Audit(AuditArgs),
     /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
@@ -859,24 +857,6 @@ pub enum AuditAction {
 }
 
 #[derive(Args, Debug)]
-pub struct SharesArgs {
-    #[command(subcommand)]
-    pub action: Option<SharesAction>,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum SharesAction {
-    /// Replace the saved folders and --allow-read paths; a running `latch serve` keeps its own until restarted
-    Set {
-        #[arg(value_name = "FOLDER", required = true)]
-        folders: Vec<PathBuf>,
-        /// A file or folder callers may also read, never write (repeatable; see `latch serve --help`)
-        #[arg(long, value_name = "PATH")]
-        allow_read: Vec<PathBuf>,
-    },
-}
-
-#[derive(Args, Debug)]
 pub struct FollowArgs {
     /// Keep printing what is added, until stopped
     #[arg(long, short)]
@@ -889,29 +869,21 @@ pub struct StatusArgs {
     #[arg(long)]
     pub pretty: bool,
     /// Only this machine's own latch, asking no one: state folder, login,
-    /// whether a host serves it, version, saved shares and --allow-read paths. Works offline and before login
+    /// whether a host serves it and version. Works offline and before login
     #[arg(long, conflicts_with = "pretty")]
     pub local: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
-    /// Saved folder configuration; exec uses home reads and per-call --write/--network permissions
-    #[arg(value_name = "FOLDER")]
-    pub folders: Vec<PathBuf>,
-
-    /// Saved read-only path configuration (repeatable); exec already reads home and system files
-    #[arg(long, value_name = "PATH", requires = "folders")]
-    pub allow_read: Vec<PathBuf>,
-
     /// Start the host and return once it answers, printing it as JSON; it
     /// runs until `latch stop`
     #[arg(short = 'd', long, conflicts_with = "foreground")]
     pub detach: bool,
 
-    /// With -d: start the host with the folders and flags the last `latch
+    /// With -d: start the host with the flags the last `latch
     /// serve` on this state folder was given, as an upgrade restarts it
-    #[arg(long, requires = "detach", conflicts_with_all = ["folders", "headless_browsers", "deny_exec"])]
+    #[arg(long, requires = "detach", conflicts_with_all = ["headless_browsers", "deny_exec"])]
     pub again: bool,
 
     /// Run the host in this process, with no service manager and no
@@ -1272,15 +1244,14 @@ mod tests {
 
     #[test]
     fn deny_exec_takes_its_agent_only_after_an_equals_sign() {
-        let bare = serve(&["/a", "--deny-exec", "/b"]);
-        assert_eq!(bare.folders, [PathBuf::from("/a"), PathBuf::from("/b")]);
+        let bare = serve(&["--deny-exec"]);
         assert_eq!(bare.deny_exec, [EVERY_AGENT]);
 
-        let some = serve(&["/a", "--deny-exec=ab12", "--deny-exec=cd34"]);
-        assert_eq!(some.folders, [PathBuf::from("/a")]);
+        let some = serve(&["--deny-exec=ab12", "--deny-exec=cd34"]);
         assert_eq!(some.deny_exec, ["ab12", "cd34"]);
 
-        assert!(serve(&["/a"]).deny_exec.is_empty());
+        assert!(serve(&[]).deny_exec.is_empty());
+        assert!(Cli::try_parse_from(["latch", "serve", "--deny-exec", "ab12"]).is_err());
     }
     #[test]
     fn google_requires_the_separator_and_leaves_gog_flags_alone() {

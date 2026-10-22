@@ -143,5 +143,5 @@ files, browser and Google calls pass through the same gatekeeper and audit as re
 calls, recorded as `owner_on_host`. If the receiver is stopped, start
 `latch serve` on the same state folder (`serve_required`, exit 3).
 
-Local `vault`, `rules` and `shares` configuration works without `serve` or
+Local `vault` and `rules` configuration works without `serve` or
 the decision model. Vault edits and rules apply to the running receiver's next operation.

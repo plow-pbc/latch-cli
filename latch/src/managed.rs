@@ -48,7 +48,7 @@ const READY_WITHIN: Duration = Duration::from_secs(60);
 const STOP_WITHIN: Duration = Duration::from_secs(40);
 /// How long a host that is up has to answer one question on its socket.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
-/// The folders and flags the last start gave the host, for `serve -d --again`.
+/// The flags the last start gave the host, for `serve -d --again`.
 const ARGS_FILE: &str = "serve-args.json";
 
 /// `latch serve -d`: the host, started and answering.
@@ -135,7 +135,7 @@ async fn launch(
     let given = if args.again {
         given_before(&dir)?
     } else {
-        let given = given_now(args)?;
+        let given = given_now(args);
         save_given(&dir, &given)?;
         given
     };
@@ -168,9 +168,8 @@ async fn launch(
     }
 }
 
-/// What `args` give the host after `serve --foreground`: its flags, then
-/// its folders, each path absolute.
-fn given_now(args: &ServeArgs) -> Result<Vec<String>, Failure> {
+/// What `args` give the host after `serve --foreground`.
+fn given_now(args: &ServeArgs) -> Vec<String> {
     let mut given = Vec::new();
     if args.headless_browsers {
         given.push("--headless-browsers".to_string());
@@ -181,26 +180,7 @@ fn given_now(args: &ServeArgs) -> Result<Vec<String>, Failure> {
             agent => format!("--deny-exec={agent}"),
         });
     }
-    // The host checks each one; made absolute here, where a relative one
-    // means something.
-    for path in &args.allow_read {
-        let path = std::path::absolute(path).map_err(|err| io_failure(path, err))?;
-        given.push(format!("--allow-read={}", text(&path)?));
-    }
-    // Named folders are checked here, where a relative one means something.
-    if !args.folders.is_empty() {
-        for folder in crate::serve::shared_folders(&args.folders, std::env::home_dir().as_deref())?
-        {
-            given.push(text(&folder)?);
-        }
-    }
-    Ok(given)
-}
-
-fn text(path: &Path) -> Result<String, Failure> {
-    path.to_str()
-        .map(str::to_string)
-        .ok_or_else(|| Failure::usage("bad_path", format!("{} is not valid UTF-8", path.display())))
+    given
 }
 
 /// Keeps `given` for a later `serve -d --again`.

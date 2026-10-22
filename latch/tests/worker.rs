@@ -451,7 +451,7 @@ fn a_worker_confines_itself_before_starting_threads() {
     assert_eq!(fs::read(dir.path().join("area/new.txt")).unwrap(), b"x");
 }
 
-/// `latch serve <area>` with no login, run with a seccomp filter
+/// `latch serve` with no login, run with a seccomp filter
 /// (installed in the child before it starts) that makes `syscall` fail with
 /// EPERM when `rules` match. Without the filter it stops at the login check.
 #[cfg(target_os = "linux")]
@@ -460,12 +460,10 @@ fn serve_with_denied(rules: Option<(i64, Vec<seccompiler::SeccompRule>)>) -> Out
 
     let dir = setup();
     let state = tempfile::tempdir_in(dir.path()).unwrap();
-    let area = dir.path().join("area").canonicalize().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
         .args(["serve", "--foreground", "--state-dir"])
         .arg(state.path())
-        .arg(area)
         .env_clear()
         .env("HOME", dir.path())
         .env("LATCH_TEST_LOOPBACK", "1");

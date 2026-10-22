@@ -162,8 +162,6 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// `serve/control.rs`).
 pub async fn run(
     state: &StateDir,
-    folders: &[PathBuf],
-    allow_read: &[PathBuf],
     headless_browsers: bool,
     deny_exec: DenyExec,
     attached: bool,
@@ -187,16 +185,7 @@ pub async fn run(
     let _lock = lock_state(&state_dir)?;
     // From here on, other processes see this host's steps (`lifecycle.rs`).
     lifecycle::record(&state.path, Phase::Starting, None)?;
-    let result = run_locked(
-        state,
-        folders,
-        allow_read,
-        headless_browsers,
-        deny_exec,
-        attached,
-        state_dir,
-    )
-    .await;
+    let result = run_locked(state, headless_browsers, deny_exec, attached, state_dir).await;
     let (phase, error) = match &result {
         Ok(()) => (Phase::Stopped, None),
         Err(failure) => (Phase::Error, Some(failure)),
@@ -213,8 +202,6 @@ pub async fn run(
 /// `run`, once this serve holds the state folder.
 async fn run_locked(
     state: &StateDir,
-    folders: &[PathBuf],
-    allow_read: &[PathBuf],
     headless_browsers: bool,
     deny_exec: DenyExec,
     attached: bool,
@@ -222,23 +209,6 @@ async fn run_locked(
 ) -> Result<(), Failure> {
     let program = std::env::current_exe()
         .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
-    // Named folders (with their `--allow-read`) win; with none, what
-    // `latch shares set` saved.
-    let saved;
-    let (folders, allow_read) = if folders.is_empty() {
-        saved = state.load_shares()?;
-        (&saved.folders[..], &saved.allow_read[..])
-    } else {
-        (folders, allow_read)
-    };
-    let hidden = hidden_paths();
-    let areas = shared_folders(folders, std::env::home_dir().as_deref())?;
-    let reads = allowed_reads(
-        allow_read,
-        std::env::home_dir().as_deref(),
-        &hidden,
-        &state_dir,
-    )?;
     let home = std::env::home_dir()
         .and_then(|home| home.canonicalize().ok())
         .ok_or_else(|| {
@@ -249,13 +219,13 @@ async fn run_locked(
         })?;
     let workers = WorkerSetup {
         home,
-        areas,
-        reads,
-        hidden,
+        areas: vec![],
+        reads: vec![],
+        hidden: hidden_paths(),
         state_dir,
         program,
     };
-    let rules = RuleFiles::new(&state.path, &workers.areas)?;
+    let rules = RuleFiles::new(&state.path)?;
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
         Failure::failed("sandbox_unavailable", message)
@@ -297,27 +267,6 @@ async fn run_host(
     let home = std::env::home_dir().unwrap_or_default();
     let plugins = crate::plugins::Plugins::load(state, &home)?;
     log(&format!("commands in this log: {}", crate::redact::NOTE));
-    let names: Vec<String> = workers
-        .areas
-        .iter()
-        .map(|area| area.display().to_string())
-        .collect();
-    if names.is_empty() {
-        log(SHARING_NONE);
-    } else {
-        log(&format!("sharing: {}", names.join(", ")));
-    }
-    if !workers.reads.is_empty() {
-        let reads: Vec<String> = workers
-            .reads
-            .iter()
-            .map(|read| read.display().to_string())
-            .collect();
-        log(&format!(
-            "also readable, never written: {}",
-            reads.join(", ")
-        ));
-    }
     if let Some(refused) = deny_exec.describe() {
         log(&refused);
     }
@@ -347,10 +296,7 @@ async fn run_host(
     ));
 
     // Clients dial us through our relay, so register only once we have one.
-    let dashboard = Dashboard::new(
-        &config.peer.name,
-        workers.areas.is_empty().then_some(SHARING_NONE),
-    );
+    let dashboard = Dashboard::new(&config.peer.name);
     dashboard.step("connecting to the relay…");
     if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
         .await
@@ -646,52 +592,7 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
     Ok(file)
 }
 
-/// What a host sharing no folders says in its log and on its dashboard.
-pub const SHARING_NONE: &str = "Sharing no folders — exec and file work under home.";
-
-/// The folders `latch serve` was given, which its workers may use: each
-/// made absolute (a worker runs in another directory, the first folder) and
-/// checked now, so a typo is a plain error rather than refused files later.
-/// Any folder may be shared but `home` (the home folder) and the folders
-/// that hold its `Library`, where macOS keeps mail, messages and the like:
-/// share the projects in it instead. The sandbox hides the state folder and
-/// the never-readable places even inside a shared folder. None at all is a
-/// host whose file copies refuse; exec uses per-command permissions.
-pub fn shared_folders(folders: &[PathBuf], home: Option<&Path>) -> Result<Vec<PathBuf>, Failure> {
-    let mut areas = Vec::new();
-    for folder in folders {
-        let refuse = |why: &str| {
-            let message = format!("cannot share {}: {why}", folder.display());
-            Failure::usage("bad_folder", message)
-        };
-        let area = folder
-            .canonicalize()
-            .map_err(|_| refuse("it does not exist"))?;
-        if !area.is_dir() {
-            return Err(refuse("it is not a folder"));
-        }
-        if holds_library(&area, home) {
-            return Err(refuse(HOLDS_LIBRARY));
-        }
-        areas.push(area);
-    }
-    Ok(areas)
-}
-
-/// Whether the real path `path` is the home folder's `Library`, where macOS
-/// keeps mail, messages and the like, or a folder that holds it (the home
-/// folder, `/Users`, `/`). Such a folder is neither shared nor opted in to.
-fn holds_library(path: &Path, home: Option<&Path>) -> bool {
-    home.is_some_and(|home| {
-        let home = home.canonicalize().unwrap_or(home.to_path_buf());
-        home.join("Library").starts_with(path)
-    })
-}
-
-const HOLDS_LIBRARY: &str = "it holds the home folder's Library (mail, messages, keychains); name the folders in it you need";
-
-/// The places no worker may read or write, even inside a shared folder:
-/// the credentials in the home folder (`sandbox::never_readable`). The
+/// The places no worker may read or write (`sandbox::never_readable`). The
 /// state folder is hidden as well, on its own terms (see `sandbox.rs`).
 pub fn hidden_paths() -> Vec<PathBuf> {
     let paths = std::env::home_dir()
@@ -712,45 +613,6 @@ fn with_targets(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         all.extend(target);
     }
     all
-}
-
-/// The paths `--allow-read` names, which workers may read but not write:
-/// each made absolute and checked now, as shared folders are. One inside a
-/// hidden path or the state folder is refused, since no worker could read
-/// it anyway; one that holds them is allowed, and they stay hidden in it,
-/// but not one that holds the home folder's `Library`, as with shares.
-pub fn allowed_reads(
-    paths: &[PathBuf],
-    home: Option<&Path>,
-    hidden: &[PathBuf],
-    state_dir: &Path,
-) -> Result<Vec<PathBuf>, Failure> {
-    let mut reads = Vec::new();
-    for path in paths {
-        let refuse = |code: &str, why: String| {
-            let message = format!("cannot allow reads of {}: {why}", path.display());
-            Failure::usage(code, message)
-        };
-        let real = path
-            .canonicalize()
-            .map_err(|_| refuse("bad_folder", "it does not exist".to_string()))?;
-        if holds_library(&real, home) {
-            return Err(refuse("bad_folder", HOLDS_LIBRARY.to_string()));
-        }
-        let hidden = hidden.iter().map(PathBuf::as_path).chain([state_dir]);
-        let never = hidden
-            .map(|never| never.canonicalize().unwrap_or(never.to_path_buf()))
-            .find(|never| real.starts_with(never));
-        if let Some(never) = never {
-            let why = format!(
-                "{} holds credentials or latch's own state, which no caller may ever read",
-                never.display()
-            );
-            return Err(refuse("never_readable", why));
-        }
-        reads.push(real);
-    }
-    Ok(reads)
 }
 
 /// Finishes when the host is asked to stop: Ctrl-C (SIGINT) in a terminal,
@@ -1597,80 +1459,6 @@ mod tests {
         let _held = lock_state(crashed.path()).unwrap();
         let now = std::fs::read_to_string(crashed.path().join("serve.lock")).unwrap();
         assert!(now.contains(&pid), "{now}");
-    }
-
-    #[test]
-    fn any_existing_folder_is_shared() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().canonicalize().unwrap();
-        let code = home.join("code");
-        let docs = home.join("docs");
-        for path in [&code, &docs] {
-            std::fs::create_dir_all(path).unwrap();
-        }
-        std::fs::write(home.join("notes.txt"), b"").unwrap();
-
-        std::fs::create_dir_all(home.join("Library/Developer")).unwrap();
-        let shared = |folders: &[PathBuf]| shared_folders(folders, Some(&home));
-
-        assert_eq!(
-            shared(&[code.join("../docs"), code.clone()]).unwrap(),
-            [docs, code]
-        );
-        // Inside the Library, but not what holds it.
-        assert_eq!(
-            shared(&[home.join("Library/Developer")]).unwrap(),
-            [home.join("Library/Developer")]
-        );
-        assert_eq!(shared(&[]).unwrap(), Vec::<PathBuf>::new());
-        for (folder, why) in [
-            (home.join("missing"), "does not exist"),
-            (home.join("notes.txt"), "not a folder"),
-            (home.clone(), "Library"),
-            (home.join("Library"), "Library"),
-            (home.join(".."), "Library"),
-            (PathBuf::from("/"), "Library"),
-        ] {
-            let failure = shared(std::slice::from_ref(&folder)).unwrap_err();
-            assert_eq!(failure.code, "bad_folder", "{folder:?}");
-            assert!(
-                failure.message.contains(why),
-                "{folder:?}: {}",
-                failure.message
-            );
-        }
-    }
-
-    #[test]
-    fn an_opt_in_inside_hidden_state_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().canonicalize().unwrap();
-        let state = home.join("state");
-        for path in [".latch", "code", "state/keys"] {
-            std::fs::create_dir_all(home.join(path)).unwrap();
-        }
-        std::fs::write(home.join(".latch/private"), b"").unwrap();
-        let hidden = crate::sandbox::never_readable(&home);
-        let allowed = |path: &str| allowed_reads(&[home.join(path)], Some(&home), &hidden, &state);
-
-        // A folder that holds them is allowed (the sandbox hides them in
-        // it), unless it holds the Library: the home folder, or above it.
-        std::fs::create_dir_all(home.join("code/.latch")).unwrap();
-        std::fs::create_dir_all(home.join("Library")).unwrap();
-        let in_code = crate::sandbox::never_readable(&home.join("code"));
-        let reads = allowed_reads(&[home.join("code")], None, &in_code, &state);
-        assert_eq!(reads.unwrap(), [home.join("code")]);
-        assert_eq!(allowed("code/../code").unwrap(), [home.join("code")]);
-        for path in [".", "..", "Library"] {
-            let failure = allowed(path).unwrap_err();
-            assert_eq!(failure.code, "bad_folder", "{path}");
-            assert!(failure.message.contains("Library"), "{path}");
-        }
-        for path in [".latch", ".latch/private", "state/keys"] {
-            let failure = allowed(path).unwrap_err();
-            assert_eq!(failure.code, "never_readable", "{path}");
-        }
-        assert_eq!(allowed("missing").unwrap_err().code, "bad_folder");
     }
 
     #[test]

@@ -110,17 +110,17 @@ pub(super) async fn start_with(
         .await
         .unwrap();
     let vault = crate::vault::host::Vault::new(state.clone());
-    let rules = RuleFiles::new(&state, std::slice::from_ref(&area)).unwrap();
+    let rules = RuleFiles::new(&state).unwrap();
     let host = Arc::new(Host {
         plow: plow.client(),
         audit: Arc::new(Mutex::new(
             AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
         )),
-        dashboard: Dashboard::new("test-host", None),
+        dashboard: Dashboard::new("test-host"),
         lifetime: super::Lifetime::new(false),
         workers: WorkerSetup {
             home: home.clone(),
-            areas: vec![area.clone()],
+            areas: vec![],
             reads: vec![],
             hidden: crate::sandbox::never_readable(&home),
             state_dir: state.clone(),
@@ -1111,7 +1111,7 @@ async fn an_outage_refuses_gated_operations_for_everyone_but_not_the_owners_sett
         let Response::Error { message, .. } = answer else {
             unreachable!()
         };
-        assert!(message.contains("rules, vault, shares"), "{message}");
+        assert!(message.contains("rules, vault"), "{message}");
     }
     assert!(!t.area.join("made").exists());
     let asked = t.judged();

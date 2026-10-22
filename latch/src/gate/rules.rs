@@ -46,26 +46,36 @@ const HOST_FILE: &str = "host.txt";
 /// judgment: a missing file is no rules.
 pub struct RuleFiles {
     dir: PathBuf,
+    state: PathBuf,
 }
 
 impl RuleFiles {
     /// The rules folder in `state_dir`, checked once: every `.txt` file is
-    /// the host's or a Plow agent uid's, none resolves into a shared folder
-    /// (where an agent could rewrite it), and no agent's rules come to
+    /// the host's or a Plow agent uid's, all stay inside protected state,
+    /// where a caller cannot rewrite them, and no agent's rules come to
     /// more than [`MAX_RULES`].
-    pub fn new(state_dir: &Path, shared: &[PathBuf]) -> Result<RuleFiles, Failure> {
-        let dir = state_dir.join(RULES_DIR);
+    pub fn new(state_dir: &Path) -> Result<RuleFiles, Failure> {
         let refuse = |message: String| Failure::usage("bad_rules", message);
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(RuleFiles { dir }),
-            Err(err) => return Err(refuse(format!("cannot read {}: {err}", dir.display()))),
+        let state = state_dir
+            .canonicalize()
+            .map_err(|err| refuse(err.to_string()))?;
+        let mut files = RuleFiles {
+            dir: state.join(RULES_DIR),
+            state,
         };
+        files.dir = match files.protected(&files.dir) {
+            Ok(dir) => dir,
+            Err(err) if err.kind() == ErrorKind::NotFound && !files.dir.is_symlink() => {
+                return Ok(files);
+            }
+            Err(err) => return Err(refuse(err.to_string())),
+        };
+        let entries = fs::read_dir(&files.dir).map_err(|err| refuse(err.to_string()))?;
         let mut host = 0;
         let mut agents = Vec::new();
         for entry in entries {
             let path = entry
-                .map_err(|err| refuse(format!("cannot read {}: {err}", dir.display())))?
+                .map_err(|err| refuse(format!("cannot read {}: {err}", files.dir.display())))?
                 .path();
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             // Only `.txt` files are rules; others here are not the gatekeeper's.
@@ -79,16 +89,9 @@ impl RuleFiles {
                     path.display()
                 )));
             }
-            let real = path
-                .canonicalize()
-                .map_err(|err| refuse(format!("cannot read {}: {err}", path.display())))?;
-            if let Some(folder) = shared.iter().find(|folder| real.starts_with(folder)) {
-                return Err(refuse(format!(
-                    "the rules file {} is inside the shared folder {}, where an agent could rewrite it",
-                    path.display(),
-                    folder.display()
-                )));
-            }
+            let real = files
+                .protected(&path)
+                .map_err(|err| refuse(err.to_string()))?;
             let size = real
                 .metadata()
                 .map_err(|err| refuse(format!("cannot read {}: {err}", path.display())))?
@@ -107,16 +110,31 @@ impl RuleFiles {
                 "the rules for {whose} come to more than {MAX_RULES} bytes"
             )));
         }
-        Ok(RuleFiles { dir })
+        Ok(files)
+    }
+
+    fn protected(&self, path: &Path) -> std::io::Result<PathBuf> {
+        let real = path.canonicalize()?;
+        if !real.starts_with(&self.state) {
+            return Err(std::io::Error::other(format!(
+                "{} resolves outside protected state {}",
+                path.display(),
+                self.state.display()
+            )));
+        }
+        Ok(real)
     }
 }
 
 impl RulesSource for RuleFiles {
     fn rules(&self, agent: &str) -> Result<Rules, String> {
-        let read = |name: &str| match std::fs::read_to_string(self.dir.join(name)) {
-            Ok(text) => Ok(Some(text)),
-            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(format!("{name}: {err}")),
+        let read = |name: &str| {
+            let path = self.dir.join(name);
+            match self.protected(&path).and_then(fs::read_to_string) {
+                Ok(text) => Ok(Some(text)),
+                Err(err) if err.kind() == ErrorKind::NotFound && !path.is_symlink() => Ok(None),
+                Err(err) => Err(format!("{name}: {err}")),
+            }
         };
         Ok(Rules {
             host: read(HOST_FILE)?,

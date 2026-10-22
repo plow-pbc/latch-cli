@@ -2,9 +2,10 @@
 
 latch lets you, and agents you allow, reach the files, programs and browser
 on your own machines. You log each machine in with your Plow account. One
-machine *serves* a folder. Your other machines and your agents *call* it.
+machine *serves* exec, files and connectors. Your other machines and your
+agents *call* it.
 
-This guide takes you from nothing to a Mac serving a folder and a second
+This guide takes you from nothing to a Mac serving calls and a second
 machine calling it, in about 10 minutes.
 
 Every command prints one JSON object, except at a terminal, where
@@ -52,13 +53,13 @@ download` so it replaces the `install.sh` already there. The installer replaces
 the binary in place and skips anything already installed at the pinned
 version. Running it twice changes nothing. A host that `latch serve` or
 `latch serve -d` started is stopped and started again with the new latch,
-with the same folders and flags.
+with the same flags.
 
 Check it:
 
 ```sh
 latch --version
-# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/1
+# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/2
 ```
 
 **Linux:** a host sandboxes what it runs with bubblewrap. The installer
@@ -105,7 +106,7 @@ Check it:
 ```sh
 latch status            # JSON: this peer, your Plow URL, and the hosts it can reach
 latch status --pretty   # the same for a person, with key art to compare between machines
-latch status --local    # only this machine: state folder, login, serve, shares. Works offline
+latch status --local    # only this machine: state folder, login and serve. Works offline
 ```
 
 ## 3. Serve this machine
@@ -159,7 +160,7 @@ too: `exec`, `file`, `google`, `messages` and `contacts` run only as your own
 request within your rules on that host, so they need the decision model (see
 6). The browser's judged actions need it too: opening a new site, plans, vault
 fills, scripts, uploads and downloads (see [the browser gatekeeper](../latch/BROWSER.md#the-gatekeeper)).
-Your settings (`rules`, `vault`, `shares`) are never judged. Set
+Your settings (`rules`, `vault`) are never judged. Set
 `LATCH_HOST=my-mac` to leave out `--host`.
 
 **Run a program.** No shell is involved unless you run one. The JSON has
@@ -341,7 +342,7 @@ Your own machines need the model for every judged call (`exec`, `file`,
 `google`, `messages`, `contacts`) and the browser's judged actions, including
 `browser open` and `do`. Browser goals and sentence checks also need the
 model. Page reads (`text`, `screenshot`) in an existing session and your
-settings (`rules`, `vault`, `shares`) work without it.
+settings (`rules`, `vault`) work without it.
 
 **`state_format` (exit 1): "… is in state format 2, set up by latch …; this
 latch … reads only format 1".** That state folder was set up by a newer latch

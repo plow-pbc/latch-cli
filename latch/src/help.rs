@@ -839,25 +839,6 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("Show the rules", &["rules", "show"])],
     },
     Entry {
-        id: "shares",
-        output: "`shares` and `allow_read`: what `latch serve` shares when named none.",
-        effect: ReadOnly,
-        owner_only: true,
-        connector: None,
-        examples: &[ex("Show the saved shares", &["shares"])],
-    },
-    Entry {
-        id: "shares.set",
-        output: "`shares` and `allow_read`, as saved.",
-        effect: Repeatable("replaces the saved folders and --allow-read paths"),
-        owner_only: true,
-        connector: None,
-        examples: &[ex(
-            "Share ~/work, and let callers read the Rust toolchain",
-            &["shares", "set", "~/work", "--allow-read", "~/.rustup"],
-        )],
-    },
-    Entry {
         id: "plugins.list",
         output: "`plugins`: each connector's `name` and `state` (enabled, disabled or needs_setup); one not enabled has a `reason` and the owner's `enable` command.",
         effect: ReadOnly,
@@ -934,23 +915,9 @@ const ENTRIES: &[Entry] = &[
         owner_only: true,
         connector: None,
         examples: &[
-            ex("Share ~/work, with the dashboard", &["serve", "~/work"]),
-            ex(
-                "Start the host detached, as an agent does",
-                &["serve", "-d", "~/work"],
-            ),
-            ex(
-                "Share ~/work, with the Rust toolchain readable and exec refused to agents",
-                &[
-                    "serve",
-                    "~/work",
-                    "--allow-read",
-                    "~/.rustup",
-                    "--allow-read",
-                    "~/.cargo",
-                    "--deny-exec",
-                ],
-            ),
+            ex("Start the host with its dashboard", &["serve"]),
+            ex("Start the host detached", &["serve", "-d"]),
+            ex("Refuse exec to agents", &["serve", "--deny-exec"]),
         ],
     },
     Entry {
@@ -1004,12 +971,8 @@ const ENTRIES: &[Entry] = &[
 
 /// The top-level fields of the answers that are plain structs, checked
 /// against those structs by the tests.
-const OUTPUT_FIELDS: &[(&str, &[&str])] = &[
-    ("devices", &["devices"]),
-    ("devices.remove", &["removed"]),
-    ("shares", &["shares", "allow_read"]),
-    ("shares.set", &["shares", "allow_read"]),
-];
+const OUTPUT_FIELDS: &[(&str, &[&str])] =
+    &[("devices", &["devices"]), ("devices.remove", &["removed"])];
 
 /// The guide for agents, versioned with the binary.
 const SKILL: &str = include_str!("../SKILL.md");
@@ -1125,7 +1088,7 @@ fn find<'a>(root: &'a mut clap::Command, path: &[String]) -> Option<&'a mut clap
 
 /// Every command under `command` (itself included) that runs on its own,
 /// with its id: a command with no subcommands, or whose subcommand is
-/// optional (`devices`, `shares`). Hidden ones are internal.
+/// optional (`devices`). Hidden ones are internal.
 fn actions<'a>(
     command: &'a clap::Command,
     path: &[String],
@@ -1482,10 +1445,6 @@ mod tests {
             online: None,
             this_machine: false,
         };
-        let shares = || crate::shares::SharesOutput {
-            shares: vec![],
-            allow_read: vec![],
-        };
         let answers = [
             (
                 "devices",
@@ -1495,8 +1454,6 @@ mod tests {
                 "devices.remove",
                 serde_json::to_value(crate::devices::RemoveOutput { removed: peer }),
             ),
-            ("shares", serde_json::to_value(shares())),
-            ("shares.set", serde_json::to_value(shares())),
         ];
         assert_eq!(answers.len(), OUTPUT_FIELDS.len());
         for (id, answer) in answers {
