@@ -1317,6 +1317,51 @@ fn an_agent_gets_owner_only_for_browser_setup_and_nothing_is_downloaded() {
 }
 
 #[test]
+fn an_agent_gets_owner_only_for_update_and_nothing_is_installed() {
+    let (dir, token, server) = logged_in_agent(vec![]);
+    server.join().unwrap();
+    let state = dir.path().join("state");
+    for args in [
+        &["update"][..],
+        &["update", "--check"],
+        &["update", "v0.1.0-1"],
+    ] {
+        let output = latch(&state, args, &[("PLOW_TOKEN_FILE", token.as_path())]);
+        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "owner_only");
+    }
+    assert!(!dir.path().join(".local").exists());
+}
+
+/// A newer build the host found shows in `status --local`, and a piped
+/// command prints nothing beyond its JSON. This latch is a local build,
+/// which is never behind.
+#[test]
+fn status_says_what_the_host_found_and_a_pipe_hears_nothing_more() {
+    let (_dir, state, _key) = owner_host();
+    let output = latch(&state, &["status", "--local"], &[]);
+    assert!(output.status.success(), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        status["update"],
+        json!({"available": false, "build": null, "checked_at": null})
+    );
+    let checked = json!({"checked_at": "2026-10-22T08:00:00Z",
+        "latest": {"tag": "v0.1.0-99999", "build": 99999}, "failures": 0,
+        "failed_at": null, "noticed_at": null});
+    fs::write(state.join("update.json"), checked.to_string()).unwrap();
+    let output = latch(&state, &["status", "--local"], &[]);
+    assert!(output.status.success(), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        status["update"],
+        json!({"available": false, "build": 99999, "checked_at": "2026-10-22T08:00:00Z"})
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
 fn an_older_plaintext_audit_is_left_alone_and_a_sealed_one_starts_beside_it() {
     let (_dir, state, _key) = owner_host();
     let old = "{\"op\":\"exec\",\"caller\":\"older-latch\"}\n";

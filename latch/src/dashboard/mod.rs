@@ -48,6 +48,8 @@ pub struct Board {
     pub handoffs: Vec<String>,
     /// That latch was updated since the host started, and to which build.
     pub update: Option<String>,
+    /// That a newer build is available, and which.
+    pub available: Option<String>,
     /// Newest first.
     pub tasks: VecDeque<Task>,
     /// Older tasks were dropped.
@@ -251,6 +253,13 @@ impl Dashboard {
     /// Says latch was updated since the host started (`update`).
     pub fn updated(&self, update: String) {
         self.change(|board| board.update = Some(update));
+    }
+
+    /// Says a newer build is available, or (none) that none is.
+    pub fn available(&self, line: Option<String>) {
+        if self.board.borrow().available != line {
+            self.change(|board| board.available = line);
+        }
     }
 
     /// Replaces the pending handoffs.

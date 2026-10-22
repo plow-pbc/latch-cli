@@ -357,6 +357,7 @@ async fn run_host(
         stopping: watch::Sender::new(Stopping::No),
     });
     watch_binary(&host, BINARY_CHECK_EVERY);
+    crate::update::watch(&state.path, &host.dashboard);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(
         &state.path,
