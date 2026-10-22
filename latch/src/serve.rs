@@ -647,8 +647,7 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
 }
 
 /// What a host sharing no folders says in its log and on its dashboard.
-pub const SHARING_NONE: &str =
-    "Sharing no folders — exec reads home. Files: `latch shares set ~/code`; restart serve.";
+pub const SHARING_NONE: &str = "Sharing no folders — exec and file work under home.";
 
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
@@ -896,6 +895,8 @@ async fn serve_request(
     mut recv: crate::transport::RecvStream,
     cut_off: impl std::future::Future<Output = &'static str>,
 ) {
+    // A file's host path is resolved before anything is judged.
+    let unplaced = files::resolve(&request.op, &mut request.args, &host.workers);
     let op = request.op.as_str();
     let exec_permissions = (op == "exec").then(|| {
         json!({
@@ -983,15 +984,13 @@ async fn serve_request(
                     Err(done) => unplanned = Some(*done),
                 }
             }
-            // File copies still need a shared folder; exec uses per-call permissions.
-            let unshared = host.workers.areas.is_empty() && matches!(op, "file_get" | "file_put");
             let gated = gate::gated(op, &request.args).filter(|_| {
                 !denied_exec
                     && !upgraded
-                    && !unshared
                     && !not_enabled
                     && exec_failure.is_none()
                     && unplanned.is_none()
+                    && unplaced.is_none()
             });
             let unjudgeable = match (&gate, &gated) {
                 (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
@@ -1040,6 +1039,8 @@ async fn serve_request(
                 unplanned
             } else if let Some(refused) = refused {
                 refused
+            } else if let Some(unplaced) = unplaced {
+                unplaced
             } else {
                 match op {
                     "file_get" => files::get(&host.workers, &request.args, &mut send).await,

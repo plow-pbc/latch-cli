@@ -8,7 +8,8 @@
 //! its write paths and IP access are granted per call. Host Unix sockets
 //! remain inaccessible. File workers use the shared areas and read-only
 //! opt-ins; Google workers read only their call folder and runtime files.
-//! Hidden paths stay out of reach, with Library/Caches an exec exception.
+//! Hidden paths stay out of reach, with Library/Caches an exception for
+//! workers that read home (exec, file get).
 //! File and Messages workers get no network; Google workers may reach out.
 //! Google and Messages workers execute only their pinned binary. None can send
 //! Apple Events. The Messages worker reads its private database folders only. The
@@ -91,6 +92,52 @@ pub(crate) fn opened_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
         let name = std::ffi::CStr::from_bytes_until_nul(&buffer).map_err(std::io::Error::other)?;
         Ok(PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes())))
     }
+}
+
+/// The folder `path` names, opened without following a symlink at it and
+/// checked to be that folder still, a folder above it swapped included: the
+/// handle the host anchors a judged write to (`open_at`, `mkdirat`, …).
+pub(crate) fn open_folder(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let folder = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)?;
+    if opened_path(&folder)? != path {
+        return Err(std::io::Error::other(format!(
+            "{} changed after it was checked",
+            path.display()
+        )));
+    }
+    Ok(folder)
+}
+
+/// `openat(folder, name, flags, mode)`, close-on-exec: `name` is looked up
+/// in `folder` alone.
+pub(crate) fn open_at(
+    folder: &std::fs::File,
+    name: &std::ffi::OsStr,
+    flags: i32,
+    mode: libc::c_uint,
+) -> std::io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(name.as_bytes()).map_err(std::io::Error::other)?;
+    // SAFETY: `name` is NUL-terminated and outlives the call, and `folder`
+    // holds its descriptor open.
+    let fd = unsafe {
+        libc::openat(
+            folder.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CLOEXEC,
+            mode,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: openat just returned this descriptor, and nothing else owns it.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 /// Confines the calling thread and any threads or processes it creates.
@@ -462,8 +509,9 @@ mod platform {
         }
         // Looking a path up inside an area (as `pwd` does) needs the details
         // of each folder above it: `read_rules` grants them to a file
-        // worker, the blanket metadata rule to a Google worker.
-        for area in &policy.areas {
+        // worker, the blanket metadata rule to a Google worker. A file
+        // worker's temp folder is where an upload is staged.
+        for area in policy.areas.iter().chain(&policy.tmpdir) {
             rules.push(format!(
                 "(allow file-read* file-write* (subpath {}))",
                 quoted(area)?
@@ -634,11 +682,10 @@ mod platform {
         let mut hidden = Vec::new();
         for path in policy.hidden.iter().filter(|path| path.exists()) {
             let path = real(path)?;
-            let filter = if policy.exec
-                && policy
-                    .home
-                    .as_ref()
-                    .is_some_and(|home| path == home.join("Library"))
+            let filter = if policy
+                .home
+                .as_ref()
+                .is_some_and(|home| path == home.join("Library"))
             {
                 format!(
                     "(require-all (subpath {}) (require-not (subpath {})))",

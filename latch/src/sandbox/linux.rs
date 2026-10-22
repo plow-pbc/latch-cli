@@ -332,6 +332,13 @@ fn mounts(
         };
         mount_writable(command, &real, writable)?;
     }
+    // A file worker's temp folder is where an upload is staged. (An exec
+    // worker's is a private one of its own, above.)
+    if !policy.exec
+        && let Some(tmpdir) = &policy.tmpdir
+    {
+        mount(command, tmpdir, false)?;
+    }
     // A worker could otherwise rename a folder above the state folder, the
     // running latch or a hidden path, inside an area: to put its own in
     // their place for the host's next start, or to move a hidden path where

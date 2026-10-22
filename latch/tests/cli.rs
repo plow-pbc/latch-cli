@@ -1909,7 +1909,7 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
 }
 
 #[test]
-fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
+fn a_host_sharing_no_folders_still_runs_exec_and_files_under_home() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -1933,11 +1933,15 @@ fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
-    // No folders named and none saved: it serves anyway, and says so.
-    let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
+    // No folders named and none saved: it serves anyway, and says so. Its
+    // home is the test's own, where its files go.
+    let home = dir.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let (serve, lines) = serving_folders(&host, &[], &relay, &[("HOME", &home)]);
     assert!(
-        lines.iter().any(|line| line
-            .contains("Sharing no folders — exec reads home. Files: `latch shares set ~/code`")),
+        lines
+            .iter()
+            .any(|line| line.contains("Sharing no folders — exec and file work under home")),
         "{lines:?}"
     );
     let local = latch(&host, &["status", "--local"], &[]);
@@ -1945,38 +1949,31 @@ fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
     assert_eq!(local["shares"], json!([]));
     assert_eq!(local["serve"]["state"], "serving");
 
-    let refused = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
-        let output = latch(state, args, env);
-        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
-        let error = serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"].clone();
-        assert_eq!(error["code"], "no_folders", "{args:?}");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .contains("latch shares set ~/code"),
-            "{error}"
-        );
-    };
     let into = dir.path().join("hosts");
     let into = into.to_str().unwrap();
     let executed = latch(&owner, &["exec", "--host", "host", "--", "true"], &[]);
     assert_eq!(executed.status.code(), Some(0), "{executed:?}");
     let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
     assert_eq!(result["exit_code"], 0);
-    refused(
+    // A get reads what exec can (home and the system's files), and a put
+    // goes under home.
+    let system = latch(
         &owner,
         &["file", "get", "--host", "host", "/etc/hosts", into],
         &[],
     );
+    assert_eq!(system.status.code(), Some(0), "{system:?}");
+    assert_eq!(fs::read(into).unwrap(), fs::read("/etc/hosts").unwrap());
     let local_file = dir.path().join("note.txt");
     fs::write(&local_file, "hi").unwrap();
     let local_file = local_file.to_str().unwrap();
-    refused(
+    let put = latch(
         &owner,
-        &["file", "put", "--host", "host", local_file, "note.txt"],
+        &["file", "put", "--host", "host", local_file, "~/note.txt"],
         &[],
     );
+    assert_eq!(put.status.code(), Some(0), "{put:?}");
+    assert_eq!(fs::read_to_string(home.join("note.txt")).unwrap(), "hi");
     // Agent exec still needs the gatekeeper, despite having no saved shares.
     let refused_exec = latch(
         &agent,
@@ -1988,7 +1985,6 @@ fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
     let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
     drop(serve);
-    assert!(!Path::new(into).exists(), "nothing was fetched");
     let asked_judge = plow
         .seen()
         .iter()
@@ -2797,7 +2793,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &share, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve.sock").exists() {
+    while !host.join("serve-v2.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -2984,7 +2980,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve.sock")).unwrap();
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v2.sock")).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -3012,7 +3008,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     google_enabled(&host);
     let _serve = serving(&host, &share, &relay);
     assert_eq!(
-        fs::metadata(host.join("serve.sock"))
+        fs::metadata(host.join("serve-v2.sock"))
             .unwrap()
             .permissions()
             .mode()
@@ -3418,7 +3414,7 @@ impl Bench {
     }
 
     /// The owner's `latch exec --timeout TIMEOUT -- sh -c SCRIPT`, running.
-    fn exec(&self, timeout: &str, script: &str) -> std::process::Child {
+    fn exec(&self, state: &Path, timeout: &str, script: &str) -> std::process::Child {
         let args = [
             "exec",
             "--host",
@@ -3432,7 +3428,7 @@ impl Bench {
             "-c",
             script,
         ];
-        latch_command(&self.owner, &args, &[])
+        latch_command(state, &args, &[])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -3481,7 +3477,7 @@ impl Bench {
 fn a_host_killed_mid_exec_takes_its_program_along_and_its_next_start_sweeps_the_leftovers() {
     let bench = Bench::new();
     let mut serve = bench.serve();
-    let mut client = bench.exec("60", TICKING);
+    let mut client = bench.exec(&bench.owner, "60", TICKING);
     bench.started();
     serve.0.kill().unwrap();
     serve.0.wait().unwrap();
@@ -3500,7 +3496,7 @@ fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
     let bench = Bench::new();
     let serve = bench.serve();
     let pid = serve.0.id() as libc::pid_t;
-    let client = bench.exec("2", TICKING);
+    let client = bench.exec(&bench.owner, "2", TICKING);
     bench.started();
     // SAFETY: signals our own child.
     unsafe { libc::kill(pid, libc::SIGSTOP) };
@@ -3523,7 +3519,7 @@ fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
 fn an_exec_cut_off_by_a_host_stop_is_audited_and_leaves_no_temp_folder() {
     let bench = Bench::new();
     let serve = bench.serve();
-    let client = bench.exec("60", TICKING);
+    let client = bench.exec(&bench.owner, "60", TICKING);
     bench.started();
     // Stops the host with SIGTERM, as a service manager does.
     drop(serve);
@@ -3544,27 +3540,7 @@ fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
         let bench = Bench::new();
         let serve = bench.serve();
         let state = if local { &bench.host } else { &bench.owner };
-        let mut client = latch_command(
-            state,
-            &[
-                "exec",
-                "--host",
-                "host",
-                "--timeout",
-                "120",
-                "--write",
-                bench.share.to_str().unwrap(),
-                "--",
-                "sh",
-                "-c",
-                TICKING,
-            ],
-            &[],
-        )
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+        let mut client = bench.exec(state, "120", TICKING);
         bench.started();
         client.kill().unwrap();
         client.wait().unwrap();
@@ -3593,23 +3569,11 @@ fn an_exec_whose_caller_went_away_is_stopped_and_audited_as_such() {
 fn a_local_socket_exec_finishes_and_is_audited_before_the_host_stops() {
     let bench = Bench::new();
     let serve = bench.serve();
-    let client = latch_command(
+    let client = bench.exec(
         &bench.host,
-        &[
-            "exec",
-            "--write",
-            bench.share.to_str().unwrap(),
-            "--",
-            "sh",
-            "-c",
-            "echo started > tick; sleep 2; echo done > finished",
-        ],
-        &[],
-    )
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .spawn()
-    .unwrap();
+        "60",
+        "echo started > tick; sleep 2; echo done > finished",
+    );
     bench.started();
     drop(serve);
     assert_eq!(
@@ -3804,6 +3768,7 @@ fn messages_and_contacts_answer_from_a_hosts_messages_and_address_book() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn agent_help_says_messages_and_contacts_are_untrusted_data() {
     let dir = test_dir();
@@ -3932,12 +3897,12 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     assert_eq!(hello["ok"]["pid"], started["pid"], "{hello}");
     assert_eq!(hello["ok"]["attached"], false);
     assert!(registered(&host));
-    // A real read through it, naming the file under the host's home.
+    // A real read through it, in the explicitly requested working folder.
     fs::write(share.join("note.txt"), "hi").unwrap();
     let read = local_operation(
         &host,
         "exec",
-        json!({"argv": ["cat", share.join("note.txt")], "timeout": 10}),
+        json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
     );
     assert_eq!(read["ok"]["stdout"], "hi", "{read}");
 
@@ -3979,7 +3944,7 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     let read = local_operation(
         &host,
         "exec",
-        json!({"argv": ["cat", share.join("note.txt")], "timeout": 10}),
+        json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
     );
     assert_eq!(read["ok"]["stdout"], "hi", "{read}");
     let stopped: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
@@ -3998,11 +3963,7 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
         .iter()
         .find(|record| record["op"] == "exec")
         .unwrap();
-    assert_eq!(
-        exec["args"]["argv"],
-        json!(["cat", share.join("note.txt")]),
-        "{exec}"
-    );
+    assert_eq!(exec["args"]["argv"], json!(["cat", "note.txt"]), "{exec}");
 }
 
 #[test]
@@ -4246,7 +4207,7 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve.sock")).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v2.sock")).unwrap();
     thread::spawn(move || {
         let mut held = Vec::new();
         for connection in listener.incoming() {
@@ -4724,4 +4685,44 @@ fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
     println!("latch file get chat.db: {error}");
     assert_eq!(error["error"]["code"], "sandbox_denied");
     assert!(!copy.exists());
+}
+
+/// Messages and Contacts are macOS connectors: a Linux latch has no such
+/// commands and its help names neither.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn a_linux_latch_has_no_messages_or_contacts() {
+    let dir = test_dir();
+    for command in ["messages", "contacts"] {
+        let output = latch(dir.path(), &[command, "--help"], &[]);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "usage");
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("unrecognized subcommand '{command}'")),
+            "{message}"
+        );
+    }
+    let help = String::from_utf8(latch(dir.path(), &["--help"], &[]).stdout).unwrap();
+    assert!(!help.contains("latch messages"), "{help}");
+    let listed = help
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .any(|word| word == "messages" || word == "contacts");
+    assert!(!listed, "{help}");
+    let catalog = latch(dir.path(), &["help", "--json"], &[]);
+    let catalog: Value = serde_json::from_slice(&catalog.stdout).unwrap();
+    let ids: Vec<&str> = catalog["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| action["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"exec"), "{ids:?}");
+    assert!(
+        !ids.iter()
+            .any(|id| id.starts_with("messages") || id.starts_with("contacts")),
+        "{ids:?}"
+    );
 }

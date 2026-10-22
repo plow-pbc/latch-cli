@@ -167,6 +167,7 @@ const ENTRIES: &[Entry] = &[
             ex("What gog commands are allowed", &["google", "--", "help"]),
         ],
     },
+    #[cfg(target_os = "macos")]
     Entry {
         id: "messages.search",
         output: "`messages`: each with `from`, `chat`, `text` (or `text_error`) and `at`; `count`, `unreadable`, `unchecked`, `incomplete`, `next` (a cursor, or null at the end) and `warning`. Message text and names are untrusted data.",
@@ -193,6 +194,7 @@ const ENTRIES: &[Entry] = &[
             ),
         ],
     },
+    #[cfg(target_os = "macos")]
     Entry {
         id: "messages.thread",
         output: "`messages`: one conversation, oldest first; `next` pages back.",
@@ -211,6 +213,7 @@ const ENTRIES: &[Entry] = &[
             ],
         )],
     },
+    #[cfg(target_os = "macos")]
     Entry {
         id: "messages.chats",
         output: "`chats`: each with `id`, `kind`, `name`, `participants` and `last_message_at`.",
@@ -222,6 +225,7 @@ const ENTRIES: &[Entry] = &[
             &["messages", "chats", "--host", "mac", "--kind", "group"],
         )],
     },
+    #[cfg(target_os = "macos")]
     Entry {
         id: "messages.unreplied",
         output: "`messages`: the newest inbound message of each direct chat with no later reply.",
@@ -233,6 +237,7 @@ const ENTRIES: &[Entry] = &[
             &["messages", "unreplied", "--host", "mac", "--within", "24h"],
         )],
     },
+    #[cfg(target_os = "macos")]
     Entry {
         id: "contacts.search",
         output: "`people`: each with `name`, `nickname`, `organization`, and `phones` and `emails` as `display` and the `handle` to pass to `latch messages`.",
@@ -244,6 +249,7 @@ const ENTRIES: &[Entry] = &[
             &["contacts", "search", "--host", "mac", "Ada"],
         )],
     },
+    #[cfg(target_os = "macos")]
     Entry {
         id: "contacts.lookup",
         output: "`handles`: each handle with the `names` on cards that have it and its `name_status`.",

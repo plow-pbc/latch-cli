@@ -121,7 +121,7 @@ log was replaced by a sound one, and otherwise stops with `audit_broken`.
 Run ordinary `latch exec`, `latch file`, `latch browser` and `latch google` commands on the
 host's state folder. A saved host resolves locally, even while Plow is
 unreachable; explicitly naming this machine with `--host` also resolves
-locally. The CLI connects to `<state-dir>/serve.sock`, inside the private
+locally. The CLI connects to `<state-dir>/serve-v2.sock`, inside the private
 state folder, mode 0600. It never dials its own iroh key.
 
 The socket accepts the same length-prefixed `Request` and `Response`

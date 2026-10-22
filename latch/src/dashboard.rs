@@ -459,8 +459,7 @@ mod tests {
         let screen = board.screen(100, 10, "Ctrl-C stops the host");
         let note = screen.lines().nth(2).unwrap();
         assert!(
-            note.contains("Sharing no folders — exec reads home")
-                && note.contains("latch shares set ~/code"),
+            note.contains("Sharing no folders — exec and file work under home"),
             "{screen}"
         );
         // On a narrower terminal it is cut to the width rather than wrapped,
