@@ -199,14 +199,8 @@ pub async fn run(
     result
 }
 
-/// `run`, once this serve holds the state folder.
-async fn run_locked(
-    state: &StateDir,
-    headless_browsers: bool,
-    deny_exec: DenyExec,
-    attached: bool,
-    state_dir: PathBuf,
-) -> Result<(), Failure> {
+/// The workers a host on `state_dir` starts: this latch, confined.
+pub(crate) fn workers(state_dir: PathBuf) -> Result<WorkerSetup, Failure> {
     let program = std::env::current_exe()
         .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
     let home = std::env::home_dir()
@@ -217,14 +211,25 @@ async fn run_locked(
                 "the host's home folder cannot be resolved".into(),
             )
         })?;
-    let workers = WorkerSetup {
+    Ok(WorkerSetup {
         home,
         areas: vec![],
         reads: vec![],
         hidden: hidden_paths(),
         state_dir,
         program,
-    };
+    })
+}
+
+/// `run`, once this serve holds the state folder.
+async fn run_locked(
+    state: &StateDir,
+    headless_browsers: bool,
+    deny_exec: DenyExec,
+    attached: bool,
+    state_dir: PathBuf,
+) -> Result<(), Failure> {
+    let workers = workers(state_dir)?;
     let rules = RuleFiles::new(&state.path)?;
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);

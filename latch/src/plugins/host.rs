@@ -35,7 +35,7 @@ pub async fn run(
         "list" => Ok(plugins.list()),
         "enable" | "disable" if !local => Err(owner_only()),
         "enable" => match Connector::named(args["name"].as_str().unwrap_or_default()) {
-            Ok(connector) => enable(plugins, workers, plow, connector).await,
+            Ok(connector) => enable(plugins, workers, plow, connector, false).await,
             Err(failure) => Err(failure),
         },
         "disable" => match Connector::named(args["name"].as_str().unwrap_or_default()) {
@@ -61,18 +61,28 @@ fn owner_only() -> Failure {
 /// Runs `connector`'s setup and enables it only if that succeeds. A setup
 /// that fails leaves it `needs_setup`, with the failure as the reason. A
 /// setup the owner turned the connector on or off during changes nothing.
-async fn enable(
+/// With no host running, Full Disk Access is checked as the app instead.
+pub(super) async fn enable(
     plugins: &Plugins,
     workers: &WorkerSetup,
     plow: &Plow,
     connector: Connector,
+    no_host: bool,
 ) -> Result<Value, Failure> {
     let revision = plugins.revision(connector);
     let setup = match connector {
         Connector::Google => google(workers, plow).await,
         #[cfg(target_os = "macos")]
         Connector::Messages | Connector::Contacts => {
-            full_disk_access(workers, &plugins.home, connector).await
+            use crate::messages::access;
+            let access = if no_host {
+                access::check_as_app(&workers.state_dir, connector).await
+            } else {
+                access::check(workers, connector, &plugins.home).await
+            };
+            let program = workers.program.canonicalize();
+            let program = program.as_deref().unwrap_or(&workers.program);
+            full_disk_access(access, program, connector, no_host)
         }
     };
     match setup {
@@ -96,7 +106,7 @@ async fn enable(
 
 /// Turns `connector` off at once for new operations, then waits for the
 /// ones already running (each bounded by its own time limit).
-async fn disable(plugins: &Plugins, connector: Connector) -> Result<Value, Failure> {
+pub(super) async fn disable(plugins: &Plugins, connector: Connector) -> Result<Value, Failure> {
     let running = plugins.set(connector, None, None)?;
     plugins.idle(connector).await;
     Ok(json!({"plugin": connector.name(), "state": "disabled", "waited_for": running}))
@@ -130,29 +140,30 @@ async fn google(workers: &WorkerSetup, plow: &Plow) -> Result<Value, Failure> {
     Ok(json!({"accounts": accounts}))
 }
 
-/// Messages' and Contacts' setup: Full Disk Access as this host sees it,
-/// checked from a worker it starts. Not granted, it says what to grant and
-/// where, and that the host must restart before the next check.
+/// Messages' and Contacts' setup: Full Disk Access as the host sees it.
+/// Not granted, it says what to grant and where, and, when a host runs,
+/// that it must restart before the next check.
 #[cfg(target_os = "macos")]
-async fn full_disk_access(
-    workers: &WorkerSetup,
-    home: &Path,
+fn full_disk_access(
+    access: crate::messages::access::Access,
+    program: &Path,
     connector: Connector,
+    no_host: bool,
 ) -> Result<Value, Failure> {
     use crate::messages::access::{self, Status};
-    let access = access::check(workers, connector, home).await;
     let mut details = json!({"access": access.status, "reason": access.reason});
     let message = match access.status {
         Status::Granted => return Ok(json!({"access": access.status})),
         Status::NotGranted => {
-            let grant = grantee(&workers.program);
+            let grant = grantee(program);
             details["grant"] = json!(grant);
             details["settings"] = json!(access::SETTINGS);
             format!(
                 "this host has no Full Disk Access; turn it on for {} in System Settings \
-                 ({}), restart the host, then run `{}` again",
+                 ({}), {}then run `{}` again",
                 grant.display(),
                 access::SETTINGS,
+                if no_host { "" } else { "restart the host, " },
                 connector.enable_command()
             )
         }

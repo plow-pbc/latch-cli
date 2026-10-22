@@ -963,7 +963,7 @@ const ENTRIES: &[Entry] = &[
         id: "setup",
         output: "At a terminal, each step and the latch command it ran; skipped steps say so.",
         effect: Repeatable(
-            "logs in, enables connectors and starts the host, as the owner answers; done steps are skipped",
+            "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped",
         ),
         owner_only: true,
         connector: None,

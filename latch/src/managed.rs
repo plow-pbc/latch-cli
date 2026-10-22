@@ -522,6 +522,45 @@ impl Service {
     }
 }
 
+/// Runs `argv` once as a launchd job of its own, as the host runs, so that
+/// macOS treats it as the app's and not as the terminal's; returns the line
+/// it printed. Its job and output are `NAME.plist` and `NAME.log` in `dir`.
+#[cfg(target_os = "macos")]
+pub async fn run_as_app(
+    dir: &Path,
+    name: &str,
+    argv: &[OsString],
+    within: Duration,
+) -> Result<String, Failure> {
+    let hash = to_hex(&Sha256::digest(dir.as_os_str().as_encoded_bytes()));
+    let label = format!("co.plow.latch.{name}.{}", &hash[..16]);
+    let output = dir.join(format!("{name}.log"));
+    if platform::registered(&label) {
+        platform::remove(&label)?;
+    }
+    match std::fs::remove_file(&output) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(io_failure(&output, err)),
+    }
+    platform::bootstrap(&label, dir, name, argv)?;
+    let deadline = Instant::now() + within;
+    let printed = loop {
+        // One line, written whole, as it ends.
+        let printed = std::fs::read_to_string(&output).unwrap_or_default();
+        if printed.ends_with('\n') {
+            break Ok(printed);
+        }
+        if Instant::now() > deadline {
+            let message = format!("{name} did not answer within {} s", within.as_secs());
+            break Err(Failure::failed("no_answer", message));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    platform::remove(&label)?;
+    printed
+}
+
 /// Runs a service manager command; its own words on failure.
 fn manager(command: &mut Command) -> Result<(), Failure> {
     let output = command
@@ -561,8 +600,19 @@ mod platform {
     /// The job is in the state folder, not `~/Library/LaunchAgents`: it is
     /// loaded for this start only, and never at login.
     pub fn start(label: &str, dir: &Path, argv: &[OsString]) -> Result<(), Failure> {
-        let path = dir.join("serve.plist");
-        let plist = job(label, dir, argv)?;
+        bootstrap(label, dir, "serve", argv)
+    }
+
+    /// Loads the job `NAME.plist` in `dir`, which runs `argv` once with its
+    /// output appended to `NAME.log` there.
+    pub fn bootstrap(
+        label: &str,
+        dir: &Path,
+        name: &str,
+        argv: &[OsString],
+    ) -> Result<(), Failure> {
+        let path = dir.join(format!("{name}.plist"));
+        let plist = job(label, &dir.join(format!("{name}.log")), argv)?;
         let io =
             |err: std::io::Error| Failure::failed("state_io", format!("{}: {err}", path.display()));
         // Mode 600: it holds the environment `latch serve` ran in.
@@ -588,7 +638,7 @@ mod platform {
 
     /// The launchd job: run once, never kept alive, and given time to
     /// stop on its own after SIGTERM.
-    fn job(label: &str, dir: &Path, argv: &[OsString]) -> Result<String, Failure> {
+    fn job(label: &str, log: &Path, argv: &[OsString]) -> Result<String, Failure> {
         let text = |value: &std::ffi::OsStr| {
             value.to_str().map(escape).ok_or_else(|| {
                 let message = format!("{} is not valid UTF-8", value.display());
@@ -606,7 +656,7 @@ mod platform {
                 environment.push_str(&format!("<key>{name}</key><string>{value}</string>"));
             }
         }
-        let log = text(dir.join("serve.log").as_os_str())?;
+        let log = text(log.as_os_str())?;
         Ok(format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
