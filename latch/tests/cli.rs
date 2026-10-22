@@ -2690,6 +2690,24 @@ fn vault_management_and_self_rules_are_local_without_serve() {
     run(&["vault", "remove", "v1", "--revision", "2"]);
     assert_eq!(run(&["vault", "list"])["items"], json!([]));
     assert_eq!(plow.seen().len(), before, "local management contacted Plow");
+    assert!(
+        !host.join("audit.ndjson").exists(),
+        "local management created the legacy audit"
+    );
+    let records = audit_records(&host);
+    assert!(
+        records
+            .iter()
+            .any(|r| r["op"] == "vault" && r["args"]["command"] == "edit")
+    );
+    assert!(
+        records
+            .iter()
+            .any(|r| r["op"] == "rules" && r["args"]["command"] == "set")
+    );
+    let sealed = fs::read_to_string(host.join("audit.sealed.ndjson")).unwrap();
+    assert!(!sealed.contains("\"op\""), "audit records were not sealed");
+    println!("local vault edit and rules set share the sealed audit; no legacy file");
     let link = latch(
         &host,
         &[
@@ -2848,6 +2866,16 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
             .len(),
         8
     );
+    assert!(!host.join("audit.ndjson").exists());
+    let records = audit_records(&host);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r["op"] == "vault" && r["args"]["command"] == "add")
+            .count(),
+        7,
+        "local and remote writes must share one verified audit chain"
+    );
 }
 
 #[test]
@@ -3001,11 +3029,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
             .to_string()
             .contains("Updated through the socket.")
     );
-    let records: Vec<Value> = fs::read_to_string(host.join("audit.ndjson"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let records = audit_records(&host);
     let gated: Vec<_> = records
         .iter()
         .filter(|r| {
@@ -3087,14 +3111,10 @@ fn local_socket_outages_refuse_gated_work_but_config_still_works() {
             judged,
             "owner config was judged"
         );
-        let record: Value = serde_json::from_str(
-            fs::read_to_string(host.join("audit.ndjson"))
-                .unwrap()
-                .lines()
-                .find(|line| line.contains("\"op\":\"exec\""))
-                .unwrap(),
-        )
-        .unwrap();
+        let record = audit_records(&host)
+            .into_iter()
+            .find(|r| r["op"] == "exec")
+            .unwrap();
         assert_eq!(record["gate"]["caller"], "owner_on_host");
         assert_eq!(record["decision"], "deny");
     }
@@ -3151,11 +3171,9 @@ fn local_socket_browser_open_observe_close_uses_one_host_and_owner_audit() {
     {
         println!("{line}");
     }
-    let records: Vec<Value> = fs::read_to_string(host.join("audit.ndjson"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .filter(|r: &Value| r["op"] == "browser")
+    let records: Vec<Value> = audit_records(&host)
+        .into_iter()
+        .filter(|r| r["op"] == "browser")
         .collect();
     assert_eq!(records.len(), 3);
     for record in records {

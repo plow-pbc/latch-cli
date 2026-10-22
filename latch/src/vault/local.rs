@@ -18,7 +18,7 @@ fn audited(
 ) -> Result<Value, Failure> {
     let config = state.require_login()?;
     // Refuse a broken or unwritable audit before changing the vault.
-    let mut log = AuditLog::open(state.path.join("audit.ndjson"))?;
+    let mut log = AuditLog::open(state.path.join(audit::FILE))?;
     let vault = host::Vault::new(state.path.clone());
     let mut args = Map::new();
     args.insert("command".into(), json!(command));
