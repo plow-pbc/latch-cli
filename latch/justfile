@@ -110,7 +110,7 @@ phone-e2e host: phone
 # Its state folder, ../.dev/state, and Plow (`api`) are baked in, so it never
 # touches ~/.latch or an installed latch; flags still override them. A running
 # serve keeps its old binary until it is restarted.
-try api="https://api.plow.co":
+build api="https://api.plow.co":
     #!/bin/sh
     set -eu
     root="$(cd .. && pwd)"
@@ -122,7 +122,7 @@ try api="https://api.plow.co":
     fi
     mkdir -p "$root/.dev/bin" "$state"
     chmod 700 "$state"
-    target="${CARGO_TARGET_DIR:-target}/try"
+    target="${CARGO_TARGET_DIR:-target}/build"
     LATCH_BUILD_STATE_DIR="$state" LATCH_BUILD_API_URL="{{api}}" CARGO_TARGET_DIR="$target" cargo build --release --locked
     cp "$target/release/latch" "$root/.dev/bin/.latch.new"
     mv -f "$root/.dev/bin/.latch.new" "$root/.dev/bin/latch"
