@@ -1,6 +1,6 @@
 //! The state directory of one latch instance (`--state-dir`, default
 //! `~/.latch`). Everything in it is readable by this user only. A latch
-//! signed for the Keychain keeps the three secrets marked * there instead of
+//! signed for the Keychain keeps the secrets marked * there instead of
 //! in files (see `secrets.rs`):
 //!
 //! - `key`*: this peer's ed25519 secret key, as hex. It never leaves the machine.
@@ -8,7 +8,10 @@
 //!   host's owner token). An agent's own credential is not copied here; see
 //!   `credential.rs`.
 //! - `config.json`: the Plow API URL and this peer's record as Plow returned it.
-//! - `audit.ndjson`, on a host: its audit log (see `audit.rs`).
+//! - `audit.sealed.ndjson`, on a host: its audit log, each record sealed
+//!   (see `audit.rs`); `audit.keys`*: the keys that seal it; `audit.lock`:
+//!   held by what writes it. A plaintext `audit.ndjson` from an older latch
+//!   is never read, and every command says it can be deleted.
 //! - `serve.log`, on a host: what a managed host logs (`latch logs`).
 //! - `serve.plist` (macOS) and `launch.lock`, on a host: the managed host's
 //!   service, and the lock that starts and stops it one at a time (see
@@ -147,7 +150,12 @@ impl StateDir {
             Failure::failed("bad_state", message)
         })?;
         let fix = match marker.format.cmp(&FORMAT) {
-            std::cmp::Ordering::Equal => return Ok(()),
+            std::cmp::Ordering::Equal => {
+                if let Some(notice) = crate::audit::plaintext_notice(&self.path) {
+                    eprintln!("{notice}");
+                }
+                return Ok(());
+            }
             std::cmp::Ordering::Greater => "update this latch",
             std::cmp::Ordering::Less => "use the latch that wrote it",
         };
@@ -307,25 +315,31 @@ impl StateDir {
     }
 }
 
-/// Writes a file only its owner can read, atomically: into a temporary
-/// file of this write's own beside it (0600), synced, then renamed over it,
-/// so concurrent writers never share one. Skips the write when the file
-/// already holds exactly these bytes, so a repeated `login` changes nothing.
+/// Writes a file only its owner can read, atomically and durably: into a
+/// temporary file of this write's own beside it (0600), synced, renamed
+/// over it, and the folder synced, so the new file is on disk before
+/// anything that relies on it (audit records sealed under a new key) is.
+/// Concurrent writers never share a temporary file. Skips the write when
+/// the file already holds exactly these bytes, so a repeated `login`
+/// changes nothing.
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if fs::read(path).is_ok_and(|current| current == bytes) {
         return Ok(());
     }
-    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty());
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let mut name = path.file_name().unwrap_or_default().to_owned();
     name.push(".");
     let mut temp = tempfile::Builder::new()
         .prefix(&name)
         .suffix(".tmp")
-        .tempfile_in(dir.unwrap_or(Path::new(".")))?;
+        .tempfile_in(dir)?;
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|err| err.error)?;
-    Ok(())
+    fs::File::open(dir)?.sync_all()
 }
 
 /// Bytes as lowercase hex, two characters per byte.

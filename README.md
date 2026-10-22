@@ -64,7 +64,7 @@ No Homebrew tap is included.
   prints it as JSON once it answers; `latch stop` stops it, and nothing
   starts it again until the next `latch serve`. `latch dashboard` views a
   running host (Ctrl-C closes only the view), `latch logs [-f]` shows its
-  log (`serve.log`) and `latch audit [-f]` its audit, one record per line.
+  log (`serve.log`) and `latch audit show [-f]` its audit.
   One host runs per state folder. `latch serve --foreground` runs the host
   in the terminal's own process, logging to stderr, for CI, tests and
   containers.
@@ -95,9 +95,21 @@ No Homebrew tap is included.
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
   to the host's log (`latch logs`), never to stdout. On a
   host, each event names the connection's caller key and the operation.
-- `latch shares set ~/work [--allow-read PATH]` saves the folders and read-only
-  paths a `latch serve` named none shares. `latch status --local`, `latch events --follow` and
-  `latch login --events` are for an app: see [latch/APP.md](latch/APP.md).
+- The host's audit log is sealed: each record is encrypted with the host's
+  audit key, kept with its other secrets. `latch audit show` prints every
+  record in full, each command as it ran; `latch audit verify` checks the
+  chain without the key; `latch audit rotate-key` starts a new key and keeps
+  the old ones (a running `latch serve` uses it once restarted). The serve
+  dashboard and `serve.log` hide credential-looking values in commands, best
+  effort: some can slip through. The sealed log is
+  `audit.sealed.ndjson`; a plaintext `audit.ndjson` from an older latch is
+  never read, and latch says it can be deleted.
+- `latch shares set ~/work [--allow-read PATH]` saves the folders, and the
+  read-only paths, a `latch serve` named none shares. With none named and
+  none saved, it serves the browser and Google only, and `exec` and `file`
+  refuse with `no_folders`. `latch status --local`,
+  `latch events --follow` and `latch login --events` are for an app: see
+  [latch/APP.md](latch/APP.md).
 
 ## On the host itself
 

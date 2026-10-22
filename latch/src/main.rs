@@ -22,6 +22,7 @@ mod files;
 mod gate;
 mod google;
 mod heartbeat;
+mod help;
 mod hosts;
 mod input;
 mod keyart;
@@ -33,7 +34,9 @@ mod managed;
 mod model;
 mod paint;
 mod plow;
+mod redact;
 mod sandbox;
+mod seal;
 mod secrets;
 mod serve;
 mod shares;
@@ -97,6 +100,12 @@ fn main() -> ExitCode {
                     failure.exit.into()
                 }
             };
+        }
+        // Help is in latch itself: no state folder, no host.
+        Command::Help(args) => return help::run(args),
+        Command::Skill => {
+            print!("{}", help::skill());
+            return ExitCode::SUCCESS;
         }
         command => command,
     };
@@ -235,6 +244,17 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Shares(args) => to_json(shares::run(&state, args.action)?),
         // Its lines, printed as they come, are its whole output.
+        Command::Audit(cli::AuditArgs {
+            action: cli::AuditAction::Show { follow: true },
+        }) => {
+            audit::follow(&state)?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        Command::Audit(args) => to_json(audit::run(&state, args.action)?),
+        // Its lines, printed as they come, are its whole output.
         Command::Events(args) => {
             events::run(&state, args)?;
             Ok(Printed {
@@ -285,7 +305,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 exit: ExitCode::SUCCESS,
             })
         }
-        // Their lines, printed as they come, are their whole output.
+        // Its lines, printed as they come, are its whole output.
         Command::Logs(args) => {
             events::logs(&state, args.follow)?;
             Ok(Printed {
@@ -293,14 +313,9 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 exit: ExitCode::SUCCESS,
             })
         }
-        Command::Audit(args) => {
-            events::audit(&state, args.follow)?;
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+        Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
+            unreachable!("handled in main")
         }
-        Command::Worker(_) | Command::BrowserWorker(_) => unreachable!("handled in main"),
     }
 }
 
