@@ -18,9 +18,11 @@ const OWNER_AGENT: &str = "handoff-caller";
 
 conformance!(
     a_handoff_pauses_the_session_until_the_owner_hands_it_back,
-    a_host_with_no_screen_answers_needs_owner_at_once,
     a_plan_running_when_the_handoff_starts_sends_nothing_more,
     refs_are_forgotten_even_while_another_session_holds_the_browser,
+    ;
+    mac:
+    a_host_with_no_screen_answers_needs_owner_at_once,
 );
 
 /// The host's browsers, with its screen check forced to `screen`.

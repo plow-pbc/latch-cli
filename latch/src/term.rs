@@ -11,10 +11,16 @@ pub const ALTERNATE_SCREEN: &str = "\x1b[?1049h";
 pub const MAIN_SCREEN: &str = "\x1b[?1049l";
 pub const HIDE_CURSOR: &str = "\x1b[?25l";
 pub const SHOW_CURSOR: &str = "\x1b[?25h";
-/// Cursor to the top-left corner, then clear the whole screen.
-pub const CLEAR: &str = "\x1b[H\x1b[2J";
+/// Cursor to the top-left corner.
+pub const HOME: &str = "\x1b[H";
 /// Clear from the cursor to the end of the line.
 pub const CLEAR_LINE_END: &str = "\x1b[K";
+/// Clear from the cursor to the end of the screen.
+pub const CLEAR_BELOW: &str = "\x1b[J";
+/// Hold what follows until `SYNC_END`, then show it at once (DEC mode
+/// 2026, synchronized output); a terminal without it ignores both.
+pub const SYNC_START: &str = "\x1b[?2026h";
+pub const SYNC_END: &str = "\x1b[?2026l";
 
 /// Showy output is only for a person at a terminal: an agent reads
 /// latch's stdout through a pipe.
