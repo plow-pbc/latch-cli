@@ -1399,6 +1399,8 @@ struct LiveState {
     owner: String,
     agent: String,
     model_down: bool,
+    /// The judge answers that the owner forbids every operation.
+    forbidden: bool,
     decisions: Vec<Value>,
     /// Each peer with the credential that registered it.
     peers: Vec<(Value, String)>,
@@ -1415,6 +1417,7 @@ impl LivePlow {
             state: std::sync::Arc::new(std::sync::Mutex::new(LiveState {
                 owner: "owner-login".to_string(),
                 model_down: false,
+                forbidden: false,
                 decisions: Vec::new(),
                 agent: "agent-credential".to_string(),
                 peers: Vec::new(),
@@ -1582,6 +1585,13 @@ impl LivePlow {
                            "usage": {"input_tokens": 1, "output_tokens": 0}}),
                 )
             }
+            ("POST", "/v1/decisions") if kind == "device" && state.forbidden => (
+                200,
+                json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
+                    "type": "choice", "choice": "FORBIDDEN",
+                    "probabilities": {"COVERED": 0.02, "NOT_COVERED": 0.08, "FORBIDDEN": 0.9}}},
+                    "usage": {"input_tokens": 1, "output_tokens": 0}}),
+            ),
             ("POST", "/v1/decisions") if kind == "device" => (
                 200,
                 json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
@@ -3200,6 +3210,15 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     let before = plow.seen().len();
     run(&["rules", "set", "Only read and echo in this test."]);
     assert_eq!(plow.seen().len(), before);
+    // From here the client's secret store refuses, as the Keychain does
+    // inside a sandbox: its key and Plow login can't be read. Calls over the
+    // socket need neither; the running host has them.
+    let locked = |mode| {
+        for secret in ["key", "plow-token"] {
+            fs::set_permissions(host.join(secret), fs::Permissions::from_mode(mode)).unwrap();
+        }
+    };
+    locked(0o000);
     let exec = run(&["exec", "--", "echo", "local socket"]);
     assert_eq!(exec["stdout"], "local socket\n");
     assert_eq!(
@@ -3223,6 +3242,24 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
         downloaded.to_str().unwrap(),
     ]);
     assert_eq!(fs::read(&downloaded).unwrap(), b"socket transfer");
+    run(&["plugins", "disable", "google"]);
+    let link = run(&[
+        "vault",
+        "link",
+        "--page",
+        "https://example.invalid/",
+        "--kind",
+        "note",
+        "--title",
+        "keyless",
+    ]);
+    assert!(
+        link["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://example.invalid/#h="),
+        "{link}"
+    );
     let decisions = plow.state.lock().unwrap().decisions.clone();
     assert_eq!(decisions.len(), 4);
     assert!(
@@ -3250,6 +3287,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
         "owner config was judged"
     );
     run(&["exec", "--host", "host", "--", "true"]);
+    locked(0o600);
     assert!(
         plow.state
             .lock()
@@ -3349,6 +3387,47 @@ fn local_socket_outages_refuse_gated_work_but_config_still_works() {
             .unwrap();
         assert_eq!(record["gate"]["caller"], "owner_on_host");
         assert_eq!(record["decision"], "deny");
+    }
+}
+
+#[test]
+fn a_local_socket_call_the_judge_forbids_does_not_run() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    plow.state.lock().unwrap().forbidden = true;
+    let target = share.join("must-not-exist");
+    let source = dir.path().join("source.txt");
+    fs::write(&source, "forbidden").unwrap();
+    for args in [
+        vec!["exec", "--", "touch", target.to_str().unwrap()],
+        vec![
+            "file",
+            "put",
+            source.to_str().unwrap(),
+            target.to_str().unwrap(),
+        ],
+    ] {
+        let output = latch(&host, &args, &[]);
+        assert_eq!(output.status.code(), Some(4), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "gatekeeper_denied", "{error}");
+        println!("forbidden local {}: {error}", args[0]);
+    }
+    assert!(!target.exists());
+    assert_eq!(plow.state.lock().unwrap().decisions.len(), 2);
+    let records: Vec<Value> = audit_records(&host)
+        .into_iter()
+        .filter(|r| matches!(r["op"].as_str(), Some("exec" | "file_put")))
+        .collect();
+    assert_eq!(records.len(), 2);
+    for record in records {
+        assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
+        assert_eq!(record["decision"], "deny", "{record}");
     }
 }
 
