@@ -42,6 +42,7 @@ use crate::state_folders::StateFolders;
 /// What every worker a host starts is allowed: the host's areas and the
 /// owner's read-only opt-ins, minus its state directory and the hidden paths.
 pub struct WorkerSetup {
+    pub home: PathBuf,
     pub areas: Vec<PathBuf>,
     pub reads: Vec<PathBuf>,
     pub hidden: Vec<PathBuf>,
@@ -145,6 +146,7 @@ impl WorkerSetup {
         job: &crate::google::process::Job,
     ) -> Result<(Running, serde_json::Value), WorkerError> {
         let restricted = WorkerSetup {
+            home: self.home.clone(),
             areas: vec![folder.to_path_buf()],
             reads: vec![],
             hidden: self.hidden.clone(),
@@ -218,16 +220,32 @@ impl WorkerSetup {
     /// `tmpdir` becomes the program's `TMPDIR`.
     pub fn start_exec(
         &self,
-        workdir: Option<&str>,
+        args: &crate::exec::ExecArgs,
         tmpdir: &Path,
-        argv: &[String],
         with_stdin: bool,
         kill_after: u64,
     ) -> Result<Child, WorkerError> {
-        let Some(first_area) = self.areas.first() else {
-            return Err(error("no_folders", NO_FOLDERS));
+        let caches =
+            crate::exec::caches(self).map_err(|failure| error(&failure.code, &failure.message))?;
+        let restricted = WorkerSetup {
+            home: self.home.clone(),
+            areas: args.writes.iter().cloned().chain(caches).collect(),
+            reads: vec![self.home.clone()],
+            hidden: self
+                .hidden
+                .iter()
+                .cloned()
+                .chain(self.state_folders.now())
+                .collect(),
+            state_folders: StateFolders::none(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
         };
-        let mut command = self.command(first_area)?;
+        let mut command = restricted.command(&self.home)?;
+        command.arg("--home").arg(&self.home);
+        if args.network {
+            command.arg("--network");
+        }
         command
             .arg("--tmpdir")
             .arg(tmpdir)
@@ -236,11 +254,15 @@ impl WorkerSetup {
             .arg("exec");
         #[cfg(target_os = "linux")]
         die_with_host(&mut command);
-        if let Some(workdir) = workdir {
+        if let Some(workdir) = &args.workdir {
             command.arg("--workdir").arg(workdir);
         }
-        command.arg("--").args(argv);
+        command.arg("--").args(&args.argv);
         command
+            .env(
+                "PATH",
+                std::env::var_os("PATH").unwrap_or_else(|| PATH.into()),
+            )
             .env("TMPDIR", tmpdir)
             .process_group(0)
             // Without input, the program's stdin is empty (`/dev/null`).
@@ -366,6 +388,8 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         hidden: args.hidden,
         state_dir: args.denied,
         exec: matches!(args.action, WorkerAction::Exec { .. }),
+        home: args.home,
+        network: args.network,
         tmpdir: args.tmpdir,
         kill_after: args.kill_after,
         program: match &args.action {
@@ -398,7 +422,16 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         WorkerAction::Read { path } => read(path),
         WorkerAction::Write { size, name, path } => write(path, name.as_deref(), *size),
         WorkerAction::Exec { workdir, argv } => {
-            return exec(&policy.areas, workdir.as_deref(), argv);
+            return exec(
+                &policy
+                    .reads
+                    .iter()
+                    .chain(&policy.areas)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                workdir.as_deref(),
+                argv,
+            );
         }
     };
     match result {

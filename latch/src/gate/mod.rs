@@ -60,6 +60,7 @@ const RULES_OF_JUDGMENT: [&str; 5] = [
     "Each message shows how long ago it was sent. An old request may still stand if the owner meant it to keep applying; otherwise it is not a request to act now.",
     "Rules on the host are the owner's standing limits; a chat message does not lift a host rule's prohibition.",
 ];
+const EXEC_PERMISSIONS: &str = "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what the owner asked. The command can read the host's home except hidden latch state and, on macOS, Library except Caches.";
 /// Added to the rules of judgment only when the judge sees host rules: a
 /// rule naming a kind of task covers the commands that plainly do it.
 const RULES_NAME_TASKS: &str = "A rule may name a kind of task, like running tests or checking mail, rather than the exact command; a command that plainly does that task is covered by it.";
@@ -435,12 +436,16 @@ fn state(
         .conversation
         .as_ref()
         .is_some_and(|c| c.more_before || shown < c.messages.len());
+    let mut rules_of_judgment = RULES_OF_JUDGMENT.to_vec();
+    if !rules.is_empty() {
+        rules_of_judgment.push(RULES_NAME_TASKS);
+    }
+    if serde_json::from_str::<Value>(action.get()).is_ok_and(|action| action["operation"] == "exec")
+    {
+        rules_of_judgment.push(EXEC_PERMISSIONS);
+    }
     let state = State {
-        rules_of_judgment: if rules.is_empty() {
-            RULES_OF_JUDGMENT.to_vec()
-        } else {
-            [&RULES_OF_JUDGMENT[..], &[RULES_NAME_TASKS]].concat()
-        },
+        rules_of_judgment,
         now: clock,
         conversation,
         owner_rules: if rules.is_empty() {

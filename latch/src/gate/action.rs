@@ -40,6 +40,10 @@ struct Action<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     working_folder: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    writes: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     size: Option<&'a Value>,
@@ -70,6 +74,8 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
         argv: None,
         stdin: None,
         working_folder: None,
+        writes: None,
+        network: None,
         path: None,
         size: None,
         file_name: None,
@@ -85,9 +91,12 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
                 argv: Some(&args["argv"]),
                 stdin: stdin.as_deref(),
                 working_folder: folder,
+                writes: Some(&args["writes"]),
+                network: Some(&args["network"]),
                 ..none
             };
-            let mut audit = json!({"argv": args["argv"], "workdir": args["workdir"]});
+            let mut audit = json!({"argv": args["argv"], "workdir": args["workdir"],
+                                   "writes": args["writes"], "network": args["network"]});
             if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(args["stdin"].clone()) {
                 audit["stdin"] = crate::exec::stdin_audit(&bytes);
             }

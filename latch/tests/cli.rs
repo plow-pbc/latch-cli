@@ -92,6 +92,7 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
     let mut command = Command::new(latch_bin());
     command
+        .env("HOME", state.parent().unwrap())
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
         .env_remove("PLOW_API_BASE")
@@ -1493,6 +1494,7 @@ fn until_serving(host: &Path, serve: &Serving) {
 fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
     let mut command = Command::new(latch_bin());
     command
+        .env("HOME", host.parent().unwrap())
         .args([
             "--state-dir",
             host.to_str().unwrap(),
@@ -1644,9 +1646,9 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
     // Library, can never be opted in to; another folder can.
     let home = dir.path().join("home");
     let refs = dir.path().join("refs");
-    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::create_dir_all(home.join(".latch")).unwrap();
     fs::create_dir_all(&refs).unwrap();
-    fs::write(home.join(".ssh/config"), "Host *").unwrap();
+    fs::write(home.join(".latch/private"), "Host *").unwrap();
     let opt_in = |path: &Path| {
         let args = ["shares", "set", saved.to_str().unwrap(), "--allow-read"];
         latch(
@@ -1655,7 +1657,7 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
             &[("HOME", &home)],
         )
     };
-    let refused = opt_in(&home.join(".ssh/config"));
+    let refused = opt_in(&home.join(".latch/private"));
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
     assert!(String::from_utf8_lossy(&refused.stderr).contains("never_readable"));
     let refused = opt_in(&home);
@@ -1749,7 +1751,17 @@ fn another_latch_state_folder_inside_a_share_stays_hidden() {
     let exec = |script: &str| {
         let exec = latch(
             &agent,
-            &["exec", "--host", "host", "--", "/bin/sh", "-c", script],
+            &[
+                "exec",
+                "--host",
+                "host",
+                "--write",
+                share.to_str().unwrap(),
+                "--",
+                "/bin/sh",
+                "-c",
+                script,
+            ],
             &agent_env,
         );
         assert_eq!(exec.status.code(), Some(0), "{exec:?}");
@@ -1803,7 +1815,7 @@ fn another_latch_state_folder_inside_a_share_stays_hidden() {
 }
 
 #[test]
-fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
+fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -1830,9 +1842,8 @@ fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
     // No folders named and none saved: it serves anyway, and says so.
     let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
     assert!(
-        lines.iter().any(|line| line.contains(
-            "Sharing no folders — browser and Google only. Add some with `latch shares set ~/code`"
-        )),
+        lines.iter().any(|line| line
+            .contains("Sharing no folders — exec reads home; browser and Google are available.")),
         "{lines:?}"
     );
     let local = latch(&host, &["status", "--local"], &[]);
@@ -1855,7 +1866,10 @@ fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
     };
     let into = dir.path().join("hosts");
     let into = into.to_str().unwrap();
-    refused(&owner, &["exec", "--host", "host", "--", "true"], &[]);
+    let executed = latch(&owner, &["exec", "--host", "host", "--", "true"], &[]);
+    assert_eq!(executed.status.code(), Some(0), "{executed:?}");
+    let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0);
     refused(
         &owner,
         &["file", "get", "--host", "host", "/etc/hosts", into],
@@ -1869,12 +1883,13 @@ fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
         &["file", "put", "--host", "host", local_file, "note.txt"],
         &[],
     );
-    // An agent's exec is refused the same way, before anything is judged.
-    refused(
+    // Agent exec still needs the gatekeeper, despite having no saved shares.
+    let refused_exec = latch(
         &agent,
         &["exec", "--host", "host", "--", "true"],
         &agent_env,
     );
+    assert_eq!(refused_exec.status.code(), Some(0), "{refused_exec:?}");
     // What needs no folder still works: here, the owner's rules.
     let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
@@ -1884,7 +1899,7 @@ fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
         .seen()
         .iter()
         .any(|(line, _)| line.contains("/v1/decisions"));
-    assert!(!asked_judge, "{:?}", plow.seen());
+    assert!(asked_judge, "{:?}", plow.seen());
 }
 
 #[test]
@@ -2487,7 +2502,9 @@ fn shutdown_exec_cases() {
 
         let mut serve = serving(&host, &share, &relay);
         let running = thread::spawn(move || {
-            let args = ["exec", "--host", "host", "--", "sh", "-c", script];
+            let args = [
+                "exec", "--host", "host", "--write", "share", "--", "sh", "-c", script,
+            ];
             latch(&client, &args, &[])
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -2780,6 +2797,8 @@ impl Bench {
             "host",
             "--timeout",
             timeout,
+            "--write",
+            self.share.to_str().unwrap(),
             "--",
             "sh",
             "-c",

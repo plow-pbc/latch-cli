@@ -433,12 +433,14 @@ fn serve_with_denied(rules: Option<(i64, Vec<seccompiler::SeccompRule>)>) -> Out
 
     let dir = setup();
     let area = dir.path().join("area").canonicalize().unwrap();
+    let state = tempfile::tempdir_in(dir.path()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
         .args(["serve", "--no-dashboard", "--state-dir"])
-        .arg(dir.path().join("state"))
+        .arg(state.path())
         .arg(area)
-        .env_clear();
+        .env_clear()
+        .env("HOME", dir.path());
     if let Some((syscall, conditions)) = rules {
         let filter: seccompiler::BpfProgram = seccompiler::SeccompFilter::new(
             [(syscall, conditions)].into_iter().collect(),
@@ -897,4 +899,142 @@ fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
     let script = r#"f=$(mktemp) && echo made > "$f" && cat "$f""#;
     let output = exec_script(dir.path(), &["--read", "/tmp"], script);
     assert_eq!(output.stdout, b"made\n", "{output:?}");
+}
+
+/// A home-readable exec with explicit writable roots, using real sandbox code.
+fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
+    let home = dir.join("area").canonicalize().unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    command
+        .args(["worker", "--home"])
+        .arg(&home)
+        .arg("--read")
+        .arg(&home)
+        .arg("--area")
+        .arg(home.join("project"))
+        .arg("--denied")
+        .arg(home.join(".latch"))
+        .arg("--hidden")
+        .arg(home.join(".latch"))
+        .arg("--tmpdir")
+        .arg(dir.join("tmp"));
+    if cfg!(target_os = "macos") {
+        command
+            .arg("--hidden")
+            .arg(home.join("Library"))
+            .arg("--area")
+            .arg(home.join("Library/Caches"));
+    }
+    if network {
+        command.arg("--network");
+    }
+    command
+        .args(["exec", "--", "/bin/sh", "-c", script])
+        .current_dir(&home)
+        .env_clear()
+        .env("PATH", HOST_PATH)
+        .env("HOME", &home)
+        .output()
+        .unwrap()
+}
+
+fn declared_setup() -> tempfile::TempDir {
+    let dir = setup();
+    for name in ["project", ".ssh", ".latch", "Library/Caches"] {
+        fs::create_dir_all(dir.path().join("area").join(name)).unwrap();
+    }
+    fs::write(dir.path().join("area/.ssh/config"), "readable-dotfile").unwrap();
+    fs::write(dir.path().join("area/.latch/private"), "hidden-state").unwrap();
+    fs::write(dir.path().join("area/Library/private"), "hidden-library").unwrap();
+    dir
+}
+
+#[test]
+fn declared_exec_reads_home_and_confines_writes_and_hidden_data() {
+    let dir = declared_setup();
+    let output = declared_exec(
+        dir.path(),
+        false,
+        r#"
+        cat .ssh/config
+        cat .latch/private 2>/dev/null
+        cat Library/private 2>/dev/null
+        echo denied > undeclared
+        echo denied > .latch/undeclared
+        echo allowed > project/result
+        echo cache > Library/Caches/result
+        true
+    "#,
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("readable-dotfile"));
+    assert!(!stdout.contains("hidden-state"));
+    if cfg!(target_os = "macos") {
+        assert!(!stdout.contains("hidden-library"));
+        assert_eq!(
+            fs::read(dir.path().join("area/Library/Caches/result")).unwrap(),
+            b"cache\n"
+        );
+    }
+    assert!(!dir.path().join("area/undeclared").exists());
+    assert!(!dir.path().join("area/.latch/undeclared").exists());
+    assert_eq!(
+        fs::read(dir.path().join("area/project/result")).unwrap(),
+        b"allowed\n"
+    );
+}
+
+#[test]
+fn declared_exec_needs_network_and_cannot_use_a_host_unix_socket() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::os::unix::net::UnixListener;
+    let dir = declared_setup();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let script = format!("curl -fsS --connect-timeout 1 --max-time 2 http://{address}/");
+    let offline = declared_exec(dir.path(), false, &script);
+    assert!(!offline.status.success(), "offline connected: {offline:?}");
+    let serving = std::thread::spawn(move || {
+        let (mut connection, _) = listener.accept().unwrap();
+        let mut request = [0; 2048];
+        assert!(connection.read(&mut request).unwrap() > 0);
+        connection
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nnetwork")
+            .unwrap();
+    });
+    let online = declared_exec(dir.path(), true, &script);
+    assert!(online.status.success(), "online: {online:?}");
+    assert_eq!(online.stdout, b"network");
+    serving.join().unwrap();
+    let path = dir.path().join("area/daemon.sock");
+    let unix = UnixListener::bind(&path).unwrap();
+    unix.set_nonblocking(true).unwrap();
+    let script = format!(
+        "curl -fsS --max-time 1 --unix-socket '{}' http://localhost/",
+        path.display()
+    );
+    for network in [false, true] {
+        let output = declared_exec(dir.path(), network, &script);
+        assert!(
+            !output.status.success(),
+            "Unix socket connected: {output:?}"
+        );
+        assert_eq!(
+            unix.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn declared_exec_cannot_read_its_hosts_process_arguments() {
+    let dir = declared_setup();
+    let script = format!("test ! -r /proc/{}/cmdline", std::process::id());
+    for network in [false, true] {
+        let output = declared_exec(dir.path(), network, &script);
+        assert!(output.status.success(), "{output:?}");
+    }
 }

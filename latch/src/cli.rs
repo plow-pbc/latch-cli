@@ -952,7 +952,7 @@ pub struct ExecArgs {
     #[command(flatten)]
     pub host: HostArg,
 
-    /// Directory to run in, inside one of the host's areas [default: the first area]
+    /// Directory inside the host's home [default: first write folder, otherwise home]
     #[arg(long, value_name = "DIR")]
     pub workdir: Option<String>,
 

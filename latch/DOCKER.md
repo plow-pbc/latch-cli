@@ -11,20 +11,28 @@ From the repository root, with an existing host state directory and area:
 docker run --rm --name latch-host \
   --user 1000:1000 --cap-drop=ALL \
   --security-opt=no-new-privileges=true \
+  --security-opt=systempaths=unconfined \
   --security-opt="seccomp=$PWD/latch/docker/seccomp.json" \
   -v "$PWD/host-state:/state" -v "$PWD/shared:/shared" \
   latch-image latch --state-dir /state serve --no-dashboard /shared
 ```
 
-The folders after `serve` are the ones it shares. Mount only the state and the
-folders this host needs. Leave Docker's masked/read-only system paths in place.
-File and Google workers have no `/proc`. Exec workers reuse the container's
-existing `/proc` read-only; this retains Docker's masks but exposes container
-process metadata rather than a private process view. All workers get a minimal
+The folders after `serve` are the ones its file workers share. Exec reads the
+container user's home, so mount workspaces under that home and declare their
+writes on each `exec` call. Mount only the state and folders this host needs.
+Docker's `systempaths=unconfined` is required to mount private procfs in a nested
+user namespace; with Docker's default proc masks the kernel refuses it. Keep
+the capability drop, no-new-privileges and seccomp policy above. The worker
+never reuses the container's process view: exec gets read-only `/proc` for its
+own PID namespace; file and Google workers have no `/proc`. All workers get a minimal
 `/dev` and their permitted writable folders. Exec and file workers see the
 container's system folders (`/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, `/opt`,
-`/var/lib`) and each `--allow-read` path read-only, the shared folders writable,
-and nothing else; exec also gets a private empty `/tmp`, `/run` and `TMPDIR`. A volume
+`/var/lib`). Exec reads home except latch state, writes only its declared paths,
+tool caches and temp, and has no IP network without `--network`; host Unix
+sockets stay blocked even with it. Linux exec refuses AF_UNIX socket creation,
+including private filesystem sockets; anonymous socket pairs work online.
+File workers still use the shared folders and read-only `--allow-read` paths.
+Exec also gets a private empty `/tmp`, `/run` and `TMPDIR`. A volume
 mounted elsewhere in the container is visible to workers only if it is shared
 or named with `--allow-read`. Google workers get only explicit runtime mounts.
 State and credentials (see `latch serve --help`) are covered by empty read-only
@@ -55,6 +63,7 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - systempaths=unconfined
       - seccomp=./latch/docker/seccomp.json
     volumes:
       - ./host-state:/state
@@ -84,7 +93,8 @@ architecture-matching OCI seccomp profile and select it with
 The Docker JSON uses conditional rules and must be converted for the target
 architecture before use with CRI; do not use it as an OCI profile unchanged.
 AppArmor nodes also need a loaded and validated Localhost AppArmor profile.
-Keep default proc masking. No Kubernetes deployment was validated for this POC.
+The runtime must permit private procfs in nested user namespaces. No Kubernetes
+deployment was validated for this POC.
 
 ## Setup refusals
 

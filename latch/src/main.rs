@@ -251,8 +251,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             })
         }
         Command::Exec(args) => {
-            let mut request =
-                json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout,
+            let mut request = json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout,
                         "writes": args.writes, "network": args.network });
             if args.stdin {
                 let bytes = input::read_all(Duration::from_secs(args.timeout))?;

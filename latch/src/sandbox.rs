@@ -3,14 +3,13 @@
 //! A worker process calls `confine` before starting any runtime or threads.
 //! From then on the operating system itself enforces the policy, and it
 //! cannot be lifted, not even by programs the worker starts: writes only
-//! inside the host's areas (and an `exec` call's own temp folder), never the
-//! host's state directory or the running latch. File and `exec` workers read
-//! only the areas, an `exec` call's temp folder, the system's own files
-//! programs need, and the paths the owner opted in to with `--allow-read`
-//! (read-only); Google workers read only their call's folder and the system
-//! locations programs need. Credentials (`never_readable`) stay out of reach
-//! of every worker, even inside an area or an opt-in. A file worker gets no
-//! network; `exec` and Google workers may reach out to the network. Google
+//! inside the writable paths and temp folder, never the host's state
+//! directory or the running latch. Exec reads home and the system's files;
+//! its write paths and IP access are granted per call. Host Unix sockets
+//! remain inaccessible. File workers use the shared areas and read-only
+//! opt-ins; Google workers read only their call folder and runtime files.
+//! Hidden paths stay out of reach, with Library/Caches an exec exception.
+//! A file worker gets no network; Google workers may reach out. Google
 //! can execute only its pinned binary; neither can send Apple Events. The
 //! kernel resolves every path (symlinks included) before checking it, so a
 //! link into a hidden path is refused by Seatbelt and reports `not_found`
@@ -41,9 +40,10 @@ pub struct Policy {
     pub hidden: Vec<PathBuf>,
     /// The host's state directory: denied on macOS, hidden on Linux, even in an area.
     pub state_dir: PathBuf,
-    /// An `exec` worker: may start programs and use the outbound network.
+    /// An `exec` worker: may start programs and has its own process view.
     pub exec: bool,
     /// An exec worker's readable home and its Library/Caches exception.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub home: Option<PathBuf>,
     /// Outbound IP access; host Unix sockets are never granted.
     pub network: bool,
@@ -63,19 +63,13 @@ pub struct Policy {
     pub break_for_test: bool,
 }
 
-/// Where a user keeps credentials and private data: ssh and gpg keys,
-/// keychains, browser profiles, mail, messages, calendars and contacts,
-/// macOS's privacy permissions (TCC), latch's own state, and cloud and
-/// developer tools' logins. No worker may read them, even when the owner
-/// shares or opts in to a folder that holds them (the sandbox denies them
-/// after everything it allows), and `--allow-read` of a path inside one is
-/// refused.
+/// Latch's private state and, on macOS, Library. Exec profiles make a
+/// narrow exception for Library/Caches; other state folders are discovered
+/// separately and remain hidden even inside a writable cache.
 pub fn never_readable(home: &Path) -> Vec<PathBuf> {
-    #[allow(unused_mut)]
-    let mut paths = vec![home.join(".latch")];
-    #[cfg(target_os = "macos")]
-    paths.push(home.join("Library"));
-    paths
+    std::iter::once(home.join(".latch"))
+        .chain(cfg!(target_os = "macos").then(|| home.join("Library")))
+        .collect()
 }
 
 /// Confines the calling thread and any threads or processes it creates.
@@ -465,10 +459,18 @@ mod platform {
                 quoted(root)?
             ));
         }
+        if policy.network {
+            rules.push("(allow network-outbound (remote ip))".to_string());
+            rules.push(CODEX_NETWORK.to_string());
+        }
+        if let Some(tmpdir) = &policy.tmpdir {
+            rules.push("(allow system-socket (socket-domain AF_UNIX))".to_string());
+            rules.push(format!(
+                "(allow network-outbound (remote unix-socket (subpath {})))",
+                quoted(tmpdir)?
+            ));
+        }
         rules.extend([
-            "(allow network-outbound)".to_string(),
-            "(allow system-socket (socket-domain AF_UNIX))".to_string(),
-            CODEX_NETWORK.to_string(),
             // As Codex: no embedded XPC services, except the speech
             // synthesizer `say` uses, and no fcntls that change a file
             // through a read-only descriptor (F_MAKECOMPRESSED,
@@ -580,10 +582,21 @@ mod platform {
         let mut hidden = Vec::new();
         for path in policy.hidden.iter().filter(|path| path.exists()) {
             let path = real(path)?;
-            rules.push(format!(
-                "(deny file-read* file-write* (subpath {}))",
-                quoted(&path)?
-            ));
+            let filter = if policy.exec
+                && policy
+                    .home
+                    .as_ref()
+                    .is_some_and(|home| path == home.join("Library"))
+            {
+                format!(
+                    "(require-all (subpath {}) (require-not (subpath {})))",
+                    quoted(&path)?,
+                    quoted(&path.join("Caches"))?
+                )
+            } else {
+                format!("(subpath {})", quoted(&path)?)
+            };
+            rules.push(format!("(deny file-read* file-write* {filter})"));
             hidden.push(path);
         }
         // The one part of the state folder a worker may see: a Google
@@ -677,6 +690,8 @@ mod google_tests {
                 hidden: vec![],
                 state_dir: root.join("state"),
                 exec: false,
+                home: None,
+                network: false,
                 tmpdir: None,
                 kill_after: None,
                 program: Some(PathBuf::from(
@@ -757,6 +772,8 @@ mod google_tests {
                 hidden: vec![],
                 state_dir: root.join("state"),
                 exec: mode == "exec",
+                home: None,
+                network: mode == "exec",
                 tmpdir: (mode == "exec").then(|| root.join("private/call")),
                 kill_after: None,
                 program: (mode == "google").then(|| gog.clone()),

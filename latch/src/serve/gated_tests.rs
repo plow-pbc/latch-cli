@@ -104,10 +104,15 @@ async fn start_with(
         )),
         dashboard,
         workers: WorkerSetup {
+            home: root.clone(),
             areas: vec![area.clone()],
             reads: vec![],
-            hidden: vec![],
-            state_folders: crate::state_folders::StateFolders::none(),
+            hidden: crate::sandbox::never_readable(&root),
+            state_folders: crate::state_folders::StateFolders::new(
+                std::slice::from_ref(&root),
+                &state,
+                &crate::sandbox::never_readable(&root),
+            ),
             state_dir: state.clone(),
             program: latch_binary(),
         },
@@ -203,7 +208,7 @@ impl TestHost {
 }
 
 fn exec(script: &str) -> Value {
-    json!({"argv": ["/bin/sh", "-c", script], "workdir": null, "timeout": 10})
+    json!({"argv": ["/bin/sh", "-c", script], "writes": ["area"], "timeout": 10})
 }
 
 fn refusal(response: &Response) -> (Exit, &str, &Value) {
@@ -467,7 +472,111 @@ async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
 
 /// An exec of `/bin/sh` reading its script from `stdin`.
 fn exec_stdin(stdin: &[u8]) -> Value {
-    json!({"argv": ["/bin/sh"], "workdir": null, "timeout": 10, "stdin": stdin})
+    json!({"argv": ["/bin/sh"], "writes": ["area"], "timeout": 10, "stdin": stdin})
+}
+
+#[tokio::test]
+async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow() {
+    let t = start(a_chat(covered_after_a_yes)).await;
+    let agent = t.caller("agent").await;
+    for path in ["~", "~/..", "/", "~/.latch/new", t.state.to_str().unwrap()] {
+        let args = json!({"argv": ["true"], "writes": [path]});
+        let (answer, _) = t.call(&agent, "exec", args).await;
+        assert_eq!(refusal(&answer).1, "bad_path", "{path}");
+    }
+    assert_eq!(t.judged(), 0);
+    let path = t.host.workers.home.join("new-project");
+    let args = json!({"argv": ["/bin/sh", "-c", "printf built > result"],
+                      "writes": ["~/new-project"], "network": true});
+    let (refused, _) = t.call(&agent, "exec", args.clone()).await;
+    assert_eq!(refusal(&refused).1, "gatekeeper_denied");
+    assert!(!path.exists());
+    t.plow.world.lock().unwrap().decide = Some(always_covered);
+    let (answer, _) = t.call(&agent, "exec", args).await;
+    let Response::Ok(result) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(std::fs::read(path.join("result")).unwrap(), b"built");
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    for state in asked {
+        assert_eq!(state["proposed_action"]["writes"], json!([path]));
+        assert_eq!(state["proposed_action"]["working_folder"], json!(path));
+        assert_eq!(state["proposed_action"]["network"], true);
+    }
+    for record in t
+        .audit()
+        .into_iter()
+        .filter(|record| record["gate"].is_object())
+    {
+        assert_eq!(record["args"]["writes"], json!([path]));
+        assert_eq!(record["args"]["network"], true);
+    }
+}
+
+#[tokio::test]
+async fn exec_reads_home_but_writes_only_declarations_and_caches() {
+    let t = start(a_chat(always_covered)).await;
+    let home = &t.host.workers.home;
+    std::fs::create_dir(home.join(".ssh")).unwrap();
+    std::fs::write(home.join(".ssh/config"), "readable-dotfile").unwrap();
+    std::fs::create_dir(home.join(".latch")).unwrap();
+    std::fs::write(home.join(".latch/private"), "hidden-private-value").unwrap();
+    std::fs::create_dir(t.area.join("peer")).unwrap();
+    std::fs::write(
+        t.area.join("peer/latch.json"),
+        r#"{"format":1,"written_by":"test"}"#,
+    )
+    .unwrap();
+    std::fs::write(t.area.join("peer/private"), "hidden-peer-value").unwrap();
+    let agent = t.caller("agent").await;
+    let script = r#"
+        cat .ssh/config
+        cat .latch/private 2>/dev/null
+        cat area/peer/private 2>/dev/null
+        echo bad > undeclared 2>/dev/null
+        for p in .cache .npm .cargo/registry .cargo/git go/pkg/mod; do
+            echo cache > "$p/probe" || exit 9
+        done
+        echo locked >> .cargo/.package-cache
+        echo locked >> .cargo/.package-cache-mutate
+        echo scratch > "$TMPDIR/probe"
+    "#;
+    let (answer, _) = t
+        .call(&agent, "exec", json!({"argv": ["/bin/sh", "-c", script]}))
+        .await;
+    let Response::Ok(result) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("readable-dotfile")
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("hidden-private-value")
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("hidden-peer-value")
+    );
+    assert!(!home.join("undeclared").exists());
+    assert_eq!(result["writes"], json!([]));
+    assert_eq!(result["network"], false);
+    let file = home.join("area/notes.txt");
+    let args = json!({"argv": ["/bin/sh", "-c", "printf changed > area/notes.txt; echo bad > area/sibling"],
+                      "writes": [file]});
+    let (answer, _) = t.call(&agent, "exec", args).await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert_eq!(std::fs::read(file).unwrap(), b"changed");
+    assert!(!t.area.join("sibling").exists());
 }
 
 /// Whether the host's log or audit holds `text` anywhere.
