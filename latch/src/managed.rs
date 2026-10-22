@@ -127,9 +127,13 @@ pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
             .to_string();
         return Err(Failure::usage("no_terminal", message));
     }
-    let (hello, boards) = watch(&state.path, "host_watch")
-        .await
-        .map_err(not_serving)?;
+    let (hello, boards) =
+        watch(&state.path, "host_watch").await.map_err(
+            |failure| match lifecycle::other_version(&state.path) {
+                Some(pid) => lifecycle::other_version_running(pid),
+                None => not_serving(failure),
+            },
+        )?;
     let footer = "Ctrl-C closes this view; the host keeps running (`latch stop` stops it)";
     show(&hello, boards, footer).await;
     Ok(())
@@ -162,7 +166,10 @@ async fn launch(
         return Err(Failure::failed("launch_busy", message));
     };
     if lifecycle::holds_lock(&dir) {
-        return Err(already_serving(&dir).await);
+        return Err(match lifecycle::other_version(&dir) {
+            Some(pid) => lifecycle::other_version_running(pid),
+            None => already_serving(&dir).await,
+        });
     }
     let given = if args.again {
         given_before(&dir)?
@@ -318,11 +325,23 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
         if !asked && let Some(pid) = target {
             asked = ask(dir, "host_stop", json!({"pid": pid})).await.is_ok();
         }
+        // A host of another latch never answers on this one's socket: its
+        // service manager stops it if it has one; otherwise its owner does.
+        if !asked
+            && !removed
+            && !service.registered()
+            && let Some(pid) = lifecycle::other_version(dir)
+        {
+            return Err(lifecycle::other_version_running(pid));
+        }
         if !asked && !removed {
             service.remove()?;
             removed = true;
         }
         if started.elapsed() > STOP_WITHIN {
+            if let Some(pid) = lifecycle::other_version(dir) {
+                return Err(lifecycle::other_version_running(pid));
+            }
             let pid = target.map_or("?".to_string(), |pid| pid.to_string());
             let message = format!(
                 "the host (pid {pid}) did not stop within {} seconds",

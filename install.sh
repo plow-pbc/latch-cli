@@ -52,4 +52,3 @@ fi
 echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
 sh "$setup/install-binary.sh" "$@" "$setup/latch"
 "$setup/latch" --version
-echo 'A host run with latch serve --foreground keeps its old binary until it is restarted.'

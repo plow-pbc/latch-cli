@@ -2323,7 +2323,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(before["protocol"], 2);
     assert_eq!(
         before["serve"],
-        json!({"running": false, "ready": false, "managed": false, "state": "stopped", "pid": null})
+        json!({"running": false, "ready": false, "managed": false, "attached": false,
+               "state": "stopped", "pid": null, "blocked": null})
     );
     assert_eq!(before["last_error"], Value::Null);
 
@@ -2339,7 +2340,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let up = local(&host);
     assert_eq!(
         up["serve"],
-        json!({"running": true, "ready": true, "managed": false, "state": "serving", "pid": pid})
+        json!({"running": true, "ready": true, "managed": false, "attached": false,
+               "state": "serving", "pid": pid, "blocked": null})
     );
     drop(serve);
     let stopped = local(&host);
@@ -4350,6 +4352,124 @@ fn stop_reaches_a_foreground_host_that_is_still_starting() {
         text.contains("stopping: asked to by `latch stop`"),
         "{text}"
     );
+}
+
+/// A host an earlier latch started on `state`: it holds the state folder
+/// and says it serves, on the unversioned socket that latch used. Returns
+/// it, its socket, and what latch says of it.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+fn old_host(state: &Path) -> (Serving, std::os::unix::net::UnixListener, String) {
+    let lock = fs::File::create(state.join("serve.lock")).unwrap();
+    lock.lock().unwrap();
+    // The lock is the old host's: it holds it from here on, as stdin.
+    let old = Serving(
+        Command::new("sleep")
+            .arg("600")
+            .stdin(lock.try_clone().unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    drop(lock);
+    let pid = old.0.id();
+    fs::write(
+        state.join("serve.lock"),
+        format!("latch serve (pid {pid}, /old/latch)\n"),
+    )
+    .unwrap();
+    let written = json!({"state": "serving", "pid": pid, "run": format!("{pid}-1"),
+                         "since": "2026-10-22T04:51:40Z", "error": null});
+    fs::write(state.join("serve.json"), written.to_string()).unwrap();
+    let socket = std::os::unix::net::UnixListener::bind(state.join("serve.sock")).unwrap();
+    let said = format!(
+        "a host from another latch version is running (pid {pid}); stop it \
+         (Ctrl-C in its terminal, or kill {pid}), then retry"
+    );
+    (old, socket, said)
+}
+
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn a_host_from_another_version_is_named_and_left_to_its_owner() {
+    let (_dir, state, _) = owner_host();
+    let (mut old, _socket, said) = old_host(&state);
+    let pid = old.0.id();
+
+    // Running, but not this latch's to use.
+    let serve = local_serve(&state);
+    assert_eq!(serve["running"], true, "{serve}");
+    assert_eq!(serve["ready"], false, "{serve}");
+    assert_eq!(serve["pid"], pid, "{serve}");
+    assert_eq!(serve["blocked"]["code"], "other_version", "{serve}");
+    assert_eq!(serve["blocked"]["message"], said.as_str(), "{serve}");
+    let detached = latch(&state, &["serve", "-d"], &[]);
+    assert_eq!(detached.status.code(), Some(3), "{detached:?}");
+    assert!(
+        String::from_utf8_lossy(&detached.stderr).contains(&said),
+        "{detached:?}"
+    );
+    for args in [&["serve"][..], &["dashboard"]] {
+        let (mut view, _terminal, shown) = at_its_own_terminal(&state, args, &[]);
+        shows(&shown, &said);
+        assert_eq!(exits_within(&mut view, 10).code(), Some(3), "{args:?}");
+    }
+    // No latch here can reach it to stop it: its owner does.
+    let stop = latch(&state, &["stop"], &[]);
+    assert_eq!(stop.status.code(), Some(3), "{stop:?}");
+    assert!(
+        String::from_utf8_lossy(&stop.stderr).contains(&said),
+        "{stop:?}"
+    );
+    assert_eq!(old.0.try_wait().unwrap(), None, "nothing signalled it");
+}
+
+/// A socket file of this latch's that nothing listens on (left by a crash)
+/// is not this latch's host.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn a_stale_socket_of_this_version_is_never_taken_for_its_host() {
+    let (_dir, state, _) = owner_host();
+    let (_old, _socket, said) = old_host(&state);
+    let current = state.join("serve-v2.sock");
+    // A socket no one listens on any more, then a plain file.
+    drop(std::os::unix::net::UnixListener::bind(&current).unwrap());
+    let serve = local_serve(&state);
+    assert_eq!(serve["ready"], false, "{serve}");
+    assert_eq!(serve["blocked"]["message"], said.as_str(), "{serve}");
+    fs::remove_file(&current).unwrap();
+    fs::write(&current, "").unwrap();
+    let serve = local_serve(&state);
+    assert_eq!(serve["ready"], false, "{serve}");
+    assert_eq!(serve["blocked"]["code"], "other_version", "{serve}");
+}
+
+/// What an upgrade over a running older host did: setup took that host for
+/// this latch's, enabled nothing, and still said latch was running.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn setup_never_takes_a_host_from_another_version_for_its_own() {
+    let (_dir, state, _) = owner_host();
+    let (old, _socket, said) = old_host(&state);
+    let (mut setup, mut terminal, shown) = at_its_own_terminal(&state, &["setup"], &[]);
+    let mut all = shows(&shown, "Connect Google? [Y/n]");
+    terminal.write_all(b"y\n").unwrap();
+    all.push_str(&shows(&shown, &said));
+    if cfg!(target_os = "macos") {
+        all.push_str(&shows(
+            &shown,
+            "Enable Messages and Contacts on this Mac? [y/N]",
+        ));
+        terminal.write_all(b"n\n").unwrap();
+    }
+    all.push_str(&shows(&shown, "Start latch now? [Y/n]"));
+    terminal.write_all(b"y\n").unwrap();
+    all.push_str(&shows(&shown, "Run `latch setup` again any time."));
+    assert!(exits_within(&mut setup, 10).success());
+    assert_eq!(all.matches(said.as_str()).count(), 2, "{all}");
+    assert!(!all.contains("latch is running"), "{all}");
+    assert!(!all.contains("Google is connected"), "{all}");
+    assert!(!registered(&state), "no host of this latch was started");
+    let mut old = old;
+    assert_eq!(old.0.try_wait().unwrap(), None);
 }
 
 #[test]
