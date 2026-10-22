@@ -170,15 +170,11 @@ fn title(op: &str, request: &Value, audit: &Value) -> String {
                 (op, action) => format!("{}: {action}", capitalized(op)),
             }
         }
+        // Only the grammar's own words, never a query or body.
         "google" => {
-            let words: Vec<&str> = request["gog_args"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .take_while(|word| !word.starts_with('-'))
-                .collect();
-            format!("Google: {}", words.join(" "))
+            let words: Vec<String> =
+                serde_json::from_value(request["gog_args"].clone()).unwrap_or_default();
+            format!("Google: {}", crate::google::policy::command_prefix(&words))
         }
         "browser" => browser_title(request, audit),
         "vault_link" => format!("Phone link: {}", pick("op")),
@@ -264,9 +260,8 @@ fn step_words(step: &Value) -> String {
             words.push(word.to_string());
         }
     }
-    if let Some(text) = literal["text"].as_str() {
-        words.push(format!("{text:?}"));
-    }
+    // Never the text it types: it may be a code or a secret, which the
+    // audit keeps only as a length and a hash.
     if let Some(check) = step["check"]["value"].as_str() {
         // A sentence is its own words; a typed check says its kind.
         match step["check"]["kind"].as_str() {

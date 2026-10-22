@@ -883,6 +883,9 @@ fn pad(text: &str, width: usize) -> String {
 /// `text` on lines of at most `width` characters, broken at spaces where
 /// it can be, mid-word where a word is longer than a line. Nothing is cut.
 pub fn wrap(text: &str, width: usize) -> Vec<String> {
+    // A caller's words (an operation's name, a message) never drive the
+    // terminal: control characters are shown, not sent.
+    let text = &term::one_line(text);
     // An indented line (JSON, a list) keeps its indent on every line.
     let indent = text.len() - text.trim_start_matches(' ').len();
     if indent > 0 && indent < width {

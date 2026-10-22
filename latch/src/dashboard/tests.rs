@@ -925,3 +925,63 @@ fn a_browser_call_shows_the_judgment_its_own_record_holds() {
         "{decision}"
     );
 }
+
+#[test]
+fn nothing_typed_queried_or_sent_as_a_terminal_command_reaches_the_screen() {
+    let dashboard = Dashboard::new("host", None);
+    let typing = json!({"command": "do", "session": "s",
+        "plan": {"steps": [{"literal": {"op": "type", "ref": "e3", "text": "482913"}}]}});
+    run(
+        &dashboard,
+        owner(),
+        "browser",
+        typing.clone(),
+        json!({"command": "do"}),
+        Response::Ok(json!({})),
+        None,
+    );
+    let search = json!({"gog_args": ["gmail", "search", "private-query"]});
+    run(
+        &dashboard,
+        owner(),
+        "google",
+        search.clone(),
+        json!({}),
+        Response::Ok(json!({})),
+        None,
+    );
+    let driving = Response::Error {
+        exit: Exit::Failed,
+        code: "not_built_yet".into(),
+        message: "this host does not run `\u{1b}[2J\u{1b}]0;owned\u{7}` yet".into(),
+        details: Value::Null,
+    };
+    run(
+        &dashboard,
+        owner(),
+        "\u{1b}[2J",
+        json!({}),
+        json!({}),
+        driving,
+        None,
+    );
+    let shown = serde_json::to_string(&board(&dashboard)).unwrap();
+    assert!(
+        !shown.contains("482913") && !shown.contains("private-query"),
+        "{shown}"
+    );
+    let titles: Vec<String> = board(&dashboard)
+        .tasks
+        .iter()
+        .flat_map(|task| task.calls.iter().map(|call| call.title.clone()))
+        .collect();
+    assert!(titles.contains(&"type e3".to_string()), "{titles:?}");
+    assert!(
+        titles.contains(&"Google: gmail.search".to_string()),
+        "{titles:?}"
+    );
+    // The failure's details hold the caller's escape, shown and never sent.
+    let mut view = view_of(&dashboard, false);
+    view.key(Key::Enter);
+    screen(&view, 80, 30);
+}
