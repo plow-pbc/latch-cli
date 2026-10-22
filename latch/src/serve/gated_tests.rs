@@ -108,11 +108,6 @@ async fn start_with(
             areas: vec![area.clone()],
             reads: vec![],
             hidden: crate::sandbox::never_readable(&root),
-            state_folders: crate::state_folders::StateFolders::new(
-                std::slice::from_ref(&root),
-                &state,
-                &crate::sandbox::never_readable(&root),
-            ),
             state_dir: state.clone(),
             program: latch_binary(),
         },
@@ -418,9 +413,10 @@ async fn a_write_path_retargeted_after_judgment_is_refused() {
 }
 
 #[tokio::test]
-async fn a_cache_symlink_does_not_grant_its_target() {
+async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
     let t = start(a_chat(always_covered)).await;
     let home = &t.host.workers.home;
+    std::fs::write(home.join(".cache"), "plain file").unwrap();
     let target = home.join("outside-write");
     std::fs::create_dir(&target).unwrap();
     std::os::unix::fs::symlink(&target, home.join(".npm")).unwrap();
@@ -438,7 +434,10 @@ async fn a_cache_symlink_does_not_grant_its_target() {
         !target.join("victim").exists(),
         "cache granted an undeclared path"
     );
-    assert_eq!(refusal(&answer).1, "cache_failed");
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert_eq!(std::fs::read(home.join(".cache")).unwrap(), b"plain file");
+    assert!(!home.join(".cargo").exists());
+    assert!(!home.join("go").exists());
 }
 
 #[tokio::test]
@@ -582,6 +581,15 @@ async fn exec_reads_home_but_writes_only_declarations_and_caches() {
     )
     .unwrap();
     std::fs::write(t.area.join("peer/private"), "hidden-peer-value").unwrap();
+    for cache in [
+        ".cache",
+        ".npm",
+        ".cargo/registry",
+        ".cargo/git",
+        "go/pkg/mod",
+    ] {
+        std::fs::create_dir_all(home.join(cache)).unwrap();
+    }
     let agent = t.caller("agent").await;
     let script = r#"
         cat .ssh/config
@@ -591,8 +599,6 @@ async fn exec_reads_home_but_writes_only_declarations_and_caches() {
         for p in .cache .npm .cargo/registry .cargo/git go/pkg/mod; do
             echo cache > "$p/probe" || exit 9
         done
-        echo locked >> .cargo/.package-cache
-        echo locked >> .cargo/.package-cache-mutate
         echo scratch > "$TMPDIR/probe"
     "#;
     let (answer, _) = t
@@ -615,7 +621,7 @@ async fn exec_reads_home_but_writes_only_declarations_and_caches() {
             .contains("hidden-private-value")
     );
     assert!(
-        !result["stdout"]
+        result["stdout"]
             .as_str()
             .unwrap()
             .contains("hidden-peer-value")

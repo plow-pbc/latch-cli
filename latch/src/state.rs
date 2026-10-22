@@ -75,14 +75,6 @@ pub struct StateDir {
     pub path: PathBuf,
 }
 
-/// Whether `dir` is a latch state folder: it holds latch's `latch.json`
-/// marker, or, made before there was one, both a key and a Plow login.
-pub fn is_state_folder(dir: &Path) -> bool {
-    let marked = fs::read_to_string(dir.join("latch.json"))
-        .is_ok_and(|text| serde_json::from_str::<Marker>(&text).is_ok());
-    marked || (dir.join("key").is_file() && dir.join("plow-token").is_file())
-}
-
 impl StateDir {
     /// `--state-dir` if given, else `~/.latch`.
     pub fn new(flag: Option<PathBuf>) -> Result<StateDir, Failure> {

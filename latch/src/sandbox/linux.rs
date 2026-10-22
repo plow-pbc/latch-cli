@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -33,7 +33,13 @@ fn bubblewrap() -> Result<PathBuf, String> {
 }
 
 pub fn check() -> Result<(), String> {
-    bubblewrap().map(|_| ())
+    bubblewrap()?;
+    // SAFETY: the version query uses null/zero arguments and writes no memory.
+    let abi = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, 0, 0, 1) };
+    if abi < 9 {
+        return Err("exec requires Landlock ABI 9 or newer for Unix socket confinement".into());
+    }
+    Ok(())
 }
 
 /// Nothing to hold: the launcher outside bubblewrap watches the host.
@@ -56,6 +62,7 @@ pub fn confine(policy: &Policy) -> Result<(), String> {
         )
         .and_then(|()| {
             if policy.exec {
+                confine_unix_sockets()?;
                 supervise_exec()?;
             }
             Ok(())
@@ -427,6 +434,68 @@ const STATUS: &str = "/.latch-exit-status";
 /// `STATUS` is, where no opt-in or area can cover it.
 const PRIVATE_TMPDIR: &str = "/.latch-tmp";
 
+/// Pathname sockets resolve only inside our private temp. Abstract sockets
+/// cannot reach servers outside this worker's domain; unnamed IPC still works.
+fn confine_unix_sockets() -> Result<(), Error> {
+    const MAKE_SOCK: u64 = 1 << 9;
+    const REFER: u64 = 1 << 13;
+    const RESOLVE_UNIX: u64 = 1 << 16;
+    #[repr(C)]
+    struct Ruleset {
+        fs: u64,
+        net: u64,
+        scoped: u64,
+    }
+    #[repr(C, packed)]
+    struct PathRule {
+        access: u64,
+        parent: i32,
+    }
+    let attr = Ruleset {
+        fs: MAKE_SOCK | REFER | RESOLVE_UNIX,
+        net: 0,
+        scoped: 1, // LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET
+    };
+    // SAFETY: attr has the kernel's C ABI layout and remains live for the call.
+    // A successful return transfers one new descriptor into OwnedFd below.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            &attr,
+            size_of::<Ruleset>(),
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: this descriptor was just created and has no other owner.
+    let rules = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    // REFER is implicitly denied by every ruleset: preserve ordinary renames.
+    for (path, access) in [("/", REFER), (PRIVATE_TMPDIR, MAKE_SOCK | RESOLVE_UNIX)] {
+        let dir = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(path)?;
+        let rule = PathRule {
+            access,
+            parent: dir.as_raw_fd(),
+        };
+        // SAFETY: both descriptors are live and rule has the packed UAPI layout
+        // for LANDLOCK_RULE_PATH_BENEATH (1). The kernel copies it during the call.
+        if unsafe { libc::syscall(libc::SYS_landlock_add_rule, rules.as_raw_fd(), 1, &rule, 0) } < 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    // SAFETY: rules owns a valid ruleset. Seccomp setup already set no_new_privs;
+    // the worker is single-threaded, and its future children inherit the policy.
+    if unsafe { libc::syscall(libc::SYS_landlock_restrict_self, rules.as_raw_fd(), 0) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
 fn supervise_exec() -> Result<(), Error> {
     // SAFETY: this scalar prctl changes only the current process's dumpability.
     // Set it before fork so the workload cannot race a read of its supervisor's
@@ -480,7 +549,7 @@ fn mount_writable(command: &mut Command, path: &Path, files: &mut Vec<File>) -> 
 /// The seccomp filter; `offline` also refuses every socket (file workers).
 /// `namespaces` lets the browser's engine make the namespaces its own
 /// sandbox runs in; no other worker may.
-fn filter(offline: bool, namespaces: bool, block_unix: bool) -> Result<(), Error> {
+fn filter(offline: bool, namespaces: bool, exec: bool) -> Result<(), Error> {
     let mut rules = BTreeMap::new();
     if !namespaces {
         rules.insert(libc::SYS_unshare, vec![]);
@@ -499,7 +568,7 @@ fn filter(offline: bool, namespaces: bool, block_unix: bool) -> Result<(), Error
     ] {
         rules.insert(syscall, vec![]);
     }
-    if offline {
+    if offline && !exec {
         for syscall in [
             libc::SYS_socket,
             libc::SYS_socketpair,
@@ -511,25 +580,24 @@ fn filter(offline: bool, namespaces: bool, block_unix: bool) -> Result<(), Error
             rules.insert(syscall, vec![]);
         }
     } else {
-        // VM sockets can reach host services outside the filesystem view.
-        let deny_vsock = SeccompRule::new(vec![SeccompCondition::new(
+        // Offline exec retains unnamed Unix IPC, not IP or other host transports.
+        // Landlock restricts named Unix destinations independently of IP access.
+        let denied_domain = SeccompRule::new(vec![SeccompCondition::new(
             0,
             SeccompCmpArgLen::Dword,
-            SeccompCmpOp::Eq,
-            libc::AF_VSOCK as u64,
+            if offline {
+                SeccompCmpOp::Ne
+            } else {
+                SeccompCmpOp::Eq
+            },
+            if offline {
+                libc::AF_UNIX
+            } else {
+                libc::AF_VSOCK
+            } as u64,
         )?])?;
-        let mut sockets = vec![deny_vsock.clone()];
-        if block_unix {
-            // Read-only bind mounts still expose host daemon sockets.
-            sockets.push(SeccompRule::new(vec![SeccompCondition::new(
-                0,
-                SeccompCmpArgLen::Dword,
-                SeccompCmpOp::Eq,
-                libc::AF_UNIX as u64,
-            )?])?);
-        }
-        rules.insert(libc::SYS_socket, sockets);
-        rules.insert(libc::SYS_socketpair, vec![deny_vsock]);
+        rules.insert(libc::SYS_socket, vec![denied_domain.clone()]);
+        rules.insert(libc::SYS_socketpair, vec![denied_domain]);
     }
     let filter: BpfProgram = SeccompFilter::new(
         rules,

@@ -27,7 +27,7 @@ arguments, accepts options before or after an explicit binary path, and shows
 usage with `--help`.
 It downloads pinned gog into `~/.latch/plugins`. Setup requires curl, tar and
 SHA-256 tools.
-Linux hosting needs bubblewrap and usable user namespaces; setup explains missing
+Linux hosting needs bubblewrap, usable user namespaces and Landlock ABI 9 or newer; setup explains missing
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
 
@@ -65,13 +65,9 @@ No Homebrew tap is included.
   `--allow-read PATH` (repeatable) adds a file or folder they may read but
   never write, e.g. `--allow-read ~/.rustup --allow-read ~/.cargo` for a
   Rust toolchain kept in the home folder.
-- Credentials and private data are never readable, even inside a shared or
-  `--allow-read` folder: `~/.ssh`, `~/.gnupg`, keychains, browser profiles,
-  Mail, Messages, Calendars, Contacts, macOS's privacy settings (TCC),
-  latch's state (any state folder in the shares too), `~/.aws`,
-  `~/.config/gcloud`, `~/.azure`, `~/.kube`, `~/.docker/config.json`,
-  `~/.netrc`, `~/.npmrc`, `~/.git-credentials` and `~/.config/gh`. An
-  `--allow-read` inside one of them is refused.
+- Exec reads home except `~/.latch`, the host's own state directory, and on
+  macOS `~/Library` except `~/Library/Caches`. Other state directories are
+  ordinary home content; latch does not search home for them.
 - The home folder, its `Library` and the folders above them (`/Users`, `/`)
   can be neither shared nor named with `--allow-read`: name the projects in
   it instead. `latch serve --help` has the whole list of what callers can

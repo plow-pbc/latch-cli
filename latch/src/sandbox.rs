@@ -63,8 +63,7 @@ pub struct Policy {
 }
 
 /// Latch's private state and, on macOS, Library. Exec profiles make a
-/// narrow exception for Library/Caches; other state folders are discovered
-/// separately and remain hidden even inside a writable cache.
+/// narrow exception for Library/Caches. The host denies its own state separately.
 pub fn never_readable(home: &Path) -> Vec<PathBuf> {
     std::iter::once(home.join(".latch"))
         .chain(cfg!(target_os = "macos").then(|| home.join("Library")))
@@ -192,7 +191,7 @@ pub fn check() -> Result<(), String> {
 
 pub fn name() -> &'static str {
     if cfg!(target_os = "linux") {
-        "bubblewrap + seccomp"
+        "bubblewrap + Landlock + seccomp"
     } else {
         "Seatbelt"
     }
@@ -486,6 +485,10 @@ mod platform {
         }
         if policy.network {
             rules.push("(allow network-outbound (remote ip))".to_string());
+            // macOS getaddrinfo sends DNS requests through this system daemon.
+            rules.push(
+                "(allow network-outbound (literal \"/private/var/run/mDNSResponder\"))".to_string(),
+            );
             rules.push(CODEX_NETWORK.to_string());
         }
         if let Some(tmpdir) = &policy.tmpdir {
@@ -494,6 +497,12 @@ mod platform {
                 "(allow network-outbound (remote unix-socket (subpath {})))",
                 quoted(tmpdir)?
             ));
+            for operation in ["network-bind", "network-inbound"] {
+                rules.push(format!(
+                    "(allow {operation} (local unix-socket (subpath {})))",
+                    quoted(tmpdir)?
+                ));
+            }
         }
         rules.extend([
             // As Codex: no embedded XPC services, except the speech
