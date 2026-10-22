@@ -2,15 +2,22 @@
 //! Disk Access as the host process sees it, checked from a worker it
 //! starts (which macOS treats as the host's), never from the terminal
 //! that asked. The worker opens the connector's stores read-only and reads
-//! nothing from them.
+//! nothing from them. With no host running, the same check runs in a
+//! one-shot launchd job of the app's latch, as the host would.
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::failure::Failure;
 use crate::plugins::Connector;
+use crate::state::StateDir;
 use crate::worker::WorkerSetup;
+
+/// How long the one-shot check has, its worker's start included.
+const CHECK_WITHIN: Duration = Duration::from_secs(30);
 
 /// System Settings' Full Disk Access pane.
 pub const SETTINGS: &str =
@@ -58,6 +65,64 @@ pub async fn check(workers: &WorkerSetup, connector: Connector, home: &Path) -> 
             status: Status::Unavailable,
             reason: format!("the access check could not run: {}", err.message),
         })
+}
+
+/// The check, with no host running, as the host would make it: in a
+/// one-shot job of this latch (the app's, when it is in one), started by
+/// launchd rather than by this terminal.
+pub async fn check_as_app(state_dir: &Path, connector: Connector) -> Access {
+    let unavailable = |reason: String| Access {
+        status: Status::Unavailable,
+        reason: format!("the access check could not run: {reason}"),
+    };
+    let program = match std::env::current_exe().and_then(|exe| exe.canonicalize()) {
+        Ok(program) => program,
+        Err(err) => return unavailable(err.to_string()),
+    };
+    let argv = [
+        program.into_os_string(),
+        "--state-dir".into(),
+        state_dir.into(),
+        "access-check".into(),
+        connector.name().into(),
+    ];
+    let printed = match crate::managed::run_as_app(state_dir, "access", &argv, CHECK_WITHIN).await {
+        Ok(printed) => printed,
+        Err(failure) => return unavailable(failure.message),
+    };
+    let answer = printed
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok());
+    match answer {
+        Some(answer) => match serde_json::from_value::<Access>(answer.clone()) {
+            Ok(access) => access,
+            Err(_) => unavailable(
+                answer["error"]["message"]
+                    .as_str()
+                    .unwrap_or(printed.trim())
+                    .to_string(),
+            ),
+        },
+        None => unavailable(printed.trim().to_string()),
+    }
+}
+
+/// The one-shot job's side: the host's check, from a worker of its own.
+pub async fn check_here(state: &StateDir, connector: Connector) -> Result<Access, Failure> {
+    // Tests stand in for macOS's answer here, as this job: a test build
+    // has no Full Disk Access to grant.
+    #[cfg(debug_assertions)]
+    if let Some(answer) = std::env::var_os("LATCH_TEST_ACCESS") {
+        let status = serde_json::from_value(serde_json::json!(answer.to_string_lossy()))
+            .map_err(|err| Failure::usage("bad_test_access", err.to_string()))?;
+        let reason = "LATCH_TEST_ACCESS".to_string();
+        return Ok(Access { status, reason });
+    }
+    let dir = state.path.canonicalize().unwrap_or(state.path.clone());
+    let workers = crate::serve::workers(dir)?;
+    let home = workers.home.clone();
+    Ok(check(&workers, connector, &home).await)
 }
 
 /// The worker's side, once confined: finds `connector`'s stores in

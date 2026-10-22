@@ -192,26 +192,30 @@ impl Stub {
 }
 
 #[test]
-fn a_fresh_run_logs_in_connects_google_and_starts_latch() {
+fn a_fresh_run_sets_everything_up_then_starts_latch() {
     let stub = Stub::new();
-    // Enter takes each default: Google yes, Messages no.
+    // Enter takes each default: Google yes, Messages no, start yes.
     let (code, shown) = stub.setup("\n\n\n");
     assert_eq!(code, Some(0), "{shown}");
     for line in [
         "→ Log in: latch login",
         "Connect Google? [Y/n]",
-        "→ Start latch: latch serve -d",
         "→ Connect Google: latch plugins enable google",
         "✓ Google is connected.",
+        "Start latch now? [Y/n]",
+        "→ Start latch: latch serve -d",
         "✓ latch is running.",
     ] {
         assert!(shown.contains(line), "{line}: {shown}");
     }
     let calls = stub.read("calls");
-    assert!(
-        calls.contains("\nlogin\n") && calls.contains("serve -d\n"),
-        "{calls}"
+    assert!(calls.contains("\nlogin\n"), "{calls}");
+    // The host starts last: no step before it needs one.
+    let (google, serve) = (
+        calls.find("plugins enable google").unwrap(),
+        calls.find("serve -d").unwrap(),
     );
+    assert!(google < serve, "{calls}");
     assert!(!calls.contains("LATCH_HOST"), "{calls}");
     assert!(stub.has("enabled-google"));
     assert!(!stub.has("enabled-messages"));
@@ -224,8 +228,8 @@ fn login_gets_the_answers_to_its_own_questions() {
     let stub = Stub::new();
     stub.file("taken", "");
     // Login's: keep the other machine, call this one "studio". Then
-    // setup's: Google yes, Messages no.
-    let (code, shown) = stub.setup("n\nstudio\n\nn\n");
+    // setup's: Google yes, Messages no, start no.
+    let (code, shown) = stub.setup("n\nstudio\n\nn\nn\n");
     assert_eq!(code, Some(0), "{shown}");
     assert_eq!(stub.read("login-answers"), "n\nstudio\n", "{shown}");
     assert!(shown.contains("✓ Google is connected."), "{shown}");
@@ -250,13 +254,13 @@ fn a_rerun_skips_every_step_already_done() {
     assert!(shown.contains("✓ latch is running."), "{shown}");
     assert!(!shown.contains('?'), "nothing asked: {shown}");
     let calls = stub.read("calls");
-    for changed in ["login", "serve -d", "plugins enable"] {
+    for changed in ["login", "serve", "plugins enable"] {
         assert!(!calls.contains(changed), "{changed}: {calls}");
     }
 }
 
 #[test]
-fn every_no_leaves_its_step_for_later_and_starts_nothing() {
+fn every_no_leaves_its_step_for_later() {
     let stub = Stub::new();
     stub.file("peer", "");
     let (code, shown) = stub.setup("n\nn\nn\n");
@@ -266,12 +270,14 @@ fn every_no_leaves_its_step_for_later_and_starts_nothing() {
         "{shown}"
     );
     assert!(
-        shown.contains("Not started; later: `latch serve -d`."),
+        shown.contains(
+            "Not started; later: `latch serve`, or `latch serve -d` to run it in the background."
+        ),
         "{shown}"
     );
     let calls = stub.read("calls");
     assert!(
-        !calls.contains("serve -d") && !calls.contains("plugins enable"),
+        !calls.contains("serve") && !calls.contains("plugins enable"),
         "{calls}"
     );
 }
@@ -281,14 +287,14 @@ fn a_failed_step_says_why_and_the_next_one_still_runs() {
     let stub = Stub::new();
     stub.file("peer", "");
     stub.file("enable-google", "fail\n");
-    let (code, shown) = stub.setup("y\nn\n");
+    let (code, shown) = stub.setup("y\nn\nn\n");
     assert_eq!(code, Some(0), "{shown}");
     assert!(shown.contains("✗ Plow has no Google account"), "{shown}");
     assert!(
         shown.contains("Try again later: latch plugins enable google"),
         "{shown}"
     );
-    assert!(shown.contains("✓ latch is running."), "{shown}");
+    assert!(shown.contains("Start latch now? [Y/n]"), "{shown}");
 }
 
 #[test]
@@ -307,17 +313,18 @@ fn setup_needs_a_terminal() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn messages_and_contacts_are_confirmed_through_the_host_once_granted() {
+fn messages_and_contacts_are_confirmed_once_granted() {
     let stub = Stub::new();
     stub.file("peer", "");
-    // Google was turned on before; the host is not running now.
+    // Google was turned on before, and latch runs, so setup asks nothing
+    // after this step (a line typed during the wait is not an answer).
     stub.enable("google");
+    stub.file("ready", "");
     // Not granted at first; granted on the host's next check.
     stub.file("enable-messages", "not_granted\nok\n");
     stub.file("enable-contacts", "not_granted\nok\n");
     let (code, shown) = stub.setup("y\n");
     assert_eq!(code, Some(0), "{shown}");
-    assert!(shown.contains("→ Start latch: latch serve -d"), "{shown}");
     assert!(
         shown.contains("Turn on Full Disk Access for /Applications/Plow Latch.app"),
         "{shown}"
@@ -371,7 +378,13 @@ fn a_host_that_ran_here_before_starts_again_with_its_flags() {
         r#"["--deny-exec"]"#,
     )
     .unwrap();
-    let (code, shown) = stub.setup("\nn\n");
+    // Google no, on macOS Messages no, start yes.
+    let typed = if cfg!(target_os = "macos") {
+        "n\nn\n\n"
+    } else {
+        "n\n\n"
+    };
+    let (code, shown) = stub.setup(typed);
     assert_eq!(code, Some(0), "{shown}");
     assert!(
         shown.contains("→ Start latch: latch serve -d --again"),

@@ -334,6 +334,11 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 exit: ExitCode::SUCCESS,
             })
         }
+        #[cfg(target_os = "macos")]
+        Command::AccessCheck { name } => {
+            let connector = plugins::Connector::named(&name)?;
+            to_json(messages::access::check_here(&state, connector).await?)
+        }
         Command::Worker(_)
         | Command::BrowserWorker(_)
         | Command::Help(_)

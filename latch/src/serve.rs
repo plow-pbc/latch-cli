@@ -13,7 +13,7 @@
 //! unreachable) denies. Every allow and every deny goes into the audit log.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -199,14 +199,8 @@ pub async fn run(
     result
 }
 
-/// `run`, once this serve holds the state folder.
-async fn run_locked(
-    state: &StateDir,
-    headless_browsers: bool,
-    deny_exec: DenyExec,
-    attached: bool,
-    state_dir: PathBuf,
-) -> Result<(), Failure> {
+/// The workers a host on `state_dir` starts: this latch, confined.
+pub(crate) fn workers(state_dir: PathBuf) -> Result<WorkerSetup, Failure> {
     let program = std::env::current_exe()
         .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
     let home = std::env::home_dir()
@@ -217,14 +211,25 @@ async fn run_locked(
                 "the host's home folder cannot be resolved".into(),
             )
         })?;
-    let workers = WorkerSetup {
+    Ok(WorkerSetup {
         home,
         areas: vec![],
         reads: vec![],
         hidden: hidden_paths(),
         state_dir,
         program,
-    };
+    })
+}
+
+/// `run`, once this serve holds the state folder.
+async fn run_locked(
+    state: &StateDir,
+    headless_browsers: bool,
+    deny_exec: DenyExec,
+    attached: bool,
+    state_dir: PathBuf,
+) -> Result<(), Failure> {
+    let workers = workers(state_dir)?;
     let rules = RuleFiles::new(&state.path)?;
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
@@ -592,6 +597,24 @@ fn host_upgraded() -> Failure {
 /// another process asking whether a serve runs (`lifecycle::holds_lock`),
 /// so this waits that long before refusing.
 fn lock_state(state_dir: &Path) -> Result<File, Failure> {
+    hold_state(state_dir, "latch serve", Duration::from_secs(1), |_| true)?.map_err(|holder| {
+        let message = format!(
+            "{} is already served by {holder}; stop that `latch serve` first",
+            state_dir.display()
+        );
+        Failure::failed("already_serving", message)
+    })
+}
+
+/// Takes `serve.lock` for `who` (see `lock_state`), trying for up to
+/// `within`, but past the first second only while `wait_for` says its
+/// holder will let go. Not taken: who holds it, as its file says.
+pub(crate) fn hold_state(
+    state_dir: &Path,
+    who: &str,
+    within: Duration,
+    wait_for: impl Fn(&str) -> bool,
+) -> Result<Result<File, String>, Failure> {
     let path = state_dir.join("serve.lock");
     let io =
         |err: std::io::Error| Failure::failed("state_io", format!("{}: {err}", path.display()));
@@ -603,37 +626,30 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
         .mode(0o600)
         .open(&path)
         .map_err(io)?;
-    let try_lock = || file.try_lock().is_ok();
-    let mut locked = try_lock();
-    for _ in 0..20 {
-        if locked {
-            break;
+    let started = std::time::Instant::now();
+    while file.try_lock().is_err() {
+        let mut holder = String::new();
+        let _ = file
+            .seek(std::io::SeekFrom::Start(0))
+            .and_then(|_| file.read_to_string(&mut holder));
+        let holder = match holder.trim() {
+            "" => "another process".to_string(),
+            holder => holder.to_string(),
+        };
+        let waited = started.elapsed();
+        if waited >= within || (waited >= Duration::from_secs(1) && !wait_for(&holder)) {
+            return Ok(Err(holder));
         }
         std::thread::sleep(Duration::from_millis(50));
-        locked = try_lock();
-    }
-    if !locked {
-        let mut holder = String::new();
-        let _ = file.read_to_string(&mut holder);
-        let holder = holder.trim();
-        let holder = if holder.is_empty() {
-            "another process"
-        } else {
-            holder
-        };
-        let message = format!(
-            "{} is already served by {holder}; stop that `latch serve` first",
-            state_dir.display()
-        );
-        return Err(Failure::failed("already_serving", message));
     }
     let exe =
         std::env::current_exe().map_or_else(|_| "latch".into(), |exe| exe.display().to_string());
-    let holder = format!("latch serve (pid {}, {exe})\n", std::process::id());
+    let holder = format!("{who} (pid {}, {exe})\n", std::process::id());
     file.set_len(0)
+        .and_then(|()| file.rewind())
         .and_then(|()| file.write_all(holder.as_bytes()))
         .map_err(io)?;
-    Ok(file)
+    Ok(Ok(file))
 }
 
 /// The places no worker may read or write (`sandbox::never_readable`). The

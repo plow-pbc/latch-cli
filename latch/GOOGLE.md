@@ -15,7 +15,7 @@ Google worker reads and runs its own gog folder, read-only, while `exec` and
 file workers can neither read nor run anything under the state directory.
 
 Google is off on a host until its owner runs `latch plugins enable google`
-there, with `latch serve` running: the setup checks that gog is installed
+there, with or without `latch serve` running: the setup checks that gog is installed
 and that Plow has a Google account connected for this host to use. Until
 then every Google call gets `not_enabled`. `latch plugins disable google`
 only stops this host asking Plow for Google credentials; nothing is revoked

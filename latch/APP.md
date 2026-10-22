@@ -39,7 +39,7 @@ normal answer, not an error.
 ```
 {"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/2)","protocol":2,
  "peer":{"name":"studio","key":"d9438ef1…","kind":"device"},
- "serve":{"running":true,"ready":true,"managed":true,"state":"serving","pid":63632},
+ "serve":{"running":true,"ready":true,"configuring":false,"managed":true,"state":"serving","pid":63632},
  "last_error":null}
 ```
 
