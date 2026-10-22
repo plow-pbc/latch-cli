@@ -948,21 +948,43 @@ fn a_fill_refused_part_way_through_a_plan_says_what_ran_first() {
         "The owner's messages don't cover this.",
         json!({}),
     );
-    run(&dashboard, agent(), "browser", plan, audit, no, None);
+    run(
+        &dashboard,
+        agent(),
+        "browser",
+        plan,
+        audit.clone(),
+        no,
+        None,
+    );
     let call = board(&dashboard).tasks[0].calls[0].clone();
     assert_eq!(call.outcome.line(), "Stopped - step 3; 2 ran");
     assert_eq!(
         call.steps[2].outcome.as_ref().map(Outcome::line).as_deref(),
         Some("Refused - outside your instructions")
     );
-    let mut view = view_of(&dashboard, false);
-    view.key(Key::Enter);
-    let inspector = screen(&view, 100, 30).join("\n");
-    assert!(
-        inspector.contains("STOPPED - step 3; 2 ran."),
-        "{inspector}"
+    // So it reads after a restart too, from its audit record alone.
+    let mut record = crate::audit::record(
+        "agent-key",
+        Some("agent-1".into()),
+        "browser",
+        "deny",
+        "gatekeeper_denied",
     );
-    assert!(!inspector.contains("did not run"), "{inspector}");
+    record.time = "2026-10-22T14:00:00Z".into();
+    record.args = audit;
+    let restored = Dashboard::new("host");
+    restored.restore(recorded(&record, "host-key").into_iter().collect());
+    for dashboard in [&dashboard, &restored] {
+        let mut view = view_of(dashboard, false);
+        view.key(Key::Enter);
+        let inspector = screen(&view, 100, 30).join("\n");
+        assert!(
+            inspector.contains("STOPPED - step 3; 2 ran."),
+            "{inspector}"
+        );
+        assert!(!inspector.contains("did not run"), "{inspector}");
+    }
 }
 
 #[test]
@@ -1027,7 +1049,9 @@ fn each_call_shows_its_kind_and_its_command_as_typed() {
         ok(),
         None,
     );
-    let labels = json!({"gog_args": ["--account", "owner@example.com", "gmail", "labels", "list"]});
+    // As the client sends it: `--account` lifted out of gog's arguments.
+    let labels = json!({"gog_args": ["gmail", "labels", "list"],
+                        "account": ["owner@example.com"]});
     let unconnected = Response::Error {
         exit: Exit::Failed,
         code: "account_required".into(),

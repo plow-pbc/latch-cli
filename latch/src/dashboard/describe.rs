@@ -87,7 +87,7 @@ pub fn finished(
             details,
             ..
         } => (
-            failed(op, code, details, audit, &steps),
+            failed(op, code, details, audit),
             Some(code.clone()),
             Some(message.clone()),
         ),
@@ -288,11 +288,8 @@ fn command(op: &str, request: &Value, audit: &Value) -> (String, String) {
             op
         }
         "google" => {
-            let mut args = words(request["gog_args"].clone());
-            if let Some(at) = args.iter().position(|arg| arg == "--account")
-                && at + 1 < args.len()
-            {
-                let account = args.drain(at..at + 2).nth(1).unwrap_or_default();
+            let args = words(request["gog_args"].clone());
+            for account in words(request["account"].clone()) {
                 line.extend(["--account".into(), quoted(&account)]);
             }
             let prefix = match audit["command"].as_str() {
@@ -543,20 +540,18 @@ fn done(op: &str, audit: &Value, steps: &[Step]) -> Outcome {
 }
 
 /// How a call that was not answered went: refused, stopped or failed.
-fn failed(op: &str, code: &str, details: &Value, audit: &Value, steps: &[Step]) -> Outcome {
+fn failed(op: &str, code: &str, details: &Value, audit: &Value) -> Outcome {
     // A plan that stopped part way, a refused fill too: where, and how much
-    // ran first; the step itself says why.
+    // ran first, as its audit keeps them; the step itself says why.
     if op == "browser"
         && let Some(at) = audit["stop"]["step"].as_u64()
+        && let Some(steps) = audit["step_outcomes"].as_array()
         && steps.len() > 1
     {
         let ran = steps
             .iter()
-            .filter(|step| {
-                step.outcome
-                    .as_ref()
-                    .is_some_and(|o| o.state == State::Done)
-            })
+            .filter_map(step_outcome)
+            .filter(|outcome| outcome.state == State::Done)
             .count();
         return Outcome::new(State::Stopped, Some(format!("step {at}; {ran} ran")));
     }
