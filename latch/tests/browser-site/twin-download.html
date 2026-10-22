@@ -1,0 +1,6 @@
+<!doctype html><title>latch twin downloads</title>
+<!-- Every session's link downloads as statement.csv: the file named in ?file=. -->
+<p><a id="get" download="statement.csv">Download the statement</a></p>
+<script>
+  document.getElementById('get').href = new URLSearchParams(location.search).get('file');
+</script>

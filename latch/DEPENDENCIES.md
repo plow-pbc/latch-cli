@@ -3,7 +3,7 @@
 Every crate `latch` depends on directly, and why. The usage numbers are from
 the library audit (crates.io and GitHub APIs, pulled 2026-10-14). `rand` is not in
 the audit; its row was pulled from the same APIs on 2026-10-15, and the vault's six
-(`aes-gcm` to `zip`) on 2026-10-19, `qrcode` on 2026-10-19, and the two `tracing` crates on 2026-10-21. Downloads
+(`aes-gcm` to `zip`, named in the browser spec) on 2026-10-19, `qrcode` on 2026-10-19, and the two `tracing` crates on 2026-10-21. Downloads
 are all-time / last 90 days. The bar for a new crate: widely used, actively
 maintained, from a known owner. Add a row here in the same change that adds a
 crate to `Cargo.toml`. `cargo deny --locked check` holds the whole locked graph
@@ -23,7 +23,7 @@ only. CI runs it on every dependency change and daily.
 | `serde` | Plain structs to and from JSON | 1,531M | 10.9k | serde-rs org | 1.0.229 (2026-07-18) | MIT/Apache-2.0 |
 | `serde_json` | The JSON format for serde | 1,434M | 5.7k | serde-rs org | 1.0.154 (2026-10-11) | MIT/Apache-2.0 |
 | `sha2` | sha256 for the audit log's hash chain | 1,062M / 302M | 2.3k | RustCrypto org | 0.11.1 (2026-10-12) | MIT/Apache-2.0 |
-| `tempfile` | Per-call Google folders and throwaway test state | 890M / 208M | 1.5k | Stebalien | 3.27.0 (2026-03-11) | MIT/Apache-2.0 |
+| `tempfile` | Per-call Google folders, each browser session's scratch folder, and throwaway test state | 890M / 208M | 1.5k | Stebalien | 3.27.0 (2026-03-11) | MIT/Apache-2.0 |
 | `tracing` | `LATCH_TRACE`: a span per host connection and operation, around iroh's own events | 955M / 230M | 6.9k (tracing monorepo) | tokio-rs org | 0.1.44 (2025-12-18) | MIT |
 | `tracing-subscriber` (env-filter, fmt) | `LATCH_TRACE`: filters those events and writes them to the host's log | 682M / 167M | 6.9k (tracing monorepo) | tokio-rs org | 0.3.23 (2026-03-13) | MIT |
 | `aes-gcm` | The vault: items and its data key sealed with AES-256-GCM | 182M / 57M | 968 (AEADs monorepo) | RustCrypto org | 0.11.1 (2026-08-21) | Apache-2.0/MIT |

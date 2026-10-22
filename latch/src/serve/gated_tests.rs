@@ -115,6 +115,7 @@ async fn start_with(
             state_dir: state.clone(),
             program: latch_binary(),
         },
+        browsers: crate::browser::host::Browsers::new(state.clone(), vault.clone(), true),
         vault,
         endpoint: endpoint.clone(),
         name: "test-host".into(),
