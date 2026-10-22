@@ -21,9 +21,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request, or to a branch, cancels the run it
+# supersedes: a merge commit holds every one before it.
 concurrency:
-  group: latch-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.mode || github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: latch-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}-${{ inputs.mode || github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
   # What this run tests. A push to main (or a dispatch) tests everything. A
@@ -92,7 +94,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON((github.event_name == 'push' || inputs.mode == 'main') && '[{"runner":"macos-15-large","shard":1,"count":4},{"runner":"macos-15-large","shard":2,"count":4},{"runner":"macos-15-large","shard":3,"count":4},{"runner":"macos-15-large","shard":4,"count":4}]' || '[{"runner":"macos-15","shard":1,"count":3},{"runner":"macos-15","shard":2,"count":3},{"runner":"macos-15","shard":3,"count":3}]') }}
+        include: ${{ fromJSON((github.event_name == 'push' || inputs.mode == 'main') && '[{"runner":"macos-15","shard":1,"count":4},{"runner":"macos-15","shard":2,"count":4},{"runner":"macos-15","shard":3,"count":4},{"runner":"macos-15","shard":4,"count":4}]' || '[{"runner":"macos-15","shard":1,"count":3},{"runner":"macos-15","shard":2,"count":3},{"runner":"macos-15","shard":3,"count":3}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     defaults:
