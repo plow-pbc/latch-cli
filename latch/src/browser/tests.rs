@@ -1823,8 +1823,19 @@ async fn a_late_popup_is_followed_before_the_next_step(engine: &str) {
             });
         }
     });
+    // Starve the page's event loop while its popup timer is due. A wait
+    // on the host's clock can end before the page has run that timer.
     let page = format!(
-        "<!doctype html><title>opener</title><button onclick=\"setTimeout(() => window.open('http://127.0.0.1:{port}/'), 250)\">Open popup</button>"
+        r#"<!doctype html><title>opener</title><button>Open popup</button>
+        <script>
+        document.querySelector('button').onclick = () => {{
+          setTimeout(() => {{
+            const until = performance.now() + 750;
+            while (performance.now() < until) {{}}
+          }}, 100);
+          setTimeout(() => window.open('http://127.0.0.1:{port}/'), 250);
+        }};
+        </script>"#
     );
     let url = format!(
         "http://127.0.0.1:{}/",
@@ -1838,6 +1849,10 @@ async fn a_late_popup_is_followed_before_the_next_step(engine: &str) {
         .await
         .unwrap();
     let seen = h.call(CALLER, "observe", &id, json!({})).await.unwrap();
+    println!(
+        "popup action: {}; observed tab {}, title {}",
+        clicked["trail"], seen["tab"], seen["title"]
+    );
     let next = find(&seen, "button", "Continue");
     let started = std::time::Instant::now();
     h.call(CALLER, "do", &id, act(&format!("click {next}")))

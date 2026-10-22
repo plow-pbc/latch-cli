@@ -818,6 +818,7 @@ impl Cft {
         frame: &Frame,
         expression: &str,
         by_value: bool,
+        wait: Duration,
     ) -> Result<Value, Failure> {
         let Some(placement) = self.placements.get(&frame.id).cloned() else {
             return Err(stale());
@@ -829,7 +830,7 @@ impl Cft {
                 && event["params"]["reason"] != "swap"
         };
         let key = (frame.id.clone(), frame.document.clone());
-        let deadline = self.by(COMMAND);
+        let deadline = self.by(wait);
         for attempt in 0..2 {
             if self.cdp.removed(&frame.id) {
                 return Err(stale());
@@ -861,6 +862,7 @@ impl Cft {
                     "expression": format!("{READER}\n{expression}"),
                     "contextId": context,
                     "returnByValue": by_value,
+                    "awaitPromise": true,
                 }),
                 &placement.session,
                 deadline,
@@ -1208,13 +1210,13 @@ impl Driver for Cft {
     }
 
     fn run(&mut self, frame: &Frame, expression: &str) -> Result<Value, Failure> {
-        self.evaluate(frame, expression, true)
+        self.evaluate(frame, expression, true, COMMAND)
             .map(|object| object["value"].clone())
     }
 
     fn call(&mut self, frame: &Frame, function: &str, args: Vec<Value>) -> Result<Value, Failure> {
         // The reader is defined, and its world made, by an ordinary run.
-        self.evaluate(frame, "true", true)?;
+        self.evaluate(frame, "true", true, COMMAND)?;
         let key = (frame.id.clone(), frame.document.clone());
         let (Some(context), Some(placement)) = (
             self.worlds.get(&key).copied(),
@@ -1277,6 +1279,7 @@ impl Driver for Cft {
                 &parent_frame,
                 &format!("document.elementFromPoint({}, {})", x - dx, y - dy),
                 false,
+                COMMAND,
             )?;
             let Some(object) = hit["objectId"].as_str().map(str::to_string) else {
                 return Ok(false);
@@ -1439,10 +1442,28 @@ impl Driver for Cft {
             event["params"]["frameId"] == main.as_str()
                 && event["method"] == "Page.frameStoppedLoading"
         };
-        self.cdp.pump(NAVIGATION_STARTS)?;
+        let deadline = self.by(LOADING);
+        // Use the page's event loop: its delayed input effects can run
+        // after a wait of the same length on the host has already ended.
+        if let Some(placement) = self.placements.get(&main).cloned() {
+            let frame = Frame {
+                id: main.clone(),
+                parent: None,
+                document: placement.document,
+            };
+            let timer = format!(
+                "new Promise(resolve => setTimeout(resolve, {}))",
+                NAVIGATION_STARTS.as_millis()
+            );
+            match self.evaluate(&frame, &timer, true, LOADING) {
+                Ok(_) => {}
+                Err(failure)
+                    if matches!(failure.code.as_str(), "stale_snapshot" | "dialog_open") => {}
+                Err(failure) => return Err(failure),
+            }
+        }
         let mut events = self.absorb()?;
         let loading = events.iter().any(started) && !events.iter().any(stopped);
-        let deadline = self.by(LOADING);
         if loading {
             while self.share().dialog.is_none() && Instant::now() < deadline {
                 self.cdp.pump(Duration::from_millis(100))?;
@@ -1516,7 +1537,7 @@ impl Driver for Cft {
         element: &str,
         files: &[PathBuf],
     ) -> Result<(), Failure> {
-        let object = self.evaluate(frame, element, false)?;
+        let object = self.evaluate(frame, element, false, COMMAND)?;
         let Some(object) = object["objectId"].as_str() else {
             return Err(stale());
         };
