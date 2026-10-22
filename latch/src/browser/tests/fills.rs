@@ -15,6 +15,7 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 
 use super::{CALLER, HIDDEN, exec, latch, test_state, test_state_alone};
+use crate::browser::engine::named;
 use crate::browser::host::{self, Browsers};
 use crate::vault::host::Vault;
 use crate::vault::item::{CARD, IDENTITY, Item, LOGIN, Raw};
@@ -33,8 +34,8 @@ conformance!(
     a_login_goes_on_to_its_password_stage_in_one_pause,
     observe_suggests_from_hints_and_the_checks_refuse_contradictions,
     a_card_confirmation_binds_its_mapping_and_frames,
-    a_fill_in_one_session_pauses_every_session_on_its_browser,
-    agent_code_is_noted_per_site_and_kept_with_the_profile,
+    a_fill_pauses_its_own_session_and_no_other,
+    agent_code_is_noted_per_site_for_its_session_only,
     a_login_after_an_edit_fills_the_new_password,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
@@ -356,6 +357,8 @@ fn item(kind: u8, title: &str, sites: &[&str], values: &[(&str, &str)]) -> Item 
 
 struct Harness {
     browsers: Arc<Browsers>,
+    /// The engine its sessions run on.
+    engine: String,
     /// The session the harness calls in, and its id.
     entry: Arc<host::Entry>,
     id: String,
@@ -364,11 +367,12 @@ struct Harness {
 }
 
 impl Harness {
-    async fn start(browsers: Browsers) -> Harness {
+    async fn start(browsers: Browsers, engine: &str) -> Harness {
         let browsers = Arc::new(browsers);
-        let (id, entry) = browsers.open("default", CALLER, None).await.unwrap();
+        let (id, entry) = browsers.open(engine, CALLER, None).await.unwrap();
         Harness {
             browsers,
+            engine: engine.to_string(),
             entry,
             id,
             shown: Vec::new(),
@@ -381,7 +385,7 @@ impl Harness {
     async fn call(&mut self, command: &str, args: Value) -> Result<Value, crate::failure::Failure> {
         let mut audit = Map::new();
         let name = if command == "open" {
-            "default"
+            named(&self.engine)
         } else {
             &self.id
         };
@@ -492,7 +496,7 @@ fn find(result: &Value, role: &str, name: &str) -> String {
 }
 
 async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -554,7 +558,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
             (evil.clone(), "https://shop.example.evil.example".into()),
         ],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
 
     // A login on a subdomain of its site, through latch's suggestion: the
     // email field before the password, and the form's one submit button.
@@ -968,7 +972,7 @@ fn exec_and_file_workers_cannot_read_the_vault_or_its_key() {
 /// no reading shows a filled value, and a fill that cannot confirm the
 /// value left the page keeps the agent out.
 async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -1002,7 +1006,7 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
 
     // A password with no press button: refused before any value is
     // released, whether the agent mapped it or took a suggestion with no
@@ -1111,11 +1115,12 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
     h.call("close", json!({})).await.ok();
 }
 
-/// A fill in one session holds the whole browser: every other session on
-/// the profile gets session_paused until the fill's cleanup is confirmed,
-/// and stays out while a value a fill could not clear may be on a page.
-async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+/// A fill holds its session's browser: its own calls get session_paused
+/// until the fill's cleanup is confirmed, and while a value a fill could
+/// not clear may be on a page, until it is closed. Another session, in a
+/// browser of its own, goes on throughout.
+async fn a_fill_pauses_its_own_session_and_no_other(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -1149,8 +1154,8 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
-    let mut h = Harness::start(browsers).await;
-    // Another caller's session on the same profile.
+    let mut h = Harness::start(browsers, engine).await;
+    // Another caller's session.
     let other = "another-caller";
     let browsers = h.browsers.clone();
     let mut shown_b = Vec::new();
@@ -1176,7 +1181,7 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
     };
     let b = call_b(
         "open",
-        "default",
+        named(engine),
         json!({"url": format!("{local}/next.html")}),
     )
     .await
@@ -1185,7 +1190,7 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
         .unwrap()
         .to_string();
 
-    // While a login fills in this session, the other gets nothing.
+    // While a login fills in this session, it is paused; the other is not.
     h.call("open", json!({"url": format!("{local}/slow-login.html")}))
         .await
         .unwrap();
@@ -1197,34 +1202,24 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
         (result, audit)
     });
     tokio::time::sleep(Duration::from_millis(1500)).await;
+    let paused = h.call("observe", json!({})).await.unwrap_err();
+    println!("observe in this session during the fill: {}", paused.code);
+    assert_eq!(paused.code, "session_paused");
     for command in ["observe", "screenshot", "eval"] {
-        let paused = call_b(command, &b, json!({"script": "1"}))
-            .await
-            .unwrap_err();
+        let went = call_b(command, &b, json!({"script": "1"})).await;
         println!(
             "{command} in the other session during the fill: {}",
-            paused.code
+            went.as_ref()
+                .map_or_else(|f| f.code.clone(), |_| "ok".into())
         );
-        assert_eq!(paused.code, "session_paused");
+        assert!(went.is_ok());
     }
-    let opened = call_b(
-        "open",
-        "default",
-        json!({"url": format!("{local}/next.html")}),
-    )
-    .await
-    .unwrap_err();
-    println!("a new session during the fill: {}", opened.code);
-    assert_eq!(opened.code, "session_paused");
     let (slow, audit) = filling.await.unwrap();
     h.shown.push(seen(&Value::Object(audit)));
     assert_eq!(slow.unwrap()["submitted"], true);
-    let seen = call_b("observe", &b, json!({})).await.unwrap();
-    println!("the other session after cleanup: {}", seen["title"]);
-    assert_eq!(seen["title"], "latch next page");
 
-    // A fill whose cleanup can't be confirmed keeps every session out,
-    // until the session it filled in is closed.
+    // A fill whose cleanup can't be confirmed keeps its session out until
+    // it is closed; the other session goes on.
     let page = h
         .call(
             "open",
@@ -1241,23 +1236,14 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
         .fill(json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}))
         .await;
     assert_eq!(trapped.unwrap_err().code, "session_paused");
-    let held = call_b("observe", &b, json!({})).await.unwrap_err();
-    println!("the other session while the trap holds: {}", held.code);
+    let held = h.call("observe", json!({})).await.unwrap_err();
+    println!("this session while the trap holds: {}", held.code);
     assert_eq!(held.code, "session_paused");
+    let seen = call_b("observe", &b, json!({})).await.unwrap();
+    println!("the other session while the trap holds: {}", seen["title"]);
+    assert_eq!(seen["title"], "latch next page");
     h.call("close", json!({})).await.unwrap();
-    if engine == "cft" {
-        let seen = call_b("observe", &b, json!({})).await.unwrap();
-        println!("the other session once it is closed: {}", seen["title"]);
-        assert_eq!(seen["title"], "latch next page");
-        call_b("close", &b, json!({})).await.unwrap();
-    } else {
-        // Camoufox can't close a page that may hold a secret without
-        // letting it send it: the browser was killed instead.
-        let gone = call_b("observe", &b, json!({})).await.unwrap_err();
-        println!("the other session once it is closed: {}", gone.code);
-        assert_eq!(gone.code, "browser_gone");
-        call_b("close", &b, json!({})).await.ok();
-    }
+    call_b("close", &b, json!({})).await.unwrap();
 
     let everything = format!("{}\n{}", h.shown.join("\n"), shown_b.join("\n"));
     for value in [PASSWORD, NUMBER, CVV] {
@@ -1268,11 +1254,11 @@ async fn a_fill_in_one_session_pauses_every_session_on_its_browser(engine: &str)
     }
 }
 
-/// Agent code is noted per site, with the profile: a fill's audit says
-/// whether `eval` ever ran on its sites, in any session, before this
-/// runtime or in it, and not when it ran only on another site.
-async fn agent_code_is_noted_per_site_and_kept_with_the_profile(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+/// Agent code is noted per site, for the session: a fill's audit says
+/// whether `eval` ran on its sites earlier in the session, and not when it
+/// ran only on another site, or in another session.
+async fn agent_code_is_noted_per_site_for_its_session_only(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -1292,9 +1278,10 @@ async fn agent_code_is_noted_per_site_and_kept_with_the_profile(engine: &str) {
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
+    // In the session the harness has: `goto` stays in it, `open` starts another.
     let login_once = async |h: &mut Harness| {
-        h.call("open", json!({"url": format!("{local}/login.html")}))
+        h.call("goto", json!({"url": format!("{local}/login.html")}))
             .await
             .unwrap();
         let (signed_in, audit) = h.login(&login.item).await;
@@ -1303,7 +1290,7 @@ async fn agent_code_is_noted_per_site_and_kept_with_the_profile(engine: &str) {
     };
 
     // Agent code on another site: a fill here is not flagged.
-    h.call("open", json!({"url": format!("{elsewhere}/next.html")}))
+    h.call("goto", json!({"url": format!("{elsewhere}/next.html")}))
         .await
         .unwrap();
     h.call("eval", json!({"script": "1"})).await.unwrap();
@@ -1311,21 +1298,17 @@ async fn agent_code_is_noted_per_site_and_kept_with_the_profile(engine: &str) {
     println!("after eval on localhost, a fill on 127.0.0.1: agent_code_before_fill {flagged}");
     assert_eq!(flagged, false);
 
-    // On this site, in a session since closed, in a runtime since ended:
-    // a later fill is flagged.
+    // On this site, earlier in the session: a later fill is flagged.
     h.call("eval", json!({"script": "1"})).await.unwrap();
-    h.call("close", json!({})).await.unwrap();
-    let kept: Value = serde_json::from_slice(
-        &std::fs::read(state.join("browser/profiles/default/agent-code.json")).unwrap(),
-    )
-    .unwrap();
-    println!("kept with the profile: {kept}");
-    assert_eq!(kept, json!(["127.0.0.1", "localhost"]));
-    let (id, entry) = h.browsers.open("default", CALLER, None).await.unwrap();
-    (h.id, h.entry) = (id, entry);
     let flagged = login_once(&mut h).await;
-    println!("in a new runtime, a fill on 127.0.0.1: agent_code_before_fill {flagged}");
+    println!("after eval on 127.0.0.1, a fill there: agent_code_before_fill {flagged}");
     assert_eq!(flagged, true);
+
+    // A new session starts with none: nothing of the last one is in it.
+    h.call("open", json!({})).await.unwrap();
+    let flagged = login_once(&mut h).await;
+    println!("in a new session, a fill on 127.0.0.1: agent_code_before_fill {flagged}");
+    assert_eq!(flagged, false);
     h.call("close", json!({})).await.unwrap();
 }
 
@@ -1333,7 +1316,7 @@ async fn agent_code_is_noted_per_site_and_kept_with_the_profile(engine: &str) {
 /// a page it allows as another top-level site: the rule is applied to the
 /// origins of the frames that hold fields, not to the page alone.
 async fn observe_lists_items_by_the_frames_that_hold_fields(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let embedded = vault
         .with(|s| {
@@ -1369,7 +1352,7 @@ async fn observe_lists_items_by_the_frames_that_hold_fields(engine: &str) {
             (frame.clone(), "https://login.shop.example".into()),
         ],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
 
     h.call(
         "open",
@@ -1395,7 +1378,7 @@ async fn observe_lists_items_by_the_frames_that_hold_fields(engine: &str) {
 }
 
 async fn a_login_goes_on_to_its_password_stage_in_one_pause(engine: &str) {
-    let (_dir, state, _area) = test_state_alone(engine, &["default"]);
+    let (_dir, state, _area) = test_state_alone(engine);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -1422,7 +1405,7 @@ async fn a_login_goes_on_to_its_password_stage_in_one_pause(engine: &str) {
             ),
         ],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
 
     // A new document: the identifier stage's suggestion (the `username
     // webauthn` field and its own submit button), then the password stage,
@@ -1605,7 +1588,7 @@ async fn a_login_goes_on_to_its_password_stage_in_one_pause(engine: &str) {
 /// What `observe` offers, from the page's own hints only, and the checks a
 /// mapping passes before any value leaves the vault.
 async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -1644,7 +1627,7 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
     let open = async |h: &mut Harness, page: &str| {
         h.call("open", json!({"url": format!("{local}/{page}")}))
             .await
@@ -1980,7 +1963,7 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
 /// values go into and the press button, and binds them: used once, and
 /// refused once the frame or a mapped field is swapped.
 async fn a_card_confirmation_binds_its_mapping_and_frames(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let card = vault
         .with(|s| {
@@ -2008,7 +1991,7 @@ async fn a_card_confirmation_binds_its_mapping_and_frames(engine: &str) {
             (frame.clone(), "https://js.processor.example".into()),
         ],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
     let confirm = async |h: &mut Harness, id: &Value, request: &str| {
         let mut audit = Map::new();
         let done = crate::browser::steps::run(
@@ -2119,7 +2102,7 @@ async fn a_card_confirmation_binds_its_mapping_and_frames(engine: &str) {
 }
 
 async fn a_filled_value_is_guarded_in_every_tab_and_from_screenshots(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let identity = vault
         .with(|s| {
@@ -2137,7 +2120,7 @@ async fn a_filled_value_is_guarded_in_every_tab_and_from_screenshots(engine: &st
         latch(),
         vec![(local.clone(), "https://shop.example".into())],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
     let address = h
         .call("open", json!({"url": format!("{local}/address.html")}))
         .await
@@ -2187,7 +2170,7 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
     // Its own value: one the other rows already guarded would be caught
     // whatever this fill guards.
     const BROKEN: &str = "made-up-broken-9k3m";
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let mut shop = item(
         LOGIN,
@@ -2223,7 +2206,7 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
     let open = async |h: &mut Harness| {
         h.call("open", json!({"url": format!("{local}/get-login.html")}))
             .await
@@ -2318,7 +2301,7 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
 /// however it ends, its session closed or its host stopped, no page sends
 /// the secret it holds as it goes.
 async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let card = vault
         .with(|s| {
@@ -2343,7 +2326,7 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
             latch(),
             vec![(local.clone(), "https://login.shop.example".into())],
         ));
-        let mut h = Harness::start(browsers).await;
+        let mut h = Harness::start(browsers, engine).await;
         let page = h
             .call(
                 "open",
@@ -2396,7 +2379,7 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
 async fn no_vault_value_goes_into_an_editable_region(engine: &str) {
     const NAME: &str = "Ada-e7c1";
     const LAST: &str = "Lovelace-3b9d";
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let identity = vault
         .with(|s| {
@@ -2414,7 +2397,7 @@ async fn no_vault_value_goes_into_an_editable_region(engine: &str) {
         latch(),
         vec![(local.clone(), "https://shop.example".into())],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
     let page = h
         .call("open", json!({"url": format!("{local}/editable.html")}))
         .await
@@ -2458,7 +2441,7 @@ async fn no_vault_value_goes_into_an_editable_region(engine: &str) {
 
 async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {
     const OLD: &str = "made-up-old-q8zr";
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -2477,7 +2460,7 @@ async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
 
     h.call("open", json!({"url": format!("{local}/login.html")}))
         .await
@@ -2517,7 +2500,7 @@ async fn a_stored_password_with_a_line_break_fills_a_single_line_field(engine: &
     // An import can leave a line break on a stored value; the field drops
     // it, as it would from a paste, and holds the password.
     let stored = format!("{PASSWORD}\n");
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let login = vault
         .with(|s| {
@@ -2536,7 +2519,7 @@ async fn a_stored_password_with_a_line_break_fills_a_single_line_field(engine: &
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
-    let mut h = Harness::start(browsers).await;
+    let mut h = Harness::start(browsers, engine).await;
 
     h.call("open", json!({"url": format!("{local}/login.html")}))
         .await

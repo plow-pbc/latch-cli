@@ -1,20 +1,14 @@
-//! A profile runtime as the host keeps it: the one browser worker on a
-//! profile (`worker.rs`), started by the first session that needs it and
-//! closed once its last session has, and what the host knows about the
-//! profile's sessions together: the fill pause, the sites agent code ran on
-//! (kept with the profile), the sites each session acted on lately, and
-//! site reservations.
-//!
-//! The worker makes one call at a time, for whichever session sends it, so
-//! sessions take turns call by call: one session's long request never holds
-//! the browser between its calls.
+//! A session runtime as the host keeps it: the browser worker (`worker.rs`)
+//! one session runs on, started on a profile of its own (`profile.rs`) when
+//! the session opens, and what the host knows of it: the fill pause and the
+//! sites agent code ran on. The profile is removed when the runtime ends.
 
-use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Mutex as Shared;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -30,7 +24,7 @@ use crate::wire::Response;
 /// The worker's environment: nothing from the host's but a plain `PATH`.
 const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
-/// A session closes after this long without a call; its profile stays.
+/// A session closes after this long without a call.
 pub const IDLE: Duration = Duration::from_secs(30 * 60);
 
 /// How long past its own limit (`Call::limit`) a call's answer may take:
@@ -42,31 +36,22 @@ fn within(call: &Value) -> Duration {
     Call::deserialize(call).map_or(core::CALL, |call| call.limit(core::CALL)) + ANSWER_GRACE
 }
 
-/// How long a session's activity on a site counts for `shared_site`.
-const SHARED_SITE: Duration = Duration::from_secs(15 * 60);
-
 pub struct Runtime {
-    pub profile: String,
     worker: Mutex<Worker>,
     /// What the worker said once the browser was up: engine, version, pid.
     pub ready: Value,
-    /// A vault fill holds the browser: every session's call is answered
+    /// A vault fill holds the browser: every call is answered
     /// `session_paused` at once rather than waiting for it.
     pub filling: AtomicBool,
     /// How many fill pauses have begun: a decision made before one began
     /// is not acted on.
     pub pauses: AtomicU32,
-    /// The sites agent code (`eval`) has run on in this profile, in any
-    /// session: a value filled there later may be seen by what it left.
+    /// The sites agent code (`eval`) has run on in this runtime: a value
+    /// filled there later may be seen by what it left.
     agent_code: Shared<BTreeSet<String>>,
-    state_dir: PathBuf,
     next_key: AtomicU32,
-    /// Sites a session reserved (`--reserve-site`), and its key.
-    reserved: Shared<HashMap<String, String>>,
     /// How long a call (its line, upload, answer and bytes) may take.
     within: fn(&Value) -> Duration,
-    /// When each session (by id hash) last acted on each site.
-    acted: Shared<HashMap<String, HashMap<String, Instant>>>,
 }
 
 struct Worker {
@@ -78,6 +63,9 @@ struct Worker {
     /// runtime ends, by its `Drop`.
     #[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
     scratch: TempDir,
+    /// The session's profile, removed after the worker is stopped.
+    #[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
+    profile: TempDir,
 }
 
 /// A call's answer: the agent's result, the audit's record of it, and a
@@ -89,33 +77,38 @@ pub struct Reply {
 }
 
 impl Runtime {
-    /// Starts the runtime on `profile` and waits until its browser is up;
-    /// with `headless`, its engine has no window.
-    pub async fn start(state_dir: &Path, profile: &str, headless: bool) -> Result<Self, Failure> {
+    /// Starts the runtime on `engine` (`cft` or `camoufox`), on a new
+    /// profile, and waits until its browser is up; with `headless`, its
+    /// engine has no window.
+    pub async fn start(state_dir: &Path, engine: &str, headless: bool) -> Result<Self, Failure> {
         let latch = std::env::current_exe()
             .map_err(|err| Failure::failed("engine_failed", err.to_string()))?;
-        Self::start_with(&latch, state_dir, profile, IDLE, headless).await
+        Self::start_with(&latch, state_dir, engine, IDLE, headless).await
     }
 
     /// `start`, with `latch` as the latch binary to run the worker.
     pub async fn start_with(
         latch: &Path,
         state_dir: &Path,
-        profile: &str,
+        engine: &str,
         idle: Duration,
         headless: bool,
     ) -> Result<Self, Failure> {
+        let failed = |err: std::io::Error| Failure::failed("engine_failed", err.to_string());
         let scratch = tempfile::Builder::new()
             .prefix("latch-browser-")
             .tempdir()
-            .map_err(|err| Failure::failed("engine_failed", err.to_string()))?;
+            .map_err(failed)?;
+        let profile = super::profile::make(state_dir).map_err(failed)?;
         let mut command = Command::new(latch);
         command
             .arg("--state-dir")
             .arg(state_dir)
             .arg("browser-worker")
+            .arg("--engine")
+            .arg(engine)
             .arg("--profile")
-            .arg(profile)
+            .arg(profile.path())
             .arg("--scratch")
             .arg(scratch.path())
             .arg("--idle-timeout")
@@ -144,7 +137,7 @@ impl Runtime {
             .process_group(0)
             .kill_on_drop(true)
             .spawn()
-            .map_err(|err| Failure::failed("engine_failed", err.to_string()))?;
+            .map_err(failed)?;
         let stdin = child.stdin.take().expect("piped");
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
         let mut worker = Worker {
@@ -152,20 +145,17 @@ impl Runtime {
             stdin,
             stdout,
             scratch,
+            profile,
         };
         let ready = worker.answer().await?;
         Ok(Runtime {
-            profile: profile.to_string(),
             worker: Mutex::new(worker),
             ready,
             filling: AtomicBool::new(false),
             pauses: AtomicU32::new(0),
-            agent_code: Shared::new(super::profile::agent_code_sites(state_dir, profile)),
-            state_dir: state_dir.to_path_buf(),
+            agent_code: Shared::default(),
             next_key: AtomicU32::new(0),
             within,
-            reserved: Shared::new(HashMap::new()),
-            acted: Shared::new(HashMap::new()),
         })
     }
 
@@ -175,6 +165,16 @@ impl Runtime {
             .try_lock()
             .expect("no call under way")
             .scratch
+            .path()
+            .to_path_buf()
+    }
+
+    #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
+    pub fn profile(&self) -> std::path::PathBuf {
+        self.worker
+            .try_lock()
+            .expect("no call under way")
+            .profile
             .path()
             .to_path_buf()
     }
@@ -251,72 +251,18 @@ impl Runtime {
         Ok(closed["result"].clone())
     }
 
-    /// Agent code ran on `site`: kept with the profile, for every later fill.
+    /// Agent code ran on `site`, for every later fill in this runtime.
     pub fn note_agent_code(&self, site: &str) {
-        let mut sites = self.agent_code.lock().expect("agent code lock");
-        if sites.insert(site.to_string())
-            && let Err(err) =
-                super::profile::keep_agent_code_sites(&self.state_dir, &self.profile, &sites)
-        {
-            crate::log::log(&format!(
-                "browser: profile {}: could not keep the sites agent code ran on: {err}",
-                self.profile
-            ));
-        }
+        self.agent_code
+            .lock()
+            .expect("agent code lock")
+            .insert(site.to_string());
     }
 
-    /// Whether agent code ever ran on one of `sites` in this profile.
+    /// Whether agent code ran on one of `sites` in this runtime.
     pub fn agent_code_on(&self, sites: &[String]) -> bool {
         let ran = self.agent_code.lock().expect("agent code lock");
         sites.iter().any(|site| ran.contains(site))
-    }
-
-    /// Reserves `site` for session `key`, unless another session holds it.
-    pub fn reserve(&self, site: &str, key: &str) -> bool {
-        let mut reserved = self.reserved.lock().expect("reservations lock");
-        let holder = reserved
-            .entry(site.to_string())
-            .or_insert_with(|| key.to_string());
-        holder == key
-    }
-
-    /// The sites other sessions than `key` hold.
-    pub fn reserved_by_others(&self, key: &str) -> Vec<String> {
-        let reserved = self.reserved.lock().expect("reservations lock");
-        reserved
-            .iter()
-            .filter(|(_, holder)| *holder != key)
-            .map(|(site, _)| site.clone())
-            .collect()
-    }
-
-    /// Session `key` (id hash `hash`) is gone: its reservations and its
-    /// activity no longer count.
-    pub fn forget(&self, key: &str, hash: &str) {
-        self.reserved
-            .lock()
-            .expect("reservations lock")
-            .retain(|_, holder| holder != key);
-        for sessions in self.acted.lock().expect("activity lock").values_mut() {
-            sessions.remove(hash);
-        }
-    }
-
-    /// Session `hash` acted on `site` now. Answers the other sessions that
-    /// acted there lately, by id hash, and how many seconds ago.
-    pub fn acted(&self, site: &str, hash: &str) -> Vec<(String, u64)> {
-        let mut acted = self.acted.lock().expect("activity lock");
-        let sessions = acted.entry(site.to_string()).or_default();
-        let now = Instant::now();
-        sessions.retain(|_, at| now.duration_since(*at) < SHARED_SITE);
-        let mut others: Vec<(String, u64)> = sessions
-            .iter()
-            .filter(|(other, _)| *other != hash)
-            .map(|(other, at)| (other.clone(), now.duration_since(*at).as_secs()))
-            .collect();
-        others.sort();
-        sessions.insert(hash.to_string(), now);
-        others
     }
 }
 
@@ -375,6 +321,7 @@ fn lost() -> Failure {
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
+    use std::time::Instant;
 
     use serde_json::json;
 
@@ -388,7 +335,7 @@ mod tests {
         let ready = r#"echo '{"ok": {"pid": 1}}'"#;
         std::fs::write(&worker, format!("#!/bin/sh\n{ready}\n{script}\n")).unwrap();
         std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut runtime = Runtime::start_with(&worker, dir.path(), "p", IDLE, true)
+        let mut runtime = Runtime::start_with(&worker, dir.path(), "cft", IDLE, true)
             .await
             .unwrap();
         runtime.within = |_| Duration::from_millis(300);

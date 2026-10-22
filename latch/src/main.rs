@@ -95,6 +95,7 @@ fn main() -> ExitCode {
             return match StateDir::new(cli.state_dir) {
                 Ok(state) => browser::worker::run(
                     &state.path,
+                    &args.engine,
                     &args.profile,
                     &args.scratch,
                     Duration::from_secs(args.idle_timeout),

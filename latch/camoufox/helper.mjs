@@ -484,25 +484,6 @@ const ops = {
     return {};
   },
 
-  /// The entry Back would load, read from the tab's own history through
-  /// the Navigation API. That API names only entries of the page's own
-  /// origin; when the one before is not among them (another origin's, or
-  /// none), where Back leads is not known.
-  async back_url() {
-    const before = await guarded(
-      activePage()
-        .mainFrame()
-        .evaluate(() => {
-          const index = navigation.currentEntry?.index ?? 0;
-          return index > 0 ? navigation.entries()[index - 1].url : null;
-        }),
-    );
-    if (before === null) {
-      throw new Failure("back_unknown", "the page before this one is of another origin, or there is none");
-    }
-    return before;
-  },
-
   async back() {
     const page = activePage();
     const before = page.url();

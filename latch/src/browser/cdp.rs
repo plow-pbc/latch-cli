@@ -176,6 +176,10 @@ impl Cdp {
     /// Reads whatever arrives within `wait` into the event queue.
     pub fn pump(&mut self, wait: Duration) -> Result<(), Failure> {
         let deadline = Instant::now() + wait;
+        // What the browser sent already is taken in, with no time to wait too.
+        if readable(&self.from_chrome, Duration::ZERO)? {
+            self.take_chunk()?;
+        }
         loop {
             match self.read(deadline, "events") {
                 Ok(message) => {
@@ -336,13 +340,19 @@ impl Cdp {
                     format!("the browser did not answer {waiting_for} in time"),
                 ));
             }
-            let mut chunk = [0u8; 64 * 1024];
-            let n = self.from_chrome.read(&mut chunk).map_err(|_| gone())?;
-            if n == 0 {
-                return Err(gone());
-            }
-            self.buffer.extend_from_slice(&chunk[..n]);
+            self.take_chunk()?;
         }
+    }
+
+    /// Reads what the pipe has, which must be readable.
+    fn take_chunk(&mut self) -> Result<(), Failure> {
+        let mut chunk = [0u8; 64 * 1024];
+        let n = self.from_chrome.read(&mut chunk).map_err(|_| gone())?;
+        if n == 0 {
+            return Err(gone());
+        }
+        self.buffer.extend_from_slice(&chunk[..n]);
+        Ok(())
     }
 }
 

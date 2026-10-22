@@ -1,7 +1,5 @@
-//! The host's handle on one session: its key in its profile runtime's
-//! worker (`runtime.rs`). Its calls go to the worker one at a time, in turn
-//! with the other sessions' calls, each carrying the sites other sessions
-//! reserved.
+//! The host's handle on one session: its key in its runtime's worker
+//! (`runtime.rs`). Its calls go to the worker one at a time.
 
 use std::sync::Arc;
 
@@ -32,11 +30,6 @@ impl Session {
         })
     }
 
-    /// The worker's name for this session.
-    pub fn key(&self) -> &str {
-        &self.key
-    }
-
     /// One call (a `core::Call` as JSON), with an upload's bytes after it.
     /// Bytes the worker sends back (a screenshot, a download) come back as
     /// `bytes`.
@@ -46,10 +39,6 @@ impl Session {
         input: Option<&[u8]>,
     ) -> Result<Reply, Failure> {
         call["session"] = json!(self.key);
-        let reserved = self.runtime.reserved_by_others(&self.key);
-        if !reserved.is_empty() {
-            call["reserved"] = json!(reserved);
-        }
         self.runtime.call(call, input).await
     }
 
@@ -57,7 +46,7 @@ impl Session {
         self.call_with(call, None).await
     }
 
-    /// Ends the session: its tabs close; the runtime's other sessions go on.
+    /// Ends the session: its tabs close.
     pub async fn end(&mut self) -> Result<Value, Failure> {
         self.call(json!({"op": "end"}))
             .await
@@ -70,18 +59,23 @@ impl Session {
     pub async fn start_with(
         latch: &std::path::Path,
         state_dir: &std::path::Path,
-        profile: &str,
+        engine: &str,
         idle: std::time::Duration,
         headless: bool,
     ) -> Result<Self, Failure> {
         let runtime =
-            Arc::new(Runtime::start_with(latch, state_dir, profile, idle, headless).await?);
+            Arc::new(Runtime::start_with(latch, state_dir, engine, idle, headless).await?);
         Session::begin(&runtime).await
     }
 
     #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
     pub fn scratch(&self) -> std::path::PathBuf {
         self.runtime.scratch()
+    }
+
+    #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
+    pub fn profile(&self) -> std::path::PathBuf {
+        self.runtime.profile()
     }
 
     /// Closes the browser and waits for the worker to end.

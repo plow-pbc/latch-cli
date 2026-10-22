@@ -2,7 +2,7 @@
 //! Camoufox helper (`camoufox/helper.mjs`), a Node program on Playwright
 //! that speaks the same operations as JSON lines over its standard streams.
 //! Playwright reaches Camoufox over a pipe of its own; no port is opened.
-//! One browser serves every session on its profile; the helper keeps each
+//! One browser serves every session its runtime begins; the helper keeps each
 //! session's tabs, dialogs and downloads apart, and every operation names
 //! the session it acts for.
 //!
@@ -27,8 +27,8 @@ use super::engine::CAMOUFOX;
 use super::profile;
 use crate::failure::{Exit, Failure};
 
-/// How long the helper has to start the browser (the first launch of a
-/// profile also makes its fingerprint), and to answer one operation: its
+/// How long the helper has to start the browser (a launch also makes the
+/// session's fingerprint), and to answer one operation: its
 /// own deadlines are shorter, so this one only catches a helper that hangs.
 const STARTUP: Duration = Duration::from_secs(90);
 const COMMAND: Duration = Duration::from_secs(90);
@@ -63,15 +63,14 @@ pub struct Camoufox {
     /// whether a dialog blocks it, and its active tab.
     seen: HashMap<String, (bool, String)>,
     scratch: PathBuf,
-    _lock: profile::Lock,
 }
 
 impl Camoufox {
-    /// Starts the helper and, through it, the engine on its profile; with
-    /// `headless`, with no window.
+    /// Starts the helper and, through it, the engine on the session's
+    /// profile in folder `profile`; with `headless`, with no window.
     pub fn launch(
         state_dir: &Path,
-        profile_name: &str,
+        profile: &Path,
         scratch: &Path,
         headless: bool,
         display: Option<&str>,
@@ -88,9 +87,8 @@ impl Camoufox {
                 ),
             ));
         }
-        let profile = profile::open(state_dir, profile_name, &CAMOUFOX.engine)?;
-        let lock = profile::lock(&profile)?;
         let engine = CAMOUFOX.verified(state_dir)?;
+        let profile = profile::prepare(profile, &CAMOUFOX.engine)?;
         for folder in ["tmp", "downloads"] {
             fs::create_dir_all(scratch.join(folder)).map_err(io_failure)?;
         }
@@ -133,7 +131,6 @@ impl Camoufox {
             unanswered: false,
             seen: HashMap::new(),
             scratch: scratch.to_path_buf(),
-            _lock: lock,
         };
         let mut env = json!({
             "PATH": PATH,
@@ -340,10 +337,6 @@ impl Driver for Camoufox {
 
     fn back(&mut self) -> Result<bool, Failure> {
         self.ask("back", json!({}))
-    }
-
-    fn back_url(&mut self) -> Result<Option<String>, Failure> {
-        self.ask("back_url", json!({}))
     }
 
     fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
@@ -635,7 +628,6 @@ mod tests {
 
     /// A Camoufox whose helper is `script`, run by `sh`.
     fn with_helper(state: &Path, script: &str) -> Camoufox {
-        let lock = profile::lock(&profile::open(state, "p", "camoufox").unwrap()).unwrap();
         let mut helper = Command::new("/bin/sh")
             .args(["-c", script])
             .stdin(Stdio::piped())
@@ -655,7 +647,6 @@ mod tests {
             unanswered: false,
             seen: HashMap::new(),
             scratch: state.to_path_buf(),
-            _lock: lock,
         }
     }
 

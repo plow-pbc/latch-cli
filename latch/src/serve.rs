@@ -61,9 +61,9 @@ struct Host {
     /// `serve/control.rs`).
     lifetime: Lifetime,
     workers: WorkerSetup,
-    /// Open browser sessions, one per profile.
+    /// Open browser sessions, each in a browser of its own.
     browsers: crate::browser::host::Browsers,
-    /// The host's vault, shared by every engine and profile.
+    /// The host's vault, shared by every session.
     vault: std::sync::Arc<crate::vault::host::Vault>,
     /// Our own endpoint and name, which a phone link points at.
     endpoint: Endpoint,
@@ -357,6 +357,7 @@ async fn run_host(
         stopping: watch::Sender::new(Stopping::No),
     });
     watch_binary(&host, BINARY_CHECK_EVERY);
+    sweep_browsers(&host);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(
         &state.path,
@@ -582,6 +583,21 @@ fn watch_binary(host: &Arc<Host>, every: Duration) {
                 .unwrap_or_default();
             host.dashboard.updated(updated_to(&version));
             return;
+        }
+    });
+}
+
+/// Every minute, lets go of the browser sessions that ended or idled out,
+/// and with them their profiles, for as long as the host runs.
+fn sweep_browsers(host: &Arc<Host>) {
+    let host = Arc::downgrade(host);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            host.browsers.sweep().await;
         }
     });
 }

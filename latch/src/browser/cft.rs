@@ -1,7 +1,7 @@
 //! The Chrome for Testing driver: the driver contract (`driver.rs`) over
 //! CDP on the engine's private pipe.
 //!
-//! One browser serves every session on its profile. Each session's share
+//! One browser serves every session its runtime begins. Each session's share
 //! is the windows it opened and every tab opened from them (a page target
 //! whose opener is no session's tab is never adopted), its dialogs, and its
 //! downloads, found from the frame that started them; the driver contract
@@ -94,7 +94,7 @@ struct Placement {
     document: String,
 }
 
-/// One profile's browser, shared by the sessions on it. The driver
+/// A runtime's browser, shared by the sessions it begins. The driver
 /// contract acts for one session at a time (`select`), on that session's
 /// own tabs, downloads and dialogs.
 pub struct Cft {
@@ -121,15 +121,14 @@ pub struct Cft {
     deadline: Option<Instant>,
     /// Whether every request is paused for the guards (`Driver::guard`).
     pausing: bool,
-    _lock: profile::Lock,
 }
 
 impl Cft {
-    /// Starts the engine on its profile; with `headless`, in Chrome's
-    /// headless mode, with no window.
+    /// Starts the engine on the session's profile in folder `profile`; with
+    /// `headless`, in Chrome's headless mode, with no window.
     pub fn launch(
         state_dir: &Path,
-        profile_name: &str,
+        profile: &Path,
         scratch: &Path,
         headless: bool,
         display: Option<&str>,
@@ -146,9 +145,8 @@ impl Cft {
                 ),
             ));
         }
-        let profile = profile::open(state_dir, profile_name, &CFT.engine)?;
-        let lock = profile::lock(&profile)?;
         let engine = CFT.verified(state_dir)?;
+        let profile = profile::prepare(profile, &CFT.engine)?;
         let Pipes {
             chrome_reads,
             chrome_writes,
@@ -179,7 +177,6 @@ impl Cft {
             scratch: scratch.to_path_buf(),
             deadline: None,
             pausing: false,
-            _lock: lock,
         };
         if let Err(failure) = browser.listen() {
             browser.close();
@@ -1153,21 +1150,6 @@ impl Driver for Cft {
             deadline,
         )?;
         Ok(true)
-    }
-
-    fn back_url(&mut self) -> Result<Option<String>, Failure> {
-        let session = self.active_state().session.clone();
-        let history = self.cdp.call(
-            "Page.getNavigationHistory",
-            json!({}),
-            Some(&session),
-            self.by(COMMAND),
-        )?;
-        let current = history["currentIndex"].as_u64().unwrap_or(0) as usize;
-        Ok(current
-            .checked_sub(1)
-            .and_then(|at| history["entries"][at]["url"].as_str())
-            .map(str::to_string))
     }
 
     fn frames(&mut self) -> Result<Vec<Frame>, Failure> {

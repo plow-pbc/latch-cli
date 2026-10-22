@@ -346,9 +346,7 @@ conformance!(
     frames_that_come_and_go_while_a_page_loads_break_no_call,
     a_frames_target_under_a_parent_page_layer_is_refused,
     eval_upload_and_download_move_values_and_files,
-    sessions_on_one_profile_share_logins_and_nothing_else,
-    sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused,
-    navigating_into_a_reserved_site_is_refused_before_it_is_sent,
+    sessions_share_nothing_and_their_profiles_end_with_them,
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
     a_browser_that_leaves_calls_unanswered_is_closed,
@@ -356,7 +354,6 @@ conformance!(
     a_dialog_that_opens_between_calls_is_refused_at_once,
     a_dialog_in_one_session_does_not_hold_another_sessions_download,
     a_download_heard_before_another_sessions_dialog_does_not_wait_on_it,
-    back_into_a_reserved_site_is_refused_after_a_return_visit,
     an_answer_shows_the_screen_and_observe_all_every_element,
 );
 
@@ -433,24 +430,20 @@ impl Drop for Turn {
 }
 
 /// A fresh state directory for one test, sharing only the installed
-/// plugins, with `profiles` made for `engine`, and a folder to share with
-/// `exec`. The engine must be installed (see the top of this file). Waits
-/// for its turn at the engines (`ENGINES_AT_ONCE`).
-fn test_state(engine: &str, profiles: &[&str]) -> (TestDir, PathBuf, PathBuf) {
-    test_state_taking(engine, profiles, 1)
+/// plugins, and a folder to share with `exec`. `engine` must be installed
+/// (see the top of this file). Waits for its turn at the engines
+/// (`ENGINES_AT_ONCE`).
+fn test_state(engine: &str) -> (TestDir, PathBuf, PathBuf) {
+    test_state_taking(engine, 1)
 }
 
 /// `test_state` for a test whose page keeps the browser busy (frames
 /// coming and going all the time): it runs with no other engine test.
-fn test_state_alone(engine: &str, profiles: &[&str]) -> (TestDir, PathBuf, PathBuf) {
-    test_state_taking(engine, profiles, ENGINES_AT_ONCE)
+fn test_state_alone(engine: &str) -> (TestDir, PathBuf, PathBuf) {
+    test_state_taking(engine, ENGINES_AT_ONCE)
 }
 
-fn test_state_taking(
-    engine: &str,
-    profiles: &[&str],
-    places: usize,
-) -> (TestDir, PathBuf, PathBuf) {
+fn test_state_taking(engine: &str, places: usize) -> (TestDir, PathBuf, PathBuf) {
     let installed = std::env::var_os("LATCH_CFT_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
@@ -483,26 +476,26 @@ fn test_state_taking(
     // This test's own state directory, sharing only the installed plugins.
     let plugins = installed.canonicalize().unwrap().join("plugins");
     std::os::unix::fs::symlink(&plugins, state.join("plugins")).unwrap();
-    for name in profiles {
-        profile::open(&state, name, engine).unwrap();
-    }
     // The test sites are on 127.0.0.1 and localhost.
     fs::write(state.join("host.json"), r#"{"allow_local_browsing": true}"#).unwrap();
     (dir, state, area)
 }
 
 async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(engine_name: &str) {
-    let (dir, state, area) = test_state(engine_name, &["b1"]);
+    let (dir, state, area) = test_state(engine_name);
 
-    let mut session =
-        Session::start_with(&latch(), &state, "b1", Duration::from_secs(120), HEADLESS)
-            .await
-            .unwrap();
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        engine_name,
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
     println!("ready: {}", session.ready);
-    let data = profile::root(&state)
-        .join("b1/data")
-        .canonicalize()
-        .unwrap();
+    let profile = session.profile();
+    let data = profile.join("data").canonicalize().unwrap();
     let cft = engine_name != "camoufox";
     let (pipe, profile_arg) = if cft {
         (
@@ -694,6 +687,25 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
         assert!(!ok && text.contains(HIDDEN), "{script}: {text}");
     }
 
+    // Password saving and autofill are off (Camoufox ships with them off),
+    // and Camoufox's fingerprint is private.
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(&preferences).unwrap()).unwrap();
+    if cft {
+        println!(
+            "profile: credentials_enable_service {}, autofill.profile_enabled {}",
+            settings["credentials_enable_service"], settings["autofill"]["profile_enabled"]
+        );
+        assert_eq!(settings["credentials_enable_service"], false);
+        assert_eq!(settings["autofill"]["profile_enabled"], false);
+    } else {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&preferences).unwrap().permissions().mode();
+        println!("profile: camoufox.json mode {:o}", mode & 0o777);
+        assert_eq!(mode & 0o077, 0);
+        assert!(settings["env"]["CAMOU_CONFIG_1"].is_string());
+    }
+
     let shot = session.call(json!({"op": "screenshot"})).await.unwrap();
     let (meta, png) = (shot.result, shot.bytes.unwrap());
     println!("screenshot: {meta}");
@@ -722,25 +734,13 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
         .collect();
     println!("processes left: {}", left.len());
     assert!(left.is_empty(), "{left:#?}");
-    assert!(!scratch.exists(), "the session's scratch folder is removed");
-
-    // The profile stays, with password saving and autofill still off
-    // (Camoufox ships with them off), and Camoufox's fingerprint private.
-    let kept: serde_json::Value = serde_json::from_slice(&fs::read(&preferences).unwrap()).unwrap();
-    if !cft {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(&preferences).unwrap().permissions().mode();
-        println!("profile kept: camoufox.json mode {:o}", mode & 0o777);
-        assert_eq!(mode & 0o077, 0);
-        assert!(kept["env"]["CAMOU_CONFIG_1"].is_string());
-        return;
-    }
+    // The scratch folder and the profile go with the runtime.
     println!(
-        "profile kept: credentials_enable_service {}, autofill.profile_enabled {}",
-        kept["credentials_enable_service"], kept["autofill"]["profile_enabled"]
+        "after close: scratch exists {}, profile exists {}",
+        scratch.exists(),
+        profile.exists()
     );
-    assert_eq!(kept["credentials_enable_service"], false);
-    assert_eq!(kept["autofill"]["profile_enabled"], false);
+    assert!(!scratch.exists() && !profile.exists());
 }
 
 /// Linux: no app is in front of an Xvfb display or a headless browser.
@@ -826,11 +826,16 @@ fn out_line(result: &serde_json::Value) -> String {
 }
 
 async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input(engine_name: &str) {
-    let (_dir, state, _area) = test_state(engine_name, &["b2"]);
-    let mut session =
-        Session::start_with(&latch(), &state, "b2", Duration::from_secs(120), HEADLESS)
-            .await
-            .unwrap();
+    let (_dir, state, _area) = test_state(engine_name);
+    let mut session = Session::start_with(
+        &latch(),
+        &state,
+        engine_name,
+        Duration::from_secs(120),
+        HEADLESS,
+    )
+    .await
+    .unwrap();
     // Every front app seen while the test runs: the engine must never be one.
     let engine = session.ready["pid"].as_u64().unwrap() as u32;
     let fronted = front_apps();
@@ -1069,16 +1074,11 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input(engine_name: &
 }
 
 async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) {
-    let (_dir, state, _area) = test_state_alone(engine, &["b2-churn"]);
-    let mut session = Session::start_with(
-        &latch(),
-        &state,
-        "b2-churn",
-        Duration::from_secs(120),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
+    let (_dir, state, _area) = test_state_alone(engine);
+    let mut session =
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     let url = test_site().replace("frames.html", "churn.html");
     let mut slowest = Duration::ZERO;
     for round in 0..3 {
@@ -1112,16 +1112,11 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
 }
 
 async fn a_call_longer_than_the_idle_timeout_does_not_end_its_session(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["hang-idle"]);
-    let mut session = Session::start_with(
-        &latch(),
-        &state,
-        "hang-idle",
-        Duration::from_secs(2),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
+    let (_dir, state, _area) = test_state(engine);
+    let mut session =
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(2), HEADLESS)
+            .await
+            .unwrap();
     session
         .call(json!({"op": "open", "url": local_page()}))
         .await
@@ -1146,13 +1141,16 @@ async fn a_call_longer_than_the_idle_timeout_does_not_end_its_session(engine: &s
 }
 
 async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["hang-stuck"]);
+    let (_dir, state, _area) = test_state(engine);
     let scratch = tempfile::tempdir().unwrap();
+    let profile = profile::make(&state).unwrap();
     let mut command = Command::new(latch());
     command
         .arg("--state-dir")
         .arg(&state)
-        .args(["browser-worker", "--profile", "hang-stuck", "--scratch"])
+        .args(["browser-worker", "--engine", engine, "--profile"])
+        .arg(profile.path())
+        .arg("--scratch")
         .arg(scratch.path())
         .args(["--call-limit", "2"])
         // As the host's runtime passes it for a test state: the page is local.
@@ -1175,10 +1173,12 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
         std::io::BufRead::read_line(&mut output, &mut line).unwrap();
         serde_json::from_str::<serde_json::Value>(&line).unwrap_or_default()
     };
-    let data = profile::root(&state).join("hang-stuck/data");
+    // The worker makes the engine's data folder as it launches it.
+    let ready = answer();
+    let data = profile.path().join("data");
     let profile_arg = format!("--user-data-dir={}", data.canonicalize().unwrap().display());
     let browser =
-        host_pid(answer()["ok"]["pid"].as_u64().unwrap() as u32, &profile_arg) as libc::pid_t;
+        host_pid(ready["ok"]["pid"].as_u64().unwrap() as u32, &profile_arg) as libc::pid_t;
     let mut call = |line: serde_json::Value| {
         writeln!(input, "{line}").unwrap();
         input.flush().unwrap();
@@ -1208,8 +1208,9 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
 
 async fn a_busy_browser_dies_with_its_host(engine: &str) {
     use std::os::unix::process::CommandExt;
-    let (_dir, state, _area) = test_state(engine, &["host-gone"]);
+    let (_dir, state, _area) = test_state(engine);
     let scratch = tempfile::tempdir().unwrap();
+    let profile = profile::make(&state).unwrap();
     // The host: a shell that starts the worker as its child, as `latch
     // serve` does, says its pid, and is then killed.
     let mut host = Command::new("/bin/sh");
@@ -1218,7 +1219,9 @@ async fn a_busy_browser_dies_with_its_host(engine: &str) {
         .arg(latch())
         .arg("--state-dir")
         .arg(&state)
-        .args(["browser-worker", "--profile", "host-gone", "--scratch"])
+        .args(["browser-worker", "--engine", engine, "--profile"])
+        .arg(profile.path())
+        .arg("--scratch")
         .arg(scratch.path())
         // As the host's runtime passes it for a test state: the page is local.
         .arg("--allow-local-browsing");
@@ -1242,9 +1245,10 @@ async fn a_busy_browser_dies_with_its_host(engine: &str) {
         serde_json::from_str::<serde_json::Value>(&line).unwrap_or_default()
     };
     let worker = answer().as_i64().unwrap() as libc::pid_t;
-    let data = profile::root(&state).join("host-gone/data");
-    let profile_arg = format!("--user-data-dir={}", data.canonicalize().unwrap().display());
+    // The worker makes the engine's data folder as it launches it.
     let ready = answer();
+    let data = profile.path().join("data");
+    let profile_arg = format!("--user-data-dir={}", data.canonicalize().unwrap().display());
     let browser =
         host_pid(ready["ok"]["pid"].as_u64().unwrap() as u32, &profile_arg) as libc::pid_t;
     let mut call = |line: serde_json::Value| {
@@ -1284,14 +1288,22 @@ async fn a_busy_browser_dies_with_its_host(engine: &str) {
 async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
     use super::camoufox::Camoufox;
     use super::driver::{Driver, Runtime};
-    let (_dir, state, _area) = test_state("camoufox", &["helper-late"]);
+    let (_dir, state, _area) = test_state("camoufox");
     let scratch = tempfile::tempdir().unwrap();
     // The engine gets absolute paths, as the worker gives it.
     let state = state.canonicalize().unwrap();
     let scratch_path = scratch.path().canonicalize().unwrap();
+    let profile = profile::make(&state).unwrap();
     let proxy = super::egress::Proxy::start(true).unwrap().url();
-    let mut browser =
-        Camoufox::launch(&state, "helper-late", &scratch_path, HEADLESS, None, &proxy).unwrap();
+    let mut browser = Camoufox::launch(
+        &state,
+        profile.path(),
+        &scratch_path,
+        HEADLESS,
+        None,
+        &proxy,
+    )
+    .unwrap();
     browser.begin("k1").unwrap();
     browser.navigate(&local_page()).unwrap();
     let pid = browser.pid() as libc::pid_t;
@@ -1313,16 +1325,11 @@ async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
 /// until it is answered: every call before then is refused with
 /// dialog_open at once, never left waiting on the blocked page.
 async fn a_dialog_that_opens_between_calls_is_refused_at_once(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["dialog-idle"]);
-    let mut session = Session::start_with(
-        &latch(),
-        &state,
-        "dialog-idle",
-        Duration::from_secs(120),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
+    let (_dir, state, _area) = test_state(engine);
+    let mut session =
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     session
         .call(json!({"op": "open", "url": local_page()}))
         .await
@@ -1365,14 +1372,10 @@ async fn a_download_heard_before_another_sessions_dialog_does_not_wait_on_it(eng
 /// Session a's page opens a dialog `alert_after` ms after its eval; session
 /// b's page downloads from a frame 1.5 s after its own.
 async fn dialog_and_download(engine: &str, alert_after: u64) {
-    let (_dir, state, _area) = test_state(engine, &["dialog-download"]);
+    let (_dir, state, _area) = test_state(engine);
     let mut h = Host::new(&state);
-    let (a, _) = h
-        .open(CALLER, "dialog-download", json!({"url": local_page()}))
-        .await;
-    let (b, _) = h
-        .open(CALLER, "dialog-download", json!({"url": local_page()}))
-        .await;
+    let (a, _) = h.open(CALLER, engine, json!({"url": local_page()})).await;
+    let (b, _) = h.open(CALLER, engine, json!({"url": local_page()})).await;
     h.call(
         CALLER,
         "eval",
@@ -1410,16 +1413,11 @@ async fn dialog_and_download(engine: &str, alert_after: u64) {
 }
 
 async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["b2-layer"]);
-    let mut session = Session::start_with(
-        &latch(),
-        &state,
-        "b2-layer",
-        Duration::from_secs(120),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
+    let (_dir, state, _area) = test_state(engine);
+    let mut session =
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
     let url = test_site().replace("frames.html", "overlay.html");
     let page = session
         .call(json!({"op": "open", "url": url}))
@@ -1449,9 +1447,9 @@ async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {
 }
 
 async fn eval_upload_and_download_move_values_and_files(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["b3"]);
+    let (_dir, state, _area) = test_state(engine);
     let mut session =
-        Session::start_with(&latch(), &state, "b3", Duration::from_secs(120), HEADLESS)
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(120), HEADLESS)
             .await
             .unwrap();
     let url = test_site().replace("frames.html", "files.html");
@@ -1579,7 +1577,7 @@ impl Host {
         }
     }
 
-    /// `command` as `caller`, on session `name` (for `open`, its profile).
+    /// `command` as `caller`, on session `name` (for `open`, its engine).
     async fn call(
         &mut self,
         caller: &str,
@@ -1592,20 +1590,23 @@ impl Host {
         result
     }
 
-    /// `open` as `caller` on `profile`: the new session's id, and the page.
+    /// `open` as `caller` on `engine`: the new session's id, and the page.
     async fn open(
         &mut self,
         caller: &str,
-        profile: &str,
+        engine: &str,
         args: serde_json::Value,
     ) -> (String, serde_json::Value) {
-        let page = self.call(caller, "open", profile, args).await.unwrap();
+        let name = super::engine::named(engine);
+        let page = self.call(caller, "open", name, args).await.unwrap();
         (page["session"].as_str().unwrap().to_string(), page)
     }
 }
 
 /// A browser call on a host with no engine installed downloads nothing,
 /// and its error names the command the host's owner installs one with.
+/// Each open runs on the engine it names, never another, and a launch
+/// that fails leaves no profile behind.
 #[tokio::test]
 async fn with_no_engine_a_call_names_the_owners_setup_and_downloads_nothing() {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
@@ -1618,7 +1619,7 @@ async fn with_no_engine_a_call_names_the_owners_setup_and_downloads_nothing() {
         .call(
             CALLER,
             "open",
-            "default",
+            "chrome",
             json!({"url": "https://example.com/"}),
         )
         .await
@@ -1628,7 +1629,34 @@ async fn with_no_engine_a_call_names_the_owners_setup_and_downloads_nothing() {
         failure.details["setup"],
         "latch browser setup --engine chrome"
     );
+    let fox = h
+        .call(
+            CALLER,
+            "open",
+            "camoufox",
+            json!({"url": "https://example.com/"}),
+        )
+        .await
+        .unwrap_err();
+    println!("camoufox with no engine: {} {}", fox.code, fox.details);
+    if cfg!(target_os = "macos") {
+        assert_eq!(fox.code, "engine_not_installed", "{fox:?}");
+        assert_eq!(
+            fox.details["setup"],
+            "latch browser setup --engine camoufox"
+        );
+    } else {
+        assert_eq!(fox.code, "unsupported_platform", "{fox:?}");
+    }
+    let other = h
+        .call(CALLER, "open", "firefox", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(other.code, "bad_arguments");
     assert!(!state.join("plugins").exists());
+    let left = fs::read_dir(profile::root(&state)).unwrap().count();
+    println!("profiles left by the failed launches: {left}");
+    assert_eq!(left, 0);
 }
 
 /// One command as the host runs it, and its audit record.
@@ -1698,8 +1726,12 @@ impl crate::model::Provider for Calm {
     }
 }
 
-async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["b2b"]);
+/// Each open is a session in a browser of its own, on a profile of its
+/// own: no cookie, tab, download or dialog crosses to another session, and
+/// its profile is removed when it closes, when the host stops, and by the
+/// next host when one stopped without closing it.
+async fn sessions_share_nothing_and_their_profiles_end_with_them(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
     let base = test_site()
         .split("/frames.html")
         .next()
@@ -1709,17 +1741,20 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
     let other = "another-caller";
     let fronted = front_apps();
 
-    // Two callers open the same profile: two sessions, one browser.
-    let (a, _) = h
+    // Two callers open sessions: two browsers, two profiles.
+    let (a, page_a) = h
         .open(
             CALLER,
-            "b2b",
+            engine,
             json!({"url": format!("{base}/alert.html"), "task": "task-a"}),
         )
         .await;
     let (b, _) = h
-        .open(other, "b2b", json!({"url": format!("{base}/files.html")}))
+        .open(other, engine, json!({"url": format!("{base}/files.html")}))
         .await;
+    let named = super::engine::named(engine);
+    println!("open answers engine {}", page_a["engine"]);
+    assert_eq!(page_a["engine"], named);
     println!(
         "ids: {} chars and {} chars, distinct: {}",
         a.len(),
@@ -1732,30 +1767,37 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
     }
     let entry_a = h.browsers.session(&a, CALLER).await.unwrap();
     let entry_b = h.browsers.session(&b, other).await.unwrap();
-    let engine = entry_a.runtime.ready["pid"].as_u64().unwrap() as u32;
+    let browser_a = entry_a.runtime.ready["pid"].as_u64().unwrap() as u32;
+    let (profile_a, profile_b) = (entry_a.runtime.profile(), entry_b.runtime.profile());
     println!(
-        "one runtime: {}, browser pid {} and {}",
-        Arc::ptr_eq(&entry_a.runtime, &entry_b.runtime),
-        engine,
-        entry_b.runtime.ready["pid"]
+        "browser pids {browser_a} and {}; profiles {} and {}",
+        entry_b.runtime.ready["pid"],
+        profile_a.display(),
+        profile_b.display()
     );
-    assert!(Arc::ptr_eq(&entry_a.runtime, &entry_b.runtime));
+    assert!(!Arc::ptr_eq(&entry_a.runtime, &entry_b.runtime));
+    assert_ne!(entry_a.runtime.ready["pid"], entry_b.runtime.ready["pid"]);
+    assert_ne!(profile_a, profile_b);
+    assert!(profile_a.is_dir() && profile_b.is_dir());
 
-    // A cookie one sets, the other reads: the profile's logins are shared.
-    h.call(
-        CALLER,
-        "eval",
-        &a,
-        json!({"script": "document.cookie = 'signed_in=yes; path=/'; document.cookie"}),
-    )
-    .await
-    .unwrap();
+    // A cookie one session sets on the site, the other, on the same site,
+    // never sees.
+    let set = h
+        .call(
+            CALLER,
+            "eval",
+            &a,
+            json!({"script": "document.cookie = 'signed_in=yes; path=/'; document.cookie"}),
+        )
+        .await
+        .unwrap();
+    assert!(set["value"].as_str().unwrap().contains("signed_in=yes"));
     let cookie = h
         .call(other, "eval", &b, json!({"script": "document.cookie"}))
         .await
         .unwrap();
     println!("cookie seen in the other session: {cookie}");
-    assert!(cookie["value"].as_str().unwrap().contains("signed_in=yes"));
+    assert!(!cookie["value"].as_str().unwrap().contains("signed_in"));
 
     // Two downloads at once with the same file name, each its own session's.
     let twin = |file: &str| format!("{base}/twin-download.html?file={file}");
@@ -1842,8 +1884,8 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
     // own popup or alert can: Chrome raises the window a page opens or
     // blocks, so this is checked first.)
     let seen_front = fronted.lock().unwrap().clone();
-    println!("front apps seen: {seen_front:?}; engine {engine}");
-    assert!(!seen_front.contains(&engine));
+    println!("front apps seen: {seen_front:?}; browser {browser_a}");
+    assert!(!seen_front.contains(&browser_a));
 
     // A popup belongs to the session whose page opened it.
     h.call(CALLER, "tab", &a, json!({"action": "switch", "tab": "t1"}))
@@ -1945,15 +1987,22 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
     );
 
     // Two tasks under one client key: each open is a session of its own,
-    // and without a session's id, the other can't reach it.
+    // with none of the other's cookies, and without a session's id, the
+    // other can't reach it.
     let (c, _) = h
         .open(
             CALLER,
-            "b2b",
+            engine,
             json!({"url": format!("{base}/next.html"), "task": "task-c"}),
         )
         .await;
     assert_ne!(a, c);
+    let cookie = h
+        .call(CALLER, "eval", &c, json!({"script": "document.cookie"}))
+        .await
+        .unwrap();
+    println!("cookie seen in the caller's second session: {cookie}");
+    assert!(!cookie["value"].as_str().unwrap().contains("signed_in"));
     let guessed = format!("s{}", "0".repeat(32));
     let hash_a = h.audits[0]["session"].as_str().unwrap().to_string();
     for (command, args) in [
@@ -1969,13 +2018,23 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
     let listed = h.call(CALLER, "sessions", "", json!({})).await.unwrap();
     println!("sessions: {listed}");
     assert_eq!(listed["sessions"].as_array().unwrap().len(), 2);
+    assert!(
+        listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|session| session["engine"] == named)
+    );
     let text = listed.to_string();
     assert!(!text.contains(&a) && !text.contains(&c) && !text.contains(&b));
     let theirs = h.call(other, "sessions", "", json!({})).await.unwrap();
     assert_eq!(theirs["sessions"].as_array().unwrap().len(), 1);
 
-    // Closing one session leaves the others' windows working.
+    // Closing one session removes its profile and leaves the others working.
     h.call(CALLER, "close", &a, json!({})).await.unwrap();
+    drop(entry_a);
+    println!("a's profile after close: exists {}", profile_a.exists());
+    assert!(!profile_a.exists());
     let seen = h.call(other, "observe", &b, json!({})).await.unwrap();
     assert_eq!(seen["title"], "latch twin downloads");
     let seen = h.call(CALLER, "observe", &c, json!({})).await.unwrap();
@@ -2039,268 +2098,41 @@ async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {
     assert_eq!(record["by_owner_device"], true);
     let gone = h.call(other, "observe", &b, json!({})).await.unwrap_err();
     assert_eq!(gone.code, "no_such_session");
-    println!(
-        "runtime after the last close: alive {}",
-        entry_b.runtime.alive()
-    );
+    println!("runtime after the close: alive {}", entry_b.runtime.alive());
     assert!(!entry_b.runtime.alive());
-}
+    drop(entry_b);
+    assert!(!profile_b.exists());
 
-async fn sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["b2b-site"]);
-    let frames = test_site();
-    let base = frames.split("/frames.html").next().unwrap().to_string();
-    let cross = frames.split("cross=").nth(1).unwrap();
-    let elsewhere = format!("http://localhost:{cross}");
-    let mut h = Host::new(&state);
-    let other = "another-caller";
-
-    // Both on 127.0.0.1: the second answer there names the first session.
-    let (a, _) = h
-        .open(
-            CALLER,
-            "b2b-site",
-            json!({"url": format!("{base}/next.html")}),
-        )
+    // A host that stops closes the sessions still open, and removes their
+    // profiles.
+    let (d, _) = h
+        .open(CALLER, engine, json!({"url": format!("{base}/next.html")}))
         .await;
-    let hash_a = h.audits[0]["session"].clone();
-    let (b, page_b) = h
-        .open(
-            other,
-            "b2b-site",
-            json!({"url": format!("{base}/alert.html")}),
-        )
-        .await;
-    println!("b's open: shared_site {}", page_b["shared_site"]);
-    assert_eq!(page_b["shared_site"][0]["session"], hash_a);
-    assert_eq!(h.audits[1]["shared_site"], json!([hash_a]));
-    h.call(CALLER, "close", &a, json!({})).await.unwrap();
-
-    // A reservation: another session's action on the site is refused
-    // before anything is sent; reading goes on; elsewhere goes on.
-    let (r, _) = h
-        .open(
-            CALLER,
-            "b2b-site",
-            json!({"url": format!("{base}/next.html"), "reserve_site": true}),
-        )
-        .await;
-    let page = h.call(other, "observe", &b, json!({})).await.unwrap();
-    let shown = find(&page, "button", "Show alert");
-    let busy = h
-        .call(other, "do", &b, act(&format!("click {shown}")))
+    let profile_d = h
+        .browsers
+        .session(&d, CALLER)
         .await
-        .unwrap_err();
+        .unwrap()
+        .runtime
+        .profile();
+    h.browsers.close_all().await;
     println!(
-        "b clicks on the reserved site: {} ({})",
-        busy.code, busy.message
+        "d's profile after the host stopped: exists {}",
+        profile_d.exists()
     );
-    assert_eq!(
-        (busy.exit, busy.code.as_str()),
-        (crate::failure::Exit::Failed, "site_busy")
-    );
-    let text = h.call(other, "text", &b, json!({})).await.unwrap();
-    assert!(
-        text["text"].as_str().unwrap().contains("waiting"),
-        "nothing was clicked"
-    );
-    for (command, args) in [
-        (
-            "tab",
-            json!({"action": "new", "url": format!("{base}/next.html")}),
-        ),
-        ("eval", json!({"script": "1"})),
-    ] {
-        let failure = h.call(other, command, &b, args).await.unwrap_err();
-        assert_eq!(failure.code, "site_busy", "{command}");
-    }
-    let opened = h
-        .call(
-            other,
-            "open",
-            "b2b-site",
-            json!({"url": format!("{base}/files.html")}),
-        )
-        .await
-        .unwrap_err();
-    println!("a new session's open on it: {}", opened.code);
-    assert_eq!(opened.code, "site_busy");
-    let away = h
-        .call(
-            other,
-            "tab",
-            &b,
-            json!({"action": "new", "url": format!("{elsewhere}/next.html")}),
-        )
-        .await
-        .unwrap();
-    println!("b elsewhere: {}", away["tab"]);
-    // The reservation ends with its session.
-    h.call(CALLER, "close", &r, json!({})).await.unwrap();
-    h.call(other, "tab", &b, json!({"action": "switch", "tab": "t1"}))
-        .await
-        .unwrap();
-    let clicked = h
-        .call(other, "do", &b, act(&format!("click {shown}")))
-        .await
-        .unwrap();
-    println!("after close: {}", clicked["trail"][0]["events"]);
-    h.call(other, "dialog", &b, json!({"accept": true}))
-        .await
-        .unwrap();
-    h.call(other, "close", &b, json!({})).await.unwrap();
-}
+    assert!(!profile_d.exists());
 
-async fn navigating_into_a_reserved_site_is_refused_before_it_is_sent(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["b2b-leave"]);
-    let frames = test_site();
-    let local = frames.split("/frames.html").next().unwrap().to_string();
-    let cross = frames.split("cross=").nth(1).unwrap();
-    let elsewhere = format!("http://localhost:{cross}");
-    let mut h = Host::new(&state);
-    let other = "another-caller";
-
-    // The other session: a page on 127.0.0.1 it left for localhost, then a
-    // tab on localhost whose link and form lead back to 127.0.0.1.
-    let leave = |from: &str, to: &str| format!("{from}/leave.html?to={to}/next.html");
-    let (b, page) = h
-        .open(
-            other,
-            "b2b-leave",
-            json!({"url": leave(&local, &elsewhere)}),
-        )
-        .await;
-    let go = find(&page, "link", "Go there");
-    h.call(other, "do", &b, act(&format!("click {go}")))
-        .await
-        .unwrap();
-    h.call(
-        other,
-        "tab",
-        &b,
-        json!({"action": "new", "url": leave(&elsewhere, &local)}),
-    )
-    .await
-    .unwrap();
-    let page = h.call(other, "observe", &b, json!({})).await.unwrap();
-
-    // 127.0.0.1 reserved: no way into it is sent.
-    let (r, _) = h
-        .open(
-            CALLER,
-            "b2b-leave",
-            json!({"url": format!("{local}/next.html"), "reserve_site": true}),
-        )
-        .await;
-    let search = find(&page, "textbox", "Search");
-    // The second form's own action stays on localhost: only its submit
-    // button's formaction leads to 127.0.0.1, and Enter in its field goes
-    // there too.
-    let field = find(&page, "textbox", "Find");
-    let mut outcomes = Vec::new();
-    for line in [
-        format!("click {}", find(&page, "link", "Go there")),
-        format!("click {}", find(&page, "button", "Send")),
-        format!("press {search} Enter"),
-        format!("press {field} Enter"),
-        format!("type {field} x\n"),
-    ] {
-        let outcome = h.call(other, "do", &b, act(&line)).await;
-        outcomes.push((line, outcome.map_or_else(|f| f.code, |_| "sent".into())));
-    }
-    let went = h
-        .call(
-            other,
-            "goto",
-            &b,
-            json!({"url": format!("{local}/next.html")}),
-        )
-        .await;
-    outcomes.push((
-        "goto".into(),
-        went.map_or_else(|f| f.code, |_| "sent".into()),
-    ));
-    let tab = h.call(other, "observe", &b, json!({})).await.unwrap();
+    // One a host that ended without closing left (it was killed), the next
+    // host on the state directory removes as it starts.
+    let left = profile::root(&state).join("left-by-a-killed-host");
+    fs::create_dir_all(left.join("data")).unwrap();
+    fs::write(left.join("data/Cookies"), "signed_in=yes").unwrap();
+    let _next = Host::new(&state);
     println!(
-        "into the reserved site from localhost: {outcomes:?}; now on {}",
-        tab["url"]
+        "a killed host's profile, once the next starts: exists {}",
+        left.exists()
     );
-    h.call(other, "tab", &b, json!({"action": "switch", "tab": "t1"}))
-        .await
-        .unwrap();
-    let back = h.call(other, "do", &b, act("back")).await;
-    let back = back.map_or_else(|f| f.code, |_| "sent".into());
-    let stayed = h.call(other, "observe", &b, json!({})).await.unwrap();
-    println!("back into it: {back}; now on {}", stayed["url"]);
-    assert!(outcomes.iter().all(|(_, code)| code == "site_busy"));
-    assert!(tab["url"].as_str().unwrap().starts_with(&elsewhere));
-    assert_eq!(back, "site_busy");
-    assert_eq!(stayed["url"], json!(format!("{elsewhere}/next.html")));
-    // Within localhost, the other session goes on.
-    let home = find(&stayed, "link", "Back to orders");
-    h.call(other, "do", &b, act(&format!("click {home}")))
-        .await
-        .unwrap();
-
-    // Once the reservation ends, so does the refusal.
-    h.call(CALLER, "close", &r, json!({})).await.unwrap();
-    h.call(other, "do", &b, act("back")).await.unwrap();
-    let returned = h.call(other, "do", &b, act("back")).await.unwrap();
-    println!("after close, back: {}", returned["page"]["url"]);
-    assert!(
-        returned["page"]["url"]
-            .as_str()
-            .unwrap()
-            .starts_with(&local)
-    );
-    h.call(other, "close", &b, json!({})).await.unwrap();
-}
-
-/// Back is checked against the tab's real history: after A, B and A
-/// again, Back leads to B, not to whatever came before the first A.
-async fn back_into_a_reserved_site_is_refused_after_a_return_visit(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["b8-back"]);
-    let frames = test_site();
-    let a = frames.replace("frames.html", "next.html");
-    let cross = frames.split("cross=").nth(1).unwrap();
-    let b = format!("http://localhost:{cross}/next.html");
-    let mut session = Session::start_with(
-        &latch(),
-        &state,
-        "b8-back",
-        Duration::from_secs(120),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
-    for url in [&a, &b, &a] {
-        session
-            .call(json!({"op": "open", "url": url}))
-            .await
-            .unwrap();
-    }
-    // Another session on the profile reserves B's site.
-    let holder = Session::begin(&session.runtime).await.unwrap();
-    let site = crate::vault::sites::site_of(&b).unwrap();
-    assert!(session.runtime.reserve(&site, holder.key()));
-    let back = session.call(json!({"op": "act", "action": "back"})).await;
-    let back = back.map_or_else(|f| f.code, |_| "sent".into());
-    let now = session.call(json!({"op": "observe"})).await.unwrap().result;
-    println!("back from the return visit: {back}; now on {}", now["url"]);
-    assert_eq!(back, "site_busy");
-    assert_eq!(now["url"], json!(a));
-    // A page of A's own site first: Back leads back to A, and goes.
-    let a2 = a.replace("next.html", "alert.html");
-    session
-        .call(json!({"op": "open", "url": a2}))
-        .await
-        .unwrap();
-    let back = session.call(json!({"op": "act", "action": "back"})).await;
-    let back = back.map_or_else(|f| f.code, |_| "sent".into());
-    let now = session.call(json!({"op": "observe"})).await.unwrap().result;
-    println!("back within A's site: {back}; now on {}", now["url"]);
-    assert_eq!((back.as_str(), &now["url"]), ("sent", &json!(a)));
-    session.close().await.unwrap();
+    assert!(!left.exists());
 }
 
 /// Camoufox runs with the prefs that open every window a page opens
@@ -2313,18 +2145,22 @@ async fn back_into_a_reserved_site_is_refused_after_a_return_visit(engine: &str)
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn camoufox_runs_with_page_windows_as_background_tabs() {
-    let (_dir, state, _area) = test_state("camoufox", &["fox-tabs"]);
+    let (_dir, state, _area) = test_state("camoufox");
     let session = Session::start_with(
         &latch(),
         &state,
-        "fox-tabs",
+        "camoufox",
         Duration::from_secs(120),
         HEADLESS,
     )
     .await
     .unwrap();
+    // Read once the browser has quit, before its runtime (and the profile)
+    // is gone.
+    let (runtime, profile) = (session.runtime.clone(), session.profile());
     session.close().await.unwrap();
-    let prefs = fs::read_to_string(profile::root(&state).join("fox-tabs/data/prefs.js")).unwrap();
+    let prefs = fs::read_to_string(profile.join("data/prefs.js")).unwrap();
+    drop(runtime);
     if HEADLESS {
         assert!(
             prefs.contains(r#"user_pref("widget.macos.allow-native-select", false);"#),
@@ -2340,22 +2176,18 @@ async fn camoufox_runs_with_page_windows_as_background_tabs() {
 }
 
 async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["b2b-turns"]);
+    let (_dir, state, _area) = test_state(engine);
     let frames = test_site();
     let base = frames.split("/frames.html").next().unwrap().to_string();
     let cross = frames.split("cross=").nth(1).unwrap();
     let mut h = Host::new(&state);
     let (a, _) = h
-        .open(
-            CALLER,
-            "b2b-turns",
-            json!({"url": format!("{base}/next.html")}),
-        )
+        .open(CALLER, engine, json!({"url": format!("{base}/next.html")}))
         .await;
     let (b, _) = h
         .open(
             CALLER,
-            "b2b-turns",
+            engine,
             json!({"url": format!("http://localhost:{cross}/files.html")}),
         )
         .await;
@@ -2398,7 +2230,7 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
 /// `observe --all` lists the rest, whose refs work, and a scroll brings
 /// them into the bounded view.
 async fn an_answer_shows_the_screen_and_observe_all_every_element(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["shown"]);
+    let (_dir, state, _area) = test_state(engine);
     let page = br#"<!doctype html><title>long page</title>
         <button>Top</button>
         <iframe src="/frame.html" style="height:80px"></iframe>
@@ -2413,7 +2245,7 @@ async fn an_answer_shows_the_screen_and_observe_all_every_element(engine: &str) 
     let (id, opened) = h
         .open(
             CALLER,
-            "shown",
+            engine,
             json!({"url": format!("http://127.0.0.1:{port}/")}),
         )
         .await;

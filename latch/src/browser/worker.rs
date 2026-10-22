@@ -1,11 +1,8 @@
-//! The browser worker: one long-lived process per profile runtime, run as
-//! `latch browser-worker --profile P --scratch DIR [--headless]
-//! [--allow-local-browsing]` (hidden
-//! from `--help`). It launches the engine its profile is bound to (a
-//! profile not made yet is made for CfT) and drives it, CfT over the CDP
-//! pipe and Camoufox through its helper, for every session on the profile:
-//! each has its own windows, tabs, snapshots, downloads and dialogs, and
-//! the browser's logins are shared.
+//! The browser worker: one long-lived process per session runtime, run as
+//! `latch browser-worker --engine E --profile DIR --scratch DIR [--headless]
+//! [--allow-local-browsing]` (hidden from `--help`). It launches engine E
+//! on the session's profile in DIR (`profile.rs`) and drives it, CfT over
+//! the CDP pipe and Camoufox through its helper.
 //!
 //! On macOS it is not inside latch's Seatbelt: a Seatbelt-confined process
 //! can only re-apply its own profile, and every Chrome or Firefox helper
@@ -13,7 +10,7 @@
 //! off. The engine's sandbox stays on for every web-content process
 //! instead. What latch still controls: the pinned build, checked before
 //! launch; a recipe that never opens a debug port or turns the sandbox off;
-//! the profile locked to this runtime; and a minimal environment (`PATH`, a
+//! a profile of the session's own; and a minimal environment (`PATH`, a
 //! home, a temp folder and the engine's own settings), all in the runtime's
 //! scratch folder; and where it goes: only web addresses, and the network
 //! only through the worker's proxy, which refuses the host's local
@@ -33,8 +30,7 @@
 //!   "audit": A}}`: R for the agent, A for the host's audit record. When
 //!   bytes follow the line (a screenshot, a download), the answer says how
 //!   many: `"bytes": N`. An upload's call is followed by its file's `size`
-//!   bytes. `"reserved"` lists the sites other sessions hold: an action
-//!   there is refused with `site_busy` before it is sent;
+//!   bytes;
 //! - `{"op": "begin"}` starts the call's session with a window of its own,
 //!   and `{"op": "end"}` closes that session's tabs;
 //! - `{"op": "close"}` closes the browser, waits for every process it
@@ -70,7 +66,6 @@ use super::core::{Answer, Call, Core};
 use super::driver::{Runtime, Seat};
 use super::egress;
 use super::engine::{CAMOUFOX, CFT};
-use super::profile;
 use crate::failure::Failure;
 use crate::wire::Response;
 
@@ -116,22 +111,14 @@ fn die_with_host() -> Result<(), Failure> {
     Ok(())
 }
 
-/// Confines this worker to its profile runtime's view. The outer copy
+/// Confines this worker to its session runtime's view. The outer copy
 /// becomes bubblewrap and never returns; the copy inside returns once its
 /// filter is on.
 #[cfg(target_os = "linux")]
-fn confine(state_dir: &Path, profile_name: &str, scratch: &Path) -> Result<(), Failure> {
+fn confine(state_dir: &Path, profile: &Path, scratch: &Path) -> Result<(), Failure> {
     let state_dir = state_dir.canonicalize().map_err(cft::io_failure)?;
-    // Made here if new (for CfT, as the launch below would), so the view
-    // has it to bind.
-    let engine = profile::engine_of(&state_dir, profile_name)?;
-    let profile = profile::open(
-        &state_dir,
-        profile_name,
-        engine.as_deref().unwrap_or(&CFT.engine),
-    )?;
     let view = crate::sandbox::BrowserView {
-        profile: profile.dir,
+        profile: profile.canonicalize().map_err(cft::io_failure)?,
         // Camoufox is pinned for macOS only, so CfT is the one engine here.
         plugin: CFT.folder(&state_dir),
         scratch: scratch.canonicalize().map_err(cft::io_failure)?,
@@ -143,7 +130,8 @@ fn confine(state_dir: &Path, profile_name: &str, scratch: &Path) -> Result<(), F
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     state_dir: &Path,
-    profile_name: &str,
+    engine: &str,
+    profile: &Path,
     scratch: &Path,
     idle: Duration,
     call_limit: Duration,
@@ -152,7 +140,7 @@ pub fn run(
     local: bool,
 ) -> ExitCode {
     #[cfg(target_os = "linux")]
-    if let Err(failure) = confine(state_dir, profile_name, scratch) {
+    if let Err(failure) = confine(state_dir, profile, scratch) {
         answer(&mut io::stdout().lock(), Response::error(&failure), None);
         return ExitCode::FAILURE;
     }
@@ -188,44 +176,37 @@ pub fn run(
     let absolute = |path: &Path| path.canonicalize().map_err(cft::io_failure);
     let launched = absolute(state_dir).and_then(|state_dir| {
         let scratch = absolute(scratch)?;
-        Ok(
-            match profile::engine_of(&state_dir, profile_name)?.as_deref() {
-                Some("camoufox") => {
-                    let browser = Camoufox::launch(
-                        &state_dir,
-                        profile_name,
-                        &scratch,
-                        headless,
-                        display,
-                        &proxy,
-                    )?;
-                    let ready = json!({
-                        "engine": CAMOUFOX.engine,
-                        "version": CAMOUFOX.version,
-                        "driver_contract": CAMOUFOX.driver_contract,
-                        "pid": browser.pid(),
-                    });
-                    serve(ready, browser, idle, call_limit, local)
-                }
-                _ => {
-                    let browser = Cft::launch(
-                        &state_dir,
-                        profile_name,
-                        &scratch,
-                        headless,
-                        display,
-                        &proxy,
-                    )?;
-                    let ready = json!({
-                        "engine": CFT.engine,
-                        "version": CFT.version,
-                        "driver_contract": CFT.driver_contract,
-                        "pid": browser.pid(),
-                    });
-                    serve(ready, browser, idle, call_limit, local)
-                }
-            },
-        )
+        let profile = absolute(profile)?;
+        Ok(match engine {
+            "camoufox" => {
+                let browser =
+                    Camoufox::launch(&state_dir, &profile, &scratch, headless, display, &proxy)?;
+                let ready = json!({
+                    "engine": CAMOUFOX.engine,
+                    "version": CAMOUFOX.version,
+                    "driver_contract": CAMOUFOX.driver_contract,
+                    "pid": browser.pid(),
+                });
+                serve(ready, browser, idle, call_limit, local)
+            }
+            "cft" => {
+                let browser =
+                    Cft::launch(&state_dir, &profile, &scratch, headless, display, &proxy)?;
+                let ready = json!({
+                    "engine": CFT.engine,
+                    "version": CFT.version,
+                    "driver_contract": CFT.driver_contract,
+                    "pid": browser.pid(),
+                });
+                serve(ready, browser, idle, call_limit, local)
+            }
+            _ => {
+                return Err(Failure::usage(
+                    "bad_engine",
+                    format!("no browser engine {engine}"),
+                ));
+            }
+        })
     });
     launched.unwrap_or_else(|failure| {
         answer(&mut io::stdout().lock(), Response::error(&failure), None);
@@ -371,28 +352,9 @@ fn serve<B: Runtime>(
                     let refused = call
                         .loads()
                         .and_then(|url| egress::requested(url, local).err());
-                    let reserved: Vec<&str> = line["reserved"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .collect();
-                    let busy = if reserved.is_empty() {
-                        None
-                    } else {
-                        match live.core.sites_of(&call) {
-                            Some(sites) => sites
-                                .into_iter()
-                                .find(|site| reserved.contains(&site.as_str()))
-                                .map(Some),
-                            // Where it leads is not known: it might be there.
-                            None => Some(None),
-                        }
-                    };
-                    let reply = match (refused, busy) {
-                        (Some(failure), _) => Err(failure),
-                        (None, Some(site)) => Err(site_busy(site.as_deref())),
-                        (None, None) => live.core.call(call, input).map_err(|mut failure| {
+                    let reply = match refused {
+                        Some(failure) => Err(failure),
+                        None => live.core.call(call, input).map_err(|mut failure| {
                             if failure.code != "browser_gone" {
                                 live.core.reading_for(&mut failure);
                             }
@@ -477,20 +439,6 @@ fn stuck() -> Failure {
             "the browser left {UNANSWERED_IN_A_ROW} calls in a row unanswered; latch closed it, and the next session starts a new one"
         ),
     )
-}
-
-/// Refused before it is sent: the call would act on `site`, which another
-/// session reserved, or (None) on a page that is not known.
-fn site_busy(site: Option<&str>) -> Failure {
-    let message = match site {
-        Some(site) => {
-            format!("another session on this profile has reserved {site}; nothing was sent")
-        }
-        None => "another session on this profile has reserved a site, and the page Back leads to is not known; nothing was sent".to_string(),
-    };
-    let mut failure = Failure::failed("site_busy", message);
-    failure.details = json!({"site": site, "audit": {"site_busy": site}});
-    failure
 }
 
 fn answer(stdout: &mut impl Write, response: Response, bytes: Option<&[u8]>) {

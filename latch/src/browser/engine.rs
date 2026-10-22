@@ -258,10 +258,24 @@ impl Pin {
     }
 }
 
+/// Engine `engine` (`cft` or `camoufox`) as the commands name it.
+pub fn named(engine: &str) -> &str {
+    if engine == "cft" { "chrome" } else { engine }
+}
+
+/// The engine the commands name `name`, if there is one.
+pub fn unnamed(name: &str) -> Option<&'static str> {
+    match name {
+        "chrome" => Some("cft"),
+        "camoufox" => Some("camoufox"),
+        _ => None,
+    }
+}
+
 /// No engine where `at` should be: the owner installs it on the host with
 /// `latch browser setup`, which the error names, in its details too.
 fn not_installed(engine: &str, version: &str, at: &Path) -> Failure {
-    let named = if engine == "cft" { "chrome" } else { engine };
+    let named = named(engine);
     let setup = format!("latch browser setup --engine {named}");
     let mut failure = Failure::failed(
         "engine_not_installed",

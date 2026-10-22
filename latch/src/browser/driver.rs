@@ -120,9 +120,6 @@ pub trait Driver {
     fn navigate(&mut self, url: &str) -> Result<(), Failure>;
     /// One step back in the active tab's history; false if there is none.
     fn back(&mut self) -> Result<bool, Failure>;
-    /// The address `back` would load, if there is one; an error when the
-    /// engine can't tell (Camoufox, when that entry is another origin's).
-    fn back_url(&mut self) -> Result<Option<String>, Failure>;
 
     /// Every frame of the active tab, cross-site and sandboxed ones included.
     fn frames(&mut self) -> Result<Vec<Frame>, Failure>;
@@ -194,7 +191,7 @@ pub trait Driver {
     fn close(&mut self) -> Value;
 }
 
-/// One profile's browser, shared by the sessions on it: the driver
+/// A runtime's browser, shared by the sessions it begins: the driver
 /// contract acts for the selected session, on its own tabs, downloads and
 /// dialogs.
 pub trait Runtime: Driver {
@@ -273,9 +270,6 @@ impl<B: Runtime> Driver for Seat<B> {
     }
     fn back(&mut self) -> Result<bool, Failure> {
         self.browser().back()
-    }
-    fn back_url(&mut self) -> Result<Option<String>, Failure> {
-        self.browser().back_url()
     }
     fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
         self.browser().frames()

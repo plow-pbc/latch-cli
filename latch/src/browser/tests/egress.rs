@@ -10,6 +10,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
+use crate::browser::engine::named;
+
 use super::{CALLER, Host, act, find, serve, test_state};
 
 conformance!(
@@ -62,7 +64,7 @@ fn redirecting(location: String) -> u16 {
 }
 
 async fn no_file_or_other_schemes_page_is_ever_shown(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["web-only"]);
+    let (_dir, state, _area) = test_state(engine);
     let secret = sentinel("SENTINEL");
     let file = state.join("sentinel-config.json");
     fs::write(&file, format!(r#"{{"plow_token": "{secret}"}}"#)).unwrap();
@@ -91,13 +93,13 @@ async fn no_file_or_other_schemes_page_is_ever_shown(engine: &str) {
         &redirect.replace("http:", "ftp:"),
     ] {
         let refused = h
-            .call(CALLER, "open", "web-only", json!({"url": url}))
+            .call(CALLER, "open", named(engine), json!({"url": url}))
             .await
             .unwrap_err();
         println!("open {url}: {} ({})", refused.code, refused.message);
         assert_eq!(refused.code, "url_refused", "{url}");
     }
-    let (s, _) = h.open(CALLER, "web-only", json!({"url": start})).await;
+    let (s, _) = h.open(CALLER, engine, json!({"url": start})).await;
     for (command, args) in [
         ("tab", json!({"action": "new", "url": file_url})),
         ("goto", json!({"url": file_url})),
@@ -116,7 +118,7 @@ async fn no_file_or_other_schemes_page_is_ever_shown(engine: &str) {
         ("button", "Go by script"),
         ("link", "Redirected"),
     ] {
-        let (s, page) = h.open(CALLER, "web-only", json!({"url": start})).await;
+        let (s, page) = h.open(CALLER, engine, json!({"url": start})).await;
         let target = find(&page, role, name);
         let clicked = h
             .call(CALLER, "do", &s, act(&format!("click {target}")))
@@ -144,7 +146,7 @@ async fn no_file_or_other_schemes_page_is_ever_shown(engine: &str) {
 }
 
 async fn local_addresses_are_refused_by_number_and_by_name(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["no-local"]);
+    let (_dir, state, _area) = test_state(engine);
     // The owner has not allowed local browsing: the default.
     fs::remove_file(state.join("host.json")).unwrap();
     let secret = sentinel("LOCAL-SERVICE");
@@ -159,7 +161,7 @@ async fn local_addresses_are_refused_by_number_and_by_name(engine: &str) {
         format!("https://127.0.0.1:{port}/"),
     ] {
         let refused = h
-            .call(CALLER, "open", "no-local", json!({"url": url}))
+            .call(CALLER, "open", named(engine), json!({"url": url}))
             .await
             .unwrap_err();
         println!("open {url}: {} ({})", refused.code, refused.message);
@@ -171,7 +173,7 @@ async fn local_addresses_are_refused_by_number_and_by_name(engine: &str) {
         );
     }
 
-    let (s, _) = h.open(CALLER, "no-local", json!({})).await;
+    let (s, _) = h.open(CALLER, engine, json!({})).await;
     for url in [
         format!("http://127.0.0.1:{port}/"),
         format!("http://localhost:{port}/"),
@@ -209,11 +211,11 @@ async fn local_addresses_are_refused_by_number_and_by_name(engine: &str) {
 }
 
 async fn the_web_loads_as_before(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["web"]);
+    let (_dir, state, _area) = test_state(engine);
     fs::remove_file(state.join("host.json")).unwrap();
     let mut h = Host::new(&state);
     for url in ["https://example.com/", "http://example.com/"] {
-        let (s, page) = h.open(CALLER, "web", json!({"url": url})).await;
+        let (s, page) = h.open(CALLER, engine, json!({"url": url})).await;
         let text = h.call(CALLER, "text", &s, json!({})).await.unwrap();
         println!("{url}: {} {:?}", page["url"], page["title"]);
         assert!(text.to_string().contains("Example Domain"), "{text:#}");
@@ -229,7 +231,7 @@ async fn the_web_loads_as_before(engine: &str) {
 async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
     use crate::browser::cft::Cft;
     use crate::browser::driver::{Driver, Runtime};
-    let (_dir, state, _area) = test_state("cft", &["intercepted"]);
+    let (_dir, state, _area) = test_state("cft");
     let secret = sentinel("SENTINEL");
     let file = state.join("sentinel-config.json");
     fs::write(&file, format!(r#"{{"plow_token": "{secret}"}}"#)).unwrap();
@@ -237,10 +239,11 @@ async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
     let scratch = tempfile::tempdir().unwrap();
     let state = state.canonicalize().unwrap();
     let scratch_path = scratch.path().canonicalize().unwrap();
+    let profile = crate::browser::profile::make(&state).unwrap();
     let proxy = crate::browser::egress::Proxy::start(true).unwrap().url();
     let mut browser = Cft::launch(
         &state,
-        "intercepted",
+        profile.path(),
         &scratch_path,
         super::HEADLESS,
         None,
@@ -273,7 +276,7 @@ async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
 /// engine hook stops those loads before they start, so the tab is blanked
 /// when latch next reads it. A `data:` image still loads.
 async fn a_data_or_blob_page_is_never_read(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["made-pages"]);
+    let (_dir, state, _area) = test_state(engine);
     let secret = sentinel("SENTINEL");
     let pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
     let page = format!(
@@ -285,7 +288,7 @@ async fn a_data_or_blob_page_is_never_read(engine: &str) {
         serve(vec![("/".into(), page.into())])
     );
     let mut h = Host::new(&state);
-    let (s, _) = h.open(CALLER, "made-pages", json!({"url": start})).await;
+    let (s, _) = h.open(CALLER, engine, json!({"url": start})).await;
     let width = h
         .call(
             CALLER,

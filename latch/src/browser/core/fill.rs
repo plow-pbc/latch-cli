@@ -580,9 +580,6 @@ mod tests {
         fn back(&mut self) -> Result<bool, Failure> {
             unreachable!()
         }
-        fn back_url(&mut self) -> Result<Option<String>, Failure> {
-            unreachable!()
-        }
         fn run(&mut self, _: &Frame, _: &str) -> Result<Value, Failure> {
             unreachable!()
         }
