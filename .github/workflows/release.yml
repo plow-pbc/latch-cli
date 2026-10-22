@@ -2,8 +2,10 @@ name: release
 # A release is a manual run from main: it mints v<version>-<run number>, e.g.
 # v0.1.0-1327, titled `latch 0.1.0 (1327)`, builds the archives (the package
 # workflow), signs and notarizes the macOS ones, checks them all and leaves a
-# draft release for a person to publish. The run number is the build number
-# latch --version shows.
+# draft release for a person to publish. The full macOS test suite runs
+# beside the build (its debug, fake-gog test build shares nothing with the
+# release build), and the draft is made only if it passes too. The run
+# number is the build number latch --version shows.
 run-name: Release (build ${{ github.run_number }})
 on:
   workflow_dispatch:
@@ -49,6 +51,9 @@ jobs:
     with:
       tag: ${{ needs.version.outputs.tag }}
       stage: build
+  mac-tests:
+    needs: version
+    uses: ./.github/workflows/mac-tests.yml
   # Only here: pull requests never reach the release environment or its
   # credentials, and keep their ad-hoc signed builds.
   sign-macos:
@@ -168,7 +173,7 @@ jobs:
       tag: ${{ needs.version.outputs.tag }}
       stage: check
   publish:
-    needs: [version, check]
+    needs: [version, check, mac-tests]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

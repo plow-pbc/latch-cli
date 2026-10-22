@@ -1,13 +1,14 @@
 name: package
 # latch's archives for each platform: built, packaged and checked (each one's
-# SHA256SUMS, install files and latch --version, on its own runner). A pull
-# request runs it for Linux only, unsigned; the macOS archives are built and
+# SHA256SUMS, install files and latch --version, on its own runner). A merge
+# to main runs it for Linux only, unsigned; the macOS archives are built and
 # checked by the release. The release workflow calls it twice: `build`
 # for the archives it then signs, and `check` to assemble and verify the
 # signed ones.
-run-name: "Package check: ${{ github.event.pull_request.title }}"
+run-name: "Package check: ${{ github.event.head_commit.message }}"
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths: ['latch/**', 'scripts/**', 'install.sh', '.github/workflows/package.yml', '!**/*.md']
   workflow_call:
     inputs:
@@ -21,10 +22,10 @@ on:
         type: string
 permissions:
   contents: read
-# A new push to a pull request cancels its run in progress.
+# A newer merge to main cancels the run it supersedes.
 concurrency:
-  group: package-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: package-${{ github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 jobs:
   version:
     if: inputs.stage != 'check'
@@ -40,7 +41,7 @@ jobs:
         run: |
           if [[ -z "$TAG" ]]; then
             package=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
-            TAG="v$package-pr.${{ github.event.number }}"
+            TAG="v$package-main.${{ github.run_number }}"
           fi
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -51,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: &matrix
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","arch":"amd64"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","arch":"arm64"}]' || '[{"runner":"macos-15","target":"aarch64-apple-darwin","arch":"arm64"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin","arch":"x86_64"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","arch":"amd64"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","arch":"arm64"}]') }}
+        include: ${{ fromJSON(github.event_name == 'push' && '[{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","arch":"amd64"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","arch":"arm64"}]' || '[{"runner":"macos-15","target":"aarch64-apple-darwin","arch":"arm64"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin","arch":"x86_64"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","arch":"amd64"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","arch":"arm64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:

@@ -4,8 +4,6 @@ on:
   push:
     branches: [main, ci-speed]
   pull_request:
-    # `labeled`: adding the `mac` label runs the Mac tests on a pull request.
-    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       mode:
@@ -28,20 +26,15 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
-  # What this run tests. A push to main (or a dispatch) tests everything. A
-  # pull request skips everything for a docs-only change, and runs the Mac
-  # jobs only as the repository variable LATCH_PR_MAC says:
-  #   paths (default): when it has the `mac` label or changes a path below;
-  #   label: only with the `mac` label, so pull requests test on Linux only;
-  #   always: on every pull request.
-  # The browser is among the paths: Linux runs none of its tests.
+  # What this run tests: everything, except a pull request that changes
+  # only docs. Pull requests test on Linux; the Mac runs on main, and by hand
+  # on any branch with the mac-tests workflow.
   changes:
     if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       code: ${{ steps.pick.outputs.code }}
-      mac: ${{ steps.pick.outputs.mac }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,30 +43,16 @@ jobs:
       - id: pick
         env:
           PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
-          LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'mac') }}
-          PR_MAC: ${{ vars.LATCH_PR_MAC || 'paths' }}
         run: |
           python3 - <<'PY'
-          import os, re, subprocess
-          MAC = re.compile(r"""^(
-              latch/src/sandbox | latch/src/secrets\.rs | latch/macos/
-            | latch/messages-reader/ | latch/src/messages/ | latch/tests/messages/
-            | latch/src/browser/ | latch/tests/browser- | latch/camoufox/
-            | latch/install-binary\.sh | latch/browser-engines\.sh
-            | latch/Cargo\.(toml|lock) | latch/rust-toolchain\.toml | latch/build\.rs
-            | latch/scripts/test-(test-)?shard\.py | \.github/workflows/latch\.yml
-          )""", re.X)
+          import os, subprocess
+          code = True
           if os.environ["PULL_REQUEST"] == "true":
               files = subprocess.check_output(["git", "diff", "--name-only", "HEAD^1", "HEAD"], text=True).split()
               code = any(not (f.endswith(".md") or f.startswith("docs/")) for f in files)
-              mode = os.environ["PR_MAC"]
-              mac = code and (mode == "always" or os.environ["LABELED"] == "true"
-                              or (mode == "paths" and any(MAC.match(f) for f in files)))
-          else:
-              code = mac = True
-          print(f"code={code} mac={mac} ({os.environ['PR_MAC']})")
+          print(f"code={code}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"code={str(code).lower()}\nmac={str(mac).lower()}\n")
+              out.write(f"code={str(code).lower()}\n")
           PY
 
   # The staging branch only probes runner access on push; benchmarks are dispatched.
@@ -88,14 +67,16 @@ jobs:
     steps:
       - run: uname -sm && getconf _NPROCESSORS_ONLN
 
+  # On main, one Mac job for what only a Mac tests: Seatbelt (the worker
+  # tests and sandbox, exec and files), the Messages and Contacts reader,
+  # secrets, the managed host under launchd, the real browser engines (Chrome
+  # for Testing and Camoufox), and the app bundle; clippy too, for the
+  # macOS-only code Linux never compiles. The integration test binaries run
+  # whole; in latch's own tests, the modules below.
   mac:
     needs: changes
-    if: needs.changes.outputs.mac == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON((github.event_name == 'push' || inputs.mode == 'main') && '[{"runner":"macos-15","shard":1,"count":4},{"runner":"macos-15","shard":2,"count":4},{"runner":"macos-15","shard":3,"count":4},{"runner":"macos-15","shard":4,"count":4}]' || '[{"runner":"macos-15","shard":1,"count":3},{"runner":"macos-15","shard":2,"count":3},{"runner":"macos-15","shard":3,"count":3}]') }}
-    runs-on: ${{ matrix.runner }}
+    if: github.event_name == 'push' || inputs.mode == 'main'
+    runs-on: macos-15
     timeout-minutes: 30
     defaults:
       run:
@@ -104,42 +85,34 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-ref || github.sha }}
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          path: .ci-tools
-          sparse-checkout: latch/scripts
       - run: rustup toolchain install
-      - if: matrix.shard == 1
-        run: python3 ../.ci-tools/latch/scripts/test-test-shard.py
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: latch -> target
-          shared-key: mac-${{ matrix.runner }}
-          save-if: ${{ matrix.shard == 1 }}
-      - if: matrix.shard == 1
-        run: cargo fmt --check && cargo clippy --all-targets --locked --features fake-gog -- -D warnings
+          shared-key: mac-macos-15
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --all-targets --locked --features fake-gog -- -D warnings
       - uses: actions/cache@v4
-        if: hashFiles('latch/src/browser/cft.json') != ''
         with:
           path: .dev/cft-state/plugins/cft
           key: cft-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
       - uses: actions/cache@v4
-        if: hashFiles('latch/src/browser/camoufox.json') != ''
         with:
           path: .dev/cft-state/plugins/camoufox
           key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
       - run: cargo build --locked
-      - if: hashFiles('latch/src/browser/cft.json') != ''
-        run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
+      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
       # fake-gog: the test-only gog stand-in the return scenario reads mail with.
-      - run: python3 ../.ci-tools/latch/scripts/test-shard.py ${{ matrix.shard }} ${{ matrix.count }} --features fake-gog
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: tests-${{ runner.arch }}-${{ matrix.shard }}
-          path: .dev/ci/*.json
-          if-no-files-found: error
+      - run: 'cargo test --locked --features fake-gog --bins -- browser:: sandbox:: secrets:: messages:: exec:: files:: serve::'
+      - run: cargo test --locked --features fake-gog --test cli --test setup --test worker
+      - run: LATCH_FUZZ_ITERATIONS=50000 swift test
+        working-directory: latch/messages-reader
+      - run: |
+          app="$RUNNER_TEMP/Plow Latch.app"
+          sh ../scripts/macos-app-bundle.sh 0.0.0 target/debug/latch "$app"
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          "$app/Contents/MacOS/latch" --version
 
   linux:
     needs: changes
@@ -212,27 +185,10 @@ jobs:
           name: latch-linux-${{ matrix.arch }}
           path: latch/target/musl-${{ matrix.arch }}/release/latch
 
-  # The Messages reader (Swift, macOS only): its tests against synthetic
-  # databases, with a bounded fuzz run of its body parser.
-  messages-reader:
-    needs: changes
-    if: needs.changes.outputs.mac == 'true'
-    runs-on: macos-15
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: latch/messages-reader
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source-ref || github.sha }}
-      - run: swift --version
-      - run: LATCH_FUZZ_ITERATIONS=50000 swift test
-
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
-    needs: [changes, mac, linux, linux-static, messages-reader]
+    needs: [changes, mac, linux, linux-static]
     runs-on: ubuntu-24.04
     env:
       RESULTS: ${{ toJSON(needs) }}
