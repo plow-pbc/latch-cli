@@ -135,6 +135,28 @@ class BinaryInstall(unittest.TestCase):
             self.assertIn("Plow Latch.app already installed", again.stdout)
             self.assertIn("latch already linked", again.stdout)
 
+            # An update whose final rename fails keeps the working app and link.
+            failing_mv = tools / "mv"
+            failing_mv.write_text('#!/bin/sh\ncase "$1" in *.app.new) exit 73;; esac\nexec /bin/mv "$@"\n')
+            failing_mv.chmod(0o755)
+            inner.write_text("#!/bin/sh\necho app-three\n")
+            failed = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0, failed.stdout)
+            self.assertIn("still at", failed.stderr)
+            self.assertEqual(subprocess.check_output([str(link)], text=True), "app-two\n")
+            leftovers = sorted(path.name for path in (home / "Applications").iterdir())
+            self.assertEqual(leftovers, ["Plow Latch.app"])
+
+            # A run cut short with the old app moved aside: the next run puts
+            # the new one in place and leaves nothing behind.
+            failing_mv.unlink()
+            installed.rename(home / "Applications/Plow Latch.app.old")
+            resumed = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertEqual(subprocess.check_output([str(link)], text=True), "app-three\n")
+            leftovers = sorted(path.name for path in (home / "Applications").iterdir())
+            self.assertEqual(leftovers, ["Plow Latch.app"])
+
     def test_help_needs_no_binary_or_setup(self):
         result = subprocess.run([str(ROOT / "latch/install.sh"), "--help"],
                                 capture_output=True, text=True)

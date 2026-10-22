@@ -106,13 +106,28 @@ if [ -n "$app" ]; then
   if [ -d "$installed" ] && [ "$(cksum < "$inner")" = "$(cksum < "$installed/Contents/MacOS/$(basename "$inner")")" ]; then
     say "$(basename "$app") already installed at $installed"
   else
-    # Copied beside the old one first; then the old one goes and the new
-    # takes its path.
+    # Copied beside the old one first. The old one then moves aside, not
+    # away, until the new one has its path: if that fails, the old one goes
+    # back, still working, and the link into it with it. A run cut short
+    # between the two leaves the old one aside, which the next run restores.
     mkdir -p "$HOME/Applications"
-    rm -rf "$installed.new"
+    if [ ! -d "$installed" ] && [ -d "$installed.old" ]; then
+      mv "$installed.old" "$installed"
+    fi
+    rm -rf "$installed.new" "$installed.old"
     cp -R "$app" "$installed.new"
-    rm -rf "$installed"
-    mv "$installed.new" "$installed"
+    if [ -d "$installed" ] && ! mv "$installed" "$installed.old"; then
+      rm -rf "$installed.new"
+      die "could not move $installed aside to update it; it is unchanged"
+    fi
+    if ! mv "$installed.new" "$installed"; then
+      if [ -d "$installed.old" ]; then
+        mv "$installed.old" "$installed"
+      fi
+      rm -rf "$installed.new"
+      die "could not put the new $(basename "$app") in place; the old one is still at $installed"
+    fi
+    rm -rf "$installed.old"
     say "installed $(basename "$app") to $installed"
   fi
   link="$installed/Contents/MacOS/$(basename "$inner")"
