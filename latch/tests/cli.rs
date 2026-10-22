@@ -1656,6 +1656,15 @@ fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
 }
 
 #[test]
+fn first_login_accepts_the_installers_plugin_directory() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    fs::create_dir_all(dir.path().join("host/plugins/gog/1.0")).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    assert!(host.join("latch.json").is_file());
+}
+
+#[test]
 fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
     let (_dir, state, _key) = owner_host();
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);

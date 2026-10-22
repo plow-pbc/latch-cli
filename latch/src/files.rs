@@ -58,6 +58,10 @@ pub async fn put(
     if first["ready"] != true {
         return refused(path, worker.finish().await.err().unwrap_or_else(unexpected));
     }
+    // The worker says where the file goes: inside `path` if it is a folder.
+    let Some(placed) = first["path"].as_str() else {
+        return refused(path, unexpected());
+    };
 
     // First answer: "go ahead", so the client sends nothing before the
     // worker is ready to write. The worker puts the file in place only once
@@ -69,10 +73,8 @@ pub async fn put(
     let mut stdin = worker.child.stdin.take().expect("stdin is piped");
     let copied = wire::copy(recv, &mut stdin, size).await;
     drop(stdin);
-    // The worker says where the file goes: inside `path` if it is a folder.
-    let placed = first["path"].as_str().unwrap_or(path).to_string();
     match (copied, worker.finish().await) {
-        (Ok(sha256), Ok(())) => moved(&placed, size, sha256),
+        (Ok(sha256), Ok(())) => moved(placed, size, sha256),
         (_, Err(error)) => Done::failed(&error.code, error.message, json!({ "path": path })),
         (Err(_), Ok(())) => lost(path),
     }
