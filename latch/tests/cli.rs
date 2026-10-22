@@ -81,6 +81,26 @@ fn latch_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_latch")))
 }
 
+/// The latch under test as a process to start. Every one stays off the
+/// local network: its iroh endpoint binds 127.0.0.1 only and never probes
+/// the router, so no test makes macOS ask to let latch find local devices.
+fn latch_process() -> Command {
+    let mut command = Command::new(latch_bin());
+    command.env("LATCH_TEST_LOOPBACK", "1");
+    command
+}
+
+/// An iroh endpoint for a test's own end of a connection, kept off the
+/// local network as `LATCH_TEST_LOOPBACK` keeps latch's: 127.0.0.1 only,
+/// and no port mapping.
+fn loopback_endpoint() -> iroh::endpoint::Builder {
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+}
+
 fn test_dir() -> tempfile::TempDir {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
@@ -94,7 +114,7 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 }
 
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
-    let mut command = Command::new(latch_bin());
+    let mut command = latch_process();
     command
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
@@ -1038,7 +1058,7 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
     let dir = test_dir();
     let state = dir.path().join("none");
     let run = |timeout: &str| {
-        let mut command = Command::new(latch_bin());
+        let mut command = latch_process();
         command
             .env_remove("PLOW_TOKEN_FILE")
             .arg("--state-dir")
@@ -1751,7 +1771,7 @@ fn until_serving(host: &Path, serve: &Serving) {
 }
 
 fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
-    let mut command = Command::new(latch_bin());
+    let mut command = latch_process();
     command
         .args([
             "--state-dir",
@@ -3067,7 +3087,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     runtime.block_on(async {
         use tokio::io::AsyncReadExt;
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            let endpoint = loopback_endpoint()
                 .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
                 .bind()
                 .await
