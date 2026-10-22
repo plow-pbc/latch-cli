@@ -3109,6 +3109,15 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     let before = plow.seen().len();
     run(&["rules", "set", "Only read and echo in this test."]);
     assert_eq!(plow.seen().len(), before);
+    // From here the client's secret store refuses, as the Keychain does
+    // inside a sandbox: its key and Plow login can't be read. Calls over the
+    // socket need neither; the running host has them.
+    let locked = |mode| {
+        for secret in ["key", "plow-token"] {
+            fs::set_permissions(host.join(secret), fs::Permissions::from_mode(mode)).unwrap();
+        }
+    };
+    locked(0o000);
     let exec = run(&["exec", "--", "echo", "local socket"]);
     assert_eq!(exec["stdout"], "local socket\n");
     assert_eq!(
@@ -3132,6 +3141,24 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
         downloaded.to_str().unwrap(),
     ]);
     assert_eq!(fs::read(&downloaded).unwrap(), b"socket transfer");
+    run(&["plugins", "disable", "google"]);
+    let link = run(&[
+        "vault",
+        "link",
+        "--page",
+        "https://example.invalid/",
+        "--kind",
+        "note",
+        "--title",
+        "keyless",
+    ]);
+    assert!(
+        link["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://example.invalid/#h="),
+        "{link}"
+    );
     let decisions = plow.state.lock().unwrap().decisions.clone();
     assert_eq!(decisions.len(), 4);
     assert!(
@@ -3159,6 +3186,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
         "owner config was judged"
     );
     run(&["exec", "--host", "host", "--", "true"]);
+    locked(0o600);
     assert!(
         plow.state
             .lock()
@@ -3300,66 +3328,6 @@ fn a_local_socket_call_the_judge_forbids_does_not_run() {
         assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
         assert_eq!(record["decision"], "deny", "{record}");
     }
-}
-
-#[test]
-fn a_local_socket_call_reads_no_secret_of_the_state_folder() {
-    use std::os::unix::fs::PermissionsExt;
-    let plow = LivePlow::start();
-    let (_runtime, relay) = local_relay();
-    let dir = test_dir();
-    let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
-    google_enabled(&host);
-    let _serve = serving(&host, &share, &relay);
-    // The client's secret store refuses, as the Keychain does inside a
-    // sandbox: its key and Plow login can't be read. The running host has
-    // them already.
-    let locked = |mode| {
-        for secret in ["key", "plow-token"] {
-            fs::set_permissions(host.join(secret), fs::Permissions::from_mode(mode)).unwrap();
-        }
-    };
-    locked(0o000);
-    let exec = latch(&host, &["exec", "--", "echo", "no secrets"], &[]);
-    let source = dir.path().join("source.txt");
-    fs::write(&source, "keyless").unwrap();
-    let put = latch(
-        &host,
-        &[
-            "file",
-            "put",
-            source.to_str().unwrap(),
-            share.join("copied.txt").to_str().unwrap(),
-        ],
-        &[],
-    );
-    let disabled = latch(&host, &["plugins", "disable", "google"], &[]);
-    let link = latch(
-        &host,
-        &[
-            "vault",
-            "link",
-            "--page",
-            "https://example.invalid/",
-            "--kind",
-            "note",
-            "--title",
-            "keyless",
-        ],
-        &[],
-    );
-    locked(0o600);
-    assert!(disabled.status.success(), "{disabled:?}");
-    let link: Value = serde_json::from_slice(&link.stdout).unwrap_or_else(|_| panic!("{link:?}"));
-    let url = link["url"].as_str().unwrap();
-    assert!(url.starts_with("https://example.invalid/#h="), "{link}");
-    assert!(exec.status.success(), "{exec:?}");
-    let answer: Value = serde_json::from_slice(&exec.stdout).unwrap();
-    assert_eq!(answer["stdout"], "no secrets\n");
-    assert!(put.status.success(), "{put:?}");
-    assert_eq!(fs::read(share.join("copied.txt")).unwrap(), b"keyless");
 }
 
 #[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
