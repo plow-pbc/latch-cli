@@ -363,6 +363,7 @@ conformance!(
     a_frames_target_under_a_parent_page_layer_is_refused,
     eval_upload_and_download_move_values_and_files,
     sessions_on_one_profile_share_logins_and_nothing_else,
+    a_late_popup_is_followed_before_the_next_step,
     sessions_warn_on_a_shared_site_and_a_reserved_one_is_refused,
     navigating_into_a_reserved_site_is_refused_before_it_is_sent,
     one_sessions_wait_does_not_hold_the_browser_for_another,
@@ -1799,6 +1800,51 @@ impl crate::model::Provider for Calm {
         };
         Box::pin(async move { Ok((answers, meta)) })
     }
+}
+
+async fn a_late_popup_is_followed_before_the_next_step(engine: &str) {
+    let (_dir, state, _area) = test_state(engine, &["late-popup"]);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let Ok(mut socket) = socket else { continue };
+            std::thread::spawn(move || {
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request);
+                std::thread::sleep(Duration::from_millis(1200));
+                let body = "<!doctype html><title>late popup</title><h1>Popup arrived</h1>";
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            });
+        }
+    });
+    let page = format!(
+        "<!doctype html><title>opener</title><button onclick=\"setTimeout(() => window.open('http://127.0.0.1:{port}/'), 250)\">Open popup</button>"
+    );
+    let url = format!(
+        "http://127.0.0.1:{}/",
+        serve(vec![("/".into(), page.into_bytes())])
+    );
+    let mut h = Host::new(&state);
+    let (id, page) = h.open(CALLER, "late-popup", json!({"url": url})).await;
+    let link = find(&page, "button", "Open popup");
+    let clicked = h
+        .call(CALLER, "do", &id, act(&format!("click {link}")))
+        .await
+        .unwrap();
+    let seen = h.call(CALLER, "observe", &id, json!({})).await.unwrap();
+    h.call(CALLER, "close", &id, json!({})).await.unwrap();
+    println!(
+        "late popup: trail {}, page {}",
+        clicked["trail"], seen["title"]
+    );
+    assert_eq!(clicked["trail"][0]["followed"], "t2");
+    assert_eq!(seen["tab"], "t2");
+    assert_eq!(seen["title"], "late popup");
 }
 
 async fn sessions_on_one_profile_share_logins_and_nothing_else(engine: &str) {

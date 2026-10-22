@@ -77,6 +77,8 @@ let spare = null;
 let opening = 0;
 /// New pages being taken in as tabs: `settle` waits for them.
 let adopting = 0;
+/// Popup navigations can start before Playwright exposes their pages.
+const openingPages = new Set();
 const dialogWaiters = new Set();
 const frameIds = new WeakMap();
 const framesById = new Map();
@@ -359,6 +361,16 @@ async function launch(params) {
     handleSIGTERM: false,
     handleSIGHUP: false,
   });
+  context.on("request", (request) => {
+    if (!request.isNavigationRequest()) return;
+    try {
+      request.frame();
+    } catch {
+      // The popup's frame has no Page until the engine reports it ready.
+      openingPages.add(request);
+    }
+  });
+  context.on("requestfailed", (request) => openingPages.delete(request));
   context.on("page", async (page) => {
     if (opening > 0) return;
     adopting += 1;
@@ -370,6 +382,11 @@ async function launch(params) {
       const id = adopt(owner.key, page, owner.tab.id);
       owner.share.pending.push({ event: "new_tab", tab: id, url: page.url(), opener: owner.tab.id });
     } finally {
+      for (const request of openingPages) {
+        try {
+          if (request.frame().page() === page) openingPages.delete(request);
+        } catch {}
+      }
       adopting -= 1;
     }
   });
@@ -614,7 +631,7 @@ const ops = {
     while (t?.started && t.loading && !mine.dialog && Date.now() < deadline) await sleep(100);
     if (t) t.started = false;
     await sleep(150);
-    while (adopting > 0 && Date.now() < deadline) await sleep(20);
+    while ((openingPages.size > 0 || adopting > 0) && !mine.dialog && Date.now() < deadline) await sleep(20);
     return mine.pending.splice(0);
   },
 
