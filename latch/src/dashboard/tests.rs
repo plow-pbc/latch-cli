@@ -1005,6 +1005,28 @@ fn each_call_shows_its_kind_and_its_command_as_typed() {
         ok(),
         None,
     );
+    // Where it runs unless told: home, or its first write folder.
+    let home = std::env::home_dir().unwrap();
+    let at_home = json!({"argv": ["ls"], "workdir": home, "exit_code": 0});
+    run(
+        &dashboard,
+        owner(),
+        "exec",
+        at_home.clone(),
+        at_home,
+        ok(),
+        None,
+    );
+    let in_project = json!({"argv": ["make"], "workdir": "/p", "writes": ["/p"], "exit_code": 0});
+    run(
+        &dashboard,
+        owner(),
+        "exec",
+        in_project.clone(),
+        in_project,
+        ok(),
+        None,
+    );
     let labels = json!({"gog_args": ["--account", "owner@example.com", "gmail", "labels", "list"]});
     let unconnected = Response::Error {
         exit: Exit::Failed,
@@ -1081,6 +1103,8 @@ fn each_call_shows_its_kind_and_its_command_as_typed() {
                 "--workdir /Users/o --secret-env DEMO=••• --timeout 30 -i sh -c 'echo $DEMO'",
                 "ok · exit 0"
             ),
+            row("exec", "ls", "ok · exit 0"),
+            row("exec", "--write /p make", "ok · exit 0"),
             row(
                 "google",
                 "--account owner@example.com gmail labels list",

@@ -226,10 +226,25 @@ fn command(op: &str, request: &Value, audit: &Value) -> (String, String) {
     let mut line: Vec<String> = Vec::new();
     let kind = match op {
         "exec" => {
+            let writes = words(pick("writes"));
+            // The folder it runs in by default (its first write folder,
+            // else home) goes unsaid, as it is when typed.
             if let Some(dir) = pick("workdir").as_str() {
-                line.extend(["--workdir".into(), quoted(dir)]);
+                let home = std::env::home_dir();
+                let real = home.as_ref().and_then(|home| home.canonicalize().ok());
+                let default = match writes.first() {
+                    Some(first) => [Some(std::path::PathBuf::from(first)), None],
+                    None => [home, real],
+                };
+                if !default
+                    .iter()
+                    .flatten()
+                    .any(|path| path == std::path::Path::new(dir))
+                {
+                    line.extend(["--workdir".into(), quoted(dir)]);
+                }
             }
-            for path in words(pick("writes")) {
+            for path in writes {
                 line.extend(["--write".into(), quoted(&path)]);
             }
             if pick("network") == true {
