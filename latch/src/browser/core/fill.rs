@@ -347,7 +347,8 @@ impl<D: Driver> Core<D> {
         if let Some(why) = answer["refused"].as_str() {
             return Err(refused(why));
         }
-        Ok(json!({"held": answer["held"] == true}))
+        Ok(json!({"held": answer["held"] == true,
+                  "dropped_breaks": answer["dropped_breaks"] == true}))
     }
 
     /// Clicks the submit or `--press` button, as an agent's click would.

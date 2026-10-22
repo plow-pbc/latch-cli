@@ -329,8 +329,14 @@
     if ((self.origin === 'null' ? 'opaque' : self.origin) !== origin) return { refused: 'the origin changed' };
     if (!setValue(el, value)) return { refused: 'no option matches' };
     if (value) filled.add(el); else filled.delete(el);
-    const held = el.localName === 'select' ? true : current(el) === value;
-    return { held };
+    if (el.localName === 'select' || current(el) === value) return { held: true };
+    // A single-line field drops line breaks, as it does from a paste: it
+    // holds the value less them, which is what a person would have got.
+    const unbroken = value.replace(/[\r\n]/g, '');
+    if (el.localName === 'input' && unbroken !== value && current(el) === unbroken) {
+      return { held: true, dropped_breaks: true };
+    }
+    return { held: false };
   };
 
   // How many filled elements still hold something.

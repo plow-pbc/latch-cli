@@ -39,6 +39,7 @@ conformance!(
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
     a_filled_value_is_guarded_in_every_tab_and_from_screenshots,
+    a_stored_password_with_a_line_break_fills_a_single_line_field,
 );
 
 /// `value` as an agent or the audit saw it, for the leak checks, less what
@@ -2411,5 +2412,44 @@ async fn a_login_after_an_edit_fills_the_new_password(engine: &str) {
     assert!(page.contains("password accepted"));
     let everything = h.shown.join("\n");
     assert!(!everything.contains(PASSWORD) && !everything.contains(OLD));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_stored_password_with_a_line_break_fills_a_single_line_field(engine: &str) {
+    // An import can leave a line break on a stored value; the field drops
+    // it, as it would from a paste, and holds the password.
+    let stored = format!("{PASSWORD}\n");
+    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", &stored)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers).await;
+
+    h.call("open", json!({"url": format!("{local}/login.html")}))
+        .await
+        .unwrap();
+    let (filled, audit) = h.login(&login.item).await;
+    println!("fill audit: {}", Value::Object(audit.clone()));
+    assert_eq!(filled.unwrap()["submitted"], true);
+    assert_eq!(audit["dropped_line_breaks"], "password");
+    let page = h.text().await;
+    println!("after the fill: {page}");
+    assert!(page.contains("password accepted"));
+    assert!(!h.shown.join("\n").contains(PASSWORD));
     h.call("close", json!({})).await.ok();
 }
