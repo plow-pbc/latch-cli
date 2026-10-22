@@ -19,6 +19,8 @@ latch --version
 
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
+On macOS that is a link into `~/Applications/Plow Latch.app`, the signed app
+latch runs in (no window or Dock icon), which Full Disk Access is granted to.
 Pass `--bin-dir DIR` after the release tag to choose another binary directory.
 The archive's executable `install.sh` installs the adjacent `latch` with no
 arguments, accepts options before or after an explicit binary path, and shows

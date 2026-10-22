@@ -99,6 +99,9 @@ jobs:
           sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
           tar -xzf "dist/latch-$VERSION-${{ matrix.target }}.tar.gz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/latch" --version
+          if [[ '${{ runner.os }}' == macOS ]]; then
+            codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/Plow Latch.app"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: latch-${{ matrix.target }}
@@ -154,6 +157,8 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$IDENTITY\""
           xcrun notarytool store-credentials latch-notary --keychain "$KEYCHAIN_PATH" \
             --apple-id "$APPLE_NOTARY_APPLE_ID" --team-id "$APPLE_NOTARY_TEAM_ID" --password "$APPLE_NOTARY_PASSWORD"
+      # The app is signed as a whole: its latch takes the bundle's identity,
+      # co.plow.latch.cli, which Full Disk Access is granted to.
       - name: Sign
         shell: bash
         run: |
@@ -161,18 +166,18 @@ jobs:
           name=$(basename "$archive" .tar.gz)
           mkdir unpacked
           tar -xzf "$archive" -C unpacked
-          binary="unpacked/$name/latch"
-          codesign --force --options runtime --timestamp --identifier co.plow.latch.cli \
-            --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY" "$binary"
-          codesign --verify --strict --verbose=2 "$binary"
+          app="unpacked/$name/Plow Latch.app"
+          codesign --force --options runtime --timestamp \
+            --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY" "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
           echo "NAME=$name" >> "$GITHUB_ENV"
-      # A bare binary takes no stapled ticket: Gatekeeper looks the ticket up
+      # The ticket is stapled to the app, so Gatekeeper need not look it up
       # online the first time a quarantined copy runs.
       - name: Notarize
         shell: bash
         run: |
-          binary="unpacked/$NAME/latch"
-          ditto -c -k --keepParent "$binary" "$RUNNER_TEMP/latch.zip"
+          app="unpacked/$NAME/Plow Latch.app"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/latch.zip"
           xcrun notarytool submit "$RUNNER_TEMP/latch.zip" --keychain-profile latch-notary \
             --keychain "$KEYCHAIN_PATH" --wait --timeout 30m --output-format json | tee "$RUNNER_TEMP/notary.json"
           id=$(jq -r .id "$RUNNER_TEMP/notary.json")
@@ -180,20 +185,23 @@ jobs:
             xcrun notarytool log "$id" --keychain-profile latch-notary --keychain "$KEYCHAIN_PATH"
             exit 1
           fi
+          xcrun stapler staple "$app"
       - name: Verify and repackage
         shell: bash
         run: |
-          binary="unpacked/$NAME/latch"
-          details=$(codesign -dvvv "$binary" 2>&1)
+          app="unpacked/$NAME/Plow Latch.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          details=$(codesign -dvvv "$app" 2>&1)
           echo "$details"
           grep -Fx 'Identifier=co.plow.latch.cli' <<< "$details"
           grep -Fx 'TeamIdentifier=3559PD337Z' <<< "$details"
           grep -Fx "Authority=$IDENTITY" <<< "$details"
           grep -E '^CodeDirectory .*flags=0x10000\(runtime\)' <<< "$details"
           grep -E '^Timestamp=' <<< "$details"
-          assessment=$(spctl --assess -vvv --type open --context context:primary-signature "$binary" 2>&1)
+          assessment=$(spctl --assess -vvv --type execute "$app" 2>&1)
           echo "$assessment"
           grep -Fx 'source=Notarized Developer ID' <<< "$assessment"
+          "unpacked/$NAME/latch" --version
           tar -czf "dist/$NAME.tar.gz" -C unpacked "$NAME"
       - uses: actions/upload-artifact@v4
         with:
@@ -248,11 +256,14 @@ jobs:
           if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
           archive=$(find . -name 'latch-*-${{ matrix.target }}.tar.gz')
           tar -xzf "$archive"
-          binary=$(find . -type f -name latch)
+          folder=$(basename "$archive" .tar.gz)
           uname -sm
-          test -x "$(dirname "$binary")/install.sh"
-          "$(dirname "$binary")/install.sh" --help
-          "$binary" --version
+          test -x "$folder/install.sh"
+          "$folder/install.sh" --help
+          "$folder/latch" --version
+          if [[ '${{ runner.os }}' == macOS ]]; then
+            codesign --verify --deep --strict --verbose=2 "$folder/Plow Latch.app"
+          fi
   publish:
     needs: [version, verify-artifacts]
     if: github.event_name != 'pull_request'

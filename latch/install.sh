@@ -6,6 +6,12 @@
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
 #
+# On macOS a release's latch is inside Plow Latch.app (the `latch` beside
+# this script leads into it). Then the whole app goes to ~/Applications,
+# replacing an older one at the same path, so it keeps its identity and its
+# Full Disk Access, and ~/.local/bin/latch becomes a link to the latch
+# inside it.
+#
 # It also installs gog, the Google CLI a host runs for `latch google`: the
 # release pinned in src/google/pin.json next to this script (the pin latch
 # itself checks gog against), into the state directory's plugins folder,
@@ -81,7 +87,44 @@ done
 # 1. The binary. Copy next to the target, then rename, so a running latch is
 # never overwritten in place. cksum, unlike cmp, is on every system.
 dest="$bin_dir/latch"
-if [ -f "$dest" ] && [ "$(cksum < "$src")" = "$(cksum < "$dest")" ]; then
+# On macOS, the app bundle the binary (or the link to it) sits in, if any.
+app=""
+if [ "$(uname -s)" = Darwin ]; then
+  inner=$src
+  if [ -L "$src" ]; then
+    case "$(readlink "$src")" in
+      /*) inner=$(readlink "$src") ;;
+      *) inner="$(dirname "$src")/$(readlink "$src")" ;;
+    esac
+  fi
+  case "$inner" in
+    *.app/Contents/MacOS/*) app=${inner%/Contents/MacOS/*} ;;
+  esac
+fi
+if [ -n "$app" ]; then
+  installed="$HOME/Applications/$(basename "$app")"
+  if [ -d "$installed" ] && [ "$(cksum < "$inner")" = "$(cksum < "$installed/Contents/MacOS/$(basename "$inner")")" ]; then
+    say "$(basename "$app") already installed at $installed"
+  else
+    # Copied beside the old one first; then the old one goes and the new
+    # takes its path.
+    mkdir -p "$HOME/Applications"
+    rm -rf "$installed.new"
+    cp -R "$app" "$installed.new"
+    rm -rf "$installed"
+    mv "$installed.new" "$installed"
+    say "installed $(basename "$app") to $installed"
+  fi
+  link="$installed/Contents/MacOS/$(basename "$inner")"
+  if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$link" ]; then
+    say "latch already linked at $dest"
+  else
+    mkdir -p "$bin_dir"
+    ln -sf "$link" "$dest.tmp"
+    mv -f "$dest.tmp" "$dest"
+    say "linked $dest to $link"
+  fi
+elif [ -f "$dest" ] && [ ! -L "$dest" ] && [ "$(cksum < "$src")" = "$(cksum < "$dest")" ]; then
   say "latch already installed at $dest"
 else
   mkdir -p "$bin_dir"

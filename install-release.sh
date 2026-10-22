@@ -34,6 +34,9 @@ tar -xzf "$archive"
 setup="$tmp/latch-$version-$target"
 cd "$caller"
 echo 'Binary defaults to ~/.local/bin (override with --bin-dir); gog uses ~/.latch/plugins (override with --state-dir).'
+if [ "$(uname -s)" = Darwin ]; then
+  echo 'On macOS latch lives in ~/Applications/Plow Latch.app; ~/.local/bin/latch links to it.'
+fi
 echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
 sh "$setup/install.sh" "$@" "$setup/latch"
 "$setup/latch" --version
