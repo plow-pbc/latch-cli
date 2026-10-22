@@ -85,14 +85,14 @@ async fn start_with(
     std::fs::create_dir_all(&parent).unwrap();
     let dir = tempfile::tempdir_in(parent).unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (area, state, home) = (root.join("area"), root.join("state"), root.join("home"));
-    std::fs::create_dir(&area).unwrap();
+    let home = root.join("home");
+    let (area, state) = (home.join("area"), root.join("state"));
+    std::fs::create_dir_all(&area).unwrap();
     crate::state::StateDir {
         path: state.clone(),
     }
     .create()
     .unwrap();
-    std::fs::create_dir(&home).unwrap();
     std::fs::write(area.join("notes.txt"), "the notes' own words").unwrap();
     let binary = root.join("latch");
     std::fs::write(&binary, "the latch this host started from").unwrap();
@@ -112,10 +112,10 @@ async fn start_with(
         dashboard: Dashboard::new("test-host", None),
         lifetime: super::Lifetime::new(false),
         workers: WorkerSetup {
-            home: root.clone(),
+            home: home.clone(),
             areas: vec![area.clone()],
             reads: vec![],
-            hidden: crate::sandbox::never_readable(&root),
+            hidden: crate::sandbox::never_readable(&home),
             state_dir: state.clone(),
             program: latch_binary(),
         },
@@ -1078,9 +1078,7 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
     let set = json!({"command": "set", "text": "Never delete or remove any file on this host."});
     let (answer, _) = t.call(&device, "rules", set).await;
     assert!(matches!(answer, Response::Ok(_)), "rules set: {answer:?}");
-    let removal = gate::gated("exec", &removal, Some(t.area.as_path()))
-        .unwrap()
-        .action;
+    let removal = gate::gated("exec", &removal).unwrap().action;
     let mut removals = Vec::new();
     for _ in 0..3 {
         let judged = t.host.gatekeeper.judge(Caller::Owner, &removal).await;

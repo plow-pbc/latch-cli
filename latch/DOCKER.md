@@ -1,12 +1,12 @@
 # Running a latch host in Docker
 
 Use an image containing latch, non-setuid bubblewrap, CA certificates, and the
-programs your host needs, on a kernel with Landlock ABI 9 or newer.
+programs your host needs.
 Install these while building the image, then run latch
-as a non-root user. The state and the shared folders must be writable by that user.
+as a non-root user. The state and intended write destinations must be writable by that user.
 The normal latch login still applies.
 
-From the repository root, with an existing host state directory and area:
+From the repository root, with an existing host state directory and home workspace:
 
 ```sh
 docker run --rm --name latch-host \
@@ -14,13 +14,17 @@ docker run --rm --name latch-host \
   --security-opt=no-new-privileges=true \
   --security-opt=systempaths=unconfined \
   --security-opt="seccomp=$PWD/latch/docker/seccomp.json" \
-  -v "$PWD/host-state:/state" -v "$PWD/shared:/shared" \
-  latch-image latch --state-dir /state serve --foreground /shared
+  -e HOME=/home/latch -v "$PWD/host-state:/state" -v "$PWD/work:/home/latch/work" \
+  latch-image latch --state-dir /state serve --foreground
 ```
 
-The folders after `serve` are the ones its file workers share. Exec reads the
-container user's home, so mount workspaces under that home and declare their
-writes on each `exec` call. Mount only the state and folders this host needs.
+Exec and file need no shared-folder setup. Both read the container user's
+home and system files. Mount workspaces under that home; declare exec writes
+with repeated `--write PATH`, and use `--network` for IP networking (off by
+default). File put writes only its judged destination. Quote leading `~` to
+expand it on the host. Mount only the state and folders this host needs.
+The remote judge and sealed audit see argv, workdir, writes and network;
+keep credentials out of argv.
 Docker's `systempaths=unconfined` is required to mount private procfs in a nested
 user namespace; with Docker's default proc masks the kernel refuses it. Keep
 the capability drop, no-new-privileges and seccomp policy above. The worker
@@ -31,17 +35,25 @@ container's system folders (`/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, `/opt`,
 `/var/lib`). Exec reads home except latch state, writes only its declared paths,
 existing plain tool-cache directories and temp, and has no IP network without
 `--network`. Missing caches and cache aliases are skipped; latch creates none.
-Landlock restricts pathname Unix sockets to private temp and abstract sockets to
-this worker's domain. Unnamed Unix sockets and socketpairs work offline too;
-host daemon sockets stay blocked with or without `--network`.
-File workers still use the shared folders and read-only `--allow-read` paths.
-Exec also gets a private empty `/tmp`, `/run` and `TMPDIR`. A volume
-mounted elsewhere in the container is visible to workers only if it is shared
-or named with `--allow-read`. Google workers get only explicit runtime mounts.
-State and credentials (see `latch serve --help`) are covered by empty read-only
-mounts, including inside a shared folder; the running latch is mounted
-read-only, and folders above any of these inside a shared folder are mount
-points, so they cannot be renamed.
+On Linux 7.1+ with Landlock ABI 9+ enabled, pathname Unix sockets are
+restricted to private temp and abstract sockets to this worker's domain.
+On older kernels (including Ubuntu 24.04's 6.8 and Raspberry Pi 6.12), or
+with Landlock disabled, seccomp blocks named Unix sockets everywhere,
+including private temp, and datagram socketpairs. Connected AF_UNIX stream
+and sequenced-packet socketpairs remain available offline for Python asyncio,
+Node subprocesses and Rust process spawning.
+Exec and IP networking still work; programs requiring named Unix sockets do not
+work on those kernels. Host daemon sockets stay blocked in both modes.
+Exec gets a private empty `/tmp`, `/run` and `TMPDIR`; workdir defaults to the
+first write folder, otherwise home. Writes must stay inside home, outside the
+hidden places, and cannot grant home itself.
+
+Hidden paths are `~/.latch` and this host's state directory (macOS also hides
+`~/Library` except `~/Library/Caches`). Empty read-only mounts cover them even
+inside a workspace. Other home files, including credential dotfiles and other
+state folders, are readable; their use is judged. The running latch is mounted
+read-only; folders above protected mounts cannot be renamed. Google workers
+get only explicit runtime mounts.
 
 The profile is Moby's published Docker default at commit
 `4b8214fc4971e06172938a1f1554ccff6647ee80`, plus four allowance groups:
@@ -68,10 +80,12 @@ services:
       - no-new-privileges:true
       - systempaths=unconfined
       - seccomp=./latch/docker/seccomp.json
+    environment:
+      HOME: /home/latch
     volumes:
       - ./host-state:/state
-      - ./shared:/shared
-    command: [latch, --state-dir, /state, serve, --foreground, /shared]
+      - ./work:/home/latch/work
+    command: [latch, --state-dir, /state, serve, --foreground]
 ```
 
 ## AppArmor hosts: unverified

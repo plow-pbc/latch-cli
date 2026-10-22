@@ -70,7 +70,7 @@ No Homebrew tap is included.
 
 ## For hosts
 
-- `latch serve ~/work` starts this machine's host as a service of yours (a
+- `latch serve` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing
   the terminal, stops the host. `latch serve -d` starts it detached and
@@ -83,20 +83,26 @@ No Homebrew tap is included.
   containers.
 - `latch login` names a machine after its hostname; `--name` picks another.
   If another of your machines holds the name, the login stops and says so.
-- `latch serve ~/work` lets callers' programs and file copies read and
-  write `~/work`, and read the system's own files (programs, libraries,
-  developer tools, Homebrew, certificates); nothing else of the machine.
-  `--allow-read PATH` (repeatable) adds a file or folder they may read but
-  never write, e.g. `--allow-read ~/.rustup --allow-read ~/.cargo` for a
-  Rust toolchain kept in the home folder.
-- Exec reads home except `~/.latch`, the host's own state directory, and on
-  macOS `~/Library` except `~/Library/Caches`. Other state directories are
-  ordinary home content; latch does not search home for them.
-- The home folder, its `Library` and the folders above them (`/Users`, `/`)
-  can be neither shared nor named with `--allow-read`: name the projects in
-  it instead. `latch serve --help` has the whole list of what callers can
-  reach.
-- `latch serve ~/work --deny-exec` refuses `exec` to every agent;
+- Exec and file calls need no shared-folder setup. They read home and the
+  system's files (programs, libraries, developer tools and certificates),
+  except `~/.latch`, this host's state directory, and on macOS `~/Library`
+  except `~/Library/Caches`. Other home content, including `.ssh` and other
+  credential dotfiles, is readable; the gatekeeper judges each use. Latch
+  does not search home for other state directories.
+- `latch exec --write '~/work' --network -- npm install` grants writes to
+  that folder and opts into IP networking for that call. Without `--network`,
+  IP networking is off. Writes are limited to repeated `--write` paths,
+  private temp and existing plain tool-cache folders; missing caches and
+  aliases are skipped, never created. Workdir defaults to the first write
+  folder, otherwise home. Writes outside home, to home itself or to hidden
+  places are refused. Host Unix sockets stay blocked even with `--network`,
+  except the macOS DNS resolver; see [Linux socket limits](latch/DOCKER.md).
+- `latch file get '~/work/out.log'` reads a readable file; `latch file put
+  ./report.pdf '~/work/report.pdf'` writes only its judged destination.
+  Quote leading `~` so latch expands it on the host. Program arguments
+  after `--` stay literal. The remote judge and sealed audit see argv,
+  workdir, write paths and network access; keep credentials out of argv.
+- `latch serve --deny-exec` refuses `exec` to every agent;
   `--deny-exec=AGENT_UID` (repeatable) to one agent, by its Plow uid. Your
   own machines are unaffected.
 - A connection problem (`host_unreachable`, a slow call): set
@@ -113,12 +119,8 @@ No Homebrew tap is included.
   effort: some can slip through. The sealed log is
   `audit.sealed.ndjson`; a plaintext `audit.ndjson` from an older latch is
   never read, and latch says it can be deleted.
-- `latch shares set ~/work [--allow-read PATH]` saves the folders, and the
-  read-only paths, a `latch serve` named none shares. With none named and
-  none saved, it serves the browser and Google only, and `exec` and `file`
-  refuse with `no_folders`. `latch status --local`,
-  `latch events --follow` and `latch login --events` are for an app: see
-  [latch/APP.md](latch/APP.md).
+- `latch status --local`, `latch events --follow` and `latch login --events`
+  are for an app: see [latch/APP.md](latch/APP.md).
 
 ## On the host itself
 
@@ -130,5 +132,4 @@ calls, recorded as `owner_on_host`. If the receiver is stopped, start
 `latch serve` on the same state folder (`serve_required`, exit 3).
 
 Local `vault`, `rules` and `shares` configuration works without `serve` or
-the decision model. Vault edits and rules apply to the running receiver's
-next operation; changes to shared folders apply when it restarts.
+the decision model. Vault edits and rules apply to the running receiver's next operation.

@@ -192,7 +192,7 @@ pub fn check() -> Result<(), String> {
 
 pub fn name() -> &'static str {
     if cfg!(target_os = "linux") {
-        "bubblewrap + Landlock + seccomp"
+        "bubblewrap + seccomp"
     } else {
         "Seatbelt"
     }
@@ -643,7 +643,7 @@ mod platform {
                 format!(
                     "(require-all (subpath {}) (require-not (subpath {})))",
                     quoted(&path)?,
-                    quoted(&path.join("Caches"))?
+                    quoted_literal(&path.join("Caches"))?
                 )
             } else {
                 format!("(subpath {})", quoted(&path)?)

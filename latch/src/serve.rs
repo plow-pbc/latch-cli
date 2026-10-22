@@ -968,8 +968,7 @@ async fn serve_request(
             }
             // File copies still need a shared folder; exec uses per-call permissions.
             let unshared = host.workers.areas.is_empty() && matches!(op, "file_get" | "file_put");
-            let first_area = host.workers.areas.first().map(PathBuf::as_path);
-            let gated = gate::gated(op, &request.args, first_area).filter(|_| {
+            let gated = gate::gated(op, &request.args).filter(|_| {
                 !denied_exec
                     && !upgraded
                     && !unshared
@@ -1033,7 +1032,7 @@ async fn serve_request(
                                 .to_string(),
                         },
                         // As a refused judgment keeps it: no stdin.
-                        audit_args: gate::gated(op, &request.args, first_area)
+                        audit_args: gate::gated(op, &request.args)
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },

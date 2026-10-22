@@ -29,7 +29,7 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
 }
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
-/// 03:45 UTC, local build, protocol plow/latch/1)`, or for a release build
+/// 03:45 UTC, local build, protocol plow/latch/2)`, or for a release build
 /// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
 /// came from (see `build.rs`), the protocol it speaks to peers and, for a
 /// build with baked-in defaults, those, so it is obvious which build this is.
@@ -852,11 +852,11 @@ pub struct StatusArgs {
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
-    /// Folders to share: callers may read and write inside these (the first is where `exec` starts) [default: the ones `latch shares set` saved, with its --allow-read paths]
+    /// Saved folder configuration; exec uses home reads and per-call --write/--network permissions
     #[arg(value_name = "FOLDER")]
     pub folders: Vec<PathBuf>,
 
-    /// A file or folder outside the shares that callers may also read, never write, e.g. ~/.rustup (repeatable; needs FOLDERs). Refused inside the never-readable places below
+    /// Saved read-only path configuration (repeatable); exec already reads home and system files
     #[arg(long, value_name = "PATH", requires = "folders")]
     pub allow_read: Vec<PathBuf>,
 
@@ -894,23 +894,21 @@ pub struct ServeArgs {
 
 /// What `latch serve --help` adds after the options.
 const SERVE_HELP: &str = "\
-What callers can reach (`exec`'s programs and `file get`/`file put` alike):
-  Read and write: the shared folders, and an exec call's own temp folder.
-  Read only: each --allow-read path, and the system's own files: programs,
-  libraries, developer tools, Homebrew, certificates. Nothing else: not the
-  rest of your home folder, not other projects.
-  Never, even inside a shared or --allow-read folder: ~/.ssh, ~/.gnupg,
-  keychains, browser profiles, Mail, Messages, Calendars, Contacts, macOS's
-  privacy settings (TCC), latch's state (this host's, ~/.latch, and any
-  other state folder in the shares, even one made while the host runs),
-  ~/.aws, ~/.config/gcloud, ~/.azure, ~/.kube, ~/.docker/config.json,
-  ~/.netrc, ~/.npmrc, ~/.git-credentials and ~/.config/gh. An --allow-read
-  inside one of these is refused.
-  Your home folder, its Library, and the folders above them (/Users, /)
-  can be neither shared nor named with --allow-read: name the folders in it
-  you need.
-  exec runs with HOME set to the first shared folder. Tools kept in your home
-  folder (~/.rustup and ~/.cargo, nvm, pyenv) need --allow-read.";
+What callers can reach (each exec and file call is judged):
+  Read: your home folder and system files (programs, libraries, developer
+  tools and certificates). No shared-folder setup is needed.
+  Hidden: ~/.latch, this host's state directory, and on macOS ~/Library
+  except ~/Library/Caches. Other home content, including credential dotfiles
+  such as ~/.ssh, is readable: the gatekeeper judges the requested use.
+  exec writes only its repeated --write PATH grants, its private temp and
+  existing plain tool-cache folders. Missing or symlinked caches are skipped,
+  never created. HOME is your home; workdir defaults to the first --write
+  folder, otherwise home. Quote '~' in host path fields.
+  exec has no IP network unless --network is given. Host Unix sockets are
+  blocked even with --network (macOS permits the system DNS resolver).
+  file get reads readable paths; file put writes its judged destination.
+  The judge and audit see argv, workdir, writes and network. Never put
+  credentials in argv: judgment goes to Plow's remote decision service.";
 
 /// What a bare `--deny-exec` stands for. An agent uid is hex, so it is
 /// never this.
@@ -952,7 +950,7 @@ pub struct HostArg {
 pub enum FileCommand {
     /// Copy a file from the host to this machine
     Get {
-        /// The file on the host: absolute, or relative to the host's first shared folder. Inside a shared folder or one of the host's --allow-read paths, or one of the system's own files (see `latch serve --help`)
+        /// The file on the host: absolute, ~-relative or relative to home; hidden places are refused (see `latch serve --help`)
         remote_path: String,
         /// Where to write it on this machine [default: the remote file's name, in the current directory]
         local_dest: Option<PathBuf>,
@@ -963,7 +961,7 @@ pub enum FileCommand {
     Put {
         /// The file on this machine to send
         local_path: PathBuf,
-        /// Where it goes on the host, inside one of its shared folders: absolute, or relative to the first. An existing folder gets the file inside it, under its own name, as with `cp`
+        /// Its judged destination on the host, inside home and outside hidden places. An existing folder gets the file inside it under its own name, as with `cp`
         remote_path: String,
         #[command(flatten)]
         host: HostArg,

@@ -2262,7 +2262,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let before = local(&never);
     assert!(!never.exists(), "status --local made the state folder");
     assert_eq!(before["peer"], Value::Null);
-    assert_eq!(before["protocol"], 1);
+    assert_eq!(before["protocol"], 2);
     assert_eq!(
         before["serve"],
         json!({"running": false, "ready": false, "managed": false, "state": "stopped", "pid": null})

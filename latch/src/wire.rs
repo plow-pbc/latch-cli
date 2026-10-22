@@ -22,9 +22,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::state::to_hex;
 
 /// The protocol name both sides announce when connecting (QUIC "ALPN"). A
-/// host only accepts connections that speak exactly this version. Version 1
-/// added `exec`'s stdin, which an older host would silently drop.
-pub const ALPN: &[u8] = b"plow/latch/1";
+/// host only accepts connections that speak exactly this version. Version 2
+/// requires per-call exec writes and opt-in network access.
+pub const ALPN: &[u8] = b"plow/latch/2";
 
 /// The protocol version in `ALPN`, as a number.
 pub fn protocol() -> u32 {

@@ -34,11 +34,6 @@ fn bubblewrap() -> Result<PathBuf, String> {
 
 pub fn check() -> Result<(), String> {
     bubblewrap()?;
-    // SAFETY: the version query uses null/zero arguments and writes no memory.
-    let abi = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, 0, 0, 1) };
-    if abi < 9 {
-        return Err("exec requires Landlock ABI 9 or newer for Unix socket confinement".into());
-    }
     Ok(())
 }
 
@@ -62,7 +57,6 @@ pub fn confine(policy: &Policy) -> Result<(), String> {
         )
         .and_then(|()| {
             if policy.exec {
-                confine_unix_sockets()?;
                 supervise_exec()?;
             }
             Ok(())
@@ -531,6 +525,11 @@ fn mount_writable(command: &mut Command, path: &Path, files: &mut Vec<File>) -> 
 /// `namespaces` lets the browser's engine make the namespaces its own
 /// sandbox runs in; no other worker may.
 fn filter(offline: bool, namespaces: bool, exec: bool) -> Result<(), Error> {
+    // ABI 9 can confine pathname Unix sockets. Older or disabled Landlock
+    // requires denying their creation; connected stream/seqpacket pairs still support IPC.
+    // SAFETY: the version query uses null/zero arguments and writes no memory.
+    let private_unix =
+        exec && unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, 0, 0, 1) } >= 9;
     let mut rules = BTreeMap::new();
     if !namespaces {
         rules.insert(libc::SYS_unshare, vec![]);
@@ -579,6 +578,46 @@ fn filter(offline: bool, namespaces: bool, exec: bool) -> Result<(), Error> {
         )?])?;
         rules.insert(libc::SYS_socket, vec![denied_domain.clone()]);
         rules.insert(libc::SYS_socketpair, vec![denied_domain]);
+        if exec && !private_unix {
+            let unix = SeccompRule::new(vec![SeccompCondition::new(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Eq,
+                libc::AF_UNIX as u64,
+            )?])?;
+            rules.get_mut(&libc::SYS_socket).unwrap().push(unix);
+            // Datagram pairs can sendto/reconnect to host sockets. Connected
+            // stream/seqpacket pairs cannot be redirected to a new peer.
+            let not_unix = SeccompRule::new(vec![SeccompCondition::new(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Ne,
+                libc::AF_UNIX as u64,
+            )?])?;
+            let not_connected_pair = SeccompRule::new(
+                [libc::SOCK_STREAM, libc::SOCK_SEQPACKET]
+                    .into_iter()
+                    .flat_map(|kind| {
+                        [
+                            0,
+                            libc::SOCK_CLOEXEC,
+                            libc::SOCK_NONBLOCK,
+                            libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                        ]
+                        .into_iter()
+                        .map(move |flags| {
+                            SeccompCondition::new(
+                                1,
+                                SeccompCmpArgLen::Dword,
+                                SeccompCmpOp::Ne,
+                                (kind | flags) as u64,
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )?;
+            rules.insert(libc::SYS_socketpair, vec![not_unix, not_connected_pair]);
+        }
     }
     let filter: BpfProgram = SeccompFilter::new(
         rules,
@@ -594,6 +633,9 @@ fn filter(offline: bool, namespaces: bool, exec: bool) -> Result<(), Error> {
         return Err(std::io::Error::last_os_error().into());
     }
     seccompiler::apply_filter(&filter)?;
+    if private_unix {
+        confine_unix_sockets()?;
+    }
     Ok(())
 }
 

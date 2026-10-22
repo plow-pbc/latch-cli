@@ -934,11 +934,10 @@ fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
         .arg("--tmpdir")
         .arg(dir.join("tmp").canonicalize().unwrap());
     if cfg!(target_os = "macos") {
-        command
-            .arg("--hidden")
-            .arg(home.join("Library"))
-            .arg("--area")
-            .arg(home.join("Library/Caches"));
+        command.arg("--hidden").arg(home.join("Library"));
+        if home.join("Library/Caches").is_dir() {
+            command.arg("--area").arg(home.join("Library/Caches"));
+        }
     }
     if network {
         command.arg("--network");
@@ -1001,6 +1000,29 @@ fn declared_exec_reads_home_and_confines_writes_and_hidden_data() {
     );
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn exec_runs_without_a_library_cache_and_does_not_follow_a_cache_alias() {
+    let dir = declared_setup();
+    let caches = dir.path().join("area/Library/Caches");
+    fs::remove_dir(&caches).unwrap();
+    let run = || {
+        declared_exec(
+            dir.path(),
+            false,
+            "cat .ssh/config; cat Library/private Library/Caches/Library/private 2>/dev/null; true",
+        )
+    };
+    let output = run();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"readable-dotfile");
+    assert!(!caches.exists());
+    std::os::unix::fs::symlink("..", &caches).unwrap();
+    let output = run();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"readable-dotfile");
+}
+
 #[test]
 fn declared_exec_needs_network_and_cannot_use_a_host_unix_socket() {
     use std::io::Read;
@@ -1057,17 +1079,11 @@ fn declared_exec_cannot_read_its_hosts_process_arguments() {
 
 #[test]
 fn a_networked_exec_resolves_a_hostname() {
-    // External DNS is the only part of this check that needs an online host.
-    use std::net::ToSocketAddrs;
-    if ("example.com", 80).to_socket_addrs().is_err() {
-        eprintln!("host DNS unavailable: hostname check not run");
-        return;
-    }
     let dir = declared_setup();
     let output = declared_exec(
         dir.path(),
         true,
-        "python3 -c 'import socket; assert socket.getaddrinfo(\"example.com\", 80); print(\"hostname resolved\")'",
+        "python3 -c 'import socket, sys; assert socket.getaddrinfo(\"localhost\", 80); s=socket.socket(socket.AF_UNIX) if sys.platform == \"darwin\" else None; s.connect(\"/private/var/run/mDNSResponder\") if s else None; print(\"hostname resolved\")'",
     );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"hostname resolved\n");
@@ -1081,8 +1097,10 @@ fn an_offline_exec_supports_unnamed_unix_sockets_and_asyncio() {
         false,
         r#"python3 -c '
 import asyncio, socket
-with socket.socket(socket.AF_UNIX): pass
-with socket.socketpair()[0]: pass
+left, right = socket.socketpair()
+with left, right:
+    left.sendall(b"IPC")
+    assert right.recv(3) == b"IPC"
 async def main():
     await asyncio.sleep(0)
 asyncio.run(main())
@@ -1113,6 +1131,19 @@ with socket.socket(socket.AF_UNIX) as server, socket.socket(socket.AF_UNIX) as c
 print("private temp socket works")
 '"#,
     );
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: this version query takes null/zero arguments and writes no memory.
+        let abi = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, 0, 0, 1) };
+        if abi < 9 {
+            assert!(!output.status.success(), "{output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("PermissionError"),
+                "{output:?}"
+            );
+            return;
+        }
+    }
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"private temp socket works\n");
 }
@@ -1146,8 +1177,8 @@ fn host_datagram_and_abstract_unix_sockets_are_blocked() {
             };
             let script = format!(
                 "python3 -c \"import errno, socket
-s=socket.socket(socket.AF_UNIX, socket.{kind})
 try:
+    s=socket.socket(socket.AF_UNIX, socket.{kind})
     {send}
 except OSError as e:
     assert e.errno in (errno.EACCES, errno.EPERM, errno.ECONNREFUSED), e
@@ -1159,6 +1190,46 @@ else:
             assert!(output.status.success(), "{kind}: {output:?}");
             assert_eq!(output.stdout, b"host blocked\n");
         }
+        let script = format!(
+            "python3 -c \"import errno, socket
+try:
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    with left, right:
+        left.sendto(b'blocked', b'{}')
+except OSError as e:
+    assert e.errno in (errno.EACCES, errno.EPERM), e
+    print('datagram relay blocked')
+else:
+    raise AssertionError('reached host via datagram pair')\"",
+            path.display()
+        );
+        let output = declared_exec(dir.path(), network, &script);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"datagram relay blocked\n");
+        let script = format!(
+            "python3 -c \"import errno, socket
+for kind in (socket.SOCK_STREAM, socket.SOCK_SEQPACKET):
+    left, right = socket.socketpair(socket.AF_UNIX, kind)
+    with left, right:
+        try:
+            left.connect(b'{}')
+        except OSError:
+            pass
+        else:
+            raise AssertionError('redirected a connected pair')
+        try:
+            left.sendto(b'own pair', b'{}')
+        except OSError as e:
+            assert e.errno == errno.EISCONN, e
+            left.sendall(b'own pair')
+        assert right.recv(32) == b'own pair'
+print('connected pairs stay private')\"",
+            path.display(),
+            path.display()
+        );
+        let output = declared_exec(dir.path(), network, &script);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"connected pairs stay private\n");
         assert_eq!(
             datagram.recv(&mut [0]).unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
@@ -1211,9 +1282,9 @@ fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
             .output()
             .unwrap()
     };
-    // The probe works, and outbound Unix sockets outside state stay usable.
+    // Host Unix sockets stay blocked even outside state.
     let outside = run(&allowed);
-    assert!(outside.status.success(), "{outside:?}");
+    assert!(!outside.status.success(), "{outside:?}");
     for (state, alias) in [
         ("state", "area/state-link"),
         ("area/peer", "area/peer-link"),
@@ -1235,14 +1306,10 @@ fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
                     "worker connected to {}: {denied:?}",
                     path.display()
                 );
+                let stderr = String::from_utf8_lossy(&denied.stderr);
                 assert!(
-                    String::from_utf8_lossy(&denied.stderr).contains(
-                        if cfg!(target_os = "macos") {
-                            "PermissionDenied"
-                        } else {
-                            "NotFound"
-                        }
-                    ),
+                    stderr.contains("PermissionDenied")
+                        || (cfg!(target_os = "linux") && stderr.contains("NotFound")),
                     "{denied:?}"
                 );
             }

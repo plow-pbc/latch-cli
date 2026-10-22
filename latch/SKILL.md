@@ -22,9 +22,23 @@ one JSON object: on stdout when it worked, as `{"error": {"code",
 
 ## What you can reach
 
-- `latch exec --host H -- PROGRAM ARGS…` runs a program in the host's
-  sandbox, inside the folders the owner shared.
-- `latch file get` / `latch file put` copy files to and from those folders.
+- `latch exec --host H --write '~/code/app' --network -- npm install`
+  runs a program in the host's sandbox. Home and system files are readable;
+  writes need repeated `--write PATH` grants. Private temp and existing plain
+  tool-cache folders are writable too; missing or aliased caches are skipped.
+  IP network is off unless `--network`. Workdir defaults to the first write
+  folder, otherwise home; `--workdir` overrides it. Host Unix sockets stay
+  blocked even with network (macOS allows its system DNS resolver).
+- `latch file get` reads a readable host path; `latch file put` writes only
+  its judged destination. Exec and file need no shared-folder setup.
+- Hidden for both: `~/.latch`, the host's own state directory, and on macOS
+  `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
+  are readable; the gatekeeper judges their use. Writes must stay inside
+  home, outside hidden places, and cannot grant home itself.
+- Quote host paths beginning with `~`: latch expands them on the host.
+  Program argv after `--` stays literal. The judge is remote: argv,
+  workdir, writes and network go to Plow and into the sealed audit. Keep
+  credentials out of argv.
 - `latch google --host H -- COMMAND…` runs an allowed Google command
   (`latch google --help` lists them).
 - `latch browser …` drives a real browser on the host: `open` a session
