@@ -15,8 +15,10 @@ use crate::browser::engine::named;
 use super::{CALLER, Host, act, find, serve, test_state};
 
 conformance!(
-    no_file_or_other_schemes_page_is_ever_shown,
     a_data_or_blob_page_is_never_read,
+    ;
+    mac:
+    no_file_or_other_schemes_page_is_ever_shown,
     local_addresses_are_refused_by_number_and_by_name,
 );
 
@@ -223,54 +225,6 @@ async fn the_web_loads_as_before(engine: &str) {
     }
 }
 
-/// A file Chrome would itself load (the driver's own navigation, a new
-/// tab on it) is stopped by latch's interception before it starts: the
-/// worker's check of the address is bypassed here, by driving the engine
-/// directly, so only the engine-level stop is left to hold.
-#[tokio::test]
-async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
-    use crate::browser::cft::Cft;
-    use crate::browser::driver::Driver;
-    let (_dir, state, _area) = test_state("cft");
-    let secret = sentinel("SENTINEL");
-    let file = state.join("sentinel-config.json");
-    fs::write(&file, format!(r#"{{"plow_token": "{secret}"}}"#)).unwrap();
-    let file_url = format!("file://{}", file.canonicalize().unwrap().display());
-    let scratch = tempfile::tempdir().unwrap();
-    let state = state.canonicalize().unwrap();
-    let scratch_path = scratch.path().canonicalize().unwrap();
-    let profile = crate::browser::profile::make(&state).unwrap();
-    let proxy = crate::browser::egress::Proxy::start(true).unwrap().url();
-    let mut browser = Cft::launch(
-        &state,
-        profile.path(),
-        &scratch_path,
-        super::HEADLESS,
-        None,
-        &proxy,
-        false,
-    )
-    .unwrap();
-    let went = browser.navigate(&file_url);
-    let opened = browser.new_tab(Some(&file_url));
-    let mut shown = Vec::new();
-    for tab in browser.tabs().unwrap() {
-        browser.switch_tab(&tab.tab).unwrap();
-        let text = browser.eval("document.documentElement.innerText");
-        shown.push(format!("{} {text:?}", tab.url));
-    }
-    browser.close();
-    println!("navigate: {went:?}\nnew tab: {opened:?}\ntabs: {shown:?}");
-    for attempt in [went.map(|_| String::new()), opened] {
-        let failure = attempt.unwrap_err();
-        assert!(
-            failure.message.contains("ERR_BLOCKED_BY_CLIENT"),
-            "{failure:?}"
-        );
-    }
-    assert!(!format!("{shown:?}").contains(&secret), "{shown:?}");
-}
-
 /// A page a script sends to a `data:` or `blob:` address of its own making
 /// (a blob page is one the engines load themselves) is never read: no
 /// engine hook stops those loads before they start, so the tab is blanked
@@ -325,4 +279,58 @@ async fn a_data_or_blob_page_is_never_read(engine: &str) {
             .unwrap();
     }
     h.call(CALLER, "close", &s, json!({})).await.unwrap();
+}
+
+/// Tagged `mac`: what macOS can answer differently from Linux (see
+/// `conformance!`).
+mod mac {
+    use super::*;
+
+    /// A file Chrome would itself load (the driver's own navigation, a new
+    /// tab on it) is stopped by latch's interception before it starts: the
+    /// worker's check of the address is bypassed here, by driving the engine
+    /// directly, so only the engine-level stop is left to hold.
+    #[tokio::test]
+    async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
+        use crate::browser::cft::Cft;
+        use crate::browser::driver::Driver;
+        let (_dir, state, _area) = test_state("cft");
+        let secret = sentinel("SENTINEL");
+        let file = state.join("sentinel-config.json");
+        fs::write(&file, format!(r#"{{"plow_token": "{secret}"}}"#)).unwrap();
+        let file_url = format!("file://{}", file.canonicalize().unwrap().display());
+        let scratch = tempfile::tempdir().unwrap();
+        let state = state.canonicalize().unwrap();
+        let scratch_path = scratch.path().canonicalize().unwrap();
+        let proxy = crate::browser::egress::Proxy::start(true).unwrap().url();
+        let profile = crate::browser::profile::make(&state).unwrap();
+        let mut browser = Cft::launch(
+            &state,
+            profile.path(),
+            &scratch_path,
+            super::super::HEADLESS,
+            None,
+            &proxy,
+            false,
+        )
+        .unwrap();
+        let went = browser.navigate(&file_url);
+        let opened = browser.new_tab(Some(&file_url));
+        let mut shown = Vec::new();
+        for tab in browser.tabs().unwrap() {
+            browser.switch_tab(&tab.tab).unwrap();
+            let text = browser.eval("document.documentElement.innerText");
+            shown.push(format!("{} {text:?}", tab.url));
+        }
+        browser.close();
+        println!("navigate: {went:?}\nnew tab: {opened:?}\ntabs: {shown:?}");
+        for attempt in [went.map(|_| String::new()), opened] {
+            let failure = attempt.unwrap_err();
+            assert!(
+                failure.message.contains("ERR_BLOCKED_BY_CLIENT"),
+                "{failure:?}"
+            );
+        }
+        assert!(!format!("{shown:?}").contains(&secret), "{shown:?}");
+    }
 }

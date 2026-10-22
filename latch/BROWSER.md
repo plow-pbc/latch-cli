@@ -697,9 +697,8 @@ process, but latch's sandbox still confines them all, as above. The
 ## Tests
 
 `src/browser/tests.rs` runs real sessions against the pinned CfT
-and Camoufox in `.dev/cft-state`, which `just cft` installs and `just test`
-runs first;
-CI does the same on its Macs. They run headless, so a test run never puts
+and Camoufox in `.dev/cft-state`, which `just test browser` (and the gate,
+`just test`) installs first; CI does the same. They run headless, so a test run never puts
 a window on the screen. `just test-headed` (the `headed-tests` feature)
 runs the same tests headed, where the checks that the engine never becomes
 the front app have something to check; it is not part of the gate. In headless
@@ -731,13 +730,12 @@ unreachable; the risk decision and a sentence check on the real model,
 through Plow, are built only with `--features live-model`, which `just
 gatekeeper` runs.
 
-On Linux they are built only with `--features linux-browser-tests` (the
-gate's containers have no engine), against the engines installed in
-`LATCH_CFT_STATE`. Linux CI caches both engines and builds their tests once
-into a debug nextest archive, shared by four partitions. `just conformance
-camoufox` runs that engine's checks on a Linux host.
-Missing GTK3/audio/X11/DBus libraries join the installer's root package
-step; browser, Node and helper files stay inside the state folder.
+On Linux they are built only with `--features linux-browser-tests`, which
+`just test` (on Linux arm64, or `--linux` in the test container) builds
+with, against the engines installed in `.dev/cft-state` or
+`LATCH_CFT_STATE`. Missing GTK3/audio/X11/DBus libraries join the
+installer's root package step; browser, Node and helper files stay inside
+the state folder.
 There the sandbox checks look at the user namespaces and
 seccomp mode of the engine's processes, exec's view of the network at
 `/proc/net`, and the front-app checks have no front app to watch.
@@ -746,5 +744,7 @@ These real-engine tests are also the driver conformance runner: each runs
 once per engine, as `browser::tests::cft::NAME` and
 `browser::tests::camoufox::NAME`, Camoufox on both platforms (and the same
 under `fills` and `steps`).
-`just conformance camoufox` runs one engine's checks; a new engine joins by
-one line in the `conformance!` macro.
+A new engine joins by one line in the `conformance!` macro. Checks after
+its `mac:` are tagged `mac`: what macOS can answer differently from Linux.
+On macOS the gate runs only those of an engine Linux also runs (and all of
+an engine Linux has no pin for); Linux runs them all.
