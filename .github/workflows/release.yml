@@ -80,6 +80,9 @@ jobs:
           unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
           export LATCH_BUILD_COMMIT="$GITHUB_SHA"
           cd latch
+          # The Messages reader first: this latch runs only the one built here.
+          LATCH_MESSAGES_READER_SHA256=$(messages-reader/build.sh | tail -n 1)
+          export LATCH_MESSAGES_READER_SHA256
           rustup toolchain install
           cargo build --release --locked --target '${{ matrix.target }}'
           codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
@@ -129,6 +132,7 @@ jobs:
     env:
       IDENTITY: 'Developer ID Application: The Plow Collective, Inc (3559PD337Z)'
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: latch-${{ matrix.target }}
@@ -163,7 +167,9 @@ jobs:
           xcrun notarytool store-credentials latch-notary --keychain "$KEYCHAIN_PATH" \
             --apple-id "$APPLE_NOTARY_APPLE_ID" --team-id "$APPLE_NOTARY_TEAM_ID" --password "$APPLE_NOTARY_PASSWORD"
       # The app is signed as a whole: its latch takes the bundle's identity,
-      # co.plow.latch.cli, which Full Disk Access is granted to.
+      # co.plow.latch.cli, which Full Disk Access is granted to, and latch's
+      # keychain group, which its embedded profile allows, so it keeps its
+      # secrets in the Keychain (latch/src/secrets.rs).
       - name: Sign
         shell: bash
         run: |
@@ -172,8 +178,9 @@ jobs:
           mkdir unpacked
           tar -xzf "$archive" -C unpacked
           app="unpacked/$name/Plow Latch.app"
-          codesign --force --options runtime --timestamp \
-            --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY" "$app"
+          test -f "$app/Contents/embedded.provisionprofile"
+          codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
+            --entitlements latch/macos/latch.entitlements --sign "$IDENTITY" "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           echo "NAME=$name" >> "$GITHUB_ENV"
       # The ticket is stapled to the app, so Gatekeeper need not look it up
@@ -203,6 +210,9 @@ jobs:
           grep -Fx "Authority=$IDENTITY" <<< "$details"
           grep -E '^CodeDirectory .*flags=0x10000\(runtime\)' <<< "$details"
           grep -E '^Timestamp=' <<< "$details"
+          entitlements=$(codesign -d --entitlements - --xml "$app" 2>/dev/null | plutil -convert xml1 -o - -)
+          echo "$entitlements"
+          grep -F '<string>3559PD337Z.co.plow.latch</string>' <<< "$entitlements"
           assessment=$(spctl --assess -vvv --type execute "$app" 2>&1)
           echo "$assessment"
           grep -Fx 'source=Notarized Developer ID' <<< "$assessment"

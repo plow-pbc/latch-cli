@@ -1,4 +1,4 @@
-//! What the judge is shown of an agent's exec, file or Google operation,
+//! What the judge is shown of a caller's exec, file or Google operation,
 //! and what the audit keeps of one the judge refused.
 
 use std::path::Path;
@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::failure::Failure;
 
-/// The most stdin an agent's exec may bring: the judge reads all of it,
+/// The most stdin an exec may bring: the judge reads all of it,
 /// and the whole judgment must fit Plow's decision route (60 KiB).
 pub const JUDGED_STDIN: usize = 16 * 1024;
 
@@ -49,6 +49,8 @@ struct Action<'a> {
     command: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     accounts: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arguments: Option<&'a Value>,
 }
 
 /// `op` with `args` as the judge sees it, if the gatekeeper judges `op`.
@@ -65,8 +67,13 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
         }),
         _ => None,
     };
+    // A connector's action is judged by its stable id: `messages.search`.
+    let operation = match op {
+        "messages" | "contacts" => format!("{op}.{}", args["action"].as_str().unwrap_or("unknown")),
+        _ => op.to_string(),
+    };
     let none = Action {
-        operation: op,
+        operation: &operation,
         argv: None,
         stdin: None,
         working_folder: None,
@@ -75,6 +82,7 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
         file_name: None,
         command: None,
         accounts: None,
+        arguments: None,
     };
     let first_area = first_area.map(Path::to_string_lossy);
     let mut once = false;
@@ -124,6 +132,18 @@ pub fn gated(op: &str, args: &Value, first_area: Option<&Path>) -> Option<Gated>
             once = crate::google::policy::parse(&words).map_or(true, |plan| !plan.read_only());
             (action, json!({"command": command}))
         }
+        // Reads, judged on their effective request (the host's plan: every
+        // filter resolved, a cursor's included); the audit keeps it and the
+        // caller's words, and the host adds the answer's counts, never its rows.
+        "messages" | "contacts" => {
+            let action = Action {
+                arguments: Some(&args["plan"]),
+                ..none
+            };
+            let name = args["action"].as_str().unwrap_or("unknown");
+            let audit = crate::messages::host::audit(op, name, &args["args"], &args["plan"]);
+            (action, audit)
+        }
         _ => return None,
     };
     Some(Gated {
@@ -142,7 +162,7 @@ fn judged_stdin(stdin: &Value) -> Result<Option<String>, Failure> {
     }
     let refused = |why: &str| {
         let message = format!(
-            "this agent's exec stdin is {why}, and the gatekeeper must read all of it: \
+            "this exec's stdin is {why}, and the gatekeeper must read all of it: \
              send at most {} KiB of UTF-8 text, or put the input in a file and name it",
             JUDGED_STDIN / 1024
         );

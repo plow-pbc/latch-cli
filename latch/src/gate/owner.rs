@@ -243,9 +243,9 @@ impl Account {
                 .any(|peer| peer.name == name && peer.kind == "device") =>
             {
                 Err(Failure::usage(
-                    "device_not_judged",
+                    "not_an_agent",
                     format!(
-                        "{name:?} is a device, and devices are never judged: rules are for agents"
+                        "{name:?} is a device: `--from` names an agent, and a device is judged on the rules for every agent"
                     ),
                 ))
             }
@@ -487,7 +487,7 @@ mod tests {
 
         assert_eq!(
             refusal(host.owner(set(Some("mac"), "five")).await),
-            (Exit::Usage, "device_not_judged".into())
+            (Exit::Usage, "not_an_agent".into())
         );
         assert_eq!(
             refusal(host.owner(set(Some("Carol"), "six")).await),
@@ -583,17 +583,20 @@ mod tests {
         let rules = host.dir.path().join("rules");
         // A write stopped before its rename leaves only its temporary file:
         // judgments, and a restarted host, still read the old text.
-        std::fs::write(rules.join("host.txt.tmp"), "Anyth").unwrap();
+        std::fs::write(rules.join("host.txt.interrupted.tmp"), "Anyth").unwrap();
         assert_eq!(host.judged(ADA).host.as_deref(), Some("Never send email."));
         // A write that fails partway changes nothing.
-        std::fs::remove_file(rules.join("host.txt.tmp")).unwrap();
-        std::fs::create_dir(rules.join("host.txt.tmp")).unwrap();
+        let mode = |mode| {
+            std::fs::set_permissions(&rules, std::os::unix::fs::PermissionsExt::from_mode(mode))
+                .unwrap()
+        };
+        mode(0o500);
         assert_eq!(
             refusal(host.owner(set(None, "Anything goes.")).await),
             (Exit::Failed, "rules_io".into())
         );
+        mode(0o700);
         assert_eq!(host.judged(ADA).host.as_deref(), Some("Never send email."));
-        std::fs::remove_dir(rules.join("host.txt.tmp")).unwrap();
         host.owner(set(None, "Anything goes.")).await.unwrap();
         assert_eq!(host.judged(ADA).host.as_deref(), Some("Anything goes."));
     }

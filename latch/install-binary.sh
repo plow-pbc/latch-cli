@@ -20,6 +20,10 @@
 # version gets its own folder, so a new pin never overwrites the old gog.
 # That download needs curl and tar.
 #
+# On macOS it installs the Messages reader that came with this latch, if it
+# did, into <state-dir>/plugins/messages/<latch version>/latch-messages; latch
+# runs only the reader it was built with.
+#
 # It also installs a browser engine for `latch browser`, with
 # browser-engines.sh next to this script: Chrome for Testing by default (on
 # macOS and Linux arm64, the Pi), or the engines `--browser` names (chrome,
@@ -212,7 +216,21 @@ else
   say "installed gog $gog_version to $gog (sha256 $(sha256 "$gog"))"
 fi
 
-# 3. Linux: work out what needs root, then run it all under one sudo. What
+# 3. macOS: the Messages reader packaged beside this latch, if there is one,
+# in a folder named for this latch's version (the one that runs it).
+reader="$(dirname "$src")/latch-messages"
+if [ "$(uname -s)" = Darwin ] && [ -f "$reader" ]; then
+  latch_version=$("$dest" --version | awk '{print $2}')
+  [ -n "$latch_version" ] || die "could not read $dest's version"
+  reader_dir="$state_dir/plugins/messages/$latch_version"
+  mkdir -p "$reader_dir"
+  cp "$reader" "$reader_dir/latch-messages.tmp"
+  chmod 755 "$reader_dir/latch-messages.tmp"
+  mv "$reader_dir/latch-messages.tmp" "$reader_dir/latch-messages"
+  say "installed the Messages reader to $reader_dir/latch-messages"
+fi
+
+# 4. Linux: work out what needs root, then run it all under one sudo. What
 # Chrome needs is browser-engines.sh's to install, then or later.
 if [ "$(uname -s)" = Linux ]; then
   packages=""
@@ -246,7 +264,7 @@ if [ "$(uname -s)" = Linux ]; then
   fi
 fi
 
-# 4. The browser engines.
+# 5. The browser engines.
 if [ -n "$browsers" ]; then
   sh "$(dirname "$0")/browser-engines.sh" --state-dir "$state_dir" $browsers
 fi

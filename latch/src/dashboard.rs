@@ -308,6 +308,14 @@ pub fn describe(op: &str, args: &Value, outcome: &str, took: Duration) -> (Strin
                 _ => (path, outcome.to_string()),
             }
         }
+        // The action and how many rows came back; never the rows.
+        "messages" | "contacts" => {
+            let action = args["action"].as_str().unwrap_or(op).to_string();
+            match args["result"]["count"].as_u64() {
+                Some(count) if outcome == "ok" => (action, format!("{count} rows · {took}")),
+                _ => (action, outcome.to_string()),
+            }
+        }
         "browser" => {
             let command = args["command"].as_str().unwrap_or_default();
             let action = args["action"]
