@@ -691,8 +691,10 @@ pub struct RulesArgs {
     /// The serving machine the rules are for [default: this machine's own host state]
     #[arg(long, global = true)]
     pub host: Option<String>,
-    /// Whose rules: an agent's name, the peer name of the latch it calls
-    /// from, or its agent uid, resolved once to the uid [default: every agent's]
+    /// The agent whose rules these are, or, for `try`, the agent to judge the
+    /// request as: its name, the peer name of the latch it calls from, or its
+    /// agent uid, resolved once to the uid [default: every agent's rules; for
+    /// `try`, you]
     #[arg(long, global = true, value_name = "NAME")]
     pub from: Option<String>,
     #[command(subcommand)]
@@ -736,6 +738,17 @@ pub enum RulesCommand {
     Clear,
     /// The rules for every agent and each agent's own, with their revisions
     Show,
+    /// Preview the verdict the gatekeeper would give a request right now,
+    /// without running it: as the agent --from names, or as you. Each
+    /// preview is billed to your Plow balance like a real judgment, about
+    /// $0.0001
+    Try {
+        /// The latch command to preview, after `--`, as an agent would send
+        /// it: exec, file, google, messages or contacts. Example: `-- exec
+        /// --write ~/site -- npm run build`
+        #[arg(last = true, required = true, value_name = "REQUEST")]
+        request: Vec<String>,
+    },
 }
 
 #[derive(Args, Debug)]

@@ -161,7 +161,7 @@ async fn preview(
 
 /// A request the gatekeeper does not judge, or browser steps, which it
 /// judges against the page they act on.
-fn not_previewable(op: &str) -> Failure {
+pub(crate) fn not_previewable(op: &str) -> Failure {
     let instead = "Preview an exec, file, google, messages or contacts request instead.";
     let message = match op {
         "browser" => format!(

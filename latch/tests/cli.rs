@@ -1481,6 +1481,8 @@ struct LiveState {
     owner: String,
     agent: String,
     model_down: bool,
+    /// The decision route answers that the owner's Plow balance is empty.
+    out_of_credits: bool,
     /// The judge answers that the owner forbids every operation.
     forbidden: bool,
     decisions: Vec<Value>,
@@ -1504,6 +1506,7 @@ impl LivePlow {
             state: std::sync::Arc::new(std::sync::Mutex::new(LiveState {
                 owner: "owner-login".to_string(),
                 model_down: false,
+                out_of_credits: false,
                 forbidden: false,
                 decisions: Vec::new(),
                 agent: "agent-credential".to_string(),
@@ -1585,6 +1588,9 @@ impl LivePlow {
                 .push(serde_json::from_slice(&request.body).unwrap());
             if state.model_down {
                 return (503, json!({}));
+            }
+            if state.out_of_credits {
+                return (402, json!({"detail": "You're out of credits."}));
             }
             if let Some((url, token)) = state.judge.clone() {
                 drop(state);
@@ -5828,4 +5834,151 @@ fn q_in_an_attached_serve_leaves_its_host_running_and_shows_the_call() {
     shows(&shown, "note.txt");
     terminal.write_all(b"\x03").unwrap();
     assert!(exits_within(&mut serve, 45).success());
+}
+
+/// What a `latch` run printed: its exit code and its JSON (stdout, or the
+/// error on stderr).
+fn answered(output: &Output) -> (Option<i32>, Value) {
+    let printed = if output.status.success() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    let json = serde_json::from_slice(printed).unwrap_or_else(|_| panic!("not JSON: {output:?}"));
+    (output.status.code(), json)
+}
+
+#[test]
+fn rules_try_previews_a_verdict_and_runs_nothing() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let owner = dir.path().join("owner");
+    let owner_token = dir.path().join("owner.token");
+    let login = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+        "--name",
+        "owner-mac",
+    ];
+    assert_eq!(latch(&owner, &login, &[]).status.code(), Some(0));
+    let home = dir.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let (serve, _) = serving_with_env(&host, &relay, &[("HOME", &home)]);
+    let build = [
+        "exec",
+        "--write",
+        "~/out",
+        "--network",
+        "--",
+        "/bin/sh",
+        "-c",
+        "echo built > ~/out/made",
+    ];
+    let previewed = |state: &Path, before: &[&str]| {
+        let words: Vec<&str> = [&["rules", "try"][..], before, &["--"], &build].concat();
+        answered(&latch(state, &words, &[]))
+    };
+
+    // From the owner's other machine, as the agent: allowed, and nothing ran.
+    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["host"], "host");
+    assert_eq!(tried["as"]["agent_uid"], AGENT_UID);
+    assert_eq!(tried["gate"]["caller"], "agent");
+    assert_eq!(tried["request"]["op"], "exec");
+    assert_eq!(tried["request"]["action"]["network"], true);
+    assert!(!home.join("out").exists(), "nothing ran");
+
+    // On the host itself, as the owner.
+    let (code, tried) = previewed(&host, &[]);
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["as"], "owner");
+    assert_eq!(tried["gate"]["source"], "owner_request");
+
+    // A refusal is a preview that worked.
+    plow.state.lock().unwrap().forbidden = true;
+    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["verdict"], "owner_said_no");
+
+    // A judge that cannot answer is an error.
+    plow.state.lock().unwrap().model_down = true;
+    let (code, error) = previewed(&owner, &["--host", "host"]);
+    assert_eq!(code, Some(3), "{error}");
+    assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+    plow.state.lock().unwrap().model_down = false;
+    plow.state.lock().unwrap().out_of_credits = true;
+    let (code, error) = previewed(&owner, &["--host", "host"]);
+    assert_eq!(code, Some(3), "{error}");
+    assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("out of credits"),
+        "{error}"
+    );
+    plow.state.lock().unwrap().out_of_credits = false;
+
+    let (code, error) = previewed(&owner, &["--host", "host", "--from", "Nobody"]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("no_such_agent"))
+    );
+
+    let browse = [
+        "rules",
+        "try",
+        "--",
+        "browser",
+        "open",
+        "https://example.com",
+    ];
+    let (code, error) = answered(&latch(&owner, &browse, &[]));
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("not_previewable"))
+    );
+
+    // The host's audit has the previews, and no exec.
+    drop(serve);
+    let records = audit_records(&host);
+    let ops: Vec<&str> = records
+        .iter()
+        .filter(|record| record["op"] != "connect")
+        .map(|record| record["op"].as_str().unwrap())
+        .collect();
+    assert_eq!(ops, ["rules_try"; 6], "{records:?}");
+    assert!(!home.join("out").exists());
+}
+
+#[test]
+fn rules_try_says_what_is_missing_before_reaching_a_host() {
+    let dir = test_dir();
+    let fresh = dir.path().join("fresh");
+    let exec = ["rules", "try", "--", "exec", "--", "true"];
+    let (code, error) = answered(&latch(&fresh, &exec, &[]));
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("not_logged_in"))
+    );
+    let no_program = ["rules", "try", "--", "exec", "--write", "~/out"];
+    let (code, error) = answered(&latch(&fresh, &no_program, &[]));
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+    let settings = ["rules", "try", "--", "vault", "list"];
+    let (code, error) = answered(&latch(&fresh, &settings, &[]));
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("not_previewable"))
+    );
+
+    let help = latch(&fresh, &["rules", "try", "-h"], &[]);
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("about $0.0001"), "{help}");
 }

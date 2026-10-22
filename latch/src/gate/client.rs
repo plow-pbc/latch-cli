@@ -8,19 +8,24 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
+use clap::{CommandFactory, FromArgMatches};
 use serde_json::{Value, json};
 
 use super::owner;
 use crate::audit::{self, AuditLog};
-use crate::cli::{RulesArgs, RulesCommand};
+use crate::cli::{Cli, Command as Latch, FileCommand, HostArg, RulesArgs, RulesCommand};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
 use crate::hosts;
 use crate::plow::Plow;
 use crate::state::StateDir;
 use crate::wire::Request;
+use crate::{google, transfer};
 
 pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
+    if let RulesCommand::Try { request } = args.command {
+        return preview(state, args.host, args.from, request).await;
+    }
     let target = Target {
         state,
         host: args.host,
@@ -60,7 +65,68 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         }
         RulesCommand::Clear => target.call(json!({"command": "clear", "from": from})).await,
         RulesCommand::Show => target.call(json!({"command": "show", "from": from})).await,
+        RulesCommand::Try { .. } => unreachable!("previewed above"),
     }
+}
+
+/// `latch rules try -- REQUEST`: REQUEST parsed and built exactly as
+/// latch would send it, then previewed on the host (the `rules_try`
+/// operation), which runs nothing. Its `--host` and `--chat` (or
+/// `LATCH_HOST`, `LATCH_CHAT`) mean what they would on the real call;
+/// `rules try --host` wins.
+async fn preview(
+    state: &StateDir,
+    host: Option<String>,
+    from: Option<String>,
+    words: Vec<String>,
+) -> Result<Value, Failure> {
+    let usage = |err: clap::Error| Failure::usage("usage", err.to_string().trim_end().to_string());
+    let matches = Cli::command()
+        .try_get_matches_from(std::iter::once("latch".to_string()).chain(words))
+        .map_err(usage)?;
+    let parsed = Cli::from_arg_matches(&matches).map_err(usage)?;
+    let (op, args, asked): (&str, Value, HostArg) = match parsed.command {
+        Latch::Exec(args) => ("exec", crate::exec::request(&args)?, args.host),
+        Latch::File(FileCommand::Get {
+            remote_path, host, ..
+        }) => ("file_get", transfer::get_args(&remote_path), host),
+        Latch::File(FileCommand::Put {
+            local_path,
+            remote_path,
+            host,
+        }) => {
+            let (_, args) = transfer::put_args(&local_path, &remote_path).await?;
+            ("file_put", args, host)
+        }
+        Latch::Google(args) if !google::client::is_help(&args) => {
+            let prepared = google::client::prepare(&args).await?;
+            let request = serde_json::to_value(&prepared.request).expect("request serializes");
+            ("google", request, args.host)
+        }
+        #[cfg(target_os = "macos")]
+        Latch::Messages(command) => (
+            "messages",
+            crate::messages::messages_request(&command),
+            command.host(),
+        ),
+        #[cfg(target_os = "macos")]
+        Latch::Contacts(command) => (
+            "contacts",
+            crate::messages::contacts_request(&command),
+            command.host(),
+        ),
+        _ => {
+            let name = matches.subcommand_name().unwrap_or_default();
+            return Err(crate::serve::not_previewable(name));
+        }
+    };
+    let peer = hosts::resolve(state, host.or(asked.host)).await?;
+    let request = Request {
+        op: "rules_try".to_string(),
+        args: json!({"request": {"op": op, "args": args, "chat": asked.chat}, "from": from}),
+        chat: None,
+    };
+    dial::call(state, &peer, &request, ANSWER_WITHIN).await
 }
 
 /// Where the commands go: the host named by `--host`, or this machine's

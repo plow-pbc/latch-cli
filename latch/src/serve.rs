@@ -1551,6 +1551,7 @@ mod gated_tests;
 #[cfg(test)]
 mod plugins_tests;
 mod rules_try;
+pub(crate) use rules_try::not_previewable;
 #[cfg(test)]
 mod rules_try_tests;
 

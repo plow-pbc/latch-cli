@@ -855,6 +855,31 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("Show the rules", &["rules", "show"])],
     },
     Entry {
+        id: "rules.try",
+        output: "`verdict`: allow, not_covered, owner_said_no, no_intent, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, or the agent), `request` (the operation and its action, secrets masked) and `gate` (the judgment's details: probabilities, source, chat window, rule revisions, model, latency, cost). A refusal is a preview that worked: exit 0.",
+        effect: Repeatable(
+            "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001), and records a `rules_try` in the host's audit; the request itself never runs",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Would Penny be allowed to build the site?",
+                &[
+                    "rules", "try", "--from", "Penny", "--", "exec", "--write", "~/site", "--",
+                    "npm", "run", "build",
+                ],
+            ),
+            ex(
+                "Preview a mail search on another host, as yourself",
+                &[
+                    "rules", "try", "--host", "mac", "--", "google", "--", "gmail", "search",
+                    "invoice",
+                ],
+            ),
+        ],
+    },
+    Entry {
         id: "plugins.list",
         output: "`plugins`: each connector's `name` and `state` (enabled, disabled or needs_setup); one not enabled has a `reason` and the owner's `enable` command.",
         effect: ReadOnly,
