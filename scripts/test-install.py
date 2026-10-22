@@ -303,10 +303,6 @@ cp "{archive}" "$out"
         self.assertIn("nothing installed", bad.stderr)
         self.assertFalse((state / "plugins/cft/1.0.0/manifest.json").exists())
 
-    @unittest.skipIf(Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").exists()
-                     and Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-                     .read_text().strip() == "1",
-                     "this host would also load the AppArmor profile")
     def test_a_linux_install_without_bubblewrap_installs_it_as_root(self):
         setup = self.root / "setup"
         setup.mkdir()
@@ -320,6 +316,15 @@ cp "{archive}" "$out"
         tool(self.tools, "sudo", f'echo "sudo $*" >> "{log}"\nexec "$@"\n')
         tool(self.tools, "apt-get", f'echo "apt-get $*" >> "{log}"\n')
         link_basic_tools(self.tools)
+        # The kernel lets bubblewrap make user namespaces here: no AppArmor
+        # profile to load, whatever the machine running the test says.
+        real_cat = os.readlink(self.tools / "cat")
+        (self.tools / "cat").unlink()
+        tool(self.tools, "cat", f"""case "$1" in
+  /proc/sys/kernel/apparmor_restrict_unprivileged_userns) echo 0 ;;
+  *) exec "{real_cat}" "$@" ;;
+esac
+""")
         env = {**self.env, "PATH": str(self.tools)}
         result = subprocess.run(
             ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state), "--no-browser",
