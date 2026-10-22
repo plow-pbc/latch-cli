@@ -34,6 +34,7 @@ mod model;
 mod paint;
 mod plow;
 mod sandbox;
+mod secrets;
 mod serve;
 mod shares;
 mod state;
@@ -104,7 +105,7 @@ fn main() -> ExitCode {
 
 #[tokio::main]
 async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
-    match run(state_dir, command).await {
+    let exit = match run(state_dir, command).await {
         Ok(output) => {
             if !output.text.is_empty() {
                 println!("{}", output.text);
@@ -115,7 +116,9 @@ async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
             eprintln!("{}", failure.to_json());
             failure.exit.into()
         }
-    }
+    };
+    dial::closed().await;
+    exit
 }
 
 /// What a command prints on stdout (JSON, `status --pretty`'s card, or

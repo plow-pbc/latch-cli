@@ -14,6 +14,12 @@ use super::*;
 use crate::model::{Asked, CallFailed, CallMeta, system_one};
 use serde_json::value::RawValue;
 
+/// The test agent, in no chat of its own choosing.
+const AGENT_CALLER: Caller = Caller::Agent {
+    uid: AGENT,
+    chat: None,
+};
+
 /// A local Plow serving `world`, and the requests it saw.
 fn plow(world: World) -> (crate::plow::Plow, Arc<Mutex<Vec<String>>>) {
     let (plow, seen, _) = plow_with_headers(world);
@@ -172,13 +178,7 @@ async fn only_the_member_plow_calls_the_owner_counts_as_the_owner() {
     );
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(world, &model, Rules::default())
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert!(judgment.verdict.is_ok());
     let from: Vec<Value> = model.state()["conversation"]
@@ -208,13 +208,7 @@ async fn every_plow_call_sends_the_credential_once() {
     let (plow, seen, authorizations) = plow_with_headers(World::with_chat("chat_a", messages));
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = Gatekeeper::new(plow, model, Box::new(Rules::default()))
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert!(judgment.verdict.is_ok());
 
@@ -241,13 +235,7 @@ async fn a_long_chat_is_read_page_by_page_back_to_its_start() {
     let (plow, seen) = plow(World::with_chat("chat_a", messages));
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = Gatekeeper::new(plow, model.clone(), Box::new(Rules::default()))
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert!(judgment.verdict.is_ok());
     let pages: Vec<String> = seen
@@ -284,13 +272,7 @@ async fn a_chat_too_long_to_fit_keeps_its_newest_messages_and_says_so() {
     let (plow, seen) = plow(World::with_chat("chat_a", messages));
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = Gatekeeper::new(plow, model.clone(), Box::new(Rules::default()))
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert!(judgment.verdict.is_ok());
     let pages = seen
@@ -314,13 +296,7 @@ async fn the_four_sources_of_intent() {
     // Chat and rules: both, the rules labelled, their hashes audited.
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(one_chat(), &model, host_rules())
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert!(judgment.verdict.is_ok());
     assert_eq!(judgment.gate["source"], "chat_and_rules");
@@ -348,13 +324,7 @@ async fn the_four_sources_of_intent() {
     // Chat only.
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(one_chat(), &model, Rules::default())
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert_eq!(judgment.gate["source"], "chat");
     assert_eq!(model.state()["owner_rules"], "(none)");
@@ -373,13 +343,7 @@ async fn the_four_sources_of_intent() {
         agent: Some("Run pytest in ~/work.".into()),
     };
     let judgment = gatekeeper(world.clone(), &model, only_agent)
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert!(judgment.verdict.is_ok());
     assert_eq!(judgment.gate["source"], "rules");
@@ -393,13 +357,7 @@ async fn the_four_sources_of_intent() {
     // Neither: refused without asking the model.
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(world, &model, Rules::default())
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert_eq!(code(&judgment), "no_intent");
     assert_eq!(judgment.verdict.as_ref().unwrap_err().exit, Exit::Denied);
@@ -424,13 +382,7 @@ async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
     // Several chats and none named: refused, rules or not, model unasked.
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(world.clone(), &model, host_rules())
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert_eq!(code(&judgment), "which_chat");
     let failure = judgment.verdict.unwrap_err();
@@ -484,13 +436,7 @@ async fn a_failed_read_refuses_and_never_falls_back_to_the_rules() {
         world.broken = Some(broken.clone());
         let model = Recorder::answering(0.9, 0.05, 0.05);
         let judgment = gatekeeper(world, &model, host_rules())
-            .judge(
-                Caller::Agent {
-                    uid: AGENT,
-                    chat: None,
-                },
-                &order(),
-            )
+            .judge(AGENT_CALLER, &order())
             .await;
         assert_eq!(code(&judgment), "gatekeeper_unavailable", "{broken}");
         assert_eq!(judgment.verdict.unwrap_err().exit, Exit::Unreachable);
@@ -499,13 +445,7 @@ async fn a_failed_read_refuses_and_never_falls_back_to_the_rules() {
 
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(one_chat(), &model, Unreadable)
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
     assert!(judgment.verdict.unwrap_err().message.contains("rules"));
@@ -516,13 +456,7 @@ async fn a_failed_read_refuses_and_never_falls_back_to_the_rules() {
 async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
     let model = Recorder::answering(0.5, 0.3, 0.2);
     let judgment = gatekeeper(one_chat(), &model, Rules::default())
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert!(judgment.verdict.is_ok(), "allowed at exactly 0.5");
     assert_eq!(judgment.gate["verdict"], "allow");
@@ -540,13 +474,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
     ] {
         let model = Recorder::answering(p[0], p[1], p[2]);
         let judgment = gatekeeper(one_chat(), &model, Rules::default())
-            .judge(
-                Caller::Agent {
-                    uid: AGENT,
-                    chat: None,
-                },
-                &order(),
-            )
+            .judge(AGENT_CALLER, &order())
             .await;
         assert_eq!(judgment.gate["verdict"], reason);
         let failure = judgment.verdict.unwrap_err();
@@ -562,13 +490,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         asked: Mutex::new(Vec::new()),
     });
     let judgment = gatekeeper(one_chat(), &down, Rules::default())
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
+        .judge(AGENT_CALLER, &order())
         .await;
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
     assert_eq!(
@@ -581,15 +503,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
 async fn the_judge_sees_what_the_agent_did_since_the_host_started() {
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let gatekeeper = gatekeeper(one_chat(), &model, Rules::default());
-    gatekeeper
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
-        .await;
+    gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(
         model.state()["already_done_by_agent"],
         "(nothing since this host started)"
@@ -602,15 +516,7 @@ async fn the_judge_sees_what_the_agent_did_since_the_host_started() {
         );
     }
     gatekeeper.did("someone_else", json!({"op": "exec"}), "ok");
-    gatekeeper
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
-        .await;
+    gatekeeper.judge(AGENT_CALLER, &order()).await;
     let done = model.state()["already_done_by_agent"]["since this host started"].clone();
     let done = done.as_array().unwrap();
     assert_eq!(done.len(), 20, "the newest 20");
@@ -765,15 +671,7 @@ async fn rules_files_are_read_at_each_judgment() {
     let files = RuleFiles::new(dir.path(), &[]).unwrap();
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let gatekeeper = gatekeeper(World::default(), &model, files);
-    let judgment = gatekeeper
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
-        .await;
+    let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert!(judgment.verdict.is_ok());
     assert_eq!(
         model.state()["owner_rules"],
@@ -783,15 +681,7 @@ async fn rules_files_are_read_at_each_judgment() {
     // An edit, and a new file for this agent, apply at once.
     std::fs::write(&host, "Never run anything.").unwrap();
     std::fs::write(rules.join(format!("{AGENT}.txt")), "Only pytest.").unwrap();
-    gatekeeper
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
-        .await;
+    gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(
         model.state()["owner_rules"],
         json!({"rules for every agent on this host": "Never run anything.",
@@ -801,15 +691,7 @@ async fn rules_files_are_read_at_each_judgment() {
     // A file there that cannot be read stops the judgment.
     std::fs::remove_file(&host).unwrap();
     std::fs::create_dir(&host).unwrap();
-    let judgment = gatekeeper
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
-        .await;
+    let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
     assert_eq!(model.calls(), 2);
 }
@@ -823,15 +705,7 @@ async fn an_owner_command_applies_to_the_next_judgment() {
         &model,
         RuleFiles::new(dir.path(), &[]).unwrap(),
     );
-    gatekeeper
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
-        .await;
+    gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(model.calls(), 0, "no rules and no chat: no_intent");
 
     let set = json!({"command": "set", "text": "Run tests in ~/work."});
@@ -844,15 +718,7 @@ async fn an_owner_command_applies_to_the_next_judgment() {
     )
     .await;
     assert!(matches!(done.response, crate::wire::Response::Ok(_)));
-    gatekeeper
-        .judge(
-            Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
-            &order(),
-        )
-        .await;
+    gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(
         model.state()["owner_rules"],
         json!({"rules for every agent on this host": "Run tests in ~/work."})
@@ -865,21 +731,10 @@ async fn an_owner_command_applies_to_the_next_judgment() {
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_held_out_replay() {
-    use std::os::unix::fs::PermissionsExt;
-    let key = std::env::var_os("LATCH_TEST_JEV_KEY")
-        .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
     let out = std::env::var_os("LATCH_TEST_REPLAY_OUT")
         .expect("LATCH_TEST_REPLAY_OUT names the file for the rows");
     let state = tempfile::tempdir().unwrap();
-    let path = state.path().join(crate::model::JEV_KEY_FILE);
-    std::fs::copy(key, &path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    std::fs::create_dir_all(state.path().join("browser")).unwrap();
-    std::fs::write(
-        state.path().join(crate::model::MODEL_FILE),
-        r#"{"provider": "jev"}"#,
-    )
-    .unwrap();
+    crate::model::ask_jev_for_tests(state.path());
     let provider = Gatekeeper::provider_for_host(state.path()).unwrap();
 
     let fixture = held_out();

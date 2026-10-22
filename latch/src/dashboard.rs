@@ -9,6 +9,8 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jiff::{Timestamp, tz::TimeZone};
@@ -21,6 +23,9 @@ use crate::term;
 
 /// How many calls the board remembers (more than any screen shows).
 const KEEP: usize = 200;
+
+/// How long a closing view waits to give the terminal back.
+const GIVE_BACK_WITHIN: Duration = Duration::from_secs(1);
 
 /// Column widths, in characters.
 const TIME: usize = 8;
@@ -48,6 +53,9 @@ pub struct Board {
     pub last_heartbeat: Option<Timestamp>,
     /// Standing notices under the title: pending browser handoffs.
     pub notices: Vec<String>,
+    /// What a starting or stopping host is doing, shown in place of the
+    /// heartbeat until the next one.
+    pub step: Option<String>,
     pub rows: VecDeque<Row>,
 }
 
@@ -74,8 +82,16 @@ impl Dashboard {
     }
 
     pub fn heartbeat(&self) {
+        self.board.send_modify(|board| {
+            board.last_heartbeat = Some(Timestamp::now());
+            board.step = None;
+        });
+    }
+
+    /// Shows what the host is doing now, while it starts or stops.
+    pub fn step(&self, step: &str) {
         self.board
-            .send_modify(|board| board.last_heartbeat = Some(Timestamp::now()));
+            .send_modify(|board| board.step = Some(step.to_string()));
     }
 
     /// Replaces the standing notices.
@@ -93,40 +109,64 @@ impl Dashboard {
 
 /// Draws the boards `boards` yields on this terminal's second screen,
 /// redrawing each second for the clock, until `boards` ends (the host
-/// stopped) or `until` does. Gives the terminal back as it was, however it
-/// ends. `footer` says what Ctrl-C does here.
+/// stopped) or `until` does. Gives the terminal back as it was. `footer`
+/// says what Ctrl-C does here.
 pub async fn show(
+    boards: tokio::sync::mpsc::Receiver<Board>,
+    until: impl std::future::Future<Output = ()>,
+    footer: &str,
+) {
+    show_on(Box::new(std::io::stdout()), boards, until, footer).await;
+}
+
+/// `show` on `out`. Only a thread of its own writes there, so a terminal
+/// that takes no output (paused, or a stalled ssh session) never holds up
+/// Ctrl-C or what follows it: the terminal is then left as it is, after
+/// `GIVE_BACK_WITHIN`.
+async fn show_on(
+    mut out: Box<dyn Write + Send>,
     mut boards: tokio::sync::mpsc::Receiver<Board>,
     until: impl std::future::Future<Output = ()>,
     footer: &str,
 ) {
-    // Written, not printed: a terminal that went away must not panic us
-    // before the host is stopped.
-    let mut out = std::io::stdout();
-    let _ = write!(out, "{}{}", term::ALTERNATE_SCREEN, term::HIDE_CURSOR);
-    let mut board = Board::default();
-    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let board = Arc::new(Mutex::new(Board::default()));
+    let (redraw, asked) = mpsc::sync_channel::<()>(1);
+    let (given, back) = tokio::sync::oneshot::channel();
+    let drawn = board.clone();
+    let footer = footer.to_string();
+    std::thread::spawn(move || {
+        let _ = write!(out, "{}{}", term::ALTERNATE_SCREEN, term::HIDE_CURSOR);
+        // Each second, or sooner when asked, until the view is closed.
+        loop {
+            let (width, height) = term::size();
+            let text = drawn
+                .lock()
+                .expect("board lock")
+                .screen(width, height, &footer);
+            let _ = write!(out, "{}{text}", term::CLEAR);
+            let _ = out.flush();
+            if let Err(RecvTimeoutError::Disconnected) = asked.recv_timeout(Duration::from_secs(1))
+            {
+                break;
+            }
+        }
+        let _ = write!(out, "{}{}", term::SHOW_CURSOR, term::MAIN_SCREEN);
+        let _ = out.flush();
+        let _ = given.send(());
+    });
     tokio::pin!(until);
     loop {
         tokio::select! {
             next = boards.recv() => match next {
-                Some(next) => board = next,
+                Some(next) => *board.lock().expect("board lock") = next,
                 None => break,
             },
-            _ = tick.tick() => {}
             () = &mut until => break,
         }
-        let (width, height) = term::size();
-        let _ = write!(
-            out,
-            "{}{}",
-            term::CLEAR,
-            board.screen(width, height, footer)
-        );
-        let _ = out.flush();
+        let _ = redraw.try_send(());
     }
-    let _ = write!(out, "{}{}", term::SHOW_CURSOR, term::MAIN_SCREEN);
-    let _ = out.flush();
+    drop(redraw);
+    let _ = tokio::time::timeout(GIVE_BACK_WITHIN, back).await;
 }
 
 impl Board {
@@ -143,7 +183,10 @@ impl Board {
 
         let mut lines = Vec::new();
         let title = format!(" latch serve · {}", term::one_line(&self.host));
-        let status = format!("last heartbeat {heartbeat} · {per_minute} calls/min ");
+        let status = match &self.step {
+            Some(step) => format!("{step} "),
+            None => format!("last heartbeat {heartbeat} · {per_minute} calls/min "),
+        };
         let gap = width.saturating_sub(title.chars().count() + status.chars().count());
         lines.push(format!(
             "{}{}{}",
@@ -299,6 +342,39 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A terminal that takes no output: every write waits forever.
+    struct Stuck(Mutex<mpsc::Receiver<()>>);
+
+    impl Write for Stuck {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.lock().unwrap().recv();
+            Ok(0)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_terminal_that_takes_no_output_never_holds_up_closing_the_view() {
+        let (_never, wait) = mpsc::channel();
+        let (boards, receiver) = tokio::sync::mpsc::channel(4);
+        let feed = tokio::spawn(async move {
+            for _ in 0..100 {
+                if boards.send(Board::default()).await.is_err() {
+                    return;
+                }
+            }
+            // Then Ctrl-C, with the drawing thread stuck in its first write.
+            std::future::pending::<()>().await;
+        });
+        let started = std::time::Instant::now();
+        let until = tokio::time::sleep(Duration::from_millis(200));
+        show_on(Box::new(Stuck(Mutex::new(wait))), receiver, until, "").await;
+        assert!(started.elapsed() < GIVE_BACK_WITHIN + Duration::from_secs(2));
+        feed.abort();
+    }
+
     #[test]
     fn a_multiline_argv_stays_on_one_row() {
         // `latch exec -- sh -c $'echo a\necho b'`, plus an escape sequence.
@@ -312,6 +388,7 @@ mod tests {
             host: "host".to_string(),
             last_heartbeat: None,
             notices: Vec::new(),
+            step: None,
             rows: VecDeque::from([Row {
                 at: Timestamp::now(),
                 caller: "agent".to_string(),

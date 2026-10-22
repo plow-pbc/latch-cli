@@ -16,6 +16,9 @@ pub const BUILD_API_URL: Option<&str> = option_env!("LATCH_BUILD_API_URL");
 /// How this build is distributed (e.g. `standalone`), set by a release
 /// build. Unset, it is a local build: made by hand from a checkout.
 pub const BUILD_CHANNEL: Option<&str> = option_env!("LATCH_BUILD_CHANNEL");
+/// The release workflow's run number, set by a release build: the build
+/// number `--version` shows after the version, as `0.1.0 (1327)`.
+pub const BUILD_NUMBER: Option<&str> = option_env!("LATCH_BUILD_NUMBER");
 
 /// The Plow a build from `channel` logs in to when nothing else names one:
 /// real Plow for a release (`standalone`), none for a local build, which
@@ -26,9 +29,10 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
 }
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
-/// 03:45 UTC, local build, protocol plow/latch/1)`: where this build came from
-/// (see `build.rs`), the protocol it speaks to peers and, for a build with
-/// baked-in defaults, those, so it is obvious which build this is.
+/// 03:45 UTC, local build, protocol plow/latch/1)`, or for a release build
+/// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
+/// came from (see `build.rs`), the protocol it speaks to peers and, for a
+/// build with baked-in defaults, those, so it is obvious which build this is.
 pub fn version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
     VERSION.get_or_init(|| {
@@ -44,8 +48,16 @@ pub fn version() -> &'static str {
             let url = BUILD_API_URL.unwrap_or("none");
             about.push_str(&format!("; state {dir}, Plow {url}"));
         }
-        format!("{} ({about})", env!("CARGO_PKG_VERSION"))
+        version_line(env!("CARGO_PKG_VERSION"), BUILD_NUMBER, &about)
     })
+}
+
+/// `package (number): about` for a numbered build, else `package (about)`.
+fn version_line(package: &str, number: Option<&str>, about: &str) -> String {
+    match number.filter(|number| !number.is_empty()) {
+        Some(number) => format!("{package} ({number}): {about}"),
+        None => format!("{package} ({about})"),
+    }
 }
 
 /// What `latch --help` adds after the commands: how an agent uses latch.
@@ -943,6 +955,19 @@ pub struct ExecArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_numbered_build_shows_its_number_after_the_version() {
+        assert_eq!(
+            version_line("0.1.0", Some("1327"), "commit abc, protocol p"),
+            "0.1.0 (1327): commit abc, protocol p"
+        );
+        assert_eq!(
+            version_line("0.1.0", None, "commit abc, local build"),
+            "0.1.0 (commit abc, local build)"
+        );
+        assert_eq!(version_line("0.1.0", Some(""), "x"), "0.1.0 (x)");
+    }
 
     fn serve(args: &[&str]) -> ServeArgs {
         let args = [&["latch", "serve"], args].concat();

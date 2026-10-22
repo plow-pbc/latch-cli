@@ -354,13 +354,16 @@ impl Browsers {
         Runtime::start(&self.state_dir, profile, self.headless).await
     }
 
-    /// Closes every runtime, for a host that is stopping.
+    /// Closes every runtime at once, for a host that is stopping.
     pub async fn close_all(&self) {
         self.sessions.lock().await.clear();
-        let runtimes: Vec<_> = self.runtimes.lock().await.drain().collect();
-        for (_, runtime) in runtimes {
-            let _ = tokio::time::timeout(CLOSING, runtime.close()).await;
+        let mut closing = tokio::task::JoinSet::new();
+        for (_, runtime) in self.runtimes.lock().await.drain() {
+            closing.spawn(async move {
+                let _ = tokio::time::timeout(CLOSING, runtime.close()).await;
+            });
         }
+        closing.join_all().await;
     }
 
     /// The sessions `caller` opened, without their ids: task label,
@@ -686,7 +689,7 @@ async fn answer(
     if matches!(command, "goto" | "tab")
         && let Some(url) = args["url"].as_str()
     {
-        super::egress::web(url)?;
+        off_web(browsers, url).await?;
     }
     let judged = match caller.gate {
         Some(_) => match judged_action(browsers, &entry, command, args).await? {
@@ -826,6 +829,17 @@ async fn judged_action(
     }))
 }
 
+/// Refuses an address the host's browser does not go to (another scheme,
+/// or a local address the owner has not allowed) before a session, an
+/// engine or the gatekeeper is involved. The worker checks it again.
+async fn off_web(browsers: &Browsers, url: &str) -> Result<(), Failure> {
+    let local = super::egress::local_allowed(&browsers.state_dir)?;
+    let url = url.to_string();
+    tokio::task::spawn_blocking(move || super::egress::requested(&url, local))
+        .await
+        .expect("the address check does not panic")
+}
+
 /// `open`: a new session on `profile`, its page loaded. The answer carries
 /// the session's id; a session that could not load its page is ended. An
 /// agent's site is judged before any session starts.
@@ -838,7 +852,7 @@ async fn open(
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
     let url = args["url"].as_str();
     if let Some(url) = url {
-        super::egress::web(url)?;
+        off_web(browsers, url).await?;
     }
     let judged = match url {
         Some(url) => {
