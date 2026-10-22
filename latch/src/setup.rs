@@ -8,9 +8,9 @@
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::mpsc::{self, Receiver};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{self, Receiver};
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
