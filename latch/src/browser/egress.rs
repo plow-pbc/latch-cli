@@ -86,9 +86,8 @@ pub fn requested(url: &str, local: bool) -> Result<(), Failure> {
 }
 
 /// Refuses an address of any scheme but `http` and `https` (`about:blank`
-/// aside, which is `None`): what the host checks before anything else, the
-/// gatekeeper included, and the worker again.
-pub fn web(url: &str) -> Result<Option<url::Url>, Failure> {
+/// aside, which is `None`).
+fn web(url: &str) -> Result<Option<url::Url>, Failure> {
     if url == "about:blank" {
         return Ok(None);
     }

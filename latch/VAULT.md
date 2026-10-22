@@ -216,12 +216,15 @@ browser.
 
 `vault.json` in the host's state directory is written atomically by serve
 and local management. Both take the same exclusive `vault.lock` for each
-read/write transaction. Serve reloads its cached store when the file's
-identity or modification changes, so local edits are visible to fills
-without a restart. The lock is released while an import waits for picks.
+read/write transaction. Each transaction reopens the current store while
+holding the lock, so local edits are visible to fills without a restart.
+The lock is released while an import waits for picks.
 Items are sealed with AES-256-GCM under a random data key; the
-data key is sealed under the custody key in `vault.key` (0600) beside it.
-`exec` and file workers can read neither (the state directory is denied to
-them). On macOS the browser engine runs as the owner outside latch's
-sandbox, so a compromised engine could read both: an accepted risk, which a
-Keychain half of the custody key narrows later.
+data key is sealed under the custody key. A signed macOS latch keeps that
+key in the Keychain, with the host's other secrets (its key and Plow token);
+any other build keeps it in `vault.key` (0600) beside the vault. `exec` and
+file workers can read neither (the state directory is denied to them). On
+macOS the browser engine runs as the owner outside latch's sandbox, so a
+compromised engine could read `vault.json`, and `vault.key` in a build that
+keeps files: an accepted risk. In a signed latch the custody key is in the
+Keychain, which only a program signed with latch's keychain group can read.

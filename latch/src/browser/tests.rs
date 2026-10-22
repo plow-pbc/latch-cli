@@ -323,6 +323,7 @@ conformance!(
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
     a_browser_that_leaves_calls_unanswered_is_closed,
+    a_busy_browser_dies_with_its_host,
     a_dialog_that_opens_between_calls_is_refused_at_once,
     a_dialog_in_one_session_does_not_hold_another_sessions_download,
     a_download_heard_before_another_sessions_dialog_does_not_wait_on_it,
@@ -1176,6 +1177,76 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
     drop(input);
     let ended = worker.wait().unwrap();
     assert!(ended.success(), "{ended:?}");
+}
+
+async fn a_busy_browser_dies_with_its_host(engine: &str) {
+    use std::os::unix::process::CommandExt;
+    let (_dir, state, _area) = test_state(engine, &["host-gone"]);
+    let scratch = tempfile::tempdir().unwrap();
+    // The host: a shell that starts the worker as its child, as `latch
+    // serve` does, says its pid, and is then killed.
+    let mut host = Command::new("/bin/sh");
+    host.arg("-c")
+        .arg(r#"exec 3<&0; "$0" "$@" <&3 & echo "$!"; exec 3<&-; wait"#)
+        .arg(latch())
+        .arg("--state-dir")
+        .arg(&state)
+        .args(["browser-worker", "--profile", "host-gone", "--scratch"])
+        .arg(scratch.path())
+        // As the host's runtime passes it for a test state: the page is local.
+        .arg("--allow-local-browsing");
+    if HEADLESS {
+        host.arg("--headless");
+    }
+    let mut host = host
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .current_dir(scratch.path())
+        .process_group(0)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = host.stdin.take().unwrap();
+    let mut output = std::io::BufReader::new(host.stdout.take().unwrap());
+    let mut answer = || {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut output, &mut line).unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap_or_default()
+    };
+    let worker = answer().as_i64().unwrap() as libc::pid_t;
+    let data = profile::root(&state).join("host-gone/data");
+    let profile_arg = format!("--user-data-dir={}", data.canonicalize().unwrap().display());
+    let ready = answer();
+    let browser =
+        host_pid(ready["ok"]["pid"].as_u64().unwrap() as u32, &profile_arg) as libc::pid_t;
+    let mut call = |line: serde_json::Value| {
+        writeln!(input, "{line}").unwrap();
+        input.flush().unwrap();
+    };
+    call(json!({"op": "begin", "session": "k1"}));
+    assert!(answer()["ok"].is_object());
+    call(json!({"op": "open", "session": "k1", "url": local_page()}));
+    assert!(answer()["ok"].is_object());
+    // A call that keeps the worker busy for half a minute.
+    call(json!({"op": "wait", "session": "k1",
+                "condition": {"kind": "text", "text": "never on this page"},
+                "within_ms": 30000}));
+    std::thread::sleep(Duration::from_secs(1));
+
+    // The host dies, and with it the worker's input.
+    host.kill().unwrap();
+    host.wait().unwrap();
+    drop(input);
+    std::thread::sleep(Duration::from_secs(3));
+    // SAFETY: signal 0 only checks that a process exists.
+    let running = |pid| unsafe { libc::kill(pid, 0) } == 0;
+    let (worker_left, browser_left) = (running(worker), running(browser));
+    // Unfixed, both run on until the wait ends, then close as usual.
+    assert!(
+        !worker_left && !browser_left,
+        "worker running: {worker_left}, browser running: {browser_left}"
+    );
 }
 
 /// The Camoufox helper gives up on a page's title after a wait of its own

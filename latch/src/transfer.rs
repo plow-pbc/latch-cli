@@ -37,7 +37,7 @@ pub async fn get(
     };
     let link = dial::connect(state, host).await?;
     let result = receive(&link.connection, chat, remote_path, &local).await;
-    link.close().await;
+    link.close();
     result
 }
 
@@ -90,7 +90,7 @@ pub async fn put(
     let name = local.file_name().and_then(|name| name.to_str());
     let link = dial::connect(state, host).await?;
     let result = send(&link.connection, chat, &mut file, size, remote_path, name).await;
-    link.close().await;
+    link.close();
     let mut result = result?;
     result["local_path"] = json!(local);
     Ok(result)
@@ -111,9 +111,16 @@ async fn send(
     };
     let (done, sha256) = upload(connection, &request, file, size).await?;
     check_same(&done, &sha256)?;
+    let path = done["path"].as_str().ok_or_else(|| {
+        Failure::new(
+            Exit::Unknown,
+            "bad_response",
+            "the host's answer did not say where the file was put".to_string(),
+        )
+    })?;
     Ok(json!({
         // Where the host put it: inside `remote_path` if that is a folder.
-        "path": done["path"].as_str().unwrap_or(remote_path),
+        "path": path,
         "size": size,
         "sha256": sha256,
         "audit_id": done["audit_id"],

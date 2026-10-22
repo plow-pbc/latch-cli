@@ -12,31 +12,39 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def fixture(root, state, binary_script, system="FixtureOS", machine="x86_64"):
+    """install.sh beside a fake latch, with a local gog pinned in `state` and
+    a `uname` that names `system` and `machine`. Returns the setup folder,
+    the binary and the folder to put first on PATH."""
+    setup = root / "setup"
+    (setup / "src/google").mkdir(parents=True)
+    shutil.copyfile(ROOT / "latch/install.sh", setup / "install.sh")
+    binary = setup / "latch"
+    binary.write_text(binary_script)
+    binary.chmod(0o755)
+    gog = state / "plugins/gog/1.0/gog"
+    gog.parent.mkdir(parents=True)
+    gog.write_bytes(b"local-gog-fixture")
+    (setup / "src/google/pin.json").write_text(json.dumps({
+        "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest(),
+    }, indent=2))
+    tools = root / "tools"
+    tools.mkdir()
+    uname = tools / "uname"
+    uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system};; -m) echo {machine};; esac\n')
+    uname.chmod(0o755)
+    return setup, binary, tools
+
+
 class BinaryInstall(unittest.TestCase):
     def install(self, custom=False, source="last", no_args=False):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=parent) as directory:
             root = Path(directory)
-            setup = root / "setup"
-            (setup / "src/google").mkdir(parents=True)
-            shutil.copyfile(ROOT / "latch/install.sh", setup / "install.sh")
-            binary = setup / "latch"
-            binary.write_text("#!/bin/sh\necho installed-fixture\n")
-            binary.chmod(0o755)
             home = root / "home"
             state = home / ".latch" if no_args else root / "state"
-            gog = state / "plugins/gog/1.0/gog"
-            gog.parent.mkdir(parents=True)
-            gog.write_bytes(b"local-gog-fixture")
-            (setup / "src/google/pin.json").write_text(json.dumps({
-                "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest(),
-            }, indent=2))
-            tools = root / "tools"
-            tools.mkdir()
-            uname = tools / "uname"
-            uname.write_text('#!/bin/sh\ncase "$1" in -s) echo FixtureOS;; -m) echo x86_64;; esac\n')
-            uname.chmod(0o755)
+            setup, binary, tools = fixture(root, state, "#!/bin/sh\necho installed-fixture\n")
             options = [] if no_args else ["--state-dir", str(state)]
             destination = home / ".local/bin/latch"
             if custom:
@@ -122,6 +130,83 @@ class BinaryInstall(unittest.TestCase):
                 self.assertEqual(ran, f"--state-dir {state} setup\n" if runs else "",
                                  (at_terminal, extra))
 
+    def test_macos_release_installs_the_app_and_updates_it_in_place(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            setup = root / "setup"
+            (setup / "src/google").mkdir(parents=True)
+            (setup / "src/browser").mkdir()
+            shutil.copyfile(ROOT / "latch/install.sh", setup / "install.sh")
+            # A release's layout: the app, and `latch` beside install.sh leading into it.
+            app = setup / "Plow Latch.app"
+            (app / "Contents/MacOS").mkdir(parents=True)
+            (app / "Contents/Info.plist").write_text("<plist>co.plow.latch.cli</plist>\n")
+            inner = app / "Contents/MacOS/latch"
+            (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
+            home = root / "home"
+            state = root / "state"
+            gog = state / "plugins/gog/1.0/gog"
+            gog.parent.mkdir(parents=True)
+            gog.write_bytes(b"local-gog-fixture")
+            (setup / "src/google/pin.json").write_text(json.dumps({
+                "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest(),
+            }, indent=2))
+            # Chrome for Testing already in place, so nothing is downloaded.
+            cft_pin = '{\n  "version": "1.0"\n}\n'
+            (setup / "src/browser/cft.json").write_text(cft_pin)
+            (state / "plugins/cft/1.0").mkdir(parents=True)
+            (state / "plugins/cft/1.0/manifest.json").write_text(cft_pin)
+            tools = root / "tools"
+            tools.mkdir()
+            uname = tools / "uname"
+            uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo arm64;; esac\n')
+            uname.chmod(0o755)
+            env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
+            args = ["sh", str(setup / "install.sh"), "--state-dir", str(state), str(setup / "latch")]
+            installed = home / "Applications/Plow Latch.app"
+            link = home / ".local/bin/latch"
+
+            for build in ["one", "two"]:
+                inner.write_text(f"#!/bin/sh\necho app-{build}\n")
+                inner.chmod(0o755)
+                result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("installed Plow Latch.app", result.stdout)
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(os.readlink(link), str(installed / "Contents/MacOS/latch"))
+                self.assertEqual(subprocess.check_output([str(link)], text=True), f"app-{build}\n")
+                self.assertEqual((installed / "Contents/Info.plist").read_text(),
+                                 "<plist>co.plow.latch.cli</plist>\n")
+            self.assertFalse((home / "Applications/Plow Latch.app.new").exists())
+            again = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertIn("Plow Latch.app already installed", again.stdout)
+            self.assertIn("latch already linked", again.stdout)
+
+            # An update whose final rename fails keeps the working app and link.
+            failing_mv = tools / "mv"
+            failing_mv.write_text('#!/bin/sh\ncase "$1" in *.app.new) exit 73;; esac\nexec /bin/mv "$@"\n')
+            failing_mv.chmod(0o755)
+            inner.write_text("#!/bin/sh\necho app-three\n")
+            failed = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0, failed.stdout)
+            self.assertIn("still at", failed.stderr)
+            self.assertEqual(subprocess.check_output([str(link)], text=True), "app-two\n")
+            leftovers = sorted(path.name for path in (home / "Applications").iterdir())
+            self.assertEqual(leftovers, ["Plow Latch.app"])
+
+            # A run cut short with the old app moved aside: the next run puts
+            # the new one in place and leaves nothing behind.
+            failing_mv.unlink()
+            installed.rename(home / "Applications/Plow Latch.app.old")
+            resumed = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertEqual(subprocess.check_output([str(link)], text=True), "app-three\n")
+            leftovers = sorted(path.name for path in (home / "Applications").iterdir())
+            self.assertEqual(leftovers, ["Plow Latch.app"])
+
     def test_help_needs_no_binary_or_setup(self):
         result = subprocess.run([str(ROOT / "latch/install.sh"), "--help"],
                                 capture_output=True, text=True)
@@ -131,6 +216,31 @@ class BinaryInstall(unittest.TestCase):
             options.append("--with-camoufox")
         for option in options:
             self.assertIn(option, result.stdout)
+
+
+class MessagesReaderInstall(unittest.TestCase):
+    def test_a_mac_install_puts_the_reader_in_this_latchs_plugin_folder(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            state = root / "state"
+            script = '#!/bin/sh\necho "latch 9.9.9 (fixture)"\n'
+            setup, _, tools = fixture(root, state, script, system="Darwin", machine="arm64")
+            (setup / "latch-messages").write_bytes(b"reader-fixture")
+            # A Mac install also puts Chrome for Testing in place: one already there.
+            pin = '{\n  "version": "1.0"\n}\n'
+            (setup / "src/browser").mkdir()
+            (setup / "src/browser/cft.json").write_text(pin)
+            (state / "plugins/cft/1.0").mkdir(parents=True)
+            (state / "plugins/cft/1.0/manifest.json").write_text(pin)
+            args = ["sh", str(setup / "install.sh"), "--state-dir", str(state), "--bin-dir", str(root / "bin")]
+            env = {**os.environ, "HOME": str(root / "home"), "PATH": f"{tools}:{os.environ['PATH']}"}
+            result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            reader = state / "plugins/messages/9.9.9/latch-messages"
+            self.assertEqual(reader.read_bytes(), b"reader-fixture")
+            self.assertTrue(os.access(reader, os.X_OK))
 
 
 if __name__ == "__main__":

@@ -119,6 +119,9 @@ pub struct Plugins {
 struct Inner {
     settings: BTreeMap<Connector, Setting>,
     running: BTreeMap<Connector, usize>,
+    /// How many times each connector's setting has changed, so a setup can
+    /// tell whether it was turned on or off while the setup ran.
+    revisions: BTreeMap<Connector, u64>,
 }
 
 impl Plugins {
@@ -146,7 +149,7 @@ impl Plugins {
             home: home.to_path_buf(),
             inner: Mutex::new(Inner {
                 settings,
-                running: BTreeMap::new(),
+                ..Inner::default()
             }),
             ended: Notify::new(),
         })
@@ -166,10 +169,32 @@ impl Plugins {
         })
     }
 
-    /// Saves `connector`'s new setting (none: disabled), then uses it.
+    /// `connector`'s revision now: what a setup passes to `set` when done.
+    fn revision(&self, connector: Connector) -> u64 {
+        let inner = self.inner.lock().expect("plugins lock");
+        inner.revisions.get(&connector).copied().unwrap_or(0)
+    }
+
+    /// Saves `connector`'s new setting (none: disabled), then uses it; with
+    /// `since`, only if the setting has not changed since that revision.
     /// Returns how many of its operations are running at that moment.
-    fn set(&self, connector: Connector, setting: Option<Setting>) -> Result<usize, Failure> {
+    fn set(
+        &self,
+        connector: Connector,
+        setting: Option<Setting>,
+        since: Option<u64>,
+    ) -> Result<usize, Failure> {
         let mut inner = self.inner.lock().expect("plugins lock");
+        let revision = inner.revisions.entry(connector).or_default();
+        if since.is_some_and(|since| since != *revision) {
+            let message = format!(
+                "{} was turned on or off while its setup ran; run `{}` again to set it up",
+                connector.name(),
+                connector.enable_command()
+            );
+            return Err(Failure::failed("setup_superseded", message));
+        }
+        *revision += 1;
         let mut settings = inner.settings.clone();
         match setting {
             Some(setting) => settings.insert(connector, setting),

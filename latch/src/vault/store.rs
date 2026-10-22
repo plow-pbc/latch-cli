@@ -3,24 +3,23 @@
 //! The own store is one file in the host's state directory, `vault.json`,
 //! written by serve and local management under vault.lock, atomically (a temporary file renamed over
 //! it). Every item is sealed with AES-256-GCM under a random **data key**;
-//! the data key is sealed under a **custody key**, kept in `vault.key`
-//! beside it, owner-only (0600). Both files sit in the state directory,
-//! which `exec` and file workers can never read.
+//! the data key is sealed under a **custody key**, kept with the state
+//! folder's other secrets (see `secrets.rs`): in the Keychain for a signed
+//! macOS latch, else in `vault.key` beside it, owner-only (0600). The state
+//! directory is one `exec` and file workers can never read.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 use super::classify;
 use super::item::{Item, Meta};
 use crate::failure::{Exit, Failure};
-use crate::state::to_hex;
+use crate::seal::{Sealed, from_hex, seal};
+use crate::secrets::{Secret, Secrets};
+use crate::state::{to_hex, write_private};
 
 /// What every vault backend offers. Deciding a release (which item, into
 /// which page) is never a backend's job; it hands over one value when the
@@ -46,7 +45,6 @@ pub trait Backend: Send {
 }
 
 const FILE: &str = "vault.json";
-const KEY_FILE: &str = "vault.key";
 /// The `vault.json` layout this latch reads and writes; a vault of another
 /// version is refused, never misread or rewritten without what it holds.
 const VERSION: u32 = 1;
@@ -55,21 +53,13 @@ const DATA_KEY_AAD: &[u8] = b"latch vault data key v1";
 const ITEMS_AAD: &[u8] = b"latch vault items v1";
 
 #[derive(Serialize, Deserialize)]
-struct Sealed {
-    nonce: String,
-    ciphertext: String,
-}
-
-#[derive(Serialize, Deserialize)]
 struct File {
     version: u32,
     data_key: Sealed,
     items: Sealed,
     /// The number the next item's id gets, so a removed id is never given
-    /// again. A vault saved before it was kept has none: then it is one
-    /// past the highest id, and saved from then on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    next_id: Option<u64>,
+    /// again.
+    next_id: u64,
 }
 
 pub struct OwnStore {
@@ -83,71 +73,24 @@ fn failed(message: String) -> Failure {
     Failure::failed("vault_failed", message)
 }
 
-fn from_hex(text: &str) -> Result<Vec<u8>, Failure> {
-    let bad = || failed("the vault file is damaged".into());
-    if !text.len().is_multiple_of(2) {
-        return Err(bad());
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| bad()))
-        .collect()
-}
-
-fn seal(key: &[u8; 32], plain: &[u8], aad: &[u8]) -> Sealed {
-    let cipher = Aes256Gcm::new_from_slice(key).expect("a 32-byte key");
-    let nonce: [u8; 12] = rand::random();
-    let ciphertext = cipher
-        .encrypt(&Nonce::from(nonce), Payload { msg: plain, aad })
-        .expect("sealing cannot fail");
-    Sealed {
-        nonce: to_hex(&nonce),
-        ciphertext: to_hex(&ciphertext),
-    }
-}
-
 fn open(key: &[u8; 32], sealed: &Sealed, aad: &[u8]) -> Result<Vec<u8>, Failure> {
-    let cipher = Aes256Gcm::new_from_slice(key).expect("a 32-byte key");
-    let nonce: [u8; 12] = from_hex(&sealed.nonce)?
-        .try_into()
-        .map_err(|_| failed("the vault file is damaged".into()))?;
-    cipher
-        .decrypt(
-            &Nonce::from(nonce),
-            Payload {
-                msg: &from_hex(&sealed.ciphertext)?,
-                aad,
-            },
-        )
-        .map_err(|_| failed("the vault could not be opened with its custody key".into()))
+    crate::seal::open(key, &sealed.nonce, &sealed.ciphertext, aad)
+        .ok_or_else(|| failed("the vault could not be opened with its custody key".into()))
 }
 
-/// Reads the custody key from `path`. It is read on each use, not kept.
-fn custody(path: &Path) -> Result<[u8; 32], Failure> {
-    from_hex(
-        fs::read_to_string(path)
-            .map_err(|err| failed(format!("{}: {err}", path.display())))?
-            .trim(),
-    )?
-    .try_into()
-    .map_err(|_| failed("the custody key is damaged".into()))
-}
-
-/// Writes `bytes` to `path` owner-only and atomically.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Failure> {
-    let temp = path.with_extension("tmp");
-    let io = |err: std::io::Error| failed(format!("{}: {err}", path.display()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)
-        .map_err(io)?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(io)?;
-    fs::rename(&temp, path).map_err(io)
+/// Reads the custody key of the vault in `dir`. It is read on each use,
+/// not kept.
+fn custody(dir: &Path) -> Result<[u8; 32], Failure> {
+    let Some(bytes) = Secrets::open(dir)?.read(Secret::VaultKey)? else {
+        return Err(failed(format!(
+            "{}: the vault has no custody key",
+            dir.display()
+        )));
+    };
+    let text = String::from_utf8(bytes).map_err(|_| failed("the custody key is damaged".into()))?;
+    from_hex(text.trim())
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| failed("the custody key is damaged".into()))
 }
 
 impl OwnStore {
@@ -155,10 +98,9 @@ impl OwnStore {
     /// empty one with new keys on first use.
     pub fn open(dir: &Path) -> Result<OwnStore, Failure> {
         let path = dir.join(FILE);
-        let key_path = dir.join(KEY_FILE);
         if !path.exists() {
             let custody: [u8; 32] = rand::random();
-            write_private(&key_path, to_hex(&custody).as_bytes())?;
+            Secrets::open(dir)?.write(Secret::VaultKey, to_hex(&custody).as_bytes())?;
             let mut store = OwnStore {
                 dir: dir.to_path_buf(),
                 data_key: rand::random(),
@@ -168,7 +110,7 @@ impl OwnStore {
             store.save()?;
             return Ok(store);
         }
-        let custody = custody(&key_path)?;
+        let custody = custody(dir)?;
         let bytes = fs::read(&path).map_err(|err| failed(format!("{}: {err}", path.display())))?;
         // The version first: another version may lay the rest out differently.
         #[derive(Deserialize)]
@@ -197,34 +139,26 @@ impl OwnStore {
             .map_err(|_| failed("the vault's data key is damaged".into()))?;
         let items: Vec<Item> = serde_json::from_slice(&open(&data_key, &file.items, ITEMS_AAD)?)
             .map_err(|_| failed("the vault's items are damaged".into()))?;
-        let past_highest = items
-            .iter()
-            .filter_map(|item| item.id.strip_prefix('v')?.parse::<u64>().ok())
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let next_id = file.next_id.unwrap_or(0).max(past_highest);
         Ok(OwnStore {
             dir: dir.to_path_buf(),
             data_key,
             items,
-            next_id,
+            next_id: file.next_id,
         })
     }
 
     fn save(&mut self) -> Result<(), Failure> {
-        let custody = custody(&self.dir.join(KEY_FILE))?;
+        let custody = custody(&self.dir)?;
         let items = serde_json::to_vec(&self.items).expect("items serialize");
         let file = File {
             version: VERSION,
             data_key: seal(&custody, &self.data_key, DATA_KEY_AAD),
             items: seal(&self.data_key, &items, ITEMS_AAD),
-            next_id: Some(self.next_id),
+            next_id: self.next_id,
         };
-        write_private(
-            &self.dir.join(FILE),
-            &serde_json::to_vec(&file).expect("file serializes"),
-        )
+        let path = self.dir.join(FILE);
+        write_private(&path, &serde_json::to_vec(&file).expect("file serializes"))
+            .map_err(|err| failed(format!("{}: {err}", path.display())))
     }
 
     fn find(&self, id: &str) -> Result<usize, Failure> {
@@ -367,7 +301,7 @@ mod tests {
             );
         }
         use std::os::unix::fs::PermissionsExt;
-        for file in [FILE, KEY_FILE] {
+        for file in [FILE, Secret::VaultKey.file()] {
             let mode = fs::metadata(dir.path().join(file))
                 .unwrap()
                 .permissions()
@@ -381,7 +315,7 @@ mod tests {
         );
         assert_eq!(reopened.list(), store.list());
         // Another custody key opens nothing.
-        fs::write(dir.path().join(KEY_FILE), to_hex(&[7u8; 32])).unwrap();
+        fs::write(dir.path().join(Secret::VaultKey.file()), to_hex(&[7u8; 32])).unwrap();
         assert_eq!(
             OwnStore::open(dir.path()).err().unwrap().code,
             "vault_failed"
@@ -402,22 +336,20 @@ mod tests {
     }
 
     #[test]
-    fn a_vault_saved_before_it_kept_its_next_id_still_opens() {
+    fn a_vault_without_its_next_id_is_refused_without_changes() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = OwnStore::open(dir.path()).unwrap();
-        store.add(login("made-up-pass-1")).unwrap();
-        store.add(login("made-up-pass-2")).unwrap();
+        OwnStore::open(dir.path()).unwrap();
         let path = dir.path().join(FILE);
         let mut file: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         file.as_object_mut().unwrap().remove("next_id");
-        fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-        let mut reopened = OwnStore::open(dir.path()).unwrap();
+        let bytes = serde_json::to_vec(&file).unwrap();
+        fs::write(&path, &bytes).unwrap();
         assert_eq!(
-            reopened.release("v2", "password").unwrap(),
-            "made-up-pass-2"
+            OwnStore::open(dir.path()).err().unwrap().code,
+            "vault_failed"
         );
-        assert_eq!(reopened.add(login("made-up-pass-3")).unwrap().item, "v3");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 
     #[test]

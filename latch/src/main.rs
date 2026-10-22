@@ -22,6 +22,7 @@ mod files;
 mod gate;
 mod google;
 mod heartbeat;
+mod help;
 mod hosts;
 mod input;
 mod keyart;
@@ -29,13 +30,15 @@ mod lifecycle;
 mod log;
 mod login;
 mod logo;
-#[cfg(target_os = "macos")]
 mod messages;
 mod model;
 mod paint;
 mod plow;
 mod plugins;
+mod redact;
 mod sandbox;
+mod seal;
+mod secrets;
 mod serve;
 mod setup;
 mod shares;
@@ -102,6 +105,12 @@ fn main() -> ExitCode {
                 }
             };
         }
+        // Help is in latch itself: no state folder, no host.
+        Command::Help(args) => return help::run(args),
+        Command::Skill => {
+            print!("{}", help::skill());
+            return ExitCode::SUCCESS;
+        }
         command => command,
     };
     run_async(cli.state_dir, command)
@@ -109,7 +118,7 @@ fn main() -> ExitCode {
 
 #[tokio::main]
 async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
-    match run(state_dir, command).await {
+    let exit = match run(state_dir, command).await {
         Ok(output) => {
             if !output.text.is_empty() {
                 println!("{}", output.text);
@@ -117,10 +126,12 @@ async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
             output.exit
         }
         Err(failure) => {
-            eprintln!("{}", failure.to_json());
+            report(&failure);
             failure.exit.into()
         }
-    }
+    };
+    dial::closed().await;
+    exit
 }
 
 /// What a command prints on stdout (JSON, `status --pretty`'s card, or
@@ -162,18 +173,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             }
         }
         Command::Login(args) => {
-            let output = match login::run(&state, args).await {
-                Ok(output) => output,
-                // A person at a terminal reads the sentence; a pipe gets the JSON.
-                Err(failure) if term::stderr_is_terminal() => {
-                    eprintln!("{}", failure.message);
-                    return Ok(Printed {
-                        text: String::new(),
-                        exit: failure.exit.into(),
-                    });
-                }
-                Err(failure) => return Err(failure),
-            };
+            let output = login::run(&state, args).await?;
             // A person at a terminal reads one line; a pipe gets the JSON.
             if !term::stdout_is_terminal() {
                 return to_json(output);
@@ -237,6 +237,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Plugins(args) => to_json(plugins::client::run(&state, args).await?),
         Command::Shares(args) => to_json(shares::run(&state, args.action)?),
+        Command::Audit(args) => to_json(audit::run(&state, args.action)?),
         // Its lines, printed as they come, are its whole output.
         Command::Events(args) => {
             events::run(&state, args)?;
@@ -244,6 +245,32 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 text: String::new(),
                 exit: ExitCode::SUCCESS,
             })
+        }
+        Command::Messages(command) => {
+            let request = messages::messages_request(&command);
+            to_json(
+                call_host(
+                    &state,
+                    command.host(),
+                    "messages",
+                    request,
+                    dial::ANSWER_WITHIN,
+                )
+                .await?,
+            )
+        }
+        Command::Contacts(command) => {
+            let request = messages::contacts_request(&command);
+            to_json(
+                call_host(
+                    &state,
+                    command.host(),
+                    "contacts",
+                    request,
+                    dial::ANSWER_WITHIN,
+                )
+                .await?,
+            )
         }
         Command::Exec(args) => {
             let mut request =
@@ -267,7 +294,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             let dashboard = !args.no_dashboard && term::stdout_is_terminal() && !term::no_color();
             paint::set_color(dashboard);
             let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
-            serve::run(
+            let served = serve::run(
                 &state,
                 &args.folders,
                 &args.allow_read,
@@ -275,10 +302,35 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 args.headless_browsers,
                 deny_exec,
             )
-            .await?;
-            to_json(json!({}))
+            .await;
+            // Once the dashboard has had the terminal, it may take no
+            // output: how the host ended goes to serve.log, and the exit
+            // code says it, so stopping never waits on the terminal.
+            if log::in_file() {
+                let exit = match served {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(failure) => {
+                        log::log(&format!("serve ended: {}", failure.to_json()));
+                        failure.exit.into()
+                    }
+                };
+                return Ok(Printed {
+                    text: String::new(),
+                    exit,
+                });
+            }
+            // A clean stop prints nothing: the host's output was its log.
+            served?;
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
         }
-        Command::Worker(_) | Command::BrowserWorker(_) | Command::Setup => {
+        Command::Worker(_)
+        | Command::BrowserWorker(_)
+        | Command::Help(_)
+        | Command::Skill
+        | Command::Setup => {
             unreachable!("handled in main")
         }
     }
@@ -327,6 +379,27 @@ fn usage_error(err: clap::Error) -> ExitCode {
         message.push_str("\n\nPut the command after `--`: latch exec --host H -- <cmd> <args>");
     }
     let failure = Failure::usage("usage", message);
-    eprintln!("{}", failure.to_json());
+    report(&failure);
     Exit::Usage.into()
+}
+
+/// Puts a failure on stderr: for a person at a terminal its message, a
+/// sentence, then any details it carries (a stopped plan's steps, a request
+/// id) as JSON; for a pipe the JSON error, so agents and scripts read its
+/// code.
+fn report(failure: &Failure) {
+    if !term::stderr_is_terminal() {
+        eprintln!("{}", failure.to_json());
+        return;
+    }
+    eprintln!("{}", failure.message);
+    let has_details = match &failure.details {
+        Value::Null => false,
+        Value::Object(details) => !details.is_empty(),
+        _ => true,
+    };
+    if has_details {
+        let details = serde_json::to_string_pretty(&failure.details).expect("details serialize");
+        eprintln!("{details}");
+    }
 }

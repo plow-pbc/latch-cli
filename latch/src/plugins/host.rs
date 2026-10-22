@@ -59,13 +59,15 @@ fn owner_only() -> Failure {
 }
 
 /// Runs `connector`'s setup and enables it only if that succeeds. A setup
-/// that fails leaves it `needs_setup`, with the failure as the reason.
+/// that fails leaves it `needs_setup`, with the failure as the reason. A
+/// setup the owner turned the connector on or off during changes nothing.
 async fn enable(
     plugins: &Plugins,
     workers: &WorkerSetup,
     plow: &Plow,
     connector: Connector,
 ) -> Result<Value, Failure> {
+    let revision = plugins.revision(connector);
     let setup = match connector {
         Connector::Google => google(workers, plow).await,
         #[cfg(target_os = "macos")]
@@ -75,14 +77,18 @@ async fn enable(
     };
     match setup {
         Ok(mut result) => {
-            plugins.set(connector, Some(Setting::Enabled))?;
+            plugins.set(connector, Some(Setting::Enabled), Some(revision))?;
             result["plugin"] = json!(connector.name());
             result["state"] = json!("enabled");
             Ok(result)
         }
         Err(failure) => {
             let reason = failure.message.clone();
-            plugins.set(connector, Some(Setting::NeedsSetup { reason }))?;
+            plugins.set(
+                connector,
+                Some(Setting::NeedsSetup { reason }),
+                Some(revision),
+            )?;
             Err(failure)
         }
     }
@@ -91,7 +97,7 @@ async fn enable(
 /// Turns `connector` off at once for new operations, then waits for the
 /// ones already running (each bounded by its own time limit).
 async fn disable(plugins: &Plugins, connector: Connector) -> Result<Value, Failure> {
-    let running = plugins.set(connector, None)?;
+    let running = plugins.set(connector, None, None)?;
     plugins.idle(connector).await;
     Ok(json!({"plugin": connector.name(), "state": "disabled", "waited_for": running}))
 }

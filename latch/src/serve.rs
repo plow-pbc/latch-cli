@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use iroh::endpoint::{Connection, Incoming, VarInt, presets};
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
+use tokio::io::AsyncReadExt;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
@@ -69,6 +70,9 @@ struct Host {
     binary: Binary,
     /// The connectors its owner turned on, and their running operations.
     plugins: crate::plugins::Plugins,
+    /// The owner's home folder, whose Messages and address book
+    /// `messages` and `contacts` read.
+    home: PathBuf,
     /// How far the host is into stopping.
     stopping: watch::Sender<Stopping>,
 }
@@ -253,7 +257,8 @@ async fn run_locked(
         let path = state.path.join("serve.log");
         log::to_file(&path)
             .map_err(|err| Failure::failed("log_file", format!("{}: {err}", path.display())))?;
-        Some(Dashboard::start(&config.peer.name))
+        let note = workers.areas.is_empty().then_some(SHARING_NONE);
+        Some(Dashboard::start(&config.peer.name, note))
     } else {
         None
     };
@@ -290,16 +295,21 @@ async fn run_host(
             .map_err(|why| Failure::failed("not_logged_in", why))?,
         Box::new(rules),
     );
-    let audit = AuditLog::open(state.path.join("audit.ndjson"))?;
+    let audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
     log(&format!("audit log verified: {} records", audit.len()));
-    let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let home = std::env::home_dir().unwrap_or_default();
     let plugins = crate::plugins::Plugins::load(state, &home)?;
+    log(&format!("commands in this log: {}", crate::redact::NOTE));
     let names: Vec<String> = workers
         .areas
         .iter()
         .map(|area| area.display().to_string())
         .collect();
-    log(&format!("sharing: {}", names.join(", ")));
+    if names.is_empty() {
+        log(SHARING_NONE);
+    } else {
+        log(&format!("sharing: {}", names.join(", ")));
+    }
     if !workers.reads.is_empty() {
         let reads: Vec<String> = workers
             .reads
@@ -340,6 +350,9 @@ async fn run_host(
     ));
 
     // Clients dial us through our relay, so register only once we have one.
+    if let Some(dashboard) = &dashboard {
+        dashboard.step("connecting to the relay…");
+    }
     if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
         .await
         .is_err()
@@ -347,6 +360,9 @@ async fn run_host(
         endpoint.close().await;
         let message = "no iroh relay connection within 15 seconds".to_string();
         return Err(Failure::failed("relay_unreachable", message));
+    }
+    if let Some(dashboard) = &dashboard {
+        dashboard.step("registering with Plow…");
     }
     let terminate = signal(SignalKind::terminate())
         .map_err(|err| Failure::failed("signal", format!("cannot listen for SIGTERM: {err}")))?;
@@ -380,6 +396,7 @@ async fn run_host(
         gatekeeper,
         binary,
         plugins,
+        home,
         stopping: watch::Sender::new(Stopping::No),
     });
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
@@ -430,14 +447,23 @@ async fn run_host(
             }
         }
     };
+    let step = |step: &str| {
+        if let Some(dashboard) = &host.dashboard {
+            dashboard.step(&format!("stopping: {step}…"));
+        }
+    };
+    step("finishing the operations running");
     shut_down(&host, moved.is_none().then_some(heartbeat), connections).await;
     // Every browser closes, however the host stopped.
+    step("closing browsers");
     host.browsers.close_all().await;
     // A name that moved is not ours any more: there is nothing of ours to
     // take offline.
     if moved.is_none() {
+        step("telling Plow this host is offline");
         go_offline(&host.plow, &endpoint.id().to_string()).await;
     }
+    step("closing connections");
     endpoint.close().await;
     log("stopped");
     moved.or(accept_failure).map_or(Ok(()), Err)
@@ -624,20 +650,19 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
     Ok(file)
 }
 
+/// What a host sharing no folders says in its log and on its dashboard.
+pub const SHARING_NONE: &str = "Sharing no folders — browser and Google only. \
+    Add some with `latch shares set ~/code`, then restart `latch serve`.";
+
 /// The folders `latch serve` was given, which its workers may use: each
 /// made absolute (a worker runs in another directory, the first folder) and
 /// checked now, so a typo is a plain error rather than refused files later.
 /// Any folder may be shared but `home` (the home folder) and the folders
 /// that hold its `Library`, where macOS keeps mail, messages and the like:
 /// share the projects in it instead. The sandbox hides the state folder and
-/// the never-readable places even inside a shared folder.
+/// the never-readable places even inside a shared folder. None at all is a
+/// host for the browser and Google only: its `exec` and `file` refuse.
 pub fn shared_folders(folders: &[PathBuf], home: Option<&Path>) -> Result<Vec<PathBuf>, Failure> {
-    if folders.is_empty() {
-        let message = "name the folders to share, e.g. `latch serve ~/code`, or save them \
-                       with `latch shares set ~/code`"
-            .to_string();
-        return Err(Failure::usage("no_folders", message));
-    }
     let mut areas = Vec::new();
     for folder in folders {
         let refuse = |why: &str| {
@@ -848,7 +873,7 @@ async fn serve_operation(
     let Ok(json) = wire::read_frame(&mut recv).await else {
         return;
     };
-    let Ok(request) = serde_json::from_slice::<Request>(&json) else {
+    let Ok(mut request) = serde_json::from_slice::<Request>(&json) else {
         let response = failed("bad_request", "the request frame is not valid".to_string());
         return answer(&mut send, &response).await;
     };
@@ -905,8 +930,29 @@ async fn serve_operation(
             let running =
                 crate::plugins::Connector::of_op(op).map(|connector| host.plugins.start(connector));
             let not_enabled = matches!(running, Some(Err(_)));
-            let gated = gate::gated(op, &request.args, &host.workers.areas[0])
-                .filter(|_| !denied_exec && !upgraded && !not_enabled);
+            // A messages call reads the address book for names only while
+            // Contacts is enabled too, held the same way.
+            let names = (op == "messages")
+                .then(|| crate::plugins::Connector::of_op("contacts"))
+                .flatten()
+                .and_then(|contacts| host.plugins.start(contacts).ok());
+            // A messages or contacts call is judged, and then run, as one
+            // effective request: the reader's reading of the caller's words
+            // and any cursor's filters. One the reader refuses is not judged.
+            let mut unplanned = None;
+            if (op == "messages" || op == "contacts") && !upgraded && !not_enabled && gate.is_ok() {
+                match crate::messages::host::plan(&host.workers, op, &request.args).await {
+                    Ok(planned) => request.args = planned,
+                    Err(done) => unplanned = Some(*done),
+                }
+            }
+            // With no shared folder, exec and file refuse: nothing to judge.
+            let unshared =
+                host.workers.areas.is_empty() && matches!(op, "exec" | "file_get" | "file_put");
+            let first_area = host.workers.areas.first().map(PathBuf::as_path);
+            let gated = gate::gated(op, &request.args, first_area).filter(|_| {
+                !denied_exec && !upgraded && !unshared && !not_enabled && unplanned.is_none()
+            });
             let unjudgeable = match (&gate, &gated) {
                 (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
@@ -944,6 +990,8 @@ async fn serve_operation(
                     audit_args: Value::Null,
                     outcome: failure.code.clone(),
                 }
+            } else if let Some(unplanned) = unplanned {
+                unplanned
             } else if let Some(refused) = refused {
                 refused
             } else {
@@ -962,11 +1010,19 @@ async fn serve_operation(
                                 .to_string(),
                         },
                         // As a refused judgment keeps it: no stdin.
-                        audit_args: gate::gated(op, &request.args, &host.workers.areas[0])
+                        audit_args: gate::gated(op, &request.args, first_area)
                             .map_or(Value::Null, |gated| gated.audit),
                         outcome: "exec_denied".to_string(),
                     },
-                    "exec" => exec::run(&host.workers, &request.args, cut_off).await,
+                    "exec" => {
+                        exec::run(&host.workers, &request.args, async {
+                            tokio::select! {
+                                reason = cut_off => reason,
+                                _ = recv.read_u8(), if local => "caller_gone",
+                            }
+                        })
+                        .await
+                    }
                     "vault" => {
                         crate::vault::host::run(
                             &host.vault,
@@ -984,6 +1040,16 @@ async fn serve_operation(
                             &host.plow,
                             &host.name,
                             &identity.kind,
+                            &request.args,
+                        )
+                        .await
+                    }
+                    "messages" | "contacts" => {
+                        crate::messages::host::run(
+                            &host.workers,
+                            &host.home,
+                            op != "messages" || names.is_some(),
+                            op,
                             &request.args,
                         )
                         .await
@@ -1044,7 +1110,8 @@ async fn serve_operation(
             let decision = decision(&done.response);
             log(&format!(
                 "{op}: {caller}: {decision}: {} {}",
-                done.outcome, done.audit_args
+                done.outcome,
+                crate::redact::shown(op, &done.audit_args)
             ));
             let dashboard = host.dashboard.as_ref().map(|dashboard| {
                 (
@@ -1078,6 +1145,7 @@ async fn serve_operation(
                 });
             }
             drop(running);
+            drop(names);
             response
         }
     };
@@ -1497,7 +1565,7 @@ mod tests {
             shared(&[home.join("Library/Developer")]).unwrap(),
             [home.join("Library/Developer")]
         );
-        assert_eq!(shared(&[]).unwrap_err().code, "no_folders");
+        assert_eq!(shared(&[]).unwrap(), Vec::<PathBuf>::new());
         for (folder, why) in [
             (home.join("missing"), "does not exist"),
             (home.join("notes.txt"), "not a folder"),

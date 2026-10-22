@@ -10,7 +10,6 @@ use super::{client, host, import};
 use crate::audit::{self, AuditLog};
 use crate::failure::Failure;
 use crate::state::StateDir;
-use crate::wire::Response;
 
 fn audited(
     state: &StateDir,
@@ -19,7 +18,7 @@ fn audited(
 ) -> Result<Value, Failure> {
     let config = state.require_login()?;
     // Refuse a broken or unwritable audit before changing the vault.
-    let mut log = AuditLog::open(state.path.join("audit.ndjson"))?;
+    let mut log = AuditLog::open(state.path.join(audit::FILE))?;
     let vault = host::Vault::new(state.path.clone());
     let mut args = Map::new();
     args.insert("command".into(), json!(command));
@@ -34,7 +33,7 @@ fn audited(
     );
     record.args = done.audit_args;
     let id = log.append(record)?;
-    result(crate::serve::with_audit_id(done.response, id))
+    crate::serve::with_audit_id(done.response, id).into_result()
 }
 
 pub(super) fn call(state: &StateDir, args: Value) -> Result<Value, Failure> {
@@ -75,22 +74,6 @@ pub(super) fn import(state: &StateDir, path: &Path) -> Result<Value, Failure> {
         result["picked"] = json!(picks);
         Ok(result)
     })
-}
-
-pub(super) fn result(response: Response) -> Result<Value, Failure> {
-    match response {
-        Response::Ok(value) => Ok(value),
-        Response::Error {
-            exit,
-            code,
-            message,
-            details,
-        } => {
-            let mut failure = Failure::new(exit, &code, message);
-            failure.details = details;
-            Err(failure)
-        }
-    }
 }
 
 pub(super) async fn link(state: &StateDir, args: Value) -> Result<Value, Failure> {

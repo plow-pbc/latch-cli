@@ -43,7 +43,18 @@ pub static PIN: LazyLock<Pin> =
 pub struct Account {
     pub account: String,
     pub access_token: Option<String>,
+    /// What the owner let Plow read on this account.
+    pub capabilities: Access,
 }
+
+/// The reads the owner granted on one account, from its Google scopes:
+/// an account connected for Gmail only cannot read its calendar.
+#[derive(Deserialize, Clone, Copy)]
+pub struct Access {
+    pub mail_read: bool,
+    pub calendar_read: bool,
+}
+
 /// Every connected account, as Plow's token answer lists them.
 #[derive(Deserialize)]
 #[serde(from = "Mint")]
@@ -70,6 +81,12 @@ impl From<Mint> for Tokens {
         accounts.extend(mint.degraded.into_iter().map(|entry| Account {
             account: entry.account,
             access_token: None,
+            // Plow sends no grants for an account it could not mint for.
+            // Its calls fail as needs_reauth, so it is never skipped.
+            capabilities: Access {
+                mail_read: true,
+                calendar_read: true,
+            },
         }));
         Self { accounts }
     }

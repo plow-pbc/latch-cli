@@ -153,6 +153,19 @@ async fn operation(
         let mut items = Vec::new();
         let mut outcomes = Vec::new();
         let mut answered = 0;
+        // An account the owner granted no read of this kind is left out,
+        // and said so, rather than failing on Google's refusal.
+        let (readable, unreadable): (Vec<&Account>, Vec<&Account>) = selected
+            .iter()
+            .partition(|account| can_read(account, &plan.command));
+        for account in unreadable {
+            outcomes.push(json!({
+                "account": account.account,
+                "status": "skipped",
+                "reason": "no_access",
+            }));
+        }
+        let selected = readable;
         let runs = at_most(
             FANOUT_AT_ONCE,
             selected
@@ -473,7 +486,7 @@ async fn conflict(
     let mut busy = Vec::new();
     let mut unchecked = Vec::new();
     let mut unreadable = Vec::new();
-    for account in &tokens.accounts {
+    for account in checked_accounts(tokens, target) {
         let listing = Request {
             gog_args: vec!["calendar".into(), "calendars".into(), "--all".into()],
             account: vec![],
@@ -537,6 +550,28 @@ async fn conflict(
         return Err(problem(Exit::Denied, "calendar_conflict", details));
     }
     Ok(unreadable)
+}
+
+/// Whether `account` lets a fan-out read of `command` run: Gmail reads
+/// need mail access, calendar reads calendar access.
+fn can_read(account: &Account, command: &str) -> bool {
+    if command.starts_with("gmail.") {
+        account.capabilities.mail_read
+    } else if command.starts_with("calendar.") {
+        account.capabilities.calendar_read
+    } else {
+        true
+    }
+}
+
+/// The accounts a booking's conflict check reads: every one with calendar
+/// access, and the one being booked on.
+fn checked_accounts<'a>(tokens: &'a Tokens, target: &Account) -> Vec<&'a Account> {
+    tokens
+        .accounts
+        .iter()
+        .filter(|account| account.capabilities.calendar_read || account.account == target.account)
+        .collect()
 }
 
 /// The calendars to probe on one account: `booking`, the calendar being
@@ -847,10 +882,59 @@ mod tests {
         assert_eq!(most.load(Ordering::SeqCst), 4);
         assert_eq!(most_later.load(Ordering::SeqCst), 4);
     }
+    /// A personal account with everything, and a work one connected for
+    /// Gmail only, as Plow's token answer lists them.
+    fn mail_only_work_account() -> Tokens {
+        serde_json::from_value(json!({
+            "accounts": [
+                { "account": "me@example.com", "access_token": "test-placeholder",
+                  "is_default": true,
+                  "capabilities": { "mail_read": true, "mail_write": true,
+                                    "calendar_read": true, "calendar_write": true } },
+                { "account": "work@example.com", "access_token": "test-placeholder",
+                  "is_default": false,
+                  "capabilities": { "mail_read": true, "mail_write": true,
+                                    "calendar_read": false, "calendar_write": false } },
+            ],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_fan_out_reads_only_accounts_granted_that_kind_of_read() {
+        let tokens = mail_only_work_account();
+        let [me, work] = [&tokens.accounts[0], &tokens.accounts[1]];
+        assert!(can_read(me, "calendar.events") && can_read(me, "gmail.search"));
+        assert!(!can_read(work, "calendar.events") && !can_read(work, "calendar.freebusy"));
+        assert!(can_read(work, "gmail.search"));
+    }
+
+    #[test]
+    fn a_booking_checks_conflicts_only_where_calendars_can_be_read() {
+        let tokens = mail_only_work_account();
+        let checked = |target: &Account| -> Vec<String> {
+            checked_accounts(&tokens, target)
+                .iter()
+                .map(|a| a.account.clone())
+                .collect()
+        };
+        // The Gmail-only account is not read, so it does not leave the
+        // check "unchecked" and refuse every booking.
+        assert_eq!(checked(&tokens.accounts[0]), ["me@example.com"]);
+        // Booking on it still reads it.
+        assert_eq!(
+            checked(&tokens.accounts[1]),
+            ["me@example.com", "work@example.com"]
+        );
+    }
+
     #[test]
     fn an_unavailable_connected_account_still_requires_account_selection() {
         let tokens: Tokens = serde_json::from_value(json!({
-            "accounts": [{ "account": "healthy@example.com", "access_token": "test-placeholder" }],
+            "accounts": [{ "account": "healthy@example.com", "access_token": "test-placeholder",
+                           "is_default": true,
+                           "capabilities": { "mail_read": true, "mail_write": true,
+                                             "calendar_read": true, "calendar_write": true } }],
             "degraded": [{ "account": "expired@example.com", "reason": "needs_reauth" }],
         }))
         .unwrap();

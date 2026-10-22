@@ -83,6 +83,11 @@ pub fn worker_error(stderr: &str) -> Option<WorkerError> {
 /// Nothing else from the host's environment is passed on.
 /// Homebrew's folders first, as in a macOS user's shell; they do not exist
 /// on Linux and cost nothing there.
+/// Why `exec` and `file` refuse on a host that shares no folders. Such an
+/// exec does not run in a scratch folder instead: the owner shared nothing
+/// to run programs against.
+const NO_FOLDERS: &str = "this host shares no folders; the owner can add some with \
+    `latch shares set ~/code` and restart `latch serve`";
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// A started worker: its stdout (for the first line and any file bytes)
@@ -104,7 +109,7 @@ impl WorkerSetup {
         path: &str,
     ) -> Result<(Running, serde_json::Value), WorkerError> {
         let Some(first_area) = self.areas.first() else {
-            return Err(error("no_areas", "this host shares no folders"));
+            return Err(error("no_folders", NO_FOLDERS));
         };
         let mut command = self.command(first_area)?;
         command.arg(action);
@@ -185,6 +190,48 @@ impl WorkerSetup {
 }
 
 impl WorkerSetup {
+    /// Starts the Messages reader `program` with `args`, confined to read
+    /// only `reads` (the Messages and address book folders), lifted out of
+    /// the folders no worker may read; with no network and nowhere to write.
+    pub fn messages(
+        &self,
+        program: &Path,
+        reads: &[PathBuf],
+        args: &[String],
+    ) -> Result<Child, WorkerError> {
+        // Compared where they really are: the hidden list holds a link's
+        // target as well as the link.
+        let real = |path: &PathBuf| path.canonicalize().unwrap_or_else(|_| path.clone());
+        let lifted: Vec<PathBuf> = reads.iter().map(real).collect();
+        let restricted = WorkerSetup {
+            areas: vec![],
+            reads: reads.to_vec(),
+            hidden: self
+                .hidden
+                .iter()
+                .filter(|hidden| !lifted.contains(&real(hidden)))
+                .cloned()
+                .collect(),
+            state_folders: StateFolders::none(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
+        };
+        let mut command = restricted.command(Path::new("/"))?;
+        command
+            .arg("messages")
+            .arg(program)
+            .arg("--")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true);
+        command
+            .spawn()
+            .map_err(|err| error("worker_failed", &err.to_string()))
+    }
+
     /// Runs a throwaway worker that only confines itself, with the policy a
     /// file worker gets (areas, the state directory denied, no network), and
     /// exits. `Ok` if the sandbox could be installed.
@@ -272,7 +319,7 @@ impl WorkerSetup {
         kill_after: u64,
     ) -> Result<Child, WorkerError> {
         let Some(first_area) = self.areas.first() else {
-            return Err(error("no_areas", "this host shares no folders"));
+            return Err(error("no_folders", NO_FOLDERS));
         };
         let mut command = self.command(first_area)?;
         command
@@ -334,7 +381,7 @@ impl WorkerSetup {
 /// with the host. bubblewrap (`--die-with-parent`) then kills the sandbox
 /// and the program in it.
 #[cfg(target_os = "linux")]
-fn die_with_host(command: &mut Command) {
+pub fn die_with_host(command: &mut Command) {
     let host = std::process::id() as libc::pid_t;
     // SAFETY: pre_exec is needed to set Linux's parent-death signal in the
     // child. The closure uses only scalar syscalls and allocation-free OS error
@@ -416,9 +463,12 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         tmpdir: args.tmpdir,
         kill_after: args.kill_after,
         program: match &args.action {
-            WorkerAction::Google { program } => Some(program.clone()),
+            WorkerAction::Google { program } | WorkerAction::Messages { program, .. } => {
+                Some(program.clone())
+            }
             _ => None,
         },
+        network: matches!(args.action, WorkerAction::Google { .. }),
         break_for_test: args.break_sandbox_for_test,
     };
     if policy.exec {
@@ -454,6 +504,11 @@ pub fn run(args: WorkerArgs) -> ExitCode {
                 serde_json::to_string(&access).expect("access serializes")
             );
             return ExitCode::SUCCESS;
+        }
+        WorkerAction::Messages { program, args } => {
+            // The reader replaces this process and keeps its sandbox.
+            let err = std::process::Command::new(program).args(args).exec();
+            return fail(io_code(&err), &format!("{}: {err}", program.display()));
         }
         WorkerAction::Read { path } => read(path),
         WorkerAction::Write { size, name, path } => write(path, name.as_deref(), *size),

@@ -7,6 +7,7 @@
 //! - the connection dropped after the request was sent: exit 5 (the
 //!   operation may or may not have happened; check before resending).
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::transport::{Connection, RecvStream, SendStream};
@@ -15,6 +16,7 @@ use iroh::endpoint::{
 };
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl};
 use serde_json::Value;
+use tokio::task::JoinHandle;
 
 use crate::failure::{Exit, Failure};
 use crate::plow::Peer;
@@ -43,6 +45,19 @@ pub struct Link {
 /// Dials this state folder over its private socket, or another host over iroh.
 /// Failure here means nothing was sent: exit 3.
 pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
+    // Plow already knows the host is offline: say so now, rather than spend
+    // the connect timeout finding out.
+    if !host.this_machine && host.online == Some(false) {
+        let seen = match &host.last_seen_at {
+            Some(at) => format!(", last seen {at}"),
+            None => String::new(),
+        };
+        let message = format!(
+            "host {:?} is offline{seen}; nothing was sent. Start `latch serve` there",
+            host.name
+        );
+        return Err(Failure::new(Exit::Unreachable, "host_offline", message));
+    }
     let key = state.load_key()?;
     if host.key == key.public().to_string() {
         let socket = crate::transport::connect_local(&state.path).await?;
@@ -115,14 +130,28 @@ fn speaks_another_version(err: &ConnectError) -> bool {
 /// lost, when the connection times out.
 const CLOSE_WITHIN: Duration = Duration::from_millis(100);
 
+/// Closes still going out, which the command's output does not wait for.
+static CLOSING: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+
 impl Link {
-    /// Closes the connection, giving the close up to `CLOSE_WITHIN` to
-    /// reach the host before this process exits.
-    pub async fn close(self) {
+    /// Closes the connection. The close goes out while the command prints
+    /// its answer; `closed` gives it up to `CLOSE_WITHIN` before exit.
+    pub fn close(self) {
         if let Some(endpoint) = self.endpoint {
             self.connection.close(VarInt::from_u32(0), b"done");
-            let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
+            let closing = tokio::spawn(async move {
+                let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
+            });
+            CLOSING.lock().expect("closing lock").push(closing);
         }
+    }
+}
+
+/// Waits for every close `Link::close` started, before this process exits.
+pub async fn closed() {
+    let closing = std::mem::take(&mut *CLOSING.lock().expect("closing lock"));
+    for close in closing {
+        let _ = close.await;
     }
 }
 
@@ -139,7 +168,7 @@ pub async fn call(
 ) -> Result<Value, Failure> {
     let link = connect(state, host).await?;
     let result = one_exchange(&link.connection, request, answer_within).await;
-    link.close().await;
+    link.close();
     result
 }
 
@@ -149,8 +178,13 @@ async fn one_exchange(
     answer_within: Duration,
 ) -> Result<Value, Failure> {
     let (mut send, mut recv) = start(connection, request).await?;
-    send.finish().map_err(|_| lost(connection, true))?;
-    answer(connection, &mut recv, answer_within).await
+    // A local caller keeps its write half alive so EOF means it disconnected.
+    if matches!(connection, Connection::Remote(_)) {
+        send.finish().map_err(|_| lost(connection, true))?;
+    }
+    let result = answer(connection, &mut recv, answer_within).await;
+    drop(send);
+    result
 }
 
 /// Opens a stream for one operation and sends its request. The send side
@@ -192,19 +226,7 @@ pub async fn answer(
         let message = "the host's answer was not a valid response".to_string();
         Failure::new(Exit::Unknown, "bad_response", message)
     })?;
-    match response {
-        Response::Ok(result) => Ok(result),
-        Response::Error {
-            exit,
-            code,
-            message,
-            details,
-        } => {
-            let mut failure = Failure::new(exit, &code, message);
-            failure.details = details;
-            Err(failure)
-        }
-    }
+    response.into_result()
 }
 
 /// Where to dial: the host's key and relay, both from the Plow directory.
@@ -249,6 +271,32 @@ mod tests {
     use std::time::Instant;
 
     #[tokio::test]
+    async fn a_host_plow_lists_offline_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let host = Peer {
+            key: "c".repeat(64),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: Some("https://relay.example/".into()),
+            last_seen_at: Some("2026-10-22T01:00:00Z".into()),
+            online: Some(false),
+            this_machine: false,
+        };
+        let started = Instant::now();
+        let failure = connect(&state, &host).await.err().unwrap();
+        assert_eq!(failure.code, "host_offline");
+        assert!(
+            failure.message.contains("2026-10-22T01:00:00Z"),
+            "{}",
+            failure.message
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
     async fn closing_is_quick_and_the_host_hears_it() {
         // A host and a client on this machine, with no relay.
         let bind = |alpns: Vec<Vec<u8>>| {
@@ -271,7 +319,8 @@ mod tests {
         };
 
         let started = Instant::now();
-        link.close().await;
+        link.close();
+        closed().await;
         let took = started.elapsed();
 
         // The host learns the client closed with "done", rather than timing

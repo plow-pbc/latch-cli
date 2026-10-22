@@ -353,6 +353,20 @@ pub fn host_provider(
 pub const MODEL_FILE: &str = "browser/model.json";
 /// The dev-only key file for jev, in the host's state directory.
 pub const JEV_KEY_FILE: &str = "jev.key";
+
+/// Sets `state` up as a host that asks jev itself, with the key file
+/// `$LATCH_TEST_JEV_KEY` names: a key file is used only on a host set up
+/// for it. For the tests that call the decision model for real.
+#[cfg(all(test, feature = "live-model"))]
+pub fn ask_jev_for_tests(state: &Path) {
+    let key = std::env::var_os("LATCH_TEST_JEV_KEY")
+        .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
+    let path = state.join(JEV_KEY_FILE);
+    std::fs::copy(key, &path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::create_dir_all(state.join("browser")).unwrap();
+    std::fs::write(state.join(MODEL_FILE), r#"{"provider": "jev"}"#).unwrap();
+}
 const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
 const JEV_MODEL: &str = "jev-1.13.0";
 

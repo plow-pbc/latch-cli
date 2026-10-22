@@ -44,8 +44,10 @@ latch differs.
 `--account` (a comma list allowed) and `--confirm-conflict` may come before
 `--` or anywhere among gog's arguments. Gmail search and calendar
 calendars/events/freebusy/conflicts merge the requested accounts, or all
-connected accounts, running at most four at once. Other operations need one
-account. Calendar event lists read `--max 100` and use the host's time zone
+connected accounts, running at most four at once; an account the owner
+connected without that kind of read (Plow's token answer gives each
+account's `capabilities`) is skipped with reason `no_access` instead of run.
+Other operations need one account. Calendar event lists read `--max 100` and use the host's time zone
 (`--timezone`) unless the agent chose; merged ones come back compact
 (`summary`, `startDayOfWeek`, `startLocal`, `endLocal`, `allDay`,
 `attendees`, `transparency`, `declined`, `id`, `account`) and are cut at the
@@ -56,8 +58,8 @@ create/update/move/delete supply `--send-updates all` unless a mode was
 supplied. Upstream gog's `respond` verb has no notification-mode flag.
 
 Timed creates (any create but `--all-day`) check busy time on every calendar
-the owner shows (`selected`) on every connected account, read-only ones
-included, plus the calendar being booked (probed even when the account shows
+the owner shows (`selected`) on every connected account with Calendar
+access (Plow's token answer says which), read-only ones included, plus the calendar being booked (probed even when the account shows
 none). An account whose calendar list answered with nothing shown has nothing
 to be busy on and counts as checked; one whose list failed does not. Busy or incomplete checks refuse with
 times and unchecked account names. After the owner agrees, repeat the command

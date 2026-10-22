@@ -14,7 +14,8 @@ owner trusts, over Plow's peer directory. The same binary plays every role:
 - a **host** runs `latch serve FOLDER…` and answers callers over iroh (QUIC,
   ALPN `plow/latch/1`), each operation in a sandboxed worker;
 - a **device** is one of the owner's own machines, logged in with an owner
-  login; it is the owner acting and is never judged;
+  login; it is the owner acting, judged on the owner's own request within
+  the host's rules;
 - an **agent** logs in with its own Plow credential and reaches hosts with
   `latch exec|file|browser|google … --host NAME`; every agent request passes
   the host's gatekeeper.
@@ -58,21 +59,28 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
   not enforced; only `--deny-exec` is a guarantee.
 - **Owner provenance is Plow's classification** of chat messages, not proven
   ingress.
-- **A device login placed where an agent runs bypasses the gatekeeper.** The
-  docs tell agents to use their own credential; the host cannot tell.
+- **A device login placed where an agent runs is judged as the owner**, on
+  its own requests within the host's rules, not against what the owner
+  asked the agent. The docs tell agents to use their own credential; the
+  host cannot tell.
 - **The state folder is protected only from latch's own workers.** Root, and
   any process of the host's OS user outside latch, can read or write it.
 - **On macOS the browser engine runs outside latch's Seatbelt** (Chrome's own
-  sandbox on), so a compromised engine could read the vault and its custody
-  key. The Keychain half of the custody key is on the roadmap.
+  sandbox on), so a compromised engine could read `vault.json`, and its
+  custody key where that is a file. A signed macOS latch keeps the custody
+  key in the Keychain under latch's keychain group, out of the engine's reach.
 - **File and `exec` workers read the whole filesystem**, as Codex CLI's do;
   only writes are confined to the shared areas.
-- **The peer's secret key is plaintext hex in a 0600 file.**
-- **Exec argv is stored in full in host logs and the audit** (plaintext until
-  audit encryption lands) so the owner can see exactly what agents ran;
-  credentials an agent puts on a command line can therefore appear there.
-  Display-time redaction is planned; argv hashing/redaction at write time is
-  declined.
+- **Outside a signed macOS latch, secrets are plaintext 0600 files**: the
+  peer's key, the Plow token, the vault's custody key and the audit keys. A
+  signed macOS latch keeps them in the Keychain.
+- **Exec argv is stored in full in the audit**, so the owner can see exactly
+  what agents ran (`latch audit show`); credentials an agent puts on a
+  command line are therefore in it. The audit is sealed record by record
+  (AES-256-GCM under the host's audit key), so on disk they are not
+  readable. Where commands are shown to people (`serve.log`, the serve
+  dashboard) credential-looking values are hidden, best effort, and they
+  say so; argv hashing or redaction at write time is declined.
 
 **Reviewer environment note:** the gate is `just test` in `latch/` (it
 installs the pinned Chrome for Testing into `.dev/cft-state` first) and needs

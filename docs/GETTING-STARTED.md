@@ -57,7 +57,7 @@ lists `browser` when your build has it.
 
 | What | Where |
 |---|---|
-| The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer says so; add it. |
+| The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer says so; add it. On macOS it links into `~/Applications/Plow Latch.app`. |
 | Your machine's state: its key, Plow login, config, audit log | `~/.latch` (made by the installer, filled in by `latch login`) |
 | gog, the Google CLI a host runs for `latch google` | `~/.latch/plugins/gog/<version>/` |
 | Builds with the browser only: Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64; about 200 MB) | `~/.latch/plugins/cft/<version>/` |
@@ -162,8 +162,13 @@ try it on one computer, give the caller its own state folder: `latch
 --state-dir ~/latch-laptop login …`, and the same `--state-dir` on every
 command after.
 
-Your own machines are you: their calls are never judged by the host's
-gatekeeper. Set `LATCH_HOST=my-mac` to leave out `--host`.
+Your own machines are you, and the host's gatekeeper judges their calls
+too: `exec`, `file`, `google`, `messages` and `contacts` run only as your own
+request within your rules on that host, so they need the decision model (see
+6). The browser's judged actions need it too: opening a new site, plans, vault
+fills, scripts, uploads and downloads (see [the browser gatekeeper](../latch/BROWSER.md#the-gatekeeper)).
+Your settings (`rules`, `vault`, `shares`) are never judged. Set
+`LATCH_HOST=my-mac` to leave out `--host`.
 
 **Run a program.** No shell is involved unless you run one. The JSON has
 `stdout`, `stderr` and `exit_code`:
@@ -192,7 +197,7 @@ export LATCH_HOST=my-mac
 latch browser open https://example.com > open.json
 export LATCH_BROWSER_SESSION=$(jq -r .session open.json)
 latch browser text                          # the page's text
-latch browser screenshot --output page.png  # a PNG on this machine
+latch browser screenshot page.png  # a PNG on this machine
 latch browser observe --all                 # elements with refs (e1, e2, …); without --all, on-screen ones only
 latch browser act click e1                  # needs the decision model (see 6)
 latch browser close
@@ -210,8 +215,9 @@ against your rules on that host.
 
 > **Never copy a device login (a machine's state folder, or its
 > `plow-token`) to an agent.** That login is you: the host sees one of your
-> own machines, and the gatekeeper never checks the call against anything you
-> asked. A copied laptop state runs `exec` on your host unjudged.
+> own machines, and the gatekeeper judges the call as your own request, never
+> against what you asked that agent. A copied laptop state runs `exec` on your
+> host as if you had asked for it.
 
 **An agent already running on Plow** has its credential and Plow's address
 in its environment (`$PLOW_AGENT_TOKEN`, the file `$PLOW_TOKEN_FILE` or
@@ -231,23 +237,31 @@ agent runs; latch does not copy the credential into the state folder.
 **A new agent you run yourself** needs a *self-hosted* agent credential
 first, made on one of your free lines.
 
-1. Create it. The token is shown once; this writes it to a 0600 file and
-   prints only the agent's uid and name:
+1. Create it. This needs your own Plow login in the shell, made the way
+   Plow's account page makes one: Plow texts you a code, and the code buys a
+   login token. (latch keeps its own login where only latch reads it: in the
+   Keychain on a signed Mac.) The agent's token is shown once; this writes it
+   to a 0600 file and prints only the agent's uid and name:
 
    ```sh
-   T=$(cat ~/.latch/plow-token)    # your own login, from step 2
+   printf 'Your phone, as +15551234567: '; read -r P
+   curl -s -X POST https://api.plow.co/v1/auth/otp/request \
+     -H 'content-type: application/json' -d "{\"phone\":\"$P\"}" >/dev/null
+   printf 'The code Plow texted you: '; read -r C
+   T=$(curl -s -X POST https://api.plow.co/v1/auth/otp/verify \
+     -H 'content-type: application/json' -d "{\"phone\":\"$P\",\"code\":\"$C\"}" | jq -r .token)
    curl -s https://api.plow.co/v1/lines -H "Authorization: Bearer $T" | jq -c '.data[] | {uid, available}'
    umask 077
    curl -s -X POST https://api.plow.co/v1/agents -H "Authorization: Bearer $T" \
      -H 'content-type: application/json' \
      -d '{"line_uid":"LINE_UID","provider":"self_hosted","name":"my-agent"}' \
      | tee >(jq -r .token > ~/my-agent.token) | jq -c '.agent | {uid, name}'
-   unset T
    ```
 
    Treat `~/my-agent.token` like a password: it carries the agent's full Plow
-   scopes. To revoke it: `curl -X DELETE https://api.plow.co/v1/agents/AGENT_UID
-   -H "Authorization: Bearer $(cat ~/.latch/plow-token)"`.
+   scopes. To revoke it, with `$T` from above (or a new one made the same
+   way): `curl -X DELETE https://api.plow.co/v1/agents/AGENT_UID -H
+   "Authorization: Bearer $T"`. `$T` is your own login: `unset T` when done.
 
 2. Log it in, in its own state folder, with the token file and Plow's public
    address:
@@ -290,11 +304,14 @@ retry once you agree. `owner_said_no` and `exec_denied` mean no.
 
 ## 6. Troubleshooting
 
+**`host_offline` (exit 3): "host … is offline".** Plow lists the host
+offline: it isn't serving. Start `latch serve` there. Nothing was sent.
+
 **`host_unreachable` (exit 3): "could not connect to host …; nothing was
 sent".**
-- The host isn't serving: `latch status` shows it `"online":false`. Start
-  `latch serve` there. A call to an offline host takes about 18 seconds to
-  fail.
+- Plow still lists the host online, but it doesn't answer: it may have
+  stopped without saying so. Plow lists it offline once its heartbeat runs
+  out; until then a call takes about 18 seconds to fail.
 - Several calls at once from the same machine (or the same agent) can fail
   this way even though the host is up: in a test, 3 of 8 parallel `exec`s
   failed. Nothing was sent, so it's safe to retry; run calls from one
@@ -302,9 +319,11 @@ sent".**
 - `outcome_unknown` (exit 5) is different: the connection dropped *after* the
   request was sent. Check whether it happened before you resend.
 
-**`gatekeeper_unavailable` (exit 3, an agent's call).** The host's
-gatekeeper couldn't reach its decision model, so the call was not run.
-Retrying runs it from the start.
+**`gatekeeper_unavailable` (exit 3).** The host's gatekeeper couldn't reach
+Plow or its decision model, whether an agent or one of your own machines
+made the call. The action needing that judgment was not run. Retrying starts
+the call again; for a browser plan, inspect its `steps` and `trail` first,
+since earlier actions may already have happened.
 
 **`model_unavailable` (exit 1, browser).** A browser step needed the decision
 model (a click's risk, a goal in words, a sentence check) and couldn't get it,
@@ -325,9 +344,11 @@ For either one, the message says why the model couldn't answer:
   credits.
 - "Plow's decision route answered HTTP 503; retry later": retry later.
 
-Your own machines need the model only for browser clicks, Enter and goals
-(`act click`, `do`); `exec`, `file`, `browser open`, `text` and
-`screenshot` work without it.
+Your own machines need the model for every judged call (`exec`, `file`,
+`google`, `messages`, `contacts`) and the browser's judged actions, including
+`browser open` and `do`. Browser goals and sentence checks also need the
+model. Page reads (`text`, `screenshot`) in an existing session and your
+settings (`rules`, `vault`, `shares`) work without it.
 
 **`state_format` (exit 1): "… is in state format 2, set up by latch …; this
 latch … reads only format 1".** That state folder was set up by a newer latch

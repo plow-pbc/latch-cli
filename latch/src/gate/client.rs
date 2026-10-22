@@ -18,7 +18,7 @@ use crate::failure::{Exit, Failure};
 use crate::hosts;
 use crate::plow::Plow;
 use crate::state::StateDir;
-use crate::wire::{Request, Response};
+use crate::wire::Request;
 
 pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
     let target = Target {
@@ -84,7 +84,7 @@ impl Target<'_> {
         let config = self.state.require_login()?;
         let plow = Plow::from_state(self.state)?;
         // A log that can't be written to stops the command before it changes anything.
-        let mut log = AuditLog::open(self.state.path.join("audit.ndjson"))?;
+        let mut log = AuditLog::open(self.state.path.join(crate::audit::FILE))?;
         let done = owner::run(
             &self.state.path,
             &plow,
@@ -97,19 +97,7 @@ impl Target<'_> {
         let mut record = audit::record(&config.peer.key, None, "rules", decision, &done.outcome);
         record.args = done.audit_args;
         let audit_id = log.append(record)?;
-        match crate::serve::with_audit_id(done.response, audit_id) {
-            Response::Ok(value) => Ok(value),
-            Response::Error {
-                exit,
-                code,
-                message,
-                details,
-            } => {
-                let mut failure = Failure::new(exit, &code, message);
-                failure.details = details;
-                Err(failure)
-            }
-        }
+        crate::serve::with_audit_id(done.response, audit_id).into_result()
     }
 }
 

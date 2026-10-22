@@ -116,11 +116,9 @@ fn stores(connector: Connector, folder: &Path) -> Result<Vec<PathBuf>, (PathBuf,
             let mut found = vec![folder.join(ADDRESS_BOOK)];
             let sources = folder.join("Sources");
             if list(folder)?.contains(&sources) {
-                found.extend(
-                    list(&sources)?
-                        .iter()
-                        .map(|source| source.join(ADDRESS_BOOK)),
-                );
+                // Only its folders hold stores, as the reader looks.
+                let folders = list(&sources)?.into_iter().filter(|source| source.is_dir());
+                found.extend(folders.map(|source| source.join(ADDRESS_BOOK)));
             }
             found
         }

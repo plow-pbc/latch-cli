@@ -126,24 +126,7 @@ pub struct Plan {
 impl Plan {
     /// Reads cannot change Google state; a timed-out write may already have.
     pub fn read_only(&self) -> bool {
-        self.help
-            || matches!(
-                self.command.as_str(),
-                "gmail.search"
-                    | "gmail.messages.search"
-                    | "gmail.get"
-                    | "gmail.thread.get"
-                    | "gmail.labels.list"
-                    | "gmail.drafts.list"
-                    | "gmail.drafts.get"
-                    | "gmail.attachment"
-                    | "calendar.calendars"
-                    | "calendar.events"
-                    | "calendar.event"
-                    | "calendar.search"
-                    | "calendar.freebusy"
-                    | "calendar.conflicts"
-            )
+        self.help || reads(&self.command)
     }
 
     /// The value of flag `name`. If the flag was repeated, the last one wins,
@@ -234,21 +217,71 @@ impl Plan {
     }
 }
 
-/// Every command the grammar allows, as typed after `--` (`gmail search`).
-pub fn allowed_commands() -> Vec<String> {
-    fn walk(node: &Node, prefix: &[&str], out: &mut Vec<String>) {
+/// One command the grammar allows, as `latch help` describes it.
+pub struct Allowed {
+    /// As typed after `--`: `["gmail", "search"]`.
+    pub words: Vec<&'static str>,
+    /// The dotted name, e.g. `gmail.search`.
+    pub command: &'static str,
+    pub aliases: &'static [String],
+    /// Its flags, by canonical name, and whether each takes a value.
+    pub flags: Vec<(&'static str, bool)>,
+    pub read_only: bool,
+}
+
+/// Every command the grammar allows, in the grammar's order.
+pub fn allowed() -> Vec<Allowed> {
+    fn walk(node: &'static Node, prefix: &[&'static str], out: &mut Vec<Allowed>) {
         for child in &node.children {
-            let mut path = prefix.to_vec();
-            path.push(&child.name);
-            if child.command.is_some() {
-                out.push(path.join(" "));
+            let mut words = prefix.to_vec();
+            words.push(&child.name);
+            if let Some(command) = &child.command {
+                out.push(Allowed {
+                    words: words.clone(),
+                    command,
+                    aliases: &child.aliases,
+                    flags: (child.flags.iter())
+                        .filter(|flag| flag.name != "help")
+                        .map(|flag| (flag.name.as_str(), flag.value))
+                        .collect(),
+                    read_only: reads(command),
+                });
             }
-            walk(child, &path, out);
+            walk(child, &words, out);
         }
     }
     let mut out = Vec::new();
     walk(&GRAMMAR, &[], &mut out);
     out
+}
+
+/// Every command the grammar allows, as typed after `--` (`gmail search`).
+pub fn allowed_commands() -> Vec<String> {
+    allowed()
+        .iter()
+        .map(|allowed| allowed.words.join(" "))
+        .collect()
+}
+
+/// Whether `command` (dotted) only reads: it cannot change Google state.
+fn reads(command: &str) -> bool {
+    matches!(
+        command,
+        "gmail.search"
+            | "gmail.messages.search"
+            | "gmail.get"
+            | "gmail.thread.get"
+            | "gmail.labels.list"
+            | "gmail.drafts.list"
+            | "gmail.drafts.get"
+            | "gmail.attachment"
+            | "calendar.calendars"
+            | "calendar.events"
+            | "calendar.event"
+            | "calendar.search"
+            | "calendar.freebusy"
+            | "calendar.conflicts"
+    )
 }
 
 /// The agent guide for `latch google`, built into latch.
@@ -260,7 +293,7 @@ pub fn allowed_help() -> &'static str {
     // clap wants a `&'static str`; the text is built once per run.
     static HELP: LazyLock<String> = LazyLock::new(|| {
         format!(
-            "Allowed gog commands (after `--`; `-- <command> --help` shows gog's own help for one):\n  {}\n\n{GUIDE}",
+            "Allowed gog commands (after `--`; `-- <command> --help` shows gog's own help for one, `latch help google <command>` latch's):\n  {}\n\n{GUIDE}",
             allowed_commands().join("\n  ")
         )
     });
@@ -578,17 +611,10 @@ fn denied() -> Failure {
 /// Every command in the grammar, as dotted names. gog is started with
 /// exactly these enabled, as a second fence behind `parse`.
 pub fn commands() -> Vec<String> {
-    fn visit(node: &Node, commands: &mut Vec<String>) {
-        if let Some(command) = &node.command {
-            commands.push(command.clone());
-        }
-        for child in &node.children {
-            visit(child, commands);
-        }
-    }
-    let mut commands = Vec::new();
-    visit(&GRAMMAR, &mut commands);
-    commands
+    allowed()
+        .into_iter()
+        .map(|allowed| allowed.command.to_owned())
+        .collect()
 }
 
 #[cfg(test)]
@@ -597,6 +623,29 @@ mod tests {
     fn plan(args: &[&str]) -> Result<Plan, Failure> {
         parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
     }
+    #[test]
+    fn a_forward_is_judged_once_like_a_send() {
+        for args in [
+            vec!["gmail", "send", "--to", "a@example.com", "--body", "hi"],
+            vec![
+                "gmail",
+                "forward",
+                "m1",
+                "--to",
+                "a@example.com",
+                "--note",
+                "fyi",
+            ],
+            vec!["gmail", "drafts", "forward", "m1", "--to", "a@example.com"],
+        ] {
+            let parsed = plan(&args).unwrap();
+            assert!(!parsed.read_only() && !parsed.fanout(), "{args:?}");
+            let request = serde_json::json!({"gog_args": args, "account": []});
+            let gated = crate::gate::gated("google", &request, Some(Path::new("/"))).unwrap();
+            assert!(gated.once, "{args:?}");
+        }
+    }
+
     #[test]
     fn bulk_and_tracking_flags_cannot_expand_a_named_message_action() {
         for args in [

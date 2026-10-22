@@ -9,6 +9,12 @@
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
 #
+# On macOS a release's latch is inside Plow Latch.app (the `latch` beside
+# this script leads into it). Then the whole app goes to ~/Applications,
+# replacing an older one at the same path, so it keeps its identity and its
+# Full Disk Access, and ~/.local/bin/latch becomes a link to the latch
+# inside it.
+#
 # It also installs gog, the Google CLI a host runs for `latch google`: the
 # release pinned in src/google/pin.json next to this script (the pin latch
 # itself checks gog against), into the state directory's plugins folder,
@@ -16,6 +22,10 @@
 # latch's default, unless --state-dir names another (a dev install's). Each
 # version gets its own folder, so a new pin never overwrites the old gog.
 # That download needs curl and tar.
+#
+# On macOS it installs the Messages reader that came with this latch, if it
+# did, into <state-dir>/plugins/messages/<latch version>/latch-messages; latch
+# runs only the reader it was built with.
 #
 # On macOS and on Linux arm64 (the Pi) it also installs Chrome for Testing,
 # the browser a host runs for `latch browser`: the release pinned in
@@ -91,7 +101,59 @@ done
 # 1. The binary. Copy next to the target, then rename, so a running latch is
 # never overwritten in place. cksum, unlike cmp, is on every system.
 dest="$bin_dir/latch"
-if [ -f "$dest" ] && [ "$(cksum < "$src")" = "$(cksum < "$dest")" ]; then
+# On macOS, the app bundle the binary (or the link to it) sits in, if any.
+app=""
+if [ "$(uname -s)" = Darwin ]; then
+  inner=$src
+  if [ -L "$src" ]; then
+    case "$(readlink "$src")" in
+      /*) inner=$(readlink "$src") ;;
+      *) inner="$(dirname "$src")/$(readlink "$src")" ;;
+    esac
+  fi
+  case "$inner" in
+    *.app/Contents/MacOS/*) app=${inner%/Contents/MacOS/*} ;;
+  esac
+fi
+if [ -n "$app" ]; then
+  installed="$HOME/Applications/$(basename "$app")"
+  if [ -d "$installed" ] && [ "$(cksum < "$inner")" = "$(cksum < "$installed/Contents/MacOS/$(basename "$inner")")" ]; then
+    say "$(basename "$app") already installed at $installed"
+  else
+    # Copied beside the old one first. The old one then moves aside, not
+    # away, until the new one has its path: if that fails, the old one goes
+    # back, still working, and the link into it with it. A run cut short
+    # between the two leaves the old one aside, which the next run restores.
+    mkdir -p "$HOME/Applications"
+    if [ ! -d "$installed" ] && [ -d "$installed.old" ]; then
+      mv "$installed.old" "$installed"
+    fi
+    rm -rf "$installed.new" "$installed.old"
+    cp -R "$app" "$installed.new"
+    if [ -d "$installed" ] && ! mv "$installed" "$installed.old"; then
+      rm -rf "$installed.new"
+      die "could not move $installed aside to update it; it is unchanged"
+    fi
+    if ! mv "$installed.new" "$installed"; then
+      if [ -d "$installed.old" ]; then
+        mv "$installed.old" "$installed"
+      fi
+      rm -rf "$installed.new"
+      die "could not put the new $(basename "$app") in place; the old one is still at $installed"
+    fi
+    rm -rf "$installed.old"
+    say "installed $(basename "$app") to $installed"
+  fi
+  link="$installed/Contents/MacOS/$(basename "$inner")"
+  if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$link" ]; then
+    say "latch already linked at $dest"
+  else
+    mkdir -p "$bin_dir"
+    ln -sf "$link" "$dest.tmp"
+    mv -f "$dest.tmp" "$dest"
+    say "linked $dest to $link"
+  fi
+elif [ -f "$dest" ] && [ ! -L "$dest" ] && [ "$(cksum < "$src")" = "$(cksum < "$dest")" ]; then
   say "latch already installed at $dest"
 else
   mkdir -p "$bin_dir"
@@ -155,7 +217,21 @@ else
   say "installed gog $gog_version to $gog (sha256 $(sha256 "$gog"))"
 fi
 
-# 3. Linux: work out what needs root, then run it all under one sudo.
+# 3. macOS: the Messages reader packaged beside this latch, if there is one,
+# in a folder named for this latch's version (the one that runs it).
+reader="$(dirname "$src")/latch-messages"
+if [ "$(uname -s)" = Darwin ] && [ -f "$reader" ]; then
+  latch_version=$("$dest" --version | awk '{print $2}')
+  [ -n "$latch_version" ] || die "could not read $dest's version"
+  reader_dir="$state_dir/plugins/messages/$latch_version"
+  mkdir -p "$reader_dir"
+  cp "$reader" "$reader_dir/latch-messages.tmp"
+  chmod 755 "$reader_dir/latch-messages.tmp"
+  mv "$reader_dir/latch-messages.tmp" "$reader_dir/latch-messages"
+  say "installed the Messages reader to $reader_dir/latch-messages"
+fi
+
+# 4. Linux: work out what needs root, then run it all under one sudo.
 # On a Linux with a Chrome for Testing build (arm64, the Pi), the browser
 # also needs Xvfb, a screenless host's display, and unzip to unpack it.
 cft_linux=""
@@ -229,7 +305,7 @@ if [ "$(uname -s)" = Linux ]; then
   fi
 fi
 
-# 4. The pinned Chrome for Testing, on macOS and on Linux arm64. The pin's
+# 5. The pinned Chrome for Testing, on macOS and on Linux arm64. The pin's
 # JSON has a fixed shape: each build is one block of "key": "value" lines,
 # which sed reads. install.sh checks the zip's sha256; latch hashes the
 # whole unpacked build before every launch. The manifest goes in last, so a
@@ -282,7 +358,7 @@ else
   fi
 fi
 
-# 5. macOS, with --with-camoufox: the pinned Camoufox, Node and the helper's
+# 6. macOS, with --with-camoufox: the pinned Camoufox, Node and the helper's
 # runtime, each checked as it arrives (the archives' sha256, `npm ci`'s
 # lockfile integrity); latch hashes each unpacked part before every launch.
 # No package's install script runs. The manifest goes in last.

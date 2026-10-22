@@ -9,9 +9,12 @@
 //! programs need, and the paths the owner opted in to with `--allow-read`
 //! (read-only); Google workers read only their call's folder and the system
 //! locations programs need. Credentials (`never_readable`) stay out of reach
-//! of every worker, even inside an area or an opt-in. A file worker gets no
+//! of every worker, even inside an area or an opt-in, but one: the Messages
+//! worker (macOS) reads the Messages and address book folders, read-only,
+//! and nothing else of the owner's. File and Messages workers get no
 //! network; `exec` and Google workers may reach out to the network. Google
-//! can execute only its pinned binary; neither can send Apple Events. The
+//! and Messages workers can execute only their pinned binary; none can send
+//! Apple Events. The
 //! kernel resolves every path (symlinks included) before checking it, so a
 //! link into a hidden path is refused by Seatbelt and reports `not_found`
 //! in Linux's filesystem view.
@@ -52,8 +55,11 @@ pub struct Policy {
     /// started, even if the host that should have stopped it by then cannot
     /// (it hangs, or is stopped).
     pub kill_after: Option<u64>,
-    /// A Google worker may run only this pinned program.
+    /// A Google or Messages worker may run only this pinned program.
     pub program: Option<PathBuf>,
+    /// A program worker may use the outbound network: Google's may, the
+    /// Messages reader's (macOS only) may not.
+    pub network: bool,
     /// Test only: make the OS refuse the sandbox, to show that a sandbox
     /// that cannot be applied fails the operation.
     pub break_for_test: bool,
@@ -151,6 +157,13 @@ fn reap(pid: libc::pid_t) -> std::io::Result<std::process::ExitStatus> {
             return Err(err);
         }
     }
+}
+
+/// Blocks until the host `watch` watches has exited: `true`. `false` if
+/// the watch broke, and there is nothing more to wait for.
+#[cfg(target_os = "macos")]
+pub fn wait_for_host(watch: HostWatch) -> bool {
+    platform::wait_for_host(watch)
 }
 
 /// Ends this process as `status` says another ended: with the same exit
@@ -287,6 +300,24 @@ mod platform {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    pub fn wait_for_host(watch: HostWatch) -> bool {
+        let HostWatch(queue) = watch;
+        loop {
+            // SAFETY: zeroed is a valid `kevent` to receive into.
+            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            // SAFETY: no changes in, room for one event out, no time limit.
+            let got = unsafe {
+                libc::kevent(queue, std::ptr::null(), 0, &mut event, 1, std::ptr::null())
+            };
+            if got == 1 {
+                return true;
+            }
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return false;
+            }
+        }
     }
 
     pub fn supervise(watch: HostWatch, kill_after: Option<u64>) -> Result<(), String> {
@@ -432,15 +463,22 @@ mod platform {
                 quoted(program)?
             ));
             rules.push("(allow process-fork)".to_string());
-            // Apple's shared network baseline includes the system resolver
-            // and notification shared memory used by getaddrinfo.
-            rules.push("(import \"system.sb\") (system-network) (allow ipc-posix-shm (ipc-posix-name \"apple.shm.notification_center\"))".to_string());
             rules.push("(allow file-write-data (literal \"/dev/null\"))".to_string());
-            rules.push("(allow network-outbound)".to_string());
             rules.push("(deny appleevent-send)".to_string());
             rules.push("(allow file-read-metadata)".to_string());
-            rules.push("(allow file-read* (subpath \"/private/etc\") (literal \"/private/var/run/resolv.conf\") (subpath \"/Library/Keychains\"))".to_string());
-            rules.push("(allow mach-lookup (global-name \"com.apple.SystemConfiguration.configd\") (global-name \"com.apple.SystemConfiguration.DNSConfiguration\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.trustd\"))".to_string());
+            rules.push("(allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/timezone\"))".to_string());
+            if policy.network {
+                // Apple's shared network baseline includes the system resolver
+                // and notification shared memory used by getaddrinfo.
+                rules.push("(import \"system.sb\") (system-network) (allow ipc-posix-shm (ipc-posix-name \"apple.shm.notification_center\"))".to_string());
+                rules.push("(allow network-outbound)".to_string());
+                rules.push("(allow file-read* (literal \"/private/var/run/resolv.conf\") (subpath \"/Library/Keychains\"))".to_string());
+                rules.push("(allow mach-lookup (global-name \"com.apple.SystemConfiguration.configd\") (global-name \"com.apple.SystemConfiguration.DNSConfiguration\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.trustd\"))".to_string());
+            }
+            // The Messages reader's databases, read-only.
+            for read in &policy.reads {
+                rules.push(format!("(allow file-read* (subpath {}))", quoted(read)?));
+            }
         }
         // Looking a path up inside an area (as `pwd` does) needs the details
         // of each folder above it: `read_rules` grants them to a file
@@ -557,7 +595,8 @@ mod platform {
     const CODEX_NETWORK: &str = include_str!("sandbox/codex/seatbelt_network_policy.sbpl");
 
     /// For every kind, last: the state directory and the hidden paths can
-    /// be neither read nor written, and the running latch never written.
+    /// be neither read nor written, their sockets never connected to, and
+    /// the running latch never written.
     /// Seatbelt matches paths, so renaming a folder above any of them would
     /// move it out of reach of these rules; directories above them inside a
     /// writable folder, and the writable folders themselves, cannot be
@@ -579,6 +618,11 @@ mod platform {
                 "(deny file-read* file-write* process-exec (subpath {}))",
                 quoted(&state)?
             ),
+            // Socket connects are network operations, not file reads or writes.
+            format!(
+                "(deny network-outbound (remote unix-socket (subpath {})))",
+                quoted(&state)?
+            ),
             format!("(deny file-write* (literal {}))", quoted(&latch)?),
         ];
         let mut hidden = Vec::new();
@@ -586,6 +630,10 @@ mod platform {
             let path = real(path)?;
             rules.push(format!(
                 "(deny file-read* file-write* (subpath {}))",
+                quoted(&path)?
+            ));
+            rules.push(format!(
+                "(deny network-outbound (remote unix-socket (subpath {})))",
                 quoted(&path)?
             ));
             hidden.push(path);
@@ -686,6 +734,7 @@ mod google_tests {
                 program: Some(PathBuf::from(
                     std::env::var_os("LATCH_PRIVATE_PROGRAM").unwrap(),
                 )),
+                network: true,
                 break_for_test: false,
             });
             if inside_state {
@@ -764,6 +813,7 @@ mod google_tests {
                 tmpdir: (mode == "exec").then(|| root.join("private/call")),
                 kill_after: None,
                 program: (mode == "google").then(|| gog.clone()),
+                network: mode == "google",
                 break_for_test: false,
             })
             .unwrap();

@@ -432,11 +432,12 @@ fn serve_with_denied(rules: Option<(i64, Vec<seccompiler::SeccompRule>)>) -> Out
     use std::os::unix::process::CommandExt;
 
     let dir = setup();
+    let state = tempfile::tempdir_in(dir.path()).unwrap();
     let area = dir.path().join("area").canonicalize().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
         .args(["serve", "--no-dashboard", "--state-dir"])
-        .arg(dir.path().join("state"))
+        .arg(state.path())
         .arg(area)
         .env_clear();
     if let Some((syscall, conditions)) = rules {
@@ -897,4 +898,85 @@ fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
     let script = r#"f=$(mktemp) && echo made > "$f" && cat "$f""#;
     let output = exec_script(dir.path(), &["--read", "/tmp"], script);
     assert_eq!(output.stdout, b"made\n", "{output:?}");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
+    use std::os::unix::net::UnixListener;
+
+    // macOS Unix socket addresses must fit even when the checkout path is long.
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    for folder in ["area", "state", "tmp"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    for (state, alias) in [
+        ("state", "area/state-link"),
+        ("area/peer", "area/peer-link"),
+    ] {
+        fs::create_dir_all(root.join(state).join("nested")).unwrap();
+        std::os::unix::fs::symlink(root.join(state), root.join(alias)).unwrap();
+    }
+    let program = root.join("area/connect");
+    let compiled = Command::new("rustc")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unix-connect.rs"))
+        .arg("-o")
+        .arg(&program)
+        .output()
+        .unwrap();
+    assert!(compiled.status.success(), "{compiled:?}");
+    let allowed = root.join("area/allowed.sock");
+    let _allowed = UnixListener::bind(&allowed).unwrap();
+    let run = |socket: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args([
+                "worker", "--area", "..", "--denied", "../state", "--hidden", "peer", "--tmpdir",
+                "../tmp", "exec", "--",
+            ])
+            .arg(&program)
+            .arg(socket)
+            .current_dir(root.join("area"))
+            .env_clear()
+            .output()
+            .unwrap()
+    };
+    // The probe works, and outbound Unix sockets outside state stay usable.
+    let outside = run(&allowed);
+    assert!(outside.status.success(), "{outside:?}");
+    for (state, alias) in [
+        ("state", "area/state-link"),
+        ("area/peer", "area/peer-link"),
+    ] {
+        for relative in ["serve.sock", "nested/other.sock"] {
+            let socket = root.join(state).join(relative);
+            let listener = UnixListener::bind(&socket).unwrap();
+            assert!(
+                Command::new(&program)
+                    .arg(&socket)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            for path in [socket, root.join(alias).join(relative)] {
+                let denied = run(&path);
+                assert!(
+                    !denied.status.success(),
+                    "worker connected to {}: {denied:?}",
+                    path.display()
+                );
+                assert!(
+                    String::from_utf8_lossy(&denied.stderr).contains(
+                        if cfg!(target_os = "macos") {
+                            "PermissionDenied"
+                        } else {
+                            "NotFound"
+                        }
+                    ),
+                    "{denied:?}"
+                );
+            }
+            drop(listener);
+        }
+    }
 }
