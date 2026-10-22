@@ -158,17 +158,48 @@ jobs:
         with:
           path: .dev/cft-state/plugins/cft
           key: cft-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
-      # Until latch installs its own AppArmor profile for the browser's
-      # bwrap: Ubuntu's bwrap profile, which install-binary.sh loads where
-      # unprivileged user namespaces are restricted, denies Chrome's sandbox
-      # the capability it needs, so these jobs lift the restriction first and
-      # the installer loads no profile.
+      # Chrome with its own sandbox, as on most Linux hosts: with Ubuntu's
+      # user namespace restriction on, install-binary.sh loads Ubuntu's bwrap
+      # profile and latch runs Chrome without it (browser-restricted below),
+      # so these jobs lift the restriction first and no profile is loaded.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # Into target/, where the tests were built, so the paths compiled into
       # them hold.
       - run: cargo nextest list --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite > /dev/null
       - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome target/debug/latch
       - run: cargo nextest run --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --partition hash:${{ matrix.part }}/4 --test-threads 6 --no-fail-fast
+
+  # The runner as Ubuntu ships it: the restriction on, Ubuntu's bwrap
+  # profile loaded by the installer, so latch runs Chrome with page
+  # isolation off; its Chrome tests and status --local say so.
+  browser-restricted:
+    needs: browser-build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: latch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - run: rustup toolchain install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/download-artifact@v4
+        with:
+          name: browser-tests
+      - uses: actions/cache@v4
+        with:
+          path: .dev/cft-state/plugins/cft
+          key: cft-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/cft.json') }}
+      - run: cargo nextest list --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite > /dev/null
+      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome target/debug/latch
+      - run: |
+          test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+          target/debug/latch --state-dir "$RUNNER_TEMP/status-state" status --local | tee /dev/stderr | grep -q '"page_isolation":"page isolation off on this host"'
+      - run: cargo nextest run --archive-file ../browser-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --test-threads 6 --no-fail-fast -E 'test(/^browser::tests::cft::/)'
 
   linux-static:
     needs: changes
@@ -208,7 +239,7 @@ jobs:
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
-    needs: [changes, mac, linux, browser-build, browser, linux-static]
+    needs: [changes, mac, linux, browser-build, browser, browser-restricted, linux-static]
     runs-on: ubuntu-24.04
     env:
       RESULTS: ${{ toJSON(needs) }}
