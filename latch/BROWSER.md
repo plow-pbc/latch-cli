@@ -207,8 +207,9 @@ the error. A target that is hidden, disabled, covered or still moving is
 refused with `covered_target`. Input is the engine's own mouse and keys at a
 person's pace (`isTrusted` is true); `select` focuses the list and types
 the option's label, as a person picks one without opening it. `type`
-never types into a password or secret field (`secret_field`, exit 4).
-While a dialog is open, every call but `dialog` is refused with
+types what the agent gives it into any text field, a password or a
+one-time code field included; only a value from the vault (`fill`) stays
+out of the agent's sight. While a dialog is open, every call but `dialog` is refused with
 `dialog_open`. A key goes only to an element that takes the focus: a hidden
 or disabled one is refused (`not_focused`).
 
