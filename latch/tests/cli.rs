@@ -4406,14 +4406,23 @@ fn at_its_own_terminal(
     (child, main, shown)
 }
 
-/// Reads what the terminal shows until it has shown `text`.
+/// Reads what the terminal shows until it has shown `text`, within a
+/// minute in all: a screen that keeps redrawing without it fails rather
+/// than waits forever.
 #[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut all = String::new();
     while !all.contains(text) {
-        match shown.recv_timeout(std::time::Duration::from_secs(60)) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match shown.recv_timeout(left) {
             Ok(more) => all.push_str(&more),
-            Err(_) => panic!("never showed {text:?}: {all}"),
+            Err(_) => {
+                // The end of it: a redrawing screen shows the same lines over.
+                let last: String = all.chars().rev().take(4000).collect();
+                let last: String = last.chars().rev().collect();
+                panic!("never showed {text:?} within a minute; last shown: {last}")
+            }
         }
     }
     all
