@@ -143,10 +143,11 @@ fn the_sandbox_reads_the_area_and_opt_ins_and_writes_only_the_area() {
     assert!(opted_in.status.success(), "{opted_in:?}");
     assert_eq!(opted_in.stdout, b"{\"size\":5}\nother");
 
-    // The state folder, directly or through a link, stays hidden.
-    for path in ["link", "../state/secret"] {
+    // An unresolved link is refused; direct state access stays hidden.
+    for (path, expected) in [("link", "io_error"), ("../state/secret", hidden_code())] {
         let refused = worker(dir.path(), &[], &["read"], path, b"");
-        assert_eq!(code(&refused), hidden_code(), "reading {path}");
+        assert_eq!(code(&refused), expected, "reading {path}");
+        assert!(refused.stdout.is_empty(), "{refused:?}");
     }
     // Writes outside the area are refused, opted in or not (Linux: a
     // read-only view).
@@ -168,13 +169,19 @@ fn missing_files_and_hidden_paths_report_the_operating_system_error() {
     let root = dir.path().canonicalize().unwrap();
     std::os::unix::fs::symlink(root.join("outside/missing"), root.join("area/dangling")).unwrap();
     std::os::unix::fs::symlink(root.join("area/missing"), root.join("area/inside-link")).unwrap();
-    for path in ["missing", "inside-link", "missing-dir/file"] {
+    // A symlink still in the worker's resolved path is refused before its
+    // target is looked up, whether that target is hidden or missing.
+    for (path, expected) in [
+        ("missing", "not_found"),
+        ("inside-link", "io_error"),
+        ("missing-dir/file", "not_found"),
+        ("../outside/missing", "not_found"),
+        ("dangling", "io_error"),
+        ("../state/missing", "not_found"),
+    ] {
         let output = worker(dir.path(), &[], &["read"], path, b"");
-        assert_eq!(code(&output), "not_found", "{path}");
-    }
-    for path in ["../outside/missing", "dangling", "../state/missing"] {
-        let output = worker(dir.path(), &[], &["read"], path, b"");
-        assert_eq!(code(&output), "not_found", "{path}");
+        assert_eq!(code(&output), expected, "{path}");
+        assert!(output.stdout.is_empty(), "{output:?}");
     }
 }
 
@@ -395,9 +402,10 @@ fn an_area_can_contain_state_but_cannot_read_or_write_it() {
     let inside = worker(dir.path(), &["--area", ".."], &["read"], "inside.txt", b"");
     assert!(inside.status.success(), "{inside:?}");
     assert_eq!(inside.stdout, b"{\"size\":6}\ninside");
-    for path in ["../state/secret", "link"] {
+    for (path, expected) in [("../state/secret", "not_found"), ("link", "io_error")] {
         let hidden = worker(dir.path(), &["--area", ".."], &["read"], path, b"");
-        assert_eq!(code(&hidden), "not_found", "{path}");
+        assert_eq!(code(&hidden), expected, "{path}");
+        assert!(hidden.stdout.is_empty(), "{hidden:?}");
     }
     let write = worker(
         dir.path(),
@@ -694,6 +702,33 @@ fn a_read_worker_reads_home_but_not_what_is_hidden() {
     }
     // Nothing outside home, either.
     assert!(!read("../outside/other.txt").status.success());
+}
+
+#[test]
+fn a_read_refuses_a_symlink_swapped_in_after_resolution_before_sending_bytes() {
+    for component in 0..3 {
+        let dir = setup();
+        let area = dir.path().join("area").canonicalize().unwrap();
+        let path = area.join("tree/inner/note.txt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "judged bytes").unwrap();
+        let resolved = path.canonicalize().unwrap();
+        let target = resolved.ancestors().nth(component).unwrap();
+        let replacement = area.join("replacement");
+        let file = match component {
+            0 => replacement.clone(),
+            1 => replacement.join("note.txt"),
+            _ => replacement.join("inner/note.txt"),
+        };
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, "unjudged bytes").unwrap();
+        fs::rename(target, target.with_file_name("saved")).unwrap();
+        std::os::unix::fs::symlink(&replacement, target).unwrap();
+
+        let read = worker(dir.path(), &[], &["read"], resolved.to_str().unwrap(), b"");
+        assert!(!read.status.success(), "component {component}: {read:?}");
+        assert!(read.stdout.is_empty(), "component {component}: {read:?}");
+    }
 }
 
 /// The `PATH` a host gives exec's programs.

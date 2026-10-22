@@ -55,6 +55,11 @@ version. Running it twice changes nothing. A host that `latch serve` or
 `latch serve -d` started is stopped and started again with the new latch,
 with the same flags.
 
+If the previous host was started with folder arguments, automatic restart
+is refused. Start once with `latch serve -d`, adding any `--deny-exec` or
+`--headless-browsers` flags you need. This saves the current flags for later
+restarts.
+
 Check it:
 
 ```sh

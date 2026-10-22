@@ -33,6 +33,7 @@ use std::cell::RefCell;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::AsFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
@@ -663,7 +664,28 @@ fn exec(
 /// Sends the file's size, then its bytes, to stdout.
 fn read(path: &Path) -> Result<(), (PathBuf, io::Error)> {
     let failed = |err| (path.to_path_buf(), err);
-    let mut file = File::open(path).map_err(failed)?;
+    let absolute = std::path::absolute(path).map_err(failed)?;
+    #[cfg(target_os = "macos")]
+    let search = libc::O_SEARCH;
+    #[cfg(target_os = "linux")]
+    let search = libc::O_PATH;
+    let directory = search | libc::O_DIRECTORY | libc::O_NOFOLLOW;
+    let mut file = File::options()
+        .read(true)
+        .custom_flags(directory)
+        .open("/")
+        .map_err(failed)?;
+    // The host resolved this path before judgment. Never follow a link
+    // swapped into any component, and keep the final file open to stream it.
+    let mut components = absolute.components().skip(1).peekable();
+    while let Some(component) = components.next() {
+        let flags = if components.peek().is_some() {
+            directory
+        } else {
+            libc::O_RDONLY | libc::O_NOFOLLOW
+        };
+        file = sandbox::open_at(&file, component.as_os_str(), flags, 0).map_err(failed)?;
+    }
     let metadata = file.metadata().map_err(failed)?;
     if metadata.is_dir() {
         return Err(failed(io::Error::new(

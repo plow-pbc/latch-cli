@@ -4068,6 +4068,22 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
     // --again preserves the flags rather than accepting replacements.
     let named = latch(&state, &["serve", "-d", "--again", "--deny-exec"], &[]);
     assert_eq!(named.status.code(), Some(2), "{named:?}");
+
+    fs::write(
+        state.join("serve-args.json"),
+        r#"["/old/folder","--deny-exec"]"#,
+    )
+    .unwrap();
+    let again = latch(&state, &["serve", "-d", "--again"], &[]);
+    assert_eq!(again.status.code(), Some(2), "{again:?}");
+    let error: Value = serde_json::from_slice(&again.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "bad_serve_args", "{error}");
+    println!("saved flags refused: {error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    for instruction in ["latch serve -d", "--deny-exec", "--headless-browsers"] {
+        assert!(message.contains(instruction), "{error}");
+    }
+    assert_eq!(local_serve(&state)["running"], false);
 }
 
 /// `latch ARGS` on a terminal of its own, as its controlling terminal, the
@@ -4827,8 +4843,6 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
     let (shop, returns) = shop_server::serve_shop_recording();
     plow.state.lock().unwrap().google = Some(format!("shop={shop}"));
 
@@ -4850,7 +4864,7 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
         fs::create_dir_all(host.join("browser")).unwrap();
         fs::write(host.join("browser/model.json"), r#"{"provider": "jev"}"#).unwrap();
     }
-    let mut command = serve_command(&host, &[&share], &relay);
+    let mut command = serve_command(&host, &relay);
     command.arg("--headless-browsers");
     let (serve, mut log, _) = serving_with(command);
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
