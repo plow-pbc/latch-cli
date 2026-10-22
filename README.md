@@ -121,9 +121,9 @@ No Homebrew tap is included.
   to the host's log (`latch logs`), never to stdout. On a
   host, each event names the connection's caller key and the operation.
 - Connectors are off until you turn them on, per host: on the host, with
-  its `latch serve` running, `latch plugins enable google` (on macOS also
-  `messages` and `contacts`) runs the connector's setup and enables it only
-  if that succeeds. `latch plugins disable NAME` refuses new calls at once
+  or without its `latch serve` running, `latch plugins enable google` (on
+  macOS also `messages` and `contacts`) runs the connector's setup and
+  enables it only if that succeeds. `latch plugins disable NAME` refuses new calls at once
   and returns once running ones finish. `latch plugins list` shows each
   one's state; agents may list, never enable or disable. A call to a
   connector that is off gets `not_enabled` (exit 4) with the enable command.

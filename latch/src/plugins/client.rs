@@ -3,8 +3,9 @@
 //! login: managing another host's connectors from here is not a thing
 //! latch does. They go to this machine's host over its private socket when
 //! it runs; when none does, this command makes the same change itself, in
-//! the state folder the next `latch serve` reads, and `list` with no host
-//! named reads it there.
+//! the state folder the next `latch serve` reads.
+
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -13,17 +14,15 @@ use crate::cli::{PluginsArgs, PluginsCommand};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
 use crate::hosts;
-use crate::lifecycle;
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
 use crate::wire::Request;
 
+/// How long an offline `enable` or `disable` waits for another one on the
+/// same state folder: past the Full Disk Access check's own limit.
+const HOLD_WITHIN: Duration = Duration::from_secs(60);
+
 pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> {
-    if let PluginsCommand::List { host: None } = args.command
-        && let Some(listed) = saved_list(state)?
-    {
-        return Ok(listed);
-    }
     let (host, args) = match args.command {
         PluginsCommand::List { host } => (
             hosts::resolve(state, host).await?,
@@ -44,59 +43,46 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
         chat: None,
     };
     match dial::call(state, &host, &request, ANSWER_WITHIN).await {
-        Err(failure) if failure.code == "serve_required" && host.this_machine => {
+        Err(failure) if failure.code == "serve_required" && request.args["name"].is_string() => {
             without_a_host(state, &request.args).await
         }
         answer => answer,
     }
 }
 
-/// This machine's connectors as last saved, when it is the owner's host
-/// and none runs: what the next `latch serve` will have.
-fn saved_list(state: &StateDir) -> Result<Option<Value>, Failure> {
-    let owner = state
-        .load_config()?
-        .is_some_and(|config| config.peer.kind == "device");
-    let dir = state.path.canonicalize().unwrap_or(state.path.clone());
-    if !owner || lifecycle::holds_lock(&dir) {
-        return Ok(None);
-    }
-    let home = std::env::home_dir().unwrap_or_default();
-    Ok(Some(Plugins::load(state, &home)?.list()))
-}
-
 /// `enable` or `disable` with no host running: the host's own setup and
-/// save, made here.
+/// save, made here while holding the state folder as a host would, so no
+/// host starts, and no other `plugins` command saves, in between.
 async fn without_a_host(state: &StateDir, args: &Value) -> Result<Value, Failure> {
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
-    if let Some(pid) = lifecycle::now(&dir).pid {
-        // Running, but not on this latch's socket: most likely an older latch.
-        let message = format!(
-            "a `latch serve` (pid {pid}) holds this state folder but does not answer this \
-             latch, so it may be an older one: stop it, then run this again"
-        );
-        return Err(Failure::new(Exit::Unreachable, "host_unreachable", message));
-    }
+    let command = args["command"].as_str().unwrap_or_default();
     let connector = Connector::named(args["name"].as_str().unwrap_or_default())?;
-    let workers = crate::serve::workers(dir.clone())?;
+    let who = format!("latch plugins {command} {}", connector.name());
+    // Another `plugins` command lets go once it is done; a host never does.
+    let serving = |holder: &str| holder.starts_with("latch serve");
+    let _held = match crate::serve::hold_state(&dir, &who, HOLD_WITHIN, |h| !serving(h))? {
+        Ok(held) => held,
+        Err(holder) if serving(&holder) => {
+            // Running, but not on this latch's socket: most likely an older latch.
+            let message = format!(
+                "{holder} holds this state folder but does not answer this latch, so it may \
+                 be an older one: stop it, then run this again"
+            );
+            return Err(Failure::new(Exit::Unreachable, "host_unreachable", message));
+        }
+        Err(holder) => {
+            let message = format!("{holder} still holds this state folder; run this again");
+            return Err(Failure::failed("state_busy", message));
+        }
+    };
+    let workers = crate::serve::workers(dir)?;
     let plugins = Plugins::load(state, &workers.home)?;
-    let result = if args["command"] == "enable" {
+    if command == "enable" {
         let plow = Plow::from_state(state)?;
         host::enable(&plugins, &workers, &plow, connector, true).await
     } else {
         host::disable(&plugins, connector).await
-    };
-    if lifecycle::holds_lock(&dir) {
-        // It may have read the connectors before this saved them.
-        let message = format!(
-            "a `latch serve` started on this state folder while this ran; run `latch plugins \
-             {} {}` again",
-            args["command"].as_str().unwrap_or_default(),
-            connector.name()
-        );
-        return Err(Failure::failed("host_started", message));
     }
-    result
 }
 
 /// This machine's own host, when the owner is the one asking. An agent's

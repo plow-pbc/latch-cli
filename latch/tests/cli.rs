@@ -3960,7 +3960,6 @@ fn setup_sets_up_every_connector_with_no_host_running() {
         assert!(!plugins.is_empty(), "{listed}");
         plugins.iter().all(|plugin| plugin["state"] == "enabled")
     };
-    assert!(enabled(&latch(&host, &["plugins", "list"], &[])), "saved");
     let _serve = serving(&host, &relay);
     assert!(
         enabled(&latch(&host, &["plugins", "list"], &[])),
@@ -4006,6 +4005,47 @@ fn plugins_with_a_host_this_latch_cannot_reach_say_so() {
     }
     assert!(!host.join("plugins.json").exists());
     drop(lock);
+}
+
+/// Two offline `plugins` commands on one state folder take turns: the
+/// second waits while the first holds the folder, and saves only after it
+/// lets go, so neither undoes the other.
+#[test]
+fn offline_plugin_commands_on_one_state_folder_take_turns() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let saved = || fs::read_to_string(host.join("plugins.json")).unwrap();
+    fs::write(
+        host.join("plugins.json"),
+        r#"{"google": {"state": "enabled"}}"#,
+    )
+    .unwrap();
+    // An `enable` in the middle of its setup, as its lock says.
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(host.join("serve.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    fs::write(
+        host.join("serve.lock"),
+        "latch plugins enable messages (pid 4242, /latch)\n",
+    )
+    .unwrap();
+    let mut disable = latch_command(&host, &["plugins", "disable", "google"], &[])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    thread::sleep(std::time::Duration::from_secs(2));
+    assert!(disable.try_wait().unwrap().is_none(), "it waits its turn");
+    assert!(saved().contains("google"), "{}", saved());
+    drop(lock);
+    let done = disable.wait_with_output().unwrap();
+    assert!(done.status.success(), "{done:?}");
+    assert!(!saved().contains("google"), "{}", saved());
 }
 
 /// Whether launchd still has the one-shot Full Disk Access check's job.
@@ -4810,9 +4850,13 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
     assert_eq!(code, Some(1));
     assert_eq!(error["error"]["code"], "gog_not_configured");
-    let (code, listed) = run(&host, &["plugins", "list"], &[]);
-    assert_eq!(code, Some(0));
-    assert_eq!(listed["plugins"][0]["state"], "needs_setup");
+    let saved: Value =
+        serde_json::from_str(&fs::read_to_string(host.join("plugins.json")).unwrap()).unwrap();
+    assert_eq!(saved["google"]["state"], "needs_setup", "{saved}");
+    // Listing still needs the host.
+    let (code, error) = run(&host, &["plugins", "list", "--host", "host"], &[]);
+    assert_eq!(code, Some(3));
+    assert_eq!(error["error"]["code"], "serve_required");
     let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(disabled["state"], "disabled");
