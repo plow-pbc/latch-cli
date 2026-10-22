@@ -169,8 +169,8 @@ def plan(args):
                 raise SystemExit(f"test.py: browser and scenario: {reason}")
             not_here += [(suite, reason) for suite in ("browser", "scenario") if suite in suites]
             suites = [suite for suite in suites if suite not in ("browser", "scenario")]
-    if where == "container":
-        require("docker")
+    if where == "container" and not os.environ.get("LATCH_TEST_CONTAINER"):
+        require("docker")  # only the launcher; the run inside has cargo instead
     elif gate or set(suites) - {"installer"} or (where == "macos" and "installer" in suites):
         require("cargo")
         if set(suites) - {"installer"}:

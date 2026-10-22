@@ -170,12 +170,30 @@ class Plans(unittest.TestCase):
                                      ("docker", [], "container")):
             def which(tool):
                 return None if tool == missing else f"/usr/bin/{tool}"
+            # As the launcher: not inside the container, as `just test --linux`
+            # itself runs there.
+            launcher = {k: v for k, v in runner.os.environ.items() if k != "LATCH_TEST_CONTAINER"}
             with mock.patch.object(runner.shutil, "which", side_effect=which), \
+                    mock.patch.dict(runner.os.environ, launcher, clear=True), \
                     mock.patch("sys.stderr", new_callable=io.StringIO) as said, \
                     self.assertRaises(SystemExit) as stopped:
                 plan(*argv, where=where)
             self.assertEqual(stopped.exception.code, 127, missing)
             self.assertIn(f"{missing} is not installed; {runner.INSTALL[missing]}", said.getvalue())
+
+    def test_inside_the_container_cargo_is_needed_and_docker_is_not(self):
+        def which(tool):
+            return None if tool == "docker" else f"/usr/bin/{tool}"
+        with mock.patch.dict(runner.os.environ, {"LATCH_TEST_CONTAINER": "1"}), \
+                mock.patch.object(runner.shutil, "which", side_effect=which):
+            self.assertEqual(plan(where="container")[1], runner.GATE["container"])
+        with mock.patch.dict(runner.os.environ, {"LATCH_TEST_CONTAINER": "1"}), \
+                mock.patch.object(runner.shutil, "which", return_value=None), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as said, \
+                self.assertRaises(SystemExit) as stopped:
+            plan(where="container")
+        self.assertEqual(stopped.exception.code, 127)
+        self.assertIn("cargo is not installed", said.getvalue())
 
     def test_the_container_is_linux_arm64_on_any_host(self):
         for machine in ("x86_64", "arm64"):
