@@ -72,7 +72,7 @@ async fn start(world: World) -> TestHost {
 async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
     let fake = fake::serve(world);
     let provider = model::Plow::new(&fake.url, "made-up-login".into()).with_model(gate::MODEL);
-    start_with(fake, Arc::new(provider), deny_exec, None).await
+    start_with(fake, Arc::new(provider), deny_exec).await
 }
 
 /// A host on `plow`, its gatekeeper asking `provider`.
@@ -80,7 +80,6 @@ async fn start_with(
     plow: FakePlow,
     provider: Arc<dyn model::Provider>,
     deny_exec: DenyExec,
-    dashboard: Option<Dashboard>,
 ) -> TestHost {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     std::fs::create_dir_all(&parent).unwrap();
@@ -110,7 +109,8 @@ async fn start_with(
         audit: Arc::new(Mutex::new(
             AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
         )),
-        dashboard,
+        dashboard: Dashboard::new("test-host", None),
+        lifetime: super::Lifetime::new(false),
         workers: WorkerSetup {
             areas: vec![area.clone()],
             reads: vec![],
@@ -243,7 +243,6 @@ async fn an_operation_is_audited_before_dashboard_name_lookup() {
         plow,
         Arc::new(provider),
         DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]),
-        Some(Dashboard::start("test-host", None)),
     )
     .await;
     let agent = t.caller("agent").await;
@@ -260,7 +259,6 @@ async fn an_operation_is_audited_before_dashboard_name_lookup() {
     };
     let ((answer, _), (requested, records)) =
         tokio::join!(t.call(&agent, "exec", exec("touch made")), during_lookup);
-    t.host.dashboard.as_ref().unwrap().stop();
     assert!(requested.is_ok(), "the dashboard never asked for the name");
     assert_eq!(refusal(&answer).1, "exec_denied");
     assert!(!t.area.join("made").exists());
@@ -830,13 +828,7 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
     model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
 
-    let t = start_with(
-        fake::serve(World::default()),
-        provider,
-        DenyExec::default(),
-        None,
-    )
-    .await;
+    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
     assert_eq!(refusal(&answer).1, "no_intent", "neither chat nor rules");
@@ -902,13 +894,7 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
     let setup = tempfile::tempdir().unwrap();
     model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
-    let t = start_with(
-        fake::serve(World::default()),
-        provider,
-        DenyExec::default(),
-        None,
-    )
-    .await;
+    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let device = t.caller("device").await;
     let run = |argv: &[&str]| json!({"argv": argv, "workdir": null, "timeout": 30});
     let ordinary = [
@@ -1133,26 +1119,6 @@ impl TestHost {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
-    // The log destination is process-wide, so give this test its own process.
-    let Ok(path) = std::env::var("LATCH_MESSAGES_TEST_LOG") else {
-        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
-        std::fs::create_dir_all(&parent).unwrap();
-        let dir = tempfile::tempdir_in(parent).unwrap();
-        let name =
-            "serve::gated_tests::messages_and_contacts_reads_are_judged_and_audited_without_a_row";
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", name, "--nocapture"])
-            .env("LATCH_MESSAGES_TEST_LOG", dir.path().join("serve.log"))
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
-    };
-    crate::log::to_file(Path::new(&path)).unwrap();
     let t = start(a_chat(always_covered)).await;
     t.with_messages();
     let agent = t.caller("agent").await;
@@ -1247,7 +1213,8 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
     let records = t.audit();
     // The audit as it reads, opened (on disk it is sealed).
     let audit = serde_json::to_string(&records).unwrap();
-    let log = std::fs::read_to_string(&path).unwrap();
+    // What the host logged: every line this test process logged.
+    let log = crate::log::captured().join("\n");
     assert!(log.contains("messages:"), "{log}");
     for record in &records {
         let (target, result) = dashboard::describe(

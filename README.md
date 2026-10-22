@@ -68,6 +68,17 @@ No Homebrew tap is included.
 
 ## For hosts
 
+- `latch serve ~/work` starts this machine's host as a service of yours (a
+  launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
+  user service on Linux) and shows its dashboard: Ctrl-C there, or closing
+  the terminal, stops the host. `latch serve -d` starts it detached and
+  prints it as JSON once it answers; `latch stop` stops it, and nothing
+  starts it again until the next `latch serve`. `latch dashboard` views a
+  running host (Ctrl-C closes only the view), `latch logs [-f]` shows its
+  log (`serve.log`) and `latch audit show [-f]` its audit.
+  One host runs per state folder. `latch serve --foreground` runs the host
+  in the terminal's own process, logging to stderr, for CI, tests and
+  containers.
 - `latch login` names a machine after its hostname; `--name` picks another.
   If another of your machines holds the name, the login stops and says so.
 - `latch serve ~/work` lets callers' programs and file copies read and
@@ -93,7 +104,7 @@ No Homebrew tap is included.
 - A connection problem (`host_unreachable`, a slow call): set
   `LATCH_TRACE=iroh=debug,latch=info` on the client, the host or both, to
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
-  to stderr, or to `serve.log` under the dashboard, never to stdout. On a
+  to the host's log (`latch logs`), never to stdout. On a
   host, each event names the connection's caller key and the operation.
 - The host's audit log is sealed: each record is encrypted with the host's
   audit key, kept with its other secrets. `latch audit show` prints every
