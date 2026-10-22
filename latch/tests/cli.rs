@@ -4667,9 +4667,10 @@ fn audit_show_follow_sleeps_while_the_log_is_quiet() {
 }
 
 /// A host's state given the pinned browser engines the tests installed
-/// (`just cft`), local pages allowed, and the Messages reader.
-#[cfg(target_os = "macos")]
-fn browser_and_messages_host(host: &Path) {
+/// (`just cft`, or `LATCH_CFT_STATE`) and local pages allowed; returns its
+/// plugins folder, for the connectors a test adds.
+#[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
+fn browser_host(host: &Path) -> PathBuf {
     let installed = std::env::var_os("LATCH_CFT_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
@@ -4682,6 +4683,13 @@ fn browser_and_messages_host(host: &Path) {
         }
     }
     fs::write(host.join("host.json"), r#"{"allow_local_browsing": true}"#).unwrap();
+    plugins
+}
+
+/// `browser_host`, with the Messages reader.
+#[cfg(target_os = "macos")]
+fn browser_and_messages_host(host: &Path) {
+    let plugins = browser_host(host);
     let reader = plugins
         .join("messages")
         .join(env!("CARGO_PKG_VERSION"))
@@ -5065,22 +5073,11 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
     plow.state.lock().unwrap().google = Some(format!("shop={shop}"));
 
     // The pinned engines, and this test build as the host's gog.
-    let installed = std::env::var_os("LATCH_CFT_STATE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
-    let engines = installed.canonicalize().unwrap().join("plugins");
-    let plugins = host.join("plugins");
-    fs::create_dir_all(&plugins).unwrap();
-    for engine in ["cft", "camoufox"] {
-        if engines.join(engine).exists() {
-            std::os::unix::fs::symlink(engines.join(engine), plugins.join(engine)).unwrap();
-        }
-    }
+    let plugins = browser_host(&host);
     let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
     let gog = plugins.join("gog").join(pin["version"].as_str().unwrap());
     fs::create_dir_all(&gog).unwrap();
     fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
-    fs::write(host.join("host.json"), r#"{"allow_local_browsing": true}"#).unwrap();
     fs::write(
         host.join("plugins.json"),
         r#"{"google": {"state": "enabled"}}"#,

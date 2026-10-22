@@ -2,14 +2,6 @@
 <body><main></main><script>
 header();
 const main = document.querySelector('main');
-// Order A1001: two identical white tank lines among the rest.
-const ORDER = { number: 'A1001', placed: 'October 16, 2026', lines: [
-  { line: 1, name: 'White tank (M)', price: 18.0 },
-  { line: 2, name: 'White tank (M)', price: 18.0 },
-  { line: 3, name: 'Oxford shirt (L)', price: 54.0 },
-  { line: 4, name: 'Wool socks', price: 12.0 },
-  { line: 5, name: 'Canvas belt', price: 29.0 },
-] };
 const chosen = () => store.get('return', []);
 function render() {
   const picked = chosen();
