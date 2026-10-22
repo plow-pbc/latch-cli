@@ -469,8 +469,9 @@ mod platform {
         }
         // Looking a path up inside an area (as `pwd` does) needs the details
         // of each folder above it: `read_rules` grants them to a file
-        // worker, the blanket metadata rule to a Google worker.
-        for area in &policy.areas {
+        // worker, the blanket metadata rule to a Google worker. A file
+        // worker's temp folder is where an upload is staged.
+        for area in policy.areas.iter().chain(&policy.tmpdir) {
             rules.push(format!(
                 "(allow file-read* file-write* (subpath {}))",
                 quoted(area)?

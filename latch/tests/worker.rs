@@ -145,40 +145,32 @@ fn missing_files_and_hidden_paths_report_the_operating_system_error() {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn a_write_is_all_or_nothing() {
+fn a_write_worker_stages_a_new_file_in_its_temp_folder() {
     let dir = setup();
-    let area = dir.path().join("area");
-    fs::write(area.join("keep.txt"), "old contents").unwrap();
-
+    let tmp = dir.path().join("tmp").canonicalize().unwrap();
+    let tmpdir = tmp.to_str().unwrap();
+    let upload = tmp.join("upload");
+    let staged = |size: &str, bytes: &[u8]| {
+        worker(
+            dir.path(),
+            &["--tmpdir", tmpdir],
+            &["write", "--size", size],
+            upload.to_str().unwrap(),
+            bytes,
+        )
+    };
     // The transfer breaks off: 3 of the 10 promised bytes arrive.
-    let short = worker(
-        dir.path(),
-        &[],
-        &["write", "--size", "10"],
-        "keep.txt",
-        b"new",
-    );
+    let short = staged("10", b"new");
     assert_eq!(code(&short), "transfer_incomplete");
-    assert_eq!(fs::read(area.join("keep.txt")).unwrap(), b"old contents");
-
-    // All bytes arrive: the new contents replace the old in one step.
-    let full = worker(
-        dir.path(),
-        &[],
-        &["write", "--size", "12"],
-        "keep.txt",
-        b"new contents",
-    );
-    assert!(full.status.success());
-    assert_eq!(fs::read(area.join("keep.txt")).unwrap(), b"new contents");
-
-    // No temporary file is left behind either way.
-    let mut names: Vec<String> = fs::read_dir(&area)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    assert_eq!(names, ["inside.txt", "keep.txt", "link"]);
+    fs::remove_file(&upload).unwrap();
+    // All bytes arrive.
+    let full = staged("12", b"new contents");
+    assert!(full.status.success(), "{full:?}");
+    assert_eq!(fs::read(&upload).unwrap(), b"new contents");
+    // A name already there is never written over (nor a link at it followed).
+    let again = staged("1", b"x");
+    assert!(!again.status.success(), "{again:?}");
+    assert_eq!(fs::read(&upload).unwrap(), b"new contents");
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -614,36 +606,6 @@ fn exec_reads_and_writes_only_areas_never_state_or_latch() {
     );
     assert!(!area.join("bin2").exists() && !area.join("keep2").exists());
     assert!(!area.join("keep/.state/config.json").exists());
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-#[test]
-fn a_write_to_a_folder_lands_inside_it_under_its_own_name() {
-    let dir = setup();
-    fs::create_dir(dir.path().join("area/docs")).unwrap();
-    let into = worker(
-        dir.path(),
-        &[],
-        &["write", "--size", "2", "--name", "notes.txt"],
-        "docs",
-        b"hi",
-    );
-    assert!(into.status.success(), "{into:?}");
-    assert!(String::from_utf8_lossy(&into.stdout).contains("\"path\":\"docs/notes.txt\""));
-    assert_eq!(
-        fs::read(dir.path().join("area/docs/notes.txt")).unwrap(),
-        b"hi"
-    );
-    // A name that is a path of its own is not used.
-    let sneaky = worker(
-        dir.path(),
-        &[],
-        &["write", "--size", "1", "--name", "../x", "--"],
-        "docs",
-        b"x",
-    );
-    assert!(!sneaky.status.success(), "{sneaky:?}");
-    assert!(!dir.path().join("area/x").exists());
 }
 
 /// The `PATH` a host gives exec's programs.

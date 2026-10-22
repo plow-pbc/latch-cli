@@ -1,10 +1,18 @@
-//! The host's side of `file get` and `file put`. Every read and write is
-//! done by a sandboxed worker (`worker.rs`); the host only passes bytes
-//! between the worker and the stream, hashing them on the way, so the audit
-//! log can record each file's path, size and sha256 (never its contents).
+//! The host's side of `file get` and `file put`. A sandboxed worker
+//! (`worker.rs`) reads every file, and receives every upload into a temp
+//! folder of its own; the host passes the bytes between it and the stream,
+//! hashing them on the way, so the audit log can record each file's path,
+//! size and sha256 (never its contents). The host itself moves a complete
+//! upload to its destination (`place`).
+
+mod place;
+
+use std::path::Path;
 
 use iroh::endpoint::{RecvStream, SendStream, VarInt};
 use serde_json::{Value, json};
+
+pub use place::{Places, destination};
 
 use crate::serve::Done;
 use crate::wire::{self, Response};
@@ -15,7 +23,7 @@ pub async fn get(workers: &WorkerSetup, args: &Value, send: &mut SendStream) -> 
     let Some(path) = args["remote_path"].as_str() else {
         return bad_arguments();
     };
-    let (mut worker, first) = match workers.start("read", None, None, path).await {
+    let (mut worker, first) = match workers.start("read", None, None, Path::new(path)).await {
         Ok(started) => started,
         Err(error) => return refused(path, error),
     };
@@ -40,9 +48,37 @@ pub async fn get(workers: &WorkerSetup, args: &Value, send: &mut SendStream) -> 
     }
 }
 
-/// `file_put`: the client's bytes go to the worker, which writes the file.
+/// Resolves a put's `remote_path` in `args` to the path it will write
+/// (`destination`), before it is judged, so the judge and the audit see
+/// that path. Answers the refusal if there is none.
+pub fn resolve_put(args: &mut Value, places: Option<&Places>) -> Option<Done> {
+    let remote = args["remote_path"].as_str()?.to_string();
+    let Some(places) = places else {
+        let message = "this host has no home folder to put files in".to_string();
+        return Some(Done::failed("no_home", message, json!({ "path": remote })));
+    };
+    match destination(&remote, args["name"].as_str(), places) {
+        Ok(path) => match path.to_str() {
+            Some(path) => {
+                args["remote_path"] = json!(path);
+                None
+            }
+            None => Some(Done::failed(
+                "bad_path",
+                format!("{} is not UTF-8", path.display()),
+                json!({ "path": remote }),
+            )),
+        },
+        Err(refusal) => Some(refused(&remote, refusal.into())),
+    }
+}
+
+/// `file_put`: the client's bytes go to the worker, which writes them into
+/// a temp folder of its own; once they are all there, the host moves them
+/// to `remote_path`, which `destination` resolved before the put was judged.
 pub async fn put(
     workers: &WorkerSetup,
+    places: &Places,
     args: &Value,
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -50,8 +86,17 @@ pub async fn put(
     let (Some(path), Some(size)) = (args["remote_path"].as_str(), args["size"].as_u64()) else {
         return bad_arguments();
     };
-    let name = args["name"].as_str();
-    let (mut worker, first) = match workers.start("write", Some(size), name, path).await {
+    let staging = match tempfile::Builder::new().prefix("latch-put-").tempdir() {
+        Ok(staging) => staging,
+        Err(err) => return Done::failed("tmpdir_failed", err.to_string(), json!({ "path": path })),
+    };
+    // Resolved, as the sandbox sees it (macOS's /var is /private/var).
+    let staged = match staging.path().canonicalize() {
+        Ok(dir) => dir.join("upload"),
+        Err(err) => return Done::failed("tmpdir_failed", err.to_string(), json!({ "path": path })),
+    };
+    let tmpdir = staged.parent();
+    let (mut worker, first) = match workers.start("write", Some(size), tmpdir, &staged).await {
         Ok(started) => started,
         Err(error) => return refused(path, error),
     };
@@ -60,8 +105,8 @@ pub async fn put(
     }
 
     // First answer: "go ahead", so the client sends nothing before the
-    // worker is ready to write. The worker puts the file in place only once
-    // all `size` bytes arrived, so if the client breaks off, nothing changes.
+    // worker is ready to write. The file is moved into place only once all
+    // `size` bytes arrived, so if the client breaks off, nothing changes.
     let go = serde_json::to_vec(&Response::Ok(json!({}))).expect("serializes");
     if wire::write_frame(send, &go).await.is_err() {
         return lost(path);
@@ -69,10 +114,11 @@ pub async fn put(
     let mut stdin = worker.child.stdin.take().expect("stdin is piped");
     let copied = wire::copy(recv, &mut stdin, size).await;
     drop(stdin);
-    // The worker says where the file goes: inside `path` if it is a folder.
-    let placed = first["path"].as_str().unwrap_or(path).to_string();
     match (copied, worker.finish().await) {
-        (Ok(sha256), Ok(())) => moved(&placed, size, sha256),
+        (Ok(sha256), Ok(())) => match place::place(&staged, Path::new(path), places) {
+            Ok(()) => moved(path, size, sha256),
+            Err(refusal) => refused(path, refusal.into()),
+        },
         (_, Err(error)) => Done::failed(&error.code, error.message, json!({ "path": path })),
         (Err(_), Ok(())) => lost(path),
     }
@@ -88,12 +134,16 @@ fn moved(path: &str, size: u64, sha256: String) -> Done {
     }
 }
 
-/// The worker refused before any bytes moved. A sandbox refusal, or a host
-/// sharing no folders, is a denial (exit 4); anything else is a failure
-/// (exit 1).
+/// The worker refused before any bytes moved, or the host would not place
+/// them. A sandbox refusal, a host sharing no folders, or a destination
+/// outside home, hidden or changed since it was checked, is a denial
+/// (exit 4); anything else is a failure (exit 1).
 fn refused(path: &str, error: WorkerError) -> Done {
     let audit_args = json!({ "path": path });
-    if matches!(error.code.as_str(), "sandbox_denied" | "no_folders") {
+    if matches!(
+        error.code.as_str(),
+        "sandbox_denied" | "no_folders" | "outside_home" | "hidden_path" | "destination_changed"
+    ) {
         return Done {
             response: Response::Error {
                 exit: crate::failure::Exit::Denied,

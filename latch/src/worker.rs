@@ -95,26 +95,27 @@ pub struct Running {
 }
 
 impl WorkerSetup {
-    /// Starts `latch worker <action> [--size N] <path>` and waits for its first line:
-    /// `{"size": N}` for `read`, `{"ready": true}` for `write`. Returns the
-    /// running worker and that line, or the worker's error.
+    /// Starts `latch worker [--tmpdir DIR] <action> [--size N] <path>` and
+    /// waits for its first line: `{"size": N}` for `read`, `{"ready": true}`
+    /// for `write`, which writes only into its `tmpdir`. Returns the running
+    /// worker and that line, or the worker's error.
     pub async fn start(
         &self,
         action: &str,
         size: Option<u64>,
-        name: Option<&str>,
-        path: &str,
+        tmpdir: Option<&Path>,
+        path: &Path,
     ) -> Result<(Running, serde_json::Value), WorkerError> {
         let Some(first_area) = self.areas.first() else {
             return Err(error("no_folders", NO_FOLDERS));
         };
         let mut command = self.command(first_area)?;
+        if let Some(tmpdir) = tmpdir {
+            command.arg("--tmpdir").arg(tmpdir);
+        }
         command.arg(action);
         if let Some(size) = size {
             command.arg("--size").arg(size.to_string());
-        }
-        if let Some(name) = name {
-            command.arg("--name").arg(name);
         }
         // `--` so a path starting with `-` is never read as a flag.
         command.arg("--").arg(path);
@@ -396,7 +397,7 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         // Confined, which is all a probe has to show.
         WorkerAction::Probe => return ExitCode::SUCCESS,
         WorkerAction::Read { path } => read(path),
-        WorkerAction::Write { size, name, path } => write(path, name.as_deref(), *size),
+        WorkerAction::Write { size, path } => write(path, *size),
         WorkerAction::Exec { workdir, argv } => {
             return exec(&policy.areas, workdir.as_deref(), argv);
         }
@@ -476,44 +477,24 @@ fn read(path: &Path) -> Result<(), (PathBuf, io::Error)> {
     stdout.flush().map_err(failed)
 }
 
-/// Writes `size` bytes from stdin to `path`, all or nothing. The bytes go
-/// into a temporary file beside the target (so the sandbox checks the same
-/// directory), which is renamed over the target only once all of them have
-/// arrived and reached the disk. A transfer that breaks off leaves the old
-/// file, or no file, exactly as it was.
-///
-/// If `path` is a folder, the file goes inside it under `name` (the client's
-/// file name), as `cp` does. The path it lands at is in the "ready" line.
-fn write(path: &Path, name: Option<&str>, size: u64) -> Result<(), (PathBuf, io::Error)> {
-    let inside;
-    let path = match name {
-        // Only a plain name: never `..` or a path of its own.
-        Some(name) if path.is_dir() && Path::new(name).file_name() == Some(name.as_ref()) => {
-            inside = path.join(name);
-            inside.as_path()
-        }
-        _ => path,
-    };
+/// Writes `size` bytes from stdin to `path`, a new file in this call's
+/// temp folder; the host moves it to the destination once it is whole.
+fn write(path: &Path, size: u64) -> Result<(), (PathBuf, io::Error)> {
     let failed = |err| (path.to_path_buf(), err);
-    let temp = temp_path(path).map_err(failed)?;
     // `create_new` never reuses (or follows a link at) an existing name.
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&temp)
+        .open(path)
         .map_err(failed)?;
-    let result = fill(&mut file, path, size).and_then(|()| fs::rename(&temp, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result.map_err(failed)
+    fill(&mut file, size).map_err(failed)
 }
 
 /// Says "ready", copies stdin into `file`, and checks exactly `size` bytes
 /// came before stdin ended.
-fn fill(file: &mut File, path: &Path, size: u64) -> io::Result<()> {
+fn fill(file: &mut File, size: u64) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
-    let ready = serde_json::json!({ "ready": true, "path": path });
+    let ready = serde_json::json!({ "ready": true });
     writeln!(stdout, "{ready}")?;
     stdout.flush()?;
     let written = io::copy(&mut io::stdin().lock(), file)?;
@@ -521,21 +502,7 @@ fn fill(file: &mut File, path: &Path, size: u64) -> io::Result<()> {
         let message = format!("expected {size} bytes, got {written}");
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, message));
     }
-    // Make sure the bytes are on disk before the file takes the target's place.
     file.sync_all()
-}
-
-/// `dir/name` becomes `dir/.name.latch-<process id>.part`.
-fn temp_path(path: &Path) -> io::Result<PathBuf> {
-    let Some(name) = path.file_name() else {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name"));
-    };
-    let temp = format!(
-        ".{}.latch-{}.part",
-        name.to_string_lossy(),
-        std::process::id()
-    );
-    Ok(path.with_file_name(temp))
 }
 
 /// The error code for an I/O failure.

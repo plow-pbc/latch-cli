@@ -697,13 +697,10 @@ pub struct WorkerArgs {
 pub enum WorkerAction {
     /// Send a file's size and bytes to stdout
     Read { path: PathBuf },
-    /// Write exactly SIZE bytes from stdin to a file, atomically
+    /// Write exactly SIZE bytes from stdin to a new file in its temp folder
     Write {
         #[arg(long)]
         size: u64,
-        /// The file's name, used if PATH is a folder
-        #[arg(long)]
-        name: Option<String>,
         path: PathBuf,
     },
     /// Run the pinned Google CLI

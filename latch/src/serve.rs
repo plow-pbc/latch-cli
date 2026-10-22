@@ -56,6 +56,8 @@ struct Host {
     /// The live view, when `serve` shows one (see `dashboard.rs`).
     dashboard: Option<Dashboard>,
     workers: WorkerSetup,
+    /// Where a put may land; `None` with no home folder.
+    places: Option<files::Places>,
     /// Open browser sessions, one per profile.
     browsers: crate::browser::host::Browsers,
     /// The host's vault, shared by every engine and profile.
@@ -385,6 +387,7 @@ async fn run_host(
     let host = Arc::new(Host {
         plow,
         audit: Arc::new(Mutex::new(audit)),
+        places: files::Places::here(&workers.state_dir),
         workers,
         dashboard,
         browsers,
@@ -840,9 +843,15 @@ async fn serve_operation(
     let Ok(json) = wire::read_frame(&mut recv).await else {
         return;
     };
-    let Ok(request) = serde_json::from_slice::<Request>(&json) else {
+    let Ok(mut request) = serde_json::from_slice::<Request>(&json) else {
         let response = failed("bad_request", "the request frame is not valid".to_string());
         return answer(&mut send, &response).await;
+    };
+    // A put's destination is resolved before anything is judged.
+    let unplaced = if request.op == "file_put" {
+        files::resolve_put(&mut request.args, host.places.as_ref())
+    } else {
+        None
     };
     let op = request.op.as_str();
     tracing::Span::current().record("op", display(op));
@@ -878,7 +887,7 @@ async fn serve_operation(
                 host.workers.areas.is_empty() && matches!(op, "exec" | "file_get" | "file_put");
             let first_area = host.workers.areas.first().map(PathBuf::as_path);
             let gated = gate::gated(op, &request.args, first_area)
-                .filter(|_| !denied_exec && !upgraded && !unshared);
+                .filter(|_| !denied_exec && !upgraded && !unshared && unplaced.is_none());
             let unjudgeable = match (&gate, &gated) {
                 (Ok(Some(_)), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
@@ -912,11 +921,17 @@ async fn serve_operation(
                 Done::failed(&failure.code, failure.message, Value::Null)
             } else if let Some(refused) = refused {
                 refused
+            } else if let Some(unplaced) = unplaced {
+                unplaced
             } else {
                 match op {
                     "file_get" => files::get(&host.workers, &request.args, &mut send).await,
                     "file_put" => {
-                        files::put(&host.workers, &request.args, &mut send, &mut recv).await
+                        let places = host
+                            .places
+                            .as_ref()
+                            .expect("resolve_put refuses without one");
+                        files::put(&host.workers, places, &request.args, &mut send, &mut recv).await
                     }
                     "exec" if denied_exec => Done {
                         response: Response::Error {
