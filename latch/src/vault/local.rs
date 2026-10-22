@@ -77,8 +77,8 @@ pub(super) fn import(state: &StateDir, path: &Path) -> Result<Value, Failure> {
 }
 
 pub(super) async fn link(state: &StateDir, args: Value) -> Result<Value, Failure> {
-    host::owner_only(&state.require_login()?.peer.kind)?;
-    let mut peer = state.require_login()?.peer;
+    let mut peer = state.require_config()?.peer;
+    host::owner_only(&peer.kind)?;
     peer.this_machine = true;
     crate::dial::call(
         state,

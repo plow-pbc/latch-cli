@@ -492,6 +492,15 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     assert_eq!(login.status.code(), Some(2), "{login:?}");
     let error: Value = serde_json::from_slice(&login.stderr).unwrap();
     assert_eq!(error["error"]["code"], "conflict", "{error}");
+    // Nobody to ask: it says what to run next.
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("`latch login --token-file FILE --name OTHER`")
+            && message.contains(&format!(
+                "`latch login --token-file FILE --name {hostname}` again at a terminal to replace it"
+            )),
+        "{message}"
+    );
     assert!(!state.join("config.json").exists());
 
     // One registration, never retried to take the name over.
@@ -503,9 +512,69 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
 }
 
 #[test]
-fn a_name_clash_stops_a_login_at_a_terminal_too() {
+fn a_name_clash_at_a_terminal_replaces_the_old_machine_with_no_second_text() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let old_key = "c".repeat(64);
+    let holder = peer(json!(old_key), "mac", "device", Value::Null);
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (409, json!({})),
+        (200, json!({"data": [holder.clone()]})),
+        // The old machine removed, then this one registered under its name.
+        (200, holder),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let args = ["login", "--api-url", &api_url, "--name", "mac"];
+    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "y\n", false, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(
+        shown.contains(
+            r#"A machine named "mac" already exists (last seen 2026-10-15T01:30:12Z). Replace it (this signs it out of Plow)? [y/N]"#
+        ),
+        "{shown}"
+    );
+    let login: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(login["peer"]["name"], "mac");
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["peer"]["name"], "mac");
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 6);
+    // One text only.
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.contains("/v1/auth/activate"))
+            .count(),
+        2
+    );
+    assert!(
+        requests[4].starts_with(&format!("DELETE /v1/latch/peers/{old_key} ")),
+        "{}",
+        requests[4]
+    );
+    assert!(
+        requests[4].contains("Bearer texted-login"),
+        "{}",
+        requests[4]
+    );
+    assert_eq!(body(&requests[5])["name"], "mac");
+}
+
+#[test]
+fn a_name_clash_at_a_terminal_asks_for_another_name_until_one_is_free_or_none_is_given() {
     let holder = peer(json!("c".repeat(64)), "mac", "device", Value::Null);
-    let (api_url, server) = fake_plow(vec![(409, json!({})), (200, json!({"data": [holder]}))]);
+    let (api_url, server) = fake_plow(vec![
+        (409, json!({})),
+        (200, json!({"data": [holder.clone()]})),
+        (409, json!({})),
+        (200, peer(Value::Null, "mac-2", "device", Value::Null)),
+    ]);
     let dir = test_dir();
     let owner_token = dir.path().join("owner.token");
     fs::write(&owner_token, "owner-login\n").unwrap();
@@ -521,13 +590,44 @@ fn a_name_clash_stops_a_login_at_a_terminal_too() {
         "mac",
     ];
 
-    // Even a person ready to say yes is not asked to replace the machine.
-    let (code, shown, _) = latch_at_a_terminal(&state, &args, "y\n", false, &[]);
+    // Enter keeps the old machine; the first new name is taken too.
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "\nmac-taken\nmac-2\n", false, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(shown.contains("New name for this machine:"), "{shown}");
+    assert!(shown.contains(r#""mac-taken" is taken too."#), "{shown}");
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["peer"]["name"], "mac-2");
+    let requests = server.join().unwrap();
+    assert_eq!(body(&requests[2])["name"], "mac-taken");
+    assert_eq!(body(&requests[3])["name"], "mac-2");
+    assert!(!requests.iter().any(|r| r.starts_with("DELETE ")));
+
+    // No, then no name: the login ends, saying what to run next.
+    // The suggested retry keeps the name asked for, quoted for the shell.
+    let quoted = peer(json!("c".repeat(64)), "Ada's Mac", "device", Value::Null);
+    let (api_url, server) = fake_plow(vec![(409, json!({})), (200, json!({"data": [quoted]}))]);
+    let state = dir.path().join("state-2");
+    let args = [
+        "login",
+        "--api-url",
+        &api_url,
+        "--token-file",
+        owner,
+        "--name",
+        "Ada's Mac",
+    ];
+    let (code, shown, _) = latch_at_a_terminal(&state, &args, "n\n\n", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
-    // A person reads the sentence, not the JSON.
-    assert!(!shown.contains("\"conflict\""), "{shown}");
-    assert!(shown.contains("latch devices remove mac"), "{shown}");
-    assert!(!shown.contains("Replace it?"), "{shown}");
+    assert!(
+        shown.contains("`latch login --token-file FILE --name OTHER`"),
+        "{shown}"
+    );
+    assert!(
+        shown
+            .contains(r"`latch login --token-file FILE --name 'Ada'\''s Mac'` again at a terminal"),
+        "{shown}"
+    );
     assert!(!state.join("config.json").exists());
     assert_eq!(server.join().unwrap().len(), 2);
 }
@@ -626,7 +726,8 @@ fn a_login_that_fails_after_the_text_is_retried_against_the_same_plow() {
     let dir = test_dir();
     let state = dir.path().join("state");
     let first = ["login", "--api-url", &api_url, "--name", "mac"];
-    let (code, shown, _) = latch_at_a_terminal(&state, &first, "", true, &[]);
+    // Asked, the person neither replaces the machine nor gives a name.
+    let (code, shown, _) = latch_at_a_terminal(&state, &first, "n\n\n", true, &[]);
     assert_eq!(code, Some(2), "{shown}");
     assert!(!state.join("config.json").exists());
 
@@ -1321,6 +1422,8 @@ struct LiveState {
     owner: String,
     agent: String,
     model_down: bool,
+    /// The judge answers that the owner forbids every operation.
+    forbidden: bool,
     decisions: Vec<Value>,
     /// Each peer with the credential that registered it.
     peers: Vec<(Value, String)>,
@@ -1337,6 +1440,7 @@ impl LivePlow {
             state: std::sync::Arc::new(std::sync::Mutex::new(LiveState {
                 owner: "owner-login".to_string(),
                 model_down: false,
+                forbidden: false,
                 decisions: Vec::new(),
                 agent: "agent-credential".to_string(),
                 peers: Vec::new(),
@@ -1504,6 +1608,13 @@ impl LivePlow {
                            "usage": {"input_tokens": 1, "output_tokens": 0}}),
                 )
             }
+            ("POST", "/v1/decisions") if kind == "device" && state.forbidden => (
+                200,
+                json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
+                    "type": "choice", "choice": "FORBIDDEN",
+                    "probabilities": {"COVERED": 0.02, "NOT_COVERED": 0.08, "FORBIDDEN": 0.9}}},
+                    "usage": {"input_tokens": 1, "output_tokens": 0}}),
+            ),
             ("POST", "/v1/decisions") if kind == "device" => (
                 200,
                 json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
@@ -3025,6 +3136,15 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     let before = plow.seen().len();
     run(&["rules", "set", "Only read and echo in this test."]);
     assert_eq!(plow.seen().len(), before);
+    // From here the client's secret store refuses, as the Keychain does
+    // inside a sandbox: its key and Plow login can't be read. Calls over the
+    // socket need neither; the running host has them.
+    let locked = |mode| {
+        for secret in ["key", "plow-token"] {
+            fs::set_permissions(host.join(secret), fs::Permissions::from_mode(mode)).unwrap();
+        }
+    };
+    locked(0o000);
     let exec = run(&["exec", "--", "echo", "local socket"]);
     assert_eq!(exec["stdout"], "local socket\n");
     assert_eq!(
@@ -3048,6 +3168,24 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
         downloaded.to_str().unwrap(),
     ]);
     assert_eq!(fs::read(&downloaded).unwrap(), b"socket transfer");
+    run(&["plugins", "disable", "google"]);
+    let link = run(&[
+        "vault",
+        "link",
+        "--page",
+        "https://example.invalid/",
+        "--kind",
+        "note",
+        "--title",
+        "keyless",
+    ]);
+    assert!(
+        link["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://example.invalid/#h="),
+        "{link}"
+    );
     let decisions = plow.state.lock().unwrap().decisions.clone();
     assert_eq!(decisions.len(), 4);
     assert!(
@@ -3075,6 +3213,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
         "owner config was judged"
     );
     run(&["exec", "--host", "host", "--", "true"]);
+    locked(0o600);
     assert!(
         plow.state
             .lock()
@@ -3174,6 +3313,47 @@ fn local_socket_outages_refuse_gated_work_but_config_still_works() {
             .unwrap();
         assert_eq!(record["gate"]["caller"], "owner_on_host");
         assert_eq!(record["decision"], "deny");
+    }
+}
+
+#[test]
+fn a_local_socket_call_the_judge_forbids_does_not_run() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let _serve = serving(&host, &share, &relay);
+    plow.state.lock().unwrap().forbidden = true;
+    let target = share.join("must-not-exist");
+    let source = dir.path().join("source.txt");
+    fs::write(&source, "forbidden").unwrap();
+    for args in [
+        vec!["exec", "--", "touch", target.to_str().unwrap()],
+        vec![
+            "file",
+            "put",
+            source.to_str().unwrap(),
+            target.to_str().unwrap(),
+        ],
+    ] {
+        let output = latch(&host, &args, &[]);
+        assert_eq!(output.status.code(), Some(4), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "gatekeeper_denied", "{error}");
+        println!("forbidden local {}: {error}", args[0]);
+    }
+    assert!(!target.exists());
+    assert_eq!(plow.state.lock().unwrap().decisions.len(), 2);
+    let records: Vec<Value> = audit_records(&host)
+        .into_iter()
+        .filter(|r| matches!(r["op"].as_str(), Some("exec" | "file_put")))
+        .collect();
+    assert_eq!(records.len(), 2);
+    for record in records {
+        assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
+        assert_eq!(record["decision"], "deny", "{record}");
     }
 }
 
