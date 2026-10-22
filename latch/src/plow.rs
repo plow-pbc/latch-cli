@@ -1,6 +1,7 @@
 //! The Plow directory client: register this peer, list the account's hosts,
 //! (on a host) look up who a caller's key belongs to and say it is going
-//! offline, remove a machine, and the two calls of a login by text.
+//! offline, remove a machine or this one, and the two calls of a login by
+//! text.
 //!
 //! Each call is made once and never retried here, so latch never calls Plow
 //! in a loop. (The host's heartbeat, which does repeat, backs off on errors.)
@@ -269,6 +270,15 @@ impl Plow {
         let request = self.http.delete(url);
         let response = self.send(request).await?;
         response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// Takes this machine out of the account and signs out its login: what
+    /// `latch logout` does. Returns the removed machines. Owner logins only.
+    pub async fn remove_self(&self) -> Result<Vec<Peer>, Failure> {
+        let url = format!("{}/v1/latch/peers/self", self.api_url);
+        let response = self.send(self.http.delete(url)).await?;
+        let list: PeerList = response.json().await.map_err(|_| bad_answer())?;
+        Ok(list.data)
     }
 
     /// Tells Plow this peer is going offline, so it is listed offline now

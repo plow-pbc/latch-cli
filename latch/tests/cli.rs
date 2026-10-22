@@ -1490,6 +1490,9 @@ struct LiveState {
     seen: Vec<(String, Option<String>)>,
     /// The token minted for the one connected Google account, if any.
     google: Option<String>,
+    /// The real Plow decision route and the login to ask it with: its
+    /// decisions go there instead (`real_judge`).
+    judge: Option<(String, String)>,
 }
 
 impl LivePlow {
@@ -1507,6 +1510,7 @@ impl LivePlow {
                 peers: Vec::new(),
                 seen: Vec::new(),
                 google: None,
+                judge: None,
             })),
         };
         let serving = plow.clone();
@@ -1582,6 +1586,10 @@ impl LivePlow {
             if state.model_down {
                 return (503, json!({}));
             }
+            if let Some((url, token)) = state.judge.clone() {
+                drop(state);
+                return ask_real_judge(&url, &token, &request.body);
+            }
         }
         match (method, path) {
             ("POST", "/v1/connectors/gmail/access-token") => {
@@ -1646,6 +1654,16 @@ impl LivePlow {
                 }
             }
             ("POST", path) if path.ends_with("/offline") => (200, json!({})),
+            // Logging out: this login's machines go, and the login with them.
+            ("DELETE", "/v1/latch/peers/self") if kind == "device" => {
+                let (removed, kept) = std::mem::take(&mut state.peers)
+                    .into_iter()
+                    .partition(|(_, credential)| *credential == token);
+                state.peers = kept;
+                state.owner = format!("{token}-revoked");
+                let removed: Vec<Value> = removed.into_iter().map(|(peer, _)| peer).collect();
+                (200, json!({"data": removed}))
+            }
             // What the host's gatekeeper reads, on the owner's login: the
             // agent's one chat, where the owner asked for it, and a judge
             // that agrees.
@@ -1700,6 +1718,47 @@ impl LivePlow {
             _ => (404, json!({})),
         }
     }
+}
+
+/// Plow's decision route, and the login to ask it with, of the state
+/// folder `$LATCH_GATEKEEPER_STATE` names (`just gatekeeper` logs it in).
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "linux-browser-tests")
+))]
+fn real_judge() -> (String, String) {
+    let state = PathBuf::from(
+        std::env::var_os("LATCH_GATEKEEPER_STATE")
+            .expect("LATCH_GATEKEEPER_STATE names a state folder logged in to Plow"),
+    );
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+    let token = fs::read_to_string(state.join("plow-token")).unwrap();
+    let url = format!(
+        "{}/v1/decisions",
+        config["api_url"].as_str().unwrap().trim_end_matches('/')
+    );
+    (url, token.trim().to_string())
+}
+
+/// Asks the real decision route `body`, with `token`: its answer.
+fn ask_real_judge(url: &str, token: &str, body: &[u8]) -> (u16, Value) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let response = reqwest::Client::new()
+            .post(url)
+            .bearer_auth(token)
+            .header("content-type", "application/json")
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        (status, response.json().await.unwrap_or_default())
+    })
 }
 
 /// A stand-in for exe.dev's proxy: every request it forwards to `upstream`
@@ -3542,6 +3601,22 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
     );
     assert_eq!(out["stopped"], true, "{out}");
     assert!(eventually(10, || serve.0.try_wait().unwrap().is_some()));
+    // Plow took the machine out of the account and revoked its login.
+    assert_eq!(
+        out["device"],
+        json!({"name": "host", "removed": true}),
+        "{out}"
+    );
+    let seen = plow.seen();
+    let removal = seen
+        .iter()
+        .find(|(line, _)| line.starts_with("DELETE /v1/latch/peers/self "));
+    assert_eq!(
+        removal.and_then(|(_, bearer)| bearer.as_deref()),
+        Some("owner-login"),
+        "{seen:?}"
+    );
+    assert!(plow.state.lock().unwrap().peers.is_empty());
     assert_eq!(secret_files_in(&host), ["vault.key", "audit.keys"]);
     // Logged out as far as setup and an app can tell: no peer, and
     // anything needing the login says to log in.
@@ -3553,8 +3628,10 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
     let error: Value = serde_json::from_slice(&shown.stderr).unwrap();
     assert_eq!(error["error"]["code"], "not_logged_in", "{error}");
 
-    // Logged in again, the vault and the audit log read as before.
+    // Logged in again, on a new login, the vault and the audit log read as before.
+    plow.state.lock().unwrap().owner = "owner-login-2".to_string();
     let token = dir.path().join("owner.token");
+    fs::write(&token, "owner-login-2\n").unwrap();
     let args = [
         "login",
         "--api-url",
@@ -3584,6 +3661,36 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
         (&json!(true), &json!(true))
     );
     assert!(!host.exists());
+}
+
+#[test]
+fn logout_without_plow_still_deletes_the_login_and_says_the_machine_is_still_listed() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    plow.stop();
+
+    let out = logout(&host, &[]);
+
+    assert_eq!(
+        out["removed"],
+        json!(["key", "plow-token", "config.json"]),
+        "{out}"
+    );
+    assert_eq!(secret_files_in(&host), Vec::<&str>::new());
+    let device = &out["device"];
+    assert_eq!(
+        (&device["name"], &device["removed"]),
+        (&json!("host"), &json!(false)),
+        "{out}"
+    );
+    assert_eq!(device["error"]["code"], "plow_unreachable", "{out}");
+    assert_eq!(
+        device["next"],
+        "`latch devices remove host` on another of your machines"
+    );
+    // Nothing is left to take out of Plow the next time.
+    assert_eq!(logout(&host, &[])["device"], Value::Null);
 }
 
 #[test]
@@ -5465,11 +5572,7 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
     )
     .unwrap();
     if live {
-        let key = std::env::var_os("LATCH_TEST_JEV_KEY")
-            .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
-        fs::copy(key, host.join("jev.key")).unwrap();
-        fs::create_dir_all(host.join("browser")).unwrap();
-        fs::write(host.join("browser/model.json"), r#"{"provider": "jev"}"#).unwrap();
+        plow.state.lock().unwrap().judge = Some(real_judge());
     }
     let mut command = serve_command(&host, &relay);
     command.arg("--headless-browsers");

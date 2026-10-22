@@ -90,9 +90,9 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
 installs the pinned Chrome for Testing into `.dev/cft-state` first) and needs
 the toolchain in `latch/rust-toolchain.toml`. CI also runs `cargo fmt --check`
 and `cargo clippy --all-targets -- -D warnings`. Tests that call the decision
-model, a live Plow stack or Google (`just test-model`, `gatekeeper-live`,
-`plan-suite`) need keys and are run by hand; a missing browser engine or key
-in a reviewer checkout is "not run", never a PR-introduced failure.
+model, a live Plow stack or Google (`just gatekeeper`, `plan-suite`) need a
+Plow login and are run by hand; a missing browser engine or login in a
+reviewer checkout is "not run", never a PR-introduced failure.
 
 ## Review priority
 

@@ -47,10 +47,8 @@ pub use action::gated;
 use chat::Conversation;
 use rules::{Rules, RulesSource};
 
-/// The jev version the gatekeeper asks, as Plow's decision route names it,
-/// and as jev itself does on a development host.
+/// The jev version the gatekeeper asks, as Plow's decision route names it.
 pub const MODEL: &str = "typesafe/jev-1.14";
-const JEV_MODEL: &str = "jev-1.14.0";
 /// An agent's action is allowed at this P(COVERED) or above.
 pub const ALLOW_P: f64 = 0.5;
 
@@ -158,7 +156,7 @@ impl Gatekeeper {
     /// The decision model the gatekeeper asks on a host, at jev 1.14: Plow's
     /// decision route on the host's own login, as for the browser.
     pub fn provider_for_host(state_dir: &std::path::Path) -> Result<Arc<dyn Provider>, String> {
-        model::host_provider(state_dir, MODEL, JEV_MODEL).map(Arc::from)
+        model::host_provider(state_dir, MODEL).map(Arc::from)
     }
 
     /// Whether the owner asked for `action` by `caller`.

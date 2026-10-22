@@ -1,3 +1,10 @@
+# The local Plow stack every dev and test flow uses (the plow-main kitchen's,
+# never restarted or changed from here), and its Linq twin. Its published
+# ports, not api.plow-main.orb.local: macOS keeps an unapproved latch off
+# OrbStack's network ("No route to host"), and loopback needs no approval.
+plow_main := "http://127.0.0.1:18934"
+plow_main_twin := "http://127.0.0.1:18935"
+
 # The Rust CLI's checks; live Google evidence uses the documented test identities.
 test: cft
     cargo fmt --check
@@ -50,30 +57,44 @@ cft:
 [linux]
 cft:
 
-# The browser tests that call the decision model (jev) for real; the key
-# file is copied into each test's own state directory, never printed.
-test-model key:
-    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model browser::tests::steps::live
-
 # The return scenario, headless, with its transcript: an order found in a
-# made-up mailbox, returned item by item on the test shop. With `key`, the
-# host's judge is the real decision model (jev).
-scenario-return key="": cft
-    if [ -n "{{key}}" ]; then LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features fake-gog,live-model --test cli the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture; else cargo test --locked --features fake-gog --test cli the_owner_returns_items_from_an_emailed_order -- --exact --nocapture; fi
+# made-up mailbox, returned item by item on the test shop, its judge a
+# stand-in (`just gatekeeper scenario` runs it on the real one).
+scenario-return: cft
+    cargo test --locked --features fake-gog --test cli the_owner_returns_items_from_an_emailed_order -- --exact --nocapture
 
-# A headless host judging exec on rules alone, on jev 1.14 (synthetic
-# chats only).
-gatekeeper-live key:
-    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model serve::gated_tests::live -- --nocapture
+# Logs this checkout's ../.dev/state in to the local Plow stack, by text to
+# its Linq twin from a made-up phone (the same local account each time).
+dev-login api=plow_main twin=plow_main_twin:
+    cargo build --quiet --locked
+    python3 scripts/dev-login.py "${CARGO_TARGET_DIR:-target}/debug/latch" "$(cd .. && pwd)/.dev/state" "{{api}}" "{{twin}}"
 
-# The gatekeeper's judge on jev 1.14 over the v0 held-out corpus, twice per
-# probe, its decisions written to `out` (synthetic chats only).
-gatekeeper-replay key out:
-    LATCH_TEST_JEV_KEY="{{key}}" LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live_held_out_replay -- --nocapture
-
-# The owner's own calls on jev itself, judged against the host's rules alone.
-gatekeeper-owner key:
-    LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model gate::tests::live_owner -- --nocapture
+# Asks the real decision model as a host does, through Plow on the login of
+# this checkout's ../.dev/state (`just dev-login` first), synthetic chats only: `checks` (the gatekeeper's and the
+# browser's), `replay OUT` (the held-out corpus, twice per probe, its
+# decisions written to OUT) or `scenario` (the return on the test shop).
+gatekeeper what="checks" out="":
+    #!/bin/sh
+    set -eu
+    state="$(cd .. && pwd)/.dev/state"
+    if ! cargo run --quiet --locked -- --state-dir "$state" status >/dev/null; then
+        echo "just gatekeeper asks Plow on the login of $state: run \`just dev-login\` first" >&2
+        exit 2
+    fi
+    export LATCH_GATEKEEPER_STATE="$state"
+    case "{{what}}" in
+    checks)
+        cargo test --locked --features live-model -- gate::tests::live_owner serve::gated_tests::live browser::tests::steps::live --nocapture ;;
+    replay)
+        [ -n "{{out}}" ] || { echo "usage: just gatekeeper replay OUT" >&2; exit 2; }
+        LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live_held_out_replay -- --nocapture ;;
+    scenario)
+        just cft
+        cargo test --locked --features fake-gog,live-model --test cli the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture ;;
+    *)
+        echo "usage: just gatekeeper [checks | replay OUT | scenario]" >&2
+        exit 2 ;;
+    esac
 
 # The plan suite (tests/browser-shop) on the decision model, through the dev
 # Plow stack the host in `host_state` is logged in to; each run, with its
@@ -107,10 +128,11 @@ phone-e2e host: phone
     phone/e2e/run.sh {{host}}
 
 # This checkout, built for release into ../.dev/bin/latch for hand testing.
-# Its state folder, ../.dev/state, and Plow (`api`) are baked in, so it never
-# touches ~/.latch or an installed latch; flags still override them. A running
-# serve keeps its old binary until it is restarted.
-build api="https://api.plow.co":
+# Its state folder, ../.dev/state, and Plow (`api`: the local stack unless
+# named, e.g. api=https://api.plow.co) are baked in, so it never touches
+# ~/.latch or an installed latch; flags still override them. A running serve
+# keeps its old binary until it is restarted.
+build api=plow_main:
     #!/bin/sh
     set -eu
     root="$(cd .. && pwd)"

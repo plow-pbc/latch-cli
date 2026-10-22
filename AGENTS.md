@@ -29,7 +29,7 @@ Before making meaningful changes, read:
 
 - All dev and test state lives under the gitignored `.dev/` at the repo root, passed with `--state-dir`. Tests make their throwaway folders in `.dev/tests/`.
 - `just cft` (run by `just test` on macOS) installs the pinned Chrome for Testing into `.dev/cft-state`, where the browser tests look for it.
-- `just build` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and Plow baked in as its defaults, so it never touches `~/.latch` or an installed latch.
+- `just build` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and the local Plow stack (the plow-main kitchen's) baked in as its defaults, so it never touches `~/.latch`, an installed latch or production Plow (`just build api=https://api.plow.co` targets it, for the chef's release smoke only). `just dev-login` logs `.dev/state` in to the local stack; `just gatekeeper` asks the real decision model on that login.
 - A binary built with `LATCH_BUILD_STATE_DIR` set has that state folder as its default. Running hosts and clients may depend on it: do not move, copy, or delete another peer's state folder, and do not stop or restart a running `latch serve`, unless asked.
 - Never print a token, key, or vault value. Credentials stay in their files with mode 600.
 
@@ -139,7 +139,7 @@ docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL \
   sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
 ```
 
-`just test-model KEY` runs the browser tests that call the decision model for real.
+`just gatekeeper` runs the checks that ask the decision model for real, through Plow on the login of `.dev/state`.
 
 Rules:
 

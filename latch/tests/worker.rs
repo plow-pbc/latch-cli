@@ -251,6 +251,51 @@ fn an_exec_worker_runs_programs_inside_the_sandbox() {
     assert!(!dir.path().join("outside/new.txt").exists());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn an_exec_worker_cannot_create_nested_user_namespaces() {
+    let dir = setup();
+    let script = format!(
+        r#"python3 - <<'PY'
+import ctypes, errno, os, signal, threading
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+newuser = 0x10000000
+clone_args = (ctypes.c_uint64 * 11)()
+clone_args[0] = newuser
+clone_args[4] = signal.SIGCHLD
+for name, number, args in [
+    ('unshare', {unshare}, (newuser,)),
+    ('clone', {clone}, (newuser | signal.SIGCHLD, 0, 0, 0, 0)),
+    ('clone3', {clone3}, (ctypes.byref(clone_args), ctypes.sizeof(clone_args))),
+]:
+    result = libc.syscall(number, *args)
+    error = ctypes.get_errno()
+    if name != 'unshare' and result == 0:
+        os._exit(0)
+    if result > 0:
+        os.waitpid(result, 0)
+    denied = (errno.EPERM, errno.ENOSPC)
+    if name == 'clone3':
+        denied += (errno.ENOSYS,)
+    assert result == -1 and error in denied, (name, result, error)
+    print(name, 'blocked:', error)
+thread = threading.Thread(target=lambda: None)
+thread.start()
+thread.join()
+print('threads still run')
+PY"#,
+        unshare = libc::SYS_unshare,
+        clone = libc::SYS_clone,
+        clone3 = libc::SYS_clone3,
+    );
+    for extra in [&[][..], &["--network"][..]] {
+        let output = exec_script(dir.path(), extra, &script);
+        assert!(output.status.success(), "{extra:?}: {output:?}");
+        println!("{extra:?}: {}", String::from_utf8_lossy(&output.stdout));
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn an_exec_cannot_kill_its_supervisor() {
