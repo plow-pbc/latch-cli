@@ -363,6 +363,7 @@ conformance!(
     a_frames_target_under_a_parent_page_layer_is_refused,
     eval_upload_and_download_move_values_and_files,
     sessions_share_nothing_and_their_profiles_end_with_them,
+    a_late_popup_is_followed_before_the_next_step,
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
     a_browser_that_leaves_calls_unanswered_is_closed,
@@ -1803,6 +1804,64 @@ impl crate::model::Provider for Calm {
         };
         Box::pin(async move { Ok((answers, meta)) })
     }
+}
+
+async fn a_late_popup_is_followed_before_the_next_step(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let Ok(mut socket) = socket else { continue };
+            std::thread::spawn(move || {
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request);
+                std::thread::sleep(Duration::from_millis(1200));
+                let body = "<!doctype html><title>late popup</title><h1>Popup arrived</h1>\
+                    <button onclick=\"document.querySelector('h1').textContent = 'Continued'\">Continue</button>";
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            });
+        }
+    });
+    let page = format!(
+        "<!doctype html><title>opener</title><button onclick=\"setTimeout(() => window.open('http://127.0.0.1:{port}/'), 250)\">Open popup</button>"
+    );
+    let url = format!(
+        "http://127.0.0.1:{}/",
+        serve(vec![("/".into(), page.into_bytes())])
+    );
+    let mut h = Host::new(&state);
+    let (id, page) = h.open(CALLER, engine, json!({"url": url})).await;
+    let link = find(&page, "button", "Open popup");
+    let clicked = h
+        .call(CALLER, "do", &id, act(&format!("click {link}")))
+        .await
+        .unwrap();
+    let seen = h.call(CALLER, "observe", &id, json!({})).await.unwrap();
+    let next = find(&seen, "button", "Continue");
+    let started = std::time::Instant::now();
+    h.call(CALLER, "do", &id, act(&format!("click {next}")))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let continued = h.call(CALLER, "text", &id, json!({})).await.unwrap();
+    h.call(CALLER, "close", &id, json!({})).await.unwrap();
+    println!(
+        "late popup: trail {}, page {}; second action {elapsed:?}: {}",
+        clicked["trail"], seen["title"], continued["text"]
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "second action took {elapsed:?}"
+    );
+    assert!(continued["text"].as_str().unwrap().contains("Continued"));
+    assert_eq!(clicked["trail"][0]["followed"], "t2");
+    assert_eq!(seen["tab"], "t2");
+    assert_eq!(seen["title"], "late popup");
 }
 
 /// Each open is a session in a browser of its own, on a profile of its

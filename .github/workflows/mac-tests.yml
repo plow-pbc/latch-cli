@@ -76,7 +76,8 @@ jobs:
         working-directory: latch/messages-reader
       - if: matrix.shard == 1
         run: |
-          app="$RUNNER_TEMP/Plow Latch.app"
+          . macos/identity.sh
+          app="$RUNNER_TEMP/$LATCH_APP_NAME.app"
           sh ../scripts/macos-app-bundle.sh 0.0.0 target/debug/latch "$app"
           codesign --force --sign - "$app"
           codesign --verify --deep --strict --verbose=2 "$app"

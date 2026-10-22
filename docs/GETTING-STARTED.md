@@ -46,12 +46,13 @@ the host.
 `--state-dir DIR` on the installer puts the plugins in another state folder
 instead; pass the same `--state-dir DIR` to every `latch` command then.
 
-**Update:** run the same command again (`curl -O` replaces the `install.sh`
-already there). The installer replaces
-the binary in place and skips anything already installed at the pinned
-version. Running it twice changes nothing. A host that `latch serve` or
+**Update:** run `latch update` (`latch update --check` only says whether a
+newer build is out; `latch update TAG` installs that build, also how to go
+back). It replaces the binary (on macOS, the whole `Plow Latch.app`) and
+skips anything already installed at the pinned version. A host that
 `latch serve -d` started is stopped and started again with the new latch,
-with the same flags.
+with the same flags. A host running in a terminal (`latch serve`) is
+stopped, and the update says to run `latch serve` there again.
 
 If the previous host was started with folder arguments, automatic restart
 is refused. Start once with `latch serve -d`, adding any `--deny-exec` or

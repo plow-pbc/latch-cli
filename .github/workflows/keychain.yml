@@ -25,10 +25,11 @@ jobs:
     environment: release
     runs-on: macos-15
     timeout-minutes: 45
-    env:
-      IDENTITY: 'Developer ID Application: The Plow Collective, Inc (3559PD337Z)'
     steps:
       - uses: actions/checkout@v4
+      # Who the app is (latch/macos/identity.sh), for every step after this.
+      - name: Identity
+        run: env -i /bin/sh -c 'set -a; . latch/macos/identity.sh; env' | grep '^LATCH_' >> "$GITHUB_ENV"
       - name: Build latch and its tests
         working-directory: latch
         run: |
@@ -58,16 +59,16 @@ jobs:
           rm "$cert"
           security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$KEYCHAIN_PATH"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$IDENTITY\""
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$LATCH_SIGNING_IDENTITY\""
       - name: Sign Plow Latch.app
         shell: bash
         run: |
-          app="$RUNNER_TEMP/Plow Latch.app"
+          app="$RUNNER_TEMP/$LATCH_APP_NAME.app"
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
           sh scripts/macos-app-bundle.sh "$version" latch/target/release/latch "$app"
           test -f "$app/Contents/embedded.provisionprofile"
           codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
-            --entitlements latch/macos/latch.entitlements --sign "$IDENTITY" "$app"
+            --entitlements latch/macos/latch.entitlements --sign "$LATCH_SIGNING_IDENTITY" "$app"
           codesign --verify --strict --verbose=2 "$app"
           codesign -dvvv --entitlements - "$app" 2>&1
           mkdir -p "$RUNNER_TEMP/bin"
