@@ -52,15 +52,26 @@ func length(_ count: Int, littleEndian: Bool = true) -> [UInt8] {
 func archive(_ text: String, inside: [UInt8] = [], end: Bool = true, littleEndian: Bool = true) -> [UInt8] {
     let signature = littleEndian ? "streamtyped" : "typedstream"
     let version: [UInt8] = littleEndian ? [0x81, 0xe8, 0x03] : [0x81, 0x03, 0xe8]
-    return [4, 11] + Array(signature.utf8) + version
-        + [0x84, 0x01, 0x40, 0x84, 0x84, 0x84, 0x08] + Array("NSString".utf8) + [0x01, 0x85]
-        + [0x84, 0x01, 0x2b] + length(text.utf8.count, littleEndian: littleEndian) + Array(text.utf8)
-        + inside + (end ? [0x86] : [])
+    // Appended a part at a time: one long `+` chain is more than some
+    // compilers will type-check.
+    var bytes: [UInt8] = [4, 11]
+    bytes += Array(signature.utf8)
+    bytes += version
+    bytes += [0x84, 0x01, 0x40, 0x84, 0x84, 0x84, 0x08] as [UInt8]
+    bytes += Array("NSString".utf8)
+    bytes += [0x01, 0x85, 0x84, 0x01, 0x2b] as [UInt8]
+    bytes += length(text.utf8.count, littleEndian: littleEndian)
+    bytes += Array(text.utf8)
+    bytes += inside
+    if end { bytes.append(0x86) }
+    return bytes
 }
 
 /// `count` objects inside one another, each an NSString with no contents.
 func nested(_ count: Int) -> [UInt8] {
-    Array([[UInt8]](repeating: [0x92, 0x84, 0x93], count: count).joined()) + [UInt8](repeating: 0x86, count: count)
+    let opened: [UInt8] = Array([[UInt8]](repeating: [0x92, 0x84, 0x93], count: count).joined())
+    let ended: [UInt8] = [UInt8](repeating: 0x86, count: count)
+    return opened + ended
 }
 
 /// Bodies that break each limit, each after its text, where a scan for the
@@ -73,8 +84,11 @@ enum Malformed {
     /// A second string whose length runs far past the end.
     static let lying = archive("short", inside: [0x94, 0x81, 0xff, 0x7f] + Array("tail".utf8))
     /// Long enough to outlast a small budget: a thousand short strings.
-    static let slow = archive(
-        "slow", inside: Array([[UInt8]](repeating: [0x94, 0x7f] + [UInt8](repeating: 0x61, count: 127), count: 7000).joined()))
+    static let slow: [UInt8] = {
+        let string: [UInt8] = [0x94, 0x7f] + [UInt8](repeating: 0x61, count: 127)
+        let strings: [UInt8] = Array([[UInt8]](repeating: string, count: 7000).joined())
+        return archive("slow", inside: strings)
+    }()
 }
 
 /// Nanoseconds since 2001, `secondsAgo` before `now`, as `message.date` holds them.

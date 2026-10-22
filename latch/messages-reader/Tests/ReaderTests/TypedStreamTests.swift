@@ -80,17 +80,28 @@ func eachLimitRejectsItsBodyEvenAfterTheText() throws {
     // Structs inside structs nest like objects: 65 of them (66 with the
     // string's object) is too deep, 63 is not.
     let structs = { (count: Int) -> [UInt8] in
-        let type = Array(String(repeating: "{=", count: count).utf8) + [UInt8(ascii: "i")]
-            + [UInt8](repeating: UInt8(ascii: "}"), count: count)
-        return [0x84] + length(type.count) + type + [0x00]
+        var type: [UInt8] = Array(String(repeating: "{=", count: count).utf8)
+        type.append(UInt8(ascii: "i"))
+        type += [UInt8](repeating: UInt8(ascii: "}"), count: count)
+        var group: [UInt8] = [0x84]
+        group += length(type.count)
+        group += type
+        group.append(0x00)
+        return group
     }
     #expect(decodeAttributedBody(archive("ok", inside: structs(65))) == .failure(.tooDeep))
     #expect(try decodeAttributedBody(archive("ok", inside: structs(63))).get() == "ok")
     // Arrays of structs, too.
-    let arrays = Array("[1".utf8) + Array(String(repeating: "{=", count: 70).utf8) + [UInt8(ascii: "i")]
-        + [UInt8](repeating: UInt8(ascii: "}"), count: 70) + [UInt8(ascii: "]")]
-    #expect(decodeAttributedBody(archive("ok", inside: [0x84] + length(arrays.count) + arrays + [0x00]))
-        == .failure(.tooDeep))
+    var arrays: [UInt8] = Array("[1".utf8)
+    arrays += Array(String(repeating: "{=", count: 70).utf8)
+    arrays.append(UInt8(ascii: "i"))
+    arrays += [UInt8](repeating: UInt8(ascii: "}"), count: 70)
+    arrays.append(UInt8(ascii: "]"))
+    var group: [UInt8] = [0x84]
+    group += length(arrays.count)
+    group += arrays
+    group.append(0x00)
+    #expect(decodeAttributedBody(archive("ok", inside: group)) == .failure(.tooDeep))
     // Cut short: the string's object never ends.
     #expect(decodeAttributedBody(archive("ok", end: false)) == .failure(.badLength))
 }
@@ -123,7 +134,9 @@ func truncatedAndInvalidFramesAreErrors() {
 @Test
 func theCostliestBodyStopsWithinItsBudget() {
     // The worst the size limit allows: half a million of the smallest values.
-    let worst = archive("ok", inside: [0x84, 0x01, 0x69, 0x00] + Array([[UInt8]](repeating: [0x95, 0x00], count: 500_000).joined()))
+    var values: [UInt8] = [0x84, 0x01, 0x69, 0x00]
+    values += Array([[UInt8]](repeating: [0x95, 0x00], count: 500_000).joined())
+    let worst = archive("ok", inside: values)
     let started = ContinuousClock.now
     let result = decodeAttributedBody(worst)
     // Read, or refused as too slow; either way, about when the budget ends
