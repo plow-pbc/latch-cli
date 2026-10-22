@@ -990,6 +990,21 @@ fn each_call_shows_its_kind_and_its_command_as_typed() {
         ok(),
         None,
     );
+    // As sent: the secret's value; as audited: its length. Only its name shows.
+    let secret = json!({"argv": ["sh", "-c", "echo $DEMO"], "workdir": "/Users/o",
+                        "secret_env": {"DEMO": "hunter2"}, "timeout": 30, "stdin": [104, 105]});
+    let audited = json!({"argv": ["sh", "-c", "echo $DEMO"], "workdir": "/Users/o",
+                         "secret_env": [{"name": "DEMO", "secret": true, "length": 7}],
+                         "timeout": 30, "stdin": {"size": 2}, "exit_code": 0});
+    run(
+        &dashboard,
+        owner(),
+        "exec",
+        secret,
+        audited.clone(),
+        ok(),
+        None,
+    );
     let labels = json!({"gog_args": ["--account", "owner@example.com", "gmail", "labels", "list"]});
     let unconnected = Response::Error {
         exit: Exit::Failed,
@@ -1058,7 +1073,12 @@ fn each_call_shows_its_kind_and_its_command_as_typed() {
             row("exec", "sh -c 'echo went wrong >&2; exit 1'", "exit 1"),
             row(
                 "exec",
-                "--network --write 'out dir' curl -sSI https://example.com",
+                "--write 'out dir' --network curl -sSI https://example.com",
+                "ok · exit 0"
+            ),
+            row(
+                "exec",
+                "--workdir /Users/o --secret-env DEMO=••• --timeout 30 -i sh -c 'echo $DEMO'",
                 "ok · exit 0"
             ),
             row(
@@ -1071,6 +1091,35 @@ fn each_call_shows_its_kind_and_its_command_as_typed() {
             row("file", "get notes.txt", "ok · 10 B"),
             row("browser", "observe", "ok"),
         ]
+    );
+    assert!(
+        !serde_json::to_string(&board(&dashboard))
+            .unwrap()
+            .contains("hunter2")
+    );
+    // A call restored from its audit record alone reads the same.
+    let mut record = crate::audit::record("host-key", None, "exec", "allow", "ok");
+    record.time = "2026-10-22T14:00:00Z".into();
+    record.args = audited;
+    let (_, _, restored) = recorded(&record, "host-key").unwrap();
+    assert_eq!(
+        restored.command,
+        "--workdir /Users/o --secret-env DEMO=••• --timeout 30 -i sh -c 'echo $DEMO'"
+    );
+    // And so it does in the inspector.
+    let mut view = view_of(&dashboard, false);
+    view.key(Key::Char('/'));
+    for ch in "DEMO".chars() {
+        view.key(Key::Char(ch));
+    }
+    view.key(Key::Enter);
+    view.key(Key::Enter);
+    let details = screen(&view, 120, 30).join("\n");
+    assert!(
+        details.contains(
+            "Command: latch exec --workdir /Users/o --secret-env DEMO=••• --timeout 30 -i sh -c"
+        ),
+        "{details}"
     );
 }
 

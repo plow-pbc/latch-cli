@@ -282,7 +282,8 @@ pub async fn run(
     let input = args.stdin.take();
     let mut audit = json!({ "argv": args.argv, "workdir": args.workdir,
                            "writes": args.writes, "network": args.network,
-                           "secret_env": secret_metadata(&args.secret_env) });
+                           "secret_env": secret_metadata(&args.secret_env),
+                           "timeout": timeout });
     if let Some(bytes) = &input {
         audit["stdin"] = stdin_audit(bytes);
     }

@@ -226,14 +226,36 @@ fn command(op: &str, request: &Value, audit: &Value) -> (String, String) {
     let mut line: Vec<String> = Vec::new();
     let kind = match op {
         "exec" => {
-            if pick("network") == true {
-                line.push("--network".into());
+            if let Some(dir) = pick("workdir").as_str() {
+                line.extend(["--workdir".into(), quoted(dir)]);
             }
             for path in words(pick("writes")) {
                 line.extend(["--write".into(), quoted(&path)]);
             }
-            if let Some(dir) = pick("workdir").as_str() {
-                line.extend(["--workdir".into(), quoted(dir)]);
+            if pick("network") == true {
+                line.push("--network".into());
+            }
+            // A secret by its name only: the request holds its value, the
+            // audit its length; neither is shown.
+            let secrets = pick("secret_env");
+            let names: Vec<&str> = match &secrets {
+                Value::Object(secrets) => secrets.keys().map(String::as_str).collect(),
+                Value::Array(secrets) => secrets
+                    .iter()
+                    .filter_map(|secret| secret["name"].as_str())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for name in names {
+                line.extend(["--secret-env".into(), format!("{}=•••", quoted(name))]);
+            }
+            if let Some(timeout) = pick("timeout").as_u64()
+                && timeout != 60
+            {
+                line.extend(["--timeout".into(), timeout.to_string()]);
+            }
+            if !pick("stdin").is_null() {
+                line.push("-i".into());
             }
             let argv = crate::redact::argv(&words(pick("argv")));
             line.extend(argv.iter().map(|word| quoted(word)));
