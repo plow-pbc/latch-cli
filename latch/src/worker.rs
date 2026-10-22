@@ -20,8 +20,9 @@
 //!   gog JSON, download metadata and file bytes from its private call folder;
 //! - `probe`: confines itself and exits 0, so the host knows at startup
 //!   that the sandbox can be installed;
-//! - `access PATH` (macOS): one line saying whether PATH can be listed,
-//!   that is whether the host has Full Disk Access for it;
+//! - `access CONNECTOR PATH` (macOS): one line saying whether the
+//!   connector's stores in PATH can be opened, that is whether the host has
+//!   Full Disk Access for them;
 //! - on any failure of the worker itself: a last line
 //!   `{"worker_error": {"code": ..., "message": ...}}` on stderr and exit 125
 //!   (the code tools like `env` use for "the wrapper failed, not the
@@ -207,11 +208,12 @@ impl WorkerSetup {
             .unwrap_or_else(|| error("sandbox_failed", &sandbox::startup_error(&stderr))))
     }
 
-    /// Runs `latch worker access -- FOLDER` in a worker that writes nowhere
+    /// Runs `latch worker access CONNECTOR -- FOLDER` in a worker that writes nowhere
     /// and may read only FOLDER, which it alone does not hide.
     #[cfg(target_os = "macos")]
     pub async fn access(
         &self,
+        connector: crate::plugins::Connector,
         folder: &Path,
     ) -> Result<crate::messages::access::Access, WorkerError> {
         // Hidden paths are kept both as named and where they really are.
@@ -234,6 +236,7 @@ impl WorkerSetup {
         let mut command = restricted.command(Path::new("/"))?;
         command
             .arg("access")
+            .arg(connector.name())
             .arg("--")
             .arg(folder)
             .stdin(Stdio::null())
@@ -440,8 +443,12 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         // Confined, which is all a probe has to show.
         WorkerAction::Probe => return ExitCode::SUCCESS,
         #[cfg(target_os = "macos")]
-        WorkerAction::Access { path } => {
-            let access = crate::messages::access::probe(path);
+        WorkerAction::Access { connector, path } => {
+            let connector = match crate::plugins::Connector::named(connector) {
+                Ok(connector) => connector,
+                Err(failure) => return fail(&failure.code, &failure.message),
+            };
+            let access = crate::messages::access::probe(connector, path);
             println!(
                 "{}",
                 serde_json::to_string(&access).expect("access serializes")

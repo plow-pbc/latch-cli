@@ -108,33 +108,63 @@ async fn a_disabled_connector_is_refused_before_it_is_judged_or_given_a_credenti
     assert_eq!(shown["enable"], "latch plugins enable google");
 }
 
+/// Where this host's pinned gog goes.
+fn gog_folder(t: &TestHost) -> PathBuf {
+    t.state
+        .join("plugins/gog")
+        .join(&crate::google::PIN.version)
+}
+
+#[tokio::test]
+async fn google_setup_refuses_a_missing_or_unverified_gog_and_stays_off() {
+    let t = start(covered()).await;
+    ok(plugins(&t, "disable", "google").await);
+
+    let answer = plugins(&t, "enable", "google").await;
+    assert_eq!(refusal(&answer).1, "gog_not_configured");
+    let shown = state_of(&t, "google").await;
+    assert_eq!(shown["state"], "needs_setup");
+    assert!(shown["reason"].as_str().unwrap().contains("not installed"));
+
+    // Not the pinned release: the check every Google worker makes refuses it.
+    std::fs::create_dir_all(gog_folder(&t)).unwrap();
+    std::fs::write(gog_folder(&t).join("gog"), "a stand-in gog").unwrap();
+    let answer = plugins(&t, "enable", "google").await;
+    assert_eq!(refusal(&answer).1, "gog_unverified");
+    assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
+    assert_eq!(
+        refusal(&t.local_call("google", accounts()).await).1,
+        "not_enabled"
+    );
+    assert_eq!(t.plow.saw("access-token"), 0, "no credential asked for");
+}
+
+/// With the pinned gog `just cft` installs (on macOS, where `just test`
+/// runs it) into `.dev/cft-state`.
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn google_is_enabled_only_once_its_setup_succeeds_and_stays_so_across_a_restart() {
+    use std::os::unix::fs::PermissionsExt;
     let t = start(World {
         decide: Some(always_covered),
         ..World::default()
     })
     .await;
     ok(plugins(&t, "disable", "google").await);
+    let pinned = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../.dev/cft-state/plugins/gog")
+        .join(&crate::google::PIN.version)
+        .join("gog");
+    let gog = gog_folder(&t).join("gog");
+    std::fs::create_dir_all(gog_folder(&t)).unwrap();
+    std::fs::copy(&pinned, &gog).expect("the pinned gog; run `just cft`");
 
-    // No gog: needs setup, and still refused.
+    std::fs::set_permissions(&gog, std::fs::Permissions::from_mode(0o644)).unwrap();
     let answer = plugins(&t, "enable", "google").await;
-    assert_eq!(refusal(&answer).1, "gog_not_configured");
-    let shown = state_of(&t, "google").await;
-    assert_eq!(shown["state"], "needs_setup");
-    assert!(shown["reason"].as_str().unwrap().contains("not installed"));
-    assert_eq!(
-        refusal(&t.local_call("google", accounts()).await).1,
-        "not_enabled"
-    );
+    assert_eq!(refusal(&answer).1, "gog_not_executable");
+    std::fs::set_permissions(&gog, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     // gog, but no Google account connected in Plow.
-    let gog = t
-        .state
-        .join("plugins/gog")
-        .join(&crate::google::PIN.version);
-    std::fs::create_dir_all(&gog).unwrap();
-    std::fs::write(gog.join("gog"), "a stand-in gog").unwrap();
     let answer = plugins(&t, "enable", "google").await;
     assert_eq!(refusal(&answer).1, "google_not_connected");
     assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
@@ -250,41 +280,63 @@ async fn only_the_owner_at_the_host_turns_a_plugin_on_or_off() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn messages_and_contacts_are_enabled_only_with_the_hosts_full_disk_access() {
+async fn messages_and_contacts_are_enabled_only_once_the_host_can_open_their_stores() {
     use std::os::unix::fs::PermissionsExt;
     let t = start(covered()).await;
     let home = t.state.parent().unwrap().join("home");
+    let mode = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    let enable = |name: &'static str| plugins(&t, "enable", name);
+    let access = |answer: &Response| {
+        let (_, code, details) = refusal(answer);
+        assert_eq!(code, "needs_setup");
+        details["access"].as_str().unwrap().to_string()
+    };
 
-    let answer = plugins(&t, "enable", "messages").await;
-    let (_, code, details) = refusal(&answer);
-    assert_eq!(code, "needs_setup");
-    assert_eq!(details["access"], "unavailable");
-
-    // Unreadable, as a folder macOS protects is to a host without access.
+    // No folder, then a folder with no database: nothing to read.
+    assert_eq!(access(&enable("messages").await), "unavailable");
     let messages = home.join("Library/Messages");
     std::fs::create_dir_all(&messages).unwrap();
-    std::fs::set_permissions(&messages, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let answer = plugins(&t, "enable", "messages").await;
-    std::fs::set_permissions(&messages, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let (_, code, details) = refusal(&answer);
-    assert_eq!(code, "needs_setup");
-    assert_eq!(details["access"], "not_granted");
+    assert_eq!(access(&enable("messages").await), "unavailable");
+
+    // A folder the host may not list, as macOS refuses a host without access.
+    std::fs::write(messages.join("chat.db"), "a synthetic store").unwrap();
+    mode(&messages, 0o000);
+    let answer = enable("messages").await;
+    mode(&messages, 0o700);
+    assert_eq!(access(&answer), "not_granted");
+    let details = refusal(&answer).2;
     assert_eq!(details["grant"], json!(t.host.workers.program));
     assert_eq!(details["settings"], crate::messages::access::SETTINGS);
-    let shown = state_of(&t, "messages").await;
-    assert_eq!(shown["state"], "needs_setup");
+
+    // A listable folder whose database the host may not open.
+    mode(&messages.join("chat.db"), 0o000);
+    let answer = enable("messages").await;
+    mode(&messages.join("chat.db"), 0o600);
+    assert_eq!(access(&answer), "not_granted");
+    assert_eq!(state_of(&t, "messages").await["state"], "needs_setup");
     assert_eq!(
         refusal(&t.local_call("messages", json!({})).await).1,
         "not_enabled"
     );
 
-    let enabled = ok(plugins(&t, "enable", "messages").await);
+    let enabled = ok(enable("messages").await);
     assert_eq!(enabled["access"], "granted");
     assert_eq!(state_of(&t, "messages").await["state"], "enabled");
-    // Each connector is checked on its own.
-    assert_eq!(state_of(&t, "contacts").await["state"], "disabled");
-    let answer = plugins(&t, "enable", "contacts").await;
-    assert_eq!(refusal(&answer).2["access"], "unavailable");
+
+    // Contacts, checked on its own: every store in Sources must open.
+    let book = home.join("Library/Application Support/AddressBook");
+    let source = book.join("Sources/A1");
+    std::fs::create_dir_all(&source).unwrap();
+    assert_eq!(access(&enable("contacts").await), "unavailable");
+    std::fs::write(source.join("AddressBook-v22.abcddb"), "a synthetic store").unwrap();
+    std::fs::write(book.join("AddressBook-v22.abcddb"), "a synthetic store").unwrap();
+    mode(&source.join("AddressBook-v22.abcddb"), 0o000);
+    let answer = enable("contacts").await;
+    mode(&source.join("AddressBook-v22.abcddb"), 0o600);
+    assert_eq!(access(&answer), "not_granted");
+    assert_eq!(ok(enable("contacts").await)["access"], "granted");
 }
 
 #[cfg(target_os = "macos")]

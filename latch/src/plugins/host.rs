@@ -6,6 +6,8 @@
 #[cfg(target_os = "macos")]
 use std::path::Path;
 
+use std::os::unix::fs::PermissionsExt;
+
 use serde_json::{Map, Value, json};
 
 use super::{Connector, Plugins, Setting};
@@ -94,11 +96,19 @@ async fn disable(plugins: &Plugins, connector: Connector) -> Result<Value, Failu
     Ok(json!({"plugin": connector.name(), "state": "disabled", "waited_for": running}))
 }
 
-/// Google's setup: gog is installed, and Plow has a Google account
+/// Google's setup: the pinned gog is installed, and Plow has a Google account
 /// connected that it gives this host credentials for. Nothing is kept here:
 /// Plow still hands out short-lived credentials per operation.
 async fn google(workers: &WorkerSetup, plow: &Plow) -> Result<Value, Failure> {
-    crate::google::host::gog_program(&workers.state_dir, &crate::google::PIN.version)?;
+    let gog = crate::google::host::gog_program(&workers.state_dir, &crate::google::PIN.version)?;
+    // The check every Google worker makes before it runs gog.
+    crate::google::process::verify(&gog)?;
+    let executable = std::fs::metadata(&gog)
+        .is_ok_and(|gog| gog.is_file() && gog.permissions().mode() & 0o111 != 0);
+    if !executable {
+        let message = format!("{} cannot be run; run install.sh again", gog.display());
+        return Err(Failure::failed("gog_not_executable", message));
+    }
     let tokens = plow.google_tokens().await?;
     let accounts: Vec<&str> = tokens
         .accounts
@@ -124,7 +134,7 @@ async fn full_disk_access(
     connector: Connector,
 ) -> Result<Value, Failure> {
     use crate::messages::access::{self, Status};
-    let access = access::check(workers, &access::folder(connector, home)).await;
+    let access = access::check(workers, connector, home).await;
     let mut details = json!({"access": access.status, "reason": access.reason});
     let message = match access.status {
         Status::Granted => return Ok(json!({"access": access.status})),

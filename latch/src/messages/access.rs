@@ -1,7 +1,8 @@
 //! Whether this host can read the owner's Messages or address book: Full
 //! Disk Access as the host process sees it, checked from a worker it
 //! starts (which macOS treats as the host's), never from the terminal
-//! that asked. The worker lists the folder and reads nothing in it.
+//! that asked. The worker opens the connector's stores read-only and reads
+//! nothing from them.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -32,7 +33,7 @@ pub struct Access {
 }
 
 /// The folder `connector` reads under `home`.
-pub fn folder(connector: Connector, home: &Path) -> PathBuf {
+fn folder(connector: Connector, home: &Path) -> PathBuf {
     match connector {
         Connector::Messages => home.join("Library/Messages"),
         Connector::Contacts => home.join("Library/Application Support/AddressBook"),
@@ -40,8 +41,9 @@ pub fn folder(connector: Connector, home: &Path) -> PathBuf {
     }
 }
 
-/// Asks a worker whether it can list `folder`.
-pub async fn check(workers: &WorkerSetup, folder: &Path) -> Access {
+/// Asks a worker whether it can open `connector`'s stores under `home`.
+pub async fn check(workers: &WorkerSetup, connector: Connector, home: &Path) -> Access {
+    let folder = folder(connector, home);
     // The worker's sandbox is built around the folder, so it must exist.
     if !folder.exists() {
         return Access {
@@ -49,21 +51,103 @@ pub async fn check(workers: &WorkerSetup, folder: &Path) -> Access {
             reason: format!("{} does not exist", folder.display()),
         };
     }
-    workers.access(folder).await.unwrap_or_else(|err| Access {
-        status: Status::Unavailable,
-        reason: format!("the access check could not run: {}", err.message),
-    })
+    workers
+        .access(connector, &folder)
+        .await
+        .unwrap_or_else(|err| Access {
+            status: Status::Unavailable,
+            reason: format!("the access check could not run: {}", err.message),
+        })
 }
 
-/// The worker's side, once confined: lists `folder`.
-pub fn probe(folder: &Path) -> Access {
-    let (status, reason) = match std::fs::read_dir(folder) {
-        Ok(_) => (Status::Granted, format!("{} can be read", folder.display())),
-        // EPERM (privacy protection) and EACCES alike.
-        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-            (Status::NotGranted, format!("{}: {err}", folder.display()))
-        }
-        Err(err) => (Status::Unavailable, format!("{}: {err}", folder.display())),
+/// The worker's side, once confined: finds `connector`'s stores in
+/// `folder` and opens each read-only, reading nothing from them. Every one
+/// must open, as the reader opens them all.
+pub fn probe(connector: Connector, folder: &Path) -> Access {
+    let stores = match stores(connector, folder) {
+        Ok(stores) => stores,
+        Err((path, err)) => return refused(&path, &err),
     };
-    Access { status, reason }
+    if stores.is_empty() {
+        return Access {
+            status: Status::Unavailable,
+            reason: format!(
+                "there is no {} store in {}",
+                connector.name(),
+                folder.display()
+            ),
+        };
+    }
+    for store in &stores {
+        if let Err(err) = std::fs::File::open(store) {
+            return refused(store, &err);
+        }
+    }
+    Access {
+        status: Status::Granted,
+        reason: format!(
+            "{} store(s) in {} can be opened",
+            stores.len(),
+            folder.display()
+        ),
+    }
+}
+
+/// Where the reader looks: Messages' `chat.db`; the address book's
+/// `AddressBook-v22.abcddb`, at its top and in each of its `Sources`.
+fn stores(connector: Connector, folder: &Path) -> Result<Vec<PathBuf>, (PathBuf, io::Error)> {
+    const ADDRESS_BOOK: &str = "AddressBook-v22.abcddb";
+    let list = |dir: &Path| -> Result<Vec<PathBuf>, (PathBuf, io::Error)> {
+        let entries = std::fs::read_dir(dir).map_err(|err| (dir.to_path_buf(), err))?;
+        entries
+            .map(|entry| {
+                entry
+                    .map(|entry| entry.path())
+                    .map_err(|err| (dir.to_path_buf(), err))
+            })
+            .collect()
+    };
+    let candidates = match connector {
+        Connector::Messages => {
+            list(folder)?;
+            vec![folder.join("chat.db")]
+        }
+        Connector::Contacts => {
+            let mut found = vec![folder.join(ADDRESS_BOOK)];
+            let sources = folder.join("Sources");
+            if list(folder)?.contains(&sources) {
+                found.extend(
+                    list(&sources)?
+                        .iter()
+                        .map(|source| source.join(ADDRESS_BOOK)),
+                );
+            }
+            found
+        }
+        Connector::Google => unreachable!("Google needs no Full Disk Access"),
+    };
+    let mut stores = Vec::new();
+    for candidate in candidates {
+        match std::fs::metadata(&candidate) {
+            Ok(_) => stores.push(candidate),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err((candidate, err)),
+        }
+    }
+    Ok(stores)
+}
+
+/// What a failure to list or open `path` means: macOS refusing (EPERM, for
+/// a host without Full Disk Access) or a permission denied is `not_granted`;
+/// anything else, `unavailable`.
+fn refused(path: &Path, err: &io::Error) -> Access {
+    let status = if err.kind() == io::ErrorKind::PermissionDenied {
+        Status::NotGranted
+    } else {
+        Status::Unavailable
+    };
+    Access {
+        status,
+        reason: format!("{}: {err}", path.display()),
+    }
 }

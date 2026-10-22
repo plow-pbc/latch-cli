@@ -3001,7 +3001,9 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
 
 /// The Messages setup asks the running host, whose Full Disk Access is what
 /// counts, never the terminal that runs `plugins enable`. Each side here
-/// has a home of its own, readable for one and not for the other.
+/// has a home of its own, readable for one and not for the other. A host
+/// that can read Messages still keeps it from exec and file workers, even
+/// with the folder shared.
 #[cfg(target_os = "macos")]
 #[test]
 fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
@@ -3019,6 +3021,8 @@ fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
     let readable = |home: &Path, yes: bool| {
         let messages = home.join("Library/Messages");
         fs::create_dir_all(&messages).unwrap();
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(messages.join("chat.db"), "a synthetic store").unwrap();
         let mode = if yes { 0o700 } else { 0o000 };
         fs::set_permissions(&messages, fs::Permissions::from_mode(mode)).unwrap();
     };
@@ -3038,7 +3042,8 @@ fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
         (output.status.code(), json)
     };
     let serve_at = |home: &Path| {
-        let mut command = serve_command(&host, &[&share], &relay);
+        let messages = home.join("Library/Messages");
+        let mut command = serve_command(&host, &[&share, &messages], &relay);
         command.env("HOME", home);
         let (serve, log, _) = serving_with(command);
         thread::spawn(move || {
@@ -3076,6 +3081,26 @@ fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
     assert_eq!(code, Some(0), "{enabled}");
     assert_eq!(enabled["access"], "granted");
     assert_eq!(enabled["state"], "enabled");
+
+    let store = host_home.join("Library/Messages/chat.db");
+    let store = store.to_str().unwrap();
+    let cat = latch(&host, &["exec", "--", "cat", store], &[]);
+    let ran: Value = serde_json::from_slice(&cat.stdout).unwrap();
+    println!("latch exec cat chat.db: {ran}");
+    assert_eq!(ran["exit_code"], 1);
+    assert!(
+        ran["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("Operation not permitted")
+    );
+    assert!(!ran.to_string().contains("synthetic store"));
+    let copy = dir.path().join("copy.db");
+    let get = latch(&host, &["file", "get", store, copy.to_str().unwrap()], &[]);
+    let error: Value = serde_json::from_slice(&get.stderr).unwrap();
+    println!("latch file get chat.db: {error}");
+    assert_eq!(error["error"]["code"], "sandbox_denied");
+    assert!(!copy.exists());
 }
 
 /// A host sharing `share`, with its exec temp folders made in `tmp`, and

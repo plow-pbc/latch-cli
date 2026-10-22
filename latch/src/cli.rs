@@ -701,10 +701,10 @@ pub enum WorkerAction {
     /// Confine itself, as every worker does, then exit: the host's startup
     /// check that the sandbox can really be installed
     Probe,
-    /// Print whether PATH can be listed, as this host sees it: the Messages
-    /// and Contacts setups' Full Disk Access check
+    /// Print whether CONNECTOR's stores in PATH can be opened, as this host
+    /// sees it: the Messages and Contacts setups' Full Disk Access check
     #[cfg(target_os = "macos")]
-    Access { path: PathBuf },
+    Access { connector: String, path: PathBuf },
     /// Become ARGV, run from WORKDIR (inside an area)
     Exec {
         #[arg(long)]
