@@ -6,8 +6,8 @@ on a machine its owner trusts, over Plow's directory.
 ## Install
 
 Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
-(`gh auth login`). Releases are tagged `v<version>-build.<UTC yyyymmddHHMM>`,
-e.g. `v0.1.0-build.202610211830`. This installs the newest published one; set
+(`gh auth login`). Releases are tagged `v<version>-<build>`, e.g. `v0.1.0-1327`, where the build
+number counts release runs; `latch --version` shows it as `0.1.0 (1327)`. This installs the newest published one; set
 `release` to a tag to pick another:
 
 ```sh
