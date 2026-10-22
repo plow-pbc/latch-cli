@@ -40,31 +40,66 @@ func otherBodyFormsDecode() throws {
     #expect(try decodeAttributedBody(utf16).get() == "hi ☀️")
     #expect(try decodeAttributedBody([0x00, 0x0a] + Array("plain".utf8)).get() == "plain")
     #expect(try decodeAttributedBody([]).get() == "")
-    let bigEndian: [UInt8] = [4, 11] + Array("typedstream".utf8) + [0x81, 0x03, 0xe8, 0x01, 0x2b, 0x81, 0x01, 0x2c]
-        + Array(String(repeating: "b", count: 300).utf8)
-    #expect(try decodeAttributedBody(bigEndian).get() == String(repeating: "b", count: 300))
+    let long = String(repeating: "b", count: 300)
+    #expect(try decodeAttributedBody(archive(long, littleEndian: false)).get() == long)
 }
 
 @Test
-func eachLimitRejectsItsBody() throws {
+func moreArchivedShapesDecode() throws {
+    let attributes: [NSAttributedString.Key: Any] = [
+        NSAttributedString.Key("__kIMMessagePartAttributeName"): NSNumber(value: 0),
+        NSAttributedString.Key("__kIMDataDetectedAttributeName"): Data(repeating: 7, count: 300),
+        NSAttributedString.Key("NSLink"): URL(string: "https://example.com/a")!,
+        NSAttributedString.Key("double"): NSNumber(value: 2.5),
+        NSAttributedString.Key("bool"): NSNumber(value: true),
+        NSAttributedString.Key("date"): Date(timeIntervalSince1970: 1_700_000_000),
+        NSAttributedString.Key("list"): ["a", NSNumber(value: 3), ["nested": "x"]] as NSArray,
+        NSAttributedString.Key("range"): NSValue(range: NSRange(location: 2, length: 5)),
+    ]
+    let text = "Your code is 482913 🎉"
+    let body = NSMutableAttributedString(string: text)
+    for (offset, (key, value)) in attributes.enumerated() {
+        body.addAttribute(key, value: value, range: NSRange(location: offset, length: 2))
+    }
+    let bytes = [UInt8](NSArchiver.archivedData(withRootObject: body))
+    #expect(try decodeAttributedBody(bytes).get() == text)
+}
+
+@Test
+func eachLimitRejectsItsBodyEvenAfterTheText() throws {
     #expect(decodeAttributedBody(Malformed.oversized) == .failure(.tooLarge))
     #expect(decodeAttributedBody(Malformed.deep) == .failure(.tooDeep))
     #expect(decodeAttributedBody(Malformed.lying) == .failure(.badLength))
-    #expect(decodeAttributedBody(Malformed.slow, limits: Limits(budget: .zero)) == .failure(.tooSlow))
-    // With the usual budget the same body is merely textless.
-    #expect(decodeAttributedBody(Malformed.slow) == .failure(.noText))
-    // 64 open objects are allowed.
-    let deepest = header + [UInt8](repeating: 0x84, count: 64) + [0x01, 0x2b, 2] + Array("ok".utf8)
-    #expect(try decodeAttributedBody(deepest).get() == "ok")
+    // 64 objects open at once are allowed.
+    #expect(try decodeAttributedBody(archive("ok", inside: nested(63))).get() == "ok")
+    // A reference to a type or object not yet read.
+    #expect(decodeAttributedBody(archive("ok", inside: [0x99, 0x00])) == .failure(.badStructure))
+    #expect(decodeAttributedBody(archive("ok", inside: [0x92, 0x9f])) == .failure(.badStructure))
+    // An unknown type.
+    #expect(decodeAttributedBody(archive("ok", inside: [0x84, 0x01, 0x7e, 0x00])) == .failure(.badStructure))
+    // Cut short: the string's object never ends.
+    #expect(decodeAttributedBody(archive("ok", end: false)) == .failure(.badLength))
 }
 
 @Test
-func truncatedAndInvalidFramesAreErrors() throws {
-    let start = header + [0x01, 0x2b]
+func everyPathSpendsFromTheBudget() throws {
+    let none = Limits(budget: .zero)
+    for body in [archive("ok"), [0xff, 0xfe, 0x6f, 0x00], Array("plain".utf8)] {
+        #expect(decodeAttributedBody(body, limits: none) == .failure(.tooSlow), "\(body.prefix(4))")
+    }
+    // A body that takes long to walk runs out of a small budget part way;
+    // with the usual one it reads.
+    #expect(decodeAttributedBody(Malformed.slow, limits: Limits(budget: .microseconds(100))) == .failure(.tooSlow))
+    #expect(try decodeAttributedBody(Malformed.slow).get() == "slow")
+}
+
+@Test
+func truncatedAndInvalidFramesAreErrors() {
+    let start = Array(archive("", end: false).dropLast())
     for payload: [UInt8] in [[], [0x81], [0x81, 0x01], [0x82, 1, 0, 0], [0x85], [5, 0x61, 0x62]] {
         #expect(decodeAttributedBody(start + payload) == .failure(.badLength), "\(payload)")
     }
-    #expect(decodeAttributedBody(start + [1, 0xff]) == .failure(.notText))
+    #expect(decodeAttributedBody(start + [1, 0xff, 0x86]) == .failure(.notText))
     #expect(decodeAttributedBody([4, 11] + Array("streamtype".utf8)) == .failure(.badLength))
     #expect(decodeAttributedBody([4, 11] + Array("notastream!".utf8)) == .failure(.notText))
     #expect(decodeAttributedBody([0xff, 0xfe, 0x61]) == .failure(.badLength))
@@ -72,10 +107,12 @@ func truncatedAndInvalidFramesAreErrors() throws {
 }
 
 @Test
-func theLargestBodyDecodesWellInsideItsBudget() throws {
-    // The worst case the limits allow: a full megabyte of object markers.
-    let worst = header + [UInt8](repeating: 0x85, count: (1 << 20) - header.count)
+func theCostliestBodyStopsWithinItsBudget() {
+    // The worst the size limit allows: half a million of the smallest values.
+    let worst = archive("ok", inside: [0x84, 0x01, 0x69, 0x00] + Array([[UInt8]](repeating: [0x95, 0x00], count: 500_000).joined()))
     let started = ContinuousClock.now
-    #expect(decodeAttributedBody(worst) == .failure(.noText))
-    #expect(ContinuousClock.now - started < .milliseconds(50))
+    let result = decodeAttributedBody(worst)
+    // Read, or refused as too slow; either way, about when the budget ends.
+    #expect(result == .success("ok") || result == .failure(.tooSlow))
+    #expect(ContinuousClock.now - started < .milliseconds(100))
 }

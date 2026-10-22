@@ -36,16 +36,45 @@ func captured(_ name: String) -> [UInt8] {
 
 let header: [UInt8] = [4, 11] + Array("streamtyped".utf8) + [0x81, 0xe8, 0x03]
 
-/// Bodies that break each limit.
+/// A length as typedstream frames it: one byte, or 0x81 and two bytes, or
+/// 0x82 and four.
+func length(_ count: Int, littleEndian: Bool = true) -> [UInt8] {
+    guard count >= 0x80 else { return [UInt8(count)] }
+    let width = count < 0x10000 ? 2 : 4
+    let bytes = (0..<width).map { UInt8(truncatingIfNeeded: count >> ($0 * 8)) }
+    return [width == 2 ? 0x81 : 0x82] + (littleEndian ? bytes : bytes.reversed())
+}
+
+/// An archive as NSArchiver writes one: an NSString holding `text`, with
+/// `inside` added inside it before it ends. Its tables then hold types
+/// `@` (0x92), `NSString` (0x93) and `+` (0x94), and objects the string
+/// (0x92) and its class (0x93).
+func archive(_ text: String, inside: [UInt8] = [], end: Bool = true, littleEndian: Bool = true) -> [UInt8] {
+    let signature = littleEndian ? "streamtyped" : "typedstream"
+    let version: [UInt8] = littleEndian ? [0x81, 0xe8, 0x03] : [0x81, 0x03, 0xe8]
+    return [4, 11] + Array(signature.utf8) + version
+        + [0x84, 0x01, 0x40, 0x84, 0x84, 0x84, 0x08] + Array("NSString".utf8) + [0x01, 0x85]
+        + [0x84, 0x01, 0x2b] + length(text.utf8.count, littleEndian: littleEndian) + Array(text.utf8)
+        + inside + (end ? [0x86] : [])
+}
+
+/// `count` objects inside one another, each an NSString with no contents.
+func nested(_ count: Int) -> [UInt8] {
+    Array([[UInt8]](repeating: [0x92, 0x84, 0x93], count: count).joined()) + [UInt8](repeating: 0x86, count: count)
+}
+
+/// Bodies that break each limit, each after its text, where a scan for the
+/// first string would stop.
 enum Malformed {
     /// Over 1 MiB.
-    static let oversized = header + [0x01, 0x2b, 0x82, 0, 0, 0x10, 0] + [UInt8](repeating: 0x61, count: 1 << 20)
-    /// 65 objects open before the text.
-    static let deep = header + [UInt8](repeating: 0x84, count: 65) + [0x01, 0x2b, 5] + Array("hello".utf8)
-    /// A length far past the end.
-    static let lying = header + [0x84, 0x01, 0x2b, 0x82, 0xff, 0xff, 0xff, 0x7f] + Array("short".utf8)
-    /// Long enough to outlast a budget: no text, nearly a megabyte to scan.
-    static let slow = header + [UInt8](repeating: 0x00, count: 900_000)
+    static let oversized = archive(String(repeating: "a", count: 1 << 20))
+    /// 65 objects open inside the text's: 66 at once.
+    static let deep = archive("hello", inside: nested(65))
+    /// A second string whose length runs far past the end.
+    static let lying = archive("short", inside: [0x94, 0x81, 0xff, 0x7f] + Array("tail".utf8))
+    /// Long enough to outlast a small budget: a thousand short strings.
+    static let slow = archive(
+        "slow", inside: Array([[UInt8]](repeating: [0x94, 0x7f] + [UInt8](repeating: 0x61, count: 127), count: 7000).joined()))
 }
 
 /// Nanoseconds since 2001, `secondsAgo` before `now`, as `message.date` holds them.

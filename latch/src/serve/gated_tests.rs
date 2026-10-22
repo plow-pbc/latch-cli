@@ -1190,14 +1190,20 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
     };
     assert_eq!(thread["count"], 3);
 
-    // Each call was judged, on the reader's own words.
+    // Each call was judged, on its effective request.
     assert_eq!(t.judged(), 3);
     let asked = t.plow.world.lock().unwrap().asked.clone();
     assert_eq!(
         asked[0]["proposed_action"],
-        json!({"operation": "messages.search", "arguments": ["--", "code"]})
+        json!({"operation": "messages.search", "arguments":
+            {"command": "search", "limit": 50, "oldest_first": false, "phrase": "code"}})
     );
     assert_eq!(asked[1]["proposed_action"]["operation"], "contacts.search");
+    assert_eq!(asked[1]["proposed_action"]["arguments"]["text"], "sample");
+    assert_eq!(
+        asked[2]["proposed_action"]["arguments"]["with"],
+        "+15550000001"
+    );
 
     // The audit keeps the action, its words and the counts; no row.
     let records = t.audit();
@@ -1237,9 +1243,12 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn a_refused_messages_read_runs_no_reader() {
+async fn a_refused_messages_read_reads_nothing() {
     let t = start(a_chat(covered_after_a_yes)).await;
-    // No reader installed: one that ran would say so.
+    // The reader plans the call (reading nothing of the owner's), and the
+    // judge refuses it: the owner's Messages and address book are never
+    // opened, so the answer is the refusal and the audit holds no result.
+    t.with_messages();
     let agent = t.caller("agent").await;
     let (answer, _) = t
         .call(&agent, "messages", json!({"action": "search", "args": []}))
@@ -1296,4 +1305,149 @@ async fn an_exec_cannot_read_the_messages_or_address_book_its_host_reads() {
         panic!("{answer:?}")
     };
     assert_eq!(chats["count"], 3);
+}
+
+/// A cursor as the reader writes one (base64url of its JSON), made up: a
+/// thread page naming no conversation.
+#[cfg(target_os = "macos")]
+fn forged_cursor() -> String {
+    let cursor = json!({"command": "thread", "key": "1", "id": 1,
+                        "filters": {"from": [], "oldestFirst": false, "handles": []}})
+    .to_string();
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let bytes = cursor.as_bytes();
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().fold(0u32, |n, b| n << 8 | *b as u32) << (8 * (3 - chunk.len()));
+        for i in 0..=chunk.len() {
+            out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_later_page_is_judged_on_the_filters_its_cursor_carries() {
+    let t = start(a_chat(always_covered)).await;
+    t.with_messages();
+    let agent = t.caller("agent").await;
+    let first = json!({"action": "search", "args": ["--from", "(555) 000-0001", "--limit", "1"]});
+    let (answer, _) = t.call(&agent, "messages", first).await;
+    let Response::Ok(first) = answer else {
+        panic!("{answer:?}")
+    };
+    let next = first["next"].as_str().unwrap().to_string();
+    let page = json!({"action": "search", "args": ["--cursor", next]});
+    let (answer, _) = t.call(&agent, "messages", page).await;
+    let Response::Ok(second) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(second["messages"][0]["id"], 301);
+    // The judge saw the page's whole request, not an opaque token.
+    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let page = &asked[1]["proposed_action"]["arguments"];
+    assert_eq!(page["from"], json!(["+15550000001"]), "{page}");
+    assert_eq!(page["after"]["id"], 103, "{page}");
+    assert_eq!(page["limit"], 50);
+    assert_eq!(t.audit()[1]["args"]["plan"], *page);
+
+    // A cursor that names no conversation is refused before anyone judges it.
+    let forged = json!({"action": "thread", "args": ["--cursor", forged_cursor()]});
+    let (answer, _) = t.call(&agent, "messages", forged).await;
+    let (exit, code, _) = refusal(&answer);
+    assert_eq!((exit, code), (Exit::Usage, "usage"));
+    assert_eq!(t.judged(), 2);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn messages_and_contacts_are_judged_for_the_owner_and_agents_and_refused_in_an_outage() {
+    let t = start(a_chat(the_owners_request)).await;
+    t.with_messages();
+    let (device, agent) = (t.caller("device").await, t.caller("agent").await);
+    let calls = [
+        (
+            "messages",
+            json!({"action": "search", "args": ["--", "code"]}),
+        ),
+        (
+            "contacts",
+            json!({"action": "lookup", "args": ["--", "+15550000001"]}),
+        ),
+    ];
+    for (op, args) in &calls {
+        // The owner's own request is covered; the agent's, unasked, is not.
+        let (answer, _) = t.call(&device, op, args.clone()).await;
+        assert!(matches!(answer, Response::Ok(_)), "{op}: {answer:?}");
+        let (answer, _) = t.call(&agent, op, args.clone()).await;
+        assert_eq!(refusal(&answer).1, "gatekeeper_denied", "{op}");
+    }
+    assert_eq!(t.judged(), 4);
+    let records = t.audit();
+    for (index, record) in records.iter().enumerate() {
+        let (caller, decision) = if index % 2 == 0 {
+            ("owner_device", "allow")
+        } else {
+            ("agent", "deny")
+        };
+        assert_eq!(record["gate"]["caller"], caller, "{record}");
+        assert_eq!(record["decision"], decision, "{record}");
+        assert_eq!(record["args"].get("result").is_some(), decision == "allow");
+    }
+
+    // With the judge down, nobody reads.
+    let down = start(a_chat(down)).await;
+    down.with_messages();
+    let (device, agent) = (down.caller("device").await, down.caller("agent").await);
+    for (op, args) in &calls {
+        for caller in [&device, &agent] {
+            let (answer, _) = down.call(caller, op, args.clone()).await;
+            let (exit, code, _) = refusal(&answer);
+            assert_eq!(
+                (exit, code),
+                (Exit::Unreachable, "gatekeeper_unavailable"),
+                "{op}"
+            );
+        }
+    }
+    assert!(
+        down.audit()
+            .iter()
+            .all(|r| r["args"].get("result").is_none())
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_contacts_worker_cannot_read_messages() {
+    let t = start(a_chat(always_covered)).await;
+    t.with_messages();
+    let [messages, book] = crate::messages::host::folders(&t.home);
+    let argv: Vec<String> = vec![
+        "--store".into(),
+        messages.join("chat.db").display().to_string(),
+        "--addressbook".into(),
+        book.display().to_string(),
+        "chats".into(),
+    ];
+    let workers = &t.host.workers;
+    let contacts = crate::messages::host::reads("contacts", &t.home);
+    let refused = crate::messages::host::read(workers, &contacts, &argv)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "messages_not_granted");
+    let messages_reads = crate::messages::host::reads("messages", &t.home);
+    let read = crate::messages::host::read(workers, &messages_reads, &argv)
+        .await
+        .unwrap();
+    assert_eq!(read["count"], 3);
+    // The contacts call itself reads the address book.
+    let agent = t.caller("agent").await;
+    let search = json!({"action": "search", "args": ["--", "ann"]});
+    let (answer, _) = t.call(&agent, "contacts", search).await;
+    let Response::Ok(people) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(people["count"], 1);
 }

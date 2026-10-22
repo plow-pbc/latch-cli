@@ -33,16 +33,67 @@ const READER_LIMIT: Duration = Duration::from_secs(20);
 /// More than the reader's own 8 MiB answer budget, less than a wire frame.
 const MAX_ANSWER: u64 = 12 << 20;
 
-/// Runs one `messages` or `contacts` call for a caller the gatekeeper
+/// The effective request for one `messages` or `contacts` call, as the
+/// reader works it out from the caller's words (a cursor's filters
+/// included), checked and with its handles canonical: what the gatekeeper
+/// judges and `run` then runs. A request the reader refuses is that
+/// refusal, judged by no one.
+pub async fn plan(workers: &WorkerSetup, op: &str, args: &Value) -> Result<Value, Box<Done>> {
+    let (action, words) =
+        request(op, args).map_err(|failure| Box::new(refused(failure, json!({"action": op}))))?;
+    let id = format!("{op}.{action}");
+    let mut argv = Vec::new();
+    if let Some(region) = region().await {
+        argv.extend(["--region".to_string(), region]);
+    }
+    argv.push("plan".to_string());
+    if op == "contacts" {
+        argv.push("contacts".to_string());
+    }
+    argv.push(action.clone());
+    argv.extend(words.iter().cloned());
+    // Planning reads nothing of the owner's.
+    let planned = read(workers, &[], &argv).await;
+    match planned {
+        Ok(answer) if answer["plan"].is_object() => {
+            Ok(json!({"action": action, "args": words, "plan": answer["plan"]}))
+        }
+        Ok(_) => Err(Box::new(refused(
+            Failure::failed("reader_failed", "the reader gave no plan".to_string()),
+            json!({"action": id, "args": words}),
+        ))),
+        Err(failure) => Err(Box::new(refused(
+            failure,
+            json!({"action": id, "args": words}),
+        ))),
+    }
+}
+
+/// Runs one planned call (`plan`'s request) for a caller the gatekeeper
 /// allowed. `home` is the owner's home folder, whose Messages and address
-/// book are read.
+/// book are read: Messages and the address book for `messages`, the
+/// address book alone for `contacts`.
 pub async fn run(workers: &WorkerSetup, home: &Path, op: &str, args: &Value) -> Done {
-    let (action, words) = match request(op, args) {
-        Ok(request) => request,
-        Err(failure) => return refused(failure, json!({"action": op})),
-    };
-    let mut audit = json!({"action": format!("{op}.{action}"), "args": words});
-    let result = answer(workers, home, op, &action, &words).await;
+    let action = args["action"].as_str().unwrap_or(op);
+    let mut audit =
+        json!({"action": format!("{op}.{action}"), "args": args["args"], "plan": args["plan"]});
+    if !args["plan"].is_object() {
+        let failure = Failure::usage("bad_request", "the call was never planned".to_string());
+        return refused(failure, audit);
+    }
+    let [messages, address_book] = folders(home);
+    let mut argv = vec![
+        "--store".to_string(),
+        messages.join("chat.db").display().to_string(),
+        "--addressbook".to_string(),
+        address_book.display().to_string(),
+        "--plan".to_string(),
+        args["plan"].to_string(),
+    ];
+    if let Some(region) = region().await {
+        argv.splice(0..0, ["--region".to_string(), region]);
+    }
+    let result = read(workers, &reads(op, home), &argv).await;
     match result {
         Ok(answer) => {
             audit["result"] = json!({
@@ -60,6 +111,22 @@ pub async fn run(workers: &WorkerSetup, home: &Path, op: &str, args: &Value) -> 
         }
         Err(failure) => refused(failure, audit),
     }
+}
+
+/// The folders a connector's reader may read: `messages` names senders, so
+/// it reads the address book too; `contacts` reads the address book alone.
+/// Only folders that exist can be allowed; the reader reports the rest.
+pub fn reads(op: &str, home: &Path) -> Vec<PathBuf> {
+    let [messages, address_book] = folders(home);
+    let folders = if op == "messages" {
+        vec![messages, address_book]
+    } else {
+        vec![address_book]
+    };
+    folders
+        .into_iter()
+        .filter(|folder| folder.exists())
+        .collect()
 }
 
 fn refused(failure: Failure, audit: Value) -> Done {
@@ -103,12 +170,12 @@ pub fn folders(home: &Path) -> [PathBuf; 2] {
     ]
 }
 
-async fn answer(
+/// Runs the reader with `argv` in a Messages worker that may read `reads`,
+/// and returns its answer.
+pub async fn read(
     workers: &WorkerSetup,
-    home: &Path,
-    op: &str,
-    action: &str,
-    words: &[String],
+    reads: &[PathBuf],
+    argv: &[String],
 ) -> Result<Value, Failure> {
     if !cfg!(target_os = "macos") {
         let message = "Messages and contacts are read on macOS hosts only".to_string();
@@ -116,30 +183,8 @@ async fn answer(
     }
     let program = reader(&workers.state_dir);
     verify(&program, READER_SHA256)?;
-    let [messages, address_book] = folders(home);
-    let mut argv = vec![
-        "--store".to_string(),
-        messages.join("chat.db").display().to_string(),
-        "--addressbook".to_string(),
-        address_book.display().to_string(),
-    ];
-    // The owner's region, for phone numbers written without a country
-    // code: the reader cannot ask macOS from inside its sandbox.
-    if let Some(region) = region().await {
-        argv.extend(["--region".to_string(), region]);
-    }
-    if op == "contacts" {
-        argv.push("contacts".to_string());
-    }
-    argv.push(action.to_string());
-    argv.extend(words.iter().cloned());
-    // Only the folders that exist can be allowed; the reader reports the rest.
-    let reads: Vec<PathBuf> = [messages, address_book]
-        .into_iter()
-        .filter(|folder| folder.exists())
-        .collect();
     let mut child = workers
-        .messages(&program, &reads, &argv)
+        .messages(&program, reads, argv)
         .map_err(|error| Failure::failed(&error.code, error.message))?;
     let mut stdout = child.stdout.take().expect("piped").take(MAX_ANSWER + 1);
     let mut stderr = child.stderr.take().expect("piped").take(64 << 10);

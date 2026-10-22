@@ -24,6 +24,12 @@ public let usage = """
 
     USAGE
       latch-messages [--store PATH] [--addressbook DIR] [--region CC] <command> [options]
+      latch-messages [--region CC] plan <command> [options]
+      latch-messages [--store PATH] [--addressbook DIR] [--region CC] --plan PLAN
+
+    `plan` prints the call's effective request, every filter resolved (a
+    cursor's included) and checked, without reading anything; `--plan` runs
+    exactly that request. A host judges the plan, then runs it.
 
     MESSAGES
       search [PHRASE] [--from HANDLE]... [--chat-id N] [--since T] [--until T]
@@ -79,8 +85,12 @@ public func run(
     write: (String) -> Void, fail: (String) -> Void
 ) -> Int32 {
     do {
-        guard let call = try parse(arguments, now: now) else {
+        guard let (call, planOnly) = try parse(arguments, now: now) else {
             write(usage)
+            return 0
+        }
+        if planOnly {
+            write(json(["plan": try Plan(call).object()]))
             return 0
         }
         let deadline = ContinuousClock.now + callBudget
@@ -103,18 +113,33 @@ public func run(
     }
 }
 
-func parse(_ arguments: [String], now: Date) throws -> Call? {
+/// The call `arguments` ask for, checked, and whether it is only to be
+/// planned; nil for help.
+func parse(_ arguments: [String], now: Date) throws -> (Call, Bool)? {
     var args = arguments[...]
     var call = Call()
+    var plan: String?
     // The reader's own settings come before the command.
-    while let flag = args.first, ["--store", "--addressbook", "--region"].contains(flag) {
+    while let flag = args.first, ["--store", "--addressbook", "--region", "--plan"].contains(flag) {
         args = args.dropFirst()
         guard let value = args.popFirst() else { throw ReaderError.usage("\(flag) wants a value") }
         switch flag {
         case "--store": call.store = value
         case "--addressbook": call.addressBook = value
+        case "--plan": plan = value
         default: call.region = value.uppercased()
         }
+    }
+    if let plan {
+        guard args.isEmpty else { throw ReaderError.usage("--plan is the whole request") }
+        try Plan.decode(plan).apply(to: &call)
+        try validate(&call)
+        return (call, false)
+    }
+    var planOnly = false
+    if args.first == "plan" {
+        args = args.dropFirst()
+        planOnly = true
     }
     guard var command = args.popFirst() else {
         throw ReaderError.usage("a command is needed: search, thread, chats, unreplied or contacts (try --help)")
@@ -226,13 +251,151 @@ func parse(_ arguments: [String], now: Date) throws -> Call? {
         }
         call.filters = cursor.filters
     } else {
-        if command == "thread" && (filters.chatId == nil) == (filters.with == nil) {
-            throw ReaderError.usage("thread needs --chat-id N or --with HANDLE (run chats to find one)")
-        }
-        if command == "unreplied" && filters.within == nil { filters.within = 36 * 3600 }
         call.filters = filters
     }
-    return call
+    try validate(&call)
+    return (call, planOnly)
+}
+
+/// Checks a call's filters, however they came (typed, from a cursor or from
+/// a plan), and makes its handles canonical, so what is planned and judged
+/// is what runs.
+func validate(_ call: inout Call) throws {
+    let phones = Phones(region: call.region)
+    var f = call.filters
+    func none(_ present: Bool, _ what: String) throws {
+        guard !present else { throw ReaderError.usage("\(call.command) takes no \(what)") }
+    }
+    let command = call.command
+    guard (1...maxLimit).contains(call.limit) else { throw ReaderError.usage("--limit wants 1 to \(maxLimit)") }
+    if command != "search" {
+        try none(f.phrase != nil, "phrase")
+        try none(!f.from.isEmpty, "--from")
+        try none(f.since != nil || f.until != nil, "--since or --until")
+        try none(f.oldestFirst, "--oldest-first")
+    }
+    if command != "search" && command != "thread" { try none(f.chatId != nil, "--chat-id") }
+    if command != "thread" { try none(f.with != nil, "--with") }
+    if command != "chats" { try none(f.kind != nil, "--kind") }
+    if command != "unreplied" { try none(f.within != nil, "--within") }
+    if command != "contacts search" { try none(f.text != nil, "TEXT") }
+    if command != "contacts lookup" { try none(!f.handles.isEmpty, "handles") }
+    switch command {
+    case "search":
+        guard f.phrase.map({ !$0.isEmpty }) ?? true else { throw ReaderError.usage("an empty phrase") }
+        guard f.from.count <= 20 else { throw ReaderError.usage("at most 20 --from") }
+        f.from = f.from.map(phones.handle)
+    case "thread":
+        guard (f.chatId == nil) != (f.with == nil) else {
+            throw ReaderError.usage("thread needs --chat-id N or --with HANDLE (run chats to find one)")
+        }
+        f.with = f.with.map(phones.handle)
+    case "chats":
+        guard f.kind == nil || f.kind == "direct" || f.kind == "group" else {
+            throw ReaderError.usage("--kind wants direct or group")
+        }
+    case "unreplied":
+        let within = f.within ?? 36 * 3600
+        guard within > 0 && within <= 7 * 86400 else { throw ReaderError.usage("--within is at most 7d") }
+        f.within = within
+    case "contacts search":
+        guard let text = f.text, !text.isEmpty else { throw ReaderError.usage("contacts search takes one TEXT") }
+    case "contacts lookup":
+        guard (1...100).contains(f.handles.count) else {
+            throw ReaderError.usage("contacts lookup takes 1 to 100 handles")
+        }
+        f.handles = f.handles.map(phones.handle)
+    default:
+        throw ReaderError.usage("unknown command \(command)")
+    }
+    // A messages list pages by date and row id.
+    if let cursor = call.cursor, !command.hasPrefix("contacts"), Int64(cursor.key) == nil {
+        throw ReaderError.usage("--cursor is not a cursor from \(command)")
+    }
+    call.filters = f
+}
+
+/// A call's effective request: what a host's gatekeeper judges and then
+/// runs. Times are ISO-8601; handles canonical; `after` is where a later
+/// page starts.
+struct Plan: Codable {
+    struct Position: Codable {
+        var key: String
+        var id: Int64
+    }
+    var command: String
+    var limit: Int
+    var phrase: String?
+    var from: [String]?
+    var chatId: Int64?
+    var with: String?
+    var since: String?
+    var until: String?
+    var oldestFirst: Bool?
+    var kind: String?
+    var withinSeconds: Double?
+    var text: String?
+    var handles: [String]?
+    var after: Position?
+
+    init(_ call: Call) {
+        let f = call.filters
+        command = call.command
+        limit = call.limit
+        phrase = f.phrase
+        from = f.from.isEmpty ? nil : f.from
+        chatId = f.chatId
+        with = f.with
+        since = f.since.map(iso)
+        until = f.until.map(iso)
+        oldestFirst = call.command == "search" ? f.oldestFirst : nil
+        kind = f.kind
+        withinSeconds = f.within
+        text = f.text
+        handles = f.handles.isEmpty ? nil : f.handles
+        after = call.cursor.map { Position(key: $0.key, id: $0.id) }
+    }
+
+    static func decode(_ text: String) throws -> Plan {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let plan = try? decoder.decode(Plan.self, from: Data(text.utf8)) else {
+            throw ReaderError.usage("--plan is not a plan")
+        }
+        return plan
+    }
+
+    func object() throws -> Any {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        return try JSONSerialization.jsonObject(with: encoder.encode(self))
+    }
+
+    func apply(to call: inout Call) throws {
+        let parseTime = { (text: String?) throws -> Double? in
+            guard let text else { return nil }
+            let full = ISO8601DateFormatter()
+            full.formatOptions = [.withInternetDateTime]
+            guard let date = full.date(from: text) else { throw ReaderError.usage("--plan has a bad time") }
+            return date.timeIntervalSince1970
+        }
+        call.command = command
+        call.limit = limit
+        var f = Filters()
+        f.phrase = phrase
+        f.from = from ?? []
+        f.chatId = chatId
+        f.with = with
+        f.since = try parseTime(since)
+        f.until = try parseTime(until)
+        f.oldestFirst = oldestFirst ?? false
+        f.kind = kind
+        f.within = withinSeconds
+        f.text = text
+        f.handles = handles ?? []
+        call.filters = f
+        call.cursor = after.map { Cursor(command: command, filters: f, key: $0.key, id: $0.id) }
+    }
 }
 
 func number(_ text: String, _ flag: String) throws -> Int64 {

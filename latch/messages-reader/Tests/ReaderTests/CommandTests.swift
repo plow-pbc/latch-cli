@@ -194,8 +194,8 @@ func aBodyThatBreaksALimitIsAnErrorForThatRowAlone() {
     for (rowid, body) in bad {
         f.message(rowid, chat: 4, handle: 30, at: date(Double(5000 + rowid), now: now), body: body)
     }
-    // A slow body is caught by its budget; give it none to show that.
-    let thread = read(f, ["thread", "--chat-id", "4"], now: now, limits: Limits(budget: .zero))
+    // A slow body is caught by its budget; give a small one to show that.
+    let thread = read(f, ["thread", "--chat-id", "4"], now: now, limits: Limits(budget: .microseconds(100)))
     #expect(thread.exit == 0)
     #expect(thread.ids == [404, 403, 402, 401])
     #expect(thread.rows.map { $0["text_error"] as? String }
@@ -205,13 +205,14 @@ func aBodyThatBreaksALimitIsAnErrorForThatRowAlone() {
     // The rest still reads beside them.
     let all = read(f, ["search", "--limit", "500"], now: now)
     #expect(all.rows.count == 11)
-    #expect(all.answer["unreadable"] as? Int == 4)
+    // With the usual budget, the slow body reads.
+    #expect(all.answer["unreadable"] as? Int == 3)
     #expect(all.texts.contains("Your code is 482913"))
-    // In a phrase search, an unreadable body the database's prefilter passed
-    // is a row that could not be checked, not a match.
+    // In a phrase search, an unreadable body is a row that could not be
+    // checked, not a match: every one is returned, and counted.
     let hello = read(f, ["search", "hello"], now: now)
-    #expect(hello.ids == [402])
-    #expect(hello.answer["unchecked"] as? Int == 1)
+    #expect(hello.ids == [401, 402, 403])
+    #expect(hello.answer["unchecked"] as? Int == 3)
     // A row with text to fall back on shows that text.
     f.message(405, chat: 4, handle: 30, at: date(1, now: now), text: "fallback", body: Malformed.deep)
     #expect(read(f, ["thread", "--chat-id", "4", "--limit", "1"], now: now).texts == ["fallback"])
@@ -333,4 +334,79 @@ func aDatabaseThePermissionsRefuseIsNotGranted() throws {
     try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: f.path)
     defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: f.path) }
     #expect(read(f, ["chats"], now: now).error?["code"] as? String == "messages_not_granted")
+}
+
+@Test
+func aPhraseSearchChecksEveryBodyAndCountsTheOnesItCannot() {
+    let f = everyday()
+    // UTF-16 bodies hold the phrase with a zero byte between letters.
+    let utf16: [UInt8] = [0xff, 0xfe] + Array("Your code is 771205".utf16).flatMap { [UInt8($0 & 0xff), UInt8($0 >> 8)] }
+    f.message(110, chat: 1, handle: 10, at: date(30, now: now), body: utf16)
+    // A body that cannot be read, nothing in it the database could match.
+    f.message(111, chat: 1, handle: 10, at: date(20, now: now), body: Malformed.lying)
+    let found = read(f, ["search", "771205"], now: now)
+    #expect(found.ids == [111, 110])
+    #expect(found.texts[1] == "Your code is 771205")
+    #expect(found.rows[0]["text_error"] as? String == "body_bad_length")
+    #expect(found.answer["unchecked"] as? Int == 1)
+    // A row with only a plain text that lacks the phrase is the one the database rules out.
+    #expect(!read(f, ["search", "771205"], now: now).ids.contains(101))
+}
+
+/// What `plan` says a call would run.
+func plan(_ fixture: Fixture, _ arguments: [String]) -> (Int32, [String: Any]) {
+    var lines: [String] = []
+    var errors: [String] = []
+    let exit = run(["--region", "US", "plan"] + arguments, write: { lines.append($0) }, fail: { errors.append($0) })
+    let text = lines.first ?? errors.first ?? "{}"
+    return (exit, try! JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any])
+}
+
+@Test
+func aPlanIsTheEffectiveRequestAndRunsAsIs() throws {
+    let f = everyday()
+    let (exit, typed) = plan(f, ["search", "--from", "(555) 000-0001", "--since", "2026-10-01T00:00:00Z", "--", "code"])
+    #expect(exit == 0)
+    let request = try #require(typed["plan"] as? [String: Any])
+    #expect(request["command"] as? String == "search")
+    #expect(request["from"] as? [String] == ["+15550000001"])
+    #expect((request["since"] as? String)?.hasPrefix("2026-") == true)
+    #expect(request["phrase"] as? String == "code")
+    #expect(request["limit"] as? Int == 50)
+    #expect(request["after"] == nil)
+    // A later page's plan holds every filter its cursor carries, and where it starts.
+    let first = read(f, ["search", "--from", "+15550000001", "--limit", "1"], now: now)
+    let (_, paged) = plan(f, ["search", "--cursor", first.next!])
+    let page = try #require(paged["plan"] as? [String: Any])
+    #expect(page["from"] as? [String] == ["+15550000001"])
+    #expect((page["after"] as? [String: Any])?["id"] as? Int == 103)
+    // Running the plan gives that page.
+    let data = try JSONSerialization.data(withJSONObject: page)
+    var lines: [String] = []
+    _ = run(["--store", f.path, "--addressbook", f.addressBook, "--plan", String(decoding: data, as: UTF8.self)],
+            write: { lines.append($0) }, fail: { _ in })
+    let answer = try #require(try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any])
+    #expect((answer["messages"] as? [[String: Any]])?.map { $0["id"] as? Int } == [301, 101])
+}
+
+@Test
+func aForgedCursorOrPlanIsCheckedLikeTypedFilters() throws {
+    let f = everyday()
+    // A thread cursor naming no conversation would read across them all.
+    let forged = Cursor(command: "thread", filters: Filters(), key: String(date(0, now: now)), id: 999).token
+    #expect(read(f, ["thread", "--cursor", forged], now: now).exit == 2)
+    #expect(plan(f, ["thread", "--cursor", forged]).0 == 2)
+    // Filters a command does not take, smuggled in a cursor.
+    var filters = Filters()
+    filters.chatId = 1
+    filters.kind = "group"
+    let mixed = Cursor(command: "thread", filters: filters, key: "1", id: 1).token
+    #expect(read(f, ["thread", "--cursor", mixed], now: now).exit == 2)
+    // A plan is checked as well.
+    for bad in [#"{"command":"thread","limit":50}"#, #"{"command":"search","limit":900}"#,
+                #"{"command":"chats","limit":5,"phrase":"x"}"#, "not json"] {
+        var errors: [String] = []
+        let exit = run(["--store", f.path, "--addressbook", f.addressBook, "--plan", bad], write: { _ in }, fail: { errors.append($0) })
+        #expect(exit == 2, "\(bad)")
+    }
 }

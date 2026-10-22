@@ -796,7 +796,7 @@ async fn serve_operation(
     let Ok(json) = wire::read_frame(&mut recv).await else {
         return;
     };
-    let Ok(request) = serde_json::from_slice::<Request>(&json) else {
+    let Ok(mut request) = serde_json::from_slice::<Request>(&json) else {
         let response = failed("bad_request", "the request frame is not valid".to_string());
         return answer(&mut send, &response).await;
     };
@@ -829,8 +829,18 @@ async fn serve_operation(
             // A worker started now would run the new latch under this old
             // host: nothing runs, and nothing is judged.
             let upgraded = host.binary.replaced();
+            // A messages or contacts call is judged, and then run, as one
+            // effective request: the reader's reading of the caller's words
+            // and any cursor's filters. One the reader refuses is not judged.
+            let mut unplanned = None;
+            if (op == "messages" || op == "contacts") && !upgraded && gate.is_ok() {
+                match crate::messages::host::plan(&host.workers, op, &request.args).await {
+                    Ok(planned) => request.args = planned,
+                    Err(done) => unplanned = Some(*done),
+                }
+            }
             let gated = gate::gated(op, &request.args, &host.workers.areas[0])
-                .filter(|_| !denied_exec && !upgraded);
+                .filter(|_| !denied_exec && !upgraded && unplanned.is_none());
             let unjudgeable = match (&gate, &gated) {
                 (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
@@ -862,6 +872,8 @@ async fn serve_operation(
             let done = if upgraded {
                 let failure = host_upgraded();
                 Done::failed(&failure.code, failure.message, Value::Null)
+            } else if let Some(unplanned) = unplanned {
+                unplanned
             } else if let Some(refused) = refused {
                 refused
             } else {

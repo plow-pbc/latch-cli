@@ -134,14 +134,18 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
             once = crate::google::policy::parse(&words).map_or(true, |plan| !plan.read_only());
             (action, json!({"command": command}))
         }
-        // Reads, judged on the reader's own words; the audit keeps them, and
-        // the host adds the answer's counts, never its rows.
+        // Reads, judged on their effective request (the host's plan: every
+        // filter resolved, a cursor's included); the audit keeps it and the
+        // caller's words, and the host adds the answer's counts, never its rows.
         "messages" | "contacts" => {
             let action = Action {
-                arguments: Some(&args["args"]),
+                arguments: Some(&args["plan"]),
                 ..none
             };
-            (action, json!({"action": operation, "args": args["args"]}))
+            (
+                action,
+                json!({"action": operation, "args": args["args"], "plan": args["plan"]}),
+            )
         }
         _ => return None,
     };

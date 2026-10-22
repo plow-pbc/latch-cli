@@ -138,12 +138,13 @@ struct Context {
         var conditions = [realRows("m")]
         var params: [Param] = []
         let needle = asciiLower(filters.phrase ?? "")
-        // A prefilter, not the decision: each row it passes is decoded and
-        // checked below. A body that cannot be decoded stays a candidate.
+        // The database can only rule out rows whose one body is a `text`
+        // without the phrase. Every row with an attributedBody is decoded
+        // and checked (its encoding may be one SQL cannot search, such as
+        // UTF-16); one that cannot be decoded is returned as unchecked.
         if !needle.isEmpty {
-            conditions.append(
-                "(instr(lower(cast(m.attributedBody as text)), lower(?)) > 0 or instr(lower(m.text), lower(?)) > 0)")
-            params += [.text(needle), .text(needle)]
+            conditions.append("(m.attributedBody is not null or instr(lower(m.text), lower(?)) > 0)")
+            params.append(.text(needle))
         }
         if !filters.from.isEmpty {
             let handles = Array(Set(filters.from.flatMap { [$0, book.phones.handle($0)] }))
