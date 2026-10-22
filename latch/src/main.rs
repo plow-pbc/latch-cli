@@ -119,7 +119,8 @@ fn main() -> ExitCode {
         }
         command => command,
     };
-    let notice = !matches!(command, Command::Update(_));
+    // `setup --status` changes nothing, not even when the notice was shown.
+    let notice = !matches!(command, Command::Update(_) | Command::Setup(_));
     let state_dir = cli.state_dir.clone();
     let exit = run_async(cli.state_dir, command);
     if notice && let Ok(state) = StateDir::new(state_dir) {
