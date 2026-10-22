@@ -37,6 +37,10 @@ sha2 = "0.11.1"
 # writes the wire frames; `signal` lets `serve` stop cleanly on SIGINT/SIGTERM;
 # `process` runs the sandboxed file workers; `fs` writes the client's files.
 tokio = { version = "1.53.3", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+# `LATCH_TRACE` (src/trace.rs): iroh's own events, filtered, to the
+# host's log, inside a span per connection and operation. No colours.
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt", "std"] }
 
 # Per-call folders for Google and throwaway test state.
 tempfile = "3.27.0"
@@ -49,7 +53,7 @@ csv = "1.4.0"
 psl = "2.1.239"
 totp-rs = { version = "6.0.0", default-features = false, features = ["std"] }
 url = "2.5.8"
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # `latch vault link`'s QR code, drawn in the terminal (no image backends).
 qrcode = { version = "0.14.1", default-features = false }
 
@@ -63,9 +67,22 @@ iroh-relay = { version = "1.3.0", default-features = false, features = ["server"
 jiff = "0.2.38"
 
 [features]
-# Builds the gatekeeper tests that call the decision model (jev) for real;
-# `just gatekeeper-live KEYFILE` runs one. Never part of the gate.
+# Builds the browser test that calls the decision model (jev) for real;
+# `just test-model KEYFILE` runs it. Never part of the gate.
 live-model = []
+# Runs the real-engine browser tests headed, with a window behind the
+# owner's, for what only a real window shows (its focus); `just
+# test-headed` runs them. Never part of the gate.
+headed-tests = []
+# Builds the real-engine browser tests on Linux, for a host whose install.sh
+# put its engine in place (`just conformance cft` on the Pi). Never
+# part of the gate, whose containers have no engine.
+linux-browser-tests = []
+
+# A Camoufox handoff brings its app forward through AppKit
+# (`NSRunningApplication`); already in the tree through iroh.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "=0.5.0"

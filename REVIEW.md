@@ -68,6 +68,11 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
 - **File and `exec` workers read the whole filesystem**, as Codex CLI's do;
   only writes are confined to the shared areas.
 - **The peer's secret key is plaintext hex in a 0600 file.**
+- **Exec argv is stored in full in host logs and the audit** (plaintext until
+  audit encryption lands) so the owner can see exactly what agents ran;
+  credentials an agent puts on a command line can therefore appear there.
+  Display-time redaction is planned; argv hashing/redaction at write time is
+  declined.
 
 **Reviewer environment note:** the gate is `just test` in `latch/` (it
 installs the pinned Chrome for Testing into `.dev/cft-state` first) and needs

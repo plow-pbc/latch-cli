@@ -3,10 +3,12 @@
 Every crate `latch` depends on directly, and why. The usage numbers are from
 the library audit (crates.io and GitHub APIs, pulled 2026-10-14). `rand` is not in
 the audit; its row was pulled from the same APIs on 2026-10-15, and the vault's six
-(`aes-gcm` to `zip`) on 2026-10-19, and `qrcode` on 2026-10-19. Downloads
+(`aes-gcm` to `zip`, named in the browser spec) on 2026-10-19, `qrcode` on 2026-10-19, and the two `tracing` crates on 2026-10-21. Downloads
 are all-time / last 90 days. The bar for a new crate: widely used, actively
 maintained, from a known owner. Add a row here in the same change that adds a
-crate to `Cargo.toml`.
+crate to `Cargo.toml`. `cargo deny --locked check` holds the whole locked graph
+to `deny.toml`: no published advisory, only the listed licenses, crates.io
+only. CI runs it on every dependency change and daily.
 
 | Crate | Used for | Downloads (all / 90 d) | Stars | Owner | Version (released) | License |
 |---|---|---|---|---|---|---|
@@ -21,13 +23,15 @@ crate to `Cargo.toml`.
 | `serde` | Plain structs to and from JSON | 1,531M | 10.9k | serde-rs org | 1.0.229 (2026-07-18) | MIT/Apache-2.0 |
 | `serde_json` | The JSON format for serde | 1,434M | 5.7k | serde-rs org | 1.0.154 (2026-10-11) | MIT/Apache-2.0 |
 | `sha2` | sha256 for the audit log's hash chain | 1,062M / 302M | 2.3k | RustCrypto org | 0.11.1 (2026-10-12) | MIT/Apache-2.0 |
-| `tempfile` | Per-call Google folders and throwaway test state | 890M / 208M | 1.5k | Stebalien | 3.27.0 (2026-03-11) | MIT/Apache-2.0 |
+| `tempfile` | Per-call Google folders, each browser session's scratch folder, and throwaway test state | 890M / 208M | 1.5k | Stebalien | 3.27.0 (2026-03-11) | MIT/Apache-2.0 |
+| `tracing` | `LATCH_TRACE`: a span per host connection and operation, around iroh's own events | 955M / 230M | 6.9k (tracing monorepo) | tokio-rs org | 0.1.44 (2025-12-18) | MIT |
+| `tracing-subscriber` (env-filter, fmt) | `LATCH_TRACE`: filters those events and writes them to the host's log | 682M / 167M | 6.9k (tracing monorepo) | tokio-rs org | 0.3.23 (2026-03-13) | MIT |
 | `aes-gcm` | The vault: items and its data key sealed with AES-256-GCM | 182M / 57M | 968 (AEADs monorepo) | RustCrypto org | 0.11.1 (2026-08-21) | Apache-2.0/MIT |
 | `csv` | The vault: reading password managers' CSV exports | 269M / 57M | 2.0k | BurntSushi | 1.4.0 (2025-10-17) | Unlicense/MIT |
 | `psl` | The vault: registrable domains (the public-suffix list, private suffixes included) | 36M / 7.9M | 38 | addr-rs org | 2.1.239 (2026-10-03); pinned in Cargo.lock, since each release is a new list | MIT/Apache-2.0 |
 | `totp-rs` (std) | The vault: authenticator codes (checked against RFC 6238's vectors) | 11M / 3.1M | 277 | constantoine | 6.0.0 (2026-08-06) | MIT |
 | `url` | The vault: reading sites and origins | 969M / 219M | 1.6k | servo org | 2.5.8 (2026-01-05) | MIT/Apache-2.0 |
-| `zip` (deflate) | The vault: reading 1Password's 1PUX exports | 307M / 87M | 360 | zip-rs org | 8.6.0 (2026-04-25) | MIT |
+| `zip` (deflate) | The vault: reading 1Password's 1PUX exports | 307M / 87M | 360 | zip-rs org | 9.0.5 (2026-10-17) | MIT |
 | `qrcode` (no default features) | `latch vault link`'s QR code in the terminal | 23M / 6.0M | 563 | kennytm | 0.14.1 (2024-07-05); the last release, small and finished rather than abandoned (repository active 2025-08) | MIT/Apache-2.0 |
 
 TLS comes with reqwest and iroh: `rustls` (1,003M / 232M downloads, 7.7k

@@ -1,0 +1,10 @@
+<!doctype html><title>latch slow login test</title>
+<!-- Posts to /welcome, which the test server answers with a new page
+     saying whether the password was right; slow-login.html's answer takes
+     three seconds, for checks made while a fill is under way. -->
+<h1>Sign in</h1>
+<form method="post" action="slow-welcome">
+  <p><label>Email <input type="email" name="email"></label></p>
+  <p><label>Password <input type="password" name="password"></label></p>
+  <p><button type="submit">Sign in</button> <button type="button">Forgot password</button></p>
+</form>

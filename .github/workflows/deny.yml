@@ -1,0 +1,31 @@
+name: deny
+
+# latch's dependencies against latch/deny.toml: published advisories,
+# licenses, bans and sources. Runs when the dependencies or the policy change,
+# and daily, since an advisory can be published against an unchanged
+# Cargo.lock.
+on:
+  push:
+    branches: [main]
+    paths: ["latch/Cargo.toml", "latch/Cargo.lock", "latch/deny.toml", ".github/workflows/deny.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["latch/Cargo.toml", "latch/Cargo.lock", "latch/deny.toml", ".github/workflows/deny.yml"]
+  schedule:
+    - cron: "17 6 * * *"
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: latch
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the toolchain pinned in latch/rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check

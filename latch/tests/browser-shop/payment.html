@@ -1,0 +1,16 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Payment — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+// A card form: the plan reaches it with no mapping and stops for one.
+const items = cart(); const total = items.reduce((t, i) => t + byId(i.id).price * i.qty, 0) + 3.99;
+main.innerHTML = `<h1>Payment</h1><p>Total ${money(total)}</p>
+<form id="pay" onsubmit="return false">
+<label>Name on card <input id="cc-name" autocomplete="cc-name"></label>
+<label>Card number <input id="cc-number" autocomplete="cc-number" inputmode="numeric"></label>
+<label>Expiry <input id="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label>
+<label>CVV <input id="cc-csc" autocomplete="cc-csc" maxlength="4"></label>
+<p><button type="submit" id="pay-btn">Pay ${money(total)}</button></p></form>`;
+document.getElementById("pay-btn").onclick = () => { store.set("order", {items: cart(), paid: true}); store.set("cart", []); location.href = "confirmed.html"; };
+</script></body></html>

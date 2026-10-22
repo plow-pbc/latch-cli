@@ -1,0 +1,16 @@
+<!doctype html><title>latch registration test</title>
+<!-- A registration form: a new password, then (with ?two=1, unmarked) a
+     second password box to confirm it. -->
+<h1>Create your account</h1>
+<form method="post" action="welcome">
+  <p><label>Email <input type="email" name="email" autocomplete="username" id="email"></label></p>
+  <p><label>New password <input type="password" name="password" autocomplete="new-password" id="pw"></label></p>
+  <p id="again" hidden><label>Confirm password <input type="password" name="confirm"></label></p>
+  <p><button type="submit">Create account</button></p>
+</form>
+<script>
+  if (new URLSearchParams(location.search).get('two')) {
+    document.getElementById('pw').removeAttribute('autocomplete');
+    document.getElementById('again').hidden = false;
+  }
+</script>

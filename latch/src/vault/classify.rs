@@ -325,7 +325,6 @@ pub fn slot(item: &Raw, label: &str) -> Option<String> {
 
 /// The value behind one label: a slot first, then the note body, then a
 /// custom field (a name two custom fields share releases neither).
-#[allow(dead_code)] // the browser's fills call it
 pub fn read(item: &Raw, label: &str) -> Option<String> {
     if let Some(value) = slot(item, label) {
         return Some(value);

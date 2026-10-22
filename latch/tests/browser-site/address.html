@@ -1,0 +1,22 @@
+<!doctype html><title>latch address test</title>
+<h1>Shipping address</h1>
+<form>
+  <p><label>First name <input name="given-name" autocomplete="given-name"></label>
+     <label>Last name <input name="family-name" autocomplete="family-name"></label></p>
+  <p><label>Address <input name="address-line1" autocomplete="address-line1"></label></p>
+  <p><label>City <input name="city" autocomplete="address-level2"></label>
+     <label>Postcode <input name="postal-code" autocomplete="postal-code"></label></p>
+  <p><label>Country <select name="country"><option value="">Choose</option><option value="GB">United Kingdom</option><option value="US">United States</option></select></label></p>
+  <p><button type="button">Continue</button></p>
+</form>
+<p id="out">nothing yet</p>
+<script>
+  // What the form holds, as the page's own text: the test reads it there,
+  // since latch never shows a value it filled.
+  const show = () => {
+    document.getElementById('out').textContent = 'form: ' +
+      [...document.querySelectorAll('input, select')].map((f) => f.value).join(' | ');
+  };
+  document.querySelector('form').addEventListener('input', show);
+  document.querySelector('form').addEventListener('change', show);
+</script>
