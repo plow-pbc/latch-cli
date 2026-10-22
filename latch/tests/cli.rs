@@ -4329,3 +4329,40 @@ fn audit_show_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() 
     );
     assert!(cut.stdout.is_empty(), "nothing of a broken log is shown");
 }
+
+/// A follower sleeps while the log is quiet: its own reads (under the audit
+/// lock) must not wake its watch of the folder.
+#[cfg(target_os = "linux")]
+#[test]
+fn audit_show_follow_sleeps_while_the_log_is_quiet() {
+    let (_dir, state, _) = owner_host();
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let mut follow = latch_command(&state, &["audit", "show", "--follow"], &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(follow.stdout.take().unwrap()).lines();
+    lines.next().unwrap().unwrap();
+    // CPU time used (user + system, in clock ticks) while nothing happens.
+    let ticks = || {
+        let stat = fs::read_to_string(format!("/proc/{}/stat", follow.id())).unwrap();
+        let fields: Vec<u64> = stat
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .split(' ')
+            .skip(11)
+            .take(2)
+            .map(|field| field.parse().unwrap())
+            .collect();
+        fields[0] + fields[1]
+    };
+    let before = ticks();
+    thread::sleep(std::time::Duration::from_secs(2));
+    let used = ticks() - before;
+    drop(follow.stdin.take());
+    assert!(follow.wait().unwrap().success());
+    assert!(used < 20, "a quiet follow used {used} ticks in 2 s");
+}

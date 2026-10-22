@@ -424,7 +424,12 @@ fn read_locked(path: &Path) -> Result<String, Failure> {
     if !path.exists() {
         return Ok(String::new());
     }
-    let _lock = lock(path.parent().unwrap_or(Path::new(".")))?;
+    // Shared, through a read-only descriptor: closing it is no write, so
+    // a follower watching the folder is not woken by its own reads.
+    let lock = path.parent().unwrap_or(Path::new(".")).join(LOCK);
+    let _lock = File::open(&lock)
+        .and_then(|file| file.lock_shared().map(|()| file))
+        .map_err(|err| io_failure(&lock, err))?;
     match fs::read_to_string(path) {
         Ok(text) => Ok(text),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(String::new()),
