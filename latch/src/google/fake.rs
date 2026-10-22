@@ -66,7 +66,7 @@ fn answer(args: &[String], shop: &str) -> Option<Value> {
             "subject": "Your Greenleaf Market order A1001 has shipped",
             "body": format!(
                 "Thanks for your order A1001.\n\
-                 3 x White tank (M)\n1 x Oxford shirt (L)\n1 x Wool socks\n\n\
+                 2 x White tank (M)\n1 x Oxford shirt (L)\n1 x Wool socks\n1 x Canvas belt\n\n\
                  View or return your order: {link}\n"
             ),
         })),

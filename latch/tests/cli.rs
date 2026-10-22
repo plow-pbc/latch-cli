@@ -5078,7 +5078,11 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
     fs::create_dir_all(&gog).unwrap();
     fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
     fs::write(host.join("host.json"), r#"{"allow_local_browsing": true}"#).unwrap();
-    fs::write(host.join("plugins.json"), r#"{"google": {"state": "enabled"}}"#).unwrap();
+    fs::write(
+        host.join("plugins.json"),
+        r#"{"google": {"state": "enabled"}}"#,
+    )
+    .unwrap();
     if live {
         let key = std::env::var_os("LATCH_TEST_JEV_KEY")
             .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
@@ -5145,26 +5149,35 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
         ("White tank (M)", "Too small"),
         ("Oxford shirt (L)", "Not as described"),
     ];
-    let mut plans = 1;
-    for (item, reason) in picks {
+    // The ops each plan sends, in order, for the audit to show.
+    let mut plans = vec![vec!["click"]];
+    for (count, (item, reason)) in picks.into_iter().enumerate() {
+        let added = match count {
+            0 => "Review return (1 item)".to_string(),
+            n => format!("Review return ({} items)", n + 1),
+        };
         let page = on(&["observe"]);
         let reason_box = refs(&page, "combobox", "Reason").remove(0);
         let button = refs(&page, "button", "Return this item").remove(0);
         let done = on(&[
             "do",
             &format!("select {reason_box} \"{reason}\""),
-            &format!("click {button}"),
+            &format!("click {button} -> text: {added}"),
         ]);
-        assert_eq!(done["status"], "reached", "{item}: {done}");
-        plans += 1;
+        // The click's check saw the return grow by this item.
+        assert_eq!(done["steps"][1]["outcome"], "checked", "{item}: {done}");
+        plans.push(vec!["select", "click"]);
     }
     let page = on(&["observe"]);
     let review = refs(&page, "link", "Review return (3 items)").remove(0);
-    on(&["do", &format!("click {review} -> path: /return-review.html")]);
+    on(&[
+        "do",
+        &format!("click {review} -> path: /return-review.html"),
+    ]);
     let page = on(&["observe"]);
     let submit = refs(&page, "button", "Submit return").remove(0);
     on(&["do", &format!("click {submit} -> path: /returns")]);
-    plans += 2;
+    plans.extend([vec!["click"], vec!["click"]]);
     on(&["close"]);
     drop(serve);
 
@@ -5175,10 +5188,8 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
         .into_owned()
         .collect();
     assert!(form.contains(&("order".into(), "A1001".into())), "{form:?}");
-    let items: Value = serde_json::from_str(
-        &form.iter().find(|(name, _)| name == "items").unwrap().1,
-    )
-    .unwrap();
+    let items: Value =
+        serde_json::from_str(&form.iter().find(|(name, _)| name == "items").unwrap().1).unwrap();
     assert_eq!(
         items,
         json!([
@@ -5195,13 +5206,19 @@ fn an_owner_returns_items_from_an_emailed_order(live: bool) {
         .iter()
         .filter(|r| r["op"] == "browser" && r["args"]["command"] == "do")
         .collect();
-    assert_eq!(plan_records.len(), plans, "{records:#?}");
-    for record in &plan_records {
+    assert_eq!(plan_records.len(), plans.len(), "{records:#?}");
+    for (record, ops) in plan_records.iter().zip(&plans) {
         println!("plan audit: {}", record["args"]);
         assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
         assert_eq!(record["args"]["gate"]["verdict"], "allow", "{record}");
         assert_eq!(record["outcome"], "ok", "{record}");
-        assert!(record["args"]["steps"].is_array(), "{record}");
+        let sent: Vec<&str> = record["args"]["step_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step["op"].as_str().unwrap())
+            .collect();
+        assert_eq!(&sent, ops, "{record}");
     }
     let google: Vec<&Value> = records.iter().filter(|r| r["op"] == "google").collect();
     assert_eq!(google.len(), 2, "{records:#?}");
