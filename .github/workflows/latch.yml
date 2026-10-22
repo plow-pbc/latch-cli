@@ -100,8 +100,9 @@ jobs:
 
   # The real-engine browser tests, on Linux arm64 (where Chrome for Testing
   # is pinned): built once into a nextest archive, which three jobs run a
-  # third each of, with every test the browser feature compiles in. The
-  # linux job above runs the rest on x86_64.
+  # third each of, with every test the browser feature compiles in, and
+  # fake-gog's return scenario, as on the Mac. The linux job above runs the
+  # rest on x86_64.
   browser-build:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -122,8 +123,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - run: cargo clippy --all-targets --locked --features linux-browser-tests -- -D warnings
-      - run: cargo nextest archive --locked --features linux-browser-tests --archive-file ../browser-tests.tar.zst
+      - run: cargo clippy --all-targets --locked --features linux-browser-tests,fake-gog -- -D warnings
+      - run: cargo nextest archive --locked --features linux-browser-tests,fake-gog --archive-file ../browser-tests.tar.zst
       - uses: actions/upload-artifact@v4
         with:
           name: browser-tests
