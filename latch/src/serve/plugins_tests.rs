@@ -3,7 +3,7 @@
 //! iroh and the owner over the host's private socket. Every test host
 //! starts with Google enabled, as its owner would have left it.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -139,8 +139,20 @@ async fn google_setup_refuses_a_missing_or_unverified_gog_and_stays_off() {
     assert_eq!(t.plow.saw("access-token"), 0, "no credential asked for");
 }
 
-/// With the pinned gog `just cft` installs (on macOS, where `just test`
-/// runs it) into `.dev/cft-state`.
+/// Installs the pinned gog `just cft` puts (on macOS, where `just test`
+/// runs it) in `.dev/cft-state`, and returns where.
+#[cfg(target_os = "macos")]
+fn install_pinned_gog(t: &TestHost) -> PathBuf {
+    let pinned = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../.dev/cft-state/plugins/gog")
+        .join(&crate::google::PIN.version)
+        .join("gog");
+    let gog = gog_folder(t).join("gog");
+    std::fs::create_dir_all(gog_folder(t)).unwrap();
+    std::fs::copy(&pinned, &gog).expect("the pinned gog; run `just cft`");
+    gog
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn google_is_enabled_only_once_its_setup_succeeds_and_stays_so_across_a_restart() {
@@ -151,13 +163,7 @@ async fn google_is_enabled_only_once_its_setup_succeeds_and_stays_so_across_a_re
     })
     .await;
     ok(plugins(&t, "disable", "google").await);
-    let pinned = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../.dev/cft-state/plugins/gog")
-        .join(&crate::google::PIN.version)
-        .join("gog");
-    let gog = gog_folder(&t).join("gog");
-    std::fs::create_dir_all(gog_folder(&t)).unwrap();
-    std::fs::copy(&pinned, &gog).expect("the pinned gog; run `just cft`");
+    let gog = install_pinned_gog(&t);
 
     std::fs::set_permissions(&gog, std::fs::Permissions::from_mode(0o644)).unwrap();
     let answer = plugins(&t, "enable", "google").await;
@@ -184,27 +190,26 @@ async fn google_is_enabled_only_once_its_setup_succeeds_and_stays_so_across_a_re
     assert!(again.start(crate::plugins::Connector::Google).is_ok());
 }
 
-#[tokio::test]
-async fn disable_refuses_new_calls_at_once_and_returns_after_the_running_one() {
-    let t = start(World {
-        google_delay: Duration::from_secs(2),
-        ..covered()
-    })
-    .await;
-    let t = Arc::new(t);
-    let finished = |t: &Arc<TestHost>, op: &'static str, args: Value| {
-        let t = t.clone();
-        tokio::spawn(async move {
-            let response = t.local_call(op, args).await;
-            (response, Instant::now())
-        })
-    };
-    let running = finished(&t, "google", accounts());
-    // Plow is now handing that call its credential.
-    while t.plow.saw("access-token") == 0 {
+/// Sends one operation over the host's socket in the background.
+fn pending(t: &Arc<TestHost>, op: &'static str, args: Value) -> tokio::task::JoinHandle<Response> {
+    let t = t.clone();
+    tokio::spawn(async move { t.local_call(op, args).await })
+}
+
+/// Until Plow has been asked for a Google credential `times` times.
+async fn asked_for_google(t: &TestHost, times: usize) {
+    while t.plow.saw("access-token") < times {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let disabling = finished(
+}
+
+#[tokio::test]
+async fn disable_refuses_new_calls_at_once_and_returns_after_the_running_one() {
+    let t = Arc::new(start(covered()).await);
+    t.plow.world.lock().unwrap().google_paused = true;
+    let running = pending(&t, "google", accounts());
+    asked_for_google(&t, 1).await;
+    let disabling = pending(
         &t,
         "plugins",
         json!({"command": "disable", "name": "google"}),
@@ -223,15 +228,53 @@ async fn disable_refuses_new_calls_at_once_and_returns_after_the_running_one() {
         "disable waits for the running call"
     );
 
-    let (answer, ran_until) = running.await.unwrap();
-    assert_eq!(ok(answer)["accounts"], json!(["me@example.com"]));
-    let (disabled, disabled_at) = disabling.await.unwrap();
-    assert_eq!(ok(disabled)["waited_for"], 1);
-    assert!(disabled_at >= ran_until);
+    t.plow.world.lock().unwrap().google_paused = false;
+    assert_eq!(
+        ok(running.await.unwrap())["accounts"],
+        json!(["me@example.com"])
+    );
+    assert_eq!(ok(disabling.await.unwrap())["waited_for"], 1);
+    let records = t.audit();
+    let at = |op: &str, outcome: &str| {
+        records
+            .iter()
+            .position(|r| r["op"] == op && r["outcome"] == outcome)
+            .unwrap()
+    };
+    assert!(
+        at("google", "ok") < at("plugins", "ok"),
+        "disable ended after the call"
+    );
     assert_eq!(
         t.plow.saw("access-token"),
         1,
         "the refused call got no credential"
+    );
+}
+
+/// A Google setup still waiting on Plow when the owner disables Google
+/// leaves it disabled.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_setup_overtaken_by_disable_changes_nothing() {
+    let t = Arc::new(start(covered()).await);
+    ok(plugins(&t, "disable", "google").await);
+    install_pinned_gog(&t);
+    t.plow.world.lock().unwrap().google_paused = true;
+    let enabling = pending(
+        &t,
+        "plugins",
+        json!({"command": "enable", "name": "google"}),
+    );
+    asked_for_google(&t, 1).await;
+    ok(plugins(&t, "disable", "google").await);
+
+    t.plow.world.lock().unwrap().google_paused = false;
+    assert_eq!(refusal(&enabling.await.unwrap()).1, "setup_superseded");
+    assert_eq!(state_of(&t, "google").await["state"], "disabled");
+    assert_eq!(
+        refusal(&t.local_call("google", accounts()).await).1,
+        "not_enabled"
     );
 }
 
