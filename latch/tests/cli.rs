@@ -1803,6 +1803,91 @@ fn another_latch_state_folder_inside_a_share_stays_hidden() {
 }
 
 #[test]
+fn a_host_sharing_no_folders_serves_and_refuses_exec_and_files_only() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let owner = dir.path().join("owner");
+    let owner_token = dir.path().join("owner.token");
+    let login = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+        "--name",
+        "owner-mac",
+    ];
+    assert_eq!(latch(&owner, &login, &[]).status.code(), Some(0));
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+
+    // No folders named and none saved: it serves anyway, and says so.
+    let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
+    assert!(
+        lines.iter().any(|line| line.contains(
+            "Sharing no folders — browser and Google only. Add some with `latch shares set ~/code`"
+        )),
+        "{lines:?}"
+    );
+    let local = latch(&host, &["status", "--local"], &[]);
+    let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(local["shares"], json!([]));
+    assert_eq!(local["serve"]["state"], "serving");
+
+    let refused = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
+        let output = latch(state, args, env);
+        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
+        let error = serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"].clone();
+        assert_eq!(error["code"], "no_folders", "{args:?}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("latch shares set ~/code"),
+            "{error}"
+        );
+    };
+    let into = dir.path().join("hosts");
+    let into = into.to_str().unwrap();
+    refused(&owner, &["exec", "--host", "host", "--", "true"], &[]);
+    refused(
+        &owner,
+        &["file", "get", "--host", "host", "/etc/hosts", into],
+        &[],
+    );
+    let local_file = dir.path().join("note.txt");
+    fs::write(&local_file, "hi").unwrap();
+    let local_file = local_file.to_str().unwrap();
+    refused(
+        &owner,
+        &["file", "put", "--host", "host", local_file, "note.txt"],
+        &[],
+    );
+    // An agent's exec is refused the same way, before anything is judged.
+    refused(
+        &agent,
+        &["exec", "--host", "host", "--", "true"],
+        &agent_env,
+    );
+    // What needs no folder still works: here, the owner's rules.
+    let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
+    assert_eq!(shown.status.code(), Some(0), "{shown:?}");
+    drop(serve);
+    assert!(!Path::new(into).exists(), "nothing was fetched");
+    let asked_judge = plow
+        .seen()
+        .iter()
+        .any(|(line, _)| line.contains("/v1/decisions"));
+    assert!(!asked_judge, "{:?}", plow.seen());
+}
+
+#[test]
 fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
