@@ -1404,6 +1404,15 @@ fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
 }
 
 #[test]
+fn first_login_accepts_the_installers_plugin_directory() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    fs::create_dir_all(dir.path().join("host/plugins/gog/1.0")).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    assert!(host.join("latch.json").is_file());
+}
+
+#[test]
 fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();

@@ -110,8 +110,8 @@ impl StateDir {
         Ok(())
     }
 
-    /// Refuses unmarked, populated folders and folders of another format.
-    /// A missing or empty folder is initialized only by `create`.
+    /// Refuses unmarked peer state and folders of another format.
+    /// Missing, empty or plugin-only folders are initialized only by `create`.
     pub fn check_format(&self) -> Result<(), Failure> {
         let path = self.path.join("latch.json");
         let text = match fs::read_to_string(&path) {
@@ -120,7 +120,11 @@ impl StateDir {
                 match fs::read_dir(&self.path) {
                     Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
                     Ok(mut entries) => {
-                        if entries.next().is_none() {
+                        if entries.all(|entry| {
+                            entry.is_ok_and(|entry| {
+                                entry.file_name() == "plugins" && entry.path().is_dir()
+                            })
+                        }) {
                             return Ok(());
                         }
                     }
@@ -347,6 +351,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&marker).unwrap(), written);
 
         fs::remove_file(&marker).unwrap();
+        fs::create_dir(state.path.join("plugins")).unwrap();
         fs::write(state.path.join("key"), "private state").unwrap();
         assert_eq!(state.check_format().unwrap_err().code, "state_format");
         assert_eq!(state.create().unwrap_err().code, "state_format");
