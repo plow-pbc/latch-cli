@@ -66,10 +66,8 @@ struct File {
     data_key: Sealed,
     items: Sealed,
     /// The number the next item's id gets, so a removed id is never given
-    /// again. A vault saved before it was kept has none: then it is one
-    /// past the highest id, and saved from then on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    next_id: Option<u64>,
+    /// again.
+    next_id: u64,
 }
 
 pub struct OwnStore {
@@ -197,18 +195,11 @@ impl OwnStore {
             .map_err(|_| failed("the vault's data key is damaged".into()))?;
         let items: Vec<Item> = serde_json::from_slice(&open(&data_key, &file.items, ITEMS_AAD)?)
             .map_err(|_| failed("the vault's items are damaged".into()))?;
-        let past_highest = items
-            .iter()
-            .filter_map(|item| item.id.strip_prefix('v')?.parse::<u64>().ok())
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let next_id = file.next_id.unwrap_or(0).max(past_highest);
         Ok(OwnStore {
             dir: dir.to_path_buf(),
             data_key,
             items,
-            next_id,
+            next_id: file.next_id,
         })
     }
 
@@ -219,7 +210,7 @@ impl OwnStore {
             version: VERSION,
             data_key: seal(&custody, &self.data_key, DATA_KEY_AAD),
             items: seal(&self.data_key, &items, ITEMS_AAD),
-            next_id: Some(self.next_id),
+            next_id: self.next_id,
         };
         write_private(
             &self.dir.join(FILE),
@@ -402,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vault_saved_before_it_kept_its_next_id_still_opens() {
+    fn a_vault_without_its_next_id_is_refused_without_changes() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = OwnStore::open(dir.path()).unwrap();
         store.add(login("made-up-pass-1")).unwrap();
@@ -411,13 +402,38 @@ mod tests {
         let mut file: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         file.as_object_mut().unwrap().remove("next_id");
-        fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-        let mut reopened = OwnStore::open(dir.path()).unwrap();
+        let bytes = serde_json::to_vec(&file).unwrap();
+        fs::write(&path, &bytes).unwrap();
         assert_eq!(
-            reopened.release("v2", "password").unwrap(),
-            "made-up-pass-2"
+            OwnStore::open(dir.path()).err().unwrap().code,
+            "vault_failed"
         );
-        assert_eq!(reopened.add(login("made-up-pass-3")).unwrap().item, "v3");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn stored_items_require_both_site_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = OwnStore::open(dir.path()).unwrap();
+        store.add(login("made-up-pass-1")).unwrap();
+        let path = dir.path().join(FILE);
+        let mut file: File = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for field in ["sites", "other_top_sites"] {
+            let mut items = serde_json::to_value(&store.items).unwrap();
+            items[0].as_object_mut().unwrap().remove(field);
+            file.items = seal(
+                &store.data_key,
+                &serde_json::to_vec(&items).unwrap(),
+                ITEMS_AAD,
+            );
+            let bytes = serde_json::to_vec(&file).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                OwnStore::open(dir.path()).err().unwrap().code,
+                "vault_failed"
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
     }
 
     #[test]

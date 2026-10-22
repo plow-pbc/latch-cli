@@ -16,11 +16,8 @@
 //! - `browser/`, on a host: profiles, the model's settings and each
 //!   session's journal.
 //! - `plugins/`, on a host: the pinned engines and the Google CLI.
-//! - `shares.json`: the folders `latch serve` shares when named none (see
-//!   `latch shares`).
-//! - `allow-read.json`: the paths it lets callers read besides, a file of
-//!   its own so that a latch from before `--allow-read`, rewriting
-//!   `shares.json`, leaves them alone.
+//! - `shares.json`: the folders `latch serve` shares when named none, and
+//!   the paths it lets callers read besides (see `latch shares`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
 //!
@@ -48,28 +45,15 @@ pub struct Config {
 /// The layout of the files in a state folder. A latch reads only a folder
 /// of exactly its own format: an older latch would misread a newer folder (or
 /// silently drop what it does not know when it saves), and no newer latch
-/// converts older folders yet. Raise it only with a change an older latch
-/// would misread, together with the explicit upgrade for that change.
-const FORMAT: u32 = 1;
+/// converts older folders. Raise it with a change an older latch would misread.
+const FORMAT: u32 = 2;
 
 /// What `latch serve` shares when it is named no folders, and what it lets
 /// callers read besides (`--allow-read`).
-#[derive(Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
 pub struct Shares {
     pub folders: Vec<PathBuf>,
     pub allow_read: Vec<PathBuf>,
-}
-
-/// `shares.json`.
-#[derive(Serialize, Deserialize, Default)]
-struct SharedFolders {
-    folders: Vec<PathBuf>,
-}
-
-/// `allow-read.json`.
-#[derive(Serialize, Deserialize, Default)]
-struct AllowRead {
-    paths: Vec<PathBuf>,
 }
 
 /// `latch.json`: the folder's format, and which latch first marked it.
@@ -109,31 +93,46 @@ impl StateDir {
 
     /// Creates the directory (owner-only) if it does not exist yet.
     pub fn create(&self) -> Result<(), Failure> {
+        self.check_format()?;
         fs::create_dir_all(&self.path).map_err(|err| self.io_failure(&self.path, err))?;
         let owner_only = fs::Permissions::from_mode(0o700);
         fs::set_permissions(&self.path, owner_only)
             .map_err(|err| self.io_failure(&self.path, err))?;
-        self.check_format()
+        if !self.path.join("latch.json").exists() {
+            self.save_json(
+                "latch.json",
+                &Marker {
+                    format: FORMAT,
+                    written_by: crate::cli::version().to_string(),
+                },
+            )?;
+        }
+        Ok(())
     }
 
-    /// Refuses a folder of another format than this latch's. A folder
-    /// without a marker was made before there was one, in format 1, and is
-    /// marked now; a folder that does not exist yet is marked by `create`.
+    /// Refuses unmarked, populated folders and folders of another format.
+    /// A missing or empty folder is initialized only by `create`.
     pub fn check_format(&self) -> Result<(), Failure> {
         let path = self.path.join("latch.json");
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) if err.kind() == ErrorKind::NotFound => {
-                if !self.path.is_dir() {
-                    return Ok(());
+                match fs::read_dir(&self.path) {
+                    Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+                    Ok(mut entries) => {
+                        if entries.next().is_none() {
+                            return Ok(());
+                        }
+                    }
+                    Err(err) => return Err(self.io_failure(&self.path, err)),
                 }
-                let marker = Marker {
-                    format: FORMAT,
-                    written_by: crate::cli::version().to_string(),
-                };
-                let text = serde_json::to_string_pretty(&marker).expect("marker serializes") + "\n";
-                return write_private(&path, text.as_bytes())
-                    .map_err(|err| self.io_failure(&path, err));
+                return Err(Failure::failed(
+                    "state_format",
+                    format!(
+                        "{} has no latch.json format marker; pass a fresh --state-dir. Nothing was read or changed",
+                        self.path.display()
+                    ),
+                ));
             }
             Err(err) => return Err(self.io_failure(&path, err)),
         };
@@ -193,39 +192,19 @@ impl StateDir {
 
     /// What `latch shares set` saved, folders in order; none if it never ran.
     pub fn load_shares(&self) -> Result<Shares, Failure> {
-        let folders: SharedFolders = self.load_json("shares.json")?;
-        let allow_read: AllowRead = self.load_json("allow-read.json")?;
-        Ok(Shares {
-            folders: folders.folders,
-            allow_read: allow_read.paths,
-        })
-    }
-
-    pub fn save_shares(&self, shares: &Shares) -> Result<(), Failure> {
-        let folders = SharedFolders {
-            folders: shares.folders.clone(),
-        };
-        let allow_read = AllowRead {
-            paths: shares.allow_read.clone(),
-        };
-        self.save_json("shares.json", &folders)?;
-        self.save_json("allow-read.json", &allow_read)
-    }
-
-    /// The file `name` in the state folder, or the default if there is none.
-    fn load_json<T: serde::de::DeserializeOwned + Default>(
-        &self,
-        name: &str,
-    ) -> Result<T, Failure> {
-        let path = self.path.join(name);
+        let path = self.path.join("shares.json");
         if !path.exists() {
-            return Ok(T::default());
+            return Ok(Shares::default());
         }
         let text = self.read(&path)?;
         serde_json::from_str(&text).map_err(|err| {
             let message = format!("{} is not valid: {err}", path.display());
             Failure::failed("bad_state", message)
         })
+    }
+
+    pub fn save_shares(&self, shares: &Shares) -> Result<(), Failure> {
+        self.save_json("shares.json", shares)
     }
 
     fn save_json(&self, name: &str, value: &impl Serialize) -> Result<(), Failure> {
@@ -334,26 +313,21 @@ mod tests {
     }
 
     #[test]
-    fn an_older_latch_rewriting_the_folders_leaves_the_reads_alone() {
+    fn shares_and_reads_are_saved_together() {
         let dir = test_dir();
         let state = StateDir {
             path: dir.path().to_path_buf(),
         };
+        assert_eq!(state.load_shares().unwrap(), Shares::default());
         let shares = Shares {
             folders: vec![PathBuf::from("/work")],
             allow_read: vec![PathBuf::from("/refs")],
         };
         state.save_shares(&shares).unwrap();
         assert_eq!(state.load_shares().unwrap(), shares);
-        // What a latch from before `--allow-read` writes for `shares set /other`.
+        assert!(!dir.path().join("allow-read.json").exists());
         fs::write(dir.path().join("shares.json"), r#"{"folders": ["/other"]}"#).unwrap();
-        assert_eq!(
-            state.load_shares().unwrap(),
-            Shares {
-                folders: vec![PathBuf::from("/other")],
-                allow_read: vec![PathBuf::from("/refs")],
-            }
-        );
+        assert_eq!(state.load_shares().unwrap_err().code, "bad_state");
     }
 
     #[test]
@@ -366,14 +340,18 @@ mod tests {
         assert!(!state.path.exists());
         state.create().unwrap();
         let written = fs::read_to_string(&marker).unwrap();
-        assert!(written.contains("\"format\": 1"), "{written}");
-
-        // A folder from before the marker is format 1, and is marked.
-        fs::remove_file(&marker).unwrap();
+        assert!(
+            written.contains(&format!("\"format\": {FORMAT}")),
+            "{written}"
+        );
         state.check_format().unwrap();
+        state.create().unwrap();
         assert_eq!(fs::read_to_string(&marker).unwrap(), written);
 
-        for (format, fix) in [(2, "update this latch"), (0, "use the latch that wrote it")] {
+        for (format, fix) in [
+            (FORMAT + 1, "update this latch"),
+            (FORMAT - 1, "use the latch that wrote it"),
+        ] {
             let other = format!(r#"{{"format": {format}, "written_by": "9.9.9"}}"#);
             fs::write(&marker, &other).unwrap();
             let refused = state.check_format().unwrap_err();
@@ -382,6 +360,25 @@ mod tests {
             assert!(refused.message.contains("9.9.9"), "{}", refused.message);
             assert_eq!(fs::read_to_string(&marker).unwrap(), other);
         }
+    }
+
+    #[test]
+    fn only_fresh_folders_can_be_initialized_without_a_marker() {
+        let dir = test_dir();
+        let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
+        state.check_format().unwrap();
+        assert!(!state.path.join("latch.json").exists());
+        state.create().unwrap();
+        fs::remove_file(state.path.join("latch.json")).unwrap();
+        fs::write(state.path.join("key"), "private state").unwrap();
+        for result in [state.check_format(), state.create()] {
+            assert_eq!(result.unwrap_err().code, "state_format");
+        }
+        assert!(!state.path.join("latch.json").exists());
+        assert_eq!(
+            fs::read_to_string(state.path.join("key")).unwrap(),
+            "private state"
+        );
     }
 
     #[test]

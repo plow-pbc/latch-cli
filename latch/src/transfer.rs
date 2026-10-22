@@ -111,9 +111,16 @@ async fn send(
     };
     let (done, sha256) = upload(connection, &request, file, size).await?;
     check_same(&done, &sha256)?;
+    let path = done["path"].as_str().ok_or_else(|| {
+        Failure::new(
+            Exit::Unknown,
+            "bad_response",
+            "the host's answer did not say where the file was put".to_string(),
+        )
+    })?;
     Ok(json!({
         // Where the host put it: inside `remote_path` if that is a folder.
-        "path": done["path"].as_str().unwrap_or(remote_path),
+        "path": path,
         "size": size,
         "sha256": sha256,
         "audit_id": done["audit_id"],
@@ -279,6 +286,107 @@ mod tests {
             args: json!({}),
             chat: None,
         }
+    }
+
+    #[tokio::test]
+    async fn an_upload_requires_the_hosts_actual_destination() {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let local = dir.path().join("source");
+        std::fs::write(&local, b"hello").unwrap();
+        for path in [
+            None,
+            Some(Value::Null),
+            Some(json!(42)),
+            Some(json!("/dest/source")),
+        ] {
+            let (host, client, accepted, connection) = connected().await;
+            let serving = async {
+                let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
+                wire::read_frame(&mut recv).await.unwrap();
+                let frame = |value| serde_json::to_vec(&Response::Ok(value)).unwrap();
+                wire::write_frame(&mut send, &frame(json!({})))
+                    .await
+                    .unwrap();
+                let sha256 = wire::copy(&mut recv, &mut tokio::io::sink(), 5)
+                    .await
+                    .unwrap();
+                let mut done = json!({"sha256": sha256});
+                if let Some(path) = &path {
+                    done["path"] = path.clone();
+                }
+                wire::write_frame(&mut send, &frame(done)).await.unwrap();
+                send.finish().unwrap();
+                let _ = send.stopped().await;
+            };
+            let mut file = File::open(&local).await.unwrap();
+            let ((), result) = tokio::join!(
+                serving,
+                send(&connection, None, &mut file, 5, "/dest", Some("source"))
+            );
+            if path.as_ref().is_some_and(Value::is_string) {
+                assert_eq!(result.unwrap()["path"], "/dest/source");
+            } else {
+                let failure = result.unwrap_err();
+                assert_eq!(failure.code, "bad_response");
+                assert!(matches!(failure.exit, Exit::Unknown));
+            }
+            client.close().await;
+            host.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_worker_without_a_destination_gets_no_upload_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::AsyncSeekExt;
+
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let program = dir.path().join("worker");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\nprintf '{\"ready\":true}\\n'\nread -r line\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let workers = crate::worker::WorkerSetup {
+            areas: vec![dir.path().to_path_buf()],
+            reads: vec![],
+            hidden: vec![],
+            state_folders: crate::state_folders::StateFolders::none(),
+            state_dir: dir.path().join("state"),
+            program,
+        };
+        let local = dir.path().join("source");
+        std::fs::write(&local, b"hello").unwrap();
+        let mut file = File::open(local).await.unwrap();
+        let (host, client, accepted, connection) = connected().await;
+        let serving = async {
+            let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
+            wire::read_frame(&mut recv).await.unwrap();
+            let done = crate::files::put(
+                &workers,
+                &json!({"remote_path": "dest", "size": 5}),
+                &mut send,
+                &mut recv,
+            )
+            .await;
+            let frame = serde_json::to_vec(&done.response).unwrap();
+            wire::write_frame(&mut send, &frame).await.unwrap();
+            send.finish().unwrap();
+            let _ = send.stopped().await;
+        };
+        let ((), result) = tokio::join!(
+            serving,
+            send(&connection, None, &mut file, 5, "dest", Some("source"))
+        );
+        assert_eq!(result.unwrap_err().code, "transfer_failed");
+        assert_eq!(file.stream_position().await.unwrap(), 0);
+        client.close().await;
+        host.close().await;
     }
 
     /// A download from a host that sends `bytes` of the `size` it promised,
