@@ -904,8 +904,12 @@ fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
 fn an_exec_worker_cannot_connect_to_sockets_in_the_host_state() {
     use std::os::unix::net::UnixListener;
 
-    let dir = setup();
+    // macOS Unix socket addresses must fit even when the checkout path is long.
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
     let root = dir.path().canonicalize().unwrap();
+    for folder in ["area", "state", "tmp"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
     for (state, alias) in [
         ("state", "area/state-link"),
         ("area/peer", "area/peer-link"),
