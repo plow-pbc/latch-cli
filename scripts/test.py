@@ -9,7 +9,6 @@ a skip. `just test-list` lists the suites; `just test-plan ...` prints a
 plan without running it.
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -87,26 +86,29 @@ def pinned_engines(key):
     return pins
 
 
-def suite_of(binary, name):
-    """The one suite each Rust test belongs to."""
-    if binary == "worker":
-        return "sandbox"
-    if name.startswith("browser::tests::") or "pinned::" in name:
-        return "browser"
-    head = name.split("::")[0]
-    if binary == "cli" and head in ("scenario", "lifecycle", "messages"):
-        return head
-    return "core"
+BROWSER = "test(/^browser::tests::/) | test(/(^|::)pinned::/)"
+CLI_MODULES = ("scenario", "lifecycle", "messages")
 
 
-def runs_on_macos(name):
-    """Of the browser suite, what macOS runs: tests tagged `mac`, and every
-    test on an engine Linux has no pin for (it would run nowhere else)."""
-    parts = name.split("::")
-    if "mac" in parts or "pinned" in parts:
-        return True
-    linux = pinned_engines("linux_arm64")
-    return any(engine in parts and not linux[engine] for engine in ENGINES)
+def filterset(suite, where):
+    """A suite's Rust tests, as a nextest filterset. Core is every test no
+    other suite takes, so each test is in exactly one."""
+    if suite == "browser":
+        if where != "macos":
+            return BROWSER
+        # macOS: tests tagged `mac`, and every test on an engine Linux has
+        # no pin for (it would run nowhere else).
+        unpinned = [f"test(/::{engine}::/)" for engine, pinned in pinned_engines("linux_arm64").items()
+                    if not pinned]
+        return f"({BROWSER}) & ({' | '.join(['test(/(^|::)(mac|pinned)::/)', *unpinned])})"
+    if suite in CLI_MODULES:
+        return f"binary(=cli) & test(/^{suite}::/)"
+    if suite == "sandbox":
+        return "binary(=worker)"
+    if suite == "core":
+        others = [BROWSER, "binary(=worker)", *(f"binary(=cli) & test(/^{m}::/)" for m in CLI_MODULES)]
+        return "not (" + " | ".join(f"({other})" for other in others) + ")"
+    raise ValueError(suite)
 
 
 def plan(args):
@@ -134,6 +136,9 @@ def plan(args):
             raise SystemExit(f"test.py: browser and scenario need an engine, and none is pinned for "
                              f"{key}; run them on arm64 (CI: ubuntu-24.04-arm) or with --linux "
                              f"from an Apple silicon Mac")
+    if set(suites) - {"installer"} and where != "container" and not shutil.which("cargo-nextest"):
+        raise SystemExit("test.py: the Rust suites run on cargo-nextest; install it (CI pins 0.9.148): "
+                         "https://nexte.st/docs/installation/pre-built-binaries/")
     if "lifecycle" in suites and where == "linux":
         session = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True)
         if session.returncode:
@@ -162,8 +167,9 @@ def engines_state(where):
     return DEV / ("linux-cft-state" if where == "container" else "cft-state")
 
 
-def steps(where, suites, gate, first_shard):
+def steps(where, suites, gate, shard):
     """What runs, in order: (name, suites it serves, command, cwd)."""
+    first_shard = not shard or shard[0] == 1
     features = FEATURES["macos" if where == "macos" else "linux"]
     rust = [s for s in suites if s not in ("installer",)]
     out = []
@@ -172,8 +178,8 @@ def steps(where, suites, gate, first_shard):
         out.append(("clippy", ["gate"], ["cargo", "clippy", "--locked", "--all-targets", "--features",
                                          features, "--", "-D", "warnings"], LATCH))
     if rust:
-        out.append(("build", rust, ["cargo", "test", "--locked", "--features", features, "--no-run",
-                                    "--message-format=json-render-diagnostics"], LATCH))
+        out.append(("build", rust, ["cargo", "nextest", "list", "--locked", "--features", features,
+                                    "--message-format", "oneline"], LATCH))
     if {"browser", "scenario"} & set(suites):
         state = engines_state(where)
         if where == "macos":
@@ -187,7 +193,11 @@ def steps(where, suites, gate, first_shard):
             command = ["sh", "browser-engines.sh", "--state-dir", str(state), *engines]
         out.append(("engines", ["browser", "scenario"], command, LATCH))
     if rust:
-        out.append(("rust", rust, None, LATCH))
+        # latch/.config/nextest.toml keeps the browser tests' limits.
+        union = " | ".join(f"({filterset(suite, where)})" for suite in rust)
+        partition = ["--partition", "hash:%d/%d" % shard] if shard else []
+        out.append(("rust", rust, ["cargo", "nextest", "run", "--locked", "--features", features,
+                                   "--no-fail-fast", *partition, "-E", union], LATCH))
     if "messages" in suites and first_shard:
         out.append(("swift reader", ["messages"], ["env", "LATCH_FUZZ_ITERATIONS=50000", "swift", "test"],
                     LATCH / "messages-reader"))
@@ -228,55 +238,22 @@ def print_plan(where, suites, gate, not_here, args):
           f"({platform.machine()}{', shard %d/%d' % args.shard if args.shard else ''})")
     for suite, reason in not_here:
         print(f"  {suite}: {reason}")
-    first = not args.shard or args.shard[0] == 1
-    for name, serves, command, cwd in steps(where, suites, gate, first):
-        detail = show(command) if command else "the build's test binaries, each test by name"
-        print(f"  {name:<18} [{', '.join(serves)}] {detail}")
+    for name, serves, command, cwd in steps(where, suites, gate, args.shard):
+        print(f"  {name:<18} [{', '.join(serves)}] {show(command)}")
 
 
-def build(command, env):
-    """Runs the test build and returns {executable: binary name}."""
-    done = subprocess.run(command, cwd=LATCH, env=env, stdout=subprocess.PIPE, text=True)
-    executables = {}
-    for line in done.stdout.splitlines():
-        message = json.loads(line)
-        if (message.get("reason") == "compiler-artifact" and message["profile"]["test"]
-                and message.get("executable")):
-            executables[message["executable"]] = message["target"]["name"]
-    if done.returncode == 0 and not executables:
-        raise SystemExit("test.py: the build made no test binaries")
-    return done.returncode, executables
-
-
-def inventory(executable):
-    listing = subprocess.check_output([executable, "--list", "--format", "terse"], text=True)
-    return [line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")]
-
-
-def in_shard(binary, name, shard):
-    if not shard:
-        return True
-    index, count = shard
-    digest = hashlib.sha256(f"{binary}::{name}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") % count == index - 1
-
-
-def select(where, suites, executables, shard):
-    """Each binary's tests for these suites, and how many each suite has."""
-    chosen, counts = {}, {suite: 0 for suite in suites if suite != "installer"}
-    for executable, binary in sorted(executables.items(), key=lambda item: item[1]):
-        names = []
-        for name in inventory(executable):
-            suite = suite_of(binary, name)
-            if suite not in suites:
-                continue
-            if where == "macos" and suite == "browser" and not runs_on_macos(name):
-                continue
-            counts[suite] += 1
-            if in_shard(binary, name, shard):
-                names.append(name)
-        chosen[executable] = (binary, names)
-    return chosen, counts
+def count(where, suites, env):
+    """How many tests each Rust suite selects here; none is a broken suite."""
+    features = FEATURES["macos" if where == "macos" else "linux"]
+    counts = {}
+    for suite in suites:
+        listed = subprocess.run(["cargo", "nextest", "list", "--locked", "--features", features,
+                                 "--message-format", "json", "-E", filterset(suite, where)],
+                                cwd=LATCH, env=env, capture_output=True, text=True, check=True)
+        counts[suite] = sum(1 for binary in json.loads(listed.stdout)["rust-suites"].values()
+                            for case in binary["testcases"].values()
+                            if case["filter-match"]["status"] == "matches" and not case["ignored"])
+    return counts
 
 
 def run(args):
@@ -288,21 +265,23 @@ def run(args):
         return in_container(args)
     print_plan(where, suites, gate, not_here, args)
     env = cargo_env(where)
-    first = not args.shard or args.shard[0] == 1
     results = []
-    executables = {}
-    for name, serves, command, cwd in steps(where, suites, gate, first):
+    for name, serves, command, cwd in steps(where, suites, gate, args.shard):
         print(f"\n== {name} [{', '.join(serves)}]", flush=True)
         began = time.monotonic()
-        binaries = []
+        detail = None
         if name == "build":
-            status, executables = build(command, env)
-        elif name == "rust":
-            status, binaries = run_rust(where, suites, executables, args, env)
+            status = subprocess.run(command, cwd=cwd, env=env, stdout=subprocess.DEVNULL).returncode
+            if status == 0:
+                counts = count(where, serves, env)
+                detail = ", ".join(f"{suite} {n}" for suite, n in counts.items())
+                print(f"  {detail}", flush=True)
+                if 0 in counts.values():
+                    print(f"test.py: a suite selects no tests on {where}; it is broken")
+                    status = 1
         else:
             status = subprocess.run(command, cwd=cwd, env=env).returncode
-        results.append((name, status, time.monotonic() - began, None))
-        results.extend(binaries)
+        results.append((name, status, time.monotonic() - began, detail))
         if status and name in ("build", "engines"):
             break
     print("\n== summary")
@@ -320,27 +299,6 @@ def run(args):
         (DEV / "ci" / name).write_text(json.dumps(report, indent=2) + "\n")
     print(f"\ntest.py: {'failed: ' + ', '.join(failed) if failed else 'all passed'}")
     return 1 if failed else 0
-
-
-def run_rust(where, suites, executables, args, env):
-    """Runs each binary once, on its tests in these suites; returns the
-    status and a summary row per binary."""
-    chosen, counts = select(where, suites, executables, args.shard)
-    empty = [suite for suite, count in counts.items() if count == 0]
-    if empty:
-        print(f"test.py: no Rust tests in {', '.join(empty)} on {where}; the suite is broken")
-        return 1, []
-    print("  " + ", ".join(f"{suite} {count}" for suite, count in counts.items()), flush=True)
-    status, rows = 0, []
-    for executable, (binary, names) in chosen.items():
-        if not names:
-            continue  # libtest would run everything for an empty filter
-        print(f"\n-- {binary}: {len(names)} tests", flush=True)
-        began = time.monotonic()
-        code = subprocess.run([executable, "--exact", *names], cwd=LATCH, env=env).returncode
-        rows.append((f"  {binary}", code, time.monotonic() - began, f"{len(names)} tests"))
-        status = status or code
-    return status, rows
 
 
 def container_seccomp():

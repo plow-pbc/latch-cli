@@ -16,12 +16,10 @@ Exit codes: 0 ok, 1 failed, 2 usage, 3 host unreachable, 4 denied,
 
 ## 1. Install
 
-You need the GitHub CLI, logged in to an account that can read
-`plow-pbc/latch-cli` (`gh auth login`). This installs the newest published
-release:
+This installs the newest release from `releases.plow.co`:
 
 ```sh
-gh release download --repo plow-pbc/latch-cli --pattern install.sh && sh install.sh
+curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 ```
 
 `sh install.sh TAG` installs that release instead (tags look like
@@ -48,8 +46,8 @@ the host.
 `--state-dir DIR` on the installer puts the plugins in another state folder
 instead; pass the same `--state-dir DIR` to every `latch` command then.
 
-**Update:** run the same command again, adding `--clobber` to `gh release
-download` so it replaces the `install.sh` already there. The installer replaces
+**Update:** run the same command again (`curl -O` replaces the `install.sh`
+already there). The installer replaces
 the binary in place and skips anything already installed at the pinned
 version. Running it twice changes nothing. A host that `latch serve` or
 `latch serve -d` started is stopped and started again with the new latch,

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs latch from a private GitHub release: the newest published one, or
+# Installs latch from its releases on releases.plow.co: the newest one, or
 # the tag given first. Options go on to the release's install-binary.sh.
 #
 #   sh install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive]
@@ -16,10 +16,11 @@ case "${1:-}" in
     shift
     ;;
 esac
-command -v gh >/dev/null || { echo 'install GitHub CLI and run gh auth login first' >&2; exit 1; }
-# `latest` is the newest published release; drafts are never picked.
+releases=https://releases.plow.co/latch-cli
+command -v curl >/dev/null || { echo 'install curl first' >&2; exit 1; }
+# `latest` is the release latest.json names: the newest promoted one.
 if [ "$version" = latest ]; then
-  version=$(gh release view --repo plow-pbc/latch-cli --json tagName --jq .tagName)
+  version=$(curl -fsSL --proto '=https' "$releases/latest.json" | sed -n 's/.*"tag": *"\([^"]*\)".*/\1/p')
 fi
 printf '%s\n' "$version" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || { echo 'expected a release tag such as v0.1.0-1327, or latest' >&2; exit 1; }
 case "$(uname -s)/$(uname -m)" in
@@ -33,7 +34,9 @@ caller=$(pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 archive="latch-$version-$target.tar.gz"
-gh release download "$version" --repo plow-pbc/latch-cli --pattern "$archive" --pattern SHA256SUMS --dir "$tmp"
+for file in "$archive" SHA256SUMS; do
+  curl -fsSL --proto '=https' -o "$tmp/$file" "$releases/releases/$version/$file" || { echo "could not download $file of $version" >&2; exit 1; }
+done
 cd "$tmp"
 # Verify only the selected archive; other targets need not be downloaded.
 awk -v name="$archive" '$2 == name {print; found=1} END {if (!found) exit 1}' SHA256SUMS > selected.sha256

@@ -128,7 +128,7 @@ just test-list        # the suites: what each covers and needs, and where it run
 just test-plan ...    # what `just test ...` would run, without running it
 ```
 
-A suite that cannot run where you asked fails and says why; nothing is skipped. CI runs these same commands.
+A suite that cannot run where you asked fails and says why; nothing is skipped. CI runs these same commands. The Rust suites run on [cargo-nextest](https://nexte.st) (CI pins 0.9.148), with `latch/.config/nextest.toml`.
 
 `just gatekeeper` runs the checks that ask the decision model for real, through Plow on the login of `.dev/state` (not tests).
 

@@ -102,6 +102,7 @@ fn main() -> ExitCode {
                     args.headless,
                     args.private_display,
                     args.allow_local_browsing,
+                    args.page_isolation_off,
                 ),
                 Err(failure) => {
                     eprintln!("{}", failure.to_json());

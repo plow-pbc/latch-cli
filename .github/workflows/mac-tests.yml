@@ -63,7 +63,7 @@ jobs:
           key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
       - uses: taiki-e/install-action@v2
         with:
-          tool: just
+          tool: just,cargo-nextest@0.9.148
       # The macOS gate, as on a laptop; shard 1 also lints and runs the
       # Swift, Python and app-bundle checks.
       - run: just test --shard ${{ matrix.shard }}/${{ inputs.shards == 1 && 1 || 2 }} --ci

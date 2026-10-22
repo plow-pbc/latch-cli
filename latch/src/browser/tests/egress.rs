@@ -308,6 +308,7 @@ mod mac {
             super::super::HEADLESS,
             None,
             &proxy,
+            false,
         )
         .unwrap();
         browser.begin("k1").unwrap();

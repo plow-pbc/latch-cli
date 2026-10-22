@@ -174,9 +174,11 @@ impl CamoufoxPin {
 }
 
 /// Launch arguments that would undo what latch relies on: Chrome's own
-/// sandbox, the private pipe as the only control channel, a headed window
-/// unless the host asks for none (`serve --headless-browsers`, which latch
-/// adds itself), and no password store. A recipe carrying one is never used.
+/// sandbox (unless the host cannot run it, `sandbox::page_isolation_off`,
+/// where latch adds `--no-sandbox` itself), the private pipe as the only
+/// control channel, a headed window unless the host asks for none (`serve
+/// --headless-browsers`, which latch adds itself), and no password store. A
+/// recipe carrying one is never used.
 const FORBIDDEN: &[&str] = &[
     "--no-sandbox",
     "--disable-gpu-sandbox",

@@ -627,7 +627,8 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
                     );
                 }
             }
-            // Chrome's own namespace sandbox, nested in latch's.
+            // Chrome's own namespace sandbox, nested in latch's; where the
+            // host cannot run it, latch's seccomp alone.
             #[cfg(target_os = "linux")]
             {
                 let (namespace, seccomp) = confinement(p.pid);
@@ -637,10 +638,14 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
                 );
                 if kind == "renderer" {
                     helpers += 1;
-                    assert!(
-                        namespace != main_confinement.0 && seccomp == "2",
-                        "Chrome's sandbox holds the renderer"
-                    );
+                    if crate::sandbox::page_isolation_off() {
+                        assert_eq!(seccomp, "2", "latch's sandbox holds the renderer");
+                    } else {
+                        assert!(
+                            namespace != main_confinement.0 && seccomp == "2",
+                            "Chrome's sandbox holds the renderer"
+                        );
+                    }
                 }
             }
         } else {
@@ -663,7 +668,17 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
         }
     }
     assert!(helpers > 0, "a web content process is running");
-    let refused: &[&str] = if cft {
+    // Chrome without its sandbox only where the host cannot run it.
+    let unsandboxed = cft && crate::sandbox::page_isolation_off();
+    assert_eq!(
+        main.args.contains("--no-sandbox"),
+        unsandboxed,
+        "{}",
+        main.args
+    );
+    let refused: &[&str] = if unsandboxed {
+        &["--remote-debugging-port", "--single-process"]
+    } else if cft {
         &[
             "--no-sandbox",
             "--remote-debugging-port",
@@ -1178,6 +1193,10 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
     if HEADLESS {
         command.arg("--headless");
     }
+    // And where this host cannot run Chrome's own sandbox.
+    if crate::sandbox::page_isolation_off() {
+        command.arg("--page-isolation-off");
+    }
     let mut worker = command
         .env_clear()
         .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
@@ -1242,6 +1261,10 @@ async fn a_busy_browser_dies_with_its_host(engine: &str) {
         .arg("--allow-local-browsing");
     if HEADLESS {
         host.arg("--headless");
+    }
+    // And where this host cannot run Chrome's own sandbox.
+    if crate::sandbox::page_isolation_off() {
+        host.arg("--page-isolation-off");
     }
     let mut host = host
         .env_clear()

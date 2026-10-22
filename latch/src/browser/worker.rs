@@ -150,6 +150,7 @@ pub fn run(
     headless: bool,
     private_display: bool,
     local: bool,
+    page_isolation_off: bool,
 ) -> ExitCode {
     #[cfg(target_os = "linux")]
     if let Err(failure) = confine(state_dir, profile_name, scratch) {
@@ -215,6 +216,7 @@ pub fn run(
                         headless,
                         display,
                         &proxy,
+                        page_isolation_off,
                     )?;
                     let ready = json!({
                         "engine": CFT.engine,

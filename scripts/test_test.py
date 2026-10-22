@@ -1,9 +1,9 @@
-"""scripts/test.py's own tests: which suite each test is in, what a plan
-refuses, and that shards and suites lose no test."""
+"""scripts/test.py's own tests: each Rust test is in exactly one suite, as
+nextest selects them, and a plan refuses what cannot run where it was asked."""
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -19,43 +19,91 @@ def plan(*argv, where="macos"):
         return runner.plan(args)
 
 
+# A crate shaped like latch: its binary and the cli and worker test binaries,
+# with a test in each place a suite takes from, and each test's suite.
+UNIT = {
+    "vault::tests::sealed": "core",
+    "browser::client::tests::usage": "core",
+    "browser::tests::cft::a_check": "browser",
+    "browser::tests::cft::mac::a_mac_check": "browser",
+    "browser::tests::camoufox::a_check": "browser",
+    "browser::tests::fills::cft::a_fill": "browser",
+    "browser::tests::mac::camoufox_only": "browser",
+    "serve::plugins_tests::pinned::gog": "browser",
+}
+CLI = {
+    "a_login": "core",
+    "a_linux_latch_has_no_messages": "core",
+    "pinned::a_browser_call": "browser",
+    "scenario::a_return": "scenario",
+    "lifecycle::a_managed_host": "lifecycle",
+    "messages::a_search": "messages",
+}
+WORKER = {"a_worker_write": "sandbox"}
+# On macOS, with Camoufox pinned for macOS only: the browser tests it runs.
+ON_MACOS = {"browser::tests::cft::mac::a_mac_check", "browser::tests::camoufox::a_check",
+            "browser::tests::mac::camoufox_only", "serve::plugins_tests::pinned::gog",
+            "pinned::a_browser_call"}
+
+
+def source(names):
+    """`names` as tests, each in its modules."""
+    tree = {}
+    for name in names:
+        *modules, test = name.split("::")
+        node = tree
+        for module in modules:
+            node = node.setdefault(module, {})
+        node[test] = None
+
+    def emit(node):
+        return " ".join(f"#[test] fn {key}() {{}}" if child is None else f"mod {key} {{ {emit(child)} }}"
+                        for key, child in node.items())
+    return emit(tree) + "\n"
+
+
 class Suites(unittest.TestCase):
-    def test_each_test_has_one_suite(self):
-        cases = {
-            ("latch", "vault::tests::a_value_is_sealed"): "core",
-            ("latch", "sandbox::tests::a_profile"): "core",
-            ("latch", "browser::core::tests::refs"): "core",
-            ("latch", "browser::tests::cft::a_check"): "browser",
-            ("latch", "browser::tests::fills::camoufox::mac::a_check"): "browser",
-            ("latch", "serve::plugins_tests::pinned::google_is_enabled"): "browser",
-            ("cli", "pinned::local_socket_browser_open"): "browser",
-            ("cli", "scenario::the_owner_returns_items"): "scenario",
-            ("cli", "lifecycle::a_detached_host_answers"): "lifecycle",
-            ("cli", "messages::agent_help_says"): "messages",
-            ("cli", "a_linux_latch_has_no_messages_or_contacts"): "core",
-            ("setup", "setup_runs_every_step"): "core",
-            ("worker", "an_exec_worker_writes_only_its_own_temp_folder"): "sandbox",
-        }
-        for (binary, name), suite in cases.items():
-            self.assertEqual(runner.suite_of(binary, name), suite, name)
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory()
+        crate = Path(cls.directory.name) / "latch"
+        (crate / "src").mkdir(parents=True)
+        (crate / "tests").mkdir()
+        (crate / "Cargo.toml").write_text('[package]\nname = "latch"\nversion = "0.1.0"\nedition = "2024"\n')
+        (crate / "src/main.rs").write_text("fn main() {}\n" + source(UNIT))
+        (crate / "tests/cli.rs").write_text(source(CLI))
+        (crate / "tests/worker.rs").write_text(source(WORKER))
+        subprocess.run(["cargo", "generate-lockfile", "-q"], cwd=crate, check=True)
+        cls.crate = crate
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    def selected(self, suite, where):
+        listed = subprocess.run(["cargo", "nextest", "list", "--message-format", "json", "-E",
+                                 runner.filterset(suite, where)], cwd=self.crate, check=True,
+                                capture_output=True, text=True)
+        return {f"{binary['binary-name']}:{name}"
+                for binary in json.loads(listed.stdout)["rust-suites"].values()
+                for name, case in binary["testcases"].items()
+                if case["filter-match"]["status"] == "matches"}
+
+    def test_each_test_is_in_exactly_one_suite(self):
+        expected = {}
+        for binary, tests in (("latch", UNIT), ("cli", CLI), ("worker", WORKER)):
+            for name, suite in tests.items():
+                expected.setdefault(suite, set()).add(f"{binary}:{name}")
+        for suite in ("core", "sandbox", "messages", "browser", "lifecycle", "scenario"):
+            self.assertEqual(self.selected(suite, "linux"), expected.get(suite, set()), suite)
 
     def test_macos_runs_tagged_browser_tests_and_engines_linux_cannot(self):
         with mock.patch.object(runner, "pinned_engines", return_value={"cft": True, "camoufox": False}):
-            self.assertTrue(runner.runs_on_macos("browser::tests::cft::mac::the_engine_runs"))
-            self.assertTrue(runner.runs_on_macos("browser::tests::mac::camoufox_runs_with_page_windows"))
-            self.assertTrue(runner.runs_on_macos("browser::tests::fills::camoufox::a_fill"))
-            self.assertTrue(runner.runs_on_macos("serve::plugins_tests::pinned::google_is_enabled"))
-            self.assertFalse(runner.runs_on_macos("browser::tests::fills::cft::a_fill"))
-            self.assertFalse(runner.runs_on_macos("browser::tests::goals::fills_inside_plans"))
+            got = {name.split(":", 1)[1] for name in self.selected("browser", "macos")}
+        self.assertEqual(got, ON_MACOS)
         with mock.patch.object(runner, "pinned_engines", return_value={"cft": True, "camoufox": True}):
-            self.assertFalse(runner.runs_on_macos("browser::tests::fills::camoufox::a_fill"))
-            self.assertTrue(runner.runs_on_macos("browser::tests::camoufox::mac::the_engine_runs"))
-
-    def test_shards_split_every_test_once(self):
-        names = [f"suite::test_{number}" for number in range(200)]
-        for count in (1, 2, 3):
-            buckets = [[n for n in names if runner.in_shard("latch", n, (i, count))] for i in range(1, count + 1)]
-            self.assertCountEqual([n for bucket in buckets for n in bucket], names)
+            got = {name.split(":", 1)[1] for name in self.selected("browser", "macos")}
+        self.assertEqual(got, ON_MACOS - {"browser::tests::camoufox::a_check"})
 
 
 class Plans(unittest.TestCase):
@@ -86,30 +134,6 @@ class Plans(unittest.TestCase):
     def test_a_named_suite_is_added_to_the_gate_once(self):
         self.assertEqual(plan("gate", "core")[1], runner.GATE["macos"])
         self.assertEqual(plan("scenario", "gate")[1], runner.GATE["macos"] + ["scenario"])
-
-
-class Binaries(unittest.TestCase):
-    def test_tests_run_by_name_and_ignored_ones_stay_ignored(self):
-        with tempfile.TemporaryDirectory() as directory:
-            crate = Path(directory) / "fixture"
-            (crate / "src").mkdir(parents=True)
-            (crate / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2024"\n')
-            (crate / "src/main.rs").write_text(
-                "fn main() {}\n#[test] fn a() {}\n#[test] fn aa() {}\n"
-                "#[test] #[ignore] fn ignored() { panic!(); }\nmod mac { #[test] fn b() {} }\n")
-            subprocess.run(["cargo", "generate-lockfile", "-q"], cwd=crate, check=True)
-            built = subprocess.run(["cargo", "test", "-q", "--no-run", "--message-format=json"], cwd=crate,
-                                   check=True, capture_output=True, text=True)
-            executable = next(line for line in built.stdout.splitlines() if '"executable":"' in line
-                              and '"test":true' in line)
-            executable = runner.json.loads(executable)["executable"]
-            names = runner.inventory(executable)
-            self.assertCountEqual(names, ["a", "aa", "ignored", "mac::b"])
-            ran = subprocess.run([executable, "--exact", "a", "ignored"], capture_output=True, text=True)
-            self.assertEqual(ran.returncode, 0, ran.stdout)
-            self.assertIn("test a ... ok", ran.stdout)
-            self.assertIn("test ignored ... ignored", ran.stdout)
-            self.assertNotIn("test aa ", ran.stdout)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 # The Linux test container `just test --linux` runs in (scripts/test.py):
 # the pinned Rust, bubblewrap for latch's sandbox, Python for the installer
-# tests, and what the pinned Chrome for Testing needs to start headless.
-# The engines themselves are installed into .dev/linux-cft-state by
-# install-binary.sh at test time, as on a Linux host.
+# tests, cargo-nextest as CI pins it, and what the pinned Chrome for Testing
+# needs to start headless. The engine itself is installed into
+# .dev/linux-cft-state by browser-engines.sh at test time.
 FROM rust:1.99.0
 RUN rustup component add clippy rustfmt \
  && apt-get update \
@@ -11,4 +11,5 @@ RUN rustup component add clippy rustfmt \
       libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libxkbcommon0 \
       libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 \
       libpango-1.0-0 libcairo2 fonts-liberation \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -sSfL https://get.nexte.st/0.9.148/linux-arm | tar xzf - -C /usr/local/cargo/bin
