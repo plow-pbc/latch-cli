@@ -90,11 +90,12 @@ fn moved(path: &str, size: u64, sha256: String) -> Done {
     }
 }
 
-/// The worker refused before any bytes moved. A sandbox refusal is a
-/// denial (exit 4); anything else is a failure (exit 1).
+/// The worker refused before any bytes moved. A sandbox refusal, or a host
+/// sharing no folders, is a denial (exit 4); anything else is a failure
+/// (exit 1).
 fn refused(path: &str, error: WorkerError) -> Done {
     let audit_args = json!({ "path": path });
-    if error.code == "sandbox_denied" {
+    if matches!(error.code.as_str(), "sandbox_denied" | "no_folders") {
         return Done {
             response: Response::Error {
                 exit: crate::failure::Exit::Denied,

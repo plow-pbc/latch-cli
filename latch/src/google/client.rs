@@ -71,7 +71,7 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
     };
     let chat = args.host.chat;
     let result = exchange(&link.connection, chat, request, files, plan.as_ref()).await;
-    link.close().await;
+    link.close();
     result
 }
 /// One `google` operation on an open connection: the request, a first answer

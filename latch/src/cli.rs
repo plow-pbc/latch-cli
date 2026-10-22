@@ -16,6 +16,9 @@ pub const BUILD_API_URL: Option<&str> = option_env!("LATCH_BUILD_API_URL");
 /// How this build is distributed (e.g. `standalone`), set by a release
 /// build. Unset, it is a local build: made by hand from a checkout.
 pub const BUILD_CHANNEL: Option<&str> = option_env!("LATCH_BUILD_CHANNEL");
+/// The release workflow's run number, set by a release build: the build
+/// number `--version` shows after the version, as `0.1.0 (1327)`.
+pub const BUILD_NUMBER: Option<&str> = option_env!("LATCH_BUILD_NUMBER");
 
 /// The Plow a build from `channel` logs in to when nothing else names one:
 /// real Plow for a release (`standalone`), none for a local build, which
@@ -26,9 +29,10 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
 }
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
-/// 03:45 UTC, local build, protocol plow/latch/1)`: where this build came from
-/// (see `build.rs`), the protocol it speaks to peers and, for a build with
-/// baked-in defaults, those, so it is obvious which build this is.
+/// 03:45 UTC, local build, protocol plow/latch/1)`, or for a release build
+/// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
+/// came from (see `build.rs`), the protocol it speaks to peers and, for a
+/// build with baked-in defaults, those, so it is obvious which build this is.
 pub fn version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
     VERSION.get_or_init(|| {
@@ -44,8 +48,16 @@ pub fn version() -> &'static str {
             let url = BUILD_API_URL.unwrap_or("none");
             about.push_str(&format!("; state {dir}, Plow {url}"));
         }
-        format!("{} ({about})", env!("CARGO_PKG_VERSION"))
+        version_line(env!("CARGO_PKG_VERSION"), BUILD_NUMBER, &about)
     })
+}
+
+/// `package (number): about` for a numbered build, else `package (about)`.
+fn version_line(package: &str, number: Option<&str>, about: &str) -> String {
+    match number.filter(|number| !number.is_empty()) {
+        Some(number) => format!("{package} ({number}): {about}"),
+        None => format!("{package} ({about})"),
+    }
 }
 
 /// What `latch --help` adds after the commands: how an agent uses latch.
@@ -63,7 +75,10 @@ Agents:
   what fixes it: often a retry later, but a host out of Plow credits fails
   until the host's account owner adds them. A browser step's
   model_unavailable (exit 1) is the same decision model, for a click's risk,
-  a goal or a sentence check; nothing was sent, and nothing gets around it.";
+  a goal or a sentence check; nothing was sent, and nothing gets around it.
+
+  `latch skill` prints the guide for agents; `latch help --json` describes
+  every command; `latch help COMMAND --examples` shows how to call one.";
 
 /// What `latch browser do --help` adds after its options: the short form
 /// by example. BROWSER.md shows the same examples.
@@ -95,7 +110,8 @@ read `do --history R` first, and never resend it.";
     name = "latch",
     version = version(),
     about = "Reach your other machines over iroh, with Plow as the directory.",
-    after_help = AGENT_HELP
+    after_help = AGENT_HELP,
+    disable_help_subcommand = true
 )]
 pub struct Cli {
     /// Directory of this latch instance: its key, Plow credential and config (~/.latch unless this build has another default)
@@ -131,17 +147,37 @@ pub enum Command {
     Rules(RulesArgs),
     /// The folders `latch serve` shares when it is named none, and its --allow-read paths: show them, or set them
     Shares(SharesArgs),
+    /// This machine's host audit log: its records in full, its chain checked without the key, or a new key
+    Audit(AuditArgs),
     /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
     Events(EventsArgs),
     /// Run this machine as a host, in the foreground, until stopped
     #[command(after_help = SERVE_HELP)]
     Serve(ServeArgs),
+    /// Help for a command, its examples, or every command as JSON
+    Help(HelpArgs),
+    /// Print SKILL.md, which teaches an agent how to use latch
+    Skill,
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),
     /// Internal: the process a host starts for each browser session
     #[command(hide = true)]
     BrowserWorker(BrowserWorkerArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HelpArgs {
+    /// The command, e.g. `browser` or `browser open` [default: every command]
+    #[arg(value_name = "COMMAND")]
+    pub path: Vec<String>,
+    /// Examples of each command, ready to adapt
+    #[arg(long, conflicts_with = "json")]
+    pub examples: bool,
+    /// Each command's inputs, output, action id, side effects and retry
+    /// rule, and latch's exit codes, as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -715,6 +751,22 @@ pub struct EventsArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct AuditArgs {
+    #[command(subcommand)]
+    pub action: AuditAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuditAction {
+    /// Every record, opened with the key: each command in full, as it ran
+    Show,
+    /// Check every record's place in the chain, without the key
+    Verify,
+    /// Seal new records under a new key and keep every old one; a running `latch serve` uses it once restarted
+    RotateKey,
+}
+
+#[derive(Args, Debug)]
 pub struct SharesArgs {
     #[command(subcommand)]
     pub action: Option<SharesAction>,
@@ -915,6 +967,19 @@ pub struct ExecArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_numbered_build_shows_its_number_after_the_version() {
+        assert_eq!(
+            version_line("0.1.0", Some("1327"), "commit abc, protocol p"),
+            "0.1.0 (1327): commit abc, protocol p"
+        );
+        assert_eq!(
+            version_line("0.1.0", None, "commit abc, local build"),
+            "0.1.0 (commit abc, local build)"
+        );
+        assert_eq!(version_line("0.1.0", Some(""), "x"), "0.1.0 (x)");
+    }
 
     fn serve(args: &[&str]) -> ServeArgs {
         let args = [&["latch", "serve"], args].concat();
