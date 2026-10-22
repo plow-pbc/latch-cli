@@ -32,6 +32,8 @@ pub struct Finished {
 
 /// A call as requested, before it runs, for `Dashboard::begin`.
 pub struct Begun {
+    /// When it began.
+    pub at: Timestamp,
     pub kind: String,
     pub command: String,
     pub title: String,
@@ -45,6 +47,7 @@ pub struct Begun {
 pub fn begun(op: &str, request: &Value) -> Begun {
     let (kind, command) = command(op, request, &Value::Null);
     Begun {
+        at: Timestamp::now(),
         kind,
         command,
         title: title(op, request, &Value::Null),
@@ -150,7 +153,12 @@ pub fn recorded(
     record: &crate::audit::Record,
     host: &str,
 ) -> Option<(Caller, Timestamp, Finished)> {
-    let at = record.time.parse().ok()?;
+    let at = record
+        .started
+        .as_ref()
+        .unwrap_or(&record.time)
+        .parse()
+        .ok()?;
     let key: String = record.caller.chars().take(8).collect();
     let caller = if record.caller == host {
         Caller {

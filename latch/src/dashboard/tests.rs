@@ -1359,3 +1359,17 @@ fn the_decision_tab_shows_the_owners_rule_for_an_owners_call() {
         "{decision}"
     );
 }
+
+#[test]
+fn a_refilled_call_is_at_the_time_it_began() {
+    let mut record = crate::audit::record("host-key", None, "exec", "allow", "ok");
+    record.args = json!({"argv": ["ls"], "exit_code": 0});
+    record.time = "2026-10-22T14:00:02Z".into();
+    record.started = Some("2026-10-22T14:00:00Z".into());
+    let (_, at, _) = recorded(&record, "host-key").unwrap();
+    assert_eq!(at.to_string(), "2026-10-22T14:00:00Z");
+    // A record made before latch kept the start: the time it was made.
+    record.started = None;
+    let (_, at, _) = recorded(&record, "host-key").unwrap();
+    assert_eq!(at.to_string(), "2026-10-22T14:00:02Z");
+}

@@ -140,15 +140,23 @@ pub fn argv(argv: &[String]) -> Vec<String> {
                     spans.push((from, end));
                 }
             }
+            // A long run of token characters looks like a credential when
+            // some stretch of it has no slash; a path's run is short words.
             let mut run = 0;
+            let (mut stretch, mut longest) = (0, 0);
             for (i, c) in arg.char_indices().chain(std::iter::once((arg.len(), ' '))) {
                 if c.is_ascii_alphanumeric() || "+/=_-".contains(c) {
                     run += 1;
+                    stretch = if c == '/' { 0 } else { stretch + 1 };
+                    longest = longest.max(stretch);
                 } else {
-                    if run >= 32 && !spans.iter().any(|&(start, end)| start < i && end > i - run) {
+                    if run >= 32
+                        && longest >= 16
+                        && !spans.iter().any(|&(start, end)| start < i && end > i - run)
+                    {
                         spans.push((i - run, i));
                     }
-                    run = 0;
+                    (run, stretch, longest) = (0, 0, 0);
                 }
             }
             spans.sort_unstable();
@@ -318,6 +326,17 @@ mod tests {
         assert_eq!(
             shown(&["ordinary", "short-token", "the owner", "日本語"]),
             ["ordinary", "short-token", "the owner", "日本語"]
+        );
+        // A path is short words between slashes; a key may have slashes too.
+        let path = "ls '/Users/ada/plow-pbc/latch-cli/latch-cli/.dev/g134/.latch'";
+        assert_eq!(shown(&[path]), [path]);
+        assert_eq!(
+            shown(&["--workdir=/home/ada/projects/latch-cli/latch"]),
+            ["--workdir=/home/ada/projects/latch-cli/latch"]
+        );
+        assert_eq!(
+            shown(&["set", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"]),
+            ["set", "[redacted]"]
         );
     }
 }

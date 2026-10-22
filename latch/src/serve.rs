@@ -885,10 +885,12 @@ async fn serve_request(
         Ok(identity) => {
             // On the board, running, from now until it is audited.
             let asked = request.args.clone();
+            let begun = dashboard::begun(op, &asked);
+            let begun_at = begun.at;
             let on_board = host.dashboard.begin(
                 host.board_caller(&identity, local, None),
                 dashboard::session(op, &asked),
-                dashboard::begun(op, &asked),
+                begun,
             );
             // Any caller's exec, file or Google operation runs only if the
             // gatekeeper allows it.
@@ -1114,6 +1116,7 @@ async fn serve_request(
                 &done.outcome,
             );
             record.args = done.audit_args.clone();
+            record.started = Some(begun_at.to_string());
             record.gate = judged
                 .clone()
                 .or_else(|| local.then(|| serde_json::json!({"caller":"owner_on_host"})));
