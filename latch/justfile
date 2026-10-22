@@ -137,7 +137,7 @@ build api=plow_main:
     root="$(cd .. && pwd)"
     state="$root/.dev/state"
     # The host's socket lives in the state folder; macOS caps its path at 104 bytes.
-    if [ "$(printf '%s' "$state/serve-v2.sock" | wc -c)" -ge 104 ]; then
+    if [ "$(printf '%s' "$state/serve-v3.sock" | wc -c)" -ge 104 ]; then
         echo "$state is too deep for the host's socket; use a worktree with a shorter path" >&2
         exit 1
     fi

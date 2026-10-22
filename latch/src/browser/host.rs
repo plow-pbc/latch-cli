@@ -32,7 +32,7 @@ use tokio::sync::Mutex;
 
 use super::judged;
 use super::plan::Op;
-use super::runtime::{IDLE, Runtime};
+use super::runtime::Runtime;
 use super::session::Session;
 use super::tags;
 use crate::failure::{Exit, Failure};
@@ -158,10 +158,6 @@ impl Entry {
     pub(super) fn owner_hint(&self) -> String {
         self.owner.chars().take(12).collect()
     }
-
-    fn idle(&self) -> bool {
-        self.seen.lock().expect("seen lock").0.elapsed() >= IDLE
-    }
 }
 
 impl Browsers {
@@ -259,11 +255,11 @@ impl Browsers {
     }
 
     /// The live session `id`, if there is one. A session whose runtime
-    /// ended, or that sat idle too long (its worker ended it), is forgotten.
+    /// ended (its worker ends it once it sat idle too long) is forgotten.
     async fn get(&self, id: &str) -> Option<Arc<Entry>> {
         let mut sessions = self.sessions.lock().await;
         let entry = sessions.get(id)?.clone();
-        if !entry.runtime.alive() || entry.idle() {
+        if !entry.runtime.alive() {
             sessions.remove(id);
             return None;
         }
@@ -296,7 +292,7 @@ impl Browsers {
         task: Option<&str>,
     ) -> Result<(String, Arc<Entry>), Failure> {
         let runtime = Arc::new(self.start(engine).await?);
-        let session = Session::begin(&runtime).await?;
+        let session = Session::new(runtime.clone());
         let id = format!("s{}", letters(&rand::random::<[u8; 16]>()));
         let entry = Arc::new(Entry {
             session: Mutex::new(session),
@@ -317,7 +313,14 @@ impl Browsers {
     async fn start(&self, engine: &str) -> Result<Runtime, Failure> {
         #[cfg(test)]
         if let Some((latch, _)) = &self.test {
-            return Runtime::start_with(latch, &self.state_dir, engine, IDLE, self.headless).await;
+            return Runtime::start_with(
+                latch,
+                &self.state_dir,
+                engine,
+                super::runtime::IDLE,
+                self.headless,
+            )
+            .await;
         }
         Runtime::start(&self.state_dir, engine, self.headless).await
     }
@@ -408,17 +411,12 @@ impl Browsers {
         Some(self.end(&entry).await)
     }
 
-    /// A session the map no longer has: its windows close, then its
-    /// browser. Its profile goes once the last call holding it has ended.
+    /// A session the map no longer has: its browser closes, and its
+    /// profile goes once the last call holding it has ended.
     async fn end(&self, entry: &Entry) -> Result<Value, Failure> {
-        let ended = entry.session.lock().await.end().await;
+        let _turn = entry.session.lock().await;
         let _ = tokio::time::timeout(CLOSING, entry.runtime.close()).await;
-        ended.map(|_| json!({"closed": true}))
-    }
-
-    /// Forgets session `id` after its worker said it has ended.
-    async fn forget(&self, id: &str) {
-        self.sessions.lock().await.remove(id);
+        Ok(json!({"closed": true}))
     }
 }
 
@@ -674,18 +672,10 @@ async fn answer(
             .expect("judged sites lock")
             .insert(site);
     }
-    match result {
-        Ok(answered) => {
-            last_site(&entry, audit);
-            Ok(answered)
-        }
-        Err(failure) => {
-            if failure.code == "no_such_session" {
-                browsers.forget(name).await;
-            }
-            Err(failure)
-        }
+    if result.is_ok() {
+        last_site(&entry, audit);
     }
+    result
 }
 
 /// What the gatekeeper judges of a session command before it runs, if

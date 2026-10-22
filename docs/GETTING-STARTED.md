@@ -62,7 +62,7 @@ Check it:
 
 ```sh
 latch --version
-# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/2
+# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/3
 ```
 
 **Linux:** a host sandboxes what it runs with bubblewrap. The installer

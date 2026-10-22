@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Mutex as Shared;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -49,7 +49,6 @@ pub struct Runtime {
     /// The sites agent code (`eval`) has run on in this runtime: a value
     /// filled there later may be seen by what it left.
     agent_code: Shared<BTreeSet<String>>,
-    next_key: AtomicU32,
     /// How long a call (its line, upload, answer and bytes) may take.
     within: fn(&Value) -> Duration,
 }
@@ -157,7 +156,6 @@ impl Runtime {
             filling: AtomicBool::new(false),
             pauses: AtomicU32::new(0),
             agent_code: Shared::default(),
-            next_key: AtomicU32::new(0),
             within,
         })
     }
@@ -182,8 +180,8 @@ impl Runtime {
             .to_path_buf()
     }
 
-    /// Whether the worker is still running: one whose sessions all sat
-    /// idle has closed itself. One busy with a call is running.
+    /// Whether the worker is still running: one whose session sat idle has
+    /// closed itself. One busy with a call is running.
     pub fn alive(&self) -> bool {
         match self.worker.try_lock() {
             Ok(mut worker) => matches!(worker.child.try_wait(), Ok(None)),
@@ -191,12 +189,7 @@ impl Runtime {
         }
     }
 
-    /// A key for a new session, the worker's name for it.
-    pub fn new_key(&self) -> String {
-        format!("k{}", self.next_key.fetch_add(1, Ordering::SeqCst) + 1)
-    }
-
-    /// One call (a `core::Call` as JSON, naming its session), with an
+    /// One call (a `core::Call` as JSON), with an
     /// upload's bytes after it. Bytes the worker sends back (a screenshot,
     /// a download) come back as `bytes`.
     /// A worker that has not finished the call well past its limit is
@@ -347,7 +340,7 @@ mod tests {
 
     async fn stopped_in_time(runtime: &Runtime, input: Option<&[u8]>) {
         let started = Instant::now();
-        let call = runtime.call(json!({"op": "upload", "session": "k1"}), input);
+        let call = runtime.call(json!({"op": "upload"}), input);
         let failure = tokio::time::timeout(Duration::from_secs(5), call)
             .await
             .expect("the call ended by its limit")

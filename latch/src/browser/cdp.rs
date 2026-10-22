@@ -3,7 +3,7 @@
 //! each message JSON ending in a NUL byte. The pipes are private to the
 //! worker and Chrome; nothing listens on a port.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -45,10 +45,10 @@ pub struct Cdp {
     /// A reply did not come in time since this was last asked.
     unanswered: bool,
     /// Filled vault values no GET request may carry as a query parameter
-    /// (`Driver::guard`), by session, and the sessions whose values a
-    /// request carried since each last asked.
-    pub guards: HashMap<String, Vec<String>>,
-    pub stopped: HashSet<String>,
+    /// (`Driver::guard`), and whether a request carried one since this was
+    /// last asked.
+    pub guards: Vec<String>,
+    pub stopped: bool,
 }
 
 /// The two pipes for one Chrome: the ends Chrome gets (to become its fd 3
@@ -75,8 +75,8 @@ pub fn pipes() -> io::Result<Pipes> {
             pages: HashSet::new(),
             removed: HashSet::new(),
             unanswered: false,
-            guards: HashMap::new(),
-            stopped: HashSet::new(),
+            guards: Vec::new(),
+            stopped: false,
         },
     })
 }
@@ -285,13 +285,7 @@ impl Cdp {
                 let request = &params["request"];
                 let url = request["url"].as_str().unwrap_or_default();
                 let web = url.starts_with("http://") || url.starts_with("https://");
-                let carriers: Vec<String> = self
-                    .guards
-                    .iter()
-                    .filter(|(_, values)| request["method"] == "GET" && carries(url, values))
-                    .map(|(key, _)| key.clone())
-                    .collect();
-                let carries = !carriers.is_empty();
+                let carries = request["method"] == "GET" && carries(url, &self.guards);
                 let session = event["sessionId"].as_str();
                 if web && !carries {
                     let _ = self.send(
@@ -300,7 +294,7 @@ impl Cdp {
                         session,
                     );
                 } else {
-                    self.stopped.extend(carriers);
+                    self.stopped |= carries;
                     // An aborted navigation commits no error page, which
                     // would keep the address, value and all, as the tab's.
                     let reason = if carries {
@@ -430,18 +424,17 @@ mod tests {
         ));
     }
 
-    /// While guards stand, Chrome pauses every request: one carrying a
-    /// session's secret is aborted and reported to that session alone, the
-    /// rest go on, and a scheme off the web is still refused.
+    /// While a guard stands, Chrome pauses every request: a GET carrying a
+    /// guarded secret is aborted and reported, the rest go on, and a scheme
+    /// off the web is still refused.
     #[test]
-    fn a_paused_request_is_checked_against_every_sessions_guard() {
+    fn a_paused_request_is_checked_against_the_guard() {
         let Pipes {
             chrome_reads,
             chrome_writes,
             mut cdp,
         } = pipes().unwrap();
-        cdp.guards.insert("a".into(), vec!["secret-a".into()]);
-        cdp.guards.insert("b".into(), vec!["secret-b".into()]);
+        cdp.guards = vec!["secret-a".into(), "secret-b".into()];
         let paused = |id: &str, method: &str, url: &str| {
             let event = json!({"method": "Fetch.requestPaused", "sessionId": "s",
                                "params": {"requestId": id, "request": {"method": method, "url": url}}});
@@ -483,7 +476,7 @@ mod tests {
             answer("r4"),
             ("Fetch.failRequest".into(), json!("BlockedByClient"))
         );
-        assert_eq!(cdp.stopped, HashSet::from(["a".to_string()]));
+        assert!(cdp.stopped);
     }
 
     #[test]

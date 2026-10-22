@@ -96,7 +96,8 @@ pub(super) fn fill_to_confirm(entry: &Entry, id: &str) -> Option<Value> {
 }
 
 /// Waits until `deadline` for `condition`, checking it a few times a
-/// second: between checks the browser is free for other sessions' calls.
+/// second: between checks the browser is free for the session's other
+/// calls.
 /// A check can also end the wait early: the condition's element is from a
 /// page that is gone, or a dialog blocks the page.
 async fn poll(

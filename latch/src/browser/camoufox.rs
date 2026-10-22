@@ -2,15 +2,13 @@
 //! Camoufox helper (`camoufox/helper.mjs`), a Node program on Playwright
 //! that speaks the same operations as JSON lines over its standard streams.
 //! Playwright reaches Camoufox over a pipe of its own; no port is opened.
-//! One browser serves every session its runtime begins; the helper keeps each
-//! session's tabs, dialogs and downloads apart, and every operation names
-//! the session it acts for.
+//! The browser is one session's: the helper keeps its tabs, dialogs and
+//! downloads.
 //!
 //! The helper's source is built into latch and written into the session's
 //! scratch folder at launch; what it runs on (Node, its packages and
 //! Camoufox) is the pinned plugin, checked before every launch.
 
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::CommandExt;
@@ -53,15 +51,13 @@ pub struct Camoufox {
     /// With no window: nothing to bring to the front.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     headless: bool,
-    /// The session the driver contract acts for.
-    current: String,
     /// When the call under way must end (`Driver::limit`).
     deadline: Option<Instant>,
     /// An answer did not come in time since this was last asked.
     unanswered: bool,
-    /// What the helper said about each session with its latest answer:
-    /// whether a dialog blocks it, and its active tab.
-    seen: HashMap<String, (bool, String)>,
+    /// What the helper said with its latest answer: whether a dialog
+    /// blocks the session, and its active tab.
+    seen: (bool, String),
     scratch: PathBuf,
 }
 
@@ -131,10 +127,9 @@ impl Camoufox {
             next_id: 0,
             browser: 0,
             headless,
-            current: String::new(),
             deadline: None,
             unanswered: false,
-            seen: HashMap::new(),
+            seen: (false, String::new()),
             scratch: scratch.to_path_buf(),
         };
         let mut env = json!({
@@ -210,7 +205,6 @@ impl Camoufox {
         let id = self.next_id;
         params["id"] = json!(id);
         params["op"] = json!(op);
-        params["session"] = json!(self.current);
         let own = Instant::now() + wait;
         let deadline = self.deadline.map_or(own, |limit| limit.min(own));
         // The helper ends its own waits by then too.
@@ -231,10 +225,7 @@ impl Camoufox {
             // A wait the helper gave up on, though it answered all the same.
             self.unanswered |= answer["late"] == true;
             let active = answer["active"].as_str().unwrap_or_default();
-            self.seen.insert(
-                self.current.clone(),
-                (answer["dialog"] == true, active.to_string()),
-            );
+            self.seen = (answer["dialog"] == true, active.to_string());
             if let Some(error) = answer.get("error") {
                 let code = error["code"].as_str().unwrap_or("engine_error");
                 let message = error["message"].as_str().unwrap_or_default().to_string();
@@ -282,11 +273,6 @@ impl Camoufox {
                 Err(_) => return Err(gone()),
             }
         }
-    }
-
-    /// Session `key`'s own folder in the runtime's scratch folder.
-    fn session_folder(&self, key: &str) -> PathBuf {
-        self.scratch.join("sessions").join(key)
     }
 
     fn frame_params(frame: &Frame) -> Value {
@@ -341,10 +327,7 @@ impl Driver for Camoufox {
     }
 
     fn active_tab(&self) -> String {
-        self.seen
-            .get(&self.current)
-            .map(|(_, active)| active.clone())
-            .unwrap_or_default()
+        self.seen.1.clone()
     }
 
     fn navigate(&mut self, url: &str) -> Result<(), Failure> {
@@ -425,9 +408,7 @@ impl Driver for Camoufox {
     }
 
     fn dialog_open(&self) -> bool {
-        self.seen
-            .get(&self.current)
-            .is_some_and(|(dialog, _)| *dialog)
+        self.seen.0
     }
 
     fn answer_dialog(&mut self, accept: bool, text: Option<&str>) -> Result<(), Failure> {
@@ -452,7 +433,7 @@ impl Driver for Camoufox {
     }
 
     fn upload_folder(&self) -> PathBuf {
-        self.session_folder(&self.current).join("uploads")
+        self.scratch.join("uploads")
     }
 
     fn downloads(&mut self) -> Result<Vec<Download>, Failure> {
@@ -554,28 +535,6 @@ impl Camoufox {
 }
 
 impl Runtime for Camoufox {
-    fn begin(&mut self, key: &str) -> Result<(), Failure> {
-        self.select(key);
-        self.ask::<Value>("begin", json!({})).map(drop)
-    }
-
-    fn end(&mut self, key: &str) {
-        self.select(key);
-        let ended = self.ask::<Value>("end", json!({}));
-        // Its pages may still hold a filled secret: they are not closed,
-        // which would let them send it as they go; the browser is killed.
-        // Every other session on it then gets browser_gone.
-        if ended.is_ok_and(|ended| ended["guarded"] == true) {
-            self.kill();
-        }
-        self.seen.remove(key);
-        let _ = fs::remove_dir_all(self.session_folder(key));
-    }
-
-    fn select(&mut self, key: &str) {
-        self.current = key.to_string();
-    }
-
     fn unanswered(&mut self) -> bool {
         std::mem::take(&mut self.unanswered)
     }
@@ -658,10 +617,9 @@ mod tests {
             next_id: 0,
             browser: 0,
             headless: true,
-            current: "k1".into(),
             deadline: None,
             unanswered: false,
-            seen: HashMap::new(),
+            seen: (false, String::new()),
             scratch: state.to_path_buf(),
         }
     }

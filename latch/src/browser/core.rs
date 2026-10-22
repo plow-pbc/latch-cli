@@ -170,11 +170,7 @@ pub enum Call {
     NextStage,
     FillCleanup,
     FillResume,
-    /// Starts the call's session with a window of its own.
-    Begin,
-    /// Ends the call's session: its tabs close, the others go on.
-    End,
-    /// Closes the browser, ending every session.
+    /// Closes the browser, ending the session.
     Close,
 }
 
@@ -437,9 +433,7 @@ impl<D: Driver> Core<D> {
             ),
             Call::Downloads => self.downloads(&mut audit),
             Call::DownloadGet { download } => self.download_get(&download, &mut audit),
-            Call::Begin | Call::End | Call::Close => {
-                unreachable!("the worker starts, ends and closes sessions")
-            }
+            Call::Close => unreachable!("the worker closes the browser"),
         };
         match result {
             Ok(result) => Ok(Answer {
@@ -456,10 +450,9 @@ impl<D: Driver> Core<D> {
         }
     }
 
-    /// Whether a fill holds this session: while it does, no other session
-    /// on the browser may read or act either.
-    pub fn is_paused(&self) -> bool {
-        self.paused
+    /// The browser, for what the worker does between calls.
+    pub fn browser(&mut self) -> &mut D {
+        &mut self.driver
     }
 
     /// A fresh reading for an error's details, when the page can be read.

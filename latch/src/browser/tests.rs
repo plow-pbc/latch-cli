@@ -369,7 +369,6 @@ conformance!(
     a_busy_browser_dies_with_its_host,
     a_dialog_that_opens_between_calls_is_refused_at_once,
     a_dialog_in_one_session_does_not_hold_another_sessions_download,
-    a_download_heard_before_another_sessions_dialog_does_not_wait_on_it,
     an_answer_shows_the_screen_and_observe_all_every_element,
 );
 
@@ -1281,9 +1280,7 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
         writeln!(input, "{line}").unwrap();
         input.flush().unwrap();
     };
-    call(json!({"op": "begin", "session": "k1"}));
-    assert!(answer()["ok"].is_object());
-    call(json!({"op": "open", "session": "k1", "url": local_page()}));
+    call(json!({"op": "open", "url": local_page()}));
     assert!(answer()["ok"].is_object());
 
     // The browser stops answering anything.
@@ -1291,7 +1288,7 @@ async fn a_browser_that_leaves_calls_unanswered_is_closed(engine: &str) {
     unsafe { libc::kill(browser, libc::SIGSTOP) };
     let mut codes = Vec::new();
     for _ in 0..3 {
-        call(json!({"op": "observe", "session": "k1"}));
+        call(json!({"op": "observe"}));
         codes.push(answer()["error"]["code"].clone());
     }
     // SAFETY: as above.
@@ -1357,12 +1354,10 @@ async fn a_busy_browser_dies_with_its_host(engine: &str) {
         writeln!(input, "{line}").unwrap();
         input.flush().unwrap();
     };
-    call(json!({"op": "begin", "session": "k1"}));
-    assert!(answer()["ok"].is_object());
-    call(json!({"op": "open", "session": "k1", "url": local_page()}));
+    call(json!({"op": "open", "url": local_page()}));
     assert!(answer()["ok"].is_object());
     // A call that keeps the worker busy for half a minute.
-    call(json!({"op": "wait", "session": "k1",
+    call(json!({"op": "wait",
                 "condition": {"kind": "text", "text": "never on this page"},
                 "within_ms": 30000}));
     std::thread::sleep(Duration::from_secs(1));
@@ -1405,7 +1400,6 @@ async fn a_wait_the_camoufox_helper_gives_up_on_is_a_command_left_unanswered() {
         &proxy,
     )
     .unwrap();
-    browser.begin("k1").unwrap();
     browser.navigate(&local_page()).unwrap();
     let pid = browser.pid() as libc::pid_t;
     // SAFETY: kill sends a signal and touches no Rust memory.
@@ -1458,21 +1452,9 @@ async fn a_dialog_that_opens_between_calls_is_refused_at_once(engine: &str) {
 }
 
 /// A download from a frame latch has not read is traced to its session
-/// through each tab's frames; a tab a dialog holds answers for none of
-/// them, and another session's call does not wait on it.
+/// through each tab's frames, and a dialog in another session neither holds
+/// it up nor is missed: answering it can be that session's next call.
 async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine: &str) {
-    dialog_and_download(engine, 1000).await;
-}
-
-/// The same, with the download heard first and the dialog after it, both
-/// taken in together by the next call.
-async fn a_download_heard_before_another_sessions_dialog_does_not_wait_on_it(engine: &str) {
-    dialog_and_download(engine, 2500).await;
-}
-
-/// Session a's page opens a dialog `alert_after` ms after its eval; session
-/// b's page downloads from a frame 1.5 s after its own.
-async fn dialog_and_download(engine: &str, alert_after: u64) {
     let (_dir, state, _area) = test_state(engine);
     let mut h = Host::new(&state);
     let (a, _) = h.open(CALLER, engine, json!({"url": local_page()})).await;
@@ -1481,7 +1463,7 @@ async fn dialog_and_download(engine: &str, alert_after: u64) {
         CALLER,
         "eval",
         &a,
-        json!({"script": format!("setTimeout(() => alert('later'), {alert_after}); 1")}),
+        json!({"script": "setTimeout(() => alert('later'), 1000); 1"}),
     )
     .await
     .unwrap();
@@ -1872,8 +1854,9 @@ async fn sessions_share_nothing_and_their_profiles_end_with_them(engine: &str) {
         profile_a.display(),
         profile_b.display()
     );
+    // Inside Linux's sandbox each browser has the same pid in a namespace
+    // of its own: the runtimes and profiles tell them apart.
     assert!(!Arc::ptr_eq(&entry_a.runtime, &entry_b.runtime));
-    assert_ne!(entry_a.runtime.ready["pid"], entry_b.runtime.ready["pid"]);
     assert_ne!(profile_a, profile_b);
     assert!(profile_a.is_dir() && profile_b.is_dir());
 

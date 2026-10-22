@@ -230,7 +230,7 @@ async fn the_web_loads_as_before(engine: &str) {
 #[tokio::test]
 async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
     use crate::browser::cft::Cft;
-    use crate::browser::driver::{Driver, Runtime};
+    use crate::browser::driver::Driver;
     let (_dir, state, _area) = test_state("cft");
     let secret = sentinel("SENTINEL");
     let file = state.join("sentinel-config.json");
@@ -251,7 +251,6 @@ async fn chrome_never_starts_a_file_load_even_one_it_would_allow() {
         false,
     )
     .unwrap();
-    browser.begin("k1").unwrap();
     let went = browser.navigate(&file_url);
     let opened = browser.new_tab(Some(&file_url));
     let mut shown = Vec::new();

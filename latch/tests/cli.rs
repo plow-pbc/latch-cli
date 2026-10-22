@@ -2424,7 +2424,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let before = local(&never);
     assert!(!never.exists(), "status --local made the state folder");
     assert_eq!(before["peer"], Value::Null);
-    assert_eq!(before["protocol"], 2);
+    assert_eq!(before["protocol"], 3);
     assert_eq!(
         before["serve"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
@@ -2922,7 +2922,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve-v2.sock").exists() {
+    while !host.join("serve-v3.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -3109,7 +3109,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v2.sock")).unwrap();
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v3.sock")).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -3137,7 +3137,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     google_enabled(&host);
     let _serve = serving(&host, &relay);
     assert_eq!(
-        fs::metadata(host.join("serve-v2.sock"))
+        fs::metadata(host.join("serve-v3.sock"))
             .unwrap()
             .permissions()
             .mode()
@@ -4891,7 +4891,7 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v2.sock")).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v3.sock")).unwrap();
     thread::spawn(move || {
         let mut held = Vec::new();
         for connection in listener.incoming() {
@@ -5011,7 +5011,7 @@ fn a_host_from_another_version_is_named_and_left_to_its_owner() {
 fn a_stale_socket_of_this_version_is_never_taken_for_its_host() {
     let (_dir, state, _) = owner_host();
     let (_old, _socket, said) = old_host(&state);
-    let current = state.join("serve-v2.sock");
+    let current = state.join("serve-v3.sock");
     // A socket no one listens on any more, then a plain file.
     drop(std::os::unix::net::UnixListener::bind(&current).unwrap());
     let serve = local_serve(&state);

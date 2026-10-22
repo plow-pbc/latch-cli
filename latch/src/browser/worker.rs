@@ -25,34 +25,25 @@
 //! per call, every answer a `wire::Response`:
 //! - first, unasked: `{"ok": {"engine", "version", "driver_contract",
 //!   "pid"}}` once the browser is up, or the error that stopped it;
-//! - then one `core::Call` per line (`{"op": "observe", …}`), each for the
-//!   session its `"session"` key names, and answered `{"ok": {"result": R,
-//!   "audit": A}}`: R for the agent, A for the host's audit record. When
-//!   bytes follow the line (a screenshot, a download), the answer says how
-//!   many: `"bytes": N`. An upload's call is followed by its file's `size`
-//!   bytes;
-//! - `{"op": "begin"}` starts the call's session with a window of its own,
-//!   and `{"op": "end"}` closes that session's tabs;
+//! - then one `core::Call` per line (`{"op": "observe", …}`), answered
+//!   `{"ok": {"result": R, "audit": A}}`: R for the agent, A for the host's
+//!   audit record. When bytes follow the line (a screenshot, a download),
+//!   the answer says how many: `"bytes": N`. An upload's call is followed
+//!   by its file's `size` bytes;
 //! - `{"op": "close"}` closes the browser, waits for every process it
 //!   started to end, answers and exits.
 //!
-//! While a vault fill holds one session (from its first step until its
-//! cleanup is confirmed), every other session's call is refused with
-//! `session_paused`. A session ends `--idle-timeout` seconds after its
-//! last call ended; the browser closes when the last one has, and at the
-//! end of stdin. Every call's waits for the browser end by its
-//! limit (`Call::limit`, from `--call-limit`), and a browser that leaves
-//! several calls in a row unanswered is closed as gone.
+//! The session ends, and the browser closes, `--idle-timeout` seconds after
+//! its last call ended, and at the end of stdin. Every call's waits for the
+//! browser end by its limit (`Call::limit`, from `--call-limit`), and a
+//! browser that leaves several calls in a row unanswered is closed as gone.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::mem::ManuallyDrop;
 use std::os::fd::FromRawFd;
 use std::path::Path;
 use std::process::ExitCode;
-use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -62,8 +53,8 @@ use serde_json::{Value, json};
 use super::camoufox::Camoufox;
 use super::cdp;
 use super::cft::{self, Cft};
-use super::core::{Answer, Call, Core};
-use super::driver::{Runtime, Seat};
+use super::core::{Call, Core};
+use super::driver::Runtime;
 use super::egress;
 use super::engine::{CAMOUFOX, CFT};
 use crate::failure::Failure;
@@ -227,9 +218,9 @@ pub fn run(
 /// How often the engine is tended between calls while it needs it.
 const TEND: Duration = Duration::from_millis(20);
 
-/// Says the browser is up, then answers each session's calls until the host
-/// closes the browser, stops writing, or every session has gone quiet for
-/// `idle`.
+/// Says the browser is up, then answers the session's calls until the host
+/// closes the browser, stops writing, or the session has gone quiet for
+/// `idle` after its last call.
 fn serve<B: Runtime>(
     ready: Value,
     browser: B,
@@ -239,8 +230,7 @@ fn serve<B: Runtime>(
 ) -> ExitCode {
     let mut stdout = io::stdout().lock();
     answer(&mut stdout, Response::Ok(ready), None);
-    let browser = Rc::new(RefCell::new(browser));
-    let mut sessions: HashMap<String, Live<B>> = HashMap::new();
+    let mut core = Core::new(browser);
     let mut last_call = Instant::now();
     let mut unanswered = Unanswered::default();
 
@@ -250,47 +240,24 @@ fn serve<B: Runtime>(
     let raw = ManuallyDrop::new(unsafe { File::from_raw_fd(0) });
     let mut stdin = BufReader::new(&*raw);
     loop {
-        // Until the next session would idle out; with none, the browser.
-        let due = sessions
-            .values()
-            .map(|live| live.last + idle)
-            .min()
-            .unwrap_or(last_call + idle);
+        let due = last_call + idle;
         let wait = due.saturating_duration_since(Instant::now());
         // While the engine holds requests for latch to check, it is tended
         // every few milliseconds, not left until the next call.
-        let tending = browser.borrow_mut().tend();
+        let tending = core.browser().tend();
         let slice = if tending { wait.min(TEND) } else { wait };
         if stdin.buffer().is_empty() && !cdp::readable(&*raw, slice).unwrap_or(false) {
-            if tending && Instant::now() < due {
+            if Instant::now() < due {
                 continue;
             }
-            let now = Instant::now();
-            let idled: Vec<String> = sessions
-                .iter()
-                .filter(|(_, live)| live.last + idle <= now)
-                .map(|(key, _)| key.clone())
-                .collect();
-            for key in idled {
-                sessions.remove(&key);
-                browser.borrow_mut().end(&key);
-            }
-            if sessions.is_empty() {
-                break;
-            }
-            continue;
+            break;
         }
         let mut line = String::new();
         if stdin.read_line(&mut line).unwrap_or(0) == 0 {
             break;
         }
-        last_call = Instant::now();
-        let parsed = serde_json::from_str::<Value>(&line).and_then(|value| {
-            let call = Call::deserialize(&value)?;
-            Ok((value, call))
-        });
-        let (line, call) = match parsed {
-            Ok(parsed) => parsed,
+        let call = match serde_json::from_str::<Value>(&line).and_then(Call::deserialize) {
+            Ok(call) => call,
             Err(err) => {
                 let failure = Failure::usage("bad_request", err.to_string());
                 answer(&mut stdout, Response::error(&failure), None);
@@ -308,79 +275,35 @@ fn serve<B: Runtime>(
             }
             _ => None,
         };
-        let key = line["session"].as_str().unwrap_or_default().to_string();
+        if let Call::Close = call {
+            let closed = core.browser().close();
+            let reply = json!({"result": closed, "audit": {}});
+            answer(&mut stdout, Response::Ok(reply), None);
+            return ExitCode::SUCCESS;
+        }
         // Every wait for the engine in this call, together, ends by then.
         let deadline = Instant::now() + call.limit(call_limit);
-        browser.borrow_mut().limit(Some(deadline));
-        browser.borrow_mut().unanswered();
-        let held = sessions
-            .iter()
-            .any(|(other, live)| *other != key && live.core.is_paused());
-        let reply = match call {
-            Call::Close => {
-                let closed = browser.borrow_mut().close();
-                let reply = json!({"result": closed, "audit": {}});
-                answer(&mut stdout, Response::Ok(reply), None);
-                return ExitCode::SUCCESS;
-            }
-            Call::Begin if held => Err(paused()),
-            Call::Begin => Seat::begin(&browser, &key).map(|seat| {
-                sessions.insert(
-                    key,
-                    Live {
-                        core: Core::new(seat),
-                        last: Instant::now(),
-                    },
-                );
-                Answer {
-                    result: json!({}),
-                    audit: json!({}),
-                    bytes: None,
+        core.browser().limit(Some(deadline));
+        core.browser().unanswered();
+        core.limit(deadline);
+        // An address that is not on the web is never sent.
+        let reply = match call
+            .loads()
+            .and_then(|url| egress::requested(url, local).err())
+        {
+            Some(failure) => Err(failure),
+            None => core.call(call, input).map_err(|mut failure| {
+                if failure.code != "browser_gone" {
+                    core.reading_for(&mut failure);
                 }
+                failure
             }),
-            Call::End => {
-                sessions.remove(&key);
-                browser.borrow_mut().end(&key);
-                Ok(Answer {
-                    result: json!({"closed": true}),
-                    audit: json!({}),
-                    bytes: None,
-                })
-            }
-            call => match sessions.get_mut(&key) {
-                None => Err(Failure::failed(
-                    "no_such_session",
-                    "that session has ended".into(),
-                )),
-                // Listing a session's tabs, and retiring its refs after a
-                // handoff, are the calls a pause lets by: neither reads or
-                // touches a page.
-                Some(_) if held && !matches!(call, Call::Tabs | Call::Forget) => Err(paused()),
-                Some(live) => {
-                    live.core.limit(deadline);
-                    // An address that is not on the web is never sent.
-                    let refused = call
-                        .loads()
-                        .and_then(|url| egress::requested(url, local).err());
-                    let reply = match refused {
-                        Some(failure) => Err(failure),
-                        None => live.core.call(call, input).map_err(|mut failure| {
-                            if failure.code != "browser_gone" {
-                                live.core.reading_for(&mut failure);
-                            }
-                            failure
-                        }),
-                    };
-                    // Idle from the end of its call: a call that took
-                    // longer than the idle timeout does not end it.
-                    live.last = Instant::now();
-                    reply
-                }
-            },
         };
-        browser.borrow_mut().limit(None);
+        core.browser().limit(None);
+        // Idle from the end of its call: a call that took longer than the
+        // idle timeout does not end the session.
         last_call = Instant::now();
-        let missed = browser.borrow_mut().unanswered();
+        let missed = core.browser().unanswered();
         let timed_out = matches!(&reply, Err(failure) if failure.code == "timeout");
         let reply = if unanswered.after(timed_out, missed) {
             Err(stuck())
@@ -403,25 +326,8 @@ fn serve<B: Runtime>(
             }
         }
     }
-    browser.borrow_mut().close();
+    core.browser().close();
     ExitCode::SUCCESS
-}
-
-/// One session on the browser, and when it was last called.
-struct Live<B: Runtime> {
-    core: Core<Seat<B>>,
-    last: Instant,
-}
-
-/// Refused while another session's fill holds the browser. Its audit
-/// record rides in the details, as the core's refusals do.
-fn paused() -> Failure {
-    let mut failure = Failure::failed(
-        "session_paused",
-        "a vault fill holds this browser; nothing can be read or done until it finishes".into(),
-    );
-    failure.details = json!({"audit": {}});
-    failure
 }
 
 /// Calls in a row that timed out on a browser that left a command
