@@ -31,12 +31,13 @@ one JSON object: on stdout when it worked, as `{"error": {"code",
   (keep its id), `observe`, then act on the refs it returns.
 - `latch messages …` and `latch contacts …` read the owner's texts and
   address book on a Mac host: search, a thread, chats; a person's handles.
+  Only a latch running on macOS has them; on Linux they are unknown commands.
 
 ## A sign-in code sent by text
 
 When a site asks for a code it texted to the owner (a goal in words stops
-there with `needs_fields`), and the host reads Messages, it is two steps,
-each judged:
+there with `needs_fields`), your latch runs on macOS and the host reads
+Messages, it is two steps, each judged:
 
 1. `latch messages search --host H --since 10m code`: take the code from
    the newest message that is plainly that site's sign-in code (none yet:
@@ -44,8 +45,9 @@ each judged:
 2. Type it into the code field from `observe`: `latch browser do 'type eN
    "CODE"'`, then submit as the page asks.
 
-Use the code for that sign-in only. If the host can't read Messages, hand
-the session to the owner: `latch browser handoff --reason 2fa`.
+Use the code for that sign-in only. On a Linux latch, which has no
+`messages`, or if the host can't read Messages, hand the session to the
+owner: `latch browser handoff --reason 2fa`.
 
 ## The gatekeeper judges your calls
 
