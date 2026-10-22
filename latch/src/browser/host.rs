@@ -227,6 +227,14 @@ impl Browsers {
         super::handoff::screen(self.headless)
     }
 
+    /// Shows on the dashboard that a plan in session `hash` finished one
+    /// step (`shown`, as its answer has it).
+    pub(super) fn progress(&self, hash: &str, request: &str, shown: &Value) {
+        if let Some(dashboard) = &*self.dashboard.lock().expect("dashboard lock") {
+            dashboard.progress(hash, request, shown);
+        }
+    }
+
     /// Shows the pending handoffs in the log, and on the dashboard.
     pub(super) fn notice_handoffs(&self) {
         let lines: Vec<String> = super::handoff::pending(&self.state_dir)
@@ -989,7 +997,7 @@ fn shared_site(entry: &Entry, result: &mut Value, audit: &mut Map<String, Value>
 }
 
 /// A short hash of a session id: what the audit records.
-fn hash_of(id: &str) -> String {
+pub(crate) fn hash_of(id: &str) -> String {
     letters(&Sha256::digest(id.as_bytes())[..6])
 }
 

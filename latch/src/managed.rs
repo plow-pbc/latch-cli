@@ -30,12 +30,15 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
+use tokio::net::unix::OwnedWriteHalf;
 
 use crate::cli::ServeArgs;
 use crate::dashboard::{self, Board};
 use crate::failure::{Exit, Failure};
 use crate::lifecycle::{self, Phase};
+use crate::serve::DETACH;
 use crate::state::{StateDir, to_hex};
 use crate::term;
 use crate::transport;
@@ -94,7 +97,15 @@ pub async fn start(state: &StateDir, args: &ServeArgs) -> Result<Value, Failure>
 
 /// `latch serve`: starts the host, holds it and shows its dashboard until
 /// Ctrl-C or the terminal goes away, then stops it.
-pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Value, Failure> {
+/// How an attached `latch serve` ended.
+pub enum Attached {
+    /// Its host stopped, as `stop` says it.
+    Stopped(Value),
+    /// The viewer left the host running (`q`): what to say, in a line.
+    Detached(String),
+}
+
+pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Attached, Failure> {
     if !term::stdout_is_terminal() || !term::interactive() {
         let message = "`latch serve` shows the host's dashboard, so it needs a terminal; \
                        `latch serve -d` starts the host detached"
@@ -105,18 +116,29 @@ pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Value, Failure
     // Only this host is ours to stop: by the time this serve cleans up,
     // another may serve the folder.
     let ours = hello["pid"].as_u64().map(|pid| pid as u32);
-    let boards = match watch(&dir, "host_attach").await {
-        Ok((_, boards)) => boards,
+    let (boards, mut holding) = match watch(&dir, "host_attach").await {
+        Ok((_, boards, holding)) => (boards, holding),
         Err(failure) => {
             stop_dir(&dir, ours).await?;
             return Err(failure);
         }
     };
-    show(&hello, boards, "Ctrl-C stops the host").await;
+    if show(&hello, boards, true).await == dashboard::Ending::Detached {
+        // `q`: the host lets go of this serve and runs on, as if started
+        // with -d.
+        let _ = holding.write_all(&DETACH).await;
+        let _ = holding.shutdown().await;
+        return Ok(Attached::Detached(format!(
+            "The host runs on (pid {}). Stop it with: latch --state-dir {} stop",
+            hello["pid"],
+            dir.display()
+        )));
+    }
     // The view is closed, so the connection that held the host is too:
     // the host is stopping. Wait for it, and remove its service.
+    drop(holding);
     let _ = writeln!(std::io::stderr(), "latch: stopping the host…");
-    stop_dir(&dir, ours).await
+    stop_dir(&dir, ours).await.map(Attached::Stopped)
 }
 
 /// `latch dashboard`: watches the running host until Ctrl-C.
@@ -127,15 +149,16 @@ pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
             .to_string();
         return Err(Failure::usage("no_terminal", message));
     }
-    let (hello, boards) =
+    // The write side stays open while the view does: the host takes its
+    // end as the viewer gone.
+    let (hello, boards, _watching) =
         watch(&state.path, "host_watch").await.map_err(
             |failure| match lifecycle::other_version(&state.path) {
                 Some(pid) => lifecycle::other_version_running(pid),
                 None => not_serving(failure),
             },
         )?;
-    let footer = "Ctrl-C closes this view; the host keeps running (`latch stop` stops it)";
-    show(&hello, boards, footer).await;
+    show(&hello, boards, false).await;
     Ok(())
 }
 
@@ -391,9 +414,19 @@ fn mismatch(hello: &Value) -> String {
 
 /// Draws the host's board until the host stops or Ctrl-C (or the terminal
 /// goes away).
-async fn show(hello: &Value, boards: tokio::sync::mpsc::Receiver<Board>, footer: &str) {
+async fn show(
+    hello: &Value,
+    boards: tokio::sync::mpsc::Receiver<Board>,
+    attached: bool,
+) -> dashboard::Ending {
     use tokio::signal::unix::{SignalKind, signal};
-    let footer = format!("{footer}{}", mismatch(hello));
+    let theirs = hello["version"].as_str().unwrap_or("unknown");
+    let notice = (theirs != crate::cli::version()).then(|| {
+        format!(
+            "Version mismatch: the host runs latch {theirs}; this is latch {}",
+            crate::cli::version()
+        )
+    });
     let mut hangup = signal(SignalKind::hangup()).expect("a hangup handler");
     let mut terminate = signal(SignalKind::terminate()).expect("a terminate handler");
     let until = async move {
@@ -403,23 +436,23 @@ async fn show(hello: &Value, boards: tokio::sync::mpsc::Receiver<Board>, footer:
             _ = terminate.recv() => {}
         }
     };
-    dashboard::show(boards, until, &footer).await;
+    dashboard::show(boards, until, attached, notice).await
 }
 
-/// Asks the host on `dir` for `op`'s board: its hello, and each board as
-/// it comes, until the connection ends.
+/// Asks the host on `dir` for `op`'s board: its hello, each board as it
+/// comes until the connection ends, and the connection's write side, whose
+/// end the host takes as the watcher gone.
 async fn watch(
     dir: &Path,
     op: &str,
-) -> Result<(Value, tokio::sync::mpsc::Receiver<Board>), Failure> {
-    let (hello, mut socket) = request(dir, op, json!({})).await?;
+) -> Result<(Value, tokio::sync::mpsc::Receiver<Board>, OwnedWriteHalf), Failure> {
+    let (hello, socket) = request(dir, op, json!({})).await?;
+    let (mut reading, writing) = socket.into_split();
     let (send, boards) = tokio::sync::mpsc::channel(4);
     tokio::spawn(async move {
-        // This task holds the connection: it closes it once the view
-        // stops listening, and the host takes that as the watcher gone.
         loop {
             let frame = tokio::select! {
-                frame = wire::read_frame(&mut socket) => frame,
+                frame = wire::read_frame(&mut reading) => frame,
                 () = send.closed() => return,
             };
             let Some(board) = frame
@@ -433,7 +466,7 @@ async fn watch(
             }
         }
     });
-    Ok((hello, boards))
+    Ok((hello, boards, writing))
 }
 
 /// One question for the host on `dir` and its answer.
@@ -544,7 +577,13 @@ impl Service {
         if !self.registered() {
             return Ok(());
         }
-        platform::remove(&self.label)
+        // A host that just ended may take its service with it meanwhile
+        // (systemd forgets a transient unit once its process ends): gone
+        // is what was wanted.
+        match platform::remove(&self.label) {
+            Err(_) if !self.registered() => Ok(()),
+            removed => removed,
+        }
     }
 }
 

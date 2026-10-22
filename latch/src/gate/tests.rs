@@ -490,6 +490,10 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
     let judgment = gatekeeper(one_chat(), &model, Rules::default())
         .judge(AGENT_CALLER, &order())
         .await;
+    assert_eq!(
+        judgment.gate["rule"],
+        "allowed when within instructions >= 0.50"
+    );
     assert!(
         judgment
             .verdict
@@ -520,6 +524,11 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
             assert!(
                 rules_of_judgment
                     .contains("Judge only whether the owner's rules on this host forbid it")
+            );
+            // The record says the rule this was held to.
+            assert_eq!(
+                judgment.gate["rule"],
+                "refused when forbidden >= within instructions"
             );
             if allowed {
                 assert!(judgment.verdict.is_ok(), "{p:?}");

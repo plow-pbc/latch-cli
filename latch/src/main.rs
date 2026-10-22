@@ -315,7 +315,14 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Serve(args) if args.detach => to_json(managed::start(&state, &args).await?),
         Command::Serve(args) => {
             paint::set_color(!term::no_color());
-            to_json(managed::attach(&state, &args).await?)
+            match managed::attach(&state, &args).await? {
+                managed::Attached::Stopped(stopped) => to_json(stopped),
+                // A person at the terminal reads one line.
+                managed::Attached::Detached(line) => Ok(Printed {
+                    text: line,
+                    exit: ExitCode::SUCCESS,
+                }),
+            }
         }
         Command::Stop => to_json(managed::stop(&state).await?),
         Command::Dashboard => {

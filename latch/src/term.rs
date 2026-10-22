@@ -145,23 +145,6 @@ pub fn one_line(text: &str) -> String {
         .collect()
 }
 
-/// `text` on one line (see `one_line`), cut or padded to exactly `width`
-/// characters, ending in "…" if it was cut. (Every character latch shows
-/// is one column wide.)
-pub fn fit(text: &str, width: usize) -> String {
-    let text = one_line(text);
-    let count = text.chars().count();
-    if count <= width {
-        return format!("{text}{}", " ".repeat(width - count));
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let mut cut: String = text.chars().take(width - 1).collect();
-    cut.push('…');
-    cut
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,13 +153,5 @@ mod tests {
     fn control_characters_never_reach_the_screen() {
         assert_eq!(one_line("a\nb\r\nc"), "a⏎b⏎⏎c");
         assert_eq!(one_line("tab\there \x1b[2J"), "tab here  [2J");
-        assert_eq!(fit("echo a\necho b", 8), "echo a⏎…");
-    }
-
-    #[test]
-    fn fit_pads_or_cuts_to_the_width() {
-        assert_eq!(fit("exec", 6), "exec  ");
-        assert_eq!(fit("sh -c 'ls | wc -l'", 8), "sh -c '…");
-        assert_eq!(fit("abc", 3), "abc");
     }
 }

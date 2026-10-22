@@ -208,7 +208,13 @@ fn aad(kid: &str, prev: &str) -> Vec<u8> {
 pub struct AuditLog {
     path: PathBuf,
     records: usize,
+    /// The last calls in the log as opened (no connections), oldest
+    /// first, for `take_recent`.
+    recent: Vec<Record>,
 }
+
+/// How many of the log's last calls a host's board starts with.
+const RECENT_CALLS: usize = 200;
 
 impl AuditLog {
     /// Opens (or starts) the log and checks it whole first: the chain, and
@@ -239,12 +245,30 @@ impl AuditLog {
                 return Err(no_key(&path));
             }
         };
-        let records = open_all(&keys, &text, &path)?.len();
-        Ok(AuditLog { path, records })
+        let all = open_all(&keys, &text, &path)?;
+        let records = all.len();
+        let mut recent: Vec<Record> = all
+            .into_iter()
+            .rev()
+            .filter(|record| record.op != "connect")
+            .take(RECENT_CALLS)
+            .collect();
+        recent.reverse();
+        Ok(AuditLog {
+            path,
+            records,
+            recent,
+        })
     }
 
     pub fn len(&self) -> usize {
         self.records
+    }
+
+    /// The last calls the log held when it was opened, oldest first: at
+    /// most `RECENT_CALLS`, and connections left out. Given once.
+    pub fn take_recent(&mut self) -> Vec<Record> {
+        std::mem::take(&mut self.recent)
     }
 
     /// Appends one record: seals it after the file's last line, writes it,

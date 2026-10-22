@@ -817,10 +817,8 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
         json!([{"name": "TOKEN", "secret": true, "length": secret.len()}])
     );
     assert!(!kept(&t, marker));
-    for record in t.audit() {
-        let (target, result) = dashboard::describe("exec", &record["args"], "ok", Duration::ZERO);
-        assert!(!target.contains(marker) && !result.contains(marker));
-    }
+    let board = serde_json::to_string(&*t.host.dashboard.watch().borrow()).unwrap();
+    assert!(!board.contains(marker), "{board}");
 }
 
 #[tokio::test]
@@ -1667,16 +1665,9 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
     // What the host logged: every line this test process logged.
     let log = crate::log::captured().join("\n");
     assert!(log.contains("messages:"), "{log}");
-    for record in &records {
-        let (target, result) = dashboard::describe(
-            record["op"].as_str().unwrap(),
-            &record["args"],
-            record["outcome"].as_str().unwrap(),
-            Duration::ZERO,
-        );
-        assert!(result.contains("rows"), "{result}");
-        assert!(!target.contains("482913") && !result.contains("482913"));
-    }
+    // The board says how many matched, and shows nothing that was read.
+    let board = serde_json::to_string(&*t.host.dashboard.watch().borrow()).unwrap();
+    assert!(board.contains(r#""text":"1 match""#), "{board}");
     // Nothing the reader returned: no body, no code, no name, no handle it found.
     for returned in [
         "482913",
@@ -1691,6 +1682,7 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
     ] {
         assert!(!audit.contains(returned), "{returned} in the audit");
         assert!(!log.contains(returned), "{returned} in serve.log");
+        assert!(!board.contains(returned), "{returned} on the dashboard");
     }
 }
 
@@ -2009,7 +2001,7 @@ async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
         logged.iter().all(|line| line.contains("[redacted]")),
         "{logged:?}"
     );
-    let (target, _) = dashboard::describe("exec", &records[0]["args"], "ok", Duration::ZERO);
-    assert!(target.contains("--token [redacted]"), "{target}");
-    assert!(!target.contains(secret), "{target}");
+    let board = serde_json::to_string(&*t.host.dashboard.watch().borrow()).unwrap();
+    assert!(board.contains("--token [redacted]"), "{board}");
+    assert!(!board.contains(secret), "{board}");
 }

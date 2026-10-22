@@ -45,7 +45,7 @@ pub async fn run(
         let (registered, wait) = match plow.register(&registration).await {
             Ok(peer) => {
                 failures = 0;
-                dashboard.heartbeat();
+                dashboard.directory(true);
                 let wait = with_jitter(HEARTBEAT);
                 let relay = relay_url.as_deref().unwrap_or("none");
                 log(&format!(
@@ -75,6 +75,7 @@ pub async fn run(
                 return Failure::failed("name_moved", message);
             }
             Err(failure) => {
+                dashboard.directory(false);
                 failures += 1;
                 let wait = backoff(failures, failure.retry_after);
                 log(&format!(

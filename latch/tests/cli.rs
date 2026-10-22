@@ -4406,14 +4406,23 @@ fn at_its_own_terminal(
     (child, main, shown)
 }
 
-/// Reads what the terminal shows until it has shown `text`.
+/// Reads what the terminal shows until it has shown `text`, within a
+/// minute in all: a screen that keeps redrawing without it fails rather
+/// than waits forever.
 #[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut all = String::new();
     while !all.contains(text) {
-        match shown.recv_timeout(std::time::Duration::from_secs(60)) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match shown.recv_timeout(left) {
             Ok(more) => all.push_str(&more),
-            Err(_) => panic!("never showed {text:?}: {all}"),
+            Err(_) => {
+                // The end of it: a redrawing screen shows the same lines over.
+                let last: String = all.chars().rev().take(4000).collect();
+                let last: String = last.chars().rev().collect();
+                panic!("never showed {text:?} within a minute; last shown: {last}")
+            }
         }
     }
     all
@@ -4445,7 +4454,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
 
     // Ctrl-C at the serve's terminal stops the host.
     let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
-    shows(&shown, "Ctrl-C stops the host");
+    shows(&shown, "Ctrl-C stop host");
     assert_eq!(local_serve(&host)["state"], "serving");
     let hello = local_operation(&host, "host_hello", json!({}));
     assert_eq!(hello["ok"]["attached"], true, "{hello}");
@@ -4458,7 +4467,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
 
     // A dashboard's Ctrl-C closes only the view.
     let (mut view, mut view_terminal, view_shown) = at_its_own_terminal(&host, &["dashboard"], &[]);
-    shows(&view_shown, "the host keeps running");
+    shows(&view_shown, "Ctrl-C close");
     view_terminal.write_all(b"\x03").unwrap();
     assert_eq!(exits_within(&mut view, 10).code(), Some(0));
     thread::sleep(std::time::Duration::from_secs(1));
@@ -4472,7 +4481,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
 
     // The terminal going away stops it too.
     let (mut serve, terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
-    shows(&shown, "Ctrl-C stops the host");
+    shows(&shown, "Ctrl-C stop host");
     drop(terminal);
     drop(shown);
     exits_within(&mut serve, 45);
@@ -4485,7 +4494,7 @@ fn an_attached_host_stops_with_its_serve_and_never_with_a_dashboard() {
     // Even a serve that is killed outright takes its host with it: the
     // host's lifetime is the connection, which the kernel closes.
     let (mut serve, _terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
-    shows(&shown, "Ctrl-C stops the host");
+    shows(&shown, "Ctrl-C stop host");
     serve.kill().unwrap();
     serve.wait().unwrap();
     assert!(eventually(45, || local_serve(&host)["running"] == false));
@@ -4519,7 +4528,7 @@ fn an_attached_serve_that_ends_late_leaves_a_host_that_took_over_alone() {
     let env = [("LATCH_TEST_RELAY_URL", Path::new(&relay))];
 
     let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
-    shows(&shown, "Ctrl-C stops the host");
+    shows(&shown, "Ctrl-C stop host");
     // The attached serve's cleanup waits for the start/stop lock, held
     // here while its host stops and another takes the folder over.
     let launching = fs::File::open(host.join("launch.lock")).unwrap();
@@ -5429,4 +5438,61 @@ fn the_owner_returns_items_from_an_emailed_order() {
 #[test]
 fn the_owner_returns_items_from_an_emailed_order_through_the_real_judge() {
     an_owner_returns_items_from_an_emailed_order(true);
+}
+
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn q_in_an_attached_serve_leaves_its_host_running_and_shows_the_call() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _managed = Managed(host.clone());
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let env = [("LATCH_TEST_RELAY_URL", Path::new(&relay))];
+
+    let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
+    shows(&shown, "Ctrl-C stop host");
+    // A call shows as what was asked, and how it went.
+    fs::write(share.join("note.txt"), "hi").unwrap();
+    let read = local_operation(
+        &host,
+        "exec",
+        json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
+    );
+    assert_eq!(read["ok"]["stdout"], "hi", "{read}");
+    // Its command wraps where the screen is narrow; its file's name is one
+    // word.
+    shows(&shown, "note.txt");
+    shows(&shown, "ok · exit 0");
+    assert_eq!(local_serve(&host)["attached"], true);
+
+    terminal.write_all(b"q").unwrap();
+    // It says how to stop the host it left running, in a line.
+    let stop = format!(
+        "latch --state-dir {} stop",
+        host.canonicalize().unwrap().display()
+    );
+    shows(&shown, &stop);
+    assert!(exits_within(&mut serve, 20).success());
+    thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(
+        local_serve(&host)["state"],
+        "serving",
+        "q left the host running"
+    );
+    let hello = local_operation(&host, "host_hello", json!({}));
+    assert_eq!(hello["ok"]["attached"], false, "{hello}");
+    // An upgrade restarts it as a host `serve -d` started.
+    assert_eq!(local_serve(&host)["attached"], false);
+    let stopped = latch(&host, &["stop"], &[]);
+    assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+
+    // Started again, its board starts with the call from before, from its
+    // audit log.
+    let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
+    shows(&shown, "note.txt");
+    terminal.write_all(b"\x03").unwrap();
+    assert!(exits_within(&mut serve, 45).success());
 }

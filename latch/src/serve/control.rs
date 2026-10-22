@@ -10,6 +10,8 @@
 //! ends, however that `latch serve` ended: Ctrl-C, its terminal closing, or
 //! killed. Only a host started that way takes a holder, and only one, so a
 //! host started detached is never tied to a terminal.
+//! A holder that sends `DETACH` as it leaves (its viewer's `q`) leaves the
+//! host running, as if started detached.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,18 +23,33 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Notify;
 
 use super::{Host, Stopping, answer, failed};
-use crate::lifecycle;
+use crate::lifecycle::{self, Phase};
 use crate::log::log;
 use crate::wire::{self, Request, Response};
 
 pub const OPS: [&str; 4] = ["host_hello", "host_stop", "host_watch", "host_attach"];
+
+/// What an attached `latch serve` sends as it leaves its host running
+/// (its viewer's `q`); its connection ending without it stops the host.
+pub const DETACH: [u8; 1] = *b"d";
+
+/// How a watch ended.
+enum Watched {
+    /// The watcher went away.
+    Gone,
+    /// The holder left the host running.
+    Detached,
+    /// The host is stopping.
+    Stopping,
+}
 
 /// How long an attached host waits for its holder once it serves: the
 /// `latch serve` that started it attaches at once, or is gone.
 const HOLD_WITHIN: Duration = Duration::from_secs(30);
 
 pub struct Lifetime {
-    pub attached: bool,
+    /// Held by the `latch serve` that started it, until that one detaches.
+    pub attached: AtomicBool,
     held: AtomicBool,
     /// Ends the host's serving loop.
     pub stop: Notify,
@@ -41,7 +58,7 @@ pub struct Lifetime {
 impl Lifetime {
     pub fn new(attached: bool) -> Lifetime {
         Lifetime {
-            attached,
+            attached: AtomicBool::new(attached),
             held: AtomicBool::new(false),
             stop: Notify::new(),
         }
@@ -56,7 +73,7 @@ impl Lifetime {
 /// An attached host whose holder never comes stops, rather than run on
 /// with no one to stop it.
 pub fn await_holder(host: &Arc<Host>) {
-    if !host.lifetime.attached {
+    if !host.lifetime.attached.load(Ordering::SeqCst) {
         return;
     }
     let host = host.clone();
@@ -83,8 +100,10 @@ pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, rec
             answer(&mut send, &hello).await;
             host.lifetime.stop("asked to by `latch stop`");
         }
-        "host_watch" => watch(host, hello, send, recv).await,
-        _ if !host.lifetime.attached => {
+        "host_watch" => {
+            watch(host, hello, send, recv).await;
+        }
+        _ if !host.lifetime.attached.load(Ordering::SeqCst) => {
             let message = "this host was started detached, so no `latch serve` holds it; \
                            `latch dashboard` views it"
                 .to_string();
@@ -94,11 +113,23 @@ pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, rec
             let message = "another `latch serve` already holds this host".to_string();
             answer(&mut send, &failed("already_attached", message)).await;
         }
-        _ => {
-            watch(host, hello, send, recv).await;
-            host.lifetime
-                .stop("the `latch serve` that holds this host went away");
-        }
+        _ => match watch(host, hello, send, recv).await {
+            Watched::Detached => {
+                // From now on this host is as if started with -d, as
+                // other latch processes (an upgrade) see it too.
+                host.lifetime.attached.store(false, Ordering::SeqCst);
+                if let Err(failure) =
+                    lifecycle::record(&host.workers.state_dir, Phase::Serving, false, None)
+                {
+                    log(&format!("could not record the detach: {}", failure.message));
+                }
+                log("the `latch serve` that held this host detached; it runs until `latch stop`");
+            }
+            Watched::Gone => host
+                .lifetime
+                .stop("the `latch serve` that holds this host went away"),
+            Watched::Stopping => {}
+        },
     }
 }
 
@@ -106,16 +137,22 @@ pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, rec
 /// host now on the state folder (`run`), and which latch it runs.
 fn hello(host: &Host) -> Value {
     json!({"pid": std::process::id(), "run": lifecycle::this_run(),
-           "version": crate::cli::version(), "attached": host.lifetime.attached})
+           "version": crate::cli::version(),
+           "attached": host.lifetime.attached.load(Ordering::SeqCst)})
 }
 
 /// Answers `hello`, then sends the board as it changes until the watcher
 /// goes away (its side of the socket ends, or it cannot be written to) or
 /// the host is stopping.
-async fn watch(host: &Host, hello: Response, mut send: OwnedWriteHalf, mut recv: OwnedReadHalf) {
+async fn watch(
+    host: &Host,
+    hello: Response,
+    mut send: OwnedWriteHalf,
+    mut recv: OwnedReadHalf,
+) -> Watched {
     let hello = serde_json::to_vec(&hello).expect("a response serializes");
     if wire::write_frame(&mut send, &hello).await.is_err() {
-        return;
+        return Watched::Gone;
     }
     let mut boards = host.dashboard.watch();
     let mut stopping = host.stopping.subscribe();
@@ -123,16 +160,21 @@ async fn watch(host: &Host, hello: Response, mut send: OwnedWriteHalf, mut recv:
     loop {
         let board = serde_json::to_vec(&*boards.borrow_and_update()).expect("a board serializes");
         if wire::write_frame(&mut send, &board).await.is_err() {
-            return;
+            return Watched::Gone;
         }
         tokio::select! {
-            changed = boards.changed() => if changed.is_err() { return },
-            // A watcher sends nothing after its request: anything read,
-            // the end included, means it is gone.
-            _ = recv.read(&mut byte) => return,
+            changed = boards.changed() => if changed.is_err() { return Watched::Stopping },
+            // A watcher sends nothing after its request but `DETACH` as it
+            // leaves; anything else read, the end included, means it is gone.
+            read = recv.read(&mut byte) => {
+                return match read {
+                    Ok(1) if byte == DETACH => Watched::Detached,
+                    _ => Watched::Gone,
+                };
+            }
             // A stopping host lets its watchers go first, rather than
             // wait for them as for an operation.
-            _ = stopping.wait_for(|stopping| *stopping != Stopping::No) => return,
+            _ = stopping.wait_for(|stopping| *stopping != Stopping::No) => return Watched::Stopping,
         }
     }
 }

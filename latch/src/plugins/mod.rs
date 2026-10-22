@@ -231,6 +231,22 @@ impl Plugins {
         }
     }
 
+    /// Each connector and whether its owner turned it on: what is known
+    /// here, which is not whether it works now.
+    pub fn enabled(&self) -> Vec<(String, String)> {
+        let inner = self.inner.lock().expect("plugins lock");
+        Connector::ALL
+            .iter()
+            .map(|&connector| {
+                let state = match inner.settings.get(&connector) {
+                    Some(Setting::Enabled) => "enabled",
+                    _ => "disabled",
+                };
+                (connector.name().to_string(), state.to_string())
+            })
+            .collect()
+    }
+
     /// Every connector with its state, and for one not enabled, why and
     /// the owner's command that turns it on.
     fn list(&self) -> Value {
