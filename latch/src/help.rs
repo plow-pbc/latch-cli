@@ -657,6 +657,25 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "browser.setup",
+        output: "The engine installed: its name, version and folder.",
+        effect: Repeatable(
+            "downloads and verifies a browser engine into this machine's state folder",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Chrome for Testing, after install.sh --no-browser",
+                &["browser", "setup"],
+            ),
+            ex(
+                "Camoufox (macOS)",
+                &["browser", "setup", "--engine", "camoufox"],
+            ),
+        ],
+    },
+    Entry {
         id: "vault.list",
         output: "Every item's metadata: id, kind, title, sites, revision; never a value.",
         effect: ReadOnly,
@@ -845,11 +864,17 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "audit.show",
-        output: "`records`: every record of this machine's host, opened with the key, each with its `id`.",
+        output: "`records`: every record of this machine's host, opened with the key, each with its `id`; with --follow, one record per line, then each new one.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
-        examples: &[ex("Read the audit", &["audit", "show"])],
+        examples: &[
+            ex("Read the audit", &["audit", "show"]),
+            ex(
+                "Watch the audit as it grows",
+                &["audit", "show", "--follow"],
+            ),
+        ],
     },
     Entry {
         id: "audit.verify",
@@ -880,12 +905,16 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "serve",
-        output: "Nothing until stopped; the dashboard or log lines meanwhile.",
-        effect: Once("runs this machine as a host until stopped"),
+        output: "With -d, the host once it answers: `state_dir`, `pid`, `run`, `version`, `log`. Otherwise the dashboard until Ctrl-C, then how the host stopped; with --foreground, log lines until stopped.",
+        effect: Once("runs this machine's host, as a service of this user's unless --foreground"),
         owner_only: true,
         connector: None,
         examples: &[
-            ex("Share ~/work", &["serve", "~/work"]),
+            ex("Share ~/work, with the dashboard", &["serve", "~/work"]),
+            ex(
+                "Start the host detached, as an agent does",
+                &["serve", "-d", "~/work"],
+            ),
             ex(
                 "Share ~/work, with the Rust toolchain readable and exec refused to agents",
                 &[
@@ -899,6 +928,30 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
         ],
+    },
+    Entry {
+        id: "stop",
+        output: "`stopped` (whether a host was running), `state_dir`, `state` and, if it failed, `error`.",
+        effect: Repeatable("stops this state folder's host and removes its service"),
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Stop the host", &["stop"])],
+    },
+    Entry {
+        id: "dashboard",
+        output: "The running host's dashboard, until Ctrl-C; needs a terminal.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Watch the host", &["dashboard"])],
+    },
+    Entry {
+        id: "logs",
+        output: "The host's log (serve.log); with --follow, then what is added.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex("Follow the host's log", &["logs", "--follow"])],
     },
     Entry {
         id: "help",

@@ -24,7 +24,7 @@ fn covered() -> World {
 /// Another host on the same synthetic Plow.
 async fn another_on(plow: &FakePlow) -> TestHost {
     let provider = model::Plow::new(&plow.url, "made-up-login".into()).with_model(gate::MODEL);
-    start_with(plow.clone(), Arc::new(provider), DenyExec::default(), None).await
+    start_with(plow.clone(), Arc::new(provider), DenyExec::default()).await
 }
 
 fn accounts() -> Value {

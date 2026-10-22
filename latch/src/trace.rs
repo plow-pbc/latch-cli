@@ -1,8 +1,8 @@
 //! Diagnostics for connection problems: `LATCH_TRACE` turns on the tracing
 //! events of iroh and the other libraries latch is built on, filtered the
 //! way `RUST_LOG` is (`LATCH_TRACE=iroh=debug,latch=info`). Off when unset.
-//! The events go wherever the host's log goes (stderr, or `serve.log`
-//! under the dashboard), never to stdout, which carries the JSON. The audit
+//! The events go where the host's log goes (stderr), never to stdout,
+//! which carries the JSON. The audit
 //! log is not affected.
 
 use tracing_subscriber::EnvFilter;
@@ -26,7 +26,7 @@ pub fn init() -> Result<(), Failure> {
         .with_ansi(false)
         // A host operation's span says how long it took when it closes.
         .with_span_events(FmtSpan::CLOSE)
-        .with_writer(|| crate::log::Sink)
+        .with_writer(std::io::stderr)
         .init();
     Ok(())
 }

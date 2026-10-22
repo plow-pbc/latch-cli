@@ -283,7 +283,7 @@ impl AuditLog {
 pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
-        AuditAction::Show => {
+        AuditAction::Show { .. } => {
             let records: Vec<Value> = read_all(&path)?
                 .into_iter()
                 .map(|record| {
@@ -295,11 +295,7 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
             Ok(json!({"records": records}))
         }
         AuditAction::Verify => {
-            let text = match fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(err) if err.kind() == ErrorKind::NotFound => String::new(),
-                Err(err) => return Err(io_failure(&path, err)),
-            };
+            let text = read_locked(&path)?;
             let (records, last) = verify(&text).map_err(|problem| broken(&path, &problem))?;
             Ok(json!({"records": records, "last": last, "checked_without_the_key": true}))
         }
@@ -376,13 +372,74 @@ pub fn read_next(keys: &Keys, prev: &str, text: &[u8], number: usize) -> Result<
     keys.open(&line, number)
 }
 
+/// `latch audit show --follow`: every record, one JSON line each, then each
+/// new one as it is written, until stopped (or, when stdin is a pipe, until
+/// it closes). A log that fails its checks, or no longer begins with what
+/// was printed, stops it with `audit_broken`.
+pub fn follow(state: &StateDir) -> Result<(), Failure> {
+    let path = state.path.join(FILE);
+    let watching = |err: std::io::Error| {
+        Failure::failed("watch_failed", format!("{}: {err}", state.path.display()))
+    };
+    state.create()?;
+    let mut watch = crate::watch::Watch::new(
+        &state.path,
+        std::slice::from_ref(&path),
+        crate::watch::stdin_is_a_pipe(),
+    )
+    .map_err(watching)?;
+    let mut printed: Option<(usize, String)> = None;
+    let mut out = std::io::stdout().lock();
+    loop {
+        watch.arm().map_err(watching)?;
+        let records = read_all(&path)?;
+        let from = match &printed {
+            None => 0,
+            Some((count, hash)) if records.get(count - 1).is_some_and(|r| &r.hash == hash) => {
+                *count
+            }
+            Some(_) => return Err(broken(&path, "it no longer begins with what was shown")),
+        };
+        for record in &records[from..] {
+            let mut shown = serde_json::to_value(record).expect("a record serializes");
+            shown["id"] = json!(record.hash);
+            if writeln!(out, "{shown}").and_then(|()| out.flush()).is_err() {
+                return Ok(());
+            }
+        }
+        if let Some(last) = records.last() {
+            printed = Some((records.len(), last.hash.clone()));
+        }
+        match watch.wait().map_err(watching)? {
+            crate::watch::Woke::StdinClosed => return Ok(()),
+            crate::watch::Woke::Changed => {}
+        }
+    }
+}
+
+/// The log's text, read under the audit lock, so a record being appended
+/// is read whole or not at all and what is read is the log as written: a
+/// last line cut short fails its checks. A log not started yet is empty.
+fn read_locked(path: &Path) -> Result<String, Failure> {
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    // Shared, through a read-only descriptor: closing it is no write, so
+    // a follower watching the folder is not woken by its own reads.
+    let lock = path.parent().unwrap_or(Path::new(".")).join(LOCK);
+    let _lock = File::open(&lock)
+        .and_then(|file| file.lock_shared().map(|()| file))
+        .map_err(|err| io_failure(&lock, err))?;
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(io_failure(path, err)),
+    }
+}
+
 /// Every record of the log at `path`: the chain checked, each record opened.
 pub fn read_all(path: &Path) -> Result<Vec<Record>, Failure> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(io_failure(path, err)),
-    };
+    let text = read_locked(path)?;
     if text.is_empty() {
         return Ok(Vec::new());
     }

@@ -438,7 +438,7 @@ fn test_state_taking(
     assert!(
         engine_folder.join("manifest.json").is_file(),
         "{engine} {version} is not installed at {}: run `just cft` in latch/ \
-         (or install.sh --state-dir into LATCH_CFT_STATE)",
+         (or install-binary.sh --state-dir into LATCH_CFT_STATE)",
         engine_folder.display()
     );
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
@@ -868,14 +868,12 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input(engine_name: &
         "Ada Lovelace"
     );
 
+    // A password field takes what the agent types, and still never shows it.
     let password = find(&typed, "textbox", "Password");
-    let refused = call(json!({"op": "act", "action": "type", "target": password, "text": "x"}))
+    let into_secret = call(json!({"op": "act", "action": "type", "target": password, "text": "x"}))
         .await
-        .unwrap_err();
-    assert_eq!(
-        (refused.exit, refused.code.as_str()),
-        (crate::failure::Exit::Denied, "secret_field")
-    );
+        .unwrap();
+    assert!(element(&into_secret, &password).get("value").is_none());
 
     let colour = find(&typed, "combobox", "Colour");
     let selected = call(json!({"op": "act", "action": "select", "target": colour, "text": "Blue"}))
@@ -1575,6 +1573,33 @@ impl Host {
         let page = self.call(caller, "open", profile, args).await.unwrap();
         (page["session"].as_str().unwrap().to_string(), page)
     }
+}
+
+/// A browser call on a host with no engine installed downloads nothing,
+/// and its error names the command the host's owner installs one with.
+#[tokio::test]
+async fn with_no_engine_a_call_names_the_owners_setup_and_downloads_nothing() {
+    let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+    fs::create_dir_all(&parent).unwrap();
+    let dir = tempfile::tempdir_in(parent).unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let mut h = Host::new(&state);
+    let failure = h
+        .call(
+            CALLER,
+            "open",
+            "default",
+            json!({"url": "https://example.com/"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "engine_not_installed", "{failure:?}");
+    assert_eq!(
+        failure.details["setup"],
+        "latch browser setup --engine chrome"
+    );
+    assert!(!state.join("plugins").exists());
 }
 
 /// One command as the host runs it, and its audit record.

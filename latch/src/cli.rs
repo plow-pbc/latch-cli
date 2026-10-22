@@ -76,7 +76,9 @@ Agents:
   what fixes it: often a retry later, but a host out of Plow credits fails
   until the host's account owner adds them. A browser step's
   model_unavailable (exit 1) is the same decision model, for a click's risk,
-  a goal or a sentence check; nothing was sent, and nothing gets around it.
+  a goal or a sentence check, and nothing gets around it. Before retrying,
+  read the answer's `steps` and `trail`, the failed step's included: earlier
+  steps, and a goal's earlier actions, may already have run.
 
   `latch skill` prints the guide for agents; `latch help --json` describes
   every command; `latch help COMMAND --examples` shows how to call one.
@@ -166,9 +168,16 @@ pub enum Command {
     Audit(AuditArgs),
     /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
     Events(EventsArgs),
-    /// Run this machine as a host, in the foreground, until stopped
+    /// Run this machine as a host, as a service of this user's: with its
+    /// dashboard (Ctrl-C stops the host), or detached with -d
     #[command(after_help = SERVE_HELP)]
     Serve(ServeArgs),
+    /// Stop the host on this state folder; its state is kept
+    Stop,
+    /// View the running host; Ctrl-C closes only the view
+    Dashboard,
+    /// The host's diagnostics (serve.log)
+    Logs(FollowArgs),
     /// Help for a command, its examples, or every command as JSON
     Help(HelpArgs),
     /// Print SKILL.md, which teaches an agent how to use latch
@@ -435,6 +444,13 @@ pub enum BrowserCommand {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Owner only, on the host itself: download and verify a browser
+    /// engine into this machine's state directory (after `install.sh
+    /// --no-browser`, say). An agent's browser call never downloads one
+    Setup {
+        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
+        engine: EngineArg,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -450,7 +466,10 @@ pub enum ProfileCommand {
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum EngineArg {
+    /// Chrome for Testing
+    #[value(name = "chrome")]
     Cft,
+    /// Camoufox (macOS)
     Camoufox,
 }
 
@@ -807,7 +826,11 @@ pub struct AuditArgs {
 #[derive(Subcommand, Debug)]
 pub enum AuditAction {
     /// Every record, opened with the key: each command in full, as it ran
-    Show,
+    Show {
+        /// One record per line, then each new one as it is written, until stopped
+        #[arg(long, short)]
+        follow: bool,
+    },
     /// Check every record's place in the chain, without the key
     Verify,
     /// Seal new records under a new key and keep every old one; a running `latch serve` uses it once restarted
@@ -833,6 +856,13 @@ pub enum SharesAction {
 }
 
 #[derive(Args, Debug)]
+pub struct FollowArgs {
+    /// Keep printing what is added, until stopped
+    #[arg(long, short)]
+    pub follow: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct StatusArgs {
     /// Show a card for a person, with key art to compare between machines, instead of JSON
     #[arg(long)]
@@ -853,9 +883,20 @@ pub struct ServeArgs {
     #[arg(long, value_name = "PATH", requires = "folders")]
     pub allow_read: Vec<PathBuf>,
 
-    /// Log plainly even on a terminal, instead of showing the live dashboard
+    /// Start the host and return once it answers, printing it as JSON; it
+    /// runs until `latch stop`
+    #[arg(short = 'd', long, conflicts_with = "foreground")]
+    pub detach: bool,
+
+    /// Run the host in this process, with no service manager and no
+    /// dashboard, logging to stderr: for CI, tests and containers
     #[arg(long)]
-    pub no_dashboard: bool,
+    pub foreground: bool,
+
+    /// Internal: the host an attached `latch serve` started, which stops
+    /// when that `latch serve` goes away
+    #[arg(long, hide = true, requires = "foreground")]
+    pub attached: bool,
 
     /// Run every browser session with no window, in Chrome's headless mode:
     /// for a test host nobody watches. Sites block headless browsers far

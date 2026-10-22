@@ -227,19 +227,17 @@ impl Browsers {
         super::handoff::screen(self.headless)
     }
 
-    /// Shows the pending handoffs: on the dashboard, or in the log.
+    /// Shows the pending handoffs in the log, and on the dashboard.
     pub(super) fn notice_handoffs(&self) {
         let lines: Vec<String> = super::handoff::pending(&self.state_dir)
             .iter()
             .map(super::handoff::line)
             .collect();
-        match &*self.dashboard.lock().expect("dashboard lock") {
-            Some(dashboard) => dashboard.notices(lines),
-            None => {
-                for line in lines {
-                    crate::log::log(&line);
-                }
-            }
+        for line in &lines {
+            crate::log::log(line);
+        }
+        if let Some(dashboard) = &*self.dashboard.lock().expect("dashboard lock") {
+            dashboard.notices(lines);
         }
     }
 

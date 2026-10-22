@@ -7,7 +7,7 @@ name: release
 # archives and release nothing.
 on:
   pull_request:
-    paths: ['latch/**', 'scripts/**', 'install-release.sh', '.github/workflows/release.yml']
+    paths: ['latch/**', 'scripts/**', 'install.sh', '.github/workflows/release.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -243,9 +243,9 @@ jobs:
           merge-multiple: true
           path: dist
       - run: |
-          cp install-release.sh dist/
+          cp install.sh dist/
           cd dist
-          sha256sum *.tar.gz install-release.sh > SHA256SUMS
+          sha256sum *.tar.gz install.sh > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: release-downloads
@@ -273,8 +273,10 @@ jobs:
           tar -xzf "$archive"
           folder=$(basename "$archive" .tar.gz)
           uname -sm
-          test -x "$folder/install.sh"
-          "$folder/install.sh" --help
+          test -x "$folder/install-binary.sh"
+          test -x "$folder/browser-engines.sh"
+          test -f "$folder/install-packages.sh"
+          "$folder/install-binary.sh" --help
           "$folder/latch" --version
           if [[ '${{ runner.os }}' == macOS ]]; then
             codesign --verify --deep --strict --verbose=2 "$folder/Plow Latch.app"
