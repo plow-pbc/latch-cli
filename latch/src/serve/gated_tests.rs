@@ -88,7 +88,11 @@ async fn start_with(
     let root = dir.path().canonicalize().unwrap();
     let (area, state, home) = (root.join("area"), root.join("state"), root.join("home"));
     std::fs::create_dir(&area).unwrap();
-    std::fs::create_dir(&state).unwrap();
+    crate::state::StateDir {
+        path: state.clone(),
+    }
+    .create()
+    .unwrap();
     std::fs::create_dir(&home).unwrap();
     std::fs::write(area.join("notes.txt"), "the notes' own words").unwrap();
     let binary = root.join("latch");
@@ -1481,6 +1485,69 @@ async fn a_contacts_worker_cannot_read_messages() {
         panic!("{answer:?}")
     };
     assert_eq!(people["count"], 1);
+}
+
+#[tokio::test]
+async fn local_vault_edits_reach_a_running_hosts_release_path() {
+    use crate::vault::store::Backend;
+    use tokio::io::AsyncWriteExt;
+    let t = start(a_chat(always_covered)).await;
+    let state = crate::state::StateDir {
+        path: t.state.clone(),
+    };
+    state.create().unwrap();
+    let key = state.load_or_create_key().unwrap().0.public().to_string();
+    state
+        .save_config(&crate::state::Config {
+            api_url: "http://127.0.0.1:9".into(),
+            peer: serde_json::from_value(
+                json!({"key": key, "name": "host", "kind": "device", "relay_url": null}),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    assert!(
+        t.host
+            .vault
+            .with(|store| Ok(store.list()))
+            .unwrap()
+            .is_empty()
+    );
+    let mut child = tokio::process::Command::new(latch_binary())
+        .arg("--state-dir")
+        .arg(&t.state)
+        .args([
+            "vault",
+            "add",
+            "--kind",
+            "login",
+            "--title",
+            "the owner",
+            "--site",
+            "example.com",
+        ])
+        .env_remove("LATCH_HOST")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"synthetic-fill-value\n")
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    assert!(output.status.success(), "local add failed");
+    assert_eq!(
+        t.host
+            .vault
+            .with(|store| store.release("v1", "password"))
+            .unwrap(),
+        "synthetic-fill-value"
+    );
 }
 
 #[tokio::test]

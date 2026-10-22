@@ -46,6 +46,7 @@ mod status;
 mod term;
 mod trace;
 mod transfer;
+mod transport;
 mod vault;
 mod watch;
 mod wire;

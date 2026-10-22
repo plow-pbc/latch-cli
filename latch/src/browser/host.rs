@@ -29,9 +29,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use iroh::endpoint::{RecvStream, SendStream};
+use crate::transport::{RecvStream, SendStream};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use super::judged;

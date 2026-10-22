@@ -1,8 +1,8 @@
 //! Choosing which host a command goes to.
 //!
 //! Order: `--host NAME`, then `$LATCH_HOST` (clap folds both into one
-//! value), then the only host in the directory other than this machine, if
-//! there is exactly one.
+//! value), then this machine if it has served, otherwise the only host
+//! in the directory, if there is exactly one.
 //! Anything else is a usage error (exit 2) that lists the hosts. Whether the
 //! host is actually up is learned by dialing it, not from its `online` flag.
 
@@ -11,10 +11,28 @@ use crate::login;
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
 
-/// Looks up the account's hosts in Plow and picks one. If Plow no longer
+/// Owner configuration without a target, or naming this peer, stays local.
+pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failure> {
+    Ok(match asked {
+        None => true,
+        Some(name) => state.require_login()?.peer.name == name,
+    })
+}
+
+/// Resolves a saved local host without Plow; otherwise looks up the account's hosts. If Plow no longer
 /// lists this machine (an agent whose credential was rotated, say), it
 /// registers again first: a host refuses a caller Plow does not know.
 pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Failure> {
+    let config = state.require_login()?;
+    if asked.as_deref() == Some(config.peer.name.as_str())
+        || (asked.is_none()
+            && (config.peer.relay_url.is_some() || state.path.join("serve.sock").exists()))
+    {
+        return Ok(Peer {
+            this_machine: true,
+            ..config.peer
+        });
+    }
     let peers = Plow::from_state(state)?.list_peers().await?;
     let own_key = state.load_key()?.public().to_string();
     if !peers.iter().any(|peer| peer.key == own_key) {
@@ -46,31 +64,19 @@ pub fn pick(asked: Option<&str>, hosts: &[Peer]) -> Result<Peer, Failure> {
             }
         };
     }
-    // This machine is never picked for you: it cannot call itself.
-    let others: Vec<Peer> = hosts
-        .iter()
-        .filter(|host| !host.this_machine)
-        .cloned()
-        .collect();
-    match others.as_slice() {
+    match hosts {
         [only] => Ok(only.clone()),
-        [] if hosts.is_empty() => {
-            let message = "no hosts in this account; start `latch serve` on one".to_string();
-            Err(Failure::usage("no_host", message))
-        }
-        [] => {
-            let message = "the only host is this machine, which cannot call itself; \
-                           call it from another machine or state directory"
-                .to_string();
-            Err(Failure::usage("no_host", message))
-        }
-        _ => {
-            let message = format!(
+        [] => Err(Failure::usage(
+            "no_host",
+            "no hosts in this account; start `latch serve` on one".into(),
+        )),
+        _ => Err(Failure::usage(
+            "host_required",
+            format!(
                 "several hosts; pass --host or set LATCH_HOST: {}",
-                names(&others)
-            );
-            Err(Failure::usage("host_required", message))
-        }
+                names(hosts)
+            ),
+        )),
     }
 }
 
@@ -112,18 +118,12 @@ mod tests {
     }
 
     #[test]
-    fn this_machine_is_never_the_default_host() {
+    fn this_machine_is_selectable_and_is_the_only_host_default() {
         let hosts = only_hosts(vec![host("me"), host("pi")], "key-of-me");
-        assert_eq!(pick(None, &hosts).unwrap().name, "pi");
-        // Named, it is still found, so dialing it says why it cannot work.
+        assert_eq!(pick(None, &hosts).unwrap_err().code, "host_required");
         assert_eq!(pick(Some("me"), &hosts).unwrap().name, "me");
         let alone = only_hosts(vec![host("me")], "key-of-me");
-        let failure = pick(None, &alone).unwrap_err();
-        assert!(
-            failure.message.contains("this machine"),
-            "{}",
-            failure.message
-        );
+        assert_eq!(pick(None, &alone).unwrap().name, "me");
     }
 
     #[test]

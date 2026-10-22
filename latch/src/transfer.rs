@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use iroh::endpoint::{Connection, RecvStream};
+use crate::transport::{Connection, RecvStream};
 use serde_json::{Value, json};
 use tokio::fs::File;
 
@@ -251,7 +251,7 @@ mod tests {
     use wire::Response;
 
     /// A host and a client endpoint, and both ends of a connection between them.
-    async fn connected() -> (Endpoint, Endpoint, Connection, Connection) {
+    async fn connected() -> (Endpoint, Endpoint, iroh::endpoint::Connection, Connection) {
         let bind = |alpns: Vec<Vec<u8>>| {
             Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
@@ -265,11 +265,15 @@ mod tests {
             tokio::join!(async { accepting.await.unwrap().await.unwrap() }, async {
                 client.connect(host.addr(), wire::ALPN).await.unwrap()
             });
-        (host, client, accepted, connection)
+        (host, client, accepted, connection.into())
     }
 
     /// Answers a download with the `size` it promises, then `bytes`.
-    async fn start_sending(accepted: &Connection, size: u64, bytes: &[u8]) -> SendStream {
+    async fn start_sending(
+        accepted: &iroh::endpoint::Connection,
+        size: u64,
+        bytes: &[u8],
+    ) -> SendStream {
         let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
         wire::read_frame(&mut recv).await.unwrap();
         let frame = serde_json::to_vec(&Response::Ok(json!({"size": size}))).unwrap();

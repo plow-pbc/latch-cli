@@ -76,7 +76,9 @@ Agents:
   what fixes it: often a retry later, but a host out of Plow credits fails
   until the host's account owner adds them. A browser step's
   model_unavailable (exit 1) is the same decision model, for a click's risk,
-  a goal or a sentence check; nothing was sent, and nothing gets around it.
+  a goal or a sentence check, and nothing gets around it. Before retrying,
+  read the answer's `steps` and `trail`, the failed step's included: earlier
+  steps, and a goal's earlier actions, may already have run.
 
   `latch skill` prints the guide for agents; `latch help --json` describes
   every command; `latch help COMMAND --examples` shows how to call one.
@@ -432,6 +434,13 @@ pub enum BrowserCommand {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Owner only, on the host itself: download and verify a browser
+    /// engine into this machine's state directory (after `install.sh
+    /// --no-browser`, say). An agent's browser call never downloads one
+    Setup {
+        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
+        engine: EngineArg,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -447,7 +456,10 @@ pub enum ProfileCommand {
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum EngineArg {
+    /// Chrome for Testing
+    #[value(name = "chrome")]
     Cft,
+    /// Camoufox (macOS)
     Camoufox,
 }
 
@@ -514,7 +526,7 @@ pub enum DialogAction {
 
 #[derive(Args, Debug)]
 pub struct VaultArgs {
-    /// Name of the host to use
+    /// Host to use (default: this machine's vault; naming this peer is local too)
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
     #[command(subcommand)]
@@ -581,7 +593,7 @@ pub enum VaultCommand {
         #[arg(long)]
         ask: Vec<String>,
     },
-    /// A one-time link that adds an item from your phone: the phone page
+    /// A one-time link through a running serve that adds an item from your phone: the phone page
     /// connects to the host itself, and the value goes straight there.
     /// Prints the link, and a QR code on a terminal; it works once, for 15
     /// minutes

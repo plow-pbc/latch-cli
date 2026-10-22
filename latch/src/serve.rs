@@ -20,9 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iroh::endpoint::{Connection, Incoming, RecvStream, SendStream, VarInt, presets};
+use iroh::endpoint::{Connection, Incoming, VarInt, presets};
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
+use tokio::io::AsyncReadExt;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
@@ -365,13 +366,6 @@ async fn run_host(
     let heartbeat_state = StateDir {
         path: state.path.clone(),
     };
-    let mut heartbeat = tokio::spawn(heartbeat::run(
-        plow.clone(),
-        endpoint.clone(),
-        heartbeat_state,
-        config,
-        dashboard.clone(),
-    ));
 
     let vault = crate::vault::host::Vault::new(workers.state_dir.clone());
     if headless_browsers {
@@ -400,13 +394,32 @@ async fn run_host(
         home: std::env::home_dir().unwrap_or_default(),
         stopping: watch::Sender::new(Stopping::No),
     });
+    let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(&state.path, Phase::Serving, None)?;
+    let mut heartbeat = tokio::spawn(heartbeat::run(
+        host.plow.clone(),
+        endpoint.clone(),
+        heartbeat_state,
+        config,
+        host.dashboard.clone(),
+    ));
     // `Box::pin` gives the stop signal a fixed place in memory, so the loop
     // can wait on the same future again each time round.
     let mut stop = Box::pin(stop_requested(terminate));
     let mut connections = JoinSet::new();
+    let mut accept_failure = None;
     let moved = loop {
         tokio::select! {
+            accepted = local_socket.listener.accept() => {
+                match accepted {
+                    Ok((socket, _)) => { connections.spawn(serve_local(host.clone(), socket)); }
+                    Err(err) => {
+                        log(&format!("stopping: local socket accept failed: {err}"));
+                        accept_failure = Some(Failure::failed("local_socket", err.to_string()));
+                        break None;
+                    }
+                }
+            }
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => {
                     let connection = tracing::info_span!("connection", caller = Empty);
@@ -448,7 +461,7 @@ async fn run_host(
     step("closing connections");
     endpoint.close().await;
     log("stopped");
-    moved.map_or(Ok(()), Err)
+    moved.or(accept_failure).map_or(Ok(()), Err)
 }
 
 /// Longest a stopping host waits for the operations it is running, and
@@ -811,9 +824,16 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     // the host stops.
     while let Some((send, recv)) = next_stream(host, connection).await {
         let operation = tracing::info_span!("operation", op = Empty);
-        serve_operation(host, caller, connection, send, recv)
-            .instrument(operation)
-            .await;
+        serve_operation(
+            host,
+            caller,
+            false,
+            send.into(),
+            recv.into(),
+            cut_off(host, connection),
+        )
+        .instrument(operation)
+        .await;
         log(&format!(
             "paths to {caller}: {}",
             describe_paths(connection)
@@ -823,7 +843,10 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
 
 /// The connection's next operation, until the client closes it or the host
 /// is stopping.
-async fn next_stream(host: &Host, connection: &Connection) -> Option<(SendStream, RecvStream)> {
+async fn next_stream(
+    host: &Host,
+    connection: &Connection,
+) -> Option<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
     let mut stopping = host.stopping.subscribe();
     // Stopping wins over a stream that is also ready: no new operation
     // starts once the host is stopping.
@@ -837,9 +860,10 @@ async fn next_stream(host: &Host, connection: &Connection) -> Option<(SendStream
 async fn serve_operation(
     host: &Host,
     caller: &str,
-    connection: &Connection,
-    mut send: SendStream,
-    mut recv: RecvStream,
+    local: bool,
+    mut send: crate::transport::SendStream,
+    mut recv: crate::transport::RecvStream,
+    cut_off: impl std::future::Future<Output = &'static str>,
 ) {
     let Ok(json) = wire::read_frame(&mut recv).await else {
         return;
@@ -854,7 +878,18 @@ async fn serve_operation(
 
     // Second check: before the operation, in case the caller was revoked
     // since it connected.
-    let response = match host.check(caller).await {
+    let identity = if local {
+        Ok(Identity {
+            key: caller.to_string(),
+            kind: "device".into(),
+            name: host.name.clone(),
+            agent_uid: None,
+            permissions: crate::plow::Permissions { call: true },
+        })
+    } else {
+        host.check(caller).await
+    };
+    let response = match identity {
         Err(denial) => {
             let _ = host
                 .append(audit::record(caller, None, op, "deny", &denial.code))
@@ -871,7 +906,14 @@ async fn serve_operation(
         Ok(identity) => {
             // Any caller's exec, file or Google operation runs only if the
             // gatekeeper allows it.
-            let gate = host.gate(&identity, request.chat.as_deref());
+            let gate = if local {
+                Ok(Gate {
+                    keeper: &host.gatekeeper,
+                    caller: Caller::OwnerOnHost,
+                })
+            } else {
+                host.gate(&identity, request.chat.as_deref())
+            };
             // An exec this host's owner denies is refused without asking.
             let denied_exec = op == "exec" && host.deny_exec.refuses(&identity);
             // A worker started now would run the new latch under this old
@@ -949,7 +991,13 @@ async fn serve_operation(
                         outcome: "exec_denied".to_string(),
                     },
                     "exec" => {
-                        exec::run(&host.workers, &request.args, cut_off(host, connection)).await
+                        exec::run(&host.workers, &request.args, async {
+                            tokio::select! {
+                                reason = cut_off => reason,
+                                _ = recv.read_u8(), if local => "caller_gone",
+                            }
+                        })
+                        .await
                     }
                     "vault" => {
                         crate::vault::host::run(
@@ -1039,7 +1087,9 @@ async fn serve_operation(
                 &done.outcome,
             );
             record.args = done.audit_args;
-            record.gate = judgment.map(|judgment| judgment.gate);
+            record.gate = judgment
+                .map(|judgment| judgment.gate)
+                .or_else(|| local.then(|| serde_json::json!({"caller":"owner_on_host"})));
             let response = match host.append(record).await {
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed("audit_failed", message),
@@ -1058,6 +1108,29 @@ async fn serve_operation(
         }
     };
     answer(&mut send, &response).await;
+}
+
+/// Local callers are trusted by the private socket, never by a request field.
+async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
+    let caller = host.endpoint.id().to_string();
+    log(&format!(
+        "connect: {caller}: owner_on_host over Unix socket"
+    ));
+    let (recv, send) = socket.into_split();
+    let operation = tracing::info_span!("operation", op = Empty);
+    serve_operation(
+        &host,
+        &caller,
+        true,
+        crate::transport::SendStream::Local(Some(send)),
+        crate::transport::RecvStream::Local(recv),
+        async {
+            host.cut_off().await;
+            "interrupted"
+        },
+    )
+    .instrument(operation)
+    .await;
 }
 
 /// Finishes when an exec is cut off by the host or loses its caller.
@@ -1177,10 +1250,10 @@ fn failed(code: &str, message: String) -> Response {
 }
 
 /// Sends the one response frame and ends our side of the stream.
-async fn answer(send: &mut SendStream, response: &Response) {
+async fn answer(send: &mut (impl tokio::io::AsyncWrite + Unpin), response: &Response) {
     let json = serde_json::to_vec(response).expect("a response serializes");
     if wire::write_frame(send, &json).await.is_ok() {
-        let _ = send.finish();
+        let _ = tokio::io::AsyncWriteExt::shutdown(send).await;
     }
 }
 

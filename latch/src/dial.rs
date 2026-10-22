@@ -10,9 +10,9 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::transport::{Connection, RecvStream, SendStream};
 use iroh::endpoint::{
-    ConnectError, ConnectingError, Connection, ConnectionError, RecvStream, SendStream,
-    TransportErrorCode, VarInt, presets,
+    ConnectError, ConnectingError, ConnectionError, TransportErrorCode, VarInt, presets,
 };
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl};
 use serde_json::Value;
@@ -38,15 +38,16 @@ pub const ANSWER_MARGIN: Duration = Duration::from_secs(30);
 
 /// An open connection to a host, and the local endpoint it runs on.
 pub struct Link {
-    endpoint: Endpoint,
+    endpoint: Option<Endpoint>,
     pub connection: Connection,
 }
 
-/// Dials `host` over iroh. Failure here means nothing was sent: exit 3.
+/// Dials this state folder over its private socket, or another host over iroh.
+/// Failure here means nothing was sent: exit 3.
 pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
     // Plow already knows the host is offline: say so now, rather than spend
     // the connect timeout finding out.
-    if host.online == Some(false) {
+    if !host.this_machine && host.online == Some(false) {
         let seen = match &host.last_seen_at {
             Some(at) => format!(", last seen {at}"),
             None => String::new(),
@@ -57,20 +58,15 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
         );
         return Err(Failure::new(Exit::Unreachable, "host_offline", message));
     }
-    let (id, relay) = host_address(host)?;
     let key = state.load_key()?;
-    // A state directory is one peer with one key, so the one that runs
-    // `serve` cannot also be the client calling it (iroh refuses to dial
-    // its own key).
-    if key.public() == id {
-        let message = format!(
-            "host {:?} is this state directory's own key, so it cannot call itself; \
-             call it from another state directory, e.g. `latch --state-dir ~/.latch-client login` \
-             then `latch --state-dir ~/.latch-client ... --host {}`",
-            host.name, host.name
-        );
-        return Err(Failure::usage("own_host", message));
+    if host.key == key.public().to_string() {
+        let socket = crate::transport::connect_local(&state.path).await?;
+        return Ok(Link {
+            endpoint: None,
+            connection: Connection::Local(std::sync::Mutex::new(Some(socket))),
+        });
     }
+    let (id, relay) = host_address(host)?;
     // Our own key is our identity: the host learns who we are from the
     // connection's handshake, not from anything we send. Our only relay is
     // the host's own, so a client contacts no relay the host did not choose.
@@ -83,8 +79,8 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
     let address = EndpointAddr::new(id).with_relay_url(relay);
     match tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(address, wire::ALPN)).await {
         Ok(Ok(connection)) => Ok(Link {
-            endpoint,
-            connection,
+            endpoint: Some(endpoint),
+            connection: Connection::Remote(connection),
         }),
         Ok(Err(err)) if speaks_another_version(&err) => {
             endpoint.close().await;
@@ -141,11 +137,13 @@ impl Link {
     /// Closes the connection. The close goes out while the command prints
     /// its answer; `closed` gives it up to `CLOSE_WITHIN` before exit.
     pub fn close(self) {
-        self.connection.close(VarInt::from_u32(0), b"done");
-        let closing = tokio::spawn(async move {
-            let _ = tokio::time::timeout(CLOSE_WITHIN, self.endpoint.close()).await;
-        });
-        CLOSING.lock().expect("closing lock").push(closing);
+        if let Some(endpoint) = self.endpoint {
+            self.connection.close(VarInt::from_u32(0), b"done");
+            let closing = tokio::spawn(async move {
+                let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
+            });
+            CLOSING.lock().expect("closing lock").push(closing);
+        }
     }
 }
 
@@ -180,8 +178,13 @@ async fn one_exchange(
     answer_within: Duration,
 ) -> Result<Value, Failure> {
     let (mut send, mut recv) = start(connection, request).await?;
-    send.finish().map_err(|_| lost(connection, true))?;
-    answer(connection, &mut recv, answer_within).await
+    // A local caller keeps its write half alive so EOF means it disconnected.
+    if matches!(connection, Connection::Remote(_)) {
+        send.finish().map_err(|_| lost(connection, true))?;
+    }
+    let result = answer(connection, &mut recv, answer_within).await;
+    drop(send);
+    result
 }
 
 /// Opens a stream for one operation and sends its request. The send side
@@ -223,19 +226,7 @@ pub async fn answer(
         let message = "the host's answer was not a valid response".to_string();
         Failure::new(Exit::Unknown, "bad_response", message)
     })?;
-    match response {
-        Response::Ok(result) => Ok(result),
-        Response::Error {
-            exit,
-            code,
-            message,
-            details,
-        } => {
-            let mut failure = Failure::new(exit, &code, message);
-            failure.details = details;
-            Err(failure)
-        }
-    }
+    response.into_result()
 }
 
 /// Where to dial: the host's key and relay, both from the Plow directory.
@@ -323,8 +314,8 @@ mod tests {
                 client.connect(host.addr(), wire::ALPN).await.unwrap()
             },);
         let link = Link {
-            endpoint: client,
-            connection,
+            endpoint: Some(client),
+            connection: connection.into(),
         };
 
         let started = Instant::now();

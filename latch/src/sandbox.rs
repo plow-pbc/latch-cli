@@ -595,7 +595,8 @@ mod platform {
     const CODEX_NETWORK: &str = include_str!("sandbox/codex/seatbelt_network_policy.sbpl");
 
     /// For every kind, last: the state directory and the hidden paths can
-    /// be neither read nor written, and the running latch never written.
+    /// be neither read nor written, their sockets never connected to, and
+    /// the running latch never written.
     /// Seatbelt matches paths, so renaming a folder above any of them would
     /// move it out of reach of these rules; directories above them inside a
     /// writable folder, and the writable folders themselves, cannot be
@@ -617,6 +618,11 @@ mod platform {
                 "(deny file-read* file-write* process-exec (subpath {}))",
                 quoted(&state)?
             ),
+            // Socket connects are network operations, not file reads or writes.
+            format!(
+                "(deny network-outbound (remote unix-socket (subpath {})))",
+                quoted(&state)?
+            ),
             format!("(deny file-write* (literal {}))", quoted(&latch)?),
         ];
         let mut hidden = Vec::new();
@@ -624,6 +630,10 @@ mod platform {
             let path = real(path)?;
             rules.push(format!(
                 "(deny file-read* file-write* (subpath {}))",
+                quoted(&path)?
+            ));
+            rules.push(format!(
+                "(deny network-outbound (remote unix-socket (subpath {})))",
                 quoted(&path)?
             ));
             hidden.push(path);
