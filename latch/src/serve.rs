@@ -72,6 +72,9 @@ struct Host {
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
     binary: Binary,
+    /// The owner's home folder, whose Messages and address book
+    /// `messages` and `contacts` read.
+    home: PathBuf,
     /// How far the host is into stopping.
     stopping: watch::Sender<Stopping>,
 }
@@ -378,6 +381,7 @@ async fn run_host(
         deny_exec,
         gatekeeper,
         binary,
+        home: std::env::home_dir().unwrap_or_default(),
         stopping: watch::Sender::new(Stopping::No),
     });
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
@@ -878,7 +882,7 @@ async fn serve_request(
     host: &Host,
     caller: &str,
     local: bool,
-    request: Request,
+    mut request: Request,
     mut send: crate::transport::SendStream,
     mut recv: crate::transport::RecvStream,
     cut_off: impl std::future::Future<Output = &'static str>,
@@ -930,12 +934,22 @@ async fn serve_request(
             // A worker started now would run the new latch under this old
             // host: nothing runs, and nothing is judged.
             let upgraded = host.binary.replaced();
+            // A messages or contacts call is judged, and then run, as one
+            // effective request: the reader's reading of the caller's words
+            // and any cursor's filters. One the reader refuses is not judged.
+            let mut unplanned = None;
+            if (op == "messages" || op == "contacts") && !upgraded && gate.is_ok() {
+                match crate::messages::host::plan(&host.workers, op, &request.args).await {
+                    Ok(planned) => request.args = planned,
+                    Err(done) => unplanned = Some(*done),
+                }
+            }
             // With no shared folder, exec and file refuse: nothing to judge.
             let unshared =
                 host.workers.areas.is_empty() && matches!(op, "exec" | "file_get" | "file_put");
             let first_area = host.workers.areas.first().map(PathBuf::as_path);
             let gated = gate::gated(op, &request.args, first_area)
-                .filter(|_| !denied_exec && !upgraded && !unshared);
+                .filter(|_| !denied_exec && !upgraded && !unshared && unplanned.is_none());
             let unjudgeable = match (&gate, &gated) {
                 (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
@@ -967,6 +981,8 @@ async fn serve_request(
             let done = if upgraded {
                 let failure = host_upgraded();
                 Done::failed(&failure.code, failure.message, Value::Null)
+            } else if let Some(unplanned) = unplanned {
+                unplanned
             } else if let Some(refused) = refused {
                 refused
             } else {
@@ -1018,6 +1034,10 @@ async fn serve_request(
                             &request.args,
                         )
                         .await
+                    }
+                    "messages" | "contacts" => {
+                        crate::messages::host::run(&host.workers, &host.home, op, &request.args)
+                            .await
                     }
                     "browser" => match &gate {
                         Ok(gate) => {

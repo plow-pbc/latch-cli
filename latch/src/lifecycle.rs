@@ -5,14 +5,13 @@
 //! its last step; its released lock says so.
 
 use std::fs::{self, File};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 use crate::failure::Failure;
+use crate::state::write_private;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -84,19 +83,9 @@ pub fn record(state_dir: &Path, phase: Phase, error: Option<&Failure>) -> Result
         }),
     };
     let path = state_dir.join("serve.json");
-    let temp = state_dir.join("serve.json.tmp");
-    let io =
-        |err: std::io::Error| Failure::failed("state_io", format!("{}: {err}", path.display()));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)
-        .map_err(io)?;
     let json = serde_json::to_string(&written).expect("a step serializes") + "\n";
-    file.write_all(json.as_bytes()).map_err(io)?;
-    fs::rename(&temp, &path).map_err(io)
+    write_private(&path, json.as_bytes())
+        .map_err(|err| Failure::failed("state_io", format!("{}: {err}", path.display())))
 }
 
 /// What the host on `state_dir` is doing now. Reads only; works on a folder
@@ -167,6 +156,8 @@ pub fn holds_lock(state_dir: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
 
     #[test]

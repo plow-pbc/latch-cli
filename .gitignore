@@ -6,6 +6,10 @@ target/
 /latch/phone/dist/
 /latch/phone/e2e/node_modules/
 
+# The Messages reader's Swift build output
+/latch/messages-reader/.build/
+/latch/messages-reader/dist/
+
 # Local agent tooling
 .claude/
 .kitchen/

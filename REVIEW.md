@@ -66,11 +66,14 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
 - **The state folder is protected only from latch's own workers.** Root, and
   any process of the host's OS user outside latch, can read or write it.
 - **On macOS the browser engine runs outside latch's Seatbelt** (Chrome's own
-  sandbox on), so a compromised engine could read the vault and its custody
-  key. The Keychain half of the custody key is on the roadmap.
+  sandbox on), so a compromised engine could read `vault.json`, and its
+  custody key where that is a file. A signed macOS latch keeps the custody
+  key in the Keychain under latch's keychain group, out of the engine's reach.
 - **File and `exec` workers read the whole filesystem**, as Codex CLI's do;
   only writes are confined to the shared areas.
-- **The peer's secret key is plaintext hex in a 0600 file.**
+- **Outside a signed macOS latch, secrets are plaintext 0600 files**: the
+  peer's key, the Plow token, the vault's custody key and the audit keys. A
+  signed macOS latch keeps them in the Keychain.
 - **Exec argv is stored in full in the audit**, so the owner can see exactly
   what agents ran (`latch audit show`); credentials an agent puts on a
   command line are therefore in it. The audit is sealed record by record

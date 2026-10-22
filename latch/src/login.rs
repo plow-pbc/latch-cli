@@ -48,12 +48,11 @@ enum Source {
 
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
     let saved = state.load_config()?;
-    let api_url = api_url(
-        args.api_url,
-        credential::env,
-        saved.as_ref(),
-        cli::BUILD_CHANNEL,
-    );
+    let saved_url = match &saved {
+        Some(config) => Some(config.api_url.clone()),
+        None => state.load_plow_url()?,
+    };
+    let api_url = api_url(args.api_url, credential::env, saved_url, cli::BUILD_CHANNEL);
     let Some(api_url) = api_url else {
         let message = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co \
                        (or set $PLOW_API_BASE or $PLOW_API_URL)";
@@ -152,7 +151,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     // half-configured instance behind (apart from the key, and the token of
     // a login by text, which is saved as soon as it arrives).
     if save_token {
-        state.save_token(&token)?;
+        state.save_token(&token, &api_url)?;
     }
     state.save_config(&Config {
         api_url,
@@ -225,7 +224,7 @@ async fn by_text(
                     return Err(Failure::failed("login_collected", message.to_string()));
                 };
                 state.create()?;
-                state.save_token(&token)?;
+                state.save_token(&token, api_url)?;
                 // At a terminal, the result says it, with the name.
                 if !term::stdout_is_terminal() && !events {
                     eprintln!("Logged in.");
@@ -367,17 +366,18 @@ fn hostname() -> Option<String> {
 /// Which Plow to log in to. The flag wins; then a cloud agent's
 /// `$PLOW_API_BASE` (on exe.dev, the proxy that adds the agent's
 /// credential), then `$PLOW_API_URL`, then this build's baked-in URL; on a
-/// repeat login, what the first one saved; last, a release build's default.
+/// repeat login, the Plow the first one saved (with its config, or with its
+/// token if it went no further); last, a release build's default.
 fn api_url(
     flag: Option<String>,
     env: impl Fn(&str) -> Option<String>,
-    saved: Option<&Config>,
+    saved: Option<String>,
     channel: Option<&str>,
 ) -> Option<String> {
     flag.or_else(|| env("PLOW_API_BASE"))
         .or_else(|| env("PLOW_API_URL"))
         .or(BUILD_API_URL.map(String::from))
-        .or(saved.map(|config| config.api_url.clone()))
+        .or(saved)
         .or(cli::default_api_url(channel).map(String::from))
 }
 
@@ -403,12 +403,10 @@ mod tests {
         assert_eq!(api_url(flag, none, None, release), Some(local.clone()));
         let env = |name: &str| (name == "PLOW_API_URL").then(|| local.clone());
         assert_eq!(api_url(None, env, None, release), Some(local.clone()));
-        let saved: Config = serde_json::from_value(json!({
-            "api_url": local,
-            "peer": {"name": "mac", "key": "k", "kind": "device"},
-        }))
-        .unwrap();
-        assert_eq!(api_url(None, none, Some(&saved), release), Some(local));
+        assert_eq!(
+            api_url(None, none, Some(local.clone()), release),
+            Some(local)
+        );
     }
 
     #[test]
