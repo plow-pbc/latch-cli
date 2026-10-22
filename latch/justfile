@@ -41,7 +41,7 @@ conformance engine: cft
 # On Linux, the engine is the one install-binary.sh put in LATCH_CFT_STATE.
 [linux]
 conformance engine:
-    cargo test --release --locked --features linux-browser-tests -- --test-threads=1 "::{{engine}}::"
+    cargo test --locked --features linux-browser-tests -- --test-threads=1 "::{{engine}}::"
 
 # The pinned engines, Chrome for Testing and Camoufox, where the browser
 # tests look for them. HOME keeps install-binary.sh's copy of latch out of the real

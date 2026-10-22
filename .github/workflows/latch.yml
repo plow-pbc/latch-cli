@@ -161,7 +161,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .dev/cft-state/plugins/camoufox
-          key: camoufox-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json') }}
+          key: camoufox-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
       # Until latch installs its own AppArmor profile for the browser's
       # bwrap: Ubuntu's bwrap profile, which install-binary.sh loads where
       # unprivileged user namespaces are restricted, denies Chrome's sandbox

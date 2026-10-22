@@ -734,8 +734,9 @@ gatekeeper` runs.
 
 On Linux they are built only with `--features linux-browser-tests` (the
 gate's containers have no engine), against the engines installed in
-`LATCH_CFT_STATE`. Linux CI caches Camoufox and runs its conformance tests
-in release mode; `just conformance camoufox` does the same on a Linux host.
+`LATCH_CFT_STATE`. Linux CI caches both engines and builds their tests once
+into a debug nextest archive, shared by four partitions. `just conformance
+camoufox` runs that engine's checks on a Linux host.
 Missing GTK3/audio/X11/DBus libraries join the installer's root package
 step; browser, Node and helper files stay inside the state folder.
 There the sandbox checks look at the user namespaces and
