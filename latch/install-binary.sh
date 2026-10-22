@@ -3,8 +3,10 @@
 #
 #   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive] [path/to/latch]
 #
-# At a terminal it ends by running `latch setup` (log in, connect Google,
-# and so on); --non-interactive, or no terminal, leaves that for later.
+# A first install (no login in the state directory yet) at a terminal ends
+# by running `latch setup` (log in, connect Google, and so on);
+# --non-interactive, or no terminal, leaves that for later. An upgrade
+# never runs it: setup could start a host the upgrade did not mean to.
 #
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
@@ -118,6 +120,9 @@ fi
 [ -f "$src" ] && [ -x "$src" ] || die "$src is not an executable file"
 
 dest="$bin_dir/latch"
+# A first install: no login in the state directory yet.
+first_install=""
+[ -f "$state_dir/config.json" ] || first_install=1
 
 # 0. A host running the latch being replaced is stopped first; only a stop
 # it confirms counts, and a failed one changes nothing. If anything fails
@@ -345,18 +350,20 @@ if [ -n "$terminal_host" ]; then
   say "the host on $state_dir ran in a terminal and was stopped: run \`latch serve\` there again to start it with the new latch"
 fi
 
-# At a terminal, `latch setup` takes it from here, reading the terminal
-# itself (this script's own stdin may be the download it came from).
-# Whatever happens in setup, the install is done.
-if [ -z "$non_interactive" ] && [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
-  say "running latch setup"
-  if [ -n "$state_given" ]; then
-    set -- --state-dir "$state_dir" setup
+# On a first install at a terminal, `latch setup` takes it from here,
+# reading the terminal itself (this script's own stdin may be the download
+# it came from). Whatever happens in setup, the install is done.
+if [ -n "$first_install" ]; then
+  if [ -z "$non_interactive" ] && [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
+    say "running latch setup"
+    if [ -n "$state_given" ]; then
+      set -- --state-dir "$state_dir" setup
+    else
+      set -- setup
+    fi
+    "$dest" "$@" </dev/tty || say "setup did not finish; run \`latch setup\` any time"
   else
-    set -- setup
+    say "next: run \`latch setup\` to log in and set up the rest"
   fi
-  "$dest" "$@" </dev/tty || say "setup did not finish; run \`latch setup\` any time"
-else
-  say "next: run \`latch setup\` to log in and set up the rest"
 fi
 say "done"

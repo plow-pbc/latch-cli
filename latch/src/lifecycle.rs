@@ -6,7 +6,8 @@
 
 use std::fs::{self, File};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, mpsc};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -149,14 +150,142 @@ pub fn now(state_dir: &Path) -> Host {
     }
 }
 
+/// How long this latch's socket has to take a connection before the host
+/// holding the folder counts as another version's.
+const PROBE_WITHIN: Duration = Duration::from_millis(500);
+
+/// How far a process's start may be from its run's: the run is named as
+/// the serve starts, a moment after the process did.
+const STARTED_WITHIN_MS: i64 = 1000;
+
 /// The pid of a host from another latch version serving `state_dir`: it
-/// holds the folder and says it serves, but not on this version's socket,
-/// so nothing this latch asks reaches it.
+/// holds the folder and says it serves, but nothing listens on this
+/// version's socket (a socket file left by a crash does not count), so
+/// nothing this latch asks reaches it.
 pub fn other_version(state_dir: &Path) -> Option<u32> {
     let host = now(state_dir);
     let serving = host.running && host.state == Phase::Serving;
-    let theirs = serving && !crate::transport::local_socket_path(state_dir).exists();
+    let theirs = serving && !listening(&crate::transport::local_socket_path(state_dir));
     host.pid.filter(|_| theirs)
+}
+
+/// Whether something takes connections on the socket at `path`, within
+/// `PROBE_WITHIN`.
+fn listening(path: &Path) -> bool {
+    let path = path.to_path_buf();
+    let (said, answer) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = said.send(std::os::unix::net::UnixStream::connect(path).is_ok());
+    });
+    answer.recv_timeout(PROBE_WITHIN).unwrap_or(false)
+}
+
+/// Whether `pid` is still the host serve.json on `state_dir` records: a
+/// latch executable that started as its run did (a run is `PID-MILLIS`,
+/// named as the serve starts). A pid since given to another process is not.
+pub fn recorded_instance(state_dir: &Path, pid: u32) -> bool {
+    let Some(run) = now(state_dir).run else {
+        return false;
+    };
+    let Some(began) = run
+        .strip_prefix(&format!("{pid}-"))
+        .and_then(|millis| millis.parse::<i64>().ok())
+    else {
+        return false;
+    };
+    let Some((exe, started)) = process::started(pid) else {
+        return false;
+    };
+    let latch = exe.file_name().is_some_and(|name| name == "latch");
+    latch && (began - started).abs() <= STARTED_WITHIN_MS + process::RESOLUTION_MS
+}
+
+/// When a process started, and from which executable.
+#[cfg(target_os = "macos")]
+mod process {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::path::PathBuf;
+
+    /// How finely the system tells a process's start.
+    pub const RESOLUTION_MS: i64 = 0;
+
+    /// `pid`'s executable and its start, in milliseconds since the epoch.
+    pub fn started(pid: u32) -> Option<(PathBuf, i64)> {
+        // SAFETY: proc_bsdinfo is a plain C struct that proc_pidinfo fills in.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: writes at most `size` bytes into `info`, which we own.
+        let got = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        if got != size {
+            return None;
+        }
+        let started = info.pbi_start_tvsec as i64 * 1000 + info.pbi_start_tvusec as i64 / 1000;
+        let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: writes at most `path.len()` bytes into `path`, which we own.
+        let length = unsafe {
+            libc::proc_pidpath(
+                pid as libc::c_int,
+                path.as_mut_ptr().cast(),
+                path.len() as u32,
+            )
+        };
+        if length <= 0 {
+            return None;
+        }
+        path.truncate(length as usize);
+        Some((PathBuf::from(OsString::from_vec(path)), started))
+    }
+}
+
+/// When a process started, and from which executable.
+#[cfg(target_os = "linux")]
+mod process {
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// How finely the system tells a process's start: the boot time it
+    /// counts from is in whole seconds.
+    pub const RESOLUTION_MS: i64 = 1000;
+
+    /// `pid`'s executable and its start, in milliseconds since the epoch.
+    pub fn started(pid: u32) -> Option<(PathBuf, i64)> {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // Its start is field 22, in clock ticks since boot; the fields
+        // after the command's closing parenthesis begin at field 3.
+        let ticks: i64 = stat
+            .rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .nth(19)?
+            .parse()
+            .ok()?;
+        let boot: i64 = fs::read_to_string("/proc/stat")
+            .ok()?
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))?
+            .trim()
+            .parse()
+            .ok()?;
+        // SAFETY: sysconf reads a system setting.
+        let hertz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as i64;
+        if hertz <= 0 {
+            return None;
+        }
+        // A replaced executable still names the file it ran.
+        let exe = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+        let exe = exe.to_string_lossy();
+        let exe = PathBuf::from(exe.strip_suffix(" (deleted)").unwrap_or(&exe));
+        Some((exe, boot * 1000 + ticks * 1000 / hertz))
+    }
 }
 
 /// What every command that needs the host says while one from another

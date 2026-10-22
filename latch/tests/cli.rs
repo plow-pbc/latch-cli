@@ -4359,16 +4359,36 @@ fn stop_reaches_a_foreground_host_that_is_still_starting() {
 /// it, its socket, and what latch says of it.
 #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 fn old_host(state: &Path) -> (Serving, std::os::unix::net::UnixListener, String) {
+    // A latch that runs until it is stopped, as the old host's would.
+    let mut latch = Command::new(env!("CARGO_BIN_EXE_latch"));
+    latch
+        .arg("--state-dir")
+        .arg(state)
+        .args(["logs", "--follow"]);
+    old_host_from(state, latch, 0)
+}
+
+/// `old_host`, running `program`, its run named `off_ms` after it started.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+fn old_host_from(
+    state: &Path,
+    mut program: Command,
+    off_ms: i64,
+) -> (Serving, std::os::unix::net::UnixListener, String) {
     let lock = fs::File::create(state.join("serve.lock")).unwrap();
     lock.lock().unwrap();
     // The lock is the old host's: it holds it from here on, as stdin.
     let old = Serving(
-        Command::new("sleep")
-            .arg("600")
+        program
             .stdin(lock.try_clone().unwrap())
+            .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap(),
     );
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
     drop(lock);
     let pid = old.0.id();
     fs::write(
@@ -4376,7 +4396,8 @@ fn old_host(state: &Path) -> (Serving, std::os::unix::net::UnixListener, String)
         format!("latch serve (pid {pid}, /old/latch)\n"),
     )
     .unwrap();
-    let written = json!({"state": "serving", "pid": pid, "run": format!("{pid}-1"),
+    let run = format!("{pid}-{}", started + off_ms);
+    let written = json!({"state": "serving", "pid": pid, "run": run,
                          "since": "2026-10-22T04:51:40Z", "error": null});
     fs::write(state.join("serve.json"), written.to_string()).unwrap();
     let socket = std::os::unix::net::UnixListener::bind(state.join("serve.sock")).unwrap();
@@ -4422,6 +4443,60 @@ fn a_host_from_another_version_is_named_and_stop_stops_it() {
     );
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(old.0.wait().unwrap().signal(), Some(libc::SIGTERM));
+}
+
+/// `latch stop` signals only the very process the old host's files
+/// recorded: not one that only shares its pid, as a reused pid would.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn stop_signals_only_the_recorded_old_host() {
+    let (_dir, state, _) = owner_host();
+    let mut sleep = Command::new("sleep");
+    sleep.arg("600");
+    let mut latch = Command::new(env!("CARGO_BIN_EXE_latch"));
+    latch
+        .arg("--state-dir")
+        .arg(&state)
+        .args(["logs", "--follow"]);
+    // Not a latch; a latch that started a minute away from its run.
+    for (program, off_ms) in [(sleep, 0), (latch, -60_000)] {
+        let (mut old, socket, said) = old_host_from(&state, program, off_ms);
+        let stop = self::latch(&state, &["stop"], &[]);
+        assert_eq!(stop.status.code(), Some(3), "{off_ms}: {stop:?}");
+        assert!(
+            String::from_utf8_lossy(&stop.stderr).contains(&said),
+            "{stop:?}"
+        );
+        assert_eq!(
+            old.0.try_wait().unwrap(),
+            None,
+            "{off_ms}: it was signalled"
+        );
+        drop(socket);
+        old.0.kill().unwrap();
+        old.0.wait().unwrap();
+        fs::remove_file(state.join("serve.sock")).unwrap();
+    }
+}
+
+/// A socket file of this latch's that nothing listens on (left by a crash)
+/// is not this latch's host.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn a_stale_socket_of_this_version_is_never_taken_for_its_host() {
+    let (_dir, state, _) = owner_host();
+    let (_old, _socket, said) = old_host(&state);
+    let current = state.join("serve-v2.sock");
+    // A socket no one listens on any more, then a plain file.
+    drop(std::os::unix::net::UnixListener::bind(&current).unwrap());
+    let serve = local_serve(&state);
+    assert_eq!(serve["ready"], false, "{serve}");
+    assert_eq!(serve["blocked"]["message"], said.as_str(), "{serve}");
+    fs::remove_file(&current).unwrap();
+    fs::write(&current, "").unwrap();
+    let serve = local_serve(&state);
+    assert_eq!(serve["ready"], false, "{serve}");
+    assert_eq!(serve["blocked"]["code"], "other_version", "{serve}");
 }
 
 /// What an upgrade over a running older host did: setup took that host for

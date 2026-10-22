@@ -113,14 +113,18 @@ class BinaryInstall(unittest.TestCase):
     def test_setup_runs_only_at_a_terminal_and_not_when_told_not_to(self):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
-        for at_terminal, extra, runs in [(False, [], False), (True, [], True),
-                                         (True, ["--non-interactive"], False)]:
+        # An upgrade (a login there already) never runs it, even at a terminal.
+        for at_terminal, extra, upgrade, runs in [
+                (False, [], False, False), (True, [], False, True),
+                (True, ["--non-interactive"], False, False), (True, [], True, False)]:
             with tempfile.TemporaryDirectory(dir=parent) as directory:
                 root = Path(directory)
                 state = root / "state"
                 called = root / "called"
                 setup, binary, tools = fixture(root, state,
                                                f'#!/bin/sh\necho "$@" >> "{called}"\n')
+                if upgrade:
+                    (state / "config.json").write_text("{}")
                 env = {**os.environ, "HOME": str(root / "home"),
                        "PATH": f"{tools}:{os.environ['PATH']}"}
                 args = ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
@@ -144,7 +148,7 @@ class BinaryInstall(unittest.TestCase):
                 self.assertEqual(result.returncode, 0)
                 ran = called.read_text() if called.exists() else ""
                 self.assertEqual(ran, f"--state-dir {state} setup\n" if runs else "",
-                                 (at_terminal, extra))
+                                 (at_terminal, extra, upgrade))
 
     def test_macos_release_installs_the_app_and_updates_it_in_place(self):
         parent = ROOT / ".dev/tests"
@@ -318,24 +322,19 @@ class HostUpgrade(unittest.TestCase):
         self.assertEqual(calls, ["0.1.0 (1) stop"])
 
     def test_a_host_in_a_terminal_is_stopped_and_the_owner_told_to_serve_again(self):
-        # `serve --foreground`, then an attached `latch serve`.
-        for managed, attached in [(False, False), (True, True)]:
+        # `serve --foreground`; an attached `latch serve`; an older latch's
+        # host, found by the new latch already installed.
+        for version, managed, attached, other_version in [
+                ("0.1.0 (1)", False, False, False), ("0.1.0 (1)", True, True, False),
+                ("0.1.0 (2)", False, False, True)]:
             log = self.log()
-            old = fake_latch("0.1.0 (1)", log, managed=managed, attached=attached)
+            old = fake_latch(version, log, managed=managed, attached=attached,
+                             other_version=other_version)
             result, calls, _ = self.upgrade(old, fake_latch("0.1.0 (2)", log), log)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(calls, ["0.1.0 (1) stop"], "never started again in the background")
+            self.assertEqual(calls, [f"{version} stop"], "never started again in the background")
             self.assertIn("ran in a terminal and was stopped: run `latch serve` there again",
                           result.stdout)
-
-    def test_a_host_of_another_version_is_stopped_by_a_latch_already_upgraded(self):
-        # The new latch was installed while an older one's host ran on.
-        log = self.log()
-        old = fake_latch("0.1.0 (2)", log, managed=False, other_version=True)
-        result, calls, _ = self.upgrade(old, fake_latch("0.1.0 (2)", log), log)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["0.1.0 (2) stop"])
-        self.assertIn("run `latch serve` there again", result.stdout)
 
     def test_no_host_or_the_same_version_stops_nothing(self):
         for old_version, running in [("0.1.0 (1)", False), ("0.1.0 (2)", True)]:
