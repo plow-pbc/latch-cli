@@ -136,7 +136,7 @@ pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<PreparedExec, F
     Ok(PreparedExec(args))
 }
 
-fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
+pub(crate) fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
     let path = match path.strip_prefix("~") {
         Ok(rest) => home.join(rest),
         Err(_) if path.is_relative() => home.join(path),
@@ -167,15 +167,21 @@ fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
     ))
 }
 
-fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Result<(), Failure> {
-    let hidden = path.starts_with(&workers.state_dir)
+/// Whether `path` (resolved) is latch state or a hidden path, where no
+/// worker reads or writes.
+pub(crate) fn is_hidden(workers: &WorkerSetup, path: &Path) -> bool {
+    path.starts_with(&workers.state_dir)
         || workers.hidden.iter().any(|hidden| {
             let hidden = hidden.canonicalize().unwrap_or_else(|_| hidden.clone());
             let cache = cfg!(target_os = "macos")
                 && hidden == workers.home.join("Library")
                 && path.starts_with(workers.home.join("Library/Caches"));
             path.starts_with(hidden) && !cache
-        });
+        })
+}
+
+pub(crate) fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Result<(), Failure> {
+    let hidden = is_hidden(workers, path);
     if !path.starts_with(&workers.home) || (write && path == workers.home) || hidden {
         return Err(Failure::new(crate::failure::Exit::Denied, "bad_path",
             "the path must be inside the host's home and outside hidden state; home itself cannot be a write target".into()));
@@ -264,19 +270,10 @@ pub async fn run(
 fn create_write_dir(path: &Path) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::OpenOptionsExt;
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("no parent folder"))?;
-    let folder = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(parent)?;
-    if crate::sandbox::opened_path(&folder)? != parent {
-        return Err(std::io::Error::other(
-            "the write parent changed after judgment",
-        ));
-    }
+    let folder = crate::sandbox::open_folder(parent)?;
     let name = std::ffi::CString::new(
         path.file_name()
             .ok_or_else(|| std::io::Error::other("no folder name"))?
@@ -574,12 +571,12 @@ fn signal_name(signal: i32) -> String {
 }
 
 /// The worker refused or failed before the program ran: a refusal by the
-/// sandbox (or a workdir outside the areas, or a host sharing no folders)
-/// is a denial, anything else a failure. There is no execution result.
+/// sandbox (or a workdir outside the areas) is a denial, anything else a
+/// failure. There is no execution result.
 fn refused(error: WorkerError, audit_args: Value) -> Done {
     let refusal = matches!(
         error.code.as_str(),
-        "sandbox_denied" | "workdir_outside_areas" | "no_folders"
+        "sandbox_denied" | "workdir_outside_areas"
     );
     if !refusal {
         return Done::failed(&error.code, error.message, audit_args);

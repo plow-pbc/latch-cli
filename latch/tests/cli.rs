@@ -1887,7 +1887,7 @@ fn a_serve_named_no_folders_shares_the_ones_saved_and_named_ones_win() {
 }
 
 #[test]
-fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
+fn a_host_sharing_no_folders_still_runs_exec_and_files_under_home() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -1911,11 +1911,15 @@ fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
-    // No folders named and none saved: it serves anyway, and says so.
-    let (serve, lines) = serving_folders(&host, &[], &relay, &[]);
+    // No folders named and none saved: it serves anyway, and says so. Its
+    // home is the test's own, where its files go.
+    let home = dir.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let (serve, lines) = serving_folders(&host, &[], &relay, &[("HOME", &home)]);
     assert!(
-        lines.iter().any(|line| line
-            .contains("Sharing no folders — exec reads home. Files: `latch shares set ~/code`")),
+        lines
+            .iter()
+            .any(|line| line.contains("Sharing no folders — exec and file work under home")),
         "{lines:?}"
     );
     let local = latch(&host, &["status", "--local"], &[]);
@@ -1923,38 +1927,31 @@ fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
     assert_eq!(local["shares"], json!([]));
     assert_eq!(local["serve"]["state"], "serving");
 
-    let refused = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
-        let output = latch(state, args, env);
-        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
-        let error = serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"].clone();
-        assert_eq!(error["code"], "no_folders", "{args:?}");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .contains("latch shares set ~/code"),
-            "{error}"
-        );
-    };
     let into = dir.path().join("hosts");
     let into = into.to_str().unwrap();
     let executed = latch(&owner, &["exec", "--host", "host", "--", "true"], &[]);
     assert_eq!(executed.status.code(), Some(0), "{executed:?}");
     let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
     assert_eq!(result["exit_code"], 0);
-    refused(
+    // A get reads what exec can (home and the system's files), and a put
+    // goes under home.
+    let system = latch(
         &owner,
         &["file", "get", "--host", "host", "/etc/hosts", into],
         &[],
     );
+    assert_eq!(system.status.code(), Some(0), "{system:?}");
+    assert_eq!(fs::read(into).unwrap(), fs::read("/etc/hosts").unwrap());
     let local_file = dir.path().join("note.txt");
     fs::write(&local_file, "hi").unwrap();
     let local_file = local_file.to_str().unwrap();
-    refused(
+    let put = latch(
         &owner,
-        &["file", "put", "--host", "host", local_file, "note.txt"],
+        &["file", "put", "--host", "host", local_file, "~/note.txt"],
         &[],
     );
+    assert_eq!(put.status.code(), Some(0), "{put:?}");
+    assert_eq!(fs::read_to_string(home.join("note.txt")).unwrap(), "hi");
     // Agent exec still needs the gatekeeper, despite having no saved shares.
     let refused_exec = latch(
         &agent,
@@ -1966,7 +1963,6 @@ fn a_host_sharing_no_folders_runs_exec_but_refuses_files() {
     let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
     drop(serve);
-    assert!(!Path::new(into).exists(), "nothing was fetched");
     let asked_judge = plow
         .seen()
         .iter()

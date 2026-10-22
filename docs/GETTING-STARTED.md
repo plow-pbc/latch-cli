@@ -115,11 +115,12 @@ FOLDER…` shares those folders this time instead of the saved ones.)
 
 What a caller from one of your machines can reach:
 
-- **Write** only inside the shared folders. A `file put` elsewhere is refused
-  (`sandbox_denied`, exit 4).
-- **Read** anything your user account can read, not only the shared folders:
-  `latch file get --host mac /etc/hosts` works. Only latch's own state folder
-  is always hidden.
+- **Files:** `file get` reads what exec can: your home folder and the
+  system's own files (`latch file get --host mac /etc/hosts` works). `file
+  put` writes anywhere in your home folder. Neither touches latch's own
+  state or, on macOS, `~/Library` (its Caches excepted); anything else is
+  refused (`bad_path`, exit 4). A put replaces the file only once all of it
+  has arrived, and keeps the old file's permissions.
 - `exec` starts in the first shared folder.
 
 > **Never share your home folder (or `/`).** latch does not stop you: `latch
@@ -167,12 +168,13 @@ latch exec --host my-mac -- sh -c 'pwd; uname -s'
 # {"exit_code":0,"stdout":"/Users/you/code/my-project\nDarwin\n",…}
 ```
 
-**Copy a file.** Paths on the host are relative to its first shared folder:
+**Copy a file.** Paths on the host are in its home folder: `'~/…'` (quoted,
+so your shell leaves the `~` alone) or relative to home:
 
 ```sh
-latch file get --host my-mac hello.txt              # to ./hello.txt
+latch file get --host my-mac '~/hello.txt'             # to ./hello.txt
 echo "note from my laptop" > notes.txt
-latch file put --host my-mac notes.txt notes.txt    # into the shared folder
+latch file put --host my-mac notes.txt '~/Documents'   # as ~/Documents/notes.txt
 ```
 
 **Drive a browser on the host** (needs a build with the browser, on both

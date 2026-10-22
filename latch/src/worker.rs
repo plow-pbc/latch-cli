@@ -81,11 +81,6 @@ pub fn worker_error(stderr: &str) -> Option<WorkerError> {
 /// Nothing else from the host's environment is passed on.
 /// Homebrew's folders first, as in a macOS user's shell; they do not exist
 /// on Linux and cost nothing there.
-/// Why `exec` and `file` refuse on a host that shares no folders. Such an
-/// exec does not run in a scratch folder instead: the owner shared nothing
-/// to run programs against.
-const NO_FOLDERS: &str = "this host shares no folders; the owner can add some with \
-    `latch shares set ~/code` and restart `latch serve`";
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// A started worker: its stdout (for the first line and any file bytes)
@@ -96,45 +91,62 @@ pub struct Running {
 }
 
 impl WorkerSetup {
-    /// Starts `latch worker <action> [--size N] <path>` and waits for its first line:
-    /// `{"size": N}` for `read`, `{"ready": true}` for `write`. Returns the
-    /// running worker and that line, or the worker's error.
-    pub async fn start(
-        &self,
-        action: &str,
-        size: Option<u64>,
-        name: Option<&str>,
-        path: &str,
-    ) -> Result<(Running, serde_json::Value), WorkerError> {
-        let Some(first_area) = self.areas.first() else {
-            return Err(error("no_folders", NO_FOLDERS));
-        };
-        let mut command = self.command(first_area)?;
-        command.arg(action);
-        if let Some(size) = size {
-            command.arg("--size").arg(size.to_string());
+    /// A worker that reads home, less the hidden paths, and writes only
+    /// `writes`: exec's and a get's.
+    fn home_readable(&self, writes: Vec<PathBuf>) -> WorkerSetup {
+        WorkerSetup {
+            home: self.home.clone(),
+            areas: writes,
+            reads: vec![self.home.clone()],
+            hidden: self.hidden.clone(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
         }
-        if let Some(name) = name {
-            command.arg("--name").arg(name);
-        }
-        // `--` so a path starting with `-` is never read as a flag.
-        command.arg("--").arg(path);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|err| error("worker_failed", &err.to_string()))?;
+    }
 
-        let stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
-        let mut running = Running { child, stdout };
-        match running.line().await {
-            Ok(first) => Ok((running, first)),
-            Err(_) => Err(running.failure().await),
-        }
+    /// Starts a worker that reads `path`, which the host resolved: home
+    /// readable, less the hidden paths, and nothing writable. Its first line is `{"size": N}`.
+    pub async fn start_read(
+        &self,
+        path: &Path,
+    ) -> Result<(Running, serde_json::Value), WorkerError> {
+        let mut command = self.home_readable(vec![]).command(&self.home)?;
+        // `--` so a path starting with `-` is never read as a flag.
+        command
+            .arg("--home")
+            .arg(&self.home)
+            .arg("read")
+            .arg("--")
+            .arg(path);
+        first_line(command).await
+    }
+
+    /// Starts a worker that writes `size` bytes from its stdin to `staged`,
+    /// a new file in this call's own temp folder, the one place it may
+    /// write. Its first line is `{"ready": true}`.
+    pub async fn start_write(
+        &self,
+        size: u64,
+        staged: &Path,
+    ) -> Result<(Running, serde_json::Value), WorkerError> {
+        let tmpdir = staged
+            .parent()
+            .ok_or_else(|| error("bad_path", "no temp folder"))?;
+        let writer = WorkerSetup {
+            home: self.home.clone(),
+            areas: vec![],
+            reads: vec![],
+            hidden: self.hidden.clone(),
+            state_dir: self.state_dir.clone(),
+            program: self.program.clone(),
+        };
+        let mut command = writer.command(tmpdir)?;
+        command
+            .arg("--tmpdir")
+            .arg(tmpdir)
+            .args(["write", "--size", &size.to_string(), "--"])
+            .arg(staged);
+        first_line(command).await
     }
 
     /// Uses the same launcher, narrowed to one disposable call folder.
@@ -316,15 +328,8 @@ impl WorkerSetup {
         kill_after: u64,
     ) -> Result<Child, WorkerError> {
         let caches = crate::exec::caches(self);
-        let restricted = WorkerSetup {
-            home: self.home.clone(),
-            areas: args.writes.iter().cloned().chain(caches).collect(),
-            reads: vec![self.home.clone()],
-            hidden: self.hidden.clone(),
-            state_dir: self.state_dir.clone(),
-            program: self.program.clone(),
-        };
-        let mut command = restricted.command(&self.home)?;
+        let writes = args.writes.iter().cloned().chain(caches).collect();
+        let mut command = self.home_readable(writes).command(&self.home)?;
         command.arg("--home").arg(&self.home);
         if args.network {
             command.arg("--network");
@@ -383,6 +388,26 @@ impl WorkerSetup {
             .env("HOME", first_area)
             .current_dir(first_area);
         Ok(command)
+    }
+}
+
+/// Starts a file worker and waits for its first line. Returns the running
+/// worker and that line, or the worker's error.
+async fn first_line(mut command: Command) -> Result<(Running, serde_json::Value), WorkerError> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|err| error("worker_failed", &err.to_string()))?;
+    let stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
+    let mut running = Running { child, stdout };
+    match running.line().await {
+        Ok(first) => Ok((running, first)),
+        Err(_) => Err(running.failure().await),
     }
 }
 
@@ -522,7 +547,7 @@ pub fn run(args: WorkerArgs) -> ExitCode {
             return fail(io_code(&err), &format!("{}: {err}", program.display()));
         }
         WorkerAction::Read { path } => read(path),
-        WorkerAction::Write { size, name, path } => write(path, name.as_deref(), *size),
+        WorkerAction::Write { size, path } => write(path, *size),
         WorkerAction::Exec { workdir, argv } => {
             return exec(
                 &policy
@@ -611,44 +636,24 @@ fn read(path: &Path) -> Result<(), (PathBuf, io::Error)> {
     stdout.flush().map_err(failed)
 }
 
-/// Writes `size` bytes from stdin to `path`, all or nothing. The bytes go
-/// into a temporary file beside the target (so the sandbox checks the same
-/// directory), which is renamed over the target only once all of them have
-/// arrived and reached the disk. A transfer that breaks off leaves the old
-/// file, or no file, exactly as it was.
-///
-/// If `path` is a folder, the file goes inside it under `name` (the client's
-/// file name), as `cp` does. The path it lands at is in the "ready" line.
-fn write(path: &Path, name: Option<&str>, size: u64) -> Result<(), (PathBuf, io::Error)> {
-    let inside;
-    let path = match name {
-        // Only a plain name: never `..` or a path of its own.
-        Some(name) if path.is_dir() && Path::new(name).file_name() == Some(name.as_ref()) => {
-            inside = path.join(name);
-            inside.as_path()
-        }
-        _ => path,
-    };
+/// Writes `size` bytes from stdin to `path`, a new file in this call's
+/// temp folder; the host moves it to the destination once it is whole.
+fn write(path: &Path, size: u64) -> Result<(), (PathBuf, io::Error)> {
     let failed = |err| (path.to_path_buf(), err);
-    let temp = temp_path(path).map_err(failed)?;
     // `create_new` never reuses (or follows a link at) an existing name.
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&temp)
+        .open(path)
         .map_err(failed)?;
-    let result = fill(&mut file, path, size).and_then(|()| fs::rename(&temp, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result.map_err(failed)
+    fill(&mut file, size).map_err(failed)
 }
 
 /// Says "ready", copies stdin into `file`, and checks exactly `size` bytes
 /// came before stdin ended.
-fn fill(file: &mut File, path: &Path, size: u64) -> io::Result<()> {
+fn fill(file: &mut File, size: u64) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
-    let ready = serde_json::json!({ "ready": true, "path": path });
+    let ready = serde_json::json!({ "ready": true });
     writeln!(stdout, "{ready}")?;
     stdout.flush()?;
     let written = io::copy(&mut io::stdin().lock(), file)?;
@@ -656,21 +661,7 @@ fn fill(file: &mut File, path: &Path, size: u64) -> io::Result<()> {
         let message = format!("expected {size} bytes, got {written}");
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, message));
     }
-    // Make sure the bytes are on disk before the file takes the target's place.
     file.sync_all()
-}
-
-/// `dir/name` becomes `dir/.name.latch-<process id>.part`.
-fn temp_path(path: &Path) -> io::Result<PathBuf> {
-    let Some(name) = path.file_name() else {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name"));
-    };
-    let temp = format!(
-        ".{}.latch-{}.part",
-        name.to_string_lossy(),
-        std::process::id()
-    );
-    Ok(path.with_file_name(temp))
 }
 
 /// The error code for an I/O failure.

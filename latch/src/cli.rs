@@ -760,13 +760,10 @@ pub struct WorkerArgs {
 pub enum WorkerAction {
     /// Send a file's size and bytes to stdout
     Read { path: PathBuf },
-    /// Write exactly SIZE bytes from stdin to a file, atomically
+    /// Write exactly SIZE bytes from stdin to a new file in its temp folder
     Write {
         #[arg(long)]
         size: u64,
-        /// The file's name, used if PATH is a folder
-        #[arg(long)]
-        name: Option<String>,
         path: PathBuf,
     },
     /// Run the pinned Google CLI
@@ -979,7 +976,7 @@ pub struct HostArg {
 pub enum FileCommand {
     /// Copy a file from the host to this machine
     Get {
-        /// The file on the host: absolute, ~-relative or relative to home; hidden places are refused (see `latch serve --help`)
+        /// The file on the host, in its home folder or a system file exec can read too: absolute, `~/…` (quote it so this shell leaves the `~` alone), or relative to home. Never latch's state or, on macOS, ~/Library (its Caches excepted)
         remote_path: String,
         /// Where to write it on this machine [default: the remote file's name, in the current directory]
         local_dest: Option<PathBuf>,
@@ -990,7 +987,7 @@ pub enum FileCommand {
     Put {
         /// The file on this machine to send
         local_path: PathBuf,
-        /// Its judged destination on the host, inside home and outside hidden places. An existing folder gets the file inside it under its own name, as with `cp`
+        /// Where it goes on the host, inside its home folder: absolute, `~/…` (quoted), or relative to home. An existing folder gets the file inside it, under its own name, as with `cp`. The judge sees the resolved path; the old file stays until the new one is complete, and the new one keeps its permissions
         remote_path: String,
         #[command(flatten)]
         host: HostArg,
