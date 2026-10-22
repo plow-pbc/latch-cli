@@ -3732,3 +3732,18 @@ fn stop_reaches_a_foreground_host_that_is_still_starting() {
         "{text}"
     );
 }
+
+#[test]
+fn stop_gives_up_waiting_behind_a_start_that_never_finishes() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // Another `latch serve` or `stop` holding the start/stop lock.
+    let launching = fs::File::create(state.join("launch.lock")).unwrap();
+    launching.lock().unwrap();
+    let started = std::time::Instant::now();
+    let stop = latch(&state, &["stop"], &[]);
+    assert_eq!(stop.status.code(), Some(1), "{stop:?}");
+    assert!(String::from_utf8_lossy(&stop.stderr).contains("stop_failed"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(45));
+}

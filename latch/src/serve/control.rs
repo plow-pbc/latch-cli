@@ -117,10 +117,7 @@ async fn watch(host: &Host, hello: Response, mut send: OwnedWriteHalf, mut recv:
     if wire::write_frame(&mut send, &hello).await.is_err() {
         return;
     }
-    let Some(dashboard) = &host.dashboard else {
-        return;
-    };
-    let mut boards = dashboard.watch();
+    let mut boards = host.dashboard.watch();
     let mut stopping = host.stopping.subscribe();
     let mut byte = [0];
     loop {

@@ -69,7 +69,7 @@ async fn start(world: World) -> TestHost {
 async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
     let fake = fake::serve(world);
     let provider = model::Plow::new(&fake.url, "made-up-login".into()).with_model(gate::MODEL);
-    start_with(fake, Arc::new(provider), deny_exec, None).await
+    start_with(fake, Arc::new(provider), deny_exec).await
 }
 
 /// A host on `plow`, its gatekeeper asking `provider`.
@@ -77,7 +77,6 @@ async fn start_with(
     plow: FakePlow,
     provider: Arc<dyn model::Provider>,
     deny_exec: DenyExec,
-    dashboard: Option<Dashboard>,
 ) -> TestHost {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     std::fs::create_dir_all(&parent).unwrap();
@@ -102,7 +101,7 @@ async fn start_with(
         audit: Arc::new(Mutex::new(
             AuditLog::open(state.join("audit.ndjson")).unwrap(),
         )),
-        dashboard,
+        dashboard: Dashboard::new("test-host"),
         lifetime: super::Lifetime::new(false),
         workers: WorkerSetup {
             areas: vec![area.clone()],
@@ -225,7 +224,6 @@ async fn an_operation_is_audited_before_dashboard_name_lookup() {
         plow,
         Arc::new(provider),
         DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]),
-        Some(Dashboard::new("test-host")),
     )
     .await;
     let agent = t.caller("agent").await;
@@ -812,13 +810,7 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
     model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
 
-    let t = start_with(
-        fake::serve(World::default()),
-        provider,
-        DenyExec::default(),
-        None,
-    )
-    .await;
+    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
     assert_eq!(refusal(&answer).1, "no_intent", "neither chat nor rules");
@@ -884,13 +876,7 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
     let setup = tempfile::tempdir().unwrap();
     model::ask_jev_for_tests(setup.path());
     let provider = Gatekeeper::provider_for_host(setup.path()).unwrap();
-    let t = start_with(
-        fake::serve(World::default()),
-        provider,
-        DenyExec::default(),
-        None,
-    )
-    .await;
+    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let device = t.caller("device").await;
     let run = |argv: &[&str]| json!({"argv": argv, "workdir": null, "timeout": 30});
     let ordinary = [

@@ -56,7 +56,7 @@ struct Host {
     /// Also held by the blocking thread that appends (see `Host::append`).
     audit: Arc<Mutex<AuditLog>>,
     /// The board viewers of this host watch (see `dashboard.rs`).
-    dashboard: Option<Dashboard>,
+    dashboard: Dashboard,
     /// Whose life this host's is, and how it is asked to stop (see
     /// `serve/control.rs`).
     lifetime: Lifetime,
@@ -361,7 +361,7 @@ async fn run_host(
         plow,
         audit: Arc::new(Mutex::new(audit)),
         workers,
-        dashboard: Some(dashboard),
+        dashboard,
         lifetime,
         browsers,
         vault,
@@ -423,9 +423,7 @@ async fn run_host(
         }
     };
     let step = |step: &str| {
-        if let Some(dashboard) = &host.dashboard {
-            dashboard.step(&format!("stopping: {step}…"));
-        }
+        host.dashboard.step(&format!("stopping: {step}…"));
     };
     step("finishing the operations running");
     shut_down(&host, moved.is_none().then_some(heartbeat), connections).await;
@@ -1058,12 +1056,8 @@ async fn serve_request(
                 "{op}: {caller}: {decision}: {} {}",
                 done.outcome, done.audit_args
             ));
-            let dashboard = host.dashboard.as_ref().map(|dashboard| {
-                (
-                    dashboard,
-                    dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed()),
-                )
-            });
+            let (target, result) =
+                dashboard::describe(op, &done.audit_args, &done.outcome, started.elapsed());
             let mut record = audit::record(
                 caller,
                 identity.agent_uid.clone(),
@@ -1079,16 +1073,14 @@ async fn serve_request(
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed("audit_failed", message),
             };
-            if let Some((dashboard, (target, result))) = dashboard {
-                dashboard.call(Row {
-                    at: jiff::Timestamp::now(),
-                    caller: host.shown_name(&identity).await,
-                    op: op.to_string(),
-                    target,
-                    result,
-                    refused: decision == "deny",
-                });
-            }
+            host.dashboard.call(Row {
+                at: jiff::Timestamp::now(),
+                caller: host.shown_name(&identity).await,
+                op: op.to_string(),
+                target,
+                result,
+                refused: decision == "deny",
+            });
             response
         }
     };
@@ -1171,22 +1163,20 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
             "vault_link: phone {caller}: {decision}: {} {}",
             done.outcome, done.audit_args
         ));
-        if let Some(dashboard) = &host.dashboard {
-            let (target, result) = dashboard::describe(
-                "vault_link",
-                &done.audit_args,
-                &done.outcome,
-                started.elapsed(),
-            );
-            dashboard.call(Row {
-                at: jiff::Timestamp::now(),
-                caller: "phone link".to_string(),
-                op: "vault_link".to_string(),
-                target,
-                result,
-                refused: decision == "deny",
-            });
-        }
+        let (target, result) = dashboard::describe(
+            "vault_link",
+            &done.audit_args,
+            &done.outcome,
+            started.elapsed(),
+        );
+        host.dashboard.call(Row {
+            at: jiff::Timestamp::now(),
+            caller: "phone link".to_string(),
+            op: "vault_link".to_string(),
+            target,
+            result,
+            refused: decision == "deny",
+        });
         let mut record = audit::record(caller, None, "vault_link", decision, &done.outcome);
         record.args = done.audit_args;
         let response = match host.append(record).await {
@@ -1330,18 +1320,16 @@ impl Host {
         identity.name.clone()
     }
 
-    /// A refused caller as a plain dashboard row, if there is a dashboard.
+    /// A refused caller as a plain dashboard row.
     fn show_refusal(&self, caller: &str, op: &str, code: &str) {
-        if let Some(dashboard) = &self.dashboard {
-            dashboard.call(Row {
-                at: jiff::Timestamp::now(),
-                caller: format!("{}…", &caller[..8.min(caller.len())]),
-                op: op.to_string(),
-                target: String::new(),
-                result: format!("refused: {code}"),
-                refused: true,
-            });
-        }
+        self.dashboard.call(Row {
+            at: jiff::Timestamp::now(),
+            caller: format!("{}…", &caller[..8.min(caller.len())]),
+            op: op.to_string(),
+            target: String::new(),
+            result: format!("refused: {code}"),
+            refused: true,
+        });
     }
 
     /// Appends to the audit log and returns the record's hash, once the

@@ -118,7 +118,13 @@ async fn launch(
         .path
         .canonicalize()
         .map_err(|err| io_failure(&state.path, err))?;
-    let _launching = launch_lock(&dir)?;
+    // Behind at most another start, or a stop.
+    let within = Instant::now() + READY_WITHIN + STOP_WITHIN;
+    let Some(_launching) = launch_lock(&dir, within).await? else {
+        let message =
+            "another `latch serve` or `latch stop` on this state folder did not finish".to_string();
+        return Err(Failure::failed("launch_busy", message));
+    };
     if lifecycle::holds_lock(&dir) {
         return Err(already_serving(&dir).await);
     }
@@ -205,7 +211,14 @@ async fn ready(dir: &Path, before: Option<&str>) -> Result<Value, Failure> {
 /// service, so nothing starts it again. With `only`, only the host with
 /// that pid: one that took the folder over since is left alone.
 async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
-    let _launching = launch_lock(dir)?;
+    let started = Instant::now();
+    let Some(_launching) = launch_lock(dir, started + STOP_WITHIN).await? else {
+        let message = format!(
+            "another `latch serve` or `latch stop` on this state folder did not finish within {} seconds",
+            STOP_WITHIN.as_secs()
+        );
+        return Err(Failure::failed("stop_failed", message));
+    };
     let service = Service::new(dir);
     let host = lifecycle::now(dir);
     if host.running && only.is_some() && host.pid != only {
@@ -215,7 +228,6 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
     // The host holding the folder now, by pid: a later one is not stopped.
     let mut target = host.pid;
     let (mut asked, mut removed) = (false, false);
-    let started = Instant::now();
     loop {
         let host = lifecycle::now(dir);
         if !host.running {
@@ -360,17 +372,9 @@ async fn request_now(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixSt
     let json = serde_json::to_vec(&request).expect("a request serializes");
     wire::write_frame(&mut socket, &json).await.map_err(lost)?;
     let frame = wire::read_frame(&mut socket).await.map_err(lost)?;
-    let response = serde_json::from_slice(&frame)
+    let response: Response = serde_json::from_slice(&frame)
         .map_err(|_| Failure::failed("bad_response", "the host's answer is not valid".into()))?;
-    match response {
-        Response::Ok(answer) => Ok((answer, socket)),
-        Response::Error {
-            exit,
-            code,
-            message,
-            ..
-        } => Err(Failure::new(exit, &code, message)),
-    }
+    Ok((response.into_result()?, socket))
 }
 
 fn not_serving(failure: Failure) -> Failure {
@@ -382,7 +386,8 @@ fn not_serving(failure: Failure) -> Failure {
 }
 
 /// Held while a host is started or stopped on `dir`.
-fn launch_lock(dir: &Path) -> Result<File, Failure> {
+/// `None` once `until` passes with another start or stop still holding it.
+async fn launch_lock(dir: &Path, until: Instant) -> Result<Option<File>, Failure> {
     let path = dir.join("launch.lock");
     let file = OpenOptions::new()
         .write(true)
@@ -391,8 +396,16 @@ fn launch_lock(dir: &Path) -> Result<File, Failure> {
         .mode(0o600)
         .open(&path)
         .map_err(|err| io_failure(&path, err))?;
-    file.lock().map_err(|err| io_failure(&path, err))?;
-    Ok(file)
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < until => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::fs::TryLockError::Error(err)) => return Err(io_failure(&path, err)),
+        }
+    }
 }
 
 fn io_failure(path: &Path, err: std::io::Error) -> Failure {
