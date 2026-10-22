@@ -67,6 +67,10 @@ use state::StateDir;
 use wire::Request;
 
 fn main() -> ExitCode {
+    #[cfg(feature = "fake-gog")]
+    if let Some(exit) = google::fake::run_if_gog() {
+        return exit;
+    }
     // A bare `latch` at a terminal shows the Plow logo. Anywhere else (a
     // pipe, an agent) it stays a usage error, as before.
     if std::env::args_os().len() == 1 && term::stdout_is_terminal() {

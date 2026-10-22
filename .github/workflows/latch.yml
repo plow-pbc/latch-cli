@@ -4,6 +4,8 @@ on:
   push:
     branches: [main, ci-speed]
   pull_request:
+    # `labeled`: adding the `mac` label runs the Mac tests on a pull request.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       mode:
@@ -19,11 +21,61 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request, or to a branch, cancels the run it
+# supersedes: a merge commit holds every one before it.
 concurrency:
-  group: latch-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.mode || github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: latch-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}-${{ inputs.mode || github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
+  # What this run tests. A push to main (or a dispatch) tests everything. A
+  # pull request skips everything for a docs-only change, and runs the Mac
+  # jobs only as the repository variable LATCH_PR_MAC says:
+  #   paths (default): when it has the `mac` label or changes a path below;
+  #   label: only with the `mac` label, so pull requests test on Linux only;
+  #   always: on every pull request.
+  # The browser is among the paths: Linux runs none of its tests.
+  changes:
+    if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.pick.outputs.code }}
+      mac: ${{ steps.pick.outputs.mac }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A pull request's merge commit and its first parent, the base.
+          fetch-depth: 2
+      - id: pick
+        env:
+          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+          LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'mac') }}
+          PR_MAC: ${{ vars.LATCH_PR_MAC || 'paths' }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          MAC = re.compile(r"""^(
+              latch/src/sandbox | latch/src/secrets\.rs | latch/macos/
+            | latch/messages-reader/ | latch/src/messages/ | latch/tests/messages/
+            | latch/src/browser/ | latch/tests/browser- | latch/camoufox/
+            | latch/install-binary\.sh | latch/browser-engines\.sh
+            | latch/Cargo\.(toml|lock) | latch/rust-toolchain\.toml | latch/build\.rs
+            | latch/scripts/test-(test-)?shard\.py | \.github/workflows/latch\.yml
+          )""", re.X)
+          if os.environ["PULL_REQUEST"] == "true":
+              files = subprocess.check_output(["git", "diff", "--name-only", "HEAD^1", "HEAD"], text=True).split()
+              code = any(not (f.endswith(".md") or f.startswith("docs/")) for f in files)
+              mode = os.environ["PR_MAC"]
+              mac = code and (mode == "always" or os.environ["LABELED"] == "true"
+                              or (mode == "paths" and any(MAC.match(f) for f in files)))
+          else:
+              code = mac = True
+          print(f"code={code} mac={mac} ({os.environ['PR_MAC']})")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"code={str(code).lower()}\nmac={str(mac).lower()}\n")
+          PY
+
   # The staging branch only probes runner access on push; benchmarks are dispatched.
   runner-access:
     if: github.ref == 'refs/heads/ci-speed' && (github.event_name == 'push' || inputs.mode == 'probe')
@@ -37,11 +89,12 @@ jobs:
       - run: uname -sm && getconf _NPROCESSORS_ONLN
 
   mac:
-    if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
+    needs: changes
+    if: needs.changes.outputs.mac == 'true'
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON((github.event_name == 'push' || inputs.mode == 'main') && '[{"runner":"macos-15-large","shard":1,"count":4},{"runner":"macos-15-large","shard":2,"count":4},{"runner":"macos-15-large","shard":3,"count":4},{"runner":"macos-15-large","shard":4,"count":4}]' || '[{"runner":"macos-15-xlarge","shard":1,"count":3},{"runner":"macos-15-xlarge","shard":2,"count":3},{"runner":"macos-15-xlarge","shard":3,"count":3}]') }}
+        include: ${{ fromJSON((github.event_name == 'push' || inputs.mode == 'main') && '[{"runner":"macos-15","shard":1,"count":4},{"runner":"macos-15","shard":2,"count":4},{"runner":"macos-15","shard":3,"count":4},{"runner":"macos-15","shard":4,"count":4}]' || '[{"runner":"macos-15","shard":1,"count":3},{"runner":"macos-15","shard":2,"count":3},{"runner":"macos-15","shard":3,"count":3}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     defaults:
@@ -65,7 +118,7 @@ jobs:
           shared-key: mac-${{ matrix.runner }}
           save-if: ${{ matrix.shard == 1 }}
       - if: matrix.shard == 1
-        run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings
+        run: cargo fmt --check && cargo clippy --all-targets --locked --features fake-gog -- -D warnings
       - uses: actions/cache@v4
         if: hashFiles('latch/src/browser/cft.json') != ''
         with:
@@ -79,7 +132,8 @@ jobs:
       - run: cargo build --locked
       - if: hashFiles('latch/src/browser/cft.json') != ''
         run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --state-dir ../.dev/cft-state --browser chrome --browser camoufox target/debug/latch
-      - run: python3 ../.ci-tools/latch/scripts/test-shard.py ${{ matrix.shard }} ${{ matrix.count }}
+      # fake-gog: the test-only gog stand-in the return scenario reads mail with.
+      - run: python3 ../.ci-tools/latch/scripts/test-shard.py ${{ matrix.shard }} ${{ matrix.count }} --features fake-gog
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -88,7 +142,8 @@ jobs:
           if-no-files-found: error
 
   linux:
-    if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -123,7 +178,8 @@ jobs:
       - run: cargo test --locked
 
   linux-static:
-    if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -159,7 +215,8 @@ jobs:
   # The Messages reader (Swift, macOS only): its tests against synthetic
   # databases, with a bounded fuzz run of its body parser.
   messages-reader:
-    if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
+    needs: changes
+    if: needs.changes.outputs.mac == 'true'
     runs-on: macos-15
     timeout-minutes: 20
     defaults:
@@ -175,16 +232,18 @@ jobs:
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
-    needs: [mac, linux, linux-static, messages-reader]
+    needs: [changes, mac, linux, linux-static, messages-reader]
     runs-on: ubuntu-24.04
     env:
       RESULTS: ${{ toJSON(needs) }}
     steps:
-      - name: Require every platform and shard
+      - name: Require every platform and shard this run tests
         run: |
           python3 - <<'PY'
           import json, os
           results = json.loads(os.environ['RESULTS'])
           print(json.dumps(results, indent=2))
-          assert all(job['result'] == 'success' for job in results.values())
+          # A job `changes` left out is skipped; `changes` itself must succeed.
+          assert results['changes']['result'] == 'success'
+          assert all(job['result'] in ('success', 'skipped') for job in results.values())
           PY

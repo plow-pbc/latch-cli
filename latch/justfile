@@ -1,8 +1,8 @@
 # The Rust CLI's checks; live Google evidence uses the documented test identities.
 test: cft
     cargo fmt --check
-    cargo clippy --locked --all-targets -- -D warnings
-    cargo test --locked
+    cargo clippy --locked --all-targets --features fake-gog -- -D warnings
+    cargo test --locked --features fake-gog
 
 # The Linux gate uses the same nested sandbox as a container host.
 test-linux:
@@ -54,6 +54,12 @@ cft:
 # file is copied into each test's own state directory, never printed.
 test-model key:
     LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features live-model browser::tests::steps::live
+
+# The return scenario, headless, with its transcript: an order found in a
+# made-up mailbox, returned item by item on the test shop. With `key`, the
+# host's judge is the real decision model (jev).
+scenario-return key="": cft
+    if [ -n "{{key}}" ]; then LATCH_TEST_JEV_KEY="{{key}}" cargo test --locked --features fake-gog,live-model --test cli the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture; else cargo test --locked --features fake-gog --test cli the_owner_returns_items_from_an_emailed_order -- --exact --nocapture; fi
 
 # A headless host judging exec on rules alone, on jev 1.14 (synthetic
 # chats only).
