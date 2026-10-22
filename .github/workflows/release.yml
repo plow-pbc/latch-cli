@@ -77,7 +77,6 @@ jobs:
       LATCH_BUILD_CHANNEL: standalone tag ${{ needs.version.outputs.tag }}
       LATCH_BUILD_NUMBER: ${{ github.run_number }}
       LATCH_BUILD_COMMIT: ${{ github.sha }}
-      IDENTITY: 'Developer ID Application: The Plow Collective, Inc (3559PD337Z)'
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install && rustup target add '${{ matrix.target }}'
@@ -86,21 +85,9 @@ jobs:
         with:
           workspaces: latch -> target
           key: release-${{ matrix.target }}
-      - name: Build
-        working-directory: latch
-        shell: bash
-        run: |
-          # The Messages reader first: this latch runs only the one built here.
-          LATCH_MESSAGES_READER_SHA256=$(messages-reader/build.sh | tail -n 1)
-          export LATCH_MESSAGES_READER_SHA256
-          cargo build --release --locked --target '${{ matrix.target }}'
-          codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
-          'target/${{ matrix.target }}/release/latch' --version
-      - name: Package
-        shell: bash
-        run: |
-          binary='latch/target/${{ matrix.target }}/release/latch'
-          sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
+      # Who the app is (latch/macos/identity.sh), for every step after this.
+      - name: Identity
+        run: env -i /bin/sh -c 'set -a; . latch/macos/identity.sh; env' | grep '^LATCH_' >> "$GITHUB_ENV"
       - name: Load signing credentials
         uses: 1password/load-secrets-action@v2
         with:
@@ -127,11 +114,27 @@ jobs:
           rm "$cert"
           security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$KEYCHAIN_PATH"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$IDENTITY\""
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "\"$LATCH_SIGNING_IDENTITY\""
           xcrun notarytool store-credentials latch-notary --keychain "$KEYCHAIN_PATH" \
             --apple-id "$APPLE_NOTARY_APPLE_ID" --team-id "$APPLE_NOTARY_TEAM_ID" --password "$APPLE_NOTARY_PASSWORD"
+      # The Messages reader first, signed with the Developer ID: this latch
+      # runs only the one built here, pinned by its sha256 as signed.
+      - name: Build
+        working-directory: latch
+        shell: bash
+        run: |
+          LATCH_MESSAGES_READER_SHA256=$(LATCH_CODESIGN_IDENTITY="$LATCH_SIGNING_IDENTITY" messages-reader/build.sh | tail -n 1)
+          export LATCH_MESSAGES_READER_SHA256
+          cargo build --release --locked --target '${{ matrix.target }}'
+          codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
+          'target/${{ matrix.target }}/release/latch' --version
+      - name: Package
+        shell: bash
+        run: |
+          binary='latch/target/${{ matrix.target }}/release/latch'
+          sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
       # The app is signed as a whole: its latch takes the bundle's identity,
-      # co.plow.latch.cli, which Full Disk Access is granted to, and latch's
+      # LATCH_BUNDLE_ID, which Full Disk Access is granted to, and latch's
       # keychain group, which its embedded profile allows, so it keeps its
       # secrets in the Keychain (latch/src/secrets.rs).
       - name: Sign
@@ -141,10 +144,10 @@ jobs:
           name=$(basename "$archive" .tar.gz)
           mkdir unpacked
           tar -xzf "$archive" -C unpacked
-          app="unpacked/$name/Plow Latch.app"
+          app="unpacked/$name/$LATCH_APP_NAME.app"
           test -f "$app/Contents/embedded.provisionprofile"
           codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
-            --entitlements latch/macos/latch.entitlements --sign "$IDENTITY" "$app"
+            --entitlements latch/macos/latch.entitlements --sign "$LATCH_SIGNING_IDENTITY" "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           echo "NAME=$name" >> "$GITHUB_ENV"
       # The ticket is stapled to the app, so Gatekeeper need not look it up
@@ -152,7 +155,7 @@ jobs:
       - name: Notarize
         shell: bash
         run: |
-          app="unpacked/$NAME/Plow Latch.app"
+          app="unpacked/$NAME/$LATCH_APP_NAME.app"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/latch.zip"
           xcrun notarytool submit "$RUNNER_TEMP/latch.zip" --keychain-profile latch-notary \
             --keychain "$KEYCHAIN_PATH" --wait --timeout 30m --output-format json | tee "$RUNNER_TEMP/notary.json"
@@ -165,18 +168,27 @@ jobs:
       - name: Verify and repackage
         shell: bash
         run: |
-          app="unpacked/$NAME/Plow Latch.app"
+          app="unpacked/$NAME/$LATCH_APP_NAME.app"
           codesign --verify --deep --strict --verbose=2 "$app"
-          details=$(codesign -dvvv "$app" 2>&1)
-          echo "$details"
-          grep -Fx 'Identifier=co.plow.latch.cli' <<< "$details"
-          grep -Fx 'TeamIdentifier=3559PD337Z' <<< "$details"
-          grep -Fx "Authority=$IDENTITY" <<< "$details"
-          grep -E '^CodeDirectory .*flags=0x10000\(runtime\)' <<< "$details"
-          grep -E '^Timestamp=' <<< "$details"
+          # The app, and the Messages reader beside it: each signed by the
+          # team, under its own id, hardened and time-stamped.
+          signed() {
+            details=$(codesign -dvvv "$1" 2>&1)
+            echo "$details"
+            grep -Fx "Identifier=$2" <<< "$details"
+            grep -Fx "TeamIdentifier=$LATCH_TEAM_ID" <<< "$details"
+            grep -Fx "Authority=$LATCH_SIGNING_IDENTITY" <<< "$details"
+            grep -E '^CodeDirectory .*flags=0x10000\(runtime\)' <<< "$details"
+            grep -E '^Timestamp=' <<< "$details"
+          }
+          signed "$app" "$LATCH_BUNDLE_ID"
+          codesign --verify --strict --verbose=2 "unpacked/$NAME/latch-messages"
+          signed "unpacked/$NAME/latch-messages" "$LATCH_READER_ID"
+          # Each build distinct to macOS (and Sparkle): its build number.
+          test "$(plutil -extract CFBundleVersion raw "$app/Contents/Info.plist")" = "${VERSION##*-}"
           entitlements=$(codesign -d --entitlements - --xml "$app" 2>/dev/null | plutil -convert xml1 -o - -)
           echo "$entitlements"
-          grep -F '<string>3559PD337Z.co.plow.latch</string>' <<< "$entitlements"
+          grep -F "<string>$LATCH_TEAM_ID.co.plow.latch</string>" <<< "$entitlements"
           assessment=$(spctl --assess -vvv --type execute "$app" 2>&1)
           echo "$assessment"
           grep -Fx 'source=Notarized Developer ID' <<< "$assessment"

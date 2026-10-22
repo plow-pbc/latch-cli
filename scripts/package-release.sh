@@ -16,9 +16,10 @@ case "$target" in
   # macOS ships Plow Latch.app, ad-hoc signed until the release signs it;
   # `latch` beside install-binary.sh leads into it.
   *-apple-darwin)
-    sh scripts/macos-app-bundle.sh "$version" "$binary" "$out/Plow Latch.app"
-    codesign --force --sign - "$out/Plow Latch.app"
-    ln -sf "Plow Latch.app/Contents/MacOS/latch" "$out/latch"
+    . latch/macos/identity.sh
+    sh scripts/macos-app-bundle.sh "$version" "$binary" "$out/$LATCH_APP_NAME.app"
+    codesign --force --sign - "$out/$LATCH_APP_NAME.app"
+    ln -sf "$LATCH_APP_NAME.app/Contents/MacOS/latch" "$out/latch"
     ;;
   *) cp "$binary" "$out/latch" ;;
 esac
