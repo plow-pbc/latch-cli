@@ -379,34 +379,34 @@ impl Harness {
         }
     }
 
+    /// A new session, in place of the harness's one, which closes.
+    async fn new_session(&mut self) {
+        let (id, entry) = self
+            .browsers
+            .open(&self.engine, CALLER, None)
+            .await
+            .unwrap();
+        let before = std::mem::replace(&mut self.id, id);
+        self.entry = entry;
+        self.browsers.close(&before, CALLER).await.unwrap();
+    }
+
     /// A call as the host makes it for an agent (pause and eval flags
-    /// included). An `open` starts a new session, which takes the place of
-    /// the one before.
+    /// included), in the harness's session: an `open` loads its page there,
+    /// as `goto` does, keeping one browser for the test.
     async fn call(&mut self, command: &str, args: Value) -> Result<Value, crate::failure::Failure> {
         let mut audit = Map::new();
-        let name = if command == "open" {
-            named(&self.engine)
-        } else {
-            &self.id
-        };
+        let command = if command == "open" { "goto" } else { command };
         let result = host::call(
             &self.browsers,
             CALLER.into(),
             command,
-            name,
+            &self.id,
             &args,
             None,
             &mut audit,
         )
         .await;
-        if command == "open"
-            && let Ok((opened, _)) = &result
-        {
-            let id = opened["session"].as_str().unwrap().to_string();
-            self.entry = self.browsers.session(&id, CALLER).await.unwrap();
-            let before = std::mem::replace(&mut self.id, id);
-            self.browsers.close(&before, CALLER).await.unwrap();
-        }
         self.shown.push(seen(&Value::Object(audit)));
         match result {
             Ok((value, _)) => {
@@ -1305,7 +1305,7 @@ async fn agent_code_is_noted_per_site_for_its_session_only(engine: &str) {
     assert_eq!(flagged, true);
 
     // A new session starts with none: nothing of the last one is in it.
-    h.call("open", json!({})).await.unwrap();
+    h.new_session().await;
     let flagged = login_once(&mut h).await;
     println!("in a new session, a fill on 127.0.0.1: agent_code_before_fill {flagged}");
     assert_eq!(flagged, false);
