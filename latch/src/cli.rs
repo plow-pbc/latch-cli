@@ -892,6 +892,11 @@ pub struct ServeArgs {
     #[arg(short = 'd', long, conflicts_with = "foreground")]
     pub detach: bool,
 
+    /// With -d: start the host with the folders and flags the last `latch
+    /// serve` on this state folder was given, as an upgrade restarts it
+    #[arg(long, requires = "detach", conflicts_with_all = ["folders", "headless_browsers", "deny_exec"])]
+    pub again: bool,
+
     /// Run the host in this process, with no service manager and no
     /// dashboard, logging to stderr: for CI, tests and containers
     #[arg(long)]

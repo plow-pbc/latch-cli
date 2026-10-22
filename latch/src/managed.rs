@@ -9,6 +9,8 @@
 //!   `serve/control.rs`) and shows its dashboard: Ctrl-C, or the terminal
 //!   going away, stops the host.
 //! - `latch serve -d` returns once the host answers on its socket.
+//!   `serve -d --again` starts it with what the last start was given,
+//!   kept in `serve-args.json`.
 //! - `latch stop` asks the host to stop, then removes the service, so
 //!   nothing starts it again; `dashboard` only watches.
 //!
@@ -46,6 +48,8 @@ const READY_WITHIN: Duration = Duration::from_secs(60);
 const STOP_WITHIN: Duration = Duration::from_secs(40);
 /// How long a host that is up has to answer one question on its socket.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
+/// The folders and flags the last start gave the host, for `serve -d --again`.
+const ARGS_FILE: &str = "serve-args.json";
 
 /// `latch serve -d`: the host, started and answering.
 pub async fn start(state: &StateDir, args: &ServeArgs) -> Result<Value, Failure> {
@@ -128,11 +132,12 @@ async fn launch(
     if lifecycle::holds_lock(&dir) {
         return Err(already_serving(&dir).await);
     }
-    // Named folders are checked here, where a relative one means something.
-    let folders = if args.folders.is_empty() {
-        Vec::new()
+    let given = if args.again {
+        given_before(&dir)?
     } else {
-        crate::serve::shared_folders(&args.folders, std::env::home_dir().as_deref())?
+        let given = given_now(args)?;
+        save_given(&dir, &given)?;
+        given
     };
     let program = std::env::current_exe()
         .and_then(|exe| exe.canonicalize())
@@ -147,23 +152,7 @@ async fn launch(
     if attached {
         argv.push("--attached".into());
     }
-    if args.headless_browsers {
-        argv.push("--headless-browsers".into());
-    }
-    for agent in &args.deny_exec {
-        argv.push(match agent.as_str() {
-            crate::cli::EVERY_AGENT => "--deny-exec".into(),
-            agent => format!("--deny-exec={agent}").into(),
-        });
-    }
-    // The host checks each one; made absolute here, where a relative one
-    // means something.
-    for path in &args.allow_read {
-        let mut flag = OsString::from("--allow-read=");
-        flag.push(std::path::absolute(path).map_err(|err| io_failure(path, err))?);
-        argv.push(flag);
-    }
-    argv.extend(folders.into_iter().map(OsString::from));
+    argv.extend(given.into_iter().map(OsString::from));
 
     let service = Service::new(&dir);
     // A host that ended on its own leaves its service registered.
@@ -177,6 +166,69 @@ async fn launch(
             Err(failure)
         }
     }
+}
+
+/// What `args` give the host after `serve --foreground`: its flags, then
+/// its folders, each path absolute.
+fn given_now(args: &ServeArgs) -> Result<Vec<String>, Failure> {
+    let mut given = Vec::new();
+    if args.headless_browsers {
+        given.push("--headless-browsers".to_string());
+    }
+    for agent in &args.deny_exec {
+        given.push(match agent.as_str() {
+            crate::cli::EVERY_AGENT => "--deny-exec".to_string(),
+            agent => format!("--deny-exec={agent}"),
+        });
+    }
+    // The host checks each one; made absolute here, where a relative one
+    // means something.
+    for path in &args.allow_read {
+        let path = std::path::absolute(path).map_err(|err| io_failure(path, err))?;
+        given.push(format!("--allow-read={}", text(&path)?));
+    }
+    // Named folders are checked here, where a relative one means something.
+    if !args.folders.is_empty() {
+        for folder in crate::serve::shared_folders(&args.folders, std::env::home_dir().as_deref())?
+        {
+            given.push(text(&folder)?);
+        }
+    }
+    Ok(given)
+}
+
+fn text(path: &Path) -> Result<String, Failure> {
+    path.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| Failure::usage("bad_path", format!("{} is not valid UTF-8", path.display())))
+}
+
+/// Keeps `given` for a later `serve -d --again`.
+fn save_given(dir: &Path, given: &[String]) -> Result<(), Failure> {
+    let path = dir.join(ARGS_FILE);
+    crate::state::write_private(&path, json!(given).to_string().as_bytes())
+        .map_err(|err| io_failure(&path, err))
+}
+
+/// What the last start gave the host, for `serve -d --again`.
+fn given_before(dir: &Path) -> Result<Vec<String>, Failure> {
+    let path = dir.join(ARGS_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let message = "no `latch serve` has run on this state folder to start again; \
+                           `latch serve -d` starts one"
+                .to_string();
+            return Err(Failure::usage("nothing_to_start_again", message));
+        }
+        Err(err) => return Err(io_failure(&path, err)),
+    };
+    serde_json::from_str(&text).map_err(|_| {
+        Failure::failed(
+            "state_io",
+            format!("{} is not a list of arguments", path.display()),
+        )
+    })
 }
 
 /// Waits until the host just started answers on its socket, or says why

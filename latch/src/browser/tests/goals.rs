@@ -1124,17 +1124,31 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
     h.open(&at("reset.html?user=testuser@example.com")).await;
     h.open(&at("verify.html?next=account.html")).await;
     let asked = told.passes();
-    let (code, details) = stop(
-        h.send(plan(
+    let stopped = h
+        .send(plan(
             &["enter the verification code"],
             &site,
             &[],
             std::slice::from_ref(&login),
         ))
-        .await,
+        .await
+        .expect_err("the plan should stop");
+    let (code, details) = (stopped.code.as_str(), &stopped.details);
+    println!(
+        "code stage: {code}; {}; {}",
+        stopped.message, details["stop"]
     );
-    println!("code stage: {code}; {}", details["stop"]);
     assert_eq!(code, "needs_fields");
+    // The stop says each way on: the vault's code, a texted one found and
+    // typed, then the owner.
+    for way in [
+        "--field otp=eN",
+        "latch messages search",
+        "type eN",
+        "handoff --reason 2fa",
+    ] {
+        assert!(stopped.message.contains(way), "{way}: {}", stopped.message);
+    }
     assert_eq!(told.passes(), asked, "stopped before the model was asked");
     assert_eq!(details["stop"]["page_offers"], json!(["code"]));
     assert!(
@@ -1163,15 +1177,17 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
         h.open(&at("reset.html")).await;
         h.open(&at("passkey.html?next=account.html")).await;
         let asked = told.passes();
-        let (code, details) = stop(
-            h.send(plan(&["sign in -> path: account.html"], &site, &[], &items))
-                .await,
-        );
+        let stopped = h
+            .send(plan(&["sign in -> path: account.html"], &site, &[], &items))
+            .await
+            .expect_err("the plan should stop");
+        let (code, details) = (stopped.code.as_str(), &stopped.details);
         println!(
             "passkey page, items {items:?}: {code}; offers {}",
             details["stop"]["page_offers"]
         );
         assert_eq!(code, "needs_fields");
+        assert!(stopped.message.contains("handoff --reason passkey"));
         assert_eq!(told.passes(), asked);
         assert_eq!(details["stop"]["page_offers"], json!(["passkey"]));
     }

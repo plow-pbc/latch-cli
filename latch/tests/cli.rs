@@ -10,6 +10,10 @@ use std::thread;
 
 use serde_json::{Value, json};
 
+#[cfg(target_os = "macos")]
+#[path = "support/shop_server.rs"]
+mod shop_server;
+
 /// A fake Plow that answers one HTTP request per entry in `answers`, in
 /// order, and hands back the raw requests it received. Like Plow, it answers
 /// a registration with the key it was sent: a `null` key in an answer is
@@ -1463,6 +1467,20 @@ impl LivePlow {
                                  "sender": {"type": "member", "display_name": "Owner", "role": "owner"}}],
                        "has_more": false}),
             ),
+            // A browser click's risk is asked the same way: low.
+            ("POST", "/v1/decisions")
+                if kind == "device"
+                    && serde_json::from_slice::<Value>(&request.body).unwrap_or_default()
+                        ["questions"]["risky"]
+                        .is_object() =>
+            {
+                (
+                    200,
+                    json!({"id": "req_test", "model": "typesafe/jev-1.13",
+                           "answers": {"risky": {"type": "noul", "noul": 0.05}},
+                           "usage": {"input_tokens": 1, "output_tokens": 0}}),
+                )
+            }
             ("POST", "/v1/decisions") if kind == "device" => (
                 200,
                 json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
@@ -2350,7 +2368,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(before["protocol"], 1);
     assert_eq!(
         before["serve"],
-        json!({"running": false, "ready": false, "state": "stopped", "pid": null})
+        json!({"running": false, "ready": false, "managed": false, "state": "stopped", "pid": null})
     );
     assert_eq!(before["shares"], json!([]));
     assert_eq!(before["allow_read"], json!([]));
@@ -2370,7 +2388,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let up = local(&host);
     assert_eq!(
         up["serve"],
-        json!({"running": true, "ready": true, "state": "serving", "pid": pid})
+        json!({"running": true, "ready": true, "managed": false, "state": "serving", "pid": pid})
     );
     drop(serve);
     let stopped = local(&host);
@@ -3872,194 +3890,6 @@ fn agent_help_says_messages_and_contacts_are_untrusted_data() {
     }
 }
 
-#[test]
-fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_host() {
-    let plow = LivePlow::start();
-    let (_relay, relay) = local_relay();
-    let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
-    let host = owner_host_on(&plow, dir.path());
-    let agent_token = dir.path().join("agent.token");
-    fs::write(&agent_token, "agent-credential\n").unwrap();
-    let agent = dir.path().join("agent");
-    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
-    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
-        let output = latch(state, args, env);
-        let printed = if output.status.success() {
-            &output.stdout
-        } else {
-            &output.stderr
-        };
-        let json: Value = serde_json::from_slice(printed).unwrap();
-        println!(
-            "{}: latch {}: {json}",
-            state.file_name().unwrap().display(),
-            args.join(" ")
-        );
-        (output.status.code(), json)
-    };
-
-    let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
-    assert_eq!(code, Some(3));
-    assert_eq!(error["error"]["code"], "serve_required");
-
-    let _serve = serving(&host, &share, &relay);
-    let (code, listed) = run(&host, &["plugins", "list"], &[]);
-    assert_eq!(code, Some(0));
-    let names: Vec<&str> = listed["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|plugin| plugin["name"].as_str().unwrap())
-        .collect();
-    let expected: &[&str] = if cfg!(target_os = "macos") {
-        &["google", "messages", "contacts"]
-    } else {
-        &["google"]
-    };
-    assert_eq!(names, expected, "never the browser");
-    assert_eq!(listed["plugins"][0]["state"], "disabled");
-    let (code, agents) = run(&agent, &["plugins", "list", "--host", "host"], &agent_env);
-    assert_eq!(code, Some(0));
-    assert_eq!(agents["plugins"], listed["plugins"]);
-
-    for command in ["enable", "disable"] {
-        let (code, error) = run(&agent, &["plugins", command, "google"], &agent_env);
-        assert_eq!(code, Some(4));
-        assert_eq!(error["error"]["code"], "owner_only");
-    }
-    let (code, error) = run(
-        &agent,
-        &["google", "--host", "host", "--", "accounts"],
-        &agent_env,
-    );
-    assert_eq!(code, Some(4));
-    assert_eq!(error["error"]["code"], "not_enabled");
-    assert_eq!(error["error"]["enable"], "latch plugins enable google");
-
-    // This Plow has no Google account connected: setup fails, so it stays off.
-    let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
-    assert_eq!(code, Some(1));
-    assert_eq!(error["error"]["code"], "gog_not_configured");
-    let (_, listed) = run(&host, &["plugins", "list"], &[]);
-    assert_eq!(listed["plugins"][0]["state"], "needs_setup");
-    let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
-    assert_eq!(code, Some(0));
-    assert_eq!(disabled["waited_for"], 0);
-    assert_eq!(
-        plow.state.lock().unwrap().decisions.len(),
-        0,
-        "never judged"
-    );
-}
-
-/// The Messages setup asks the running host, whose Full Disk Access is what
-/// counts, never the terminal that runs `plugins enable`. Each side here
-/// has a home of its own, readable for one and not for the other. A host
-/// that can read Messages still keeps it from exec and file workers, even
-/// with the folder shared.
-#[cfg(target_os = "macos")]
-#[test]
-fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
-    use std::os::unix::fs::PermissionsExt;
-    let plow = LivePlow::start();
-    let (_relay, relay) = local_relay();
-    let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
-    let host = owner_host_on(&plow, dir.path());
-    let (host_home, terminal_home) = (
-        dir.path().join("host-home"),
-        dir.path().join("terminal-home"),
-    );
-    let readable = |home: &Path, yes: bool| {
-        let messages = home.join("Library/Messages");
-        fs::create_dir_all(&messages).unwrap();
-        fs::set_permissions(&messages, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::write(messages.join("chat.db"), "a synthetic store").unwrap();
-        let mode = if yes { 0o700 } else { 0o000 };
-        fs::set_permissions(&messages, fs::Permissions::from_mode(mode)).unwrap();
-    };
-    let enable = || {
-        let output = latch(
-            &host,
-            &["plugins", "enable", "messages"],
-            &[("HOME", terminal_home.as_path())],
-        );
-        let printed = if output.status.success() {
-            &output.stdout
-        } else {
-            &output.stderr
-        };
-        let json: Value = serde_json::from_slice(printed).unwrap();
-        println!("latch plugins enable messages: {json}");
-        (output.status.code(), json)
-    };
-    let serve_at = |home: &Path| {
-        let messages = home.join("Library/Messages");
-        let mut command = serve_command(&host, &[&share, &messages], &relay);
-        command.env("HOME", home);
-        let (serve, log, _) = serving_with(command);
-        thread::spawn(move || {
-            for line in log.lines().map_while(Result::ok) {
-                if line.contains("plugins:") {
-                    println!("{line}");
-                }
-            }
-        });
-        serve
-    };
-
-    readable(&host_home, false);
-    readable(&terminal_home, true);
-    let serve = serve_at(&host_home);
-    let (code, error) = enable();
-    assert_eq!(code, Some(1));
-    assert_eq!(error["error"]["code"], "needs_setup");
-    assert_eq!(error["error"]["access"], "not_granted");
-    assert_eq!(
-        error["error"]["grant"],
-        Path::new(env!("CARGO_BIN_EXE_latch"))
-            .canonicalize()
-            .unwrap()
-            .to_str()
-            .unwrap()
-    );
-    drop(serve);
-
-    readable(&host_home, true);
-    readable(&terminal_home, false);
-    let _serve = serve_at(&host_home);
-    let (code, enabled) = enable();
-    readable(&terminal_home, true);
-    assert_eq!(code, Some(0), "{enabled}");
-    assert_eq!(enabled["access"], "granted");
-    assert_eq!(enabled["state"], "enabled");
-
-    let store = host_home.join("Library/Messages/chat.db");
-    let store = store.to_str().unwrap();
-    let cat = latch(&host, &["exec", "--", "cat", store], &[]);
-    let ran: Value = serde_json::from_slice(&cat.stdout).unwrap();
-    println!("latch exec cat chat.db: {ran}");
-    assert_eq!(ran["exit_code"], 1);
-    assert!(
-        ran["stderr"]
-            .as_str()
-            .unwrap()
-            .contains("Operation not permitted")
-    );
-    assert!(!ran.to_string().contains("synthetic store"));
-    let copy = dir.path().join("copy.db");
-    let get = latch(&host, &["file", "get", store, copy.to_str().unwrap()], &[]);
-    let error: Value = serde_json::from_slice(&get.stderr).unwrap();
-    println!("latch file get chat.db: {error}");
-    assert_eq!(error["error"]["code"], "sandbox_denied");
-    assert!(!copy.exists());
-}
-
 #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 #[test]
 fn an_attached_serve_whose_host_fails_says_why_and_leaves_nothing_running() {
@@ -4190,6 +4020,7 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     assert_eq!(adopt["error"]["code"], "not_attached", "{adopt}");
     // Nobody else asks the host on the network what its socket answers.
     assert_eq!(local_serve(&host)["state"], "serving");
+    assert_eq!(local_serve(&host)["managed"], true);
 
     let stopped = latch(&host, &["stop"], &[]);
     assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
@@ -4204,6 +4035,21 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
     // Stopping again stops nothing, and says so.
     let twice: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
     assert_eq!(twice["stopped"], false);
+    assert_eq!(local_serve(&host)["managed"], false);
+
+    // Started again with what it was given, as an upgrade restarts it: the
+    // same share, though `--again` names none.
+    let restarted = latch(&host, &["serve", "-d", "--again"], &env);
+    assert_eq!(restarted.status.code(), Some(0), "{restarted:?}");
+    let read = local_operation(
+        &host,
+        "exec",
+        json!({"argv": ["cat", "note.txt"], "timeout": 10}),
+    );
+    assert_eq!(read["ok"]["stdout"], "hi", "{read}");
+    let stopped: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
+    assert_eq!(stopped["stopped"], true);
+    assert!(!registered(&host));
 
     let log = fs::read_to_string(host.join("serve.log")).unwrap();
     assert!(log.contains("stopping: asked to by `latch stop`"), "{log}");
@@ -4218,6 +4064,19 @@ fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
         .find(|record| record["op"] == "exec")
         .unwrap();
     assert_eq!(exec["args"]["argv"], json!(["cat", "note.txt"]), "{exec}");
+}
+
+#[test]
+fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
+    let (_dir, state, _key) = owner_host();
+    let again = latch(&state, &["serve", "-d", "--again"], &[]);
+    assert_eq!(again.status.code(), Some(2), "{again:?}");
+    let error: Value = serde_json::from_slice(&again.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "nothing_to_start_again");
+    assert_eq!(local_serve(&state)["running"], false);
+    // --again takes nothing else: what it starts with is what was given.
+    let named = latch(&state, &["serve", "-d", "--again", "/tmp"], &[]);
+    assert_eq!(named.status.code(), Some(2), "{named:?}");
 }
 
 /// `latch ARGS` on a terminal of its own, as its controlling terminal, the
@@ -4588,4 +4447,342 @@ fn audit_show_follow_sleeps_while_the_log_is_quiet() {
     drop(follow.stdin.take());
     assert!(follow.wait().unwrap().success());
     assert!(used < 20, "a quiet follow used {used} ticks in 2 s");
+}
+
+/// A host's state given the pinned browser engines the tests installed
+/// (`just cft`), local pages allowed, and the Messages reader.
+#[cfg(target_os = "macos")]
+fn browser_and_messages_host(host: &Path) {
+    let installed = std::env::var_os("LATCH_CFT_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
+    let engines = installed.canonicalize().unwrap().join("plugins");
+    let plugins = host.join("plugins");
+    fs::create_dir_all(&plugins).unwrap();
+    for engine in ["cft", "camoufox"] {
+        if engines.join(engine).exists() {
+            std::os::unix::fs::symlink(engines.join(engine), plugins.join(engine)).unwrap();
+        }
+    }
+    fs::write(host.join("host.json"), r#"{"allow_local_browsing": true}"#).unwrap();
+    let reader = plugins
+        .join("messages")
+        .join(env!("CARGO_PKG_VERSION"))
+        .join("latch-messages");
+    fs::create_dir_all(reader.parent().unwrap()).unwrap();
+    fs::copy(messages_reader(), &reader).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_agent_signs_in_with_a_code_texted_to_the_owner() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let (share, home) = (dir.path().join("share"), dir.path().join("home"));
+    fs::create_dir(&share).unwrap();
+    messages_home(&home);
+    browser_and_messages_host(&host);
+    let mut command = serve_command(&host, &[&share], &relay);
+    command.arg("--headless-browsers").env("HOME", &home);
+    let (serve, mut log, _) = serving_with(command);
+    thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+    until_serving(&host, &serve);
+    for name in ["messages", "contacts"] {
+        let enabled = latch(&host, &["plugins", "enable", name], &[]);
+        assert!(enabled.status.success(), "{enabled:?}");
+    }
+    let site = shop_server::serve_shop();
+
+    let agent_runs = |args: &[&str]| {
+        let output = latch(&agent, args, &agent_env);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let answer = serde_json::from_slice::<Value>(printed).unwrap_or(Value::Null);
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {answer}");
+        answer
+    };
+
+    // The sign-in page asks for the code it texted.
+    let opened = agent_runs(&[
+        "browser",
+        "--host",
+        "host",
+        "open",
+        &format!("{site}/verify.html?next=index.html"),
+    ]);
+    let session = opened["session"].as_str().unwrap().to_string();
+    let page = agent_runs(&[
+        "browser",
+        "--host",
+        "host",
+        "--session",
+        &session,
+        "observe",
+    ]);
+    let field = page["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["role"] == "textbox" && e["name"] == "Verification code")
+        .unwrap_or_else(|| panic!("no code field in {page}"))["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Step 1: the agent finds the code in the owner's messages.
+    let found = agent_runs(&[
+        "messages", "search", "--host", "host", "--since", "15m", "code",
+    ]);
+    let text = found["messages"][0]["text"].as_str().unwrap();
+    let code: String = text
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|word| word.len() == 6)
+        .unwrap()
+        .into();
+    assert_eq!(code, "482913");
+
+    // Step 2: it types the code into the page's code field and submits it,
+    // as literal steps; the page goes on once the code is in.
+    let button = page["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["role"] == "button" && e["name"] == "Verify")
+        .unwrap()["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let typed = format!("type {field} \"{code}\"");
+    let submitted = format!("click {button} -> path: /index.html");
+    let plan = agent_runs(&[
+        "browser",
+        "--host",
+        "host",
+        "--session",
+        &session,
+        "do",
+        &typed,
+        &submitted,
+    ]);
+    // The code went into its field, and the page took it: the submit's
+    // check, the page it goes on to, held.
+    assert_eq!(plan["steps"][0]["outcome"], "dispatched", "{plan}");
+    assert_eq!(plan["steps"][1]["outcome"], "checked", "{plan}");
+    agent_runs(&["browser", "--host", "host", "--session", &session, "close"]);
+
+    // Both steps were judged, as the agent's, on the host.
+    let records = audit_records(&host);
+    let judged: Vec<(&str, &str)> = records
+        .iter()
+        // The browser keeps its judgment with its arguments.
+        .filter(|r| r["gate"]["caller"] == "agent" || r["args"]["gate"]["caller"] == "agent")
+        .map(|r| {
+            (
+                r["op"].as_str().unwrap_or(""),
+                r["decision"].as_str().unwrap_or(""),
+            )
+        })
+        .collect();
+    assert!(judged.contains(&("messages", "allow")), "{judged:?}");
+    assert!(judged.contains(&("browser", "allow")), "{judged:?}");
+    drop(serve);
+}
+
+#[test]
+fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_host() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
+        let output = latch(state, args, env);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap();
+        println!(
+            "{}: latch {}: {json}",
+            state.file_name().unwrap().display(),
+            args.join(" ")
+        );
+        (output.status.code(), json)
+    };
+
+    let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
+    assert_eq!(code, Some(3));
+    assert_eq!(error["error"]["code"], "serve_required");
+
+    let _serve = serving(&host, &share, &relay);
+    let (code, listed) = run(&host, &["plugins", "list"], &[]);
+    assert_eq!(code, Some(0));
+    let names: Vec<&str> = listed["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|plugin| plugin["name"].as_str().unwrap())
+        .collect();
+    let expected: &[&str] = if cfg!(target_os = "macos") {
+        &["google", "messages", "contacts"]
+    } else {
+        &["google"]
+    };
+    assert_eq!(names, expected, "never the browser");
+    assert_eq!(listed["plugins"][0]["state"], "disabled");
+    let (code, agents) = run(&agent, &["plugins", "list", "--host", "host"], &agent_env);
+    assert_eq!(code, Some(0));
+    assert_eq!(agents["plugins"], listed["plugins"]);
+
+    for command in ["enable", "disable"] {
+        let (code, error) = run(&agent, &["plugins", command, "google"], &agent_env);
+        assert_eq!(code, Some(4));
+        assert_eq!(error["error"]["code"], "owner_only");
+    }
+    let (code, error) = run(
+        &agent,
+        &["google", "--host", "host", "--", "accounts"],
+        &agent_env,
+    );
+    assert_eq!(code, Some(4));
+    assert_eq!(error["error"]["code"], "not_enabled");
+    assert_eq!(error["error"]["enable"], "latch plugins enable google");
+
+    // This Plow has no Google account connected: setup fails, so it stays off.
+    let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
+    assert_eq!(code, Some(1));
+    assert_eq!(error["error"]["code"], "gog_not_configured");
+    let (_, listed) = run(&host, &["plugins", "list"], &[]);
+    assert_eq!(listed["plugins"][0]["state"], "needs_setup");
+    let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
+    assert_eq!(code, Some(0));
+    assert_eq!(disabled["waited_for"], 0);
+    assert_eq!(
+        plow.state.lock().unwrap().decisions.len(),
+        0,
+        "never judged"
+    );
+}
+
+/// The Messages setup asks the running host, whose Full Disk Access is what
+/// counts, never the terminal that runs `plugins enable`. Each side here
+/// has a home of its own, readable for one and not for the other. A host
+/// that can read Messages still keeps it from exec and file workers, even
+/// with the folder shared.
+#[cfg(target_os = "macos")]
+#[test]
+fn messages_setup_reports_the_hosts_full_disk_access_not_the_terminals() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let host = owner_host_on(&plow, dir.path());
+    let (host_home, terminal_home) = (
+        dir.path().join("host-home"),
+        dir.path().join("terminal-home"),
+    );
+    let readable = |home: &Path, yes: bool| {
+        let messages = home.join("Library/Messages");
+        fs::create_dir_all(&messages).unwrap();
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(messages.join("chat.db"), "a synthetic store").unwrap();
+        let mode = if yes { 0o700 } else { 0o000 };
+        fs::set_permissions(&messages, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let enable = || {
+        let output = latch(
+            &host,
+            &["plugins", "enable", "messages"],
+            &[("HOME", terminal_home.as_path())],
+        );
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap();
+        println!("latch plugins enable messages: {json}");
+        (output.status.code(), json)
+    };
+    let serve_at = |home: &Path| {
+        let messages = home.join("Library/Messages");
+        let mut command = serve_command(&host, &[&share, &messages], &relay);
+        command.env("HOME", home);
+        let (serve, log, _) = serving_with(command);
+        thread::spawn(move || {
+            for line in log.lines().map_while(Result::ok) {
+                if line.contains("plugins:") {
+                    println!("{line}");
+                }
+            }
+        });
+        serve
+    };
+
+    readable(&host_home, false);
+    readable(&terminal_home, true);
+    let serve = serve_at(&host_home);
+    let (code, error) = enable();
+    assert_eq!(code, Some(1));
+    assert_eq!(error["error"]["code"], "needs_setup");
+    assert_eq!(error["error"]["access"], "not_granted");
+    assert_eq!(
+        error["error"]["grant"],
+        Path::new(env!("CARGO_BIN_EXE_latch"))
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    drop(serve);
+
+    readable(&host_home, true);
+    readable(&terminal_home, false);
+    let _serve = serve_at(&host_home);
+    let (code, enabled) = enable();
+    readable(&terminal_home, true);
+    assert_eq!(code, Some(0), "{enabled}");
+    assert_eq!(enabled["access"], "granted");
+    assert_eq!(enabled["state"], "enabled");
+
+    let store = host_home.join("Library/Messages/chat.db");
+    let store = store.to_str().unwrap();
+    let cat = latch(&host, &["exec", "--", "cat", store], &[]);
+    let ran: Value = serde_json::from_slice(&cat.stdout).unwrap();
+    println!("latch exec cat chat.db: {ran}");
+    assert_eq!(ran["exit_code"], 1);
+    assert!(
+        ran["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("Operation not permitted")
+    );
+    assert!(!ran.to_string().contains("synthetic store"));
+    let copy = dir.path().join("copy.db");
+    let get = latch(&host, &["file", "get", store, copy.to_str().unwrap()], &[]);
+    let error: Value = serde_json::from_slice(&get.stderr).unwrap();
+    println!("latch file get chat.db: {error}");
+    assert_eq!(error["error"]["code"], "sandbox_denied");
+    assert!(!copy.exists());
 }
