@@ -90,6 +90,17 @@ fn latch_process() -> Command {
     command
 }
 
+/// An iroh endpoint for a test's own end of a connection, kept off the
+/// local network as `LATCH_TEST_LOOPBACK` keeps latch's: 127.0.0.1 only,
+/// and no port mapping.
+fn loopback_endpoint() -> iroh::endpoint::Builder {
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+}
+
 fn test_dir() -> tempfile::TempDir {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
@@ -2965,7 +2976,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     runtime.block_on(async {
         use tokio::io::AsyncReadExt;
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            let endpoint = loopback_endpoint()
                 .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
                 .bind()
                 .await
