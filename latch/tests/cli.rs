@@ -1425,6 +1425,20 @@ impl LivePlow {
                                  "sender": {"type": "member", "display_name": "Owner", "role": "owner"}}],
                        "has_more": false}),
             ),
+            // A browser click's risk is asked the same way: low.
+            ("POST", "/v1/decisions")
+                if kind == "device"
+                    && serde_json::from_slice::<Value>(&request.body).unwrap_or_default()
+                        ["questions"]["risky"]
+                        .is_object() =>
+            {
+                (
+                    200,
+                    json!({"id": "req_test", "model": "typesafe/jev-1.13",
+                           "answers": {"risky": {"type": "noul", "noul": 0.05}},
+                           "usage": {"input_tokens": 1, "output_tokens": 0}}),
+                )
+            }
             ("POST", "/v1/decisions") if kind == "device" => (
                 200,
                 json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
@@ -3323,7 +3337,7 @@ fn an_agent_signs_in_with_a_code_texted_to_the_owner() {
         "--host",
         "host",
         "open",
-        &format!("{site}/verify.html?next=account.html"),
+        &format!("{site}/verify.html?next=index.html"),
     ]);
     let session = opened["session"].as_str().unwrap().to_string();
     let page = agent_runs(&[
@@ -3356,8 +3370,19 @@ fn an_agent_signs_in_with_a_code_texted_to_the_owner() {
         .into();
     assert_eq!(code, "482913");
 
-    // Step 2: it types the code into the page's code field, a literal step.
-    let typed = format!("type {field} \"{code}\" -> field: {field}={code}");
+    // Step 2: it types the code into the page's code field and submits it,
+    // as literal steps; the page goes on once the code is in.
+    let button = page["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["role"] == "button" && e["name"] == "Verify")
+        .unwrap()["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let typed = format!("type {field} \"{code}\"");
+    let submitted = format!("click {button} -> path: /index.html");
     let plan = agent_runs(&[
         "browser",
         "--host",
@@ -3366,20 +3391,20 @@ fn an_agent_signs_in_with_a_code_texted_to_the_owner() {
         &session,
         "do",
         &typed,
+        &submitted,
     ]);
-    assert_eq!(plan["status"], "reached", "{plan}");
+    // The code went into its field, and the page took it: the submit's
+    // check, the page it goes on to, held.
+    assert_eq!(plan["steps"][0]["outcome"], "dispatched", "{plan}");
+    assert_eq!(plan["steps"][1]["outcome"], "checked", "{plan}");
     agent_runs(&["browser", "--host", "host", "--session", &session, "close"]);
 
     // Both steps were judged, as the agent's, on the host.
-    let audit = latch(&host, &["audit"], &[]);
-    let records: Vec<Value> = String::from_utf8(audit.stdout)
-        .unwrap()
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
+    let records = audit_records(&host);
     let judged: Vec<(&str, &str)> = records
         .iter()
-        .filter(|r| r["gate"]["caller"] == "agent")
+        // The browser keeps its judgment with its arguments.
+        .filter(|r| r["gate"]["caller"] == "agent" || r["args"]["gate"]["caller"] == "agent")
         .map(|r| {
             (
                 r["op"].as_str().unwrap_or(""),
