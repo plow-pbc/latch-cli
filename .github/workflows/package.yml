@@ -1,13 +1,14 @@
 name: package
 # latch's archives for each platform: built, packaged and checked (each one's
 # SHA256SUMS, install files and latch --version, on its own runner). A pull
-# request runs it all, unsigned. The release workflow calls it twice: `build`
+# request runs it for Linux only, unsigned; the macOS archives are built and
+# checked by the release. The release workflow calls it twice: `build`
 # for the archives it then signs, and `check` to assemble and verify the
 # signed ones.
 run-name: "Package check: ${{ github.event.pull_request.title }}"
 on:
   pull_request:
-    paths: ['latch/**', 'scripts/**', 'install.sh', '.github/workflows/package.yml']
+    paths: ['latch/**', 'scripts/**', 'install.sh', '.github/workflows/package.yml', '!**/*.md']
   workflow_call:
     inputs:
       tag:
@@ -20,6 +21,10 @@ on:
         type: string
 permissions:
   contents: read
+# A new push to a pull request cancels its run in progress.
+concurrency:
+  group: package-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   version:
     if: inputs.stage != 'check'
@@ -46,11 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: &matrix
-        include:
-          - { runner: macos-15, target: aarch64-apple-darwin, arch: arm64 }
-          - { runner: macos-15-intel, target: x86_64-apple-darwin, arch: x86_64 }
-          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, arch: amd64 }
-          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, arch: arm64 }
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","arch":"amd64"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","arch":"arm64"}]' || '[{"runner":"macos-15","target":"aarch64-apple-darwin","arch":"arm64"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin","arch":"x86_64"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","arch":"amd64"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","arch":"arm64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
