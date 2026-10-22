@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use iroh::endpoint::{Connection, Incoming, RecvStream, SendStream, VarInt, presets};
 use iroh::{Endpoint, RelayMode};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
