@@ -1,6 +1,6 @@
 # CLI output contract and copy pass
 
-Date: 2026-10-22. Status: approved direction (chef: "go"); revised after first read and a check against the code at origin/main bcf17c9, ready for review.
+Date: 2026-10-22. Status: approved direction (chef: "go"); revised after first read and a check against the code at origin/main f626899, ready for review.
 Product stage: internal tool, pre-PMF. Primary users are agents and a future GUI running latch as a subprocess; humans use it mainly for setup and config. No back-compat with today's output is required.
 
 ## 0. In one paragraph
@@ -19,10 +19,11 @@ One sentence: **every command returns JSON, except the human commands (`setup`, 
 - Every command writes its result as JSON on stdout and any error as JSON on stderr, whether or not stdout/stderr is a terminal. No terminal detection decides format.
 - `--version` returns JSON. `browser text` returns the page text inside JSON; `--raw` is removed.
 - Internal protocols are not commands and are out of scope: worker framing (exec, file transfer), and program output that `exec` forwards inside its result.
-- **A command's stderr is only its one error line.** `LATCH_TRACE` output goes to a file in the state folder, not stderr. Foreground `serve` is a long-running process, not a command result: its logs, trace included, stay on stderr as today.
+- **A regular command's stderr is only its one error line.** (Human commands draw their screens where they like, stderr included; this rule does not apply to them.) `LATCH_TRACE` output goes to a file in the state folder, not stderr. Foreground `serve` is a long-running process, not a command result: its logs, trace included, stay on stderr as today.
+- **The once-a-day "update available" notice leaves regular commands.** Today `update::notice` can print it to stderr after any command when both streams are terminals. Regular commands stop printing it; `status` carries the same fact as a JSON field; the human commands (`setup`, the dashboard) may still show it.
 
 ### 2.2 Streams
-- `events --follow`, `audit show -f`, `logs [-f]` and `login --events` emit JSON lines. Each line has a `type`; the first line is `{"type":"hello","schema":N}`; consumers ignore unknown fields.
+- `events` (with or without `--follow`), `audit show -f`, `logs [-f]` and `login --events` emit JSON lines. Each line has a `type`; the first line is `{"type":"hello","schema":N}`; consumers ignore unknown fields.
 - `logs` emits one JSON line per log record. How records are stored on disk is the implementer's call.
 
 ### 2.3 No text mode
@@ -74,7 +75,7 @@ Localization; a GUI itself; changing what commands do (only how they report); wh
 ### Chunk 1a: One error shape
 Implements: §2.5, and the `LATCH_TRACE` rule in §2.1
 Interfaces: consumes existing failure codes and exit classes · produces the error shape with `code`/`message`/`next`/`exit`, and `help --json` listing every error code with its exit
-Done when: a test triggers one failure per command (from `help --json`) with stderr both a terminal (pty) and piped, and each gives exactly one JSON error line whose `exit` equals the process exit code; bad arguments exit 2 for every command; with `LATCH_TRACE` set, stderr is still exactly one line and the trace lands in the state folder; `help --json` lists every code with its exit.
+Done when: a test triggers one failure per regular command (from `help --json`; human commands excluded) with stderr both a terminal (pty) and piped, and each gives exactly one JSON error line whose `exit` equals the process exit code; bad arguments exit 2 for every command; with `LATCH_TRACE` set or an update available, stderr is still exactly one line and the trace lands in the state folder; `help --json` lists every code with its exit.
 
 ### Chunk 1b: JSON results, no text mode
 Implements: §2.1 (results), §2.3
@@ -84,7 +85,7 @@ Done when: a test runs every non-interactive command (from `help --json`) with s
 ### Chunk 1c: Typed streams
 Implements: §2.2
 Interfaces: consumes 1a's error shape · produces JSON-lines streams with `type` and a `hello` first line
-Done when: for `events --follow`, `audit show -f`, `logs`, `logs -f` and `login --events`, a test reads the stream piped and finds a `hello` line with `schema` first and a `type` on every line; `logs` gives one line per record; `--pretty` does not indent stream lines.
+Done when: for `events`, `events --follow`, `audit show -f`, `logs`, `logs -f` and `login --events`, a test reads the stream piped and finds a `hello` line with `schema` first and a `type` on every line; `logs` gives one line per record; `--pretty` does not indent stream lines.
 
 ### Chunk 1d: Human commands
 Implements: §2.4
