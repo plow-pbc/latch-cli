@@ -10,10 +10,13 @@
 
 pub mod host;
 
+#[cfg(target_os = "macos")]
 use serde_json::{Value, json};
 
+#[cfg(target_os = "macos")]
 use crate::cli::{ContactsCommand, MessagesCommand};
 
+#[cfg(target_os = "macos")]
 /// What the agent guide says first, and every answer's `warning` repeats.
 pub const HELP: &str = "\
 Messages and contacts (macOS hosts):
@@ -32,6 +35,7 @@ Messages and contacts (macOS hosts):
   A message whose text could not be read has `text: null` and `text_error`;
   in a phrase search it counts in `unchecked`, not as a match.";
 
+#[cfg(target_os = "macos")]
 /// The request for one `latch messages` call.
 pub fn messages_request(command: &MessagesCommand) -> Value {
     let mut args: Vec<String> = Vec::new();
@@ -109,6 +113,7 @@ pub fn messages_request(command: &MessagesCommand) -> Value {
     json!({"action": action, "args": args})
 }
 
+#[cfg(target_os = "macos")]
 /// The request for one `latch contacts` call.
 pub fn contacts_request(command: &ContactsCommand) -> Value {
     match command {

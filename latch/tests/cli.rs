@@ -3830,6 +3830,7 @@ fn messages_and_contacts_answer_from_a_hosts_messages_and_address_book() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn agent_help_says_messages_and_contacts_are_untrusted_data() {
     let dir = test_dir();
@@ -4380,4 +4381,44 @@ fn audit_show_follow_sleeps_while_the_log_is_quiet() {
     drop(follow.stdin.take());
     assert!(follow.wait().unwrap().success());
     assert!(used < 20, "a quiet follow used {used} ticks in 2 s");
+}
+
+/// Messages and Contacts are macOS connectors: a Linux latch has no such
+/// commands and its help names neither.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn a_linux_latch_has_no_messages_or_contacts() {
+    let dir = test_dir();
+    for command in ["messages", "contacts"] {
+        let output = latch(dir.path(), &[command, "--help"], &[]);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "usage");
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("unrecognized subcommand '{command}'")),
+            "{message}"
+        );
+    }
+    let help = String::from_utf8(latch(dir.path(), &["--help"], &[]).stdout).unwrap();
+    assert!(!help.contains("latch messages"), "{help}");
+    let listed = help
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .any(|word| word == "messages" || word == "contacts");
+    assert!(!listed, "{help}");
+    let catalog = latch(dir.path(), &["help", "--json"], &[]);
+    let catalog: Value = serde_json::from_slice(&catalog.stdout).unwrap();
+    let ids: Vec<&str> = catalog["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| action["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"exec"), "{ids:?}");
+    assert!(
+        !ids.iter()
+            .any(|id| id.starts_with("messages") || id.starts_with("contacts")),
+        "{ids:?}"
+    );
 }
