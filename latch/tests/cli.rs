@@ -5895,11 +5895,21 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(tried["request"]["action"]["network"], true);
     assert!(!home.join("out").exists(), "nothing ran");
 
-    // On the host itself, as the owner.
-    let (code, tried) = previewed(&host, &[]);
+    // On the host itself, as the owner: this machine's host, whatever
+    // LATCH_HOST says.
+    let elsewhere = [("LATCH_HOST", Path::new("owner-mac"))];
+    let words: Vec<&str> = [&["rules", "try", "--"][..], &build].concat();
+    let (code, tried) = answered(&latch(&host, &words, &elsewhere));
     assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["host"], "host");
     assert_eq!(tried["as"], "owner");
     assert_eq!(tried["gate"]["source"], "owner_request");
+
+    // Without --host, the owner's other machine previews on its own host,
+    // which does not serve: never on the account's one host.
+    let (code, error) = previewed(&owner, &[]);
+    assert_eq!(code, Some(3), "{error}");
+    assert_eq!(error["error"]["code"], "serve_required");
 
     // A refusal is a preview that worked.
     plow.state.lock().unwrap().forbidden = true;
@@ -5971,6 +5981,28 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
     let no_program = ["rules", "try", "--", "exec", "--write", "~/out"];
     let (code, error) = answered(&latch(&fresh, &no_program, &[]));
     assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+    // The host goes on `rules try`, never inside the request.
+    for nested in [
+        &["rules", "try", "--", "exec", "--host", "mac", "--", "true"][..],
+        &[
+            "rules",
+            "try",
+            "--",
+            "file",
+            "get",
+            "--host",
+            "mac",
+            "notes.txt",
+        ],
+        &[
+            "rules", "try", "--", "google", "--host", "mac", "--", "gmail", "search", "x",
+        ],
+    ] {
+        let (code, error) = answered(&latch(&fresh, nested, &[]));
+        assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(message.contains("latch rules try --host NAME"), "{message}");
+    }
     let settings = ["rules", "try", "--", "vault", "list"];
     let (code, error) = answered(&latch(&fresh, &settings, &[]));
     assert_eq!(
