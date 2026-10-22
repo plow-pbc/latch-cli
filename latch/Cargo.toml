@@ -67,8 +67,8 @@ iroh-relay = { version = "1.3.0", default-features = false, features = ["server"
 jiff = "0.2.38"
 
 [features]
-# Builds the browser test that calls the decision model (jev) for real;
-# `just test-model KEYFILE` runs it. Never part of the gate.
+# Builds the tests that ask the decision model for real, through Plow on a
+# logged-in state folder; `just gatekeeper` runs them. Never part of the gate.
 live-model = []
 # Runs the real-engine browser tests headed, with a window behind the
 # owner's, for what only a real window shows (its focus); `just

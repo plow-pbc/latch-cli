@@ -1,10 +1,9 @@
 name: package
-# latch's archives for each platform: built, packaged and checked (each one's
-# SHA256SUMS, install files and latch --version, on its own runner). A merge
-# to main runs it for Linux only, unsigned; the macOS archives are built and
-# checked by the release. The release workflow calls it twice: `build`
-# for the archives it then signs, and `check` to assemble and verify the
-# signed ones.
+# latch's Linux archives, built and packaged, and every platform's archives
+# checked (each one's SHA256SUMS, install files and latch --version, on its
+# own runner). A merge to main builds and checks the Linux ones. The release
+# workflow calls it twice: `build` for the Linux archives (it builds and signs
+# the macOS ones itself), and `check` to assemble and verify them all.
 run-name: "Package check: ${{ github.event.head_commit.message }}"
 on:
   push:
@@ -51,8 +50,10 @@ jobs:
     if: inputs.stage != 'check'
     strategy:
       fail-fast: false
-      matrix: &matrix
-        include: ${{ fromJSON(github.event_name == 'push' && '[{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","arch":"amd64"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","arch":"arm64"}]' || '[{"runner":"macos-15","target":"aarch64-apple-darwin","arch":"arm64"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin","arch":"x86_64"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","arch":"amd64"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","arch":"arm64"}]') }}
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, arch: arm64 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
@@ -63,23 +64,16 @@ jobs:
       LATCH_BUILD_API_URL: ''
     steps:
       - uses: actions/checkout@v4
-      - name: Build macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          test "$(uname -m)" = '${{ matrix.arch }}'
-          unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
-          export LATCH_BUILD_COMMIT="$GITHUB_SHA"
-          cd latch
-          # The Messages reader first: this latch runs only the one built here.
-          LATCH_MESSAGES_READER_SHA256=$(messages-reader/build.sh | tail -n 1)
-          export LATCH_MESSAGES_READER_SHA256
-          rustup toolchain install
-          cargo build --release --locked --target '${{ matrix.target }}'
-          codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
-          'target/${{ matrix.target }}/release/latch' --version
-      - name: Build Linux
-        if: runner.os == 'Linux'
+      # The latch workflow's static Linux build keeps this cache warm: only
+      # latch itself is built again, with this release's values baked in.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            latch/target/cargo-home
+            latch/target/musl-${{ matrix.arch }}
+          key: musl-${{ matrix.arch }}-${{ hashFiles('latch/build-musl.sh', 'latch/rust-toolchain.toml') }}-${{ hashFiles('latch/Cargo.lock') }}
+          restore-keys: musl-${{ matrix.arch }}-${{ hashFiles('latch/build-musl.sh', 'latch/rust-toolchain.toml') }}-
+      - name: Build
         shell: bash
         run: |
           unset LATCH_BUILD_STATE_DIR LATCH_BUILD_API_URL
@@ -87,14 +81,11 @@ jobs:
           ./build-musl.sh '${{ matrix.arch }}'
           file 'target/musl-${{ matrix.arch }}/release/latch' | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
           'target/musl-${{ matrix.arch }}/release/latch' --version
+          sudo chown -R "$(id -u):$(id -g)" target/cargo-home 'target/musl-${{ matrix.arch }}'
       - name: Package
         shell: bash
         run: |
-          if [[ '${{ runner.os }}' == macOS ]]; then
-            binary='latch/target/${{ matrix.target }}/release/latch'
-          else
-            binary='latch/target/musl-${{ matrix.arch }}/release/latch'
-          fi
+          binary='latch/target/musl-${{ matrix.arch }}/release/latch'
           # The test-only gog stand-in never ships: its marker is in no binary.
           if grep -aqF latch-fake-gog-test-only "$binary"; then
             echo "$binary was built with the fake-gog test feature" >&2
@@ -103,9 +94,6 @@ jobs:
           sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' "$binary"
           tar -xzf "dist/latch-$VERSION-${{ matrix.target }}.tar.gz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/latch" --version
-          if [[ '${{ runner.os }}' == macOS ]]; then
-            codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/latch-$VERSION-${{ matrix.target }}/Plow Latch.app"
-          fi
       - uses: actions/upload-artifact@v4
         with:
           name: latch-${{ matrix.target }}
@@ -139,7 +127,9 @@ jobs:
     if: ${{ !cancelled() && needs.assemble.result == 'success' }}
     strategy:
       fail-fast: false
-      matrix: *matrix
+      # The Intel Mac runs the x86_64 archive built on Apple Silicon.
+      matrix:
+        include: ${{ fromJSON(github.event_name == 'push' && '[{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"}]' || '[{"runner":"macos-15","target":"aarch64-apple-darwin"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4

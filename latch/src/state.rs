@@ -20,8 +20,6 @@
 //!   `managed.rs`).
 //! - `vault.json` and `vault.key`*, on a host: the vault and its custody key
 //!   (see `vault/store.rs`).
-//! - `jev.key`, on a dev host only: the key for the jev model provider
-//!   (see `model.rs`).
 //! - `browser/`, on a host: profiles, the model's settings and each
 //!   session's journal.
 //! - `plugins/`, on a host: the pinned engines and the Google CLI.

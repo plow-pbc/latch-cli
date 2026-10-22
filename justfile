@@ -18,18 +18,6 @@ test-list:
 test-plan *args:
     @python3 scripts/test.py --dry-run "$@"
 
-# Runs the real decision model (not tests): checks (default), replay OUT, scenario.
-[positional-arguments]
-gatekeeper what="checks" *args="":
-    #!/bin/sh
-    set -eu
-    # The key file: LATCH_TEST_JEV_KEY, never a flag.
-    key="${LATCH_TEST_JEV_KEY:?set LATCH_TEST_JEV_KEY to the jev key file}"
-    cd latch
-    case "$1" in
-      checks) just test-model "$key" && just gatekeeper-live "$key" && just gatekeeper-owner "$key" ;;
-      replay) [ -n "${2:-}" ] || { echo "usage: just gatekeeper replay OUT" >&2; exit 2; }
-              just gatekeeper-replay "$key" "$2" ;;
-      scenario) just scenario-return "$key" ;;
-      *) echo "just gatekeeper [checks | replay OUT | scenario]" >&2; exit 2 ;;
-    esac
+# Asks the real decision model through Plow (not tests): checks, replay OUT, scenario.
+gatekeeper *args:
+    @just --justfile latch/justfile gatekeeper {{args}}

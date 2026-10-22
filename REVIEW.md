@@ -90,9 +90,9 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
 pinned browser engines into `.dev/cft-state` first, and runs fmt and clippy)
 and needs the toolchain in `latch/rust-toolchain.toml`; `just test --linux`
 is the Linux gate, in Docker. Checks that call the decision model, a live
-Plow stack or Google (`just gatekeeper`, `plan-suite`) need keys and are run
-by hand; a missing browser engine or key
-in a reviewer checkout is "not run", never a PR-introduced failure.
+Plow stack or Google (`just gatekeeper`, `plan-suite`) need a Plow login and
+are run by hand; a missing browser engine or login in a reviewer checkout is
+"not run", never a PR-introduced failure.
 
 ## Review priority
 

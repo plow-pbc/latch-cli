@@ -5,8 +5,8 @@
 //!
 //! The decision model is a fake provider answering from fixed facts about
 //! the test site, in every run, with a switch that makes it unreachable;
-//! built only with `--features live-model` (`just test-model`), the
-//! confirmation task runs on jev itself.
+//! built only with `--features live-model` (`just gatekeeper`), the
+//! confirmation task runs on the real model, through Plow.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -895,16 +895,20 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
     h.close().await;
 }
 
-/// The risk decision and a sentence check on jev itself, built only with `--features
-/// live-model` (`just test-model KEYFILE`): the key file is copied into the
-/// test's own state directory.
+/// The risk decision and a sentence check on the real decision model,
+/// built only with `--features live-model` (`just gatekeeper`): asked on
+/// Plow's decision route with the logged-in state's login.
 #[cfg(feature = "live-model")]
 #[tokio::test]
-async fn live_jev_asks_for_a_confirmation_only_where_one_is_needed() {
+async fn live_the_model_asks_for_a_confirmation_only_where_one_is_needed() {
     let (_dir, state, _area) = test_state("cft", &["default"]);
-    crate::model::ask_jev_for_tests(&state);
+    let provider = crate::model::host_provider(
+        &crate::model::logged_in_for_tests(),
+        crate::model::PLOW_MODEL,
+    )
+    .unwrap();
     let site = site();
-    let mut h = Harness::start(&state, None).await;
+    let mut h = Harness::start(&state, Some(Arc::from(provider))).await;
     let page = h.open(&format!("{site}/order.html")).await;
     let back = find(&page, "link", "Back to basket");
     let place = find(&page, "button", "Place order");
@@ -938,6 +942,6 @@ async fn live_jev_asks_for_a_confirmation_only_where_one_is_needed() {
     println!("save draft: {}", saved["steps"][0]);
     assert_eq!(saved["steps"][0]["outcome"], "model_assessed");
     let calls = serde_json::to_string(&h.audits).unwrap();
-    assert!(calls.contains("\"provider\":\"typesafe\""));
+    assert!(calls.contains("\"provider\":\"plow\""));
     h.close().await;
 }

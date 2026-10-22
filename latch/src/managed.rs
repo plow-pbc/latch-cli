@@ -190,8 +190,8 @@ async fn launch(
     };
     let host = lifecycle::now(&dir);
     if host.configuring {
-        let message = "a `latch plugins` command is changing this state folder's connectors; \
-                       start latch once it finishes"
+        let message = "a `latch plugins` or `latch logout` command is changing this state \
+                       folder; start latch once it finishes"
             .to_string();
         return Err(Failure::failed("state_busy", message));
     }

@@ -55,6 +55,10 @@ state folders, are readable; their use is judged. The running latch is mounted
 read-only; folders above protected mounts cannot be renamed. Google workers
 get only explicit runtime mounts.
 
+Exec, file and Google workers cannot create further user namespaces after
+bubblewrap sets up their sandbox. Browser workers retain nested namespaces
+for the engine's own sandbox.
+
 The profile is Moby's published Docker default at commit
 `4b8214fc4971e06172938a1f1554ccff6647ee80`, plus four allowance groups:
 

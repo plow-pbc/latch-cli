@@ -130,7 +130,7 @@ just test-plan ...    # what `just test ...` would run, without running it
 
 A suite that cannot run where you asked fails and says why; nothing is skipped. CI runs these same commands.
 
-`just gatekeeper` runs the real decision model (not a test; needs `LATCH_TEST_JEV_KEY`).
+`just gatekeeper` runs the checks that ask the decision model for real, through Plow on the login of `.dev/state` (not tests).
 
 Rules:
 

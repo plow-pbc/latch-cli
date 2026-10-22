@@ -36,6 +36,15 @@ pub enum Secret {
 }
 
 impl Secret {
+    pub const ALL: [Secret; 4] = [
+        Secret::Key,
+        Secret::PlowToken,
+        Secret::VaultKey,
+        Secret::AuditKeys,
+    ];
+    /// This peer's identity and login, without which it is logged out.
+    pub const LOGIN: [Secret; 2] = [Secret::Key, Secret::PlowToken];
+
     /// The file it is kept in by a build without the Keychain.
     pub fn file(self) -> &'static str {
         match self {
@@ -54,6 +63,8 @@ trait Store: Send + Sync {
     fn add(&self, account: &str, bytes: &[u8]) -> Result<bool, String>;
     /// Adds the item or replaces its value.
     fn set(&self, account: &str, bytes: &[u8]) -> Result<(), String>;
+    /// Deletes the item; `false` if there was none.
+    fn remove(&self, account: &str) -> Result<bool, String>;
 }
 
 /// One state folder's secrets.
@@ -122,6 +133,33 @@ impl Secrets {
             .map_err(|why| self.refused("save", secret, &why))
     }
 
+    /// Deletes each of `secrets` this folder has, where this build keeps
+    /// them. Returns the files they are named by, of those there were.
+    pub fn remove_each(&self, secrets: &[Secret]) -> Result<Vec<&'static str>, Failure> {
+        let mut removed = Vec::new();
+        for &secret in secrets {
+            let was = match &self.keychain {
+                Some(store) => store
+                    .remove(&self.account(secret))
+                    .map_err(|why| self.refused("delete", secret, &why))?,
+                None => match fs::remove_file(self.dir.join(secret.file())) {
+                    Ok(()) => true,
+                    Err(err) if err.kind() == ErrorKind::NotFound => false,
+                    Err(err) => return Err(io_failure(&self.dir.join(secret.file()), err)),
+                },
+            };
+            if was {
+                removed.push(secret.file());
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Whether this build keeps its secrets in the Keychain.
+    pub fn in_keychain(&self) -> bool {
+        self.keychain.is_some()
+    }
+
     /// The item's account: the state folder's real path and the file name.
     fn account(&self, secret: Secret) -> String {
         let dir = fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
@@ -158,7 +196,9 @@ mod platform {
         kSecAttrSynchronizable, kSecClass, kSecClassGenericPassword, kSecReturnData,
         kSecUseDataProtectionKeychain, kSecValueData,
     };
-    use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemUpdate};
+    use security_framework_sys::keychain_item::{
+        SecItemAdd, SecItemCopyMatching, SecItemDelete, SecItemUpdate,
+    };
 
     use super::Store;
     use crate::failure::Failure;
@@ -360,6 +400,16 @@ mod platform {
                 SecItemUpdate(query.as_concrete_TypeRef(), change.as_concrete_TypeRef())
             })
         }
+
+        fn remove(&self, account: &str) -> Result<bool, String> {
+            let query = CFDictionary::from_CFType_pairs(&item(account));
+            // SAFETY: a valid dictionary.
+            let code = unsafe { SecItemDelete(query.as_concrete_TypeRef()) };
+            if code == errSecItemNotFound {
+                return Ok(false);
+            }
+            status(code).map(|()| true)
+        }
     }
 
     #[cfg(test)]
@@ -434,6 +484,10 @@ mod tests {
                 .insert(account.into(), bytes.to_vec());
             Ok(())
         }
+
+        fn remove(&self, account: &str) -> Result<bool, String> {
+            Ok(self.items.lock().unwrap().remove(account).is_some())
+        }
     }
 
     fn in_memory(dir: &Path, memory: &Memory) -> Result<Secrets, Failure> {
@@ -482,6 +536,38 @@ mod tests {
         let secrets = in_memory(dir.path(), &Memory::default()).unwrap();
         assert_eq!(secrets.read(Secret::Key).unwrap(), None);
         assert_eq!(fs::read(dir.path().join("key")).unwrap(), b"dev-key");
+    }
+
+    #[test]
+    fn removing_a_folders_secrets_deletes_its_items_only_and_leaves_files_alone() {
+        let (dir, other) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        fs::write(dir.path().join("plow-token"), b"dev-token").unwrap();
+        let memory = Memory::default();
+        let secrets = in_memory(dir.path(), &memory).unwrap();
+        secrets.create(Secret::Key, b"key").unwrap();
+        secrets.write(Secret::PlowToken, b"plow-login").unwrap();
+        secrets.write(Secret::AuditKeys, b"audit").unwrap();
+        let theirs = in_memory(other.path(), &memory).unwrap();
+        theirs.create(Secret::Key, b"their-key").unwrap();
+
+        assert_eq!(
+            secrets.remove_each(&Secret::LOGIN).unwrap(),
+            ["key", "plow-token"]
+        );
+        assert_eq!(secrets.read(Secret::AuditKeys).unwrap().unwrap(), b"audit");
+        assert_eq!(secrets.remove_each(&Secret::ALL).unwrap(), ["audit.keys"]);
+        assert_eq!(
+            secrets.remove_each(&Secret::ALL).unwrap(),
+            Vec::<&str>::new()
+        );
+        for secret in Secret::ALL {
+            assert_eq!(secrets.read(secret).unwrap(), None, "{secret:?}");
+        }
+        assert_eq!(theirs.read(Secret::Key).unwrap().unwrap(), b"their-key");
+        assert_eq!(
+            fs::read(dir.path().join("plow-token")).unwrap(),
+            b"dev-token"
+        );
     }
 
     #[test]

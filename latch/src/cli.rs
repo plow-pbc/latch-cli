@@ -147,6 +147,10 @@ pub struct Cli {
 pub enum Command {
     /// Create this peer's key if missing and register it with Plow
     Login(LoginArgs),
+    /// Log this state folder out: stop its host, then delete its key and
+    /// Plow token from the Keychain or its files; the vault and audit stay
+    /// readable after the next login
+    Logout(LogoutArgs),
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
     /// Print this peer's identity and the hosts it can reach
@@ -942,6 +946,14 @@ What callers can reach (each exec and file call is judged):
 /// What a bare `--deny-exec` stands for. An agent uid is hex, so it is
 /// never this.
 pub const EVERY_AGENT: &str = "*";
+
+#[derive(Args, Debug)]
+pub struct LogoutArgs {
+    /// Also delete the vault and audit keys, and then the state folder
+    /// itself, with everything in it
+    #[arg(long)]
+    pub purge: bool,
+}
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
