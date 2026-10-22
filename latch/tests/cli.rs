@@ -2637,7 +2637,10 @@ fn messages_and_contacts_answer_from_a_hosts_messages_and_address_book() {
     assert_eq!(rest["next"], Value::Null);
     let (_, chats) = run(&["messages", "chats", "--kind", "group", "--host", "host"]);
     assert_eq!(chats["chats"][0]["name"], "Dinner");
-    assert_eq!(chats["chats"][0]["participants"][1]["name"], "Bo");
+    assert_eq!(
+        chats["chats"][0]["participants"][1]["name"],
+        "Robert Sample"
+    );
     let (_, unreplied) = run(&["messages", "unreplied", "--host", "host"]);
     assert_eq!(unreplied["messages"][0]["id"], 103, "{unreplied}");
 

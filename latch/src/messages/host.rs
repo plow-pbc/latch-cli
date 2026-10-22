@@ -39,9 +39,14 @@ const MAX_ANSWER: u64 = 12 << 20;
 /// judges and `run` then runs. A request the reader refuses is that
 /// refusal, judged by no one.
 pub async fn plan(workers: &WorkerSetup, op: &str, args: &Value) -> Result<Value, Box<Done>> {
-    let (action, words) =
-        request(op, args).map_err(|failure| Box::new(refused(failure, json!({"action": op}))))?;
-    let id = format!("{op}.{action}");
+    let (action, words) = request(op, args).map_err(|failure| {
+        let action = args["action"].as_str().unwrap_or("unknown");
+        Box::new(refused(
+            failure,
+            audit(op, action, &args["args"], &Value::Null),
+        ))
+    })?;
+    let kept = audit(op, &action, &json!(words), &Value::Null);
     let mut argv = Vec::new();
     if let Some(region) = region().await {
         argv.extend(["--region".to_string(), region]);
@@ -60,12 +65,9 @@ pub async fn plan(workers: &WorkerSetup, op: &str, args: &Value) -> Result<Value
         }
         Ok(_) => Err(Box::new(refused(
             Failure::failed("reader_failed", "the reader gave no plan".to_string()),
-            json!({"action": id, "args": words}),
+            kept.clone(),
         ))),
-        Err(failure) => Err(Box::new(refused(
-            failure,
-            json!({"action": id, "args": words}),
-        ))),
+        Err(failure) => Err(Box::new(refused(failure, kept))),
     }
 }
 
@@ -75,8 +77,7 @@ pub async fn plan(workers: &WorkerSetup, op: &str, args: &Value) -> Result<Value
 /// address book alone for `contacts`.
 pub async fn run(workers: &WorkerSetup, home: &Path, op: &str, args: &Value) -> Done {
     let action = args["action"].as_str().unwrap_or(op);
-    let mut audit =
-        json!({"action": format!("{op}.{action}"), "args": args["args"], "plan": args["plan"]});
+    let mut audit = audit(op, action, &args["args"], &args["plan"]);
     if !args["plan"].is_object() {
         let failure = Failure::usage("bad_request", "the call was never planned".to_string());
         return refused(failure, audit);
@@ -127,6 +128,36 @@ pub fn reads(op: &str, home: &Path) -> Vec<PathBuf> {
         .into_iter()
         .filter(|folder| folder.exists())
         .collect()
+}
+
+/// What the audit and the log keep of a call: its action, the caller's
+/// words and its plan, minus what an answer put there. A cursor holds the
+/// page before's last row (a contact's name, for `contacts search`), so a
+/// cursor's token is not kept, and neither is a plan's position by name.
+pub fn audit(op: &str, action: &str, words: &Value, plan: &Value) -> Value {
+    let words: Vec<Value> = words
+        .as_array()
+        .into_iter()
+        .flatten()
+        .scan(false, |after_cursor, word| {
+            let kept = if *after_cursor {
+                json!("[cursor]")
+            } else {
+                word.clone()
+            };
+            *after_cursor = word == "--cursor";
+            Some(kept)
+        })
+        .collect();
+    let mut audit = json!({"action": format!("{op}.{action}"), "args": words});
+    if !plan.is_null() {
+        let mut plan = plan.clone();
+        if op == "contacts" && plan["after"].is_object() {
+            plan["after"]["key"] = json!("[name]");
+        }
+        audit["plan"] = plan;
+    }
+    audit
 }
 
 fn refused(failure: Failure, audit: Value) -> Done {
@@ -328,6 +359,31 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn the_audit_keeps_no_cursor_and_no_name_from_a_page() {
+        let words = json!(["--cursor", "eyJrZXkiOiJBbm4gRXhhbXBsZSJ9", "--limit", "5"]);
+        let plan = json!({"command": "contacts search", "text": "a", "after": {"key": "Ann Example", "id": 0}});
+        let kept = audit("contacts", "search", &words, &plan);
+        assert_eq!(kept["action"], "contacts.search");
+        assert_eq!(
+            kept["args"],
+            json!(["--cursor", "[cursor]", "--limit", "5"])
+        );
+        assert_eq!(kept["plan"]["after"], json!({"key": "[name]", "id": 0}));
+        assert_eq!(kept["plan"]["text"], "a");
+        assert!(!kept.to_string().contains("Ann") && !kept.to_string().contains("eyJ"));
+        // A messages page is placed by a date, which is kept.
+        let plan = json!({"command": "search", "after": {"key": "782000000000000000", "id": 103}});
+        let kept = audit("messages", "search", &json!(["--cursor", "x"]), &plan);
+        assert_eq!(kept["plan"]["after"]["key"], "782000000000000000");
+        assert_eq!(kept["args"], json!(["--cursor", "[cursor]"]));
+        assert!(
+            audit("messages", "chats", &json!([]), &Value::Null)
+                .get("plan")
+                .is_none()
+        );
     }
 
     #[test]

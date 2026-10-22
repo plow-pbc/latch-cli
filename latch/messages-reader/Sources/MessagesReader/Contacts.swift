@@ -19,7 +19,7 @@ func contactsSearch(_ call: Call, deadline: ContinuousClock.Instant) throws -> A
     // while the book is unchanged.
     let found = book.people.enumerated()
         .filter { _, person in
-            person.name.lowercased().contains(text) || (person.organization?.lowercased().contains(text) ?? false)
+            [person.name, person.nickname, person.organization].contains { $0?.lowercased().contains(text) ?? false }
         }
         .sorted { ($0.element.name, $0.offset) < ($1.element.name, $1.offset) }
     var answer = Answer("people")
@@ -41,6 +41,7 @@ func contactsSearch(_ call: Call, deadline: ContinuousClock.Instant) throws -> A
         }
         let object: [String: Any] = [
             "name": person.name,
+            "nickname": person.nickname ?? NSNull(),
             "organization": person.organization ?? NSNull(),
             "phones": person.phones.map { ["display": $0, "handle": book.phones.handle($0)] },
             "emails": person.emails.map { ["display": $0, "handle": book.phones.handle($0)] },

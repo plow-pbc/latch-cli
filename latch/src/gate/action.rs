@@ -142,10 +142,9 @@ pub fn gated(op: &str, args: &Value, first_area: &Path) -> Option<Gated> {
                 arguments: Some(&args["plan"]),
                 ..none
             };
-            (
-                action,
-                json!({"action": operation, "args": args["args"], "plan": args["plan"]}),
-            )
+            let name = args["action"].as_str().unwrap_or("unknown");
+            let audit = crate::messages::host::audit(op, name, &args["args"], &args["plan"]);
+            (action, audit)
         }
         _ => return None,
     };

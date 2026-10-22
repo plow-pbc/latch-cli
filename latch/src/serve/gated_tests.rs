@@ -1176,7 +1176,8 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
     let Response::Ok(people) = answer else {
         panic!("{answer:?}")
     };
-    assert_eq!(people["people"][0]["name"], "Bo");
+    assert_eq!(people["people"][0]["name"], "Robert Sample");
+    assert_eq!(people["people"][0]["nickname"], "Bo");
     assert_eq!(people["people"][0]["emails"][0]["handle"], "bo@example.com");
 
     let (answer, _) = t
@@ -1214,6 +1215,27 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
     assert_eq!(records[0]["args"]["action"], "messages.search");
     assert_eq!(records[0]["args"]["result"]["count"], 1);
     assert_eq!(records[2]["args"]["result"]["count"], 3);
+
+    // A later page of contacts: its cursor holds the last name the page
+    // before gave, which neither the audit nor the log keeps.
+    let first = json!({"action": "search", "args": ["--limit", "1", "--", "a"]});
+    let (answer, _) = t.call(&agent, "contacts", first).await;
+    let Response::Ok(first) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(first["people"][0]["name"], "Ann Example");
+    let next = first["next"].as_str().unwrap().to_string();
+    let page = json!({"action": "search", "args": ["--cursor", next.clone()]});
+    let (answer, _) = t.call(&agent, "contacts", page).await;
+    let Response::Ok(second) = answer else {
+        panic!("{answer:?}")
+    };
+    assert_eq!(second["people"][0]["name"], "Robert Sample");
+    let paged = &t.audit()[4]["args"];
+    assert_eq!(paged["args"], json!(["--cursor", "[cursor]"]));
+    assert_eq!(paged["plan"]["after"]["key"], "[name]");
+
+    let records = t.audit();
     let audit = std::fs::read_to_string(t.state.join("audit.ndjson")).unwrap();
     let log = std::fs::read_to_string(&path).unwrap();
     assert!(log.contains("messages:"), "{log}");
@@ -1234,8 +1256,10 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
         "Super Duper",
         "lunch?",
         "Ann Example",
+        "Robert Sample",
         "Sample & Co",
         "Dinner",
+        next.as_str(),
     ] {
         assert!(!audit.contains(returned), "{returned} in the audit");
         assert!(!log.contains(returned), "{returned} in serve.log");

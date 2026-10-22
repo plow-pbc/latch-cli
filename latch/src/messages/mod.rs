@@ -4,16 +4,15 @@
 //! (`messages-reader/`, run in a sandboxed worker) answers it.
 //!
 //! The request is `{"action": "search", "args": [...]}`, its args the
-//! reader's own words after its command, so what the judge sees is what the
-//! reader runs. Times given as durations (`--since 10m`) are made absolute
-//! here, so the judge sees the window as dates.
+//! reader's own words after its command. The host has the reader plan the
+//! call (times resolved on the host's clock, handles made canonical) and
+//! judges and runs that plan.
 
 pub mod host;
 
 use serde_json::{Value, json};
 
 use crate::cli::{ContactsCommand, MessagesCommand};
-use crate::failure::Failure;
 
 /// What the agent guide says first, and every answer's `warning` repeats.
 pub const HELP: &str = "\
@@ -32,7 +31,7 @@ Messages and contacts (macOS hosts):
   in a phrase search it counts in `unchecked`, not as a match.";
 
 /// The request for one `latch messages` call.
-pub fn messages_request(command: &MessagesCommand) -> Result<Value, Failure> {
+pub fn messages_request(command: &MessagesCommand) -> Value {
     let mut args: Vec<String> = Vec::new();
     let mut flag = |name: &str, value: Option<String>| {
         if let Some(value) = value {
@@ -56,8 +55,8 @@ pub fn messages_request(command: &MessagesCommand) -> Result<Value, Failure> {
                 flag("--from", Some(handle.clone()));
             }
             flag("--chat-id", chat_id.map(|id| id.to_string()));
-            flag("--since", since.as_deref().map(absolute).transpose()?);
-            flag("--until", until.as_deref().map(absolute).transpose()?);
+            flag("--since", since.clone());
+            flag("--until", until.clone());
             flag("--limit", limit.map(|n| n.to_string()));
             flag("--cursor", cursor.clone());
             if *oldest_first {
@@ -105,7 +104,7 @@ pub fn messages_request(command: &MessagesCommand) -> Result<Value, Failure> {
             "unreplied"
         }
     };
-    Ok(json!({"action": action, "args": args}))
+    json!({"action": action, "args": args})
 }
 
 /// The request for one `latch contacts` call.
@@ -134,45 +133,5 @@ pub fn contacts_request(command: &ContactsCommand) -> Value {
             args.extend(handles.iter().cloned());
             json!({"action": "lookup", "args": args})
         }
-    }
-}
-
-/// A `--since`/`--until` value with any duration (`10m`, `2h`, `7d`) made
-/// a time, so the judge and the audit see the window itself. Dates pass as
-/// written; the reader checks them.
-fn absolute(text: &str) -> Result<String, Failure> {
-    let units = [('s', 1), ('m', 60), ('h', 3600), ('d', 86400)];
-    let Some((unit, scale)) = units
-        .iter()
-        .find(|(unit, _)| text.ends_with(*unit) && !text.contains('-'))
-    else {
-        return Ok(text.to_string());
-    };
-    let number: i64 = text.trim_end_matches(*unit).parse().map_err(|_| {
-        Failure::usage(
-            "usage",
-            format!("{text}: want a date, or a duration like 10m, 2h or 7d"),
-        )
-    })?;
-    let then = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(number * scale);
-    Ok(then.strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn durations_become_times_and_dates_stay() {
-        let then = absolute("2h").unwrap();
-        let seconds = jiff::Timestamp::now().as_second()
-            - then.parse::<jiff::Timestamp>().unwrap().as_second();
-        assert!((7199..=7201).contains(&seconds), "{then}");
-        assert_eq!(absolute("2026-10-21").unwrap(), "2026-10-21");
-        assert_eq!(
-            absolute("2026-10-21T09:00:00-07:00").unwrap(),
-            "2026-10-21T09:00:00-07:00"
-        );
-        assert!(absolute("xm").is_err());
     }
 }

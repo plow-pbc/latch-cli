@@ -146,7 +146,7 @@ func chatsListParticipantsWithNamesByLastRealMessage() throws {
     #expect(chats.rows.map { $0["kind"] as? String } == ["group", "direct", "direct"])
     let people = try #require(chats.rows[0]["participants"] as? [[String: Any]])
     #expect(people.map { $0["handle"] as? String } == ["+15550000001", "bo@example.com", "+15550000004"])
-    #expect(people.map { $0["name"] as? String } == ["Ann Example", "Bo", nil])
+    #expect(people.map { $0["name"] as? String } == ["Ann Example", "Robert Sample", nil])
     #expect(read(f, ["chats", "--kind", "group"], now: now).ids == [3])
     let first = read(f, ["chats", "--limit", "2"], now: now)
     #expect(first.ids == [3, 1])
@@ -266,7 +266,13 @@ func aCallPastItsDeadlineStopsAndSaysWhereToGoOn() throws {
 func contactsSearchAndLookupGiveHandlesToPassBack() throws {
     let f = everyday()
     let sample = read(f, ["contacts", "search", "sample"], now: now)
-    #expect(sample.rows.map { $0["name"] as? String } == ["Bo"])
+    #expect(sample.rows.map { $0["name"] as? String } == ["Robert Sample"])
+    #expect(sample.rows[0]["nickname"] as? String == "Bo")
+    // The full name, the nickname and the organization are each searched.
+    for text in ["robert", "bo", "& co"] {
+        #expect(read(f, ["contacts", "search", text], now: now).rows.map { $0["name"] as? String }
+            .contains("Robert Sample"), "\(text)")
+    }
     #expect(sample.rows[0]["organization"] as? String == "Sample & Co")
     #expect((sample.rows[0]["emails"] as? [[String: String]]) == [["display": "Bo@Example.com", "handle": "bo@example.com"]])
     let ann = read(f, ["contacts", "search", "ANN"], now: now)

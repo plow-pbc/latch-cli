@@ -239,7 +239,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             })
         }
         Command::Messages(command) => {
-            let request = messages::messages_request(&command)?;
+            let request = messages::messages_request(&command);
             to_json(
                 call_host(
                     &state,

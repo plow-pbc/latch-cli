@@ -7,9 +7,11 @@
 import Foundation
 import SQLite3
 
-/// One card: who, and every phone and email on it.
+/// One card: who (the full name, else the nickname, else the
+/// organization), and every phone and email on it.
 struct Person {
     let name: String
+    let nickname: String?
     let organization: String?
     var phones: [String] = []
     var emails: [String] = []
@@ -143,10 +145,11 @@ final class AddressBook {
             let full = [row.string(2), row.string(3)].compactMap { $0 }.filter { !$0.isEmpty }
                 .joined(separator: " ")
             let organization = row.string(4).flatMap { $0.isEmpty ? nil : $0 }
-            let name = !nickname.isEmpty ? nickname : !full.isEmpty ? full : organization ?? ""
+            let name = !full.isEmpty ? full : !nickname.isEmpty ? nickname : organization ?? ""
             if !name.isEmpty {
                 if people[id] == nil {
-                    people[id] = Person(name: name, organization: organization)
+                    people[id] = Person(
+                        name: name, nickname: nickname.isEmpty ? nil : nickname, organization: organization)
                     order.append(id)
                 }
                 if let phone = row.string(5), !phone.isEmpty { people[id]?.phones.append(phone) }
