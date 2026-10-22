@@ -1,0 +1,102 @@
+# CLI output contract and copy pass
+
+Date: 2026-10-22. Status: approved direction (chef: "go"); revised after first read and a check against the code at origin/main bcf17c9, ready for review.
+Product stage: internal tool, pre-PMF. Primary users are agents and a future GUI running latch as a subprocess; humans use it mainly for setup and config. No back-compat with today's output is required.
+
+## 0. In one paragraph
+
+Two things. First, **consistent JSON**: every regular command returns JSON on stdout and fails with one JSON error shape on stderr, whether or not it runs in a terminal, so an agent or GUI can rely on a single contract. Second, **a copy pass**: every string a human reads (setup and login screens, error messages, help one-liners) is rewritten to a short, plain house style, proposed as a table first and applied after the chef approves it.
+
+## 1. Why
+
+Today latch mixes two rules: stdout is JSON for most commands, but errors become plain sentences when stderr is a terminal, some commands print text even when piped (`setup`, `logs`, `status --pretty`), and nothing forces JSON. A GUI or agent cannot rely on one contract, and human copy is verbose. Research on best-in-class CLIs (`research/research-cli-output-claude.md`, `research/research-cli-output-codex.md`, next to this spec) found that the consistent ones use one global switch and never let terminal detection decide the data format.
+
+## 2. The contract
+
+One sentence: **every command returns JSON, except the human commands (`setup`, interactive `login`, the dashboard) and help text.** (Chef, 2026-10-22: no `--human` flag and no per-command text screens.)
+
+### 2.1 JSON by default, everywhere
+- Every command writes its result as JSON on stdout and any error as JSON on stderr, whether or not stdout/stderr is a terminal. No terminal detection decides format.
+- `--version` returns JSON. `browser text` returns the page text inside JSON; `--raw` is removed.
+- Internal protocols are not commands and are out of scope: worker framing (exec, file transfer), and program output that `exec` forwards inside its result.
+- **A command's stderr is only its one error line.** `LATCH_TRACE` output goes to a file in the state folder, not stderr. Foreground `serve` is a long-running process, not a command result: its logs, trace included, stay on stderr as today.
+
+### 2.2 Streams
+- `events --follow`, `audit show -f`, `logs [-f]` and `login --events` emit JSON lines. Each line has a `type`; the first line is `{"type":"hello","schema":N}`; consumers ignore unknown fields.
+- `logs` emits one JSON line per log record. How records are stored on disk is the implementer's call.
+
+### 2.3 No text mode
+- There is no flag or environment variable that turns a regular command's output into text. `status --pretty`'s text card and other per-command text renderings are removed.
+- **`--pretty` is a global flag that indents the JSON** (still JSON, same content; chef, 2026-10-22). Default output is compact, one object per line. Streams stay one object per line even with `--pretty`. Errors stay one line on stderr. A person at a terminal reads the JSON; its error `message` is one plain sentence.
+- Humans get richer views in the human commands instead (§2.4). The dashboard grows into the human view of status, connectors, rules and the audit over time.
+
+### 2.4 Human commands
+- `setup`, interactive `login`, and the dashboard (attached `serve`, `dashboard`) are for people and are never JSON. Nothing blocks an agent from running them; they just aren't a machine interface. `help`, `--help`, `skill` and bare `latch` (its logo and help) are text by nature.
+- Their machine equivalents are regular JSON commands: setup's steps (`plugins enable …`, `status`), `login --events` (JSON lines as today: `code` carrying the link and expiry, `waiting`, `verified`, `expired`, `error`), `serve -d` / `serve --foreground`, and the audit (`audit show [-f]`, `events --follow`) in place of the dashboard.
+- Without a terminal, a human command exits 2 with JSON `no_terminal` (the code the dashboard already uses), whose `next` names its machine equivalent. Only interaction needs a terminal: `login` with an agent credential or an existing login still works non-interactively as today, returning JSON.
+- latch invoking itself (e.g. `setup` running its steps) parses its children's JSON.
+
+### 2.5 One error shape
+- `{"error":{"code":"…","message":"…","next":"…","exit":N, …details}}` on stderr, one line, for every failure: argument parsing, transport, setup, host, connector.
+- `message` is one short sentence; usage hints (e.g. exec's "put the command after `--`") go in `next`, not a second paragraph; `next` is at most one command or action (omitted when there is none); `exit` equals the process exit code.
+- Argument and usage errors always exit 2, and so does `no_terminal`; consumers branch on `code`, not the exit number. Existing exit classes otherwise stay; every code and its exit is listed in `help --json`.
+- A command whose operation succeeded but whose child failed (e.g. `exec` exit 1) returns a result, not an error; its JSON carries the child's status. An `exec` timeout is an error on stderr; any output the program produced before the timeout goes in the error's details.
+
+## 3. Copy guide
+
+Applies to every human-facing string: the human commands' screens and prompts, error `message` and `next`, help one-liners.
+
+1. Lead with the outcome in one short sentence.
+2. Name what was affected (host, connector, path).
+3. At most one next step, as a command when there is one.
+4. Say refused / unavailable / failed / skipped precisely; never claim success early.
+5. No explanation unless something failed or the user must decide.
+6. No apologies, celebration or exclamation marks.
+7. IDs, codes and diagnostics go in details, not the sentence.
+8. Colour and symbols only reinforce words; honour `NO_COLOR`; sanitize terminal control characters.
+
+Example: `The Messages connector is off. Run: latch plugins enable messages`.
+
+## 4. Out of scope
+
+Localization; a GUI itself; changing what commands do (only how they report); where foreground `serve` logs go.
+
+## Chunks
+
+### Global Constraints
+- Product stage: internal tool, pre-PMF. Size the review bar to that.
+- JSON is the default for every command's result and errors; no terminal detection chooses format (§2.1). The human commands and help text are the only exceptions (§2.4); no text mode for regular commands (§2.3).
+- One error shape (§2.5) for every failure path; `exit` in the JSON equals the process exit code.
+- No back-compat shims for today's output; delete old text paths rather than keep both.
+- The copy guide (§3) governs every human string. Chunks 1a–1d may leave existing message wording as is; Chunks 2–3 own the wording.
+- "Every command" means the command list `help --json` reports, so tests cannot drift from the real surface.
+
+### Chunk 1a: One error shape
+Implements: §2.5, and the `LATCH_TRACE` rule in §2.1
+Interfaces: consumes existing failure codes and exit classes · produces the error shape with `code`/`message`/`next`/`exit`, and `help --json` listing every error code with its exit
+Done when: a test triggers one failure per command (from `help --json`) with stderr both a terminal (pty) and piped, and each gives exactly one JSON error line whose `exit` equals the process exit code; bad arguments exit 2 for every command; with `LATCH_TRACE` set, stderr is still exactly one line and the trace lands in the state folder; `help --json` lists every code with its exit.
+
+### Chunk 1b: JSON results, no text mode
+Implements: §2.1 (results), §2.3
+Interfaces: consumes 1a's error shape · produces JSON-only results for every regular command and the global `--pretty`
+Done when: a test runs every non-interactive command (from `help --json`) with stdout both a terminal (pty) and piped and gets JSON of identical shape; `--pretty` gives indented JSON of the same content for every command; `--version` and `browser text` return JSON and `--raw` is gone; a grep shows the per-command text renderers (including `status --pretty`'s card) are deleted; an `exec` whose child exits 1 returns a result, and an `exec` timeout returns an error carrying the partial output.
+
+### Chunk 1c: Typed streams
+Implements: §2.2
+Interfaces: consumes 1a's error shape · produces JSON-lines streams with `type` and a `hello` first line
+Done when: for `events --follow`, `audit show -f`, `logs`, `logs -f` and `login --events`, a test reads the stream piped and finds a `hello` line with `schema` first and a `type` on every line; `logs` gives one line per record; `--pretty` does not indent stream lines.
+
+### Chunk 1d: Human commands
+Implements: §2.4
+Interfaces: consumes 1a's error shape and 1b's JSON commands · produces `no_terminal` for every human command and `setup` driving its steps through their JSON
+Done when: `setup`, interactive `login`, attached `serve` and `dashboard` each exit 2 with `no_terminal` and a `next` naming the machine equivalent when run without a terminal; `login` with an agent credential or an existing login succeeds without a terminal and returns JSON; `setup` still completes in a terminal, with its steps' JSON parsed rather than printed.
+
+### Chunk 2: Copy pass — proposal
+Implements: §3
+Interfaces: consumes every human-facing string after Chunks 1a–1d · produces a before/after table for the chef
+Done when: a table of every human-facing string (human-command screens and prompts, error messages and `next`, help one-liners), with the current text, the proposed text and where it lives, is delivered to the chef; no code changed.
+
+### Chunk 3: Copy pass — apply
+Implements: §3
+Interfaces: consumes the chef-approved table from Chunk 2
+Done when: every approved string is in the code; tests that assert copy are updated; a grep shows none of the replaced strings remain.
