@@ -1,5 +1,7 @@
 # latch's front door. The CLI's other recipes are in latch/justfile.
 
+set dotenv-filename := ".env.local"
+
 # Builds this checkout for release into .dev/bin/latch, for hand testing.
 build *args:
     @just --justfile latch/justfile build {{args}}
