@@ -1,0 +1,47 @@
+name: measure-release
+# TEMPORARY: times the release's build jobs on this branch (a release runs
+# only from main); removed before merge.
+on:
+  push:
+    branches: [release-speedup]
+permissions:
+  contents: read
+jobs:
+  linux:
+    uses: ./.github/workflows/package.yml
+    with:
+      tag: v0.1.0-measure.${{ github.run_number }}
+      stage: build
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-15
+    env:
+      VERSION: v0.1.0-measure.${{ github.run_number }}
+      LATCH_BUILD_CHANNEL: standalone tag v0.1.0-measure.${{ github.run_number }}
+      LATCH_BUILD_NUMBER: ${{ github.run_number }}
+      LATCH_BUILD_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install && rustup target add '${{ matrix.target }}'
+        working-directory: latch
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+          key: release-${{ matrix.target }}
+          save-if: false
+      - name: Build
+        working-directory: latch
+        shell: bash
+        run: |
+          LATCH_MESSAGES_READER_SHA256=$(messages-reader/build.sh | tail -n 1)
+          export LATCH_MESSAGES_READER_SHA256
+          cargo build --release --locked --target '${{ matrix.target }}'
+          codesign --force --sign - 'target/${{ matrix.target }}/release/latch'
+          'target/${{ matrix.target }}/release/latch' --version
+          file 'target/${{ matrix.target }}/release/latch'
+      - name: Package
+        shell: bash
+        run: sh scripts/package-release.sh "$VERSION" '${{ matrix.target }}' 'latch/target/${{ matrix.target }}/release/latch'
