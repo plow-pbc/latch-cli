@@ -98,58 +98,25 @@ pub(super) struct FileShown {
     size: u64,
 }
 
-/// A judged action that was let through: what to record as done once its
-/// outcome is known.
-pub(super) struct Judged<'a> {
-    gate: Gate<'a>,
-    action: Action,
-}
-
-impl Judged<'_> {
-    /// Records a one-time action (a plan or a fill) as done by the caller,
-    /// with how it ended, for the judge's "already done". Opening a site,
-    /// running a script, uploading or downloading again is normal, so
-    /// these are not recorded.
-    pub(super) fn ended<T>(self, result: &Result<T, Failure>) {
-        if !matches!(
-            self.action,
-            Action::BrowserPlan { .. } | Action::VaultFill { .. }
-        ) {
-            return;
-        }
-        let outcome = match result {
-            Ok(_) => "ok",
-            Err(failure) => failure.code.as_str(),
-        };
-        self.gate.did(&self.action, outcome);
-    }
-}
-
 /// Judges `action` for the caller's gate: no gate (a caller in the
-/// browser's own tests) is never judged. The judgment goes to the audit as
-/// `gate`.
-pub(super) async fn judge<'a>(
-    gate: Option<Gate<'a>>,
+/// browser's own tests) is never judged. The audit keeps what was judged,
+/// whole, as `judged` (a plan's steps as written, like an exec's argv),
+/// and the judgment as `gate`.
+pub(super) async fn judge(
+    gate: Option<Gate<'_>>,
     action: Action,
     audit: &mut Map<String, Value>,
-) -> Result<Option<Judged<'a>>, Failure> {
+) -> Result<(), Failure> {
     let Some(gate) = gate else {
-        return Ok(None);
+        return Ok(());
     };
-    let (judged, record) = judgment(gate, action).await;
-    audit.insert("gate".into(), record);
-    judged.map(Some)
-}
-
-/// Judges `action`, and gives the judgment's `gate` object for the
-/// record of whatever was judged.
-pub(super) async fn judgment(
-    gate: Gate<'_>,
-    action: Action,
-) -> (Result<Judged<'_>, Failure>, Value) {
+    audit.insert(
+        "judged".into(),
+        serde_json::to_value(&action).expect("an action serializes"),
+    );
     let judgment = gate.judge(&action).await;
-    let judged = judgment.verdict.map(|()| Judged { gate, action });
-    (judged, judgment.gate)
+    audit.insert("gate".into(), judgment.gate);
+    judgment.verdict
 }
 
 /// A URL as the site rules read it: outside tests, itself.

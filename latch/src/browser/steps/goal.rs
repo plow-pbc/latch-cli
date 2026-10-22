@@ -618,7 +618,7 @@ impl Run<'_> {
                 if let Some(object) = args.as_object_mut() {
                     object.remove("kind");
                 }
-                let judged = self.judge_fill(n, &args).await?;
+                self.judge_fill(n, &args).await?;
                 if bundle.confirm {
                     args["item_title"] = json!(bundle.title);
                     let failure = confirm_fill(self.browsers, self.entry, &args, self.audit).await;
@@ -633,17 +633,10 @@ impl Run<'_> {
                         record["gate"] = judgment;
                     }
                     self.records.push(record);
-                    let failure = Err(failure);
-                    if let Some(judged) = judged {
-                        judged.ended(&failure);
-                    }
-                    return failure;
+                    return Err(failure);
                 }
                 self.choice = Some(choice_record(&decision, Some(pick)));
                 let sent = self.fill_now(n, args, None).await;
-                if let Some(judged) = judged {
-                    judged.ended(&sent);
-                }
                 self.choice = None;
                 *acted += 1;
                 before = Some(state);
