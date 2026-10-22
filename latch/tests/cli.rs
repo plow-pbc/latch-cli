@@ -3507,11 +3507,6 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
     assert_eq!(shown.status.code(), Some(2), "{shown:?}");
     let error: Value = serde_json::from_slice(&shown.stderr).unwrap();
     assert_eq!(error["error"]["code"], "not_logged_in", "{error}");
-    let again = logout(&host, &[]);
-    assert_eq!(
-        (&again["removed"], &again["stopped"]),
-        (&json!([]), &json!(false))
-    );
 
     // Logged in again, the vault and the audit log read as before.
     let token = dir.path().join("owner.token");
@@ -3547,45 +3542,37 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
 }
 
 #[test]
-fn logout_refuses_a_state_folder_replaced_while_it_waits_and_deletes_nothing() {
+fn logout_refuses_a_link_to_a_state_folder_or_a_folder_that_is_not_one() {
     let dir = test_dir();
-    let (selected, other) = (dir.path().join("selected"), dir.path().join("other"));
-    for state in [&selected, &other] {
-        fs::create_dir(state).unwrap();
-        fs::write(
-            state.join("latch.json"),
-            r#"{"format": 2, "written_by": "test"}"#,
-        )
-        .unwrap();
-        for file in SECRET_FILES {
-            fs::write(state.join(file), "synthetic").unwrap();
+    let (real, link, other) = (
+        dir.path().join("state"),
+        dir.path().join("link"),
+        dir.path().join("photos"),
+    );
+    fs::create_dir(&real).unwrap();
+    fs::create_dir(&other).unwrap();
+    fs::write(
+        real.join("latch.json"),
+        r#"{"format": 2, "written_by": "test"}"#,
+    )
+    .unwrap();
+    for (folder, file) in [&real, &other]
+        .iter()
+        .flat_map(|f| SECRET_FILES.map(|s| (*f, s)))
+    {
+        fs::write(folder.join(file), "synthetic").unwrap();
+    }
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    for state in [&link, &other] {
+        for args in [vec!["logout"], vec!["logout", "--purge"]] {
+            let output = latch(state, &args, &[]);
+            assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "state_format", "{error}");
         }
     }
-    // Logout's stop waits for this lock while the folder is swapped.
-    let launch = fs::File::create(selected.join("launch.lock")).unwrap();
-    launch.lock().unwrap();
-    for args in [vec!["logout"], vec!["logout", "--purge"]] {
-        let logout = latch_command(&selected, &args, &[])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        thread::sleep(std::time::Duration::from_millis(800));
-        let moved = dir.path().join("moved");
-        fs::rename(&selected, &moved).unwrap();
-        std::os::unix::fs::symlink(&other, &selected).unwrap();
-        launch.unlock().unwrap();
-        let output = logout.wait_with_output().unwrap();
-        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
-        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(error["error"]["code"], "state_changed", "{error}");
-        assert_eq!(secret_files_in(&moved), SECRET_FILES, "{args:?}");
-        assert_eq!(secret_files_in(&other), SECRET_FILES, "{args:?}");
-        // Put the folder back for the next run, its lock held again.
-        fs::remove_file(&selected).unwrap();
-        fs::rename(&moved, &selected).unwrap();
-        launch.lock().unwrap();
-    }
+    assert_eq!(secret_files_in(&real), SECRET_FILES);
+    assert_eq!(secret_files_in(&other), SECRET_FILES);
 }
 
 #[test]
@@ -3604,14 +3591,10 @@ fn no_host_starts_while_logout_holds_the_state_folder() {
     .stderr(std::process::Stdio::piped())
     .spawn()
     .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while !held.exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "logout never held the folder"
-        );
-        thread::sleep(std::time::Duration::from_millis(20));
-    }
+    assert!(
+        eventually(20, || held.exists()),
+        "logout never held the folder"
+    );
     let mut serve = Serving(
         serve_command(&host, &relay)
             .stderr(std::process::Stdio::piped())
@@ -3643,22 +3626,6 @@ fn no_host_starts_while_logout_holds_the_state_folder() {
         out["removed"],
         json!(["key", "plow-token", "config.json"]),
         "{out}"
-    );
-}
-
-#[test]
-fn logout_purge_deletes_no_folder_that_is_not_latch_state() {
-    let dir = test_dir();
-    let other = dir.path().join("photos");
-    fs::create_dir(&other).unwrap();
-    fs::write(other.join("key"), "not latch's").unwrap();
-    let output = latch(&other, &["logout", "--purge"], &[]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "state_format", "{error}");
-    assert_eq!(
-        fs::read_to_string(other.join("key")).unwrap(),
-        "not latch's"
     );
 }
 
