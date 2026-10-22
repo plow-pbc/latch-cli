@@ -56,6 +56,8 @@ struct Host {
     /// The live view, when `serve` shows one (see `dashboard.rs`).
     dashboard: Option<Dashboard>,
     workers: WorkerSetup,
+    /// Open browser sessions, one per profile.
+    browsers: crate::browser::host::Browsers,
     /// The host's vault, shared by every engine and profile.
     vault: std::sync::Arc<crate::vault::host::Vault>,
     /// Our own endpoint and name, which a phone link points at.
@@ -148,11 +150,13 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Runs the host until it is asked to stop. With `show_dashboard`, a live
 /// view takes the terminal and the log goes to `serve.log` in the state
 /// directory; the terminal is given back however the host stops.
+/// With `headless_browsers`, every browser session runs with no window.
 pub async fn run(
     state: &StateDir,
     folders: &[PathBuf],
     allow_read: &[PathBuf],
     show_dashboard: bool,
+    headless_browsers: bool,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
     // A host that could not sandbox its workers would refuse every call;
@@ -170,8 +174,6 @@ pub async fn run(
             state.path.clone()
         }
     };
-    let program = std::env::current_exe()
-        .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
     // Held until this process ends, however it ends.
     let _lock = lock_state(&state_dir)?;
     // From here on, other processes see this host's steps (`lifecycle.rs`).
@@ -181,9 +183,9 @@ pub async fn run(
         folders,
         allow_read,
         show_dashboard,
+        headless_browsers,
         deny_exec,
         state_dir,
-        program,
     )
     .await;
     let (phase, error) = match &result {
@@ -205,10 +207,12 @@ async fn run_locked(
     folders: &[PathBuf],
     allow_read: &[PathBuf],
     show_dashboard: bool,
+    headless_browsers: bool,
     deny_exec: DenyExec,
     state_dir: PathBuf,
-    program: PathBuf,
 ) -> Result<(), Failure> {
+    let program = std::env::current_exe()
+        .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
     // Named folders (with their `--allow-read`) win; with none, what
     // `latch shares set` saved.
     let saved;
@@ -251,7 +255,16 @@ async fn run_locked(
     } else {
         None
     };
-    let result = run_host(state, config, workers, dashboard.clone(), rules, deny_exec).await;
+    let result = run_host(
+        state,
+        config,
+        workers,
+        dashboard.clone(),
+        headless_browsers,
+        rules,
+        deny_exec,
+    )
+    .await;
     if let Some(dashboard) = &dashboard {
         dashboard.stop();
     }
@@ -263,6 +276,7 @@ async fn run_host(
     config: Config,
     workers: WorkerSetup,
     dashboard: Option<Dashboard>,
+    headless_browsers: bool,
     rules: RuleFiles,
     deny_exec: DenyExec,
 ) -> Result<(), Failure> {
@@ -351,11 +365,23 @@ async fn run_host(
     ));
 
     let vault = crate::vault::host::Vault::new(workers.state_dir.clone());
+    if headless_browsers {
+        log("browsers: headless, with no window");
+    }
+    let browsers = crate::browser::host::Browsers::new(
+        workers.state_dir.clone(),
+        vault.clone(),
+        headless_browsers,
+    );
+    if let Some(dashboard) = &dashboard {
+        browsers.show_on(dashboard.clone());
+    }
     let host = Arc::new(Host {
         plow,
         audit: Arc::new(Mutex::new(audit)),
         workers,
         dashboard,
+        browsers,
         vault,
         endpoint: endpoint.clone(),
         name,
@@ -400,6 +426,9 @@ async fn run_host(
     };
     step("finishing the operations running");
     shut_down(&host, moved.is_none().then_some(heartbeat), connections).await;
+    // Every browser closes, however the host stopped.
+    step("closing browsers");
+    host.browsers.close_all().await;
     // A name that moved is not ours any more: there is nothing of ours to
     // take offline.
     if moved.is_none() {
@@ -918,6 +947,25 @@ async fn serve_operation(
                         )
                         .await
                     }
+                    "browser" => match &gate {
+                        Ok(gate) => {
+                            crate::browser::host::run(
+                                &host.browsers,
+                                caller,
+                                &identity.kind,
+                                *gate,
+                                request.args,
+                                &mut send,
+                                &mut recv,
+                            )
+                            .await
+                        }
+                        Err(failure) => Done {
+                            response: Response::error(failure),
+                            audit_args: Value::Null,
+                            outcome: failure.code.clone(),
+                        },
+                    },
                     "google" => {
                         crate::google::host::run(
                             &host.workers,

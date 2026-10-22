@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Set up your weekly box — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+// A same-URL wizard: every stage has the same "Next" button in the same
+// place, and the address never changes.
+const STAGES = [
+  ["Welcome", "<p>Your weekly box brings fresh salads every week.</p>"],
+  ["Delivery day", "<p>Your box arrives on Tuesday.</p>"],
+  ["Box size", "<p>Your box holds 4 salads.</p>"],
+];
+function show(stage) {
+  if (stage >= STAGES.length) {
+    store.set("weekly_box", "done");
+    main.innerHTML = "<h1>All set</h1><p>Your weekly box starts on Tuesday.</p>";
+    return;
+  }
+  const [title, body] = STAGES[stage];
+  main.innerHTML = `<h1>Set up your weekly box</h1><h2>Step ${stage + 1} of ${STAGES.length}: ${title}</h2>${body}
+<p><button type="button" id="next">Next</button></p>`;
+  document.getElementById("next").onclick = () => show(stage + 1);
+}
+show(0);
+</script></body></html>

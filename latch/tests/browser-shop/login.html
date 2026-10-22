@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Sign in — Greenleaf Market</title><link rel="stylesheet" href="style.css"><script src="shop.js"></script></head>
+<body><main></main><script>
+header(); cookieBanner();
+const main = document.querySelector('main');
+
+main.innerHTML = `<h1>Sign in</h1><form id="f" action="login-password.html"><label>Email address <input type="email" name="email" id="email" autocomplete="username webauthn"></label>
+<input type="hidden" name="next" value="${qs("next") || "account.html"}"><p><button type="submit">Continue</button></p></form>
+<p>New here? <a href="#">Create an account</a></p>`;
+</script></body></html>

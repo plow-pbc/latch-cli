@@ -1,0 +1,9 @@
+<!doctype html><title>latch wrong token test</title>
+<!-- A sign-in whose identifier box is marked as a phone number, though it
+     takes an email too (as one large site's is); posts to /welcome. -->
+<h1>Log in</h1>
+<form method="post" action="welcome">
+  <p><label>Phone number or email <input type="text" name="email" autocomplete="tel-national"></label></p>
+  <p><label>Password <input type="password" name="password" autocomplete="current-password"></label></p>
+  <p><button type="submit">Log in</button></p>
+</form>

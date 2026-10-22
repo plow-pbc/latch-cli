@@ -1,0 +1,10 @@
+{
+  "name": "latch-camoufox",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "better-sqlite3": "file:sqlite",
+    "camoufox-js": "0.13.0",
+    "playwright-core": "1.62.1"
+  }
+}

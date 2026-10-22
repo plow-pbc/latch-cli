@@ -1,0 +1,17 @@
+<!doctype html><title>latch identifier-first test</title>
+<!-- The first stage of a sign-in, marked as the autofill grammar says: the
+     email (`username webauthn`) and its own submit button, "Continue", which
+     goes to the next stage as a new document: ?then=password (the default,
+     idf-password.html), code (totp.html), chooser (idf-chooser.html) or two
+     (idf-two.html, a password form with two submit buttons). -->
+<h1>Sign in</h1>
+<form id="first" action="idf-password.html">
+  <p><label>Email <input type="email" name="email" autocomplete="username webauthn"></label></p>
+  <p><button type="submit">Continue</button> <button type="button">Sign in with a passkey</button>
+     <button type="button">Continue with Google</button></p>
+</form>
+<script>
+  const then = new URLSearchParams(location.search).get('then') || 'password';
+  document.getElementById('first').action = {password: 'idf-password.html', code: 'totp.html',
+    chooser: 'idf-chooser.html', two: 'idf-two.html'}[then];
+</script>

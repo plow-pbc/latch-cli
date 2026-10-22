@@ -67,9 +67,22 @@ iroh-relay = { version = "1.3.0", default-features = false, features = ["server"
 jiff = "0.2.38"
 
 [features]
-# Builds the gatekeeper tests that call the decision model (jev) for real;
-# `just gatekeeper-live KEYFILE` runs one. Never part of the gate.
+# Builds the browser test that calls the decision model (jev) for real;
+# `just test-model KEYFILE` runs it. Never part of the gate.
 live-model = []
+# Runs the real-engine browser tests headed, with a window behind the
+# owner's, for what only a real window shows (its focus); `just
+# test-headed` runs them. Never part of the gate.
+headed-tests = []
+# Builds the real-engine browser tests on Linux, for a host whose install.sh
+# put its engine in place (`just conformance cft` on the Pi). Never
+# part of the gate, whose containers have no engine.
+linux-browser-tests = []
+
+# A Camoufox handoff brings its app forward through AppKit
+# (`NSRunningApplication`); already in the tree through iroh.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "=0.5.0"
