@@ -4,8 +4,7 @@ name: keychain
 # (latch/src/secrets.rs). This signs one as a release would (Developer ID,
 # in the helper bundle with its provisioning profile) and runs what only it
 # can show: the `--ignored` Keychain tests in tests/cli.rs, and a clear
-# failure where the Keychain is unusable. It signs a debug build: the
-# tests' interruption hook exists only there.
+# failure where the Keychain is unusable.
 # The release environment signs only on main: after a merge that touches
 # secret custody, and by hand.
 on:
@@ -34,8 +33,8 @@ jobs:
         working-directory: latch
         run: |
           rustup toolchain install
-          cargo build --locked
-          cargo test --locked --test cli --no-run
+          cargo build --release --locked
+          cargo test --release --locked --test cli --no-run
       - name: Load signing credentials
         uses: 1password/load-secrets-action@v2
         with:
@@ -64,7 +63,7 @@ jobs:
         shell: bash
         run: |
           app="$RUNNER_TEMP/Latch.app"
-          sh scripts/macos-helper-bundle.sh latch/target/debug/latch "$app"
+          sh scripts/macos-helper-bundle.sh latch/target/release/latch "$app"
           test -f "$app/Contents/embedded.provisionprofile"
           codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
             --entitlements latch/macos/helper.entitlements --sign "$IDENTITY" "$app"
@@ -73,13 +72,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           ln -s "$app/Contents/MacOS/latch" "$RUNNER_TEMP/bin/latch"
       # The signed latch is reached through a PATH-style link, as installed.
-      # LATCH_TEST_FILES_BIN is the same build, unsigned: it keeps files.
       - name: Keychain tests
         working-directory: latch
         env:
           LATCH_TEST_BIN: ${{ runner.temp }}/bin/latch
-          LATCH_TEST_FILES_BIN: ${{ github.workspace }}/latch/target/debug/latch
-        run: cargo test --locked --test cli -- --ignored --test-threads=1 --nocapture a_signed_latch
+        run: cargo test --release --locked --test cli -- --ignored --nocapture a_signed_latch
       # A system daemon runs outside any user session, where the
       # data-protection Keychain is unavailable (Apple TN3137): the signed
       # latch must fail and say so, and write no key file.

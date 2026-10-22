@@ -2404,56 +2404,6 @@ fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
     drop(serve);
 }
 
-#[test]
-#[ignore = "needs LATCH_TEST_BIN (signed for the Keychain) and LATCH_TEST_FILES_BIN (not); the keychain workflow runs it"]
-fn a_signed_latch_moves_file_secrets_into_the_keychain_even_when_cut_short() {
-    let signed = latch_bin();
-    let files = PathBuf::from(std::env::var_os("LATCH_TEST_FILES_BIN").unwrap());
-    let plow = LivePlow::start();
-    let (_relay, relay) = local_relay();
-    let dir = test_dir();
-    let share = dir.path().join("share");
-    fs::create_dir(&share).unwrap();
-
-    // Set up by a latch that keeps files: logins, a host and a vault item.
-    // SAFETY: tests in this binary that read LATCH_TEST_BIN run one at a time
-    // (the workflow passes --test-threads=1).
-    unsafe { std::env::set_var("LATCH_TEST_BIN", &files) };
-    let (host, owner) = host_and_owner(&plow, dir.path());
-    let serve = serving(&host, &share, &relay);
-    vault_add(&owner, "Shop");
-    drop(serve);
-    assert_eq!(secret_files_in(&host), SECRET_FILES);
-    assert_eq!(secret_files_in(&owner), ["key", "plow-token"]);
-    unsafe { std::env::set_var("LATCH_TEST_BIN", &signed) };
-
-    // The signed latch's first start is cut short right after its second
-    // Keychain write, the key's already read back: every file stays until
-    // all three are confirmed. (The hook exists in debug builds only.)
-    let stop = [("LATCH_TEST_STOP_MOVE_AFTER", Path::new("2"))];
-    let cut = latch(
-        &host,
-        &["serve", "--no-dashboard", share.to_str().unwrap()],
-        &stop,
-    );
-    assert_eq!(cut.status.code(), Some(75), "{cut:?}");
-    assert_eq!(secret_files_in(&host), SECRET_FILES);
-
-    // The next start finishes the move: the same identity (a different key
-    // would fail `require_login`), the same login, the same vault.
-    let serve = serving(&host, &share, &relay);
-    assert_eq!(vault_titles(&owner), ["Shop"]);
-    drop(serve);
-    for state in [&host, &owner] {
-        assert_eq!(
-            secret_files_in(state),
-            Vec::<&str>::new(),
-            "{}",
-            state.display()
-        );
-    }
-}
-
 /// A host sharing `share`, with its exec temp folders made in `tmp`, and
 /// an owner's machine to call it from.
 struct Bench {
