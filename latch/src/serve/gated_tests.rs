@@ -103,7 +103,7 @@ pub(super) async fn start_with(
         r#"{"google": {"state": "enabled"}}"#
     };
     std::fs::write(state.join("plugins.json"), enabled).unwrap();
-    let endpoint = Endpoint::builder(presets::Minimal)
+    let endpoint = crate::dial::endpoint()
         .relay_mode(RelayMode::Disabled)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
         .bind()
@@ -163,7 +163,7 @@ pub(super) async fn start_with(
 impl TestHost {
     /// A caller Plow knows as an agent (with its uid) or a device.
     pub(super) async fn caller(&self, kind: &str) -> Endpoint {
-        let client = Endpoint::builder(presets::Minimal)
+        let client = crate::dial::endpoint()
             .relay_mode(RelayMode::Disabled)
             .bind()
             .await
@@ -1002,7 +1002,7 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
 
 /// One request over a phone link's connection, as the phone page sends it.
 async fn phone_call(host: &TestHost, op: &str, args: Value) -> Response {
-    let phone = Endpoint::builder(presets::Minimal)
+    let phone = crate::dial::endpoint()
         .relay_mode(RelayMode::Disabled)
         .bind()
         .await

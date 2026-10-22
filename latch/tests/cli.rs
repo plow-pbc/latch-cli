@@ -81,6 +81,15 @@ fn latch_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_latch")))
 }
 
+/// The latch under test as a process to start. Every one stays off the
+/// local network: its iroh endpoint binds 127.0.0.1 only and never probes
+/// the router, so no test makes macOS ask to let latch find local devices.
+fn latch_process() -> Command {
+    let mut command = Command::new(latch_bin());
+    command.env("LATCH_TEST_LOOPBACK", "1");
+    command
+}
+
 fn test_dir() -> tempfile::TempDir {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
@@ -94,7 +103,7 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 }
 
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
-    let mut command = Command::new(latch_bin());
+    let mut command = latch_process();
     command
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
@@ -937,7 +946,7 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
     let dir = test_dir();
     let state = dir.path().join("none");
     let run = |timeout: &str| {
-        let mut command = Command::new(latch_bin());
+        let mut command = latch_process();
         command
             .env_remove("PLOW_TOKEN_FILE")
             .arg("--state-dir")
@@ -1640,7 +1649,7 @@ fn until_serving(host: &Path, serve: &Serving) {
 }
 
 fn serve_command(host: &Path, shares: &[&Path], relay: &str) -> Command {
-    let mut command = Command::new(latch_bin());
+    let mut command = latch_process();
     command
         .args([
             "--state-dir",
