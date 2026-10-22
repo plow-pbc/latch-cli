@@ -57,6 +57,7 @@ use std::os::fd::FromRawFd;
 use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -77,6 +78,43 @@ use crate::wire::Response;
 /// the worker counts it gone: it closes it and ends, and the next session
 /// starts a new one.
 const UNANSWERED_IN_A_ROW: usize = 3;
+
+/// The process groups the engine's processes lead (the worker starts each
+/// engine in a group of its own), for `die_with_host`.
+static ENGINE_GROUPS: Mutex<Vec<libc::pid_t>> = Mutex::new(Vec::new());
+
+/// Notes the process group `leader` leads, which this worker started.
+pub fn started_group(leader: u32) {
+    let mut groups = ENGINE_GROUPS
+        .lock()
+        .unwrap_or_else(|held| held.into_inner());
+    groups.push(leader as libc::pid_t);
+}
+
+/// Kills the engine's processes and this worker the moment the host that
+/// started it exits, however it exits and even in the middle of a call:
+/// a watch of its own, on a thread of its own. (The end of stdin says the
+/// same, but only once the call under way is over.) On Linux the host
+/// has the kernel kill this worker, and bubblewrap then kills everything
+/// in its sandbox (see `Runtime::start_with`).
+#[cfg(target_os = "macos")]
+fn die_with_host() -> Result<(), Failure> {
+    let watch = crate::sandbox::watch_host().map_err(|why| Failure::failed("host_gone", why))?;
+    std::thread::spawn(move || {
+        if !crate::sandbox::wait_for_host(watch) {
+            return;
+        }
+        let groups = ENGINE_GROUPS
+            .lock()
+            .unwrap_or_else(|held| held.into_inner());
+        for group in groups.iter() {
+            // SAFETY: signals only, to groups this worker started.
+            unsafe { libc::killpg(*group, libc::SIGKILL) };
+        }
+        std::process::exit(1);
+    });
+    Ok(())
+}
 
 /// Confines this worker to its profile runtime's view. The outer copy
 /// becomes bubblewrap and never returns; the copy inside returns once its
@@ -115,6 +153,11 @@ pub fn run(
 ) -> ExitCode {
     #[cfg(target_os = "linux")]
     if let Err(failure) = confine(state_dir, profile_name, scratch) {
+        answer(&mut io::stdout().lock(), Response::error(&failure), None);
+        return ExitCode::FAILURE;
+    }
+    #[cfg(target_os = "macos")]
+    if let Err(failure) = die_with_host() {
         answer(&mut io::stdout().lock(), Response::error(&failure), None);
         return ExitCode::FAILURE;
     }
