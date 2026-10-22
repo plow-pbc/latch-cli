@@ -4352,6 +4352,61 @@ fn stop_reaches_a_foreground_host_that_is_still_starting() {
     );
 }
 
+/// A host an earlier latch started: it holds the state folder and says it
+/// serves, on the unversioned socket that latch used.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[test]
+fn a_host_from_another_version_is_named_and_stop_stops_it() {
+    let (_dir, state, _) = owner_host();
+    let lock = fs::File::create(state.join("serve.lock")).unwrap();
+    lock.lock().unwrap();
+    // The lock is the old host's: it holds it from here on, as stdin.
+    let mut old = Serving(
+        Command::new("sleep")
+            .arg("600")
+            .stdin(lock.try_clone().unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    drop(lock);
+    let pid = old.0.id();
+    fs::write(
+        state.join("serve.lock"),
+        format!("latch serve (pid {pid}, /old/latch)\n"),
+    )
+    .unwrap();
+    let written = json!({"state": "serving", "pid": pid, "run": format!("{pid}-1"),
+                         "since": "2026-10-22T04:51:40Z", "error": null});
+    fs::write(state.join("serve.json"), written.to_string()).unwrap();
+    let _socket = std::os::unix::net::UnixListener::bind(state.join("serve.sock")).unwrap();
+    let said = format!(
+        "a host from another latch version is running (pid {pid}); stop it \
+         (Ctrl-C in its terminal, or kill {pid}), then retry"
+    );
+
+    let detached = latch(&state, &["serve", "-d"], &[]);
+    assert_eq!(detached.status.code(), Some(1), "{detached:?}");
+    assert!(
+        String::from_utf8_lossy(&detached.stderr).contains(&said),
+        "{detached:?}"
+    );
+    for args in [&["serve"][..], &["dashboard"]] {
+        let (mut view, _terminal, shown) = at_its_own_terminal(&state, args, &[]);
+        shows(&shown, &said);
+        assert_eq!(exits_within(&mut view, 10).code(), Some(1), "{args:?}");
+    }
+    assert_eq!(old.0.try_wait().unwrap(), None, "only stop stops it");
+
+    let stop = latch(&state, &["stop"], &[]);
+    assert_eq!(stop.status.code(), Some(0), "{stop:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&stop.stdout).unwrap()["stopped"],
+        true
+    );
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(old.0.wait().unwrap().signal(), Some(libc::SIGTERM));
+}
+
 #[test]
 fn stop_gives_up_waiting_behind_a_start_that_never_finishes() {
     let dir = test_dir();
