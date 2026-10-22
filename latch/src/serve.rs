@@ -860,12 +860,18 @@ async fn serve_operation(
         return answer(&mut send, &response).await;
     };
     let op = request.op.as_str();
+    let exec_permissions = (op == "exec").then(|| {
+        json!({
+            "writes": request.args.get("writes").cloned().unwrap_or_else(|| json!([])),
+            "network": request.args.get("network").cloned().unwrap_or_else(|| json!(false)),
+        })
+    });
     tracing::Span::current().record("op", display(op));
     let started = Instant::now();
 
     // Second check: before the operation, in case the caller was revoked
     // since it connected.
-    let response = match host.check(caller).await {
+    let mut response = match host.check(caller).await {
         Err(denial) => {
             let _ = host
                 .append(audit::record(caller, None, op, "deny", &denial.code))
@@ -1068,6 +1074,14 @@ async fn serve_operation(
             response
         }
     };
+    if let (Some(permissions), Response::Error { details, .. }) = (exec_permissions, &mut response)
+    {
+        if details.is_null() {
+            *details = json!({});
+        }
+        details["writes"] = permissions["writes"].clone();
+        details["network"] = permissions["network"].clone();
+    }
     answer(&mut send, &response).await;
 }
 
