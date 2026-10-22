@@ -7,6 +7,8 @@
 //!
 //! latch walks the 32 bytes of the ed25519 public key itself.
 
+use crate::seal::from_hex;
+
 pub const COLS: usize = 17;
 pub const ROWS: usize = 9;
 
@@ -18,7 +20,7 @@ const SYMBOLS: &[u8] = b" .o+=*BOX@%&#/^";
 /// `COLS + 2` characters (the board in a frame), or `None` if `key_hex`
 /// is not a key.
 pub fn art(key_hex: &str, title: &str) -> Option<Vec<String>> {
-    let key = from_hex(key_hex)?;
+    let key: [u8; 32] = from_hex(key_hex)?.try_into().ok()?;
     let mut visits = [[0usize; COLS]; ROWS];
     let start = (COLS / 2, ROWS / 2);
     let (mut x, mut y) = start;
@@ -67,15 +69,6 @@ fn frame_line(label: &str) -> String {
     let dashes = COLS - label.chars().count();
     let left = dashes / 2;
     format!("+{}{label}{}+", "-".repeat(left), "-".repeat(dashes - left))
-}
-
-fn from_hex(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() != 64 {
-        return None;
-    }
-    (0..32)
-        .map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok())
-        .collect()
 }
 
 #[cfg(test)]

@@ -1,9 +1,12 @@
-//! The gatekeeper: one judgment, before an agent's operation runs, of
+//! The gatekeeper: one judgment, before any caller's operation runs, of
 //! whether the owner asked for it.
 //!
-//! What the owner asked for comes from two places, never from the agent:
-//! the owner's own messages in the agent's Plow chat (`chat.rs`), and the
-//! owner's rules for agents on this host (`rules.rs`). The judge is one
+//! For an agent, what the owner asked for comes from two places, never
+//! from the agent: the owner's own messages in the agent's Plow chat
+//! (`chat.rs`), and the owner's rules for agents on this host (`rules.rs`).
+//! For the owner, calling from one of their own machines, it is the
+//! request itself, within the host's rules: the same check runs, so a
+//! hijacked owner session is judged too. The judge is one
 //! decision-model question, asked through Plow's decision route: is the
 //! action COVERED, NOT_COVERED or FORBIDDEN by what the owner said? It is
 //! allowed at P(COVERED) ≥ 0.5. Anything that keeps it from judging (a
@@ -61,6 +64,8 @@ const RULES_OF_JUDGMENT: [&str; 5] = [
     "Rules on the host are the owner's standing limits; a chat message does not lift a host rule's prohibition.",
 ];
 const EXEC_PERMISSIONS: &str = "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what the owner asked. The command can read the host's home except hidden latch state and, on macOS, Library except Caches.";
+/// Added to the rules of judgment when the owner is the caller.
+const OWNER_CALLS: &str = "The caller is the owner, at one of their own machines: the proposed action is the owner's own request, and it is covered unless the owner's rules on this host forbid it.";
 /// Added to the rules of judgment only when the judge sees host rules: a
 /// rule naming a kind of task covers the commands that plainly do it.
 const RULES_NAME_TASKS: &str = "A rule may name a kind of task, like running tests or checking mail, rather than the exact command; a command that plainly does that task is covered by it.";
@@ -109,20 +114,47 @@ pub struct Judgment {
     pub gate: Value,
 }
 
-/// One agent's gate, for the operations of one request: the host's
-/// gatekeeper, the agent's verified uid, and the chat it named.
+/// Who is asking, as the gatekeeper judges and records them.
+#[derive(Clone, Copy)]
+pub enum Caller<'a> {
+    /// The owner, at one of their own machines: judged against the host's
+    /// rules and the request itself.
+    Owner,
+    /// An agent, by its verified Plow uid, in the chat it named: judged
+    /// against the owner's chat and rules.
+    Agent { uid: &'a str, chat: Option<&'a str> },
+}
+
+impl Caller<'_> {
+    /// Whose history and turns these are: the agent's uid, or the owner's.
+    fn key(&self) -> &str {
+        match self {
+            Caller::Owner => "owner",
+            Caller::Agent { uid, .. } => uid,
+        }
+    }
+
+    /// The caller's kind, as the audit's `gate` object names it.
+    fn kind(&self) -> &'static str {
+        match self {
+            Caller::Owner => "owner_device",
+            Caller::Agent { .. } => "agent",
+        }
+    }
+}
+
+/// One caller's gate, for the operations of one request.
 #[derive(Clone, Copy)]
 pub struct Gate<'a> {
     pub keeper: &'a Gatekeeper,
-    pub agent: &'a str,
-    pub chat: Option<&'a str>,
+    pub caller: Caller<'a>,
 }
 
 impl Gate<'_> {
     /// Whether the owner asked for `action`, in the judge's words for it.
     pub async fn judge(&self, action: &impl Serialize) -> Judgment {
         let action = serde_json::value::to_raw_value(action).expect("an action serializes");
-        self.keeper.judge(self.agent, self.chat, &action).await
+        self.keeper.judge(self.caller, &action).await
     }
 
     /// Waits until no other one-time action of this agent is between its
@@ -130,20 +162,25 @@ impl Gate<'_> {
     pub async fn one_at_a_time(&self) -> tokio::sync::OwnedMutexGuard<()> {
         let turn = {
             let mut turns = self.keeper.turns.lock().expect("gatekeeper turns lock");
-            turns.entry(self.agent.to_string()).or_default().clone()
+            turns
+                .entry(self.caller.key().to_string())
+                .or_default()
+                .clone()
         };
         turn.lock_owned().await
     }
 
-    /// Records `what` the agent ran, and how it ended.
+    /// Records `what` the caller ran, and how it ended.
     pub fn did(&self, what: &impl Serialize, outcome: &str) {
         let what = serde_json::to_value(what).expect("an action serializes");
-        self.keeper.did(self.agent, what, outcome);
+        self.keeper.did(self.caller.key(), what, outcome);
     }
 }
 
 /// What a judgment is built from, read fresh each time.
 struct Intent {
+    /// Whether the owner is the caller.
+    owner: bool,
     conversation: Option<Conversation>,
     rules: Rules,
 }
@@ -165,12 +202,11 @@ impl Gatekeeper {
         model::host_provider(state_dir, MODEL, JEV_MODEL).map(Arc::from)
     }
 
-    /// Whether the owner asked for `action` by agent `agent` (its verified
-    /// uid), in `chat` when the agent named one.
-    pub async fn judge(&self, agent: &str, chat: Option<&str>, action: &RawValue) -> Judgment {
+    /// Whether the owner asked for `action` by `caller`.
+    pub async fn judge(&self, caller: Caller<'_>, action: &RawValue) -> Judgment {
         let started = Instant::now();
-        let mut gate = json!({});
-        let verdict = self.decide(agent, chat, action, &mut gate).await;
+        let mut gate = json!({"caller": caller.kind()});
+        let verdict = self.decide(caller, action, &mut gate).await;
         gate["verdict"] = json!(match &verdict {
             Ok(()) => "allow",
             Err(failure) => failure.details["reason"].as_str().unwrap_or(&failure.code),
@@ -179,11 +215,12 @@ impl Gatekeeper {
         Judgment { verdict, gate }
     }
 
-    /// Records a one-time operation the gatekeeper let `agent` run, and how
-    /// it ended, for the judge's "already done".
-    pub fn did(&self, agent: &str, what: Value, outcome: &str) {
+    /// Records a one-time operation the gatekeeper let the caller `who`
+    /// (its [`Caller`] key) run, and how it ended, for the judge's
+    /// "already done".
+    pub fn did(&self, who: &str, what: Value, outcome: &str) {
         let mut done = self.done.lock().expect("gatekeeper history lock");
-        let list = done.entry(agent.to_string()).or_default();
+        let list = done.entry(who.to_string()).or_default();
         if list.len() == DONE_SHOWN {
             list.pop_front();
         }
@@ -196,31 +233,36 @@ impl Gatekeeper {
 
     async fn decide(
         &self,
-        agent: &str,
-        chat: Option<&str>,
+        caller: Caller<'_>,
         action: &RawValue,
         gate: &mut Value,
     ) -> Result<(), Failure> {
-        let conversation = chat::read(&self.plow, agent, chat).await?;
+        let conversation = match caller {
+            Caller::Owner => None,
+            Caller::Agent { uid, chat } => chat::read(&self.plow, uid, chat).await?,
+        };
+        // The owner's key is no agent uid: only the host's rules apply.
         let rules = self
             .rules
-            .rules(agent)
+            .rules(caller.key())
             .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")))?;
         let intent = Intent {
+            owner: matches!(caller, Caller::Owner),
             conversation,
             rules,
         };
         let now = jiff::Zoned::now();
         let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
-        let done = self.done_by(agent, now.timestamp());
+        let done = self.done_by(caller.key(), now.timestamp());
         self.ask(&intent, now.timestamp(), &clock, action, &done, gate)
             .await
     }
 
-    /// `agent`'s latest operations, oldest first, as the judge sees them.
-    fn done_by(&self, agent: &str, now: Timestamp) -> Vec<Done> {
+    /// The latest operations of the caller `who`, oldest first, as the
+    /// judge sees them.
+    fn done_by(&self, who: &str, now: Timestamp) -> Vec<Done> {
         let done = self.done.lock().expect("gatekeeper history lock");
-        done.get(agent)
+        done.get(who)
             .into_iter()
             .flatten()
             .map(|ran| Done {
@@ -246,6 +288,7 @@ impl Gatekeeper {
             gate["chat"] = json!(c.chat);
         }
         gate["source"] = json!(match (&intent.conversation, rules.is_empty()) {
+            _ if intent.owner => "owner_request",
             (Some(_), true) => "chat",
             (Some(_), false) => "chat_and_rules",
             (None, false) => "rules",
@@ -340,7 +383,9 @@ fn unavailable(why: &str) -> Failure {
     Failure::new(
         Exit::Unreachable,
         "gatekeeper_unavailable",
-        format!("The gatekeeper could not judge this, so it did not run: {why}"),
+        format!(
+            "The gatekeeper could not judge this, so it did not run: {why}. The owner's settings commands (rules, vault, shares) still work."
+        ),
     )
 }
 
@@ -387,8 +432,12 @@ struct Entry<'a> {
     text: &'a str,
 }
 
+/// The owner's rules as the judge reads them: for an owner's call, the
+/// host's rules are the rules on this host, for everyone.
 #[derive(Serialize)]
 struct OwnerRules<'a> {
+    #[serde(rename = "rules on this host", skip_serializing_if = "Option::is_none")]
+    everyone: Option<&'a str>,
     #[serde(
         rename = "rules for every agent on this host",
         skip_serializing_if = "Option::is_none"
@@ -416,7 +465,18 @@ fn state(
     action: &RawValue,
     done: &[Done],
 ) -> Box<RawValue> {
+    // The owner's own request is the owner's message, sent just now.
+    let request;
     let conversation = match &intent.conversation {
+        _ if intent.owner => {
+            request = format!("Do this now: {}", action.get());
+            Listed::Items(vec![Entry {
+                id: "request",
+                from: "OWNER",
+                when: ago(now, now),
+                text: &request,
+            }])
+        }
         None => Listed::Nothing("(no chat)"),
         Some(_) if shown == 0 => Listed::Nothing("(no messages)"),
         Some(c) => Listed::Items(
@@ -437,6 +497,9 @@ fn state(
         .as_ref()
         .is_some_and(|c| c.more_before || shown < c.messages.len());
     let mut rules_of_judgment = RULES_OF_JUDGMENT.to_vec();
+    if intent.owner {
+        rules_of_judgment.push(OWNER_CALLS);
+    }
     if !rules.is_empty() {
         rules_of_judgment.push(RULES_NAME_TASKS);
     }
@@ -451,8 +514,13 @@ fn state(
         owner_rules: if rules.is_empty() {
             Listed::Nothing("(none)")
         } else {
+            let (everyone, host) = match intent.owner {
+                true => (rules.host.as_deref(), None),
+                false => (None, rules.host.as_deref()),
+            };
             Listed::Items(OwnerRules {
-                host: rules.host.as_deref(),
+                everyone,
+                host,
                 agent: rules.agent.as_deref(),
             })
         },

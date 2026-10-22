@@ -901,20 +901,8 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_jev_asks_for_a_confirmation_only_where_one_is_needed() {
-    use std::os::unix::fs::PermissionsExt;
     let (_dir, state, _area) = test_state("cft", &["default"]);
-    let key = std::env::var_os("LATCH_TEST_JEV_KEY")
-        .expect("LATCH_TEST_JEV_KEY names the jev key file for this test");
-    let path = state.join(crate::model::JEV_KEY_FILE);
-    std::fs::copy(key, &path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    // A key file is used only on a host set up for it.
-    std::fs::create_dir_all(state.join("browser")).unwrap();
-    std::fs::write(
-        state.join(crate::model::MODEL_FILE),
-        r#"{"provider": "jev"}"#,
-    )
-    .unwrap();
+    crate::model::ask_jev_for_tests(&state);
     let site = site();
     let mut h = Harness::start(&state, None).await;
     let page = h.open(&format!("{site}/order.html")).await;

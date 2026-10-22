@@ -432,8 +432,8 @@ fn serve_with_denied(rules: Option<(i64, Vec<seccompiler::SeccompRule>)>) -> Out
     use std::os::unix::process::CommandExt;
 
     let dir = setup();
-    let area = dir.path().join("area").canonicalize().unwrap();
     let state = tempfile::tempdir_in(dir.path()).unwrap();
+    let area = dir.path().join("area").canonicalize().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
     command
         .args(["serve", "--no-dashboard", "--state-dir"])

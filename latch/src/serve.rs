@@ -36,7 +36,7 @@ use crate::exec;
 use crate::failure::Failure;
 use crate::files;
 use crate::gate::rules::RuleFiles;
-use crate::gate::{self, Gate, Gatekeeper};
+use crate::gate::{self, Caller, Gate, Gatekeeper};
 use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
 use crate::log::{self, log};
@@ -880,7 +880,15 @@ async fn serve_operation(
             }
         }
         Ok(identity) => {
-            let exec_failure = if op == "exec" {
+            // Any caller's exec, file or Google operation runs only if the
+            // gatekeeper allows it.
+            let gate = host.gate(&identity, request.chat.as_deref());
+            // An exec this host's owner denies is refused without asking.
+            let denied_exec = op == "exec" && host.deny_exec.refuses(&identity);
+            // A worker started now would run the new latch under this old
+            // host: nothing runs, and nothing is judged.
+            let upgraded = host.binary.replaced();
+            let exec_failure = if op == "exec" && !denied_exec && !upgraded {
                 match exec::normalize(&host.workers, &request.args) {
                     Ok(args) => {
                         request.args = args;
@@ -891,32 +899,24 @@ async fn serve_operation(
             } else {
                 None
             };
-            // An agent's exec, file or Google operation runs only if the
-            // gatekeeper allows it.
-            let gate = host.gate(&identity, request.chat.as_deref());
-            // An exec this host's owner denies is refused without asking.
-            let denied_exec = op == "exec" && host.deny_exec.refuses(&identity);
-            // A worker started now would run the new latch under this old
-            // host: nothing runs, and nothing is judged.
-            let upgraded = host.binary.replaced();
-            // With no shared folder, exec and file refuse: nothing to judge.
+            // File copies still need a shared folder; exec uses per-call permissions.
             let unshared = host.workers.areas.is_empty() && matches!(op, "file_get" | "file_put");
             let first_area = host.workers.areas.first().map(PathBuf::as_path);
             let gated = gate::gated(op, &request.args, first_area)
                 .filter(|_| !denied_exec && !upgraded && !unshared && exec_failure.is_none());
             let unjudgeable = match (&gate, &gated) {
-                (Ok(Some(_)), Some(gated)) => gated.unjudgeable.as_ref(),
+                (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
                 _ => None,
             };
             // A one-time action (send one email) is judged, run and
-            // recorded before the same agent's next one is judged, so two
+            // recorded before the same caller's next one is judged, so two
             // sent at once do not both run.
             let turn = match (&gate, &gated) {
-                (Ok(Some(gate)), Some(gated)) if gated.once => Some(gate.one_at_a_time().await),
+                (Ok(gate), Some(gated)) if gated.once => Some(gate.one_at_a_time().await),
                 _ => None,
             };
             let judgment = match (&gate, &gated) {
-                (Ok(Some(gate)), Some(gated)) if unjudgeable.is_none() => {
+                (Ok(gate), Some(gated)) if unjudgeable.is_none() => {
                     Some(gate.judge(&gated.action).await)
                 }
                 _ => None,
@@ -993,7 +993,7 @@ async fn serve_operation(
                                 &host.browsers,
                                 caller,
                                 &identity.kind,
-                                *gate,
+                                Some(*gate),
                                 request.args,
                                 &mut send,
                                 &mut recv,
@@ -1023,7 +1023,7 @@ async fn serve_operation(
                     ),
                 }
             };
-            if let (Ok(Some(gate)), Some(gated), Some(judgment)) = (&gate, &gated, &judgment)
+            if let (Ok(gate), Some(gated), Some(judgment)) = (&gate, &gated, &judgment)
                 && judgment.verdict.is_ok()
                 && gated.once
             {
@@ -1223,23 +1223,25 @@ impl Host {
     /// Asks Plow who `caller` is. Returns the caller's identity if it may
     /// call, or why not. Nothing is cached: every check asks Plow again, so
     /// a revoked key stops working at once.
-    /// The gate an agent's operations pass, in the chat it named; none for
-    /// the owner's own devices, which are never judged. An agent Plow
-    /// gives no uid can't be judged, so nothing of it runs.
+    /// The gate a caller's operations pass: the owner's own devices as
+    /// the owner, an agent in the chat it named. An agent Plow gives no uid
+    /// can't be judged, so nothing of it runs.
     fn gate<'a>(
         &'a self,
         identity: &'a Identity,
         chat: Option<&'a str>,
-    ) -> Result<Option<Gate<'a>>, Failure> {
+    ) -> Result<Gate<'a>, Failure> {
         if identity.kind == "device" {
-            return Ok(None);
+            return Ok(Gate {
+                keeper: &self.gatekeeper,
+                caller: Caller::Owner,
+            });
         }
         match identity.agent_uid.as_deref() {
-            Some(agent) => Ok(Some(Gate {
+            Some(uid) => Ok(Gate {
                 keeper: &self.gatekeeper,
-                agent,
-                chat,
-            })),
+                caller: Caller::Agent { uid, chat },
+            }),
             None => Err(Failure::new(
                 crate::failure::Exit::Unreachable,
                 "gatekeeper_unavailable",
