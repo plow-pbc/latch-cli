@@ -315,13 +315,14 @@ def run(args):
 
 
 def container_seccomp():
-    """latch's container seccomp profile (docker/seccomp.json) with what
-    Chrome's own sandbox needs inside its user namespace, in a container
-    with no capabilities: chroot (else it aborts, `sys_chroot(...) == 0`),
-    and clone with new PID, network, IPC or mount namespaces but no new user
-    namespace (else its zygote cannot fork and nothing answers
-    `Page.enable`). The kernel still refuses both outside a user namespace.
-    Never --no-sandbox."""
+    """latch's container seccomp profile (docker/seccomp.json) with what the
+    engines' own sandboxes need inside their user namespace, in a container
+    with no capabilities: chroot (else Chrome aborts, `sys_chroot(...) ==
+    0`), clone with new PID, network, IPC or mount namespaces but no new
+    user namespace (else Chrome's zygote cannot fork and nothing answers
+    `Page.enable`), and unshare of those with a user namespace (Firefox's
+    content sandbox). The kernel still refuses them outside a user
+    namespace. Never --no-sandbox."""
     profile = json.loads((LATCH / "docker/seccomp.json").read_text())
     for rule in profile["syscalls"]:
         if rule.get("names") == ["chroot"]:
@@ -330,6 +331,11 @@ def container_seccomp():
     profile["syscalls"].append({"names": ["clone"], "action": "SCMP_ACT_ALLOW", "args": [
         {"index": 0, "value": 0x16000000, "valueTwo": 0, "op": "SCMP_CMP_MASKED_EQ"}],
         "includes": {"arches": ["amd64", "arm64"]}})
+    # Firefox's content sandbox unshares a user namespace with new PID,
+    # network and IPC ones; with only CLONE_NEWUSER allowed, its content runs
+    # in the browser's namespace. CLONE_NEWUTS | CLONE_NEWCGROUP clear.
+    profile["syscalls"].append({"names": ["unshare"], "action": "SCMP_ACT_ALLOW", "args": [
+        {"index": 0, "value": 0x06000000, "valueTwo": 0, "op": "SCMP_CMP_MASKED_EQ"}]})
     path = DEV / "seccomp-test.json"
     DEV.mkdir(exist_ok=True)
     path.write_text(json.dumps(profile))
