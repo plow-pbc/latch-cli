@@ -863,7 +863,7 @@ async fn serve_operation(
     let exec_permissions = (op == "exec").then(|| {
         json!({
             "writes": request.args.get("writes").cloned().unwrap_or_else(|| json!([])),
-            "network": request.args.get("network").cloned().unwrap_or_else(|| json!(false)),
+            "network": request.args.get("network").cloned().unwrap_or(json!(false)),
         })
     });
     tracing::Span::current().record("op", display(op));
