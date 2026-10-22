@@ -1,9 +1,8 @@
-# The local Plow stack every dev and test flow uses (the plow-main kitchen's,
-# never restarted or changed from here), and its Linq twin. Its published
-# ports, not api.plow-main.orb.local: macOS keeps an unapproved latch off
-# OrbStack's network ("No route to host"), and loopback needs no approval.
-plow_main := "http://127.0.0.1:18934"
-plow_main_twin := "http://127.0.0.1:18935"
+# The repo's .env.local (see .env.local.example) says which local Plow stack
+# the dev recipes use; scripts/dev_plow.py reads it. Its published ports, not
+# *.orb.local: macOS keeps an unapproved latch off OrbStack's network ("No
+# route to host"), and loopback needs no approval.
+set dotenv-filename := ".env.local"
 
 # The Rust CLI's checks; live Google evidence uses the documented test identities.
 test: cft
@@ -64,9 +63,9 @@ scenario-return: cft
 
 # Logs this checkout's ../.dev/state in to the local Plow stack, by text to
 # its Linq twin from a made-up phone (the same local account each time).
-dev-login api=plow_main twin=plow_main_twin:
+dev-login api="" twin="":
     cargo build --quiet --locked
-    python3 scripts/dev-login.py "${CARGO_TARGET_DIR:-target}/debug/latch" "$(cd .. && pwd)/.dev/state" "{{api}}" "{{twin}}"
+    python3 scripts/dev-login.py "${CARGO_TARGET_DIR:-target}/debug/latch" "$(cd .. && pwd)/.dev/state" --api "{{api}}" --twin "{{twin}}"
 
 # Asks the real decision model as a host does, through Plow on the login of
 # this checkout's ../.dev/state (`just dev-login` first), synthetic chats only: `checks` (the gatekeeper's and the
@@ -131,9 +130,11 @@ phone-e2e host: phone
 # named, e.g. api=https://api.plow.co) are baked in, so it never touches
 # ~/.latch or an installed latch; flags still override them. A running serve
 # keeps its old binary until it is restarted.
-build api=plow_main:
+build api="":
     #!/bin/sh
     set -eu
+    api="{{api}}"
+    [ -n "$api" ] || api="$(python3 scripts/dev_plow.py api)"
     root="$(cd .. && pwd)"
     state="$root/.dev/state"
     # The host's socket lives in the state folder; macOS caps its path at 104 bytes.
@@ -144,7 +145,7 @@ build api=plow_main:
     mkdir -p "$root/.dev/bin" "$state"
     chmod 700 "$state"
     target="${CARGO_TARGET_DIR:-target}/build"
-    LATCH_BUILD_STATE_DIR="$state" LATCH_BUILD_API_URL="{{api}}" CARGO_TARGET_DIR="$target" cargo build --release --locked
+    LATCH_BUILD_STATE_DIR="$state" LATCH_BUILD_API_URL="$api" CARGO_TARGET_DIR="$target" cargo build --release --locked
     cp "$target/release/latch" "$root/.dev/bin/.latch.new"
     mv -f "$root/.dev/bin/.latch.new" "$root/.dev/bin/latch"
     "$root/.dev/bin/latch" --version

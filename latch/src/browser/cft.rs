@@ -797,7 +797,7 @@ impl Cft {
         };
         let key = (frame.id.clone(), frame.document.clone());
         let deadline = self.by(wait);
-        for attempt in 0..2 {
+        for _ in 0..2 {
             if self.cdp.removed(&frame.id) {
                 return Err(stale());
             }
@@ -855,8 +855,9 @@ impl Cft {
                     ));
                 }
                 Ok(Reply::Gone) => return Err(stale()),
-                // The document went away under its world: make a new one once.
-                Err(failure) if attempt == 0 && failure.code == "engine_error" => {
+                // The document went away under its world: try a new one once,
+                // then let the caller handle the replaced document.
+                Err(failure) if failure.code == "engine_error" => {
                     self.worlds.remove(&key);
                 }
                 Err(failure) => return Err(failure),
@@ -1324,7 +1325,9 @@ impl Driver for Cft {
         let deadline = self.by(LOADING);
         // Use the page's event loop: its delayed input effects can run
         // after a wait of the same length on the host has already ended.
-        if let Some(placement) = self.placements.get(&main).cloned() {
+        if self.share().dialog.is_none()
+            && let Some(placement) = self.placements.get(&main).cloned()
+        {
             let frame = Frame {
                 id: main.clone(),
                 parent: None,

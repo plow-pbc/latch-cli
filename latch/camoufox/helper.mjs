@@ -565,7 +565,7 @@ const ops = {
     const deadline = Math.min(Date.now() + LOADING, due);
     // Give the page's event loop its action window: a busy page's timers
     // can run after a wait of the same length in the helper has ended.
-    if (t) {
+    if (t && !mine.dialog) {
       try {
         await inFrame(
           frameId(t.page.mainFrame()),
