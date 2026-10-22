@@ -356,27 +356,41 @@ impl Gatekeeper {
                 .map_or(0.0, |(_, p)| *p)
         };
         gate["p"] = json!({"COVERED": p("COVERED"), "NOT_COVERED": p("NOT_COVERED"), "FORBIDDEN": p("FORBIDDEN")});
-        verdict(p("COVERED"), p("NOT_COVERED"), p("FORBIDDEN"))
+        verdict(intent.owner, p("COVERED"), p("NOT_COVERED"), p("FORBIDDEN"))
     }
 }
 
-/// The verdict for the model's probabilities.
-fn verdict(covered: f64, not_covered: f64, forbidden: f64) -> Result<(), Failure> {
+/// How the owner sees and changes the rules that judged their own call.
+const OWNER_RULES: &str = "See them with `latch rules show` and change them with `latch rules edit` (with `--host NAME` from another machine), then retry.";
+
+/// The verdict for the model's probabilities. An owner's call is judged
+/// only by the request and this host's rules (no chat is read), so its
+/// refusal says so.
+fn verdict(owner: bool, covered: f64, not_covered: f64, forbidden: f64) -> Result<(), Failure> {
     if covered >= ALLOW_P {
         return Ok(());
     }
-    let (reason, message) = if forbidden >= not_covered {
-        (
+    let (reason, message) = match (forbidden >= not_covered, owner) {
+        (true, false) => (
             "owner_said_no",
-            "The owner said not to do this. Don't retry unless the owner changes it.",
-        )
-    } else {
-        (
+            "The owner said not to do this. Don't retry unless the owner changes it.".to_string(),
+        ),
+        (false, false) => (
             "not_covered",
-            "The owner's messages don't cover this. Ask the owner in chat, saying exactly what you will do (item, total, recipient), then retry.",
-        )
+            "The owner's messages don't cover this. Ask the owner in chat, saying exactly what you will do (item, total, recipient), then retry.".to_string(),
+        ),
+        (true, true) => (
+            "owner_said_no",
+            format!("The gatekeeper judged that this host's rules forbid this. {OWNER_RULES}"),
+        ),
+        (false, true) => (
+            "not_covered",
+            format!(
+                "The gatekeeper judged this not covered under this host's rules, or the request unclear. {OWNER_RULES}"
+            ),
+        ),
     };
-    let mut failure = Failure::new(Exit::Denied, "gatekeeper_denied", message.to_string());
+    let mut failure = Failure::new(Exit::Denied, "gatekeeper_denied", message);
     failure.details = json!({"reason": reason});
     Err(failure)
 }
