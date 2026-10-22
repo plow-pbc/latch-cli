@@ -313,25 +313,31 @@ impl StateDir {
     }
 }
 
-/// Writes a file only its owner can read, atomically: into a temporary
-/// file of this write's own beside it (0600), synced, then renamed over it,
-/// so concurrent writers never share one. Skips the write when the file
-/// already holds exactly these bytes, so a repeated `login` changes nothing.
+/// Writes a file only its owner can read, atomically and durably: into a
+/// temporary file of this write's own beside it (0600), synced, renamed
+/// over it, and the folder synced, so the new file is on disk before
+/// anything that relies on it (audit records sealed under a new key) is.
+/// Concurrent writers never share a temporary file. Skips the write when
+/// the file already holds exactly these bytes, so a repeated `login`
+/// changes nothing.
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if fs::read(path).is_ok_and(|current| current == bytes) {
         return Ok(());
     }
-    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty());
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let mut name = path.file_name().unwrap_or_default().to_owned();
     name.push(".");
     let mut temp = tempfile::Builder::new()
         .prefix(&name)
         .suffix(".tmp")
-        .tempfile_in(dir.unwrap_or(Path::new(".")))?;
+        .tempfile_in(dir)?;
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|err| err.error)?;
-    Ok(())
+    fs::File::open(dir)?.sync_all()
 }
 
 /// Bytes as lowercase hex, two characters per byte.
