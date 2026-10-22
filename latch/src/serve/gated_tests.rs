@@ -916,7 +916,9 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
     let set = json!({"command": "set", "text": "Never delete or remove any file on this host."});
     let (answer, _) = t.call(&device, "rules", set).await;
     assert!(matches!(answer, Response::Ok(_)), "rules set: {answer:?}");
-    let removal = gate::gated("exec", &removal, &t.area).unwrap().action;
+    let removal = gate::gated("exec", &removal, Some(t.area.as_path()))
+        .unwrap()
+        .action;
     let mut removals = Vec::new();
     for _ in 0..3 {
         let judged = t.host.gatekeeper.judge(Caller::Owner, &removal).await;
