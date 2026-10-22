@@ -35,7 +35,7 @@ Update by rerunning the commands above; `install-release.sh latest` also
 resolves the newest published release itself. State and versioned plugins stay in place;
 restart an existing `latch serve` intentionally when ready to use the new binary.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
-No Homebrew tap or Mac app is included.
+No Homebrew tap is included.
 
 ## For agents
 
