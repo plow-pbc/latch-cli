@@ -56,7 +56,7 @@ impl Effect {
                 "Resending gives the same result: resend it after exit 3 or 5."
             }
             Effect::Once(_) => {
-                "Exit 3: nothing was sent, resend it. Exit 5: it may have happened; check before resending."
+                "Exit 3 or 5: part or all of it may have run; check before resending. A browser plan's `steps` and `stop` say what ran: send only what is left."
             }
         }
     }
@@ -77,7 +77,7 @@ use Effect::{Once, ReadOnly, Repeatable};
 const ENTRIES: &[Entry] = &[
     Entry {
         id: "login",
-        output: "This peer (name, key, kind) and whether its key was created now.",
+        output: "This peer (name, key, kind) and whether its key was created now; with --events, JSON lines (code, waiting, verified, expired, error) instead.",
         effect: Repeatable("creates this peer's key if missing and registers it with Plow"),
         owner_only: false,
         connector: None,
@@ -110,7 +110,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "status",
-        output: "This peer, its Plow and the hosts it can reach; a card with --pretty.",
+        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -791,10 +791,8 @@ const ENTRIES: &[Entry] = &[
 /// The top-level fields of the answers that are plain structs, checked
 /// against those structs by the tests.
 const OUTPUT_FIELDS: &[(&str, &[&str])] = &[
-    ("login", &["peer", "key_created"]),
     ("devices", &["devices"]),
     ("devices.remove", &["removed"]),
-    ("status", &["peer", "api_url", "hosts"]),
     ("shares", &["shares", "allow_read"]),
     ("shares.set", &["shares", "allow_read"]),
 ];
@@ -1276,29 +1274,12 @@ mod tests {
         };
         let answers = [
             (
-                "login",
-                serde_json::to_value(crate::login::LoginOutput {
-                    peer: peer.clone(),
-                    key_created: true,
-                }),
-            ),
-            (
                 "devices",
                 serde_json::to_value(crate::devices::DevicesOutput { devices: vec![] }),
             ),
             (
                 "devices.remove",
-                serde_json::to_value(crate::devices::RemoveOutput {
-                    removed: peer.clone(),
-                }),
-            ),
-            (
-                "status",
-                serde_json::to_value(crate::status::StatusOutput {
-                    peer,
-                    api_url: "https://plow.example".into(),
-                    hosts: vec![],
-                }),
+                serde_json::to_value(crate::devices::RemoveOutput { removed: peer }),
             ),
             ("shares", serde_json::to_value(shares())),
             ("shares.set", serde_json::to_value(shares())),

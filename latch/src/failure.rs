@@ -32,10 +32,10 @@ impl Exit {
                 "The command line is wrong, or the host is unknown or ambiguous; fix the command."
             }
             Exit::Unreachable => {
-                "The host could not be reached, or could not judge the call, and nothing ran. Its message says what fixes it: often a retry later."
+                "The host could not be reached, or could not judge the call. Its message says what fixes it: often a retry later. A browser plan may have run steps before it stopped: read its `steps` and `stop` and send only what is left."
             }
             Exit::Denied => {
-                "Refused; don't retry. The one exception is gatekeeper_denied with reason not_covered: ask the owner in your Plow chat, naming exactly what you will do, and retry once they agree."
+                "Refused; don't retry, except: gatekeeper_denied with reason not_covered (ask the owner in your Plow chat, naming exactly what you will do, and retry once they agree); confirm_needed (if the task needs it, carry it out with `latch browser do --confirm C`); calendar_conflict (ask the owner; once they agree, resend with --confirm-conflict)."
             }
             Exit::Unknown => {
                 "The connection was lost after the request was sent; check before resending."

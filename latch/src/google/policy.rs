@@ -611,17 +611,10 @@ fn denied() -> Failure {
 /// Every command in the grammar, as dotted names. gog is started with
 /// exactly these enabled, as a second fence behind `parse`.
 pub fn commands() -> Vec<String> {
-    fn visit(node: &Node, commands: &mut Vec<String>) {
-        if let Some(command) = &node.command {
-            commands.push(command.clone());
-        }
-        for child in &node.children {
-            visit(child, commands);
-        }
-    }
-    let mut commands = Vec::new();
-    visit(&GRAMMAR, &mut commands);
-    commands
+    allowed()
+        .into_iter()
+        .map(|allowed| allowed.command.to_owned())
+        .collect()
 }
 
 #[cfg(test)]
