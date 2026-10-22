@@ -71,6 +71,8 @@ struct Host {
     /// Judges agents' operations against the owner's chat and rules.
     gatekeeper: Gatekeeper,
     binary: Binary,
+    /// The connectors its owner turned on, and their running operations.
+    plugins: crate::plugins::Plugins,
     /// The owner's home folder, whose Messages and address book
     /// `messages` and `contacts` read.
     home: PathBuf,
@@ -292,6 +294,8 @@ async fn run_host(
     );
     let audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
     log(&format!("audit log verified: {} records", audit.len()));
+    let home = std::env::home_dir().unwrap_or_default();
+    let plugins = crate::plugins::Plugins::load(state, &home)?;
     log(&format!("commands in this log: {}", crate::redact::NOTE));
     let names: Vec<String> = workers
         .areas
@@ -387,7 +391,8 @@ async fn run_host(
         deny_exec,
         gatekeeper,
         binary,
-        home: std::env::home_dir().unwrap_or_default(),
+        plugins,
+        home,
         stopping: watch::Sender::new(Stopping::No),
     });
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
@@ -956,11 +961,23 @@ async fn serve_request(
             } else {
                 (None, None)
             };
+            // Nor for a connector its owner has not enabled. One that is
+            // counts as running until its answer is audited, so `disable`
+            // waits for it.
+            let running =
+                crate::plugins::Connector::of_op(op).map(|connector| host.plugins.start(connector));
+            let not_enabled = matches!(running, Some(Err(_)));
+            // A messages call reads the address book for names only while
+            // Contacts is enabled too, held the same way.
+            let names = (op == "messages")
+                .then(|| crate::plugins::Connector::of_op("contacts"))
+                .flatten()
+                .and_then(|contacts| host.plugins.start(contacts).ok());
             // A messages or contacts call is judged, and then run, as one
             // effective request: the reader's reading of the caller's words
             // and any cursor's filters. One the reader refuses is not judged.
             let mut unplanned = None;
-            if (op == "messages" || op == "contacts") && !upgraded && gate.is_ok() {
+            if (op == "messages" || op == "contacts") && !upgraded && !not_enabled && gate.is_ok() {
                 match crate::messages::host::plan(&host.workers, op, &request.args).await {
                     Ok(planned) => request.args = planned,
                     Err(done) => unplanned = Some(*done),
@@ -972,6 +989,7 @@ async fn serve_request(
                 !denied_exec
                     && !upgraded
                     && !unshared
+                    && !not_enabled
                     && exec_failure.is_none()
                     && unplanned.is_none()
             });
@@ -1011,6 +1029,12 @@ async fn serve_request(
                     response: Response::error(&failure),
                     audit_args: Value::Null,
                     outcome: failure.code,
+                }
+            } else if let Some(Err(failure)) = &running {
+                Done {
+                    response: Response::error(failure),
+                    audit_args: Value::Null,
+                    outcome: failure.code.clone(),
                 }
             } else if let Some(unplanned) = unplanned {
                 unplanned
@@ -1071,8 +1095,14 @@ async fn serve_request(
                         .await
                     }
                     "messages" | "contacts" => {
-                        crate::messages::host::run(&host.workers, &host.home, op, &request.args)
-                            .await
+                        crate::messages::host::run(
+                            &host.workers,
+                            &host.home,
+                            op != "messages" || names.is_some(),
+                            op,
+                            &request.args,
+                        )
+                        .await
                     }
                     "browser" => match &gate {
                         Ok(gate) => {
@@ -1093,6 +1123,16 @@ async fn serve_request(
                             outcome: failure.code.clone(),
                         },
                     },
+                    "plugins" => {
+                        crate::plugins::host::run(
+                            &host.plugins,
+                            &host.workers,
+                            &host.plow,
+                            local,
+                            &request.args,
+                        )
+                        .await
+                    }
                     "google" => {
                         crate::google::host::run(
                             &host.workers,
@@ -1148,6 +1188,8 @@ async fn serve_request(
                 result,
                 refused: decision == "deny",
             });
+            drop(running);
+            drop(names);
             response
         }
     };
@@ -1458,6 +1500,8 @@ fn describe_paths(connection: &Connection) -> String {
 mod control;
 #[cfg(test)]
 mod gated_tests;
+#[cfg(test)]
+mod plugins_tests;
 
 #[cfg(test)]
 mod tests {
