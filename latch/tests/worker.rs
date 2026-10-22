@@ -256,25 +256,25 @@ fn an_exec_worker_runs_programs_inside_the_sandbox() {
 #[test]
 fn an_exec_cannot_kill_its_supervisor() {
     let dir = setup();
-    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .args([
-            "worker",
-            "--area",
-            "../area",
-            "--denied",
-            "../state",
-            "--tmpdir",
-            "../tmp",
-            "exec",
-            "--",
-            "/bin/sh",
-            "-c",
-            "if kill -KILL \"$PPID\" 2>/dev/null; then echo escaped; else echo protected; fi",
-        ])
-        .current_dir(dir.path().join("area"))
-        .env_clear()
-        .output()
-        .unwrap();
+    let output = exec_worker(
+        Command::new(env!("CARGO_BIN_EXE_latch"))
+            .args([
+                "worker",
+                "--area",
+                "../area",
+                "--denied",
+                "../state",
+                "--tmpdir",
+                "../tmp",
+                "exec",
+                "--",
+                "/bin/sh",
+                "-c",
+                "if kill -KILL \"$PPID\" 2>/dev/null; then echo escaped; else echo protected; fi",
+            ])
+            .current_dir(dir.path().join("area"))
+            .env_clear(),
+    );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"protected\n", "{output:?}");
 }

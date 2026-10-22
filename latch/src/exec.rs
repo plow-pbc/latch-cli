@@ -962,8 +962,15 @@ mod tests {
         let arguments = String::from_utf8_lossy(&arguments);
         assert!(arguments.contains("exec"));
         assert!(!arguments.contains(marker));
-        drop(child.stdin.take());
-        child.wait().await.unwrap();
+        let header = serde_json::to_vec(&PrivateExec {
+            secret_env: BTreeMap::new(),
+            error_token: "startup-test-token".into(),
+        })
+        .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        crate::wire::write_frame(&mut input, &header).await.unwrap();
+        drop(input);
+        assert!(child.wait().await.unwrap().success());
     }
 
     #[tokio::test]
