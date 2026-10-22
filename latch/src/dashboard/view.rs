@@ -304,6 +304,9 @@ impl View {
         if let Some(update) = &board.update {
             shown.push((update.clone(), &alert));
         }
+        if let Some(available) = &board.available {
+            shown.push((available.clone(), &bold));
+        }
         for handoff in &board.handoffs {
             shown.push((handoff.clone(), &alert));
         }

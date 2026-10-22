@@ -195,6 +195,10 @@ pub enum Command {
     Help(HelpArgs),
     /// Print SKILL.md, which teaches an agent how to use latch
     Skill,
+    /// Install the newest latch, or the build TAG names (also how to go
+    /// back), restarting a `serve -d` host on it; `--check` only says whether
+    /// a newer build is available. Owner only
+    Update(UpdateArgs),
     /// Set this machine up, at a terminal: log in, connect Google, on a Mac
     /// turn on Messages and Contacts, all with no host running, then offer to
     /// start latch. Each step runs a latch command and is skipped once done,
@@ -214,6 +218,16 @@ pub enum Command {
         /// messages or contacts
         name: String,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct UpdateArgs {
+    /// A release's tag, e.g. v0.1.0-1327: installs that build, even an older one
+    #[arg(value_name = "TAG", conflicts_with = "check")]
+    pub tag: Option<String>,
+    /// Only say whether a newer build is available; changes nothing
+    #[arg(long)]
+    pub check: bool,
 }
 
 #[derive(Args, Debug)]

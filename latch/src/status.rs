@@ -52,6 +52,8 @@ pub struct LocalStatus {
     pub serve: Serve,
     /// Why the host last stopped, when it stopped by a failure.
     pub last_error: Option<Problem>,
+    /// Whether a newer build is available, as the host last looked.
+    pub update: crate::update::Status,
 }
 
 #[derive(Serialize)]
@@ -114,5 +116,6 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
             blocked,
         },
         last_error: host.error,
+        update: crate::update::status(&dir),
     })
 }

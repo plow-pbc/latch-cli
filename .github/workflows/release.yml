@@ -1,11 +1,14 @@
 name: release
 # A release is a manual run from main: it mints v<version>-<run number>, e.g.
 # v0.1.0-1327, titled `latch 0.1.0 (1327)`, builds the archives (the package
-# workflow), signs and notarizes the macOS ones, checks them all and leaves a
-# draft release for a person to publish. The full macOS test suite runs
-# beside the build (its debug, fake-gog test build shares nothing with the
-# release build), and the draft is made only if it passes too. The run
-# number is the build number latch --version shows.
+# workflow), signs and notarizes the macOS ones, checks them all, signs
+# SHA256SUMS with latch's release key, uploads the release to
+# releases.plow.co/latch-cli/releases/<tag>/ and leaves a draft release for a
+# person to publish. Publishing it runs the promote workflow, which makes it
+# the release `install.sh` and `latch update` install. The full macOS test
+# suite runs beside the build (its debug, fake-gog test build shares nothing
+# with the release build), and nothing is uploaded unless it passes too. The
+# run number is the build number latch --version shows.
 run-name: Release (build ${{ github.run_number }})
 on:
   workflow_dispatch:
@@ -175,8 +178,11 @@ jobs:
   publish:
     needs: [version, check, mac-tests]
     runs-on: ubuntu-24.04
+    # The release key and the upload role are the release environment's only.
+    environment: release
     permissions:
       contents: write
+      id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.version.outputs.tag }}
@@ -188,6 +194,32 @@ jobs:
         with:
           name: release-downloads
           path: dist
+      - name: Load the release key
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          LATCH_MINISIGN_SECRET_KEY: op://terraform/GitHub Actions Release Secrets/LATCH_MINISIGN_SECRET_KEY
+      # latch update refuses a release whose SHA256SUMS this key did not sign.
+      # The key has no password (minisign -G -W): 1Password is what keeps it.
+      - name: Sign SHA256SUMS
+        shell: bash
+        run: |
+          sudo apt-get install -y minisign
+          key="$RUNNER_TEMP/minisign.key"
+          (umask 077 && printf '%s\n' "$LATCH_MINISIGN_SECRET_KEY" > "$key")
+          minisign -S -s "$key" -m dist/SHA256SUMS -t "latch $VERSION"
+          rm "$key"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_LATCH_RELEASE_ROLE_ARN }}
+          aws-region: us-west-2
+      # Never rewritten once published, so caches may keep them for good.
+      - name: Upload the release
+        run: |
+          aws s3 cp dist "s3://releases.plow.co/latch-cli/releases/$VERSION/" --recursive \
+            --cache-control 'public, max-age=31536000, immutable'
       # Push the tag only after every build is signed and verified. A person
       # publishes the draft after checking the signed builds.
       - name: Create draft release

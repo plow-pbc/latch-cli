@@ -5,11 +5,10 @@ on a machine its owner trusts, over Plow's directory.
 
 ## Install
 
-Teammates need access to this private repository and authenticated [GitHub CLI](https://cli.github.com/)
-(`gh auth login`). This installs the newest published release:
+This installs the newest release from `releases.plow.co`:
 
 ```sh
-gh release download --repo plow-pbc/latch-cli --pattern install.sh && sh install.sh
+curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 export PATH="$HOME/.local/bin:$PATH"
 latch --version
 ```
@@ -35,11 +34,20 @@ Linux hosting needs bubblewrap and usable user namespaces; setup explains missin
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
 
-Update by rerunning the commands above, adding `--clobber` to `gh release download` so
-the download replaces the one already there. State and versioned plugins stay in place.
-A host `serve -d` started is stopped and started again with the new latch, with what
-it was given. One running in a terminal (`latch serve`, or `serve --foreground`) is
-stopped, and the update says to run `latch serve` there again.
+Update with `latch update`: it installs the newest build, or `latch update TAG`
+that build (also how to go back to an older one); `latch update --check` only
+says whether a newer one is out. It checks the release's `SHA256SUMS` against
+latch's release signing key and the archive against it (on macOS, also that
+the app is signed by Plow), then runs the release's own `install-binary.sh`.
+State and versioned plugins stay in place, and the browser engines installed
+are brought up to date. A host `serve -d` started is stopped and started again
+with the new latch, with what it was given. One running in a terminal
+(`latch serve`, or `serve --foreground`) is stopped, and the update says to run
+`latch serve` there again. Only the owner updates: an agent's login is refused.
+A running host looks for a newer build about once a day: `latch status --local`
+shows it as `update`, the dashboard as a line under the header, and a command
+at a terminal says so on stderr once a day. `LATCH_NO_UPDATE_CHECK=1` turns
+the looking and the notices off.
 The macOS binaries are signed with Plow's Developer ID and notarized by Apple.
 No Homebrew tap is included.
 
