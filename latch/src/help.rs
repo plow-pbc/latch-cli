@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::cli::{Cli, HelpArgs};
 use crate::failure::{Exit, Failure};
+use crate::google::policy::{self, Allowed};
 
 /// What latch knows about a command beyond what its parser says.
 struct Entry {
@@ -787,6 +788,17 @@ const ENTRIES: &[Entry] = &[
     },
 ];
 
+/// The top-level fields of the answers that are plain structs, checked
+/// against those structs by the tests.
+const OUTPUT_FIELDS: &[(&str, &[&str])] = &[
+    ("login", &["peer", "key_created"]),
+    ("devices", &["devices"]),
+    ("devices.remove", &["removed"]),
+    ("status", &["peer", "api_url", "hosts"]),
+    ("shares", &["shares", "allow_read"]),
+    ("shares.set", &["shares", "allow_read"]),
+];
+
 /// The guide for agents, versioned with the binary.
 const SKILL: &str = include_str!("../SKILL.md");
 
@@ -801,11 +813,26 @@ pub fn skill() -> String {
     format!("---\n{front}\nmetadata:\n  version: {version}\n---\n{body}")
 }
 
-/// `latch help [COMMAND…] [--examples | --json]`.
+/// `latch help [COMMAND…] [--examples | --json]`. Under `google`, the
+/// words after it name gog commands, from the grammar that validates them.
 pub fn run(args: HelpArgs) -> ExitCode {
     let mut root = Cli::command();
     root.build();
-    let Some(command) = find(&mut root, &args.path) else {
+    let (path, gog_words) = match args.path.split_first() {
+        Some((first, rest)) if first == "google" && !rest.is_empty() => (&args.path[..1], rest),
+        _ => (&args.path[..], &[][..]),
+    };
+    let gog: Vec<Allowed> = if path.is_empty() || path == ["google"] {
+        let named = |allowed: &Allowed| {
+            allowed.words.len() >= gog_words.len()
+                && allowed.words.iter().zip(gog_words).all(|(a, b)| a == b)
+        };
+        policy::allowed().into_iter().filter(named).collect()
+    } else {
+        Vec::new()
+    };
+    let found = find(&mut root, path).filter(|_| gog_words.is_empty() || !gog.is_empty());
+    let Some(command) = found else {
         let message = format!(
             "no command `latch {}`; `latch help` lists them",
             args.path.join(" ")
@@ -813,14 +840,18 @@ pub fn run(args: HelpArgs) -> ExitCode {
         eprintln!("{}", Failure::usage("unknown_command", message).to_json());
         return Exit::Usage.into();
     };
-    if !args.examples && !args.json {
+    if !args.examples && !args.json && gog_words.is_empty() {
         print!("{}", command.render_long_help());
         return ExitCode::SUCCESS;
     }
     let mut runnable = Vec::new();
-    actions(command, &args.path, &mut runnable);
+    if gog_words.is_empty() {
+        actions(command, path, &mut runnable);
+    }
+    let mut listed: Vec<Action> = runnable.iter().map(|(id, cmd)| describe(id, cmd)).collect();
+    let google = find(&mut root, &["google".to_string()]).expect("latch google");
+    listed.extend(gog.iter().map(|allowed| describe_gog(allowed, google)));
     if args.json {
-        let actions = runnable.iter().map(|(id, cmd)| describe(id, cmd)).collect();
         let help = Help {
             version: crate::cli::version(),
             exit_codes: Exit::ALL
@@ -830,19 +861,45 @@ pub fn run(args: HelpArgs) -> ExitCode {
                     meaning: exit.meaning(),
                 })
                 .collect(),
-            actions,
+            actions: listed,
         };
         println!("{}", serde_json::to_string(&help).expect("help serializes"));
-    } else {
-        for (id, _) in &runnable {
-            println!("latch {}", id.replace('.', " "));
-            for example in entry(id).examples {
-                println!("  # {}\n  latch {}", example.what, quoted(example.args));
+    } else if args.examples {
+        for action in &listed {
+            println!("{}", action.usage);
+            for example in &action.examples {
+                println!("  # {}\n  {}", example.what, example.command);
             }
             println!();
         }
+    } else {
+        for (allowed, action) in gog.iter().zip(&listed) {
+            print_gog(allowed, action);
+        }
     }
     ExitCode::SUCCESS
+}
+
+/// A gog command's help: its words, what it changes, its flags, and where
+/// gog's own usage is.
+fn print_gog(allowed: &Allowed, action: &Action) {
+    let words = allowed.words.join(" ");
+    println!("{}", action.usage);
+    if !allowed.aliases.is_empty() {
+        println!("  Also typed as: {}", allowed.aliases.join(", "));
+    }
+    match action.side_effects {
+        None => println!("  Reads only: changes nothing at Google."),
+        Some(what) => println!("  Side effects: {what}."),
+    }
+    let flags: Vec<String> = (allowed.flags.iter())
+        .map(|(name, value)| match value {
+            true => format!("--{name} VALUE"),
+            false => format!("--{name}"),
+        })
+        .collect();
+    println!("  Flags: {}", flags.join(" "));
+    println!("  `latch google --host H -- {words} --help` prints gog's own usage.\n");
 }
 
 /// The subcommand `path` names, from the root.
@@ -900,11 +957,30 @@ struct Action {
     about: String,
     inputs: Vec<Input>,
     output: &'static str,
+    /// The answer's top-level fields, where they are known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_fields: Option<&'static [&'static str]>,
     side_effects: Option<&'static str>,
     retry: &'static str,
     owner_only: bool,
     connector: Option<&'static str>,
-    examples: Vec<String>,
+    /// A gog command's own flags, after `--`, as its grammar declares them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gog_flags: Option<Vec<GogFlag>>,
+    examples: Vec<ExampleHelp>,
+}
+
+#[derive(Serialize)]
+struct ExampleHelp {
+    what: String,
+    command: String,
+}
+
+#[derive(Serialize)]
+struct GogFlag {
+    flag: String,
+    /// Takes a value (`--max 20`), or is a switch.
+    value: bool,
 }
 
 #[derive(Serialize)]
@@ -931,7 +1007,81 @@ fn describe(id: &str, command: &clap::Command) -> Action {
         .or(command.get_about())
         .map(ToString::to_string)
         .unwrap_or_default();
-    let inputs = command
+    Action {
+        id: id.to_string(),
+        usage: usage(command),
+        about,
+        inputs: inputs(command),
+        output: entry.output,
+        output_fields: OUTPUT_FIELDS
+            .iter()
+            .find(|(of, _)| *of == id)
+            .map(|(_, fields)| *fields),
+        side_effects: entry.effect.side_effects(),
+        retry: entry.effect.retry(),
+        owner_only: entry.owner_only,
+        connector: entry.connector,
+        gog_flags: None,
+        examples: entry
+            .examples
+            .iter()
+            .map(|example| ExampleHelp {
+                what: example.what.to_string(),
+                command: format!("latch {}", quoted(example.args)),
+            })
+            .collect(),
+    }
+}
+
+/// An allowed gog command as an action of `latch google`: its id is
+/// `google.` and the grammar's dotted name.
+fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
+    let words = allowed.words.join(" ");
+    let effect = match allowed.read_only {
+        true => ReadOnly,
+        false => Once("changes the owner's Google data, at Google"),
+    };
+    let mut inputs = inputs(google);
+    inputs.retain(|input| !input.after_separator);
+    let help_args = ["google", "--host", "mac", "--"]
+        .into_iter()
+        .chain(allowed.words.iter().copied())
+        .chain(["--help"])
+        .collect::<Vec<_>>();
+    Action {
+        id: format!("google.{}", allowed.command),
+        usage: format!("latch google [OPTIONS] -- {words} [GOG_ARGS]..."),
+        about: format!("gog's `{words}`, run on a host's Google account"),
+        inputs,
+        output: "gog's JSON answer.",
+        output_fields: None,
+        side_effects: effect.side_effects(),
+        retry: effect.retry(),
+        owner_only: false,
+        connector: Some("google"),
+        gog_flags: Some(
+            (allowed.flags.iter())
+                .map(|(name, value)| GogFlag {
+                    flag: format!("--{name}"),
+                    value: *value,
+                })
+                .collect(),
+        ),
+        examples: vec![ExampleHelp {
+            what: format!("gog's own usage for `{words}`"),
+            command: format!("latch {}", quoted(&help_args)),
+        }],
+    }
+}
+
+fn usage(command: &clap::Command) -> String {
+    let mut command = command.clone();
+    let usage = command.render_usage().to_string();
+    usage.trim_start_matches("Usage: ").to_string()
+}
+
+fn inputs(command: &clap::Command) -> Vec<Input> {
+    command
         .get_arguments()
         .filter(|arg| {
             !arg.is_hide_set() && !matches!(arg.get_action(), ArgAction::Help | ArgAction::Version)
@@ -984,28 +1134,7 @@ fn describe(id: &str, command: &clap::Command) -> Action {
                     .unwrap_or_default(),
             }
         })
-        .collect();
-    let mut usage = command.clone();
-    Action {
-        id: id.to_string(),
-        usage: usage
-            .render_usage()
-            .to_string()
-            .trim_start_matches("Usage: ")
-            .to_string(),
-        about,
-        inputs,
-        output: entry.output,
-        side_effects: entry.effect.side_effects(),
-        retry: entry.effect.retry(),
-        owner_only: entry.owner_only,
-        connector: entry.connector,
-        examples: entry
-            .examples
-            .iter()
-            .map(|example| format!("latch {}", quoted(example.args)))
-            .collect(),
-    }
+        .collect()
 }
 
 /// `args` as a shell would need them typed: a word with anything but plain
@@ -1030,6 +1159,7 @@ fn quoted(args: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     fn runnable() -> Vec<String> {
         let mut root = Cli::command();
@@ -1126,6 +1256,101 @@ mod tests {
             .find(|input| input.name == "host")
             .unwrap();
         assert_eq!(host.env.as_deref(), Some("LATCH_HOST"));
+    }
+
+    #[test]
+    fn output_fields_are_the_answers_fields() {
+        use crate::plow::Peer;
+        let peer = Peer {
+            key: "k".into(),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: None,
+            last_seen_at: None,
+            online: None,
+            this_machine: false,
+        };
+        let shares = || crate::shares::SharesOutput {
+            shares: vec![],
+            allow_read: vec![],
+        };
+        let answers = [
+            (
+                "login",
+                serde_json::to_value(crate::login::LoginOutput {
+                    peer: peer.clone(),
+                    key_created: true,
+                }),
+            ),
+            (
+                "devices",
+                serde_json::to_value(crate::devices::DevicesOutput { devices: vec![] }),
+            ),
+            (
+                "devices.remove",
+                serde_json::to_value(crate::devices::RemoveOutput {
+                    removed: peer.clone(),
+                }),
+            ),
+            (
+                "status",
+                serde_json::to_value(crate::status::StatusOutput {
+                    peer,
+                    api_url: "https://plow.example".into(),
+                    hosts: vec![],
+                }),
+            ),
+            ("shares", serde_json::to_value(shares())),
+            ("shares.set", serde_json::to_value(shares())),
+        ];
+        assert_eq!(answers.len(), OUTPUT_FIELDS.len());
+        for (id, answer) in answers {
+            let answer = answer.unwrap();
+            let fields: Vec<_> = answer
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            let (_, listed) = OUTPUT_FIELDS.iter().find(|(of, _)| *of == id).unwrap();
+            let mut listed = listed.to_vec();
+            listed.sort();
+            assert_eq!(fields, listed, "{id}");
+        }
+    }
+
+    #[test]
+    fn every_allowed_gog_command_is_an_action_and_its_example_runs_it() {
+        let mut root = Cli::command();
+        root.build();
+        let google = find(&mut root, &["google".into()]).unwrap().clone();
+        let allowed = policy::allowed();
+        assert!(
+            allowed
+                .iter()
+                .any(|allowed| allowed.command == "gmail.search")
+        );
+        // Refused upstream commands are not in the grammar's allowed list.
+        assert!(
+            !allowed
+                .iter()
+                .any(|allowed| allowed.words == ["gmail", "watch"]
+                    || allowed.words == ["drive", "ls"])
+        );
+        for allowed in &allowed {
+            let action = describe_gog(allowed, &google);
+            assert_eq!(action.id, format!("google.{}", allowed.command));
+            for example in &action.examples {
+                let words: Vec<_> = example.command.split(' ').skip(1).collect();
+                let argv = std::iter::once("latch").chain(words.iter().copied());
+                let crate::cli::Command::Google(args) = Cli::try_parse_from(argv).unwrap().command
+                else {
+                    panic!("{}", example.command);
+                };
+                let plan = policy::parse(&args.gog_args).unwrap();
+                assert_eq!(plan.command, allowed.command, "{}", example.command);
+            }
+        }
     }
 
     #[test]

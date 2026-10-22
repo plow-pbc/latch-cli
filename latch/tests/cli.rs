@@ -773,6 +773,32 @@ fn help_and_skill_need_no_login_and_carry_this_version() {
     let unknown = latch(&state, &["help", "nope"], &[]);
     assert_eq!(unknown.status.code(), Some(2));
 
+    // gog's commands are found the same way, from the grammar latch checks
+    // them against; one it refuses is not there.
+    let search = latch(
+        &state,
+        &["help", "google", "gmail", "search", "--json"],
+        &[],
+    );
+    assert_eq!(search.status.code(), Some(0), "{search:?}");
+    let search: Value = serde_json::from_slice(&search.stdout).unwrap();
+    let ids: Vec<_> = search["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| &a["id"])
+        .collect();
+    assert_eq!(ids, ["google.gmail.search"]);
+    assert_eq!(search["actions"][0]["side_effects"], Value::Null);
+    let send = latch(&state, &["help", "google", "gmail", "send"], &[]);
+    let text = String::from_utf8(send.stdout).unwrap();
+    assert!(
+        text.contains("Side effects:") && text.contains("--to VALUE"),
+        "{text}"
+    );
+    let watch = latch(&state, &["help", "google", "gmail", "watch"], &[]);
+    assert_eq!(watch.status.code(), Some(2));
+
     let skill = latch(&state, &["skill"], &[]);
     let text = String::from_utf8(skill.stdout).unwrap();
     assert!(text.starts_with("---\nname: latch\n"), "{text}");
