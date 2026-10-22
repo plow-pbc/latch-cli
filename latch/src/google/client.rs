@@ -136,8 +136,7 @@ async fn exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iroh::endpoint::presets;
-    use iroh::{Endpoint, RelayMode};
+    use iroh::RelayMode;
     use wire::Response;
 
     /// `gmail attachment` saving to `local`, from a host whose gog wrote a
@@ -149,7 +148,7 @@ mod tests {
         local: &Path,
     ) -> Result<Value, Failure> {
         let bind = |alpns: Vec<Vec<u8>>| {
-            Endpoint::builder(presets::Minimal)
+            crate::dial::endpoint()
                 .relay_mode(RelayMode::Disabled)
                 .alpns(alpns)
                 .bind()

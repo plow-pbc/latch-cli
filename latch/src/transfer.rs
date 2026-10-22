@@ -246,14 +246,13 @@ fn local_failure(path: &Path, err: std::io::Error) -> Failure {
 mod tests {
     use super::*;
     use iroh::endpoint::SendStream;
-    use iroh::endpoint::presets;
     use iroh::{Endpoint, RelayMode};
     use wire::Response;
 
     /// A host and a client endpoint, and both ends of a connection between them.
     async fn connected() -> (Endpoint, Endpoint, iroh::endpoint::Connection, Connection) {
         let bind = |alpns: Vec<Vec<u8>>| {
-            Endpoint::builder(presets::Minimal)
+            crate::dial::endpoint()
                 .relay_mode(RelayMode::Disabled)
                 .alpns(alpns)
                 .bind()
