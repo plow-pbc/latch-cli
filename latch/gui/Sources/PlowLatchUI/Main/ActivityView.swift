@@ -87,8 +87,8 @@ private struct Records: View {
                     TableColumn("Status") { record in StatusLabel(status: record.status).help(record.status.title) }
                         .width(min: 140, ideal: 210, max: 280)
                     TableColumn("Request") { record in
-                        Text(record.command).font(.body.monospaced()).lineLimit(1).truncationMode(.middle)
-                            .help(record.command)
+                        Text(record.command ?? "—").font(.body.monospaced()).lineLimit(1).truncationMode(.middle)
+                            .help(record.command ?? "A connection")
                     }
                     .width(min: 160, ideal: 200)
                     TableColumn("Caller") { record in
@@ -145,7 +145,7 @@ private struct Records: View {
             }
             guard !query.isEmpty else { return true }
             let caller = callerLabel(record)
-            return [record.command, caller.who, caller.kind, record.status.title].contains { $0.lowercased().contains(query) }
+            return [record.command ?? "", caller.who, caller.kind, record.status.title].contains { $0.lowercased().contains(query) }
         }
     }
 

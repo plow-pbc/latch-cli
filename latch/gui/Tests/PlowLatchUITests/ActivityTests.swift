@@ -25,12 +25,15 @@ struct ActivityTests {
         ]))
     }
 
-    @Test func requestsReadAsTyped() throws {
+    /// latch gives each record its command; a connection has none.
+    @Test func requestsAreLatchsOwnCommands() throws {
         let all = try records(Fixtures.studioAudit)
         let commands = all.map(\.command)
-        #expect(commands.contains("cat Projects/latch-demo/README.md"))
-        #expect(commands.contains("rm -rf Finance"))
-        #expect(commands.contains("rules set · rules for every agent"))
+        #expect(commands.contains("latch exec cat Projects/latch-demo/README.md"))
+        #expect(commands.contains("latch rules set"))
+        #expect(all.filter { $0.op == "connect" }.allSatisfy { $0.command == nil })
+        let quoted = try LatchJSON.decoder.decode(AuditRecord.self, from: Data(#"{"agent":null,"caller":"k","caller_name":"vac2","command":"latch exec cat 'Projects/my file.txt'","decision":"allow","details":null,"id":"e1","op":"exec","outcome":"ok","time":"2026-10-23T08:40:02Z"}"#.utf8))
+        #expect(quoted.command == "latch exec cat 'Projects/my file.txt'")
     }
 
     @Test func callersAreNamed() throws {
@@ -110,7 +113,7 @@ struct LiveActivityTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(feed.records.count > before)
-        #expect(feed.records.contains { $0.command == "echo \(marker)" && $0.status == .allowed(nil) })
+        #expect(feed.records.contains { $0.command?.hasSuffix(" echo \(marker)") == true && $0.status == .allowed(nil) })
         feed.stop()
         try await Task.sleep(for: .milliseconds(500))
         #expect(Self.followers(state) == 0)
@@ -170,7 +173,6 @@ struct RecordFieldsTests {
         #expect(shown["Accounts"] == "me@example.com")
         #expect(shown["Command"] == "gmail.send")
         #expect(shown["Outcomes"] == "account: me@example.com, status: ok")
-        #expect(google.command == "google gmail send")
     }
 
     // Exec's own fields have their own sections; the rest still shows.
@@ -294,7 +296,7 @@ struct RecordShapeTests {
     @Test func aRefusedConnectionIsARefusal() throws {
         let refused = try record(#"{"agent":null,"caller":"k","caller_name":null,"decision":"deny","details":null,"id":"c1","op":"connect","outcome":"caller_denied","time":"2026-10-23T05:27:23Z"}"#)
         #expect(refused.status == .refused("caller not allowed"))
-        #expect(refused.command == "connect")
+        #expect(refused.command == nil)
         #expect(!refused.isBackground)
         let allowed = try record(#"{"agent":null,"caller":"k","caller_name":"laptop","decision":"allow","details":null,"id":"c2","op":"connect","outcome":"connected","time":"2026-10-23T05:27:23Z"}"#)
         #expect(allowed.status == .connected && allowed.isBackground)
