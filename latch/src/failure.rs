@@ -88,6 +88,9 @@ pub struct Failure {
     /// The one command or action that fixes it, when there is one. (Boxed,
     /// so every `Result<_, Failure>` stays small.)
     pub next: Option<Box<str>>,
+    /// Already said to the person who ran a human command, as a plain line
+    /// on their terminal: nothing more is printed for it.
+    pub said: bool,
     pub details: Value,
 }
 
@@ -99,6 +102,7 @@ impl Failure {
             message,
             retry_after: None,
             next: None,
+            said: false,
             details: Value::Null,
         }
     }

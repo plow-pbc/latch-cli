@@ -35,11 +35,11 @@ case "$*" in
       fi
     fi
     # A login by text ends in a person's line; one that asks no one
-    # (`json-login`) answers its JSON; one that fails (`login-fails`), its
-    # error line.
+    # (`json-login`) answers its JSON; one by text that fails
+    # (`login-fails`) says why in a plain line.
     if [ -f "$STUB/login-fails" ]; then
       echo 'Waiting for your text…' >&2
-      echo '{"error":{"code":"code_expired","exit":1,"message":"the code expired before it was texted"}}' >&2
+      echo 'the code expired before it was texted; run `latch login` again' >&2
       exit 1
     fi
     if [ -f "$STUB/json-login" ]; then echo '{"peer":{"name":"mac","key":"k","kind":"device"},"key_created":true}'
@@ -101,6 +101,7 @@ impl Stub {
 
     /// `name` enabled, as the stand-in's host lists it and as the host
     /// saves it in the state folder.
+    #[cfg(target_os = "macos")]
     fn enable(&self, name: &str) {
         self.file(&format!("enabled-{name}"), "");
         let state = self.root.join("state");
@@ -306,64 +307,28 @@ fn a_failed_step_says_why_and_the_next_one_still_runs() {
     assert!(shown.contains("Start latch now? [Y/n]"), "{shown}");
 }
 
-/// With no terminal, setup asks nothing and changes nothing: it fails with
-/// `no_terminal`, naming as `next` the first step not done yet.
+/// A login that fails: what it said stays on the terminal, and setup,
+/// going by its exit status, says the other steps wait.
 #[test]
-fn setup_without_a_terminal_names_the_first_step_not_done() {
-    let stub = Stub::new();
-    let next = || {
-        let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-            .arg("--state-dir")
-            .arg(stub.root.join("state"))
-            .arg("setup")
-            .env("LATCH_SETUP_LATCH", stub.root.join("latch-stub"))
-            .env("STUB", stub.root.join("stub"))
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-        assert!(output.stdout.is_empty(), "{output:?}");
-        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(error["error"]["code"], "no_terminal", "{error}");
-        error["error"]["next"].as_str().unwrap().to_string()
-    };
-    assert_eq!(next(), "latch login --events");
-    stub.file("peer", "");
-    assert_eq!(next(), "latch plugins enable google");
-    stub.enable("google");
-    if cfg!(target_os = "macos") {
-        assert_eq!(next(), "latch plugins enable messages");
-        stub.enable("messages");
-        assert_eq!(next(), "latch plugins enable contacts");
-        stub.enable("contacts");
-    }
-    assert_eq!(next(), "latch serve -d");
-    stub.file("ready", "");
-    assert_eq!(next(), "latch status");
-    let calls = stub.read("calls");
-    assert!(
-        !calls.contains("login\n") && !calls.contains("enable") && !calls.contains("serve"),
-        "it only looked: {calls}"
-    );
-}
-
-/// A login that fails: what it showed stays on the terminal, and setup
-/// says its error in a line of its own, never as the JSON.
-#[test]
-fn a_failed_login_is_said_in_a_line_not_its_json() {
+fn a_failed_login_leaves_its_line_and_the_other_steps_wait() {
     let stub = Stub::new();
     stub.file("login-fails", "");
     let (code, shown) = stub.setup("");
     assert_eq!(code, Some(0), "{shown}");
     assert!(shown.contains("Waiting for your text…"), "{shown}");
     assert!(
-        shown.contains("✗ the code expired before it was texted"),
+        shown.contains("the code expired before it was texted"),
         "{shown}"
     );
     assert!(
         shown.contains("Not logged in, so the other steps wait"),
         "{shown}"
     );
-    assert!(!shown.contains("{\"error\""), "{shown}");
+    let calls = stub.read("calls");
+    assert!(
+        !calls.contains("enable") && !calls.contains("serve"),
+        "{calls}"
+    );
 }
 
 /// A login that asks no one answers JSON: setup reads it and says so in

@@ -6,9 +6,7 @@
 //! whether it is done already and then skips it, so setup can be run again
 //! at any time. Skipping or failing a step never stops the next one.
 
-use std::fs::File;
-use std::io::{BufRead, Read, Write};
-use std::os::fd::FromRawFd;
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 #[cfg(target_os = "macos")]
@@ -37,7 +35,9 @@ pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
         input: None,
     };
     if !term::interactive() {
-        let failure = setup.no_terminal();
+        let failure = StateDir::new(setup.state_dir.clone())
+            .and_then(|state| status(&state))
+            .map_or_else(|failure| failure, |status| no_terminal(&status));
         eprintln!("{}", failure.to_json());
         return failure.exit.into();
     }
@@ -125,30 +125,6 @@ impl Setup {
         self.latch(&["status", "--local"]).json
     }
 
-    /// Without a terminal nobody answers setup's questions: it names, as
-    /// `next`, the first of its steps not done yet.
-    fn no_terminal(&self) -> Failure {
-        let local = self.local();
-        let off = |name: &str| self.plugin_state(name).as_deref() != Some("enabled");
-        let next = if local["peer"].is_null() {
-            "latch login --events"
-        } else if off("google") {
-            "latch plugins enable google"
-        } else if cfg!(target_os = "macos") && off("messages") {
-            "latch plugins enable messages"
-        } else if cfg!(target_os = "macos") && off("contacts") {
-            "latch plugins enable contacts"
-        } else if local["serve"]["ready"] != true {
-            "latch serve -d"
-        } else {
-            "latch status"
-        };
-        let message = "latch setup asks questions, so it needs a terminal".to_string();
-        let mut failure = Failure::usage("no_terminal", message);
-        failure.next = Some(next.into());
-        failure
-    }
-
     /// Step 1: a login, by text at this terminal.
     fn log_in(&mut self) -> bool {
         if let Some(name) = self.local()["peer"]["name"].as_str() {
@@ -156,51 +132,27 @@ impl Setup {
             return true;
         }
         step("Log in", "latch login");
-        match self.login() {
-            Ok(answer) => {
-                if let Some(name) = answer["peer"]["name"].as_str() {
-                    done(&format!("Logged in as {name}."));
-                }
-                return true;
+        // Its questions, a login by text's screen and what went wrong are
+        // the person's, at this terminal; setup goes by its exit status. A
+        // login that asked no one answers JSON, read for the name.
+        let login = self
+            .command(&["login"])
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .output();
+        if let Ok(output) = login
+            && output.status.success()
+        {
+            let answer: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+            if let Some(name) = answer["peer"]["name"].as_str() {
+                done(&format!("Logged in as {name}."));
             }
-            Err(error) => {
-                let message = error["error"]["message"].as_str().unwrap_or("it failed");
-                eprintln!("✗ {message}");
-            }
+            return true;
         }
         say(
             "Not logged in, so the other steps wait: run `latch setup` again once `latch login` works.",
         );
         false
-    }
-
-    /// `latch login`, at this terminal: its questions, and a login by
-    /// text's screen, are the person's. Its stderr is a terminal of setup's
-    /// own, passed on here as it comes, all but its error line, which setup
-    /// reads and says in its own words. Its JSON (a login that asked no one)
-    /// is read too, never shown.
-    fn login(&self) -> Result<Value, Value> {
-        let unread = |why: String| serde_json::json!({"error": {"message": why}});
-        let (main, side) = pty().map_err(|err| unread(format!("no terminal for login: {err}")))?;
-        let mut command = self.command(&["login"]);
-        command
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(side));
-        let child = command.spawn();
-        // Every copy of the terminal's other side closes with login, so
-        // passing it on ends when login does.
-        drop(command);
-        let child = child.map_err(|err| unread(err.to_string()))?;
-        let passing = std::thread::spawn(move || pass_on(main));
-        let output = child
-            .wait_with_output()
-            .map_err(|err| unread(err.to_string()))?;
-        let error = passing.join().unwrap_or(Value::Null);
-        if output.status.success() {
-            return Ok(serde_json::from_slice(&output.stdout).unwrap_or(Value::Null));
-        }
-        Err(error)
     }
 
     /// A connector's state: as the host lists it when it runs, else as it
@@ -337,6 +289,24 @@ fn start_args(state: &StateDir) -> Vec<&'static str> {
     } else {
         vec!["serve", "-d"]
     }
+}
+
+/// Without a terminal nobody answers setup's questions: `no_terminal`,
+/// whose `next` is the first step `setup --status` says is not done, or
+/// `latch status` once every step is.
+fn no_terminal(status: &Status) -> Failure {
+    let next = status
+        .steps
+        .iter()
+        .filter(|step| step.state != StepState::Done)
+        .find_map(|step| step.args.as_ref())
+        .map_or("latch status".to_string(), |args| {
+            format!("latch {}", args.join(" "))
+        });
+    let message = "latch setup asks questions, so it needs a terminal".to_string();
+    let mut failure = Failure::usage("no_terminal", message);
+    failure.next = Some(next.into());
+    failure
 }
 
 /// `latch setup --status`: each step of setup, read from the state folder
@@ -534,68 +504,6 @@ impl Input {
             }
         }
     }
-}
-
-/// A new terminal (a pty) the size of this one: its two sides.
-fn pty() -> std::io::Result<(File, File)> {
-    // SAFETY: an all-zero winsize is a valid value of the C struct.
-    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-    // SAFETY: TIOCGWINSZ only writes this terminal's size into `size`; on
-    // failure it stays zero, which a terminal takes as unknown.
-    unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut size) };
-    let (mut main, mut side) = (0, 0);
-    let none = std::ptr::null_mut();
-    // SAFETY: openpty writes two new descriptors, which are ours from here.
-    if unsafe { libc::openpty(&mut main, &mut side, none, std::ptr::null_mut(), &mut size) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: both are open descriptors no one else owns.
-    Ok(unsafe { (File::from_raw_fd(main), File::from_raw_fd(side)) })
-}
-
-/// Passes what login shows on its terminal on to this one as it comes,
-/// prompts with no line end included, all but its one JSON error line,
-/// which it returns.
-fn pass_on(mut from: File) -> Value {
-    let mut out = std::io::stderr();
-    let mut error = Value::Null;
-    // A line that begins with `{`, held until its end: the error line, or
-    // else shown after all.
-    let mut held: Option<Vec<u8>> = None;
-    let mut line_start = true;
-    let mut chunk = [0u8; 4096];
-    // Ends with an error (EIO) once login, the terminal's last user, exits.
-    while let Ok(read) = from.read(&mut chunk) {
-        if read == 0 {
-            break;
-        }
-        let mut shown = Vec::new();
-        for &byte in &chunk[..read] {
-            if let Some(line) = &mut held {
-                line.push(byte);
-                if byte == b'\n' {
-                    let line = held.take().expect("held");
-                    match serde_json::from_slice::<Value>(&line) {
-                        Ok(value) if value.get("error").is_some() => error = value,
-                        _ => shown.extend(line),
-                    }
-                    line_start = true;
-                }
-                continue;
-            }
-            if line_start && byte == b'{' {
-                held = Some(vec![byte]);
-                continue;
-            }
-            shown.push(byte);
-            line_start = byte == b'\n';
-        }
-        let _ = out.write_all(&shown).and_then(|()| out.flush());
-    }
-    if let Some(line) = held {
-        let _ = out.write_all(&line);
-    }
-    error
 }
 
 fn say(text: &str) {

@@ -103,79 +103,91 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             by_text(state, &api_url, name, args.events).await?
         }
     };
-
-    state.create()?;
-    let (key, key_created) = state.load_or_create_key()?;
-    // Login never starts a listener, so it never learns a new relay address:
-    // it re-sends the one this peer last registered (a running host's
-    // heartbeat keeps that current in config.json), so logging in again
-    // never unlists a running host. A host first becomes reachable when
-    // `latch serve` registers its relay.
-    let relay_url = saved
-        .as_ref()
-        .and_then(|config| config.peer.relay_url.clone());
-    let registration = Registration {
-        key: key.public().to_string(),
-        name,
-        relay_url,
-    };
-    let plow = Plow::new(&api_url, &token);
-    // An agent is named after itself in Plow. Plow names one that is not
-    // an agent's credential, as it always has.
-    let me = if owner {
-        None
-    } else {
-        plow.agent_me().await.ok()
-    };
-    let registration = Registration {
-        name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
-        ..registration
-    };
-    let peer = match plow.register(&registration).await {
-        // Two agents may share a name: unless one was asked for, try once
-        // more as the name plus the start of this agent's uid.
-        Err(failure) if failure.code == "conflict" && !owner && !named => {
-            let me = match me {
-                Some(me) => me,
-                None => plow.agent_me().await.map_err(|_| failure)?,
-            };
-            let name = registration.name.as_deref().unwrap_or(&me.name);
-            let suffixed = Registration {
-                name: Some(format!("{name}-{}", &me.uid[..6.min(me.uid.len())])),
-                ..registration.clone()
-            };
-            plow.register(&suffixed).await?
-        }
-        // Another of the owner's machines may hold the name.
-        Err(failure) if failure.code == "conflict" && owner => {
-            if registration.name.is_none() {
-                return Err(failure);
+    // Once a person has texted, what goes wrong is theirs to read.
+    let registered = async {
+        state.create()?;
+        let (key, key_created) = state.load_or_create_key()?;
+        // Login never starts a listener, so it never learns a new relay address:
+        // it re-sends the one this peer last registered (a running host's
+        // heartbeat keeps that current in config.json), so logging in again
+        // never unlists a running host. A host first becomes reachable when
+        // `latch serve` registers its relay.
+        let relay_url = saved
+            .as_ref()
+            .and_then(|config| config.peer.relay_url.clone());
+        let registration = Registration {
+            key: key.public().to_string(),
+            name,
+            relay_url,
+        };
+        let plow = Plow::new(&api_url, &token);
+        // An agent is named after itself in Plow. Plow names one that is not
+        // an agent's credential, as it always has.
+        let me = if owner {
+            None
+        } else {
+            plow.agent_me().await.ok()
+        };
+        let registration = Registration {
+            name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
+            ..registration
+        };
+        let peer = match plow.register(&registration).await {
+            // Two agents may share a name: unless one was asked for, try once
+            // more as the name plus the start of this agent's uid.
+            Err(failure) if failure.code == "conflict" && !owner && !named => {
+                let me = match me {
+                    Some(me) => me,
+                    None => plow.agent_me().await.map_err(|_| failure)?,
+                };
+                let name = registration.name.as_deref().unwrap_or(&me.name);
+                let suffixed = Registration {
+                    name: Some(format!("{name}-{}", &me.uid[..6.min(me.uid.len())])),
+                    ..registration.clone()
+                };
+                plow.register(&suffixed).await?
             }
-            let rerun = if save_token {
-                "latch login --token-file FILE"
-            } else {
-                "latch login"
-            };
-            clash(&plow, registration, rerun).await?
-        }
-        result => result?,
-    };
+            // Another of the owner's machines may hold the name.
+            Err(failure) if failure.code == "conflict" && owner => {
+                if registration.name.is_none() {
+                    return Err(failure);
+                }
+                let rerun = if save_token {
+                    "latch login --token-file FILE"
+                } else {
+                    "latch login"
+                };
+                clash(&plow, registration, rerun).await?
+            }
+            result => result?,
+        };
 
-    // Save only after Plow accepted us, so a failed first login leaves no
-    // half-configured instance behind (apart from the key, and the token of
-    // a login by text, which is saved as soon as it arrives).
-    if save_token {
-        state.save_token(&token, &api_url)?;
+        // Save only after Plow accepted us, so a failed first login leaves no
+        // half-configured instance behind (apart from the key, and the token of
+        // a login by text, which is saved as soon as it arrives).
+        if save_token {
+            state.save_token(&token, &api_url)?;
+        }
+        state.save_config(&Config {
+            api_url,
+            peer: peer.clone(),
+        })?;
+        Ok(LoginOutput {
+            peer,
+            key_created,
+            by_text: texted,
+        })
     }
-    state.save_config(&Config {
-        api_url,
-        peer: peer.clone(),
-    })?;
-    Ok(LoginOutput {
-        peer,
-        key_created,
-        by_text: texted,
-    })
+    .await;
+    registered.map_err(|failure| if texted { told(failure) } else { failure })
+}
+
+/// A login by text that fails once it has talked to the person says so to
+/// them in a plain line, not JSON.
+fn told(mut failure: Failure) -> Failure {
+    eprintln!("{}", failure.message);
+    failure.said = true;
+    failure
 }
 
 /// Registers this peer again as it last was, when Plow no longer lists it:
@@ -229,12 +241,25 @@ async fn by_text(
         eprintln!("Text {code} to {}", for_people(&activation.send_to));
         eprintln!("Waiting for your text…");
     }
+    let waited = wait_for_text(state, api_url, &plow, &activation.activation_secret).await;
+    match events {
+        true => waited,
+        false => waited.map_err(told),
+    }
+}
 
+/// Asks Plow until the code was texted: the login's token, saved.
+async fn wait_for_text(
+    state: &StateDir,
+    api_url: &str,
+    plow: &Plow,
+    secret: &str,
+) -> Result<String, Failure> {
     let started = Instant::now();
     let mut failures = 0;
     loop {
         let poll = poll_every(started.elapsed());
-        let wait = match plow.redeem(&activation.activation_secret).await {
+        let wait = match plow.redeem(secret).await {
             Ok(answer) if answer.status == "verified" => {
                 // Only the first `verified` answer carries the token.
                 let Some(token) = answer.token else {

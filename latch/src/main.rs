@@ -403,7 +403,10 @@ fn usage_error(err: clap::Error) -> ExitCode {
 }
 
 /// Puts a failure on stderr as its one JSON error line, whether a person
-/// or a program reads it.
+/// or a program reads it; unless a human command already said it to the
+/// person in a plain line.
 fn report(failure: &Failure) {
-    eprintln!("{}", failure.to_json());
+    if !failure.said {
+        eprintln!("{}", failure.to_json());
+    }
 }

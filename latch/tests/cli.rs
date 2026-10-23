@@ -4899,6 +4899,85 @@ fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::Ex
     status.unwrap()
 }
 
+/// Setup with no terminal names, as `next`, the first step `setup
+/// --status` says is not done: the same steps, read the same way.
+#[test]
+fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let fresh = dir.path().join("fresh");
+    let owner = owner_host_on(&plow, dir.path());
+    let ready = dir.path().join("ready");
+    fs::create_dir_all(&ready).unwrap();
+    let ready = owner_host_on(&plow, &ready);
+    let connectors: Vec<String> = ["google", "messages", "contacts"]
+        .iter()
+        .map(|name| format!(r#""{name}": {{"state": "enabled"}}"#))
+        .collect();
+    fs::write(
+        ready.join("plugins.json"),
+        format!("{{{}}}", connectors.join(", ")),
+    )
+    .unwrap();
+    let mut nexts = Vec::new();
+    for state in [&fresh, &owner, &ready] {
+        let listed = latch(state, &["setup", "--status"], &[]);
+        let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        let first = listed["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["state"] != "done" && step["args"].is_array())
+            .unwrap_or_else(|| panic!("{listed}"));
+        let words: Vec<&str> = first["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap())
+            .collect();
+        let output = latch(state, &["setup"], &[]);
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+        assert_eq!(
+            error["error"]["next"],
+            format!("latch {}", words.join(" ")),
+            "{listed}"
+        );
+        nexts.push(error["error"]["next"].as_str().unwrap().to_string());
+    }
+    assert_eq!(
+        nexts,
+        [
+            "latch login --events",
+            "latch plugins enable google",
+            "latch serve -d"
+        ]
+    );
+}
+
+/// A login by text that fails once the person has the code says so in a
+/// plain line on their terminal, not JSON.
+#[test]
+fn a_login_by_text_that_fails_says_so_in_a_plain_line() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let (api_url, server) = fake_plow(vec![(200, activation), (410, json!({"detail": "expired"}))]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let args = ["login", "--api-url", &api_url, "--name", "mac"];
+    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", true, &[]);
+    assert_eq!(code, Some(1), "{shown}");
+    assert!(stdout.is_empty());
+    assert!(shown.contains("Text TRY12 to"), "{shown}");
+    assert_eq!(
+        shown.trim_end().lines().last(),
+        Some("the code expired before it was texted; run `latch login` again"),
+        "{shown}"
+    );
+    assert!(!shown.contains("{\"error\""), "{shown}");
+    server.join().unwrap();
+}
+
 /// Each human command, run with no terminal, exits 2 with `no_terminal`
 /// and names, as `next`, the regular command a program uses instead. A
 /// login that needs no one still works there, in JSON.
