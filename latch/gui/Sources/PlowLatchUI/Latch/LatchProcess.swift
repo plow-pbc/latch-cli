@@ -75,9 +75,20 @@ nonisolated final class LatchProcess: @unchecked Sendable {
         }
     }
 
-    /// Runs to the end and returns stdout, or throws latch's error.
+    /// Runs to the end and returns stdout, or throws latch's error. A
+    /// cancelled caller stops latch (SIGTERM) and gets CancellationError.
     nonisolated func output() async throws -> Data {
+        try await withTaskCancellationHandler {
+            try await run()
+        } onCancel: {
+            terminate()
+        }
+    }
+
+    private nonisolated func run() async throws -> Data {
         try start()
+        // Cancelled before latch started: it ends at once.
+        if Task.isCancelled { terminate() }
         if let input {
             try? stdin.fileHandleForWriting.write(contentsOf: input)
         }
@@ -86,6 +97,7 @@ nonisolated final class LatchProcess: @unchecked Sendable {
         async let err = stderr.fileHandleForReading.readUntilEnd()
         let (data, errData) = await (out, err)
         let status = await exitStatus()
+        try Task.checkCancellation()
         guard status == 0 else { throw Self.failure(status: status, stderr: errData) }
         return data
     }

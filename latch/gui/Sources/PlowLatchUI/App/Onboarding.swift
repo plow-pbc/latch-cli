@@ -51,7 +51,7 @@ final class Onboarding {
 
     static let decks = [
         Deck(name: "Personal assistant",
-             rules: "Allow my family assistant to check our calendar, search messages about dinner, and order groceries online. Never let it send email or write outside the project folder.",
+             rules: "Allow agents to check our calendar, find messages about dinner, order groceries online and save shopping lists in ~/Documents. Do not send email or write files outside ~/Documents.",
              examples: [
                  Example(title: "Check our calendar", symbol: "calendar",
                          shown: "latch google -- calendar events primary --from 2026-10-26 --to 2026-11-02",
@@ -69,7 +69,7 @@ final class Onboarding {
                          request: ["google", "--", "gmail", "send", "--to", "jordan@example.com", "--subject", "Update", "--body", "Ready for review."]),
              ]),
         Deck(name: "Executive assistant",
-             rules: "Allow my work assistant to read and send work email, check my calendar, and install dependencies in ~/work/demo with network access. Keep it out of my personal messages.",
+             rules: "Allow agents to read and send work email, check my calendar and install dependencies in ~/work with network access. Do not read my personal messages.",
              examples: [
                  Example(title: "Find unread email", symbol: "envelope",
                          shown: "latch google -- gmail search is:unread", request: ["google", "--", "gmail", "search", "is:unread"]),
@@ -138,6 +138,8 @@ final class Onboarding {
         self.app = app
         self.step = step
         self.progress = progress
+        // A rerun shows the login item as it is; a first run offers it on.
+        if progress.rerun { startAtLogin = app.loginItemIsOn() }
     }
 
     private var client: any LatchClient { app.client }
@@ -413,17 +415,23 @@ final class Onboarding {
             googleAccounts = try await client.enable("google")?.accounts ?? []
             google = .done
         } catch let LatchError.failed(failure) where failure.code == "google_not_connected" {
-            google = .needed("Connect Google in Plow, then come back here.")
+            google = .needed(failure.message)
             googleConnectURL = failure.connectUrl
         } catch {
             google = .failed((error as? LatchError)?.message ?? error.localizedDescription)
         }
     }
 
-    /// "Connect Google in Plow": the page latch names, or Plow's home page
-    /// until latch names one. Only ever on a click.
+    /// "Connect Google in Plow": the page latch names; only ever on a click.
     func connectGoogleInPlow() {
-        app.open(googleConnectURL ?? URL(string: "https://plow.co")!)
+        if let url = googleConnectURL { app.open(url) }
+    }
+
+    /// Back in the app (from Plow, say): checks again unless Google is
+    /// connected or a check is under way.
+    func returnedToApp() async {
+        guard step == .google, google != .done, google != .checking else { return }
+        await checkGoogle()
     }
 
     // MARK: Contacts & Messages
@@ -441,6 +449,8 @@ final class Onboarding {
             while !Task.isCancelled {
                 for plugin in ["messages", "contacts"] where check(plugin) != .done {
                     let result = await enableAccess(plugin)
+                    // Left the screen meanwhile: a late answer changes nothing.
+                    guard !Task.isCancelled else { return }
                     set(plugin, result.check)
                     if let failure = result.failure, !opened, let settings = failure.settings.flatMap(URL.init(string:)) {
                         opened = true

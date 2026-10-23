@@ -96,7 +96,10 @@ package enum SnapshotRunner {
             }),
             ("05-google-not-checked", .google, Fixtures.stopped, Progress(), { $0.google = .unknown }),
             ("05-google-not-connected", .google, Fixtures.stopped, Progress(), {
-                $0.google = .needed("Connect Google in Plow, then come back here.")
+                $0.google = .needed("Plow has no Google account this host can use; connect one in Plow, then run `latch plugins enable google` again")
+            }),
+            ("05-google-not-connected-with-link", .google, Fixtures.stopped, Progress(), {
+                $0.google = .needed("connect a Google account in Plow"); $0.googleConnectURL = URL(string: "https://plow.co/connect/google")
             }),
             ("05-google-connected", .google, Fixtures.stopped, Progress(), {
                 $0.google = .done; $0.googleAccounts = ["owner@example.com"]

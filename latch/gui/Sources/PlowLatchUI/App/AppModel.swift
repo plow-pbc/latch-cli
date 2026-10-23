@@ -17,6 +17,7 @@ final class AppModel {
     var reveal: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
     /// Turns "Start when you log in" on or off; a test build records it.
     var setLoginItem: (Bool) throws -> Void = { try LoginItem.set($0) }
+    var loginItemIsOn: () -> Bool = { LoginItem.isOn }
     /// The windows SwiftUI opens and closes, set by the app's scenes.
     var openWindow: ((String) -> Void)?
     var dismissWindow: ((String) -> Void)?

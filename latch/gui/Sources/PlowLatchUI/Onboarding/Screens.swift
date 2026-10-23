@@ -262,12 +262,14 @@ struct GoogleView: View {
             Panel {
                 PanelRow(symbol: "g.circle", title: "Google accounts", state: state, stateColor: color)
             }
-            if case let .failed(message) = flow.google {
-                Text(message).foregroundStyle(Brand.clay).font(.callout)
-            }
-            if flow.google != .done {
+            if flow.googleConnectURL != nil, flow.google != .done {
                 Button("Connect Google in Plow") { flow.connectGoogleInPlow() }
                     .buttonStyle(.link).foregroundStyle(Brand.volt)
+            } else if case let .needed(message) = flow.google {
+                Text(message).foregroundStyle(Brand.muted).font(.callout)
+            }
+            if case let .failed(message) = flow.google {
+                Text(message).foregroundStyle(Brand.clay).font(.callout)
             }
             if flow.google == .done, !flow.googleAccounts.isEmpty {
                 Text(flow.googleAccounts.joined(separator: ", ")).foregroundStyle(Brand.muted)
@@ -276,9 +278,9 @@ struct GoogleView: View {
         }
         .padding(.horizontal, 56)
         .padding(.top, 52)
-        // Coming back from Plow: check again, once.
+        // Coming back from Plow: check again.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            if case .needed = flow.google { Task { await flow.checkGoogle() } }
+            Task { await flow.returnedToApp() }
         }
     }
 
@@ -460,20 +462,21 @@ enum Summary {
         let failed = app.status == nil && app.statusError != nil
         let loggedIn = app.status?.peer != nil
         let serving = app.status?.serve.state == "serving"
-        let passed = (flow?.progress ?? app.progress).passed
-        // Connectors' state needs the host; without it, what latch answered
-        // on their screens this time, or a skip, is what is known.
-        func connector(_ names: [String], _ step: Step, answered: Bool) -> (String, Bool) {
+        // Connectors' state needs the host; without it, only what latch
+        // answered on their screens this time is known. A skip says nothing
+        // about what latch has: "Not set up" is only ever latch's answer.
+        func connector(_ names: [String], answered: Bool) -> (String, Bool) {
             if let plugins = app.plugins {
                 let on = names.allSatisfy { plugins[$0] == "enabled" }
                 return (on ? "On" : "Not set up", on)
             }
             if answered { return ("On", true) }
-            return (passed[step] == .skipped ? "Not set up" : "Couldn't check", false)
+            return ("Couldn't check", false)
         }
-        let google = connector(["google"], .google, answered: flow?.google == .done)
-        let access = connector(["messages", "contacts"], .access, answered: flow?.accessDone == true)
-        let rules: (String, Bool) = switch app.rulesSaved {
+        let google = connector(["google"], answered: flow?.google == .done)
+        let access = connector(["messages", "contacts"], answered: flow?.accessDone == true)
+        // Rules as latch last said: its rules show, or what was saved here.
+        let rules: (String, Bool) = switch app.rulesSaved ?? flow?.savedRules.map({ !$0.isEmpty }) {
         case true?: ("Saved", true)
         case false?: ("Not set up", false)
         case nil: ("Couldn't check", false)

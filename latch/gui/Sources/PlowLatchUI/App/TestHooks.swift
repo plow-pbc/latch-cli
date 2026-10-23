@@ -11,12 +11,18 @@ import AppKit
 enum TestHooks {
     /// What the app would have opened, for `state`.
     static var opened: [String] = []
+    /// The login item as this run left it.
+    static var loginItem = false
 
     static func install(_ app: AppModel) {
         // Nothing leaves the app: links and Finder reveals are recorded.
         app.open = { opened.append("open \($0.absoluteString)") }
         app.reveal = { opened.append("reveal \($0.path)") }
-        app.setLoginItem = { opened.append("login item \($0 ? "on" : "off")") }
+        app.setLoginItem = { on in
+            loginItem = on
+            opened.append("login item \(on ? "on" : "off")")
+        }
+        app.loginItemIsOn = { loginItem }
         let center = DistributedNotificationCenter.default()
         func on(_ command: String, _ act: @escaping @MainActor (String?) -> Void) {
             center.addObserver(forName: .init("co.plow.latch.test.\(command)"), object: nil, queue: .main) { note in

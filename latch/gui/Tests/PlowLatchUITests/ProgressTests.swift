@@ -119,15 +119,14 @@ struct GatekeeperTests {
         #expect(loginItem == [false, true])
     }
 
-    @Test func connectGoogleInPlowOpensWhatLatchNamesOrPlow() {
+    @Test func connectGoogleInPlowOpensWhatLatchNames() {
         let app = AppModel(client: FakeLatchClient(), still: true)
         var opened: [URL] = []
         app.open = { opened.append($0) }
         let flow = app.stage(.google)
-        flow.connectGoogleInPlow()
         flow.googleConnectURL = URL(string: "https://plow.co/connect/google")
         flow.connectGoogleInPlow()
-        #expect(opened == [URL(string: "https://plow.co")!, URL(string: "https://plow.co/connect/google")!])
+        #expect(opened == [URL(string: "https://plow.co/connect/google")!])
     }
 
     @Test func googleNotConnectedCarriesLatchsConnectURL() throws {
@@ -160,5 +159,105 @@ struct GatekeeperTests {
     @Test func onlyMissingAccessIsAccessNeeded() {
         #expect(Onboarding.Check.needed("Waiting for access").isNeeded)
         #expect(!Onboarding.Check.failed("the Messages reader is missing").isNeeded)
+    }
+}
+
+/// A latch whose `plugins enable` answers as a test says, after a pause,
+/// and counts its calls.
+final class ScriptedClient: LatchClient, @unchecked Sendable {
+    let enableAnswer: @Sendable (String) throws -> GoogleEnabled?
+    let pause: Duration
+    private(set) var enabled: [String] = []
+
+    init(pause: Duration = .zero, enable: @escaping @Sendable (String) throws -> GoogleEnabled?) {
+        self.pause = pause
+        self.enableAnswer = enable
+    }
+
+    func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.stopped) }
+    func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func rulesShow() async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+    func rulesSet(_ text: String) async throws {}
+    func rulesTry(_ request: [String]) async throws -> RulesTry { throw CancellationError() }
+    func pluginsList() async throws -> PluginsList { throw CancellationError() }
+    func serve(again: Bool) async throws {}
+    func enable(_ plugin: String) async throws -> GoogleEnabled? {
+        enabled.append(plugin)
+        try await Task.sleep(for: pause)
+        return try enableAnswer(plugin)
+    }
+}
+
+@MainActor
+struct ClosingTests {
+    private func until(_ done: () -> Bool) async {
+        for _ in 0..<200 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    @Test func cancellingARunStopsLatch() async throws {
+        let process = LatchProcess(executable: URL(filePath: "/bin/sleep"), arguments: ["30"])
+        let started = ContinuousClock.now
+        let run = Task { try await process.output() }
+        try await Task.sleep(for: .milliseconds(100))
+        run.cancel()
+        let result = await run.result
+        #expect(throws: CancellationError.self) { try result.get() }
+        #expect(ContinuousClock.now - started < .seconds(3))
+    }
+
+    @Test func leavingContactsAndMessagesStopsItsChecks() async throws {
+        let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access", grant: "/Applications/Plow Latch.app",
+                                      settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        let client = ScriptedClient(pause: .milliseconds(300)) { _ in throw LatchError.failed(notGranted) }
+        let app = AppModel(client: client, still: true)
+        var opened: [URL] = []
+        app.open = { opened.append($0) }
+        app.reveal = { opened.append($0) }
+        let flow = app.stage(.access)
+        flow.requestAccess()
+        try await Task.sleep(for: .milliseconds(50))
+        flow.skip()
+        try await Task.sleep(for: .milliseconds(700))
+        #expect(flow.step == .start)
+        #expect(opened.isEmpty)
+        #expect(flow.messages == .unknown)
+        #expect(client.enabled == ["messages"])
+    }
+
+    @Test func aRerunShowsTheLoginItemAsItIs() {
+        let app = AppModel(client: FakeLatchClient(), still: true)
+        app.loginItemIsOn = { false }
+        #expect(app.stage(.start, progress: Progress(rerun: true)).startAtLogin == false)
+        #expect(app.stage(.start, progress: Progress()).startAtLogin == true)
+        app.loginItemIsOn = { true }
+        #expect(app.stage(.start, progress: Progress(rerun: true)).startAtLogin == true)
+        #expect(Progress().settingUpAgain().rerun)
+    }
+
+    @Test func connectGoogleInPlowOnlyWithLatchsURL() async {
+        let quiet = LatchFailure(code: "google_not_connected", message: "connect a Google account in Plow")
+        let client = ScriptedClient { _ in throw LatchError.failed(quiet) }
+        let app = AppModel(client: client, still: true)
+        var opened: [URL] = []
+        app.open = { opened.append($0) }
+        let flow = app.stage(.google)
+        // Coming back to the app checks, even before any check.
+        await flow.returnedToApp()
+        #expect(client.enabled == ["google"])
+        #expect(flow.google == .needed("connect a Google account in Plow"))
+        #expect(flow.googleConnectURL == nil)
+        flow.connectGoogleInPlow()
+        #expect(opened.isEmpty)
+        await flow.returnedToApp()
+        #expect(client.enabled == ["google", "google"])
+    }
+
+    @Test func notSetUpIsOnlyLatchsAnswer() {
+        let app = AppModel(client: FakeLatchClient(), still: true)
+        app.stage(status: try? Fixtures.decode(Fixtures.stopped))
+        _ = app.stage(.done, progress: Progress(passed: [.google: .skipped, .access: .skipped, .rules: .skipped]))
+        app.stage(rulesSaved: true, plugins: nil)
+        // Skipped this time, but latch has rules; the host isn't running to say about connectors.
+        #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Saved", "Couldn't check", "Couldn't check", "Not running"])
     }
 }

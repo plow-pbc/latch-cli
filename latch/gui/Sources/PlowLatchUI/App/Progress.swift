@@ -25,6 +25,9 @@ enum Destination: Equatable {
 struct Progress: Equatable {
     var passed: [Step: Passed] = [:]
     var finished = false
+    /// "Set up again…": screens show what's set up now rather than first-run
+    /// defaults.
+    var rerun = false
 
     /// Where a launch lands: not logged in → Welcome until it was passed,
     /// then Log in, finished or not (a logout means setting up again);
@@ -40,13 +43,14 @@ struct Progress: Equatable {
     /// "Set up again…": every screen after Log in is walked again, each
     /// showing what's set up now; a relaunch midway resumes there.
     func settingUpAgain() -> Progress {
-        Progress(passed: passed.filter { $0.key == .welcome || $0.key == .login }, finished: false)
+        Progress(passed: passed.filter { $0.key == .welcome || $0.key == .login }, finished: false, rerun: true)
     }
 }
 
 extension Progress {
     private static let passedKey = "OnboardingPassed"
     private static let finishedKey = "OnboardingFinished"
+    private static let rerunKey = "OnboardingRerun"
 
     static func load(_ defaults: UserDefaults = .standard) -> Progress {
         let raw = defaults.dictionary(forKey: passedKey) as? [String: String] ?? [:]
@@ -54,11 +58,12 @@ extension Progress {
         for (step, how) in raw {
             if let step = Step(rawValue: step), let how = Passed(rawValue: how) { passed[step] = how }
         }
-        return Progress(passed: passed, finished: defaults.bool(forKey: finishedKey))
+        return Progress(passed: passed, finished: defaults.bool(forKey: finishedKey), rerun: defaults.bool(forKey: rerunKey))
     }
 
     func save(_ defaults: UserDefaults = .standard) {
         defaults.set(Dictionary(uniqueKeysWithValues: passed.map { ($0.key.rawValue, $0.value.rawValue) }), forKey: Self.passedKey)
         defaults.set(finished, forKey: Self.finishedKey)
+        defaults.set(rerun, forKey: Self.rerunKey)
     }
 }
