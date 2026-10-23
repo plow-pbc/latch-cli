@@ -1276,7 +1276,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
         ),
     ];
     let (dir, state, key) = owner_host();
-    // `--from`, and the two shows (edit's and the last), each read the account.
+    // `--agent`, and the two shows (edit's and the last), each read the account.
     let (url, server) = fake_plow([account.clone(), account.clone(), account].concat());
     use_plow(&state, &url);
 
@@ -1292,7 +1292,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     let file = rules_file.to_str().unwrap();
     let agent = latch(
         &state,
-        &["rules", "set", "--from", "ada-latch", "--file", file],
+        &["rules", "set", "--agent", "ada-latch", "--file", file],
         &[],
     );
     assert_eq!(agent.status.code(), Some(0), "{agent:?}");
@@ -2460,7 +2460,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
                 "set",
                 "--host",
                 "host",
-                "--from",
+                "--agent",
                 "Research bot",
                 "--file",
                 file,
@@ -2469,7 +2469,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         ),
         run(
             &owner,
-            &["rules", "edit", "--host", "host", "--from", "Research bot"],
+            &["rules", "edit", "--host", "host", "--agent", "Research bot"],
             &[("EDITOR", editor.as_path())],
         ),
         run(&owner, &["rules", "show", "--host", "host"], &[]),
@@ -2480,7 +2480,14 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         &["rules", "show", "--host", "host"][..],
         &["rules", "set", "--host", "host", "Anything goes."],
         &["rules", "edit", "--host", "host"],
-        &["rules", "clear", "--host", "host", "--from", "Research bot"],
+        &[
+            "rules",
+            "clear",
+            "--host",
+            "host",
+            "--agent",
+            "Research bot",
+        ],
     ]
     .iter()
     .map(|args| run(&agent, args, &[("EDITOR", editor.as_path()), agent_env[0]]))
@@ -2488,7 +2495,14 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let rules_after_agent = fs::read_to_string(host.join(format!("rules/{AGENT_UID}.txt")));
     let cleared = run(
         &owner,
-        &["rules", "clear", "--host", "host", "--from", "Research bot"],
+        &[
+            "rules",
+            "clear",
+            "--host",
+            "host",
+            "--agent",
+            "Research bot",
+        ],
         &[],
     );
 
@@ -6161,7 +6175,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     };
 
     // From the owner's other machine, as the agent: allowed, and nothing ran.
-    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    let (code, tried) = previewed(&owner, &["--host", "host", "--agent", "Research bot"]);
     assert_eq!(code, Some(0), "{tried}");
     assert_eq!(tried["verdict"], "allow");
     assert_eq!(tried["host"], "host");
@@ -6189,7 +6203,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
 
     // A refusal is a preview that worked.
     plow.state.lock().unwrap().forbidden = true;
-    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    let (code, tried) = previewed(&owner, &["--host", "host", "--agent", "Research bot"]);
     assert_eq!(code, Some(0), "{tried}");
     assert_eq!(tried["verdict"], "owner_said_no");
 
@@ -6212,7 +6226,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     );
     plow.state.lock().unwrap().out_of_credits = false;
 
-    let (code, error) = previewed(&owner, &["--host", "host", "--from", "Nobody"]);
+    let (code, error) = previewed(&owner, &["--host", "host", "--agent", "Nobody"]);
     assert_eq!(
         (code, &error["error"]["code"]),
         (Some(2), &json!("no_such_agent"))

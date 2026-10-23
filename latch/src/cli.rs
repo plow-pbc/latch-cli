@@ -690,7 +690,7 @@ pub struct RulesScope {
     /// Whose rules: an agent's name, the peer name of the latch it calls
     /// from, or its agent uid, resolved once to the uid [default: every agent's]
     #[arg(long, value_name = "NAME")]
-    pub from: Option<String>,
+    pub agent: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -743,7 +743,7 @@ pub enum RulesCommand {
         scope: RulesScope,
     },
     /// Preview the verdict the gatekeeper would give a request right now,
-    /// without running it: as the agent --from names, or as you. The verdict
+    /// without running it: as the agent --agent names, or as you. The verdict
     /// is the gatekeeper's judgment at this moment, so a close call can come
     /// out differently next time; the answer's `gate.p` shows how sure it
     /// was. Each preview is billed to your Plow balance like a real
@@ -755,7 +755,7 @@ pub enum RulesCommand {
         /// Judge the request as this agent: its name, the peer name of the
         /// latch it calls from, or its agent uid [default: you]
         #[arg(long, value_name = "NAME")]
-        from: Option<String>,
+        agent: Option<String>,
         /// The latch command to preview, after `--`, as an agent would send
         /// it: exec, file, google, messages or contacts. Example: `-- exec
         /// --write ~/site -- npm run build`

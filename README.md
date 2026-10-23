@@ -3,6 +3,8 @@
 A command-line peer that lets an agent reach the files, programs and browser
 on a machine its owner trusts, over Plow's directory.
 
+How it fits together, and what it does and doesn't support: [docs/HOW-LATCH-WORKS.md](docs/HOW-LATCH-WORKS.md).
+
 ## Install
 
 This installs the newest release from `releases.plow.co`:
