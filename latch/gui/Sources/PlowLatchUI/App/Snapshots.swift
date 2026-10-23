@@ -289,7 +289,11 @@ package enum SnapshotRunner {
             ("02-login-name-taken", .login, Fixtures.loggedOut, Progress(), { $0.login = .nameTaken(existing: "studio", lastSeen: nil); $0.loginName = "studio-2" }),
             ("02-login-verified", .login, Fixtures.serving, Progress(), { $0.login = .verified(name: "studio") }),
             ("03-privacy", .privacy, Fixtures.stopped, Progress(), { _ in }),
-            ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), { _ in }),
+            // No saved rules: the box arrives with the first default's, its
+            // review held back so the still shows the rows unjudged.
+            ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), {
+                await $0.loadRules(); $0.stopWork(); $0.previews = [:]
+            }),
             ("04-rules-rerun-prefilled", .rules, Fixtures.stopped, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules
             }),
