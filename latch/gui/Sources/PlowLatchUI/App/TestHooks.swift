@@ -78,6 +78,7 @@ enum TestHooks {
             Task { await app.trial.run(on: host, app: app) }
         }
         on("focus") { uid in app.rulesFocus = uid }
+        on("agent") { uid in app.agentsPath = uid.map { [$0] } ?? [] }
         // Saves "UID|TEXT" (UID empty: every agent's) on the selected host
         // as Save does, over the revision on screen.
         on("save-rules") { argument in
