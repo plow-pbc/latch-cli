@@ -340,6 +340,30 @@ impl Plow {
         Ok(me.agent)
     }
 
+    /// The account this credential belongs to, as an opaque uid.
+    pub async fn owner_uid(&self) -> Result<String, Failure> {
+        #[derive(Deserialize)]
+        struct OwnerUid {
+            owner_uid: String,
+        }
+        let url = format!("{}/v1/auth/owner-uid", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let owner: OwnerUid = response.json().await.map_err(|_| bad_answer())?;
+        Ok(owner.owner_uid)
+    }
+
+    /// The account owner's display name, if they set one.
+    pub async fn display_name(&self) -> Result<Option<String>, Failure> {
+        #[derive(Deserialize)]
+        struct Profile {
+            display_name: Option<String>,
+        }
+        let url = format!("{}/v1/auth/profile", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let profile: Profile = response.json().await.map_err(|_| bad_answer())?;
+        Ok(profile.display_name)
+    }
+
     /// Starts a login by text for a machine called `name`.
     pub async fn activate(&self, name: &str) -> Result<Activation, Failure> {
         let url = format!("{}/v1/auth/activate", self.api_url);

@@ -243,9 +243,13 @@ struct RecentTests {
         let feed = ActivityFeed(client: client, host: nil)
         feed.stage(client.newest)
         #expect(feed.records.filter { !$0.isBackground }.isEmpty && feed.hasOlder)
-        await feed.loadOlder(until: 5)
+        await feed.loadOlder(until: 5, pages: ActivityFeed.homePages)
         #expect(feed.records.filter { !$0.isBackground }.count == 6)
         #expect(client.pages == 1)
+        // The earlier page (94…99) went before the newest (100…149); a
+        // record of it streamed again isn't held twice.
+        feed.apply(try LatchJSON.decoder.decode(AuditLine.self, from: Data(PagedClient.line(95, op: "exec").utf8)))
+        #expect(feed.records.map(\.id) == (94..<150).map { String(format: "%064d", $0) })
     }
 }
 
@@ -254,6 +258,10 @@ struct RecentTests {
 final class PagedClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     private(set) var pages = 0
+    private(set) var follows = 0
+    /// What `audit --follow` streams, given how many follows came before;
+    /// nothing by default.
+    var following: (Int) -> AsyncThrowingStream<AuditLine, Error> = { _ in AsyncThrowingStream { _ in } }
     static func line(_ n: Int, op: String) -> String {
         let id = String(format: "%064d", n)
         let args = op == "exec" ? #"{"argv":["ls"]}"# : "null"
@@ -263,10 +271,17 @@ final class PagedClient: LatchClient, @unchecked Sendable {
         ([#"{"type":"snapshot","cursor":"x","has_older":true}"#] + (100..<150).map { Self.line($0, op: "connect") }
             + [#"{"type":"caught_up","cursor":"y","has_older":true}"#]).joined(separator: "\n")
     }
+    /// Each earlier page: six records of `olderOp`, more before them when
+    /// `olderHasMore`; a page throws `olderFails` instead when it's set.
+    var olderOp = "exec"
+    var olderHasMore = false
+    var olderFails: (any Error)?
     func audit(host: String?, before: String?) async throws -> AuditPage {
         pages += 1
-        return try AuditPage.parse(Data(((94..<100).map { Self.line($0, op: "exec") }
-            + [#"{"type":"caught_up","cursor":"z","has_older":false}"#]).joined(separator: "\n").utf8))
+        if let olderFails { throw olderFails }
+        let end = 100 - (pages - 1) * 6
+        return try AuditPage.parse(Data((((end - 6)..<end).map { Self.line($0, op: olderOp) }
+            + [#"{"type":"caught_up","cursor":"z","has_older":\#(olderHasMore)}"#]).joined(separator: "\n").utf8))
     }
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -279,7 +294,10 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
+    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+        follows += 1
+        return following(follows - 1)
+    }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }
@@ -297,6 +315,42 @@ struct TooLargeRecordTests {
         #expect(!feed.running)
         #expect(feed.error?.code == "record_too_large")
         #expect(client.follows == 1)
+        feed.stop()
+    }
+}
+
+/// Activity holds each record once, oldest first, however it arrives: from
+/// the stream, an earlier page, or again after the host reset its cursor.
+@MainActor
+struct ActivityOrderTests {
+    private static func line(_ n: Int) throws -> AuditLine {
+        try LatchJSON.decoder.decode(AuditLine.self, from: Data(PagedClient.line(n, op: "exec").utf8))
+    }
+
+    @Test func aRecordStreamedTwiceIsHeldOnce() throws {
+        let feed = ActivityFeed(client: PagedClient(), host: nil)
+        for n in [1, 2, 1, 3, 2] { feed.apply(try Self.line(n)) }
+        #expect(feed.records.map(\.id) == [1, 2, 3].map { String(format: "%064d", $0) })
+    }
+
+    @Test func afterTheHostResetsItsCursorTheRecordsComeBackOnce() async throws {
+        let client = PagedClient()
+        let record = try Self.line(1)
+        client.following = { before in
+            AsyncThrowingStream { continuation in
+                continuation.yield(record)
+                if before == 0 {
+                    continuation.finish(throwing: LatchError.failed(LatchFailure(code: "cursor_expired", message: "that record isn't in this audit")))
+                } else {
+                    continuation.yield(.caughtUp(cursor: String(format: "%064d", 1), hasOlder: false))
+                }
+            }
+        }
+        let feed = ActivityFeed(client: client, host: nil)
+        feed.start()
+        await waitUntil { feed.caughtUp }
+        #expect(client.follows == 2)
+        #expect(feed.records.map(\.id) == [String(format: "%064d", 1)])
         feed.stop()
     }
 }

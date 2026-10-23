@@ -56,9 +56,9 @@ struct HostEntry: Equatable, Identifiable {
         var hosts = (account?.hosts ?? []).map {
             HostEntry(name: $0.name, isThisMac: $0.isThisMac, online: $0.online, lastSeen: $0.lastSeenAt, key: $0.key)
         }
-        if let local, let peer = local.peer, local.serve.running || account == nil, !hosts.contains(where: \.isThisMac) {
-            hosts.removeAll { $0.name == peer.name }
-            hosts.append(HostEntry(name: peer.name, isThisMac: true, key: peer.key))
+        if let local, let name = local.loggedInAs, local.thisMachine.hosting.running || account == nil, !hosts.contains(where: \.isThisMac) {
+            hosts.removeAll { $0.name == name }
+            hosts.append(HostEntry(name: name, isThisMac: true, key: local.thisMachine.key))
         }
         return hosts.sorted { ($0.isThisMac ? 0 : 1, $0.name) < ($1.isThisMac ? 0 : 1, $1.name) }
     }
@@ -76,7 +76,7 @@ enum HostState: Equatable {
 
     init(_ host: HostEntry, local: LocalStatus?) {
         if host.isThisMac {
-            guard let serve = local?.serve else { self = .unknown; return }
+            guard let serve = local?.thisMachine.hosting else { self = .unknown; return }
             if serve.blocked != nil { self = .blocked; return }
             self = switch serve.state {
             case "serving": serve.ready ? .serving : .notReady

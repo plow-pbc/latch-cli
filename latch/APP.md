@@ -59,22 +59,43 @@ works offline and before login. Not being logged in, or not serving, is a
 normal answer, not an error.
 
 ```
-{"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/4)","protocol":4,
- "peer":{"name":"studio","key":"d9438ef1…","kind":"device"},
- "serve":{"running":true,"ready":true,"configuring":false,"managed":true,"state":"serving","pid":63632},
- "last_error":null}
+{"login":{"kind":"device"},
+ "this_machine":{"name":"studio","key":"5b66c591…","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":95728,"blocked":null,"deny_exec":{"every_agent":false,"agent_uids":[]}}},
+ "plugins":[{"name":"google","state":"enabled"},…],
+ "update":{"available":false,"build":null,"checked_at":null},
+ "last_error":null,"api_url":"https://api.plow.co","state_dir":"/Users/me/.latch",
+ "version":"0.1.0 (commit b0be31f8b, built 2026-10-23 19:40 UTC, local build, protocol plow/latch/4)","protocol":4}
 ```
 
 Field by field:
 
-- `peer` is `null` before login.
-- `serve.running` means a `latch serve` holds the state folder's lock.
-- `serve.ready` means that serve is online and accepting callers.
-- `serve.managed` means it runs as this user's service, as `latch serve` and `serve -d` start it, not `serve --foreground`. An upgrade stops a host `serve -d` started and starts it again with `latch serve -d --again`.
-- `serve.attached` means a managed host is held by the `latch serve` in a terminal that started it. An upgrade stops it, and a host run with `serve --foreground`, and says to run `latch serve` there again.
-- `serve.blocked`, when set, says why a running host cannot be used: `other_version`, a host from another latch version, with its pid and how to stop it. `serve.ready` is then false.
-- `serve.state` is one of `starting`, `serving`, `stopped` or `error`.
+- `login` is `null` before login, else `{"kind": "device" | "agent"}`. Logged in means `login` is set; don't decide it from a name.
+- `this_machine` is the machine whose status this is. Its `name` and `key` are the ones `serve` registers, `null` before login.
+- `this_machine.hosting.running` means a `latch serve` holds the state folder's lock.
+- `hosting.ready` means that serve is online and accepting callers.
+- `hosting.managed` means it runs as this user's service, as `latch serve` and `serve -d` start it, not `serve --foreground`. An upgrade stops a host `serve -d` started and starts it again with `latch serve -d --again`.
+- `hosting.attached` means a managed host is held by the `latch serve` in a terminal that started it. An upgrade stops it, and a host run with `serve --foreground`, and says to run `latch serve` there again.
+- `hosting.blocked`, when set, says why a running host cannot be used: `other_version`, a host from another latch version, with its pid and how to stop it. `hosting.ready` is then false.
+- `hosting.state` is one of `starting`, `serving`, `stopped` or `error`. A machine that never served says `stopped`.
+- `plugins` is what `latch plugins list` says.
 - `last_error` says why the host last stopped, when it stopped because of a failure. A host that was killed or crashed shows `serve_ended`.
+
+## `latch status`
+
+The same as `status --local`, plus what Plow says of the account:
+
+```
+{"account":{"owner_uid":"9a51a542-…","display_name":"Morgan"},
+ …the fields of status --local…,
+ "hosts":[{"name":"studio","key":"5b66c591…","self":true,"online":true,"last_seen_at":"2026-10-23T19:41:50.229474Z"},
+          {"name":"pi-kitchen","key":"ea6a25b3…","self":false,"online":true,"last_seen_at":"2026-10-23T19:41:58.723159Z"}],
+ "default_host":"studio","default_host_reason":null}
+```
+
+- `hosts` are the account's hosts as Plow lists them, this machine first; `self` marks it. A machine that never served isn't one. `online` and `last_seen_at` are Plow's report, as Plow names them.
+- `default_host` is where a command without `--host` goes. When there is none it is `null`, and `default_host_reason` says why: `unknown_host` (`$LATCH_HOST` names no host), `no_host`, `host_required` (several, and none chosen) or `not_logged_in`.
+- Before login it asks no one: `account`, `hosts` and `default_host` are `null`.
+- When Plow can't be asked it fails, with `plow_unreachable` (exit 1, `next` `latch status --local`) or `plow_denied` (exit 4); it never answers with Plow's fields left out.
 
 ## Exec and file permissions
 
@@ -147,6 +168,10 @@ read another of the owner's hosts over latch's connection and print exactly
 what that host's own `status --local [--follow]` and `audit` print there. Only the owner's own devices may
 read them; an agent's login gets exit 4 `owner_only`. Naming this machine
 reads it here.
+
+A host on an older latch answers `status --host` in that latch's shape
+(`peer` and `serve` rather than `login` and `this_machine`) until it is
+updated with `latch update` there.
 
 - An offline host gives exit 3 `host_offline` at once; nothing is shown from
   elsewhere.

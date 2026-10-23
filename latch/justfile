@@ -38,7 +38,7 @@ gatekeeper what="checks" out="":
     #!/bin/sh
     set -eu
     state="$(cd .. && pwd)/.dev/state"
-    if ! cargo run --quiet --locked -- --state-dir "$state" status >/dev/null; then
+    if ! cargo run --quiet --locked -- --state-dir "$state" status | grep -q '"login":{'; then
         echo "just gatekeeper asks Plow on the login of $state: run \`just dev-login\` first" >&2
         exit 2
     fi

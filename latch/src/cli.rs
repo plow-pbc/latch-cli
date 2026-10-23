@@ -171,7 +171,7 @@ pub enum Command {
     /// each one's standing on that host. Also shows, creates and removes
     /// them (owner only)
     Agents(AgentsArgs),
-    /// Print this peer's identity and the hosts it can reach
+    /// Print this machine, its login and account, and the account's hosts
     Status(StatusArgs),
     /// Copy a file between this machine and a host
     #[command(subcommand)]

@@ -119,7 +119,9 @@ impl Setup {
 
     /// Step 1: a login, by text at this terminal.
     fn log_in(&mut self) -> bool {
-        if let Some(name) = self.local()["peer"]["name"].as_str() {
+        let local = self.local();
+        if !local["login"].is_null() {
+            let name = local["this_machine"]["name"].as_str().unwrap_or_default();
             done(&format!("Logged in as {name}."));
             return true;
         }
@@ -150,7 +152,7 @@ impl Setup {
     /// A connector's state: as the host lists it when it runs, else as it
     /// last saved it in the state folder's plugins.json.
     fn plugin_state(&self, name: &str) -> Option<String> {
-        if self.local()["serve"]["ready"] == true {
+        if self.local()["this_machine"]["hosting"]["ready"] == true {
             let listed = self.latch(&["plugins", "list"]);
             return listed.json["plugins"]
                 .as_array()?
@@ -256,7 +258,7 @@ impl Setup {
     /// once a host ran here, so it keeps the flags its owner gave it
     /// (`--deny-exec`).
     fn start(&mut self) {
-        if self.local()["serve"]["ready"] == true {
+        if self.local()["this_machine"]["hosting"]["ready"] == true {
             done("latch is running.");
             return;
         }
@@ -367,9 +369,12 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
         None
     };
     let saved = crate::plugins::saved(state)?;
-    let serving = local.serve.ready;
+    let serving = local.this_machine.hosting.ready;
     // Whether Google is connected in Plow, asked only for the owner's login.
-    let owner = local.peer.as_ref().is_some_and(|me| me.kind == "device");
+    let owner = local
+        .login
+        .as_ref()
+        .is_some_and(|login| login.kind == "device");
     let (plow, sign_in_again) = if owner {
         match crate::plow::Plow::from_state(state) {
             Ok(plow) => {
@@ -387,8 +392,9 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
     } else {
         (None, None)
     };
-    let mut steps = vec![match &local.peer {
-        Some(me) => Step::new("login", Done, format!("Logged in as {}.", me.name), None),
+    let name = local.this_machine.name.as_deref().unwrap_or_default();
+    let mut steps = vec![match &local.login {
+        Some(_) => Step::new("login", Done, format!("Logged in as {name}."), None),
         None => Step::new(
             "login",
             Needed,
@@ -400,9 +406,9 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
         let name = connector.name();
         let what = format!("The {} connector", title(name));
         let enabled = saved.get(&connector) == Some(&Setting::Enabled);
-        let (state, reason, args) = match (&local.peer, saved.get(&connector)) {
+        let (state, reason, args) = match (&local.login, saved.get(&connector)) {
             (None, _) => (Blocked, format!("{what} needs a login first."), None),
-            (Some(me), _) if me.kind != "device" => (
+            (Some(login), _) if login.kind != "device" => (
                 Blocked,
                 format!("{what} is turned on by the owner's own login, not an agent's."),
                 None,
@@ -439,12 +445,12 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
         }
         steps.push(step);
     }
-    steps.push(match (&local.peer, &local.serve) {
+    steps.push(match (&local.login, &local.this_machine.hosting) {
         (None, _) => Step::new("host", Blocked, "latch needs a login first.".into(), None),
         (_, serve) if serve.ready => Step::new("host", Done, "latch is running.".into(), None),
         (
             _,
-            crate::status::Serve {
+            crate::status::Hosting {
                 blocked: Some(problem),
                 ..
             },

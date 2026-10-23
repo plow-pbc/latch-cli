@@ -52,11 +52,6 @@ struct HomeView: View {
         .formStyle(.grouped)
         .navigationTitle(app.host?.name ?? "Home")
         .navigationSubtitle(app.host?.subtitle(local: app.status) ?? "")
-        .task(id: app.host?.id) {
-            guard !app.still else { return }
-            await app.refreshSummary()
-        }
-        .following(app.host.flatMap { $0.isThisMac || $0.online != false ? app.feed(for: $0) : nil }, still: app.still)
     }
 }
 
@@ -72,7 +67,7 @@ private struct ViewerSection: View {
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("This Mac (\(app.status?.peer?.name ?? "")) isn't hosting.").font(.headline)
+                    Text("This Mac (\(app.status?.thisMachine.name ?? "")) isn't hosting.").font(.headline)
                     Text("You're viewing your hosts. Your agents' work runs on them, not here.")
                         .foregroundStyle(.secondary)
                     if let error = app.startHostError {
@@ -119,9 +114,9 @@ private struct NeedsSection: View {
         var needs: [Needed] = []
         if let error = app.statusError { needs.append(.unchecked(error)) }
         guard let status = app.status else { return needs }
-        if let blocked = status.serve.blocked {
+        if let blocked = status.thisMachine.hosting.blocked {
             needs.append(.blocked(.failed(blocked)))
-        } else if status.serve.state == "stopped" || status.serve.state == "error" {
+        } else if status.thisMachine.hosting.state == "stopped" || status.thisMachine.hosting.state == "error" {
             needs.append(.stopped(lastError: status.lastError.map(LatchError.failed)))
         }
         if let update = status.update, update.available { needs.append(.update(build: update.build)) }
@@ -169,7 +164,7 @@ private struct ActivitySections: View {
             }
             Section("Recent activity") {
                 if calls.isEmpty {
-                    Text(feed.hasOlder ? "Looking further back…" : "No requests yet.").foregroundStyle(.secondary)
+                    Text(feed.loadingOlder ? "Looking further back…" : "No requests yet.").foregroundStyle(.secondary)
                 }
                 ForEach(calls.suffix(5).reversed()) { record in
                     Button {
@@ -181,13 +176,18 @@ private struct ActivitySections: View {
                     }
                     .buttonStyle(.plain)
                 }
+                // Home reaches back only a few pages on its own; the rest is
+                // a click away.
+                if calls.count < 5, feed.hasOlder, !feed.loadingOlder {
+                    Button("Load Earlier") { Task { await feed.loadOlder() } }
+                }
                 Button("Show All Activity") { app.section = .activity }
             }
             // The newest page may be all connections and reads: reach back
             // for five requests, or to the start.
             .task(id: feed.caughtUp) {
                 guard feed.caughtUp, !app.still else { return }
-                await feed.loadOlder(until: 5)
+                await feed.loadOlder(until: 5, pages: ActivityFeed.homePages)
             }
         }
     }

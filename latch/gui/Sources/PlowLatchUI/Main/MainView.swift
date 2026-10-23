@@ -32,19 +32,36 @@ struct MainView: View {
             guard !app.still else { return }
             await app.refreshStatus()
             app.leaveMainIfLoggedOut()
-            await app.refreshAccount()
             await app.followStatus()
         }
+        // Plow's list of hosts, which can be slow, arrives when it does;
+        // this Mac's status doesn't wait for it.
+        .task {
+            guard !app.still else { return }
+            await app.refreshAccount()
+        }
+        // Each screen's reads, decided by the model: a change of screen or
+        // host cancels the last one's.
+        .task(id: Entry(section: app.section, host: app.host?.id, online: app.host?.online)) {
+            guard !app.still else { return }
+            await app.enter(app.section, host: app.host)
+        }
+        // Home and Activity share the selected host's feed: going between
+        // them keeps it running.
+        .following(app.activityFeed, still: app.still)
+        .onDisappear { app.endFeeds() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             guard !app.still else { return }
-            Task {
-                await app.refreshAccount()
-                if app.section == .home { await app.refreshSummary() }
-                // Back from connecting an account in Plow.
-                if app.section == .connections { await app.refreshConnections() }
-            }
+            Task { await app.activated() }
         }
     }
+}
+
+/// What a screen's reads depend on.
+private struct Entry: Hashable {
+    var section: SidebarItem
+    var host: String?
+    var online: Bool?
 }
 
 private struct Sidebar: View {
@@ -65,8 +82,8 @@ private struct Sidebar: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let me = app.status?.peer {
-                Text(app.viewerOnly ? "Logged in as \(me.name) · viewing only" : "Logged in as \(me.name)")
+            if let name = app.status?.loggedInAs {
+                Text(app.viewerOnly ? "Logged in as \(name) · viewing only" : "Logged in as \(name)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -88,10 +105,10 @@ struct HostPicker: View {
 
     var body: some View {
         Menu {
-            if app.viewerOnly, let me = app.status?.peer {
+            if app.viewerOnly, let name = app.status?.loggedInAs {
                 Section {
                     Button {} label: {
-                        Text("This Mac (\(me.name))")
+                        Text("This Mac (\(name))")
                         Text("Not hosting · you're viewing your hosts")
                     }
                     .disabled(true)

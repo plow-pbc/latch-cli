@@ -166,7 +166,8 @@ No Homebrew tap is included.
 - `latch serve --deny-exec` refuses `exec` to every agent;
   `--deny-exec=AGENT_UID` (repeatable) to one agent, by its Plow uid. Your
   own machines are unaffected. `latch rules show` and `latch status
-  --local` report it (`deny_exec`) as the host runs, or last ran.
+  --local` report it (`this_machine.hosting.deny_exec`) as the host runs,
+  or last ran.
 - A connection problem (`host_unreachable`, a slow call): set
   `LATCH_TRACE=iroh=debug,latch=info` on the client, the host or both, to
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). A

@@ -38,8 +38,10 @@ final class NewAgent {
     /// Reads Plow's catalog and the account's lines; the first free line
     /// is picked.
     func load(app: AppModel) async {
-        catalog = await AppModel.result { try await app.agentCatalog() }
-        lines = await AppModel.result { try await app.agentLines() }
+        guard let catalog = await AppModel.result({ try await app.agentCatalog() }) else { return }
+        self.catalog = catalog
+        guard let lines = await AppModel.result({ try await app.agentLines() }) else { return }
+        self.lines = lines
         if line == nil { line = freeLines.first?.uid }
     }
 

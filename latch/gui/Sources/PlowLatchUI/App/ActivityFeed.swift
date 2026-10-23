@@ -2,9 +2,10 @@ import Observation
 import SwiftUI
 
 /// One host's audit as `latch audit --follow` streams it: the newest page,
-/// then each record as it's written. It runs only while a screen showing
-/// it is on screen, and picks up after the last record it got when it
-/// starts again.
+/// then each record as it's written. It runs while a screen showing it is
+/// on screen and for a grace after, so coming straight back doesn't start
+/// latch again, and picks up after the last record it got when it starts
+/// again.
 @Observable
 final class ActivityFeed {
     let client: any LatchClient
@@ -13,6 +14,9 @@ final class ActivityFeed {
 
     /// Oldest first.
     private(set) var records: [AuditRecord] = []
+    /// The ids of `records`, kept with them: a record already held is
+    /// found without going through them all.
+    @ObservationIgnored private var ids: Set<AuditRecord.ID> = []
     /// Records older than the first held exist on the host.
     private(set) var hasOlder = false
     /// Every record up to now has arrived.
@@ -24,6 +28,13 @@ final class ActivityFeed {
     private var cursor: String?
     private var task: Task<Void, Never>?
     private var watchers = 0
+    /// The earlier pages Home reads on its own looking for five requests.
+    static let homePages = 2
+
+    /// How long the stream keeps running after the last screen showing it
+    /// goes.
+    var grace: Duration = .seconds(30)
+    private var release: Task<Void, Never>?
     /// The stream is running (it ends on its own after an error that
     /// waiting won't fix).
     private(set) var running = false
@@ -35,6 +46,8 @@ final class ActivityFeed {
 
     /// A screen showing this feed appeared; the first one starts the stream.
     func start() {
+        release?.cancel()
+        release = nil
         watchers += 1
         guard !running else { return }
         running = true
@@ -51,10 +64,24 @@ final class ActivityFeed {
     }
 
     /// A screen showing it went away; the last one stops the stream (and
-    /// latch with it).
+    /// latch with it) once the grace has passed with none back.
     func stop() {
         watchers = max(0, watchers - 1)
-        guard watchers == 0 else { return }
+        guard watchers == 0, task != nil else { return }
+        release?.cancel()
+        release = Task { [grace] in
+            try? await Task.sleep(for: grace)
+            guard !Task.isCancelled, watchers == 0 else { return }
+            end()
+        }
+    }
+
+    /// Stops the stream now (the window closed); the records and where they
+    /// got to stay, for the next start.
+    func end() {
+        release?.cancel()
+        release = nil
+        watchers = 0
         task?.cancel()
         task = nil
         running = false
@@ -76,6 +103,7 @@ final class ActivityFeed {
                 if failure.code == "cursor_expired" {
                     cursor = nil
                     records = []
+                    ids = []
                     continue
                 }
                 guard !Task.isCancelled else { return }
@@ -104,7 +132,7 @@ final class ActivityFeed {
         case let .record(cursor, record):
             self.cursor = cursor
             error = nil
-            guard !records.contains(where: { $0.id == record.id }) else { return }
+            guard ids.insert(record.id).inserted else { return }
             records.append(record)
         case let .caughtUp(cursor, hasOlder):
             self.cursor = cursor
@@ -123,18 +151,22 @@ final class ActivityFeed {
         defer { loadingOlder = false }
         do {
             let page = try await client.audit(host: host, before: first.id)
-            let held = Set(records.map(\.id))
-            records.insert(contentsOf: page.records.filter { !held.contains($0.id) }, at: 0)
+            let earlier = page.records.filter { ids.insert($0.id).inserted }
+            records.insert(contentsOf: earlier, at: 0)
             hasOlder = page.hasOlder
         } catch {
+            // Leaving the screen that asked is no failure to show.
+            guard !(error is CancellationError), !Task.isCancelled else { return }
             self.error = .from(error)
         }
     }
 
     /// Earlier pages until `requests` records aren't connections or the
-    /// owner's reads, or there are no more (Home's Recent).
-    func loadOlder(until requests: Int) async {
-        while hasOlder, error == nil, records.filter({ !$0.isBackground }).count < requests {
+    /// owner's reads, there are no more, or `pages` were read (Home's
+    /// Recent, which offers the rest a page at a time).
+    func loadOlder(until requests: Int, pages: Int) async {
+        for _ in 0..<pages {
+            guard hasOlder, error == nil, records.filter({ !$0.isBackground }).count < requests, !Task.isCancelled else { return }
             let held = records.count
             await loadOlder()
             if records.count == held { return }
