@@ -579,7 +579,7 @@ pub struct VaultArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum VaultCommand {
-    /// Every item's metadata (never a value)
+    /// Every item's metadata, a login's username included (never a secret value)
     List,
     /// Add an item; its secrets are asked for at a prompt, never taken from
     /// the command line or the environment
@@ -1230,8 +1230,9 @@ Exit code and output:
 Input:
   Without -i the command's stdin is empty (so `echo hi | latch exec -- cat`
   prints nothing). With -i (--stdin) latch reads its own stdin to the end
-  first, at most 256 KiB, within --timeout, and sends it; a terminal, more
-  than 256 KiB or a pipe that never ends is a usage error and nothing runs:
+  first, within --timeout, and sends it. The host's gatekeeper reads all of
+  it, so it must be UTF-8 text of at most 16 KiB; anything else, a terminal
+  or a pipe that never ends is a usage error and nothing runs:
     latch exec --host pi -i -- sh < script.sh
     cat <<'EOF' | latch exec --host pi -i -- sh
     uname -a
@@ -1283,7 +1284,7 @@ pub struct ExecArgs {
           value_parser = clap::value_parser!(u64).range(1..=600))]
     pub timeout: u64,
 
-    /// Send this machine's stdin to the program (read to the end first, at most 256 KiB); without it the program's stdin is empty
+    /// Send this machine's stdin to the program (read to the end first; at most 16 KiB of UTF-8 text, which the gatekeeper reads); without it the program's stdin is empty
     #[arg(short = 'i', long)]
     pub stdin: bool,
 

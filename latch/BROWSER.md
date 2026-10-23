@@ -493,10 +493,13 @@ card number arrives), it does not press, clears the values, and answers
 whose `new text` check already holds stops before the confirmation is
 spent.
 
-**No model, no pass.** With no model reachable, a click or Enter that needs
-a risk decision, and a sentence check, stop with `model_unavailable` and
-nothing sent. Literal `type`, `select`, `scroll` and `back`, typed checks
-and confirmations already issued still work.
+**No model, no pass.** With no model reachable, a plan with a sentence
+check stops with `model_unavailable` before anything is sent, and a click
+or Enter that needs a risk decision stops with it before that action is
+sent. If the model fails while judging a step's sentence check, the plan
+stops with `model_unavailable` after that step's action was sent. Literal
+`type`, `select`, `scroll` and `back`, typed checks and confirmations
+already issued still work.
 
 **Request ids and the journal.** The client makes an id per request, so it
 knows it even if the answer is lost: an exit 5 names it. The host journals

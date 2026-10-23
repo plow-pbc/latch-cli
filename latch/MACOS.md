@@ -13,8 +13,9 @@ way and it can keep its secrets in the Keychain.
 - `Contents/MacOS/latch`, the bundle's executable (`CFBundleExecutable`);
 - `Contents/Info.plist`, written by the script: bundle id
   `co.plow.latch.cli`, `LSUIElement` (no window, no Dock icon), macOS 13 or
-  later. `CFBundleVersion` is the version without its build number, so
-  every build of 0.1.0 reads 0.1.0;
+  later. `CFBundleShortVersionString` is the version (0.1.0) and
+  `CFBundleVersion` a release's build number (1327 for `v0.1.0-1327`), so
+  each build is distinct; a version with no build number is used for both;
 - `Contents/Resources/AppIcon.icns` (`latch/macos/`);
 - `Contents/embedded.provisionprofile`, the Developer ID profile that lets
   the signature claim latch's keychain group.
@@ -82,8 +83,8 @@ bundle, into the state folder (`~/.latch`, or `--state-dir`):
 - gog, `plugins/gog/<version>/`;
 - the Messages reader, `plugins/messages/<latch version>/latch-messages`: a
   separate Swift binary (`latch/messages-reader`) that latch runs only if
-  its sha256 is the one latch was built with. The release's reader is ad
-  hoc signed;
+  its sha256 is the one latch was built with. The release workflow signs
+  the reader with Plow's Developer ID and notarizes it with the app;
 - the browser engines, `plugins/cft/` and `plugins/camoufox/`.
 
 ## Dev and CI builds

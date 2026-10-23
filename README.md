@@ -182,8 +182,9 @@ No Homebrew tap is included.
 After `latch serve` has registered this machine, commands with no `--host`
 use its private local receiver. `--host NAME` or `LATCH_HOST` still selects
 another host; naming this machine uses the same local receiver. Exec,
-files, browser and Google calls pass through the same gatekeeper and audit as remote
-calls, recorded as `owner_on_host`. If the receiver is stopped, start
+files, browser and Google calls, and on macOS `messages` and `contacts`, pass
+through the same gatekeeper and audit as remote calls, recorded as
+`owner_on_host`. If the receiver is stopped, start
 `latch serve` on the same state folder (`serve_required`, exit 3).
 
 Local `vault` and `rules` configuration works without `serve` or

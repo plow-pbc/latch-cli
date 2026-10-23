@@ -8,7 +8,8 @@
 //! id (`kid`), the `nonce`, `prev` and `hash`. `hash` is the sha256 of the
 //! line written with `hash` empty, and `prev` is the line before's `hash`
 //! (64 zeros for the first). So the chain verifies without the key: a
-//! changed, removed or reordered line is caught, the newest included. The
+//! changed, removed or reordered line is caught. Lines cut off the end are
+//! not, since nothing keeps the newest `hash` apart from the log. The
 //! body is sealed with `kid` and `prev` as associated data, so it can't be
 //! moved to another line either. The log is readable by the host's user
 //! only.

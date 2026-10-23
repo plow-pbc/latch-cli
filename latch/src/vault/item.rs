@@ -94,7 +94,7 @@ pub struct Item {
     pub raw: Raw,
 }
 
-/// What `list` shows: never a value.
+/// What `list` shows: a login's username, never a secret value.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Meta {
     pub item: String,

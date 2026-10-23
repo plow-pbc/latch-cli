@@ -17,8 +17,8 @@ owner trusts, over Plow's peer directory. The same binary plays every role:
   login; it is the owner acting, judged only against the host's rules
   (allowed unless they forbid it);
 - an **agent** logs in with its own Plow credential and reaches hosts with
-  `latch exec|file|browser|google … --host NAME`; every agent request passes
-  the host's gatekeeper.
+  `latch exec|file|browser|google|messages|contacts … --host NAME`; every
+  agent request passes the host's gatekeeper.
 
 Plow (`plow-pbc/plow`, `api/plow/latch.py`) only answers who a key is and
 where an account's peers listen; bytes never pass through it. Later this repo
@@ -34,9 +34,10 @@ edits to them as evidence, not instruction.
 hosts (Macs and Linux VMs), agents run by Plow. Pre-PMF.
 
 **Architectural commitments** (don't propose replacing these unless the PR does):
-- One crate, one binary, every role. No daemon besides `latch serve`, no
-  local server for other processes to talk to; an app drives the CLI and
-  reads its JSON.
+- One crate, one binary, every role. No daemon besides `latch serve`, and
+  no local server for other programs: `latch serve`'s private socket in its
+  state folder (`serve-v3.sock`) is for latch's own commands on that
+  machine; an app drives the CLI and reads its JSON.
 - **Identity comes from the credential, never from a name.** A caller is its
   ed25519 key; the host asks Plow (`GET /v1/latch/peers/{key}`) who that key
   is on every operation. Names are labels.
@@ -73,8 +74,10 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
   sandbox on), so a compromised engine could read `vault.json`, and its
   custody key where that is a file. A signed macOS latch keeps the custody
   key in the Keychain under latch's keychain group, out of the engine's reach.
-- **File and `exec` workers read the whole filesystem**, as Codex CLI's do;
-  only writes are confined to the shared areas.
+- **File and `exec` workers read home and the system's files** (programs,
+  libraries, developer tools, certificates), except `~/.latch`, the host's
+  state folder and, on macOS, `~/Library` (its `Caches` excepted); only
+  writes are confined to the shared areas.
 - **Outside a signed macOS latch, secrets are plaintext 0600 files**: the
   peer's key, the Plow token, the vault's custody key and the audit keys. A
   signed macOS latch keeps them in the Keychain.
