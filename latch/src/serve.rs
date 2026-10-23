@@ -1199,13 +1199,26 @@ struct Checked<'a> {
 /// Why a checked request does not run, as its caller is answered.
 enum Stop {
     /// The host's own refusal, made without asking the judge: an exec its
-    /// owner turned off (`--deny-exec`), a connector that is off.
+    /// owner turned off (`--deny-exec`), a connector that is off, a path it
+    /// never lets a worker use.
     Host(Done),
     /// Any other: a replaced binary, a bad request, the gatekeeper's no.
     Refused(Done),
 }
 
 impl Stop {
+    /// A path the host turns down: its own refusal when it is one of the
+    /// paths it never allows (exit 4), else a bad request.
+    fn path(done: Done) -> Stop {
+        match done.response {
+            Response::Error {
+                exit: crate::failure::Exit::Denied,
+                ..
+            } => Stop::Host(done),
+            _ => Stop::Refused(done),
+        }
+    }
+
     fn done(self) -> Done {
         match self {
             Stop::Host(done) | Stop::Refused(done) => done,
@@ -1313,7 +1326,7 @@ async fn check<'a>(
     } else if upgraded {
         Some(Stop::Refused(refused_now(host_upgraded(), Value::Null)))
     } else if let Some(failure) = exec_failure {
-        Some(Stop::Refused(refused_now(failure, Value::Null)))
+        Some(Stop::path(refused_now(failure, Value::Null)))
     } else if let Some(failure) = not_enabled {
         Some(Stop::Host(refused_now(failure, Value::Null)))
     } else if let Some(unplanned) = unplanned {
@@ -1321,7 +1334,7 @@ async fn check<'a>(
     } else if let Some(refused) = refused {
         Some(Stop::Refused(refused))
     } else if let Some(unplaced) = unplaced {
-        Some(Stop::Refused(unplaced))
+        Some(Stop::path(unplaced))
     } else if denied_exec {
         // As a refused judgment keeps it: no stdin.
         let audit = gate::gated(op, &request.args).map_or(Value::Null, |gated| gated.audit);
