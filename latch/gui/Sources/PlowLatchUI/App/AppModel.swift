@@ -306,7 +306,12 @@ final class AppModel {
     /// over, once the person has read why Plow still lists it, if it does.
     func logOut() async throws {
         loggingOut = true
-        defer { loggingOut = false }
+        // Once it's done, onboarding takes over: the status stream may have
+        // said "logged out" already, while this still held it back.
+        defer {
+            loggingOut = false
+            leaveMainIfLoggedOut()
+        }
         let result = try await client.logout()
         if let device = result.device, !device.removed {
             logOutWarning = "This Mac is logged out, but Plow couldn't take it out of your account"
@@ -314,7 +319,6 @@ final class AppModel {
                 + (device.next.map { " Finish with \($0)." } ?? "")
         }
         await refreshStatus()
-        leaveMainIfLoggedOut()
     }
 
     /// The person read the warning: onboarding takes over.

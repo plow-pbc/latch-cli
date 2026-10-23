@@ -106,6 +106,8 @@ struct HostSettingsTests {
 final class AccountClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     private(set) var loggedOut = false
+    /// Whether Plow takes the Mac out of the account at logout.
+    var plowRemoves = false
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(loggedOut ? Fixtures.loggedOut : Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -130,6 +132,7 @@ final class AccountClient: LatchClient, @unchecked Sendable {
     }
     func logout() async throws -> LogoutResult {
         loggedOut = true
+        if plowRemoves { return try Fixtures.decode(#"{"device":{"name":"studio","removed":true},"purged":false,"stopped":true}"#) }
         return try Fixtures.decode(#"{"device":{"name":"studio","removed":false,"error":{"code":"plow_unreachable","message":"could not reach Plow"},"next":"`latch devices remove studio` on another of your machines"},"purged":false,"stopped":true}"#)
     }
 }
@@ -143,6 +146,17 @@ struct AccountTests {
         #expect(app.logOutWarning?.contains("`latch devices remove studio` on another of your machines") == true)
         #expect(app.onboarding == nil)
         app.acknowledgeLogOutWarning()
+        #expect(app.onboarding != nil)
+    }
+
+    /// The status stream said "logged out" while the logout still ran.
+    @Test func aLogoutTheStreamAnnouncedFirstStillOpensOnboarding() async throws {
+        let client = AccountClient()
+        client.plowRemoves = true
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        try await app.logOut()
+        #expect(app.logOutWarning == nil)
         #expect(app.onboarding != nil)
     }
 
