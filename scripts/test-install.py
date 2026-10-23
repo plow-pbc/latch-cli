@@ -406,25 +406,19 @@ class HostUpgrade(unittest.TestCase):
         calls = log.read_text().splitlines() if log.exists() else []
         return result, calls, home / "Applications/Plow Latch.app"
 
-    def test_a_mac_host_is_found_through_the_app_without_a_link_to_it(self):
-        """On macOS the app is what gets replaced: its host is stopped and
-        started again even when no latch is in the bin folder."""
-        log = self.log()
-        result, calls, app = self.mac_upgrade("0.1.0 (1)", "0.1.0 (2)", log)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
-        self.assertIn("latch 0.1.0 (2)",
-                      subprocess.check_output([str(app / "Contents/MacOS/latch"), "--version"], text=True))
-
-    def test_a_new_window_with_the_same_latch_restarts_its_host(self):
-        """Replacing the app replaces its latch too, which the running host
-        then refuses to serve from until it starts again."""
-        log = self.log()
-        result, calls, app = self.mac_upgrade("0.1.0 (2)", "0.1.0 (2)", log,
-                                              old_window="window-one\n", new_window="window-two\n")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
-        self.assertEqual((app / "Contents/Frameworks/libPlowLatchUI.dylib").read_text(), "window-two\n")
+    def test_a_replaced_mac_app_restarts_its_host_found_through_the_app(self):
+        """On macOS the app is what gets replaced, a new latch or only a new
+        window: its host is stopped and started again even when no latch is
+        in the bin folder."""
+        for old, before, after in [("0.1.0 (1)", "", ""), ("0.1.0 (2)", "window-one\n", "window-two\n")]:
+            with self.subTest(old=old, window=after):
+                log = self.log()
+                result, calls, app = self.mac_upgrade(old, "0.1.0 (2)", log, before, after)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
+                self.assertIn("latch 0.1.0 (2)", subprocess.check_output(
+                    [str(app / "Contents/MacOS/latch"), "--version"], text=True))
+                self.assertEqual((app / "Contents/Frameworks/libPlowLatchUI.dylib").read_text(), after)
 
     def test_a_failed_stop_changes_nothing(self):
         log = self.log()
