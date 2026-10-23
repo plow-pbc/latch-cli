@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 import Synchronization
 import Testing
 @testable import PlowLatchUI
@@ -240,6 +241,47 @@ struct GatekeeperTests {
         let again = app.stage(.start)
         await again.startLatch()
         #expect(loginItem == [false, true])
+    }
+
+    /// macOS may register the login item yet hold it for the person to
+    /// allow in Login Items: Start stays on its screen and says so, and once
+    /// it's allowed, Start goes on.
+    @Test func startWaitsForTheLoginItemToBeAllowed() async {
+        let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        var status = SMAppService.Status.notRegistered
+        var calls: [String] = []
+        app.setLoginItem = { on in
+            try LoginItem.set(on, status: { status }, register: { calls.append("register"); status = .requiresApproval },
+                              unregister: { calls.append("unregister") })
+        }
+        let flow = app.stage(.start)
+        flow.startAtLogin = true
+        await flow.startLatch()
+        #expect(flow.step == .start)
+        #expect(flow.startError == LoginItem.needsApproval)
+        // Left registered: Login Items lists it only while it is.
+        #expect(calls == ["register"])
+        // Asked again before it's allowed: still waiting, nothing re-registered.
+        await flow.startLatch()
+        #expect(flow.step == .start && calls == ["register"])
+        // Allowed in Login Items.
+        status = .enabled
+        await flow.startLatch()
+        #expect(flow.step == .done)
+        #expect(flow.startError == nil)
+    }
+
+    /// Registering can also refuse outright while macOS waits for approval.
+    @Test func aRegistrationRefusedForApprovalIsSaidAsSuch() {
+        var status = SMAppService.Status.notRegistered
+        struct Refused: Error {}
+        #expect(throws: LoginItem.needsApproval) {
+            try LoginItem.set(true, status: { status }, register: { status = .requiresApproval; throw Refused() }, unregister: {})
+        }
+        status = .notRegistered
+        #expect(throws: Refused.self) {
+            try LoginItem.set(true, status: { status }, register: { throw Refused() }, unregister: {})
+        }
     }
 
     @Test func googleNotConnectedCarriesLatchsConnectURL() throws {

@@ -358,6 +358,7 @@ package enum SnapshotRunner {
             ("07-start-error", .start, Fixtures.stopped, Progress(), {
                 $0.startError = LatchError.failed(LatchFailure(code: "serve_failed", message: "the host did not answer within 30 seconds (`latch logs` has its log)"))
             }),
+            ("07-start-login-item-needs-approval", .start, Fixtures.serving, Progress(), { $0.startError = LoginItem.needsApproval }),
             ("08-done-all-set", .done, Fixtures.serving, full, {
                 $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
             }),
