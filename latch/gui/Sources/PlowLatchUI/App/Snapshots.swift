@@ -647,8 +647,9 @@ package enum SnapshotRunner {
         }
     }
 
-    /// The main window as the window server shows it (sidebar materials and
-    /// toolbar included), drawn off screen.
+    /// The main window, title bar included, drawn off every display from its
+    /// own views: the window server composites nothing there, so it has no
+    /// image of it (nor of the sidebar's materials) to give.
     private static func renderWindow(_ view: some View, size: CGSize, dark: Bool, file: URL) async throws {
         guard wanted(file) else { return }
         let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
@@ -659,7 +660,7 @@ package enum SnapshotRunner {
         window.setFrame(CGRect(origin: CGPoint(x: -4000, y: -4000), size: size), display: true)
         window.orderFrontRegardless()
         try await Task.sleep(for: .milliseconds(600))
-        try Render.window(window, to: file)
+        try Render.frame(window, to: file)
         window.orderOut(nil)
         print(file.path)
     }

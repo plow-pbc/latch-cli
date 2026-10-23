@@ -9,16 +9,6 @@ struct HostSettingsView: View {
 
     var body: some View {
         Form {
-            if app.viewerOnly, let me = app.status?.peer {
-                Section("This Mac") {
-                    HStack {
-                        LabeledContent(me.name, value: "Not hosting")
-                        Button(app.startingHost ? "Starting…" : "Start Hosting on This Mac…") { app.confirmingStartHosting = true }
-                            .disabled(app.startingHost)
-                    }
-                    if let error = app.startHostError { Text(error).foregroundStyle(.red) }
-                }
-            }
             if let host = app.host {
                 HostSection(host: host, stopping: $stopping)
                 if !host.isThisMac && host.online == false {
