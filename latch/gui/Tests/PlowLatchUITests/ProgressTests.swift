@@ -311,7 +311,6 @@ struct ClosingTests {
         await until { flow.messages.isNeeded && flow.contacts.isNeeded }
         #expect(flow.terminalHostNeedsRestart)
         #expect(!flow.backgroundHostNeedsRestart)
-        #expect(flow.accessMessage == "this host has no Full Disk Access; restart the host")
         #expect(client.stopped == 0)
     }
 

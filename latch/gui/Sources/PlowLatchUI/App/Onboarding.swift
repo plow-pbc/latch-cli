@@ -119,8 +119,6 @@ final class Onboarding {
     var messages: Check = .unknown
     var contacts: Check = .unknown
     var waitingForAccess = false
-    /// latch's own words about access, for a host a terminal holds.
-    var accessMessage: String?
     var restarting = false
     /// Why Restart Latch failed, while it shows.
     var restartError: String?
@@ -509,8 +507,8 @@ final class Onboarding {
         return serve.state == "serving" && serve.managed && serve.attached != true
     }
 
-    /// The same, for a host held by a terminal: latch's own words say what
-    /// to do there; the app never restarts it.
+    /// The same, for a host held by a terminal: the person restarts it
+    /// there; the app never does.
     var terminalHostNeedsRestart: Bool {
         guard messages.isNeeded || contacts.isNeeded, let serve = app.status?.serve else { return false }
         return serve.state == "serving" && !backgroundHostNeedsRestart
@@ -540,7 +538,6 @@ final class Onboarding {
             _ = try await client.enable(plugin)
             return (.done, nil)
         } catch let LatchError.failed(failure) where failure.code == "needs_setup" && failure.settings != nil {
-            accessMessage = failure.message
             return (.needed("Waiting for access"), failure)
         } catch {
             return (.failed((error as? LatchError)?.message ?? error.localizedDescription), nil)

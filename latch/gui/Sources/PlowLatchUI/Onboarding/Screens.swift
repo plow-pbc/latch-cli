@@ -275,7 +275,7 @@ struct GoogleView: View {
                 Text(message).foregroundStyle(Brand.clay).font(.callout)
             }
             if flow.google == .done, !flow.googleAccounts.isEmpty {
-                Text("Connected accounts: \(ListFormatter.localizedString(byJoining: flow.googleAccounts)).").foregroundStyle(Brand.muted)
+                Text("Connected as \(ListFormatter.localizedString(byJoining: flow.googleAccounts)).").foregroundStyle(Brand.muted)
             }
             Spacer(minLength: 0)
         }
@@ -344,32 +344,17 @@ struct AccessView: View {
                 }
             } else if flow.backgroundHostNeedsRestart {
                 HStack(spacing: 12) {
-                    Text("After turning on Full Disk Access, restart Latch to use Messages and Contacts.").foregroundStyle(Brand.muted)
+                    Text("Turn on access, then restart Latch to apply it.").foregroundStyle(Brand.muted)
                     Spacer()
                     Button(flow.restarting ? "Restarting…" : "Restart Latch") { Task { await flow.restartLatch() } }
                         .disabled(flow.restarting)
                 }
             } else if flow.terminalHostNeedsRestart {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 12) {
-                        Text("Latch is running in a terminal. After turning on Full Disk Access, restart it there.")
-                            .foregroundStyle(Brand.muted)
-                        Spacer()
-                        Button("Check again") { flow.checkAccess() }
-                    }
-                    // latch's own recovery steps, unchanged: the path, the
-                    // settings link and the command.
-                    if let message = flow.accessMessage {
-                        DisclosureGroup("Details") {
-                            Text(message)
-                                .font(.callout)
-                                .foregroundStyle(Brand.muted)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .font(.callout)
-                    }
+                HStack(spacing: 12) {
+                    Text("Latch is running in a terminal. Turn on access, then restart it there.")
+                        .foregroundStyle(Brand.muted)
+                    Spacer()
+                    Button("Check again") { flow.checkAccess() }
                 }
             } else if flow.waitingForAccess {
                 Text("This screen updates when access is granted.").foregroundStyle(Brand.muted)

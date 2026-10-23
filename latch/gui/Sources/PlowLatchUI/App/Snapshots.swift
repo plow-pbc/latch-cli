@@ -129,7 +129,6 @@ package enum SnapshotRunner {
             }),
             ("06-access-terminal-host", .access, Fixtures.servingAttached, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
-                $0.accessMessage = "this host has no Full Disk Access; turn it on for /Users/me/Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), restart the host, then run `latch plugins enable messages` again"
             }),
             ("06-access-unavailable", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .failed("messages cannot be checked on this host: the Messages reader is missing; run install.sh again")
