@@ -2587,4 +2587,72 @@ mod mac {
             assert!(prefs.contains(pref), "{pref} is not in force");
         }
     }
+
+    /// A tab its popup hid keeps the browser's own priority: macOS's
+    /// background band (Chrome's process priority policy puts a hidden
+    /// tab's renderer there) starves it on a busy machine, and the session
+    /// still acts in that tab.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn cft_keeps_a_tab_its_popup_hid_at_the_browsers_priority() {
+        let (_dir, state, _area) = test_state("cft");
+        let base = test_site()
+            .split("/frames.html")
+            .next()
+            .unwrap()
+            .to_string();
+        let mut h = Host::new(&state);
+        let (id, page) = h
+            .open(CALLER, "cft", json!({"url": format!("{base}/alert.html")}))
+            .await;
+        let link = find(&page, "link", "Open next in a new tab");
+        h.call(CALLER, "do", &id, act(&format!("click {link}")))
+            .await
+            .unwrap();
+        h.call(CALLER, "tab", &id, json!({"action": "switch", "tab": "t1"}))
+            .await
+            .unwrap();
+        let shown = h
+            .call(
+                CALLER,
+                "eval",
+                &id,
+                json!({"script": "document.visibilityState"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(shown["value"], "hidden");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let entry = h.browsers.session(&id, CALLER).await.unwrap();
+        let browser = entry.runtime.ready["pid"].as_u64().unwrap().to_string();
+        let out = Command::new("/bin/ps")
+            .args(["-Aww", "-o", "pid=,pgid=,pri=,args="])
+            .output()
+            .unwrap();
+        let listed = String::from_utf8_lossy(&out.stdout);
+        let rows: Vec<Vec<&str>> = listed
+            .lines()
+            .map(|line| line.split_whitespace().collect::<Vec<_>>())
+            .filter(|fields| fields.len() > 3 && fields[1] == browser)
+            .collect();
+        let priority = |fields: &Vec<&str>| fields[2].parse::<u32>().unwrap();
+        let own = rows
+            .iter()
+            .find(|fields| fields[0] == browser)
+            .map(priority);
+        let renderers: Vec<(&str, u32)> = rows
+            .iter()
+            .filter(|fields| fields.contains(&"--type=renderer"))
+            .map(|fields| (fields[0], priority(fields)))
+            .collect();
+        println!("browser priority {own:?}; renderers (pid, priority): {renderers:?}");
+        assert!(!renderers.is_empty());
+        assert!(
+            renderers.iter().all(|(_, pri)| Some(*pri) == own),
+            "{renderers:?}"
+        );
+        drop(entry);
+        h.call(CALLER, "close", &id, json!({})).await.unwrap();
+    }
 }
