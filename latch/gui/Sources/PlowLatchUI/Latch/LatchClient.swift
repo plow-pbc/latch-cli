@@ -142,8 +142,7 @@ nonisolated struct LiveLatchClient: LatchClient {
     /// latch saves it, readable only by this user, into a folder of its own
     /// that is removed once the bytes are read.
     func auditShot(_ record: String, shot: String, host: String?) async throws -> Data {
-        let folder = FileManager.default.temporaryDirectory.appending(path: "latch-shot-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let folder = try ShotFolder.make()
         defer { try? FileManager.default.removeItem(at: folder) }
         let file = folder.appending(path: "shot.png")
         _ = try await run(["audit", "shot", record, shot, "--output", file.path] + on(host))

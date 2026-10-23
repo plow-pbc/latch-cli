@@ -10,6 +10,11 @@ struct RecordInspector: View {
     var hostName: String
     /// nil for this Mac's own host, else the host `--host` names.
     var host: String?
+    @Environment(AppModel.self) private var app
+    /// A browser plan's screenshots, for the record shown.
+    @State private var shots: RecordShots?
+    /// The screenshot open in Quick Look.
+    @State private var preview: URL?
 
     var body: some View {
         Form {
@@ -28,8 +33,8 @@ struct RecordInspector: View {
                 LabeledContent("Operation", value: record.op)
                 LabeledContent("Outcome") { Text(record.outcome).font(.body.monospaced()) }
             }
-            if !record.shots.isEmpty {
-                ShotsSection(record: record, host: host, hostName: hostName)
+            if let shots, shots.record == record.id {
+                ShotsSection(shots: shots, hostName: hostName) { open($0) }
             } else if record.isScreenshot {
                 Section("Screenshot") {
                     Text(RecordShots.standalone).foregroundStyle(.secondary)
@@ -77,6 +82,31 @@ struct RecordInspector: View {
         }
         .formStyle(.grouped)
         .controlSize(.small)
+        // Read when the record is opened, and again only for another.
+        .task(id: record.id) {
+            preview = nil
+            shots = record.shots.isEmpty ? nil : RecordShots(client: app.client, host: host, record: record)
+            await shots?.load()
+        }
+        .quickLookPreview($preview)
+        .onChange(of: preview) { closed, _ in closed.map(Self.remove) }
+        .onDisappear { preview.map(Self.remove) }
+    }
+
+    /// A screenshot in Quick Look, from a file only this user can read,
+    /// removed once it closes.
+    private func open(_ shot: RecordShots.Shot) {
+        guard case let .loaded(png) = shot.state, let folder = try? ShotFolder.make() else { return }
+        let file = folder.appending(path: "\(shot.title).png")
+        guard FileManager.default.createFile(atPath: file.path, contents: png, attributes: [.posixPermissions: 0o600]) else {
+            Self.remove(file)
+            return
+        }
+        preview = file
+    }
+
+    private static func remove(_ file: URL) {
+        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }
 
     /// Everything else the record holds, by key: each op's own args, and
@@ -115,61 +145,33 @@ struct RecordInspector: View {
     }
 }
 
-/// A browser plan's screenshots, read from its host when the record opens;
-/// one opens in Quick Look from a file only this user can read, removed
-/// once it closes.
+/// A browser plan's screenshots as they arrive; one opens in Quick Look.
 private struct ShotsSection: View {
-    var record: AuditRecord
-    var host: String?
+    var shots: RecordShots
     var hostName: String
-    @Environment(AppModel.self) private var app
-    @State private var shots: RecordShots?
-    @State private var preview: URL?
+    var open: (RecordShots.Shot) -> Void
 
     var body: some View {
         Section("Screenshots") {
             VStack(alignment: .leading, spacing: 6) {
                 ScrollView(.horizontal) {
                     HStack(alignment: .top, spacing: 8) {
-                        ForEach(shots?.shots ?? []) { shot in
+                        ForEach(shots.shots) { shot in
                             ShotTile(shot: shot, hostName: hostName) { open(shot) }
                         }
                     }
                     .padding(.vertical, 2)
                 }
-                if shots?.shots.contains(where: { $0.state == .gone }) == true {
+                if shots.shots.contains(where: { $0.state == .gone }) {
                     Text(RecordShots.gone).font(.caption).foregroundStyle(.secondary)
                 }
+                ForEach(shots.shots) { shot in
+                    if case let .failed(error) = shot.state {
+                        Text("\(shot.title): \(ErrorCopy.short(error, host: hostName))").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
-            .task(id: record.id) {
-                let shots = RecordShots(client: app.client, host: host, record: record)
-                self.shots = shots
-                await shots.load()
-            }
-            .quickLookPreview($preview)
-            .onChange(of: preview) { closed, _ in closed.map(Self.remove) }
-            .onDisappear { preview.map(Self.remove) }
         }
-    }
-
-    private func open(_ shot: RecordShots.Shot) {
-        guard case let .loaded(png) = shot.state else { return }
-        let folder = FileManager.default.temporaryDirectory.appending(path: "latch-shot-\(UUID().uuidString)")
-        let file = folder.appending(path: "\(shot.title).png")
-        do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        } catch {
-            return
-        }
-        guard FileManager.default.createFile(atPath: file.path, contents: png, attributes: [.posixPermissions: 0o600]) else {
-            Self.remove(file)
-            return
-        }
-        preview = file
-    }
-
-    private static func remove(_ file: URL) {
-        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }
 }
 
@@ -180,15 +182,16 @@ private struct ShotTile: View {
     var open: () -> Void
 
     var body: some View {
+        let loaded = shot.thumbnail != nil
         VStack(alignment: .leading, spacing: 4) {
             Group {
                 switch shot.state {
                 case .loading:
                     ProgressView().controlSize(.small)
-                case let .loaded(png):
-                    if let image = NSImage(data: png) {
+                case .loaded:
+                    if let thumbnail = shot.thumbnail {
                         Button(action: open) {
-                            Image(nsImage: image).resizable().scaledToFit()
+                            Image(nsImage: thumbnail).resizable().scaledToFit()
                         }
                         .buttonStyle(.plain)
                         .help("Open in Quick Look")
@@ -197,10 +200,8 @@ private struct ShotTile: View {
                     }
                 case .gone:
                     Image(systemName: "clock.badge.xmark").foregroundStyle(.secondary)
-                        .help(RecordShots.gone)
-                case let .failed(error):
+                case .failed:
                     Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
-                        .help(ErrorCopy.short(error, host: hostName))
                 }
             }
             .frame(width: 128, height: 80)
@@ -208,8 +209,20 @@ private struct ShotTile: View {
             .clipShape(.rect(cornerRadius: 4))
             Text(shot.title).font(.caption).foregroundStyle(.secondary)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(shot.title)
+        .accessibilityValue(state)
+        .accessibilityAddTraits(loaded ? .isButton : .isImage)
+        .accessibilityAction { if loaded { open() } }
+    }
+
+    private var state: String {
+        switch shot.state {
+        case .loading: "Loading"
+        case .loaded: "Screenshot"
+        case .gone: RecordShots.gone
+        case let .failed(error): ErrorCopy.short(error, host: hostName)
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import PlowLatchUI
@@ -426,6 +427,17 @@ struct RecordShotsTests {
 
     private func records(_ fixture: String) throws -> [AuditRecord] {
         try AuditPage.parse(Data(fixture.utf8)).records
+    }
+
+    /// A tile is drawn from a thumbnail made once, not the whole page.
+    @Test func eachShotGetsASmallThumbnailOnce() async throws {
+        let plan = try #require(try browser().first { $0.args?.command == "do" })
+        let shots = RecordShots(client: FakeLatchClient(), host: nil, record: plan)
+        await shots.load()
+        let thumbnail = try #require(shots.shots.first?.thumbnail)
+        #expect(max(thumbnail.size.width, thumbnail.size.height) == 256)
+        guard case let .loaded(png) = shots.shots.first?.state else { Issue.record("not loaded"); return }
+        #expect(NSImage(data: png)?.size.width == 1280)
     }
 
     /// The bundle's latch saves the shot into a folder of its own, which is
