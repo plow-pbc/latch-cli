@@ -89,6 +89,19 @@ pub fn timed_out(timeout: u64, result: Value) -> Failure {
     failure
 }
 
+/// The `exec` operation's arguments for `latch exec`, its stdin read now
+/// when `-i` sends it.
+pub fn request(args: &crate::cli::ExecArgs) -> Result<Value, Failure> {
+    let secret_env = parse_secret_env(&args.secret_env)?;
+    let mut request = json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout,
+                "writes": args.writes, "network": args.network, "secret_env": secret_env });
+    if args.stdin {
+        let bytes = crate::input::read_all(Duration::from_secs(args.timeout))?;
+        request["stdin"] = json!(bytes);
+    }
+    Ok(request)
+}
+
 pub fn parse_secret_env(values: &[String]) -> Result<BTreeMap<String, String>, Failure> {
     let mut secrets = BTreeMap::new();
     for value in values {

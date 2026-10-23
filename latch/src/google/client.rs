@@ -25,6 +25,28 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
             "guide": "latch google --help prints the agent guide",
         }));
     }
+    let Prepared {
+        request,
+        files,
+        plan,
+    } = prepare(&args).await?;
+    let host = crate::hosts::resolve(state, args.host.host).await?;
+    let link = dial::connect(state, &host).await?;
+    let chat = args.host.plow_chat;
+    let result = exchange(&link.connection, chat, request, files, plan.as_ref()).await;
+    link.close();
+    result
+}
+
+/// A `google` operation, ready to send: its arguments, the client files
+/// gog will read, opened, and the plan they were found in.
+pub struct Prepared {
+    pub request: Request,
+    files: Vec<File>,
+    plan: Option<policy::Plan>,
+}
+
+pub async fn prepare(args: &GoogleArgs) -> Result<Prepared, Failure> {
     // latch's own flags may be written among gog's; the host lifts them out
     // again, but the files gog reads are found in what is left.
     let lifted = policy::lift(&args.gog_args)?;
@@ -60,19 +82,19 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
             files.push(file);
         }
     }
-    let host = crate::hosts::resolve(state, args.host.host).await?;
-    let link = dial::connect(state, &host).await?;
     let request = Request {
         gog_args: lifted.args,
-        account: lifted.accounts.unwrap_or(args.account),
+        account: lifted.accounts.unwrap_or_else(|| args.account.clone()),
         confirm_conflict: args.confirm_conflict || lifted.confirm_conflict,
         inputs,
     };
-    let chat = args.host.plow_chat;
-    let result = exchange(&link.connection, chat, request, files, plan.as_ref()).await;
-    link.close();
-    result
+    Ok(Prepared {
+        request,
+        files,
+        plan,
+    })
 }
+
 /// One `google` operation on an open connection: the request, a first answer
 /// ("ready"), the client's file bytes, a header listing the files gog wrote,
 /// each file's bytes (written to its client path and checked by sha256), and

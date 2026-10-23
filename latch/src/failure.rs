@@ -311,6 +311,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("not_on_a_phone_link", Exit::Denied),
     ("not_owner", Exit::Denied),
     ("not_permitted", Exit::Denied),
+    ("not_previewable", Exit::Usage),
     ("not_removed", Exit::Usage),
     ("nothing_to_start_again", Exit::Usage),
     ("nothing_typed", Exit::Usage),
