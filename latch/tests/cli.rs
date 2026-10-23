@@ -180,6 +180,7 @@ fn owner_calls_refuse_a_plow_chat() {
     for args in [
         &["exec", "--", "echo", "must-not-run"][..],
         &["browser", "sessions"],
+        &["google", "--", "gmail", "search", "invoice"],
     ] {
         for from_env in [false, true] {
             let mut argv = args.to_vec();

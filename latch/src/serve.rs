@@ -979,7 +979,15 @@ async fn serve_request(
                 audit_args: gated.audit.clone(),
                 outcome: failure.code.clone(),
             });
-            let done = if upgraded {
+            let done = if request.chat.is_some()
+                && let Err(failure) = &gate
+            {
+                Done {
+                    response: Response::error(failure),
+                    audit_args: Value::Null,
+                    outcome: failure.code.clone(),
+                }
+            } else if upgraded {
                 let failure = host_upgraded();
                 Done::failed(&failure.code, failure.message, Value::Null)
             } else if let Some(failure) = exec_failure {
