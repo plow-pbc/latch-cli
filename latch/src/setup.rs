@@ -107,7 +107,7 @@ impl Setup {
         if let Some(dir) = &self.state_dir {
             command.arg("--state-dir").arg(dir);
         }
-        // Setup is about this machine: `plugins list` must not ask another.
+        // Setup is about this machine, never another host.
         command.env_remove("LATCH_HOST").args(args);
         command
     }
@@ -149,22 +149,14 @@ impl Setup {
         false
     }
 
-    /// A connector's state: as the host lists it when it runs, else as it
-    /// last saved it in the state folder's plugins.json.
+    /// A connector's state, as this machine's `status --local` lists it.
     fn plugin_state(&self, name: &str) -> Option<String> {
-        if self.local()["this_machine"]["hosting"]["ready"] == true {
-            let listed = self.latch(&["plugins", "list"]);
-            return listed.json["plugins"]
-                .as_array()?
-                .iter()
-                .find(|plugin| plugin["name"] == name)
-                .and_then(|plugin| plugin["state"].as_str())
-                .map(String::from);
-        }
-        let state = StateDir::new(self.state_dir.clone()).ok()?;
-        let saved = std::fs::read_to_string(state.path.join("plugins.json")).ok()?;
-        let saved: Value = serde_json::from_str(&saved).ok()?;
-        saved[name]["state"].as_str().map(String::from)
+        self.local()["plugins"]
+            .as_array()?
+            .iter()
+            .find(|plugin| plugin["name"] == name)
+            .and_then(|plugin| plugin["state"].as_str())
+            .map(String::from)
     }
 
     /// Step 2: Google, through Plow.

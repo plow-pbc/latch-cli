@@ -40,7 +40,7 @@ expect() {
 state="$work/state"
 expect 0 'protocol plow/latch/' "$dir/latch" --version
 expect 0 '"state":"stopped"' "$dir/latch" --state-dir "$state" status --local
-expect 0 '"name":"messages"' "$dir/latch" --state-dir "$state" plugins list
+expect 0 '"name":"messages"' "$dir/latch" --state-dir "$state" status --local
 expect 0 '"records":0' "$dir/latch" --state-dir "$state" audit verify
 expect 0 '"exit_codes"' "$dir/latch" help --json
 

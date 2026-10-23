@@ -37,8 +37,10 @@ final class SignInClient: LatchClient, @unchecked Sendable {
         let again = step?.needsSignIn
         return GoogleEnabled(accounts: (step?.accounts ?? []).filter { !(again ?? []).contains($0) }, needsSignIn: again)
     }
-    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(Fixtures.studioPluginsSetUp) }
-    func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
+    /// Google on, once the sign-in turned it on.
+    func localStatus() async throws -> LocalStatus {
+        try Fixtures.decode(Fixtures.status(Fixtures.serving, plugins: Fixtures.studioPluginsSetUp))
+    }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
@@ -228,7 +230,7 @@ struct GoogleSignInTests {
         client.events?.yield(.enabled(GoogleEnabled(accounts: after)))
         client.events?.finish()
         func googleOn() -> Bool {
-            (try? app.summaries["studio"]?.plugins?.get())?.plugins.first { $0.name == "google" }?.state == "enabled"
+            app.status?.plugins?.first { $0.name == "google" }?.state == "enabled"
         }
         await waitUntil { app.googleSignIn == nil && app.connections == .google(GoogleAccounts(accounts: after)) && googleOn() }
         #expect(app.googleSignIn == nil)

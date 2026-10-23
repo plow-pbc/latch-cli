@@ -5,6 +5,7 @@
 
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -13,9 +14,14 @@ use crate::credential;
 use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::lifecycle::{self, Phase, Problem};
-use crate::plow::Plow;
+use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
 use crate::watch::{Watch, Woke};
+use crate::wire::Request;
+
+/// How long the account's hosts have, all together, to say which plugins
+/// they have on, from before the first is dialed.
+pub const PLUGINS_WITHIN: Duration = Duration::from_secs(2);
 
 #[derive(Serialize)]
 pub struct Status {
@@ -49,6 +55,39 @@ pub struct Host {
     pub this_machine: bool,
     pub online: Option<bool>,
     pub last_seen_at: Option<String>,
+    /// Its plugins that are on or need setup, as it says when asked (this
+    /// machine's from its own state folder); `null` when that is unknown,
+    /// with why in `plugins_reason`.
+    pub plugins: Option<Vec<Plugin>>,
+    /// `host_offline` (not asked), `host_unreachable` (no answer in time),
+    /// `caller_denied`, `protocol_mismatch` or the code the host failed with.
+    pub plugins_reason: Option<String>,
+}
+
+/// One of a host's plugins, as `hosts[]` lists it: never one that is off.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Plugin {
+    pub name: String,
+    /// `enabled` or `needs_setup`: the owner's saved setting, not a check
+    /// that it works.
+    pub state: String,
+}
+
+/// The plugins in a host's list (its `plugins` request's answer) that are
+/// on or need setup.
+pub fn on_or_set_up(listed: &Value) -> Vec<Plugin> {
+    listed["plugins"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|plugin| {
+            let state = plugin["state"].as_str()?;
+            (state == "enabled" || state == "needs_setup").then(|| Plugin {
+                name: plugin["name"].as_str().unwrap_or_default().to_string(),
+                state: state.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// How long `status` waits for Plow's answer.
@@ -70,12 +109,18 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
     let directory = tokio::time::timeout(PLOW_WITHIN, directory(state))
         .await
         .unwrap_or_else(|_| Err(crate::plow::no_answer(&config.api_url, PLOW_WITHIN)));
-    let directory = directory.map_err(|mut failure| {
+    let mut directory = directory.map_err(|mut failure| {
         if failure.code == code::plow_unreachable.name {
             failure.next = Some("latch status --local".into());
         }
         failure
     })?;
+    let hosts = &mut directory.hosts;
+    ask_plugins(state, &directory.peers, |index, answer| match answer {
+        Ok(plugins) => hosts[index].plugins = Some(plugins),
+        Err(reason) => hosts[index].plugins_reason = Some(reason),
+    })
+    .await;
     Ok(Status {
         account: Some(directory.account),
         local,
@@ -88,8 +133,11 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
 /// What Plow says of the account this machine is logged in to.
 pub struct Directory {
     pub account: Account,
-    /// This machine first; the rest in Plow's order.
+    /// This machine first; the rest in Plow's order. Their plugins are not
+    /// asked yet (`ask_plugins`).
     pub hosts: Vec<Host>,
+    /// The same hosts, as Plow lists them, to dial.
+    pub peers: Vec<Peer>,
     pub default_host: Option<String>,
     pub default_host_reason: Option<String>,
 }
@@ -120,18 +168,58 @@ pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
             display_name,
         },
         hosts: listed
-            .into_iter()
+            .iter()
             .map(|peer| Host {
-                name: peer.name,
-                key: peer.key,
+                name: peer.name.clone(),
+                key: peer.key.clone(),
                 this_machine: peer.this_machine,
                 online: peer.online,
-                last_seen_at: peer.last_seen_at,
+                last_seen_at: peer.last_seen_at.clone(),
+                plugins: None,
+                plugins_reason: None,
             })
             .collect(),
+        peers: listed,
         default_host,
         default_host_reason,
     })
+}
+
+/// Asks each of `hosts` which plugins it has on, all at once within
+/// `PLUGINS_WITHIN`, and gives `each` a host's answer, or the code of why
+/// there is none, by its place in `hosts`, as it comes. This machine's is
+/// read from its state folder, never dialed. Asking no host fails this.
+pub async fn ask_plugins(
+    state: &StateDir,
+    hosts: &[Peer],
+    mut each: impl FnMut(usize, Result<Vec<Plugin>, String>),
+) {
+    let mut others = Vec::new();
+    for (index, host) in hosts.iter().enumerate() {
+        if !host.this_machine {
+            others.push(index);
+            continue;
+        }
+        match crate::plugins::list_saved(state) {
+            Ok(listed) => each(index, Ok(on_or_set_up(&listed))),
+            Err(failure) => each(index, Err(failure.code)),
+        }
+    }
+    let peers: Vec<Peer> = others.iter().map(|&index| hosts[index].clone()).collect();
+    let request = Request {
+        op: "plugins".to_string(),
+        args: json!({"command": "list"}),
+        chat: None,
+    };
+    crate::dial::ask_each(state, &peers, &request, PLUGINS_WITHIN, |at, answer| {
+        each(
+            others[at],
+            answer
+                .map(|listed| on_or_set_up(&listed))
+                .map_err(|failure| failure.code),
+        )
+    })
+    .await;
 }
 
 #[derive(Serialize)]
@@ -140,7 +228,8 @@ pub struct LocalStatus {
     /// before login.
     pub login: Option<Login>,
     pub this_machine: ThisMachine,
-    /// As `latch plugins list` says.
+    /// Each connector: `name` and `state` (enabled, disabled or
+    /// needs_setup), and for one not enabled, why and the owner's `enable`.
     pub plugins: Value,
     /// Whether a newer build is available, as the host last looked.
     pub update: crate::update::Status,

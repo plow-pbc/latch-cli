@@ -364,7 +364,6 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
-    func pluginsList(host: String?) async throws -> PluginsList { throw CancellationError() }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     /// What `status --local --follow` sends, then it stays open; nil ends it at once.
     var followed: [String]?

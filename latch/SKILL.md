@@ -21,8 +21,9 @@ when there is a next step), with an exit code you can branch on. Branch on
   is meant to be used here.
 - **From another machine:** log in with your own credential (`latch login`
   with no flags finds it). `latch status` shows your account, this machine
-  (`this_machine`), the account's hosts (`self` marks this one) and
-  `default_host`, where a command without `--host` goes; name one with
+  (`this_machine`), the account's hosts (`self` marks this one), the
+  plugins each one has on (`plugins`; `null` with `plugins_reason` when it
+  didn't say) and `default_host`, where a command without `--host` goes; name one with
   `--host` (or `$LATCH_HOST`); with only one host, latch picks it.
 - Your login lives in a state folder: `--state-dir DIR`, else
   `$LATCH_STATE_DIR`, else `~/.latch`. Where `HOME` is not your home,

@@ -148,11 +148,11 @@ struct HostSettingsTests {
     /// latch's reasons and refusals name commands and pages; the Plugins
     /// area says them in its own words.
     @Test func pluginsAreSaidWithoutCommandsOrAddresses() throws {
-        let plugins = try (Fixtures.decode(Fixtures.studioPluginsSetUp) as PluginsList).plugins
+        let plugins: [Plugin] = try Fixtures.decode(Fixtures.studioPluginsSetUp)
         #expect(plugins.map(PluginCopy.state) == ["On", "Needs Full Disk Access for Plow Latch, in System Settings", "Off"])
         #expect(plugins.contains { $0.reason?.contains("`") == true })
         // Google saves needs_setup for any failed setup, not only a missing account.
-        let google = PluginsList.Plugin(name: "google", state: "needs_setup", reason: "gog 0.45.0 is not installed at /s/plugins/gog/0.45.0/gog; run install.sh")
+        let google = Plugin(name: "google", state: "needs_setup", reason: "gog 0.45.0 is not installed at /s/plugins/gog/0.45.0/gog; run install.sh")
         #expect(PluginCopy.state(google) == "Needs setting up")
         let refusals = [
             ("google", LatchFailure(code: "google_not_connected", message: "Plow has no Google account this host can use; connect one at http://localhost:3000/connections, then run `latch plugins enable google` again")),
@@ -189,7 +189,6 @@ final class AccountClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(Fixtures.rulesStudio) }
     func rulesSet(_ text: String) async throws {}
-    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }

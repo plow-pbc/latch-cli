@@ -73,10 +73,10 @@ final class ContractTests {
         }
     }
 
-    @Test func pluginsListOfAFreshStateFolder() async throws {
-        let plugins = try await client.pluginsList(host: nil)
-        #expect(Set(plugins.plugins.map(\.name)) == ["google", "messages", "contacts"])
-        #expect(plugins.plugins.allSatisfy { $0.state == "disabled" })
+    @Test func pluginsOfAFreshStateFolder() async throws {
+        let plugins = try #require(try await client.localStatus().plugins)
+        #expect(Set(plugins.map(\.name)) == ["google", "messages", "contacts"])
+        #expect(plugins.allSatisfy { $0.state == "disabled" })
     }
 
     /// The keep-awake switch saves with no login or host, and `status

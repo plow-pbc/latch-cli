@@ -35,7 +35,6 @@ final class RulesClient: LatchClient, @unchecked Sendable {
             show.everyAgent = text.isEmpty ? nil : .init(text: text, revision: "r\(sets.count)")
         }
     }
-    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }

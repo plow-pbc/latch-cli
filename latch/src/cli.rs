@@ -196,8 +196,8 @@ pub enum Command {
     /// The owner's standing rules for agents on a host, which the host's
     /// gatekeeper reads at every judgment (owner devices only)
     Rules(RulesArgs),
-    /// The connectors on a host: list them; on the host itself, its owner
-    /// turns one on (running its setup) or off
+    /// This host's connectors: its owner, on the host itself, turns one on
+    /// (running its setup) or off; `latch status` lists them
     Plugins(PluginsArgs),
     /// This machine's own host settings, saved in its state folder: a
     /// running host picks a change up at once, and a stopped one when it
@@ -753,13 +753,6 @@ pub struct PluginsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PluginsCommand {
-    /// Every connector: enabled, disabled or needs_setup, with the reason;
-    /// this machine's, running or not, unless --host names another
-    List {
-        /// Name of the host to ask
-        #[arg(long, env = "LATCH_HOST")]
-        host: Option<String>,
-    },
     /// Run NAME's setup for this machine's host, running or not; NAME is
     /// enabled only if it succeeds (owner only). When no Google account is
     /// connected in Plow, or none works until the owner signs in again,

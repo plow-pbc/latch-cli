@@ -60,7 +60,8 @@ fn hosted(facts: &mut Facts) -> &mut Hosted {
 }
 
 /// Plow's answer: these hosts (name, this machine, online), the default
-/// host as `latch status` would pick it.
+/// host as `latch status` would pick it; each asked for its plugins, with
+/// none on, but one Plow lists offline, which isn't asked.
 fn directory(hosts: &[(&str, bool, Option<bool>)]) -> Directory {
     let hosts: Vec<Host> = hosts
         .iter()
@@ -72,6 +73,8 @@ fn directory(hosts: &[(&str, bool, Option<bool>)]) -> Directory {
             last_seen_at: online
                 .is_some_and(|online| !online)
                 .then(|| "2026-10-22T09:14:00Z".into()),
+            plugins: (online != Some(false)).then(Vec::new),
+            plugins_reason: (online == Some(false)).then(|| "host_offline".into()),
         })
         .collect();
     let (default_host, default_host_reason) = match hosts.as_slice() {
@@ -85,6 +88,7 @@ fn directory(hosts: &[(&str, bool, Option<bool>)]) -> Directory {
             display_name: Some("Ada Lovelace".into()),
         },
         hosts,
+        peers: vec![],
         default_host,
         default_host_reason,
     }
@@ -217,6 +221,69 @@ fn the_host_row_waits_for_the_service_manager_and_never_guesses() {
 }
 
 #[test]
+fn each_other_host_fills_in_its_plugins_or_why_it_did_not_say() {
+    let mut facts = facts();
+    facts.plow = Some(Pending::Got(directory(&[
+        ("studio", true, Some(true)),
+        ("pi", false, Some(true)),
+        ("mini", false, Some(false)),
+    ])));
+    let row = |facts: &Facts, name: &str| {
+        let shown = shown(facts);
+        let line = shown
+            .lines()
+            .find(|line| line.trim_start().starts_with(&format!("{name}:")))
+            .unwrap();
+        line.trim().to_string()
+    };
+    let Some(Pending::Got(directory)) = &mut facts.plow else {
+        unreachable!()
+    };
+    directory.hosts[1].plugins = None;
+    assert_eq!(row(&facts, "pi"), "pi: online · …");
+    assert!(facts.waiting());
+
+    let answered = ["google", "messages"]
+        .map(|name| Plugin {
+            name: name.into(),
+            state: if name == "messages" {
+                "needs_setup"
+            } else {
+                "enabled"
+            }
+            .into(),
+        })
+        .to_vec();
+    facts.plugins_of(1, Ok(answered));
+    assert_eq!(row(&facts, "pi"), "pi: Google, Messages (needs setup)");
+    assert!(!facts.waiting());
+    facts.plugins_of(1, Ok(vec![]));
+    assert_eq!(row(&facts, "pi"), "pi: online · no plugins on");
+    // Plow lists it offline, so it isn't asked.
+    assert_eq!(row(&facts, "mini"), "mini: not online, last seen Oct 22");
+
+    for (reason, says) in [
+        ("caller_denied", "pi: online · caller_denied"),
+        ("host_unreachable", "pi: online · no answer"),
+    ] {
+        let Some(Pending::Got(directory)) = &mut facts.plow else {
+            unreachable!()
+        };
+        directory.hosts[1].plugins = None;
+        facts.plugins_of(1, Err(reason.into()));
+        assert_eq!(row(&facts, "pi"), says);
+    }
+    // Past the time, one still not answered never will.
+    let Some(Pending::Got(directory)) = &mut facts.plow else {
+        unreachable!()
+    };
+    directory.hosts[1].plugins_reason = None;
+    assert!(facts.waiting());
+    facts.give_up();
+    assert_eq!(row(&facts, "pi"), "pi: online · no answer");
+}
+
+#[test]
 fn several_hosts_and_never_served_needs_a_host_and_lists_three() {
     let mut facts = facts();
     facts.here_default = None;
@@ -229,7 +296,10 @@ fn several_hosts_and_never_served_needs_a_host_and_lists_three() {
     ])));
     let text = shown(&facts);
     assert!(text.contains("Plow says: not listed as a host"), "{text}");
-    assert!(text.contains("           c: not online\n"), "{text}");
+    assert!(
+        text.contains("           c: not online · no plugins on\n"),
+        "{text}"
+    );
     assert!(text.contains("+2 more: latch status"), "{text}");
     assert!(!text.contains("d: online"), "{text}");
     assert!(

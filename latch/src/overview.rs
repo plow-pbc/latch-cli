@@ -1,11 +1,12 @@
 //! A bare `latch` at a terminal: who this machine is signed in as, whether
-//! it hosts, the account's hosts, where commands go, its connectors and its
-//! update, with the Plow logo animating beside it (`logo.rs`) and one next
-//! step under it. What this machine knows from its files draws at once;
-//! what can wait (Plow's answer, and the host's state, which asks the
-//! service manager) is asked on threads of its own and fills in as it
-//! arrives, within two seconds of wall time. Read-only: it registers,
-//! starts and saves nothing.
+//! it hosts, the account's hosts and the plugins each has on, where
+//! commands go, its connectors and its update, with the Plow logo animating
+//! beside it (`logo.rs`) and one next step under it. What this machine
+//! knows from its files draws at once; what can wait (Plow's answer, and
+//! the host's state, which asks the service manager) is asked on threads of
+//! its own and fills in as it arrives, within two seconds of wall time.
+//! Once Plow has answered, each other host is asked for its plugins, and
+//! has two seconds more. Read-only: it registers, starts and saves nothing.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,12 +22,14 @@ use crate::lifecycle::Phase;
 use crate::logo;
 use crate::paint::{self, AMBER, DIM, Rgb, VOLT};
 use crate::state::StateDir;
-use crate::status::{self, Directory, Hosted, Login};
+use crate::status::{self, Directory, Hosted, Login, Plugin};
 use crate::term;
 
 /// How long what can wait has to arrive, from when the overview starts
 /// asking (Plow's credential's read included).
 const WITHIN: Duration = Duration::from_secs(2);
+/// Past the hosts' own time to ask, for their last answers to arrive here.
+const SLACK: Duration = Duration::from_millis(250);
 /// The width of a row's label: "Connectors" and a space.
 const LABEL: usize = 11;
 /// The facts' width beside the mark: 80 columns in all.
@@ -47,6 +50,8 @@ enum Arrived {
     Plow(Result<Directory, Failure>),
     /// `None`: the service manager didn't answer in time.
     Host(Option<Hosted>),
+    /// A host's plugins, by its place in Plow's answer, or why it has none.
+    Plugins(usize, Result<Vec<Plugin>, String>),
 }
 
 pub fn run(state: &StateDir) -> Result<(), Failure> {
@@ -56,7 +61,7 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
     // Plow's is left behind if it never answers; the host's ends by the
     // deadline, its service manager's command killed and reaped.
     state.check_format()?;
-    let deadline = Instant::now() + WITHIN;
+    let mut deadline = Instant::now() + WITHIN;
     let config = state.load_config()?;
     let (arrived, arrivals) = mpsc::channel();
     let path = state.path.clone();
@@ -70,12 +75,29 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
     if config.is_some() {
         let path = state.path.clone();
         std::thread::spawn(move || {
-            let asked = tokio::runtime::Builder::new_current_thread()
+            let state = StateDir { path };
+            let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|err| Failure::new(code::plow_error, err.to_string()))
-                .and_then(|runtime| runtime.block_on(status::directory(&StateDir { path })));
-            let _ = arrived.send(Arrived::Plow(asked));
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    let failure = Failure::new(code::plow_error, err.to_string());
+                    let _ = arrived.send(Arrived::Plow(Err(failure)));
+                    return;
+                }
+            };
+            let directory = runtime.block_on(status::directory(&state));
+            let peers = directory
+                .as_ref()
+                .ok()
+                .map(|directory| directory.peers.clone());
+            let _ = arrived.send(Arrived::Plow(directory));
+            if let Some(peers) = peers {
+                runtime.block_on(status::ask_plugins(&state, &peers, |index, answer| {
+                    let _ = arrived.send(Arrived::Plugins(index, answer));
+                }));
+            }
         });
     }
     let asked = std::env::var("LATCH_HOST").ok();
@@ -145,7 +167,14 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
         };
         if waiting {
             match arrivals.recv_timeout(until.saturating_duration_since(Instant::now())) {
-                Ok(Arrived::Plow(answer)) => facts.plow = Some(Pending::from(answer)),
+                Ok(Arrived::Plow(answer)) => {
+                    // The hosts' plugins have their own time from here.
+                    if answer.is_ok() {
+                        deadline = deadline.max(Instant::now() + status::PLUGINS_WITHIN + SLACK);
+                    }
+                    facts.plow = Some(Pending::from(answer));
+                }
+                Ok(Arrived::Plugins(index, answer)) => facts.plugins_of(index, answer),
                 Ok(Arrived::Host(Some(hosted))) => facts.host = Pending::Got(hosted),
                 Ok(Arrived::Host(None)) => facts.host = Pending::NoAnswer,
                 Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
@@ -170,7 +199,7 @@ struct Facts {
     login: Option<Login>,
     /// The name `serve` registers this machine with, once logged in.
     name: Option<String>,
-    /// As `latch plugins list` says.
+    /// As `latch status --local` says.
     plugins: Value,
     update: crate::update::Status,
     state_dir: PathBuf,
@@ -213,7 +242,9 @@ impl From<Result<Directory, Failure>> for Pending<Directory> {
 
 impl Facts {
     fn waiting(&self) -> bool {
-        matches!(self.host, Pending::Waiting) || matches!(self.plow, Some(Pending::Waiting))
+        matches!(self.host, Pending::Waiting)
+            || matches!(self.plow, Some(Pending::Waiting))
+            || self.listed().iter().any(plugins_waiting)
     }
 
     /// The deadline: whatever has not arrived never will.
@@ -223,6 +254,36 @@ impl Facts {
         }
         if let Some(Pending::Waiting) = self.plow {
             self.plow = Some(Pending::NoAnswer);
+        }
+        if let Some(Pending::Got(directory)) = &mut self.plow {
+            for host in directory
+                .hosts
+                .iter_mut()
+                .filter(|host| plugins_waiting(host))
+            {
+                host.plugins_reason = Some(code::host_unreachable.name.to_string());
+            }
+        }
+    }
+
+    /// The hosts Plow listed, once it has.
+    fn listed(&self) -> &[status::Host] {
+        match &self.plow {
+            Some(Pending::Got(directory)) => &directory.hosts,
+            _ => &[],
+        }
+    }
+
+    fn plugins_of(&mut self, index: usize, answer: Result<Vec<Plugin>, String>) {
+        let Some(Pending::Got(directory)) = &mut self.plow else {
+            return;
+        };
+        let Some(host) = directory.hosts.get_mut(index) else {
+            return;
+        };
+        match answer {
+            Ok(plugins) => host.plugins = Some(plugins),
+            Err(reason) => host.plugins_reason = Some(reason),
         }
     }
 
@@ -387,7 +448,7 @@ impl Facts {
                     .collect();
                 for host in others.iter().take(3) {
                     let mut line = vec![plain(term::one_line(&host.name)), toned(": ", Tone::Dim)];
-                    line.extend(self.seen(host));
+                    line.extend(self.plugins(host));
                     lines.push(line);
                 }
                 if others.len() > 3 {
@@ -477,6 +538,36 @@ impl Facts {
                 vec![toned(format!("not online{last}"), Tone::Dim)]
             }
         }
+    }
+
+    /// Another host: the plugins it has on, once it says; else Plow's words
+    /// for it, and why it didn't say, or that it is still being asked.
+    fn plugins(&self, host: &status::Host) -> Line {
+        let mut line = match &host.plugins {
+            Some(plugins) if !plugins.is_empty() => {
+                let mut line = vec![];
+                for plugin in plugins {
+                    if !line.is_empty() {
+                        line.push(toned(", ", Tone::Dim));
+                    }
+                    line.push(plain(crate::setup::title(&plugin.name)));
+                    if plugin.state == "needs_setup" {
+                        line.push(toned(" (needs setup)", Tone::Warn));
+                    }
+                }
+                return line;
+            }
+            _ => self.seen(host),
+        };
+        line.push(match (&host.plugins, host.plugins_reason.as_deref()) {
+            (Some(_), _) => toned(" · no plugins on", Tone::Dim),
+            (None, Some("host_offline")) => return line,
+            (None, None) if host.online == Some(false) => return line,
+            (None, Some("host_unreachable")) => toned(" · no answer", Tone::Warn),
+            (None, Some(reason)) => toned(format!(" · {reason}"), Tone::Warn),
+            (None, None) => toned(" · …", Tone::Warn),
+        });
+        line
     }
 
     /// A time of day today, else a date.
@@ -689,6 +780,11 @@ fn footer() -> Line {
         toned("For agents (JSON): latch status.", Tone::Dim),
         toned(" Live activity: latch dashboard.", Tone::Dim),
     ]
+}
+
+/// Not answered about its plugins yet, nor known not to answer.
+fn plugins_waiting(host: &status::Host) -> bool {
+    host.plugins.is_none() && host.plugins_reason.is_none()
 }
 
 /// What a row that needed Plow's answer says when asking failed.

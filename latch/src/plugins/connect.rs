@@ -237,7 +237,7 @@ fn unknown() -> Failure {
         code::outcome_unknown,
         "Stopped after Google's enable was sent; whether it is on for this host is unknown.".into(),
     );
-    unknown.next = Some("latch plugins list".into());
+    unknown.next = Some("latch status --local".into());
     unknown
 }
 

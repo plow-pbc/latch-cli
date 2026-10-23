@@ -69,15 +69,7 @@ async fn connect_within(state: &StateDir, host: &Peer, within: Duration) -> Resu
     // Plow already knows the host is offline: say so now, rather than spend
     // the connect timeout finding out.
     if !host.this_machine && host.online == Some(false) {
-        let seen = match &host.last_seen_at {
-            Some(at) => format!(", last seen {at}"),
-            None => String::new(),
-        };
-        let message = format!(
-            "host {:?} is not online{seen}; nothing was sent. Start `latch serve` there",
-            host.name
-        );
-        return Err(Failure::new(code::host_offline, message));
+        return Err(offline(host));
     }
     // This machine's own host is reached over its socket, with no secret:
     // the running host holds them.
@@ -105,40 +97,170 @@ async fn connect_within(state: &StateDir, host: &Peer, within: Duration) -> Resu
             endpoint: Some(endpoint),
             connection: Connection::Remote(connection),
         }),
-        Ok(Err(err)) if speaks_another_version(&err) => {
-            endpoint.close().await;
-            // Builds of one protocol version work together; only that differs.
-            let message = format!(
-                "host {:?} does not speak {}, the protocol of this latch {}, so one of \
-                 the two runs an older latch; nothing was sent. Compare `latch --version` on \
-                 both machines and update the older one",
-                host.name,
-                String::from_utf8_lossy(wire::ALPN),
-                crate::cli::version(),
-            );
-            Err(Failure::new(code::protocol_mismatch, message))
-        }
         Ok(Err(err)) => {
             endpoint.close().await;
-            tracing::info!(host = %host.name, error = ?err, "could not connect");
-            let message = format!(
-                "could not connect to host {:?}: {}; nothing was sent",
-                host.name,
-                reasons(&err)
-            );
-            Err(Failure::new(code::host_unreachable, message))
+            Err(not_connected(host, &err))
         }
         Err(_) => {
             endpoint.close().await;
-            tracing::info!(host = %host.name, "no connection within {}s", within.as_secs_f32());
-            let message = format!(
-                "could not connect to host {:?} within {}s; nothing was sent",
-                host.name,
-                within.as_secs_f32()
-            );
-            Err(Failure::new(code::host_unreachable, message))
+            Err(not_connected_within(host, within))
         }
     }
+}
+
+/// Plow lists `host` offline: it is not dialed.
+fn offline(host: &Peer) -> Failure {
+    let seen = match &host.last_seen_at {
+        Some(at) => format!(", last seen {at}"),
+        None => String::new(),
+    };
+    let message = format!(
+        "host {:?} is not online{seen}; nothing was sent. Start `latch serve` there",
+        host.name
+    );
+    Failure::new(code::host_offline, message)
+}
+
+/// Why dialing `host` failed: it speaks another protocol, or it could not
+/// be reached.
+fn not_connected(host: &Peer, err: &ConnectError) -> Failure {
+    if speaks_another_version(err) {
+        // Builds of one protocol version work together; only that differs.
+        let message = format!(
+            "host {:?} does not speak {}, the protocol of this latch {}, so one of \
+             the two runs an older latch; nothing was sent. Compare `latch --version` on \
+             both machines and update the older one",
+            host.name,
+            String::from_utf8_lossy(wire::ALPN),
+            crate::cli::version(),
+        );
+        return Failure::new(code::protocol_mismatch, message);
+    }
+    tracing::info!(host = %host.name, error = ?err, "could not connect");
+    let message = format!(
+        "could not connect to host {:?}: {}; nothing was sent",
+        host.name,
+        reasons(err)
+    );
+    Failure::new(code::host_unreachable, message)
+}
+
+fn not_connected_within(host: &Peer, within: Duration) -> Failure {
+    tracing::info!(host = %host.name, "no connection within {}s", within.as_secs_f32());
+    let message = format!(
+        "could not connect to host {:?} within {}s; nothing was sent",
+        host.name,
+        within.as_secs_f32()
+    );
+    Failure::new(code::host_unreachable, message)
+}
+
+/// Sends `request` to each of `hosts` at once, through one endpoint, and
+/// gives `each` a host's answer (by its place in `hosts`) as it comes. All
+/// of it, the endpoint's start included, is within `within`: a host with no
+/// answer by then is `host_unreachable`, and none is dialed past it. A host
+/// Plow lists offline is not dialed. Returns once every host has its answer
+/// and the endpoint is closed.
+pub async fn ask_each(
+    state: &StateDir,
+    hosts: &[Peer],
+    request: &Request,
+    within: Duration,
+    mut each: impl FnMut(usize, Result<Value, Failure>),
+) {
+    let deadline = tokio::time::Instant::now() + within;
+    let late = |host: &Peer| {
+        let message = format!(
+            "host {:?} did not answer within {}s",
+            host.name,
+            within.as_secs_f32()
+        );
+        Failure::new(code::host_unreachable, message)
+    };
+    let mut dialing = Vec::new();
+    for (index, host) in hosts.iter().enumerate() {
+        if host.online == Some(false) {
+            each(index, Err(offline(host)));
+            continue;
+        }
+        match host_address(host) {
+            Ok(address) => dialing.push((index, address)),
+            Err(failure) => each(index, Err(failure)),
+        }
+    }
+    if dialing.is_empty() {
+        return;
+    }
+    // Our relays are the dialed hosts' own, as for one host.
+    let mut relays: Vec<RelayUrl> = dialing
+        .iter()
+        .map(|(_, (_, relay))| relay.clone())
+        .collect();
+    relays.sort();
+    relays.dedup();
+    let bound = match state.load_key() {
+        Ok(key) => {
+            let binding = endpoint()
+                .secret_key(key)
+                .relay_mode(RelayMode::custom(relays))
+                .bind();
+            match tokio::time::timeout_at(deadline, binding).await {
+                Ok(Ok(endpoint)) => Ok(endpoint),
+                Ok(Err(err)) => Err(Failure::new(
+                    code::iroh,
+                    format!("could not start iroh: {err}"),
+                )),
+                Err(_) => Err(Failure::new(
+                    code::host_unreachable,
+                    format!("could not start iroh within {}s", within.as_secs_f32()),
+                )),
+            }
+        }
+        Err(failure) => Err(failure),
+    };
+    let endpoint = match bound {
+        Ok(endpoint) => endpoint,
+        Err(failure) => {
+            for (index, _) in dialing {
+                each(
+                    index,
+                    Err(Failure::relayed(
+                        failure.exit,
+                        &failure.code,
+                        failure.message.clone(),
+                    )),
+                );
+            }
+            return;
+        }
+    };
+    let mut asking = tokio::task::JoinSet::new();
+    for &(index, (id, ref relay)) in &dialing {
+        let (endpoint, request, host) = (endpoint.clone(), request.clone(), hosts[index].clone());
+        let address = EndpointAddr::new(id).with_relay_url(relay.clone());
+        asking.spawn(async move {
+            let connection = match endpoint.connect(address, wire::ALPN).await {
+                Ok(connection) => Connection::Remote(connection),
+                Err(err) => return (index, Err(not_connected(&host, &err))),
+            };
+            let answer = one_exchange(&connection, &request, within).await;
+            connection.close(VarInt::from_u32(0), b"done");
+            (index, answer)
+        });
+    }
+    let mut unanswered: Vec<usize> = dialing.iter().map(|(index, _)| *index).collect();
+    while let Ok(Some(joined)) = tokio::time::timeout_at(deadline, asking.join_next()).await {
+        if let Ok((index, answer)) = joined {
+            unanswered.retain(|&waiting| waiting != index);
+            each(index, answer);
+        }
+    }
+    // Past the deadline nothing goes on asking.
+    asking.abort_all();
+    for index in unanswered {
+        each(index, Err(late(&hosts[index])));
+    }
+    let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
 }
 
 /// An error and each error under it, outermost first: iroh's outer errors

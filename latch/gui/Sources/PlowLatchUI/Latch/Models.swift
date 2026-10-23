@@ -74,6 +74,8 @@ nonisolated struct LocalStatus: Decodable, Equatable {
     var version: String?
     var lastError: LatchFailure?
     var update: Update?
+    /// Each connector here and whether it's on.
+    var plugins: [Plugin]?
 
     /// This machine's name once logged in; nil before login.
     var loggedInAs: String? { login == nil ? nil : thisMachine.name }
@@ -396,17 +398,14 @@ nonisolated struct SetupStatus: Decodable, Equatable {
     func step(_ name: String) -> Step? { steps.first { $0.step == name } }
 }
 
-/// `latch plugins list`: each connector on a host and whether it's on.
-nonisolated struct PluginsList: Decodable, Equatable {
-    struct Plugin: Decodable, Equatable {
-        var name: String
-        /// `enabled`, `disabled` or `needs_setup`.
-        var state: String
-        /// Why, in latch's words, and the command that turns it on.
-        var reason: String?
-        var enable: String?
-    }
-    var plugins: [Plugin]
+/// One connector on a host, as its `status --local` lists it.
+nonisolated struct Plugin: Decodable, Equatable {
+    var name: String
+    /// `enabled`, `disabled` or `needs_setup`.
+    var state: String
+    /// Why, in latch's words, and the command that turns it on.
+    var reason: String?
+    var enable: String?
 }
 
 /// `latch plugins enable google`'s answer.
