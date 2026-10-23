@@ -2,8 +2,8 @@
 //! (`worker.rs`) and report how it ended and what it printed.
 //!
 //! The program gets an argv list, never a shell line, and an empty stdin
-//! unless the client sent some (`--stdin`, at most 256 KiB), which a task
-//! of its own writes to the program and then closes. Each output stream is
+//! unless the client sent some (`--stdin`, at most 16 KiB of UTF-8 text).
+//! A task writes it to the program and then closes the pipe. Each output stream is
 //! kept up to 256 KiB (the rest is read and dropped, and `truncated` is
 //! set), so a runaway command cannot flood the agent. At the time limit the
 //! whole process group (the program and everything it started) is killed.
@@ -49,8 +49,6 @@ use crate::worker::{WorkerError, WorkerSetup, authenticated_worker_error};
 const OUTPUT_CAP: usize = 256 * 1024;
 /// The longest `--timeout` a host accepts.
 const MAX_TIMEOUT_SECS: u64 = 600;
-/// The most stdin a call may bring (`latch exec --stdin`).
-pub const MAX_STDIN: usize = 256 * 1024;
 /// After the program ends, how long to wait for its output pipes to close
 /// (a process that left the group could otherwise hold them open).
 const DRAIN_GRACE: Duration = Duration::from_secs(5);
@@ -86,8 +84,10 @@ pub fn request(args: &crate::cli::ExecArgs) -> Result<Value, Failure> {
     let mut request = json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout,
                 "writes": args.writes, "network": args.network, "secret_env": secret_env });
     if args.stdin {
-        let bytes = crate::input::read_all(Duration::from_secs(args.timeout))?;
+        let bytes =
+            crate::input::read_all(Duration::from_secs(args.timeout), crate::gate::JUDGED_STDIN)?;
         request["stdin"] = json!(bytes);
+        crate::gate::judged_stdin(&request["stdin"])?;
     }
     Ok(request)
 }
@@ -163,13 +163,6 @@ pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<PreparedExec, F
     }
     if !(1..=MAX_TIMEOUT_SECS).contains(&args.timeout) {
         return Err(bad("timeout must be 1 to 600 seconds"));
-    }
-    if args
-        .stdin
-        .as_ref()
-        .is_some_and(|bytes| bytes.len() > MAX_STDIN)
-    {
-        return Err(bad("stdin must be at most 256 KiB of bytes"));
     }
     for path in &mut args.writes {
         *path = resolve(&workers.home, path)?;
@@ -804,13 +797,7 @@ mod tests {
             ),
             (
                 "stdin",
-                vec![
-                    json!("text"),
-                    json!(true),
-                    json!([-1]),
-                    json!([256]),
-                    json!(vec![0; MAX_STDIN + 1]),
-                ],
+                vec![json!("text"), json!(true), json!([-1]), json!([256])],
             ),
         ] {
             for (case, value) in values.into_iter().enumerate() {
