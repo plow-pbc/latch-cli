@@ -142,8 +142,8 @@ final class AppModel {
     /// The Vault screen's selected item, and what `vault show` said of
     /// items, by host name then item.
     var selectedVaultItem: VaultList.Item.ID?
-    /// The sheet over the Vault screen: New Item, Edit, or Import.
-    var vaultSheet: VaultSheet?
+    /// The New Item or Edit sheet over the Vault screen.
+    var vaultSheet: VaultEditor?
     private(set) var vaultShows: [String: [String: Result<VaultShow, LatchError>]] = [:]
 
     /// Reads a host's vault again (the Vault screen, after a change).
@@ -162,8 +162,8 @@ final class AppModel {
     func beginVaultEdit(_ item: VaultList.Item, on host: HostEntry) async {
         await showVaultItem(item.item, on: host)
         switch vaultShows[host.name]?[item.item] {
-        case let .success(show)?: vaultSheet = .editor(VaultEditor(editing: show, on: host))
-        case let .failure(error)?: vaultSheet = .editor(VaultEditor(failed: item, error.message, on: host))
+        case let .success(show)?: vaultSheet = VaultEditor(editing: show, on: host)
+        case let .failure(error)?: vaultSheet = VaultEditor(failed: item, error.message, on: host)
         case nil: break
         }
     }
@@ -195,16 +195,6 @@ final class AppModel {
         } catch {
             vaultRemoveError = (error as? LatchError)?.message ?? error.localizedDescription
         }
-    }
-
-    /// `latch vault import FILE --preview` on a host.
-    func previewImport(_ file: URL, on host: HostEntry) async throws -> ImportPreview {
-        try await client.vaultImportPreview(file, host: host.isThisMac ? nil : host.name)
-    }
-
-    /// Imports the rows picked from a preview.
-    func importRows(_ picks: [Int], from file: URL, on host: HostEntry) async throws -> ImportResult {
-        try await vaultChange(on: host) { try await self.client.vaultImport(file, picks: picks, host: $0) }
     }
 
     /// A change to a host's vault, then the vault read again, whether it

@@ -14,6 +14,4 @@ extension LatchClient {
         throw LatchError.unreachable("not scripted")
     }
     func vaultRemove(_ item: String, revision: Int, host: String?) async throws { throw LatchError.unreachable("not scripted") }
-    func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview { throw LatchError.unreachable("not scripted") }
-    func vaultImport(_ file: URL, picks: [Int], host: String?) async throws -> ImportResult { throw LatchError.unreachable("not scripted") }
 }

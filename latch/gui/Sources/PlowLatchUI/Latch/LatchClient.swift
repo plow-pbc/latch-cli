@@ -43,10 +43,6 @@ nonisolated protocol LatchClient: Sendable {
     func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item
     /// `latch vault remove ITEM --revision R`.
     func vaultRemove(_ item: String, revision: Int, host: String?) async throws
-    /// `latch vault import FILE --preview`: what it holds; nothing is saved.
-    func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview
-    /// `latch vault import FILE --pick ROWS`: saves those rows of the preview.
-    func vaultImport(_ file: URL, picks: [Int], host: String?) async throws -> ImportResult
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
     /// `latch status --local --follow`: this Mac's state, again whenever it
@@ -204,15 +200,6 @@ nonisolated struct LiveLatchClient: LatchClient {
         _ = try await run(["vault", "remove", item, "--revision", String(revision)] + on(host))
     }
 
-    func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview {
-        try decode(ImportPreviewAnswer.self, try await run(["vault", "import", file.path, "--preview"] + on(host))).preview
-    }
-
-    func vaultImport(_ file: URL, picks: [Int], host: String?) async throws -> ImportResult {
-        let rows = picks.map(String.init).joined(separator: ",")
-        return try decode(ImportResult.self, try await run(["vault", "import", file.path, "--pick", rows] + on(host)))
-    }
-
     /// Field values as `--stdin` takes them: one JSON object of strings.
     private static func values(_ values: [String: String]) throws -> Data {
         try JSONSerialization.data(withJSONObject: values)
@@ -256,7 +243,6 @@ nonisolated struct LiveLatchClient: LatchClient {
 
 /// `vault add`'s and `vault edit`'s answer: the item as saved.
 nonisolated private struct VaultItemAnswer: Decodable { var item: VaultList.Item }
-nonisolated private struct ImportPreviewAnswer: Decodable { var preview: ImportPreview }
 
 nonisolated private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
     do {

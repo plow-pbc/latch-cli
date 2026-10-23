@@ -175,7 +175,7 @@ nonisolated struct VaultList: Decodable, Equatable {
         var item: String
         /// Bumped by every change; an edit or removal names the one it saw.
         var revision: Int
-        /// `login`, `card`, `identity` or `note` (an import may bring others).
+        /// `login`, `card`, `identity` or `note`.
         var kind: String
         var title: String
         var username: String?
@@ -209,43 +209,6 @@ nonisolated struct VaultDraft: Equatable, Sendable {
 nonisolated struct VaultShow: Decodable, Equatable {
     var item: VaultList.Item
     var values: [String: String]
-}
-
-/// `latch vault import FILE --preview`: what an export holds, never a
-/// secret; each row's `pick` is what `--pick` takes.
-nonisolated struct ImportPreview: Decodable, Equatable {
-    struct Row: Decodable, Equatable, Identifiable {
-        var pick: Int
-        var kind: String
-        var title: String
-        var username: String?
-        var url: String?
-        /// The vault already holds it.
-        var duplicate: Bool
-        /// It updates an item the vault holds: the fields it changes.
-        var changed: [String]?
-        var hasPassword: Bool?
-        var hasTotp: Bool?
-        var warnings: [String]?
-
-        var id: Int { pick }
-    }
-    struct Skipped: Decodable, Equatable {
-        var title: String
-        var reason: String
-    }
-    var source: String
-    var items: [Row]
-    var skipped: [Skipped]?
-}
-
-/// What `latch vault import FILE --pick ROWS` did.
-nonisolated struct ImportResult: Decodable, Equatable {
-    var saved: Int
-    var updated: Int
-    var duplicates: Int
-    /// Rows that couldn't be saved, and why; the rest were.
-    var failed: [ImportPreview.Skipped]
 }
 
 /// `latch rules try`: the verdict a request would get now, without running it.
