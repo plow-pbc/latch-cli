@@ -164,7 +164,7 @@ private struct ActivitySections: View {
             }
             Section("Recent activity") {
                 if calls.isEmpty {
-                    Text("No requests yet.").foregroundStyle(.secondary)
+                    Text(feed.hasOlder ? "Looking further back…" : "No requests yet.").foregroundStyle(.secondary)
                 }
                 ForEach(calls.suffix(5).reversed()) { record in
                     Button {
@@ -177,6 +177,12 @@ private struct ActivitySections: View {
                     .buttonStyle(.plain)
                 }
                 Button("Show All Activity") { app.section = .activity }
+            }
+            // The newest page may be all connections and reads: reach back
+            // for five requests, or to the start.
+            .task(id: feed.caughtUp) {
+                guard feed.caughtUp, !app.still else { return }
+                await feed.loadOlder(until: 5)
             }
         }
     }

@@ -11,7 +11,7 @@ final class ActivityFeed {
     /// nil for this Mac's own host, else the host `--host` names.
     let host: String?
 
-    /// Oldest first, at most `limit`.
+    /// Oldest first.
     private(set) var records: [AuditRecord] = []
     /// Records older than the first held exist on the host.
     private(set) var hasOlder = false
@@ -20,9 +20,6 @@ final class ActivityFeed {
     /// Why the stream stopped, until it runs again.
     private(set) var error: LatchError?
     private(set) var loadingOlder = false
-
-    /// The most records kept; older ones are dropped and can be loaded again.
-    static let limit = 1000
 
     private var cursor: String?
     private var task: Task<Void, Never>?
@@ -107,10 +104,6 @@ final class ActivityFeed {
             error = nil
             guard !records.contains(where: { $0.id == record.id }) else { return }
             records.append(record)
-            if records.count > Self.limit {
-                records.removeFirst(records.count - Self.limit)
-                hasOlder = true
-            }
         case let .caughtUp(cursor, hasOlder):
             self.cursor = cursor
             if records.isEmpty { self.hasOlder = hasOlder }
@@ -133,6 +126,16 @@ final class ActivityFeed {
             hasOlder = page.hasOlder
         } catch {
             self.error = error as? LatchError ?? .unreachable(error.localizedDescription)
+        }
+    }
+
+    /// Earlier pages until `requests` records aren't connections or the
+    /// owner's reads, or there are no more (Home's Recent).
+    func loadOlder(until requests: Int) async {
+        while hasOlder, error == nil, records.filter({ !$0.isBackground }).count < requests {
+            let held = records.count
+            await loadOlder()
+            if records.count == held { return }
         }
     }
 
@@ -162,13 +165,15 @@ nonisolated extension AuditRecord {
     }
 
     var status: Status {
-        if op == "connect" { return .connected }
+        if op == "connect", decision == "allow" { return .connected }
         if decision == "allow" { return .allowed(outcome == "ok" ? nil : outcome.replacingOccurrences(of: "_", with: " ")) }
         switch outcome {
         case "exec_denied": return .refused("exec is off for this agent")
         case "not_enabled": return .refused("\(op.capitalized) is off")
         case "no_intent": return .refused("no instructions from you")
         case "gatekeeper_unavailable": return .refused("judge unavailable")
+        case "caller_denied": return .refused("caller not allowed")
+        case "owner_only": return .refused("the owner's only")
         case "gatekeeper_denied":
             return gate?.verdict == "owner_said_no" ? .refused("you said no") : .notCovered
         default: return .refused(outcome.replacingOccurrences(of: "_", with: " "))
@@ -189,7 +194,7 @@ nonisolated extension AuditRecord {
             return words.joined(separator: " ")
         case "file_get": return "file get \(a?.path ?? "")"
         case "file_put": return "file put \(a?.path ?? "")"
-        case "connect": return "connected"
+        case "connect": return "connect"
         case "messages", "contacts":
             return [op, a?.action?.replacingOccurrences(of: "\(op).", with: "")].compactMap { $0 }.joined(separator: " ")
         case "browser":

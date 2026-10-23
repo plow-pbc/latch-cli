@@ -46,21 +46,12 @@ struct ActivityTests {
         #expect(unnamed.callerLabel(hostKey: nil, hostName: "studio", isThisMac: true).who.hasPrefix("Agent "))
     }
 
-    @Test func aFeedHoldsEachRecordOnceAndAtMostItsLimit() throws {
+    @Test func aFeedHoldsEachRecordOnce() throws {
         let feed = ActivityFeed(client: FakeLatchClient(), host: nil)
         feed.stage(Fixtures.studioAudit)
         feed.stage(Fixtures.studioAudit)
         #expect(feed.records.count == 27)
         #expect(feed.caughtUp)
-        let record = try #require(feed.records.last)
-        for n in 0..<ActivityFeed.limit {
-            var copy = record
-            copy.id = "r\(n)"
-            feed.apply(.record(cursor: copy.id, copy))
-        }
-        #expect(feed.records.count == ActivityFeed.limit)
-        #expect(feed.hasOlder)
-        #expect(feed.records.last?.id == "r\(ActivityFeed.limit - 1)")
     }
 
     @Test func aFeedStreamsOnlyWhileWatched() async throws {
@@ -211,7 +202,11 @@ struct NeverServedTests {
         for _ in 0..<300 where !done() { try? await Task.sleep(for: .milliseconds(5)) }
     }
 
-    @Test func activityFollowsOnceThisMacStartsHosting() async throws {
+    // This Mac learns it serves either from the status stream or, after
+    // Start Latch, from Start Latch's own read (the stream may then never
+    // show the change): either way, the activity follows.
+    @Test(arguments: [false, true])
+    func activityFollowsOnceThisMacStartsHosting(startViaApp: Bool) async throws {
         let client = NeverServedClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.stopped))
@@ -222,30 +217,14 @@ struct NeverServedTests {
         // Waiting alone doesn't ask again.
         try await Task.sleep(for: .milliseconds(100))
         #expect(client.follows == 1)
-        client.hosting = true
-        app.statusChanged(try Fixtures.decode(Fixtures.serving))
+        if startViaApp {
+            await app.startHosting()
+        } else {
+            client.hosting = true
+            app.statusChanged(try Fixtures.decode(Fixtures.serving))
+        }
         await until { feed.caughtUp }
-        #expect(feed.caughtUp)
-        #expect(feed.error == nil)
-        feed.stop()
-    }
-
-    // "Start Latch" reads the new status itself, so the status stream may
-    // never show the change: whichever path learns this Mac serves, the
-    // activity follows.
-    @Test func activityFollowsWhenStartingHostingReadsTheStatusFirst() async throws {
-        let client = NeverServedClient()
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.stopped))
-        let feed = app.feed(for: try #require(app.host))
-        feed.start()
-        await until { feed.error != nil }
-        #expect(feed.error?.code == "no_host_here")
-        await app.startHosting()
-        // The stream's copy of the change arrives after: nothing more to do.
-        app.statusChanged(try Fixtures.decode(Fixtures.serving))
-        await until { feed.caughtUp }
-        #expect(feed.caughtUp)
+        #expect(feed.caughtUp && feed.error == nil)
         #expect(client.follows == 2)
         feed.stop()
     }
@@ -270,4 +249,75 @@ struct OwnerReadTests {
         // An agent asking is never the owner looking.
         #expect(try !record(op: "vault", args: #"{"command":"list"}"#, agent: "a1").isBackground)
     }
+}
+
+/// Records whose shape differs from exec's, as latch writes them.
+struct RecordShapeTests {
+    private func record(_ json: String) throws -> AuditRecord { try LatchJSON.decoder.decode(AuditRecord.self, from: Data(json.utf8)) }
+
+    // `browser/judged.rs` keeps a browser judgment in the args, as `gate`,
+    // beside what was judged.
+    @Test func aBrowserJudgmentIsRead() throws {
+        let refused = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"command":"open","origin":"https://shop.example","judged":{"kind":"open"},"gate":{"verdict":"owner_said_no","source":"chat_and_rules","p":{"COVERED":0.1,"FORBIDDEN":0.9,"NOT_COVERED":0.0}}},"gate":null,"started":null},"id":"b1","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
+        #expect(refused.status == .refused("you said no"))
+        #expect(refused.gate?.source == "chat_and_rules")
+        #expect(!RecordInspector.otherFields(of: refused).map(\.key).contains("gate"))
+    }
+
+    // `serve.rs` records a refused connection with decision deny.
+    @Test func aRefusedConnectionIsARefusal() throws {
+        let refused = try record(#"{"agent":null,"caller":"k","caller_name":null,"decision":"deny","details":null,"id":"c1","op":"connect","outcome":"caller_denied","time":"2026-10-23T05:27:23Z"}"#)
+        #expect(refused.status == .refused("caller not allowed"))
+        #expect(refused.command == "connect")
+        #expect(!refused.isBackground)
+        let allowed = try record(#"{"agent":null,"caller":"k","caller_name":"laptop","decision":"allow","details":null,"id":"c2","op":"connect","outcome":"connected","time":"2026-10-23T05:27:23Z"}"#)
+        #expect(allowed.status == .connected && allowed.isBackground)
+    }
+}
+
+/// Home's Recent reaches back past connections and the owner's reads.
+@MainActor
+struct RecentTests {
+    @Test func homeLoadsOlderPagesUntilItHasFiveRequests() async throws {
+        let client = PagedClient()
+        let feed = ActivityFeed(client: client, host: nil)
+        feed.stage(client.newest)
+        #expect(feed.records.filter { !$0.isBackground }.isEmpty && feed.hasOlder)
+        await feed.loadOlder(until: 5)
+        #expect(feed.records.filter { !$0.isBackground }.count == 6)
+        #expect(client.pages == 1)
+    }
+}
+
+/// A host whose newest 50 records are all connections, with six exec
+/// requests on the page before.
+final class PagedClient: LatchClient, @unchecked Sendable {
+    let stateDir = "/s"
+    private(set) var pages = 0
+    static func line(_ n: Int, op: String) -> String {
+        let id = String(format: "%064d", n)
+        let args = op == "exec" ? #"{"argv":["ls"]}"# : "null"
+        return #"{"type":"record","cursor":"\#(id)","record":{"agent":null,"caller":"k","caller_name":"laptop","decision":"allow","details":{"args":\#(args)},"id":"\#(id)","op":"\#(op)","outcome":"ok","time":"2026-10-23T05:27:23Z"}}"#
+    }
+    var newest: String {
+        ([#"{"type":"snapshot","cursor":"x","has_older":true}"#] + (100..<150).map { Self.line($0, op: "connect") }
+            + [#"{"type":"caught_up","cursor":"y","has_older":true}"#]).joined(separator: "\n")
+    }
+    func audit(host: String?, before: String?) async throws -> AuditPage {
+        pages += 1
+        return try AuditPage.parse(Data(((94..<100).map { Self.line($0, op: "exec") }
+            + [#"{"type":"caught_up","cursor":"z","has_older":false}"#]).joined(separator: "\n").utf8))
+    }
+    func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
+    func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
+    func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+    func rulesSet(_ text: String) async throws {}
+    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
+    func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
+    func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
+    func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
+    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
+    func serve(again: Bool) async throws {}
+    func stop() async throws {}
 }

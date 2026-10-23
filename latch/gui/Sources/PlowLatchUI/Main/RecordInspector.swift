@@ -73,8 +73,9 @@ struct RecordInspector: View {
         let detailFields = record.details?.fields ?? [:]
         var fields: [(key: String, value: JSONValue)] = []
         if case let .object(args)? = detailFields["args"] {
+            // A browser's judgment is in its args; Why shows it.
             let shown: Set<String> = record.op == "exec"
-                ? ["argv", "workdir", "writes", "network", "secret_env", "exit_code", "duration_ms", "stderr_bytes", "timed_out"] : []
+                ? ["argv", "workdir", "writes", "network", "secret_env", "exit_code", "duration_ms", "stderr_bytes", "timed_out"] : ["gate"]
             fields += args.filter { !shown.contains($0.key) && $0.value != .null }.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
         }
         fields += detailFields.filter { !["args", "gate", "started"].contains($0.key) && $0.value != .null }

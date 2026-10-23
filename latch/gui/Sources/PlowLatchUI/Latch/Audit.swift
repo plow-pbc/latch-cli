@@ -68,6 +68,8 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         var action: String?
         var url: String?
         var origin: String?
+        /// A browser judgment, kept beside what was judged (`judged`).
+        var gate: Gate?
 
         struct Secret: Decodable, Equatable { var name: String? }
     }
@@ -95,7 +97,9 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     }
 
     var args: Args? { details?.args }
-    var gate: Gate? { details?.gate }
+    /// The gatekeeper's judgment: in the details, or a browser step's in
+    /// its args.
+    var gate: Gate? { details?.gate ?? details?.args?.gate }
     var isRefused: Bool { decision != "allow" }
 
     /// The owner looking, not acting: `rules show`, `vault list`/`show`,
@@ -113,7 +117,7 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     }
 
     /// A connection or an owner's read: shown in Activity only on request.
-    var isBackground: Bool { op == "connect" || isOwnerRead }
+    var isBackground: Bool { (op == "connect" && decision == "allow") || isOwnerRead }
 }
 
 /// Any JSON value, kept as latch wrote it.
