@@ -1,9 +1,12 @@
 //! `latch status`: who this peer is, and which hosts it can reach. With
-//! `--local`, only what this machine knows, for an app (see `local`).
+//! `--local`, only what this machine knows, for an app (see `local`); with
+//! `--follow` too, again each time that changes (see `follow`).
 
-use std::path::PathBuf;
+use std::os::fd::RawFd;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use serde_json::{Value, json};
 
 use crate::credential;
 use crate::failure::Failure;
@@ -11,6 +14,7 @@ use crate::hosts;
 use crate::lifecycle::{self, Phase, Problem};
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
+use crate::watch::{Watch, Woke};
 
 #[derive(Serialize)]
 pub struct StatusOutput {
@@ -124,4 +128,43 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         page_isolation: crate::sandbox::page_isolation_off()
             .then_some(crate::sandbox::PAGE_ISOLATION_OFF),
     })
+}
+
+/// `status --local --follow`: `hello`, then this machine's `status --local`
+/// as a `status` line, and again each time it changes, given to `send`
+/// until it returns false (or `hangup` closes). It sleeps until the state
+/// folder or the host changes, and never opens the audit. A host streams
+/// its own to its owner's `status --host --follow` this way.
+pub fn follow(
+    dir: &Path,
+    hangup: Option<RawFd>,
+    mut send: impl FnMut(&Value) -> bool,
+) -> Result<(), Failure> {
+    let watching =
+        |err: std::io::Error| Failure::failed("watch_failed", format!("{}: {err}", dir.display()));
+    let state = StateDir {
+        path: dir.to_path_buf(),
+    };
+    let lock = dir.join("serve.lock");
+    let mut watch = Watch::new(dir, &[lock], hangup).map_err(watching)?;
+    if !send(&json!({"type": "hello", "schema": 1})) {
+        return Ok(());
+    }
+    let mut sent = None;
+    loop {
+        watch.arm().map_err(watching)?;
+        let status = local(&state)?;
+        watch.process(status.serve.pid);
+        let status = serde_json::to_value(status).expect("a status serializes");
+        if sent.as_ref() != Some(&status) {
+            if !send(&json!({"type": "status", "status": status})) {
+                return Ok(());
+            }
+            sent = Some(status);
+        }
+        match watch.wait().map_err(watching)? {
+            Woke::HungUp => return Ok(()),
+            Woke::Changed => {}
+        }
+    }
 }

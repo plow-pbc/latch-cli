@@ -1,6 +1,6 @@
-//! `status`, `audit show` and `events` with `--host`: another host's own
-//! output, read over latch's connection as the `status`, `audit` and
-//! `events` operations (see `serve/reads.rs`). The host answers its
+//! `status` and `audit` with `--host`: another host's own output, read
+//! over latch's connection as the `status` and `audit` operations (see
+//! `serve/reads.rs`). The host answers its
 //! owner's own devices only. A failed call never falls back to this
 //! machine's own state; naming this machine reads it here.
 
@@ -41,8 +41,8 @@ pub async fn call(state: &StateDir, host: &Peer, op: &str, args: Value) -> Resul
     dial::call(state, host, &request(op, args), ANSWER_WITHIN).await
 }
 
-/// How many batches of lines may wait for a slow reader of our stdout.
-const QUEUED: usize = 16;
+/// How many lines may wait for a slow reader of our stdout.
+const QUEUED: usize = 64;
 
 /// Prints each line `host` streams, one JSON line each, as it comes: until
 /// the host ends them, nobody reads our stdout, or we are asked to stop
@@ -63,11 +63,11 @@ pub async fn stream(state: &StateDir, host: &Peer, op: &str, args: Value) -> Res
     printed
 }
 
-/// The opening (the snapshot, or every record so far) is printed whole
-/// before anything can stop it, as the host's own command prints it; and
-/// only then is `stop` asked for. After it, lines go through a printer
-/// thread, so a stop ends this even while a reader that stopped reading
-/// holds up a write.
+/// The opening (an audit read through `caught_up`, a status through its
+/// first `status`) is printed whole before anything can stop it, as the
+/// host's own command prints it; only then is `stop` asked for. After it,
+/// lines go through a printer thread, so a stop ends this even while a
+/// reader that stopped reading holds up a write.
 async fn print_stream<S: Future<Output = ()>>(
     connection: &Connection,
     host: &Peer,
@@ -77,24 +77,26 @@ async fn print_stream<S: Future<Output = ()>>(
 ) -> Result<(), Failure> {
     let (mut send, mut recv) = dial::start(connection, request).await?;
     send.finish().map_err(|_| dial::lost(connection, true))?;
-    let Some(opening) = lines(
-        dial::answer(connection, &mut recv, ANSWER_WITHIN).await,
-        host,
-    )?
-    else {
-        return Ok(());
-    };
-    if !print(&mut out, &opening) {
-        return Ok(());
+    loop {
+        let answer = dial::answer(connection, &mut recv, ANSWER_WITHIN).await;
+        let Some(line) = line(answer, host)? else {
+            return Ok(());
+        };
+        if !print(&mut out, &line) {
+            return Ok(());
+        }
+        if matches!(line["type"].as_str(), Some("caught_up" | "status")) {
+            break;
+        }
     }
     let (printer, printed) = printer(out);
     let following = async {
         // A followed host may say nothing for hours.
-        while let Some(batch) = lines(
+        while let Some(line) = line(
             dial::answer(connection, &mut recv, Duration::MAX).await,
             host,
         )? {
-            if printer.send(batch).await.is_err() {
+            if printer.send(line).await.is_err() {
                 // Nobody reads our stdout.
                 return Ok(());
             }
@@ -109,35 +111,29 @@ async fn print_stream<S: Future<Output = ()>>(
     }
 }
 
-/// The batch of lines in a host's answer, or `None` once it ends them.
-fn lines(answer: Result<Value, Failure>, host: &Peer) -> Result<Option<Vec<Value>>, Failure> {
-    let answer = match answer {
+/// The line in a host's answer, or `None` once it ends them.
+fn line(answer: Result<Value, Failure>, host: &Peer) -> Result<Option<Value>, Failure> {
+    let mut answer = match answer {
         Err(failure) if failure.code == "outcome_unknown" => return Err(dropped(host)),
         answer => answer?,
     };
-    Ok(answer.get("lines").and_then(Value::as_array).cloned())
+    Ok(answer.get_mut("line").map(Value::take))
 }
 
-/// Writes `lines`; false once nobody reads them.
-fn print(out: &mut impl Write, lines: &[Value]) -> bool {
-    lines
-        .iter()
-        .try_for_each(|line| writeln!(out, "{line}"))
-        .and_then(|()| out.flush())
-        .is_ok()
+/// Writes `line`; false once nobody reads it.
+fn print(out: &mut impl Write, line: &Value) -> bool {
+    writeln!(out, "{line}").and_then(|()| out.flush()).is_ok()
 }
 
-/// A thread that prints each batch it is sent, until the queue closes or a
+/// A thread that prints each line it is sent, until the queue closes or a
 /// write fails; `printed` finishes when it is done. A thread of its own: a
 /// write it is stuck in never keeps the process from exiting.
-fn printer(
-    mut out: impl Write + Send + 'static,
-) -> (mpsc::Sender<Vec<Value>>, oneshot::Receiver<()>) {
-    let (queue, mut queued) = mpsc::channel::<Vec<Value>>(QUEUED);
+fn printer(mut out: impl Write + Send + 'static) -> (mpsc::Sender<Value>, oneshot::Receiver<()>) {
+    let (queue, mut queued) = mpsc::channel::<Value>(QUEUED);
     let (done, printed) = oneshot::channel();
     std::thread::spawn(move || {
-        while let Some(batch) = queued.blocking_recv() {
-            if !print(&mut out, &batch) {
+        while let Some(line) = queued.blocking_recv() {
+            if !print(&mut out, &line) {
                 break;
             }
         }
@@ -233,21 +229,23 @@ mod tests {
 
     #[tokio::test]
     async fn the_opening_is_printed_whole_even_when_asked_to_stop_at_once() {
-        let snapshot = json!({"type": "snapshot", "cursor": "-:0:0", "activity": []});
-        let connection = host_answering(vec![
-            json!({"lines": [{"type": "reset"}, snapshot]}),
-            json!({"lines": [{"type": "host", "state": "stopped"}]}),
-        ]);
+        let opening = [
+            json!({"type": "hello", "schema": 1}),
+            json!({"type": "snapshot", "cursor": "0".repeat(64), "has_older": false}),
+            json!({"type": "record", "cursor": "a".repeat(64), "record": {"op": "exec"}}),
+            json!({"type": "caught_up", "cursor": "a".repeat(64), "has_older": false}),
+        ];
+        let mut answers: Vec<Value> = opening.iter().map(|line| json!({"line": line})).collect();
+        answers.push(json!({"line": {"type": "record", "cursor": "b".repeat(64)}}));
+        let connection = host_answering(answers);
         let out = Printed::default();
-        let request = request("events", json!({"follow": true}));
+        let request = request("audit", json!({"follow": true}));
         print_stream(&connection, &host(), &request, out.clone(), || async {})
             .await
             .unwrap();
         let printed = String::from_utf8(out.0.lock().unwrap().clone()).unwrap();
-        assert_eq!(
-            printed,
-            format!("{}\n{snapshot}\n", json!({"type": "reset"}))
-        );
+        let expected: String = opening.iter().map(|line| format!("{line}\n")).collect();
+        assert!(printed.starts_with(&expected), "{printed}");
     }
 
     #[test]
@@ -259,8 +257,8 @@ mod tests {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             let result = runtime.block_on(async {
                 let connection = host_answering(vec![
-                    json!({"lines": []}),
-                    json!({"lines": ["x".repeat(1 << 20)]}),
+                    json!({"line": {"type": "caught_up"}}),
+                    json!({"line": {"type": "record", "big": "x".repeat(1 << 20)}}),
                 ]);
                 let request = request("audit", json!({"follow": true}));
                 let stop = || tokio::time::sleep(Duration::from_millis(300));

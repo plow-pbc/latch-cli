@@ -276,10 +276,11 @@ dispatch (`sent`, `refused`, `unknown`) and its screenshot's size and
 sha256. Each decision-model call records its purpose, provider, model,
 the provider's request id, latency and the kinds of data sent, never
 content. `scripts/plan-metrics.py` reads these back from the records
-`latch audit show` opens:
+`latch audit` shows:
 
 ```sh
-latch --state-dir STATE audit show | jq -c '.records[]' | python3 scripts/plan-metrics.py /dev/stdin
+latch --state-dir STATE audit --all | jq -c 'select(.type == "record") | .record + .record.details' \
+  | python3 scripts/plan-metrics.py /dev/stdin
 ```
 
 It prints, per plan, its actions, model calls, the model's total time and
@@ -288,7 +289,7 @@ the plan share, confirmations and how they were answered, what followed
 each stop, escapes to `eval`, turns, and stops by code.
 What the gatekeeper judged is kept whole, as `judged`, like an exec's
 argv: a plan's steps as written with their values, a site, a fill's item
-and fields (never a value). `serve.log` and the dashboard show it with
+and fields (never a value). `serve.log`, the dashboard and `latch audit` show it with
 credential-looking values hidden. Otherwise never page text, field values
 or typed text: `type` records the text's length and sha256. `eval` records its script verbatim up to 4 KiB, its
 size and sha256, and workaround tags (other frames, shadow roots,

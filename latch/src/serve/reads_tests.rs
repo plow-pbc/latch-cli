@@ -1,6 +1,6 @@
-//! The owner reading a host's status, audit and events from another
-//! machine, end to end: the same headless host as `gated_tests`, callers
-//! over iroh, and the same output the host's own commands give.
+//! The owner reading a host's status and audit from another machine, end
+//! to end: the same headless host as `gated_tests`, callers over iroh, and
+//! the same lines the host's own commands give.
 
 use std::time::Duration;
 
@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::gated_tests::{TestHost, refusal, start};
 use super::*;
-use crate::cli::{AuditAction, EventsArgs};
+use crate::audit::Range;
 use crate::failure::Exit;
 use crate::gate::fake::World;
 
@@ -23,7 +23,6 @@ fn ok(response: Response) -> Value {
 struct Stream {
     connection: Connection,
     recv: iroh::endpoint::RecvStream,
-    pending: std::collections::VecDeque<Value>,
 }
 
 impl Stream {
@@ -42,11 +41,7 @@ impl Stream {
             .await
             .unwrap();
         send.finish().unwrap();
-        Stream {
-            connection,
-            recv,
-            pending: Default::default(),
-        }
+        Stream { connection, recv }
     }
 
     async fn next(&mut self) -> Response {
@@ -57,53 +52,53 @@ impl Stream {
         serde_json::from_slice(&frame).unwrap()
     }
 
-    /// The next batch of lines.
-    async fn lines(&mut self) -> Vec<Value> {
-        let answer = ok(self.next().await);
-        let lines = answer["lines"].as_array();
-        lines
-            .unwrap_or_else(|| panic!("not lines: {answer}"))
-            .clone()
+    async fn line(&mut self) -> Value {
+        let mut answer = ok(self.next().await);
+        assert!(answer.get("line").is_some(), "not a line: {answer}");
+        answer["line"].take()
     }
 
-    /// The next line, from this batch or the next.
-    async fn line(&mut self) -> Value {
-        while self.pending.is_empty() {
-            self.pending = self.lines().await.into();
+    /// Every line up to the end of the stream, and its final answer.
+    async fn all_lines(&mut self) -> (Vec<Value>, Value) {
+        let mut lines = Vec::new();
+        loop {
+            let mut answer = ok(self.next().await);
+            match answer.get_mut("line") {
+                Some(line) => lines.push(line.take()),
+                None => return (lines, answer),
+            }
         }
-        self.pending.pop_front().unwrap()
+    }
+
+    /// The error that ends the stream, after any lines.
+    async fn refusal(&mut self) -> Response {
+        loop {
+            match self.next().await {
+                Response::Ok(_) => continue,
+                refused => return refused,
+            }
+        }
     }
 }
 
-/// What the host's own `latch events` prints for its state folder.
-fn events_here(t: &TestHost) -> Vec<Value> {
-    let args = EventsArgs {
-        follow: false,
-        after: None,
-        lifecycle_only: false,
-        host: None,
-    };
+/// What the host's own `latch audit` prints for `args`.
+fn audit_here(t: &TestHost, args: Value) -> Vec<Value> {
+    let range: Range = serde_json::from_value(args).unwrap();
     let mut lines = Vec::new();
-    crate::events::stream(&t.state, &args, None, |batch| {
-        lines.extend_from_slice(batch);
+    crate::audit::read(&t.state, "test-host's", &range, None, |line| {
+        lines.push(line.clone());
         true
     })
     .unwrap();
     lines
 }
 
-fn audit_here(t: &TestHost) -> Value {
-    let show = AuditAction::Show {
-        follow: false,
-        host: None,
-    };
-    crate::audit::run(
-        &StateDir {
-            path: t.state.clone(),
-        },
-        show,
-    )
-    .unwrap()
+fn records(lines: &[Value]) -> Vec<Value> {
+    lines
+        .iter()
+        .filter(|line| line["type"] == "record")
+        .map(|line| line["record"].clone())
+        .collect()
 }
 
 #[tokio::test]
@@ -112,9 +107,9 @@ async fn an_agent_is_refused_each_read_and_nothing_is_streamed() {
     let agent = t.caller("agent").await;
     for (op, args) in [
         ("status", json!({})),
-        ("audit", json!({"follow": false})),
+        ("status", json!({"follow": true})),
+        ("audit", json!({})),
         ("audit", json!({"follow": true})),
-        ("events", json!({"follow": true})),
     ] {
         let mut stream = Stream::open(&t, &agent, op, args).await;
         let answer = stream.next().await;
@@ -125,8 +120,12 @@ async fn an_agent_is_refused_each_read_and_nothing_is_streamed() {
 }
 
 #[tokio::test]
-async fn the_owner_reads_the_same_status_audit_and_events_as_on_the_host() {
+async fn the_owner_reads_the_same_status_and_audit_as_on_the_host_masked_as_there() {
     let t = start(World::default()).await;
+    let secret = "synthetic-remote-credential-7c41";
+    let mut exec = crate::audit::record("k1", None, "exec", "allow", "ok");
+    exec.args = json!({"argv": ["curl", "-H", format!("Authorization: Bearer {secret}")]});
+    t.host.append(exec).await.unwrap();
     let device = t.caller("device").await;
 
     let (status, _) = t.call(&device, "status", json!({})).await;
@@ -138,69 +137,58 @@ async fn the_owner_reads_the_same_status_audit_and_events_as_on_the_host() {
     .unwrap();
     assert_eq!(status, serde_json::to_value(here).unwrap());
 
-    // The records as the host shows them, up to the one this read added.
-    let (audit, _) = t.call(&device, "audit", json!({"follow": false})).await;
-    let mut audit = ok(audit);
-    let here = audit_here(&t);
-    let mut records = here["records"].as_array().unwrap().clone();
-    let own = records.pop().unwrap();
-    assert_eq!(
-        (own["op"].as_str(), own["id"] == audit["audit_id"]),
-        (Some("audit"), true)
-    );
-    audit.as_object_mut().unwrap().remove("audit_id");
-    assert_eq!(audit, json!({"records": records}));
-    assert!(records.iter().any(|record| record["op"] == "status"));
+    let mut stream = Stream::open(&t, &device, "audit", json!({"all": true})).await;
+    let (lines, end) = stream.all_lines().await;
+    assert!(end["audit_id"].is_string(), "{end}");
+    assert!(!lines.iter().any(|line| line.to_string().contains(secret)));
+    // Here, the log also holds the read's own record, after the rest.
+    let here = audit_here(&t, json!({"all": true}));
+    let mut held = records(&here);
+    assert_eq!(held.pop().unwrap()["id"], end["audit_id"]);
+    assert_eq!(records(&lines), held);
+    let ops: Vec<&str> = held.iter().map(|r| r["op"].as_str().unwrap()).collect();
+    assert_eq!(ops, ["exec", "connect", "status", "connect"]);
+    assert_eq!(lines[0], here[0]);
+    assert_eq!(lines.last().unwrap()["type"], "caught_up");
 
-    // Without --follow: the snapshot, then the end.
-    let mut stream = Stream::open(&t, &device, "events", json!({"follow": false})).await;
-    let opening = stream.lines().await;
-    assert_eq!(opening.len(), 1);
-    let snapshot = &opening[0];
-    let end = ok(stream.next().await);
-    assert!(
-        end.get("lines").is_none() && end["audit_id"].is_string(),
-        "{end}"
-    );
-    let here = events_here(&t);
-    // Here, the snapshot also holds the events read's own record.
-    let mut activity = here[0]["activity"].as_array().unwrap().clone();
-    assert_eq!(activity.pop().unwrap()["op"], "events");
-    assert_eq!(snapshot["activity"], json!(activity));
-    assert_eq!(snapshot["host"], here[0]["host"]);
+    // An earlier page, and an anchor that host does not hold.
+    let second = held[1]["id"].as_str().unwrap();
+    let mut page = Stream::open(&t, &device, "audit", json!({"before": second})).await;
+    let (page, _) = page.all_lines().await;
+    assert_eq!(records(&page), held[..1]);
+    let unknown = json!({"follow": true, "after": "f".repeat(64)});
+    let mut expired = Stream::open(&t, &device, "audit", unknown).await;
+    let answer = expired.refusal().await;
+    let (exit, code, _) = refusal(&answer);
+    assert_eq!((exit, code), (Exit::Usage, "cursor_expired"));
 }
 
 #[tokio::test]
 async fn a_followed_stream_sends_each_new_record_and_ends_once_the_caller_leaves() {
     let t = start(World::default()).await;
     let device = t.caller("device").await;
-    let mut events = Stream::open(&t, &device, "events", json!({"follow": true})).await;
-    assert_eq!(events.line().await["type"], "snapshot");
+    let mut status = Stream::open(&t, &device, "status", json!({"follow": true})).await;
+    assert_eq!(status.line().await, json!({"type": "hello", "schema": 1}));
+    assert_eq!(status.line().await["type"], "status");
     let mut audit = Stream::open(&t, &device, "audit", json!({"follow": true})).await;
-    assert!(audit.line().await["id"].is_string());
+    while audit.line().await["type"] != "caught_up" {}
 
     ok(t.local_call("rules", json!({"command": "show"})).await);
     let line = loop {
-        let line = events.line().await;
-        if line["type"] == "activity" && line["entry"]["op"] == "rules" {
+        let line = audit.line().await;
+        if line["record"]["op"] == "rules" {
             break line;
         }
     };
-    assert!(line["cursor"].is_string());
-    let record = loop {
-        let record = audit.line().await;
-        if record["op"] == "rules" {
-            break record;
-        }
-    };
-    assert_eq!(record["id"], line["entry"]["id"]);
+    assert_eq!(line["type"], "record");
+    assert_eq!(line["cursor"], line["record"]["id"]);
 
     // The host hears the callers leave, ends their streams and records them.
-    events.connection.close(VarInt::from_u32(0), b"done");
+    status.connection.close(VarInt::from_u32(0), b"done");
     audit.connection.close(VarInt::from_u32(0), b"done");
     let ended = |op: &str| t.audit().iter().any(|record| record["op"] == op);
     let started = Instant::now();
-    while !(ended("events") && ended("audit")) {
+    while !(ended("status") && ended("audit")) {
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "streams still open"
@@ -213,15 +201,10 @@ async fn a_followed_stream_sends_each_new_record_and_ends_once_the_caller_leaves
 async fn a_stopping_host_ends_a_followed_stream_and_says_so() {
     let t = start(World::default()).await;
     let device = t.caller("device").await;
-    let mut events = Stream::open(&t, &device, "events", json!({"follow": true})).await;
-    assert_eq!(events.line().await["type"], "snapshot");
+    let mut audit = Stream::open(&t, &device, "audit", json!({"follow": true})).await;
+    assert_eq!(audit.line().await["type"], "hello");
     t.host.stopping.send_replace(Stopping::Draining);
-    let answer = loop {
-        match events.next().await {
-            Response::Ok(_) => continue,
-            refused => break refused,
-        }
-    };
+    let answer = audit.refusal().await;
     let (exit, code, _) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Unreachable, "host_stopped"));
 }
@@ -250,4 +233,25 @@ async fn a_stopping_host_ends_a_stream_whose_caller_stopped_reading() {
     }
     let ended = t.audit().into_iter().find(|record| record["op"] == "audit");
     assert_eq!(ended.unwrap()["outcome"], "host_stopped");
+}
+
+#[tokio::test]
+async fn a_record_too_large_for_one_frame_ends_the_read_and_is_never_left_out() {
+    let t = start(World::default()).await;
+    // A path is shown as it is; an exec's long word would be hidden.
+    let mut record = crate::audit::record("k1", None, "file_get", "allow", "ok");
+    record.args = json!({"path": "x".repeat(wire::MAX_FRAME)});
+    let id = t.host.append(record).await.unwrap();
+    let device = t.caller("device").await;
+    let mut stream = Stream::open(&t, &device, "audit", json!({"all": true})).await;
+    let answer = loop {
+        match stream.next().await {
+            Response::Ok(line) => assert_ne!(line["line"]["type"], "caught_up"),
+            refused => break refused,
+        }
+    };
+    let (exit, code, details) = refusal(&answer);
+    assert_eq!((exit, code), (Exit::Failed, "record_too_large"));
+    assert_eq!(details["id"], id);
+    assert_eq!(details["limit"], wire::MAX_FRAME);
 }

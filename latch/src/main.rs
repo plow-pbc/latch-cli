@@ -15,7 +15,6 @@ mod credential;
 mod dashboard;
 mod devices;
 mod dial;
-mod events;
 mod exec;
 mod failure;
 mod files;
@@ -31,6 +30,7 @@ mod log;
 mod login;
 mod logo;
 mod logout;
+mod logs;
 mod managed;
 mod messages;
 mod model;
@@ -56,6 +56,8 @@ mod watch;
 mod wire;
 mod worker;
 
+use std::io::Write;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -205,9 +207,19 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 to_json(devices::remove(&state, &name, yes).await?)
             }
         },
-        Command::Status(args) if args.host.is_some() => {
+        Command::Status(args) if args.host.is_some() || args.follow => {
+            let follow = args.follow;
             match remote::other_host(&state, args.host).await? {
+                Some(host) if follow => {
+                    let request = json!({"follow": true});
+                    streamed(remote::stream(&state, &host, "status", request).await)
+                }
                 Some(host) => to_json(remote::call(&state, &host, "status", json!({})).await?),
+                None if follow => {
+                    // Before the first login, too.
+                    state.create()?;
+                    print_local(|hangup, send| status::follow(&state.path, hangup, send))
+                }
                 None => to_json(status::local(&state)?),
             }
         }
@@ -261,30 +273,34 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Plugins(args) => to_json(plugins::client::run(&state, args).await?),
         Command::Update(args) => to_json(update::run(&state, args).await?),
         Command::Audit(cli::AuditArgs {
-            action: cli::AuditAction::Show { follow, host },
-        }) => {
-            let args = json!({"follow": follow});
-            match remote::other_host(&state, host).await? {
-                Some(host) if follow => {
-                    streamed(remote::stream(&state, &host, "audit", args).await)
+            action: Some(action),
+            ..
+        }) => to_json(audit::run(&state, action)?),
+        Command::Audit(args) => {
+            let range = audit::Range {
+                last: args.last.map(|last| last as usize),
+                all: args.all,
+                before: args.before,
+                after: args.after,
+                follow: args.follow,
+            };
+            match remote::other_host(&state, args.host).await? {
+                Some(host) => {
+                    let request = serde_json::to_value(&range).expect("a range serializes");
+                    streamed(remote::stream(&state, &host, "audit", request).await)
                 }
-                Some(host) => to_json(remote::call(&state, &host, "audit", args).await?),
-                None if follow => streamed(audit::follow(&state)),
-                None => to_json(audit::run(
-                    &state,
-                    cli::AuditAction::Show { follow, host: None },
-                )?),
+                None => {
+                    state.create()?;
+                    let whose = match state.load_config()? {
+                        Some(config) => format!("{}'s", config.peer.name),
+                        None => "this machine's".to_string(),
+                    };
+                    print_local(|hangup, send| {
+                        audit::read(&state.path, &whose, &range, hangup, send)
+                    })
+                }
             }
         }
-        Command::Audit(args) => to_json(audit::run(&state, args.action)?),
-        Command::Events(args) => match remote::other_host(&state, args.host.clone()).await? {
-            Some(host) => {
-                let request = json!({"follow": args.follow, "after": args.after,
-                                     "lifecycle_only": args.lifecycle_only});
-                streamed(remote::stream(&state, &host, "events", request).await)
-            }
-            None => streamed(events::run(&state, args)),
-        },
         #[cfg(target_os = "macos")]
         Command::Messages(command) => {
             let request = messages::messages_request(&command);
@@ -362,7 +378,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         }
         // Its lines, printed as they come, are its whole output.
         Command::Logs(args) => {
-            events::logs(&state, args.follow)?;
+            logs::run(&state, args.follow)?;
             Ok(Printed {
                 text: String::new(),
                 exit: ExitCode::SUCCESS,
@@ -394,6 +410,19 @@ async fn call_host(
         chat: host.chat,
     };
     dial::call(state, &peer, &request, answer_within).await
+}
+
+/// Prints a stream of this machine's lines on stdout as they come, until
+/// nobody reads them, or stdin, when it is a pipe, closes. They are its
+/// whole output.
+fn print_local(
+    lines: impl FnOnce(Option<RawFd>, &mut dyn FnMut(&Value) -> bool) -> Result<(), Failure>,
+) -> Result<Printed, Failure> {
+    let mut out = std::io::stdout().lock();
+    let stdin = watch::stdin_is_a_pipe().then_some(libc::STDIN_FILENO);
+    streamed(lines(stdin, &mut |line| {
+        writeln!(out, "{line}").and_then(|()| out.flush()).is_ok()
+    }))
 }
 
 /// A stream's lines, printed as they came, are its whole output.

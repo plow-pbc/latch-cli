@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """The plan command's metrics, read from a host's audit records, one JSON
-record per line, as `latch audit show` opens them:
+record per line, as `latch audit` shows them, with their details beside
+the rest:
 
-    latch --state-dir STATE audit show | jq -c '.records[]' \
+    latch --state-dir STATE audit --all \
+      | jq -c 'select(.type == "record") | .record + .record.details' \
       | python3 scripts/plan-metrics.py /dev/stdin [--since ISO-TIME]
 
 Prints one JSON object: each plan request (actions, model-chosen actions,

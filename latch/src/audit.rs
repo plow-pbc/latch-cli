@@ -305,14 +305,11 @@ impl AuditLog {
     }
 }
 
-/// `latch audit …` on this machine's host state.
+/// `latch audit verify` and `latch audit rotate-key`, on this machine's
+/// host state.
 pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
-        AuditAction::Show { .. } => {
-            let records: Vec<Value> = read_all(&path)?.iter().map(shown).collect();
-            Ok(json!({"records": records}))
-        }
         AuditAction::Verify => {
             let text = read_locked(&path)?;
             let (records, last) = verify(&text).map_err(|problem| broken(&path, &problem))?;
@@ -324,13 +321,6 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
                       "note": "new records use the new key, a running latch serve's included"}))
         }
     }
-}
-
-/// A record as `audit show` prints it: with its hash as `id`.
-fn shown(record: &Record) -> Value {
-    let mut shown = serde_json::to_value(record).expect("a record serializes");
-    shown["id"] = json!(record.hash);
-    shown
 }
 
 /// The `hash` of the log's last line, read from the end of the file.
@@ -398,63 +388,170 @@ pub fn read_next(keys: &Keys, prev: &str, text: &[u8], number: usize) -> Result<
     keys.open(&line, number)
 }
 
-/// `latch audit show --follow`: every record, one JSON line each, then each
-/// new one as it is written, until stopped (or, when stdin is a pipe, until
-/// it closes). A log that fails its checks, or no longer begins with what
-/// was printed, stops it with `audit_broken`.
-pub fn follow(state: &StateDir) -> Result<(), Failure> {
-    state.create()?;
-    let mut out = std::io::stdout().lock();
-    let stdin = crate::watch::stdin_is_a_pipe().then_some(libc::STDIN_FILENO);
-    follow_lines(&state.path, stdin, |lines| {
-        lines
-            .iter()
-            .try_for_each(|line| writeln!(out, "{line}"))
-            .and_then(|()| out.flush())
-            .is_ok()
-    })
+/// Which records `latch audit` reads, as its flags say: the newest
+/// `last` (50 without it), or `all`; those before the record `before`; or
+/// with `follow`, every one after the record `after`. A record is named by
+/// its id; `GENESIS` stands for "before the first".
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct Range {
+    pub last: Option<usize>,
+    pub all: bool,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub follow: bool,
 }
 
-/// The lines of `latch audit show --follow` for the log in `dir`, given to
-/// `send` as they are read until it returns false, or `hangup` closes:
-/// first every record so far (perhaps none), then each batch of new ones.
-/// A host streams them to its owner's `latch audit show --follow --host`
-/// this way.
-pub fn follow_lines(
+/// How many records a read without `--last` or `--all` shows.
+const PAGE: usize = 50;
+
+/// What a stream's lines are, so a reader knows this version's.
+const SCHEMA: u32 = 1;
+
+impl Range {
+    /// The same rules as the command's flags, for a range that came over
+    /// the wire.
+    fn check(&self) -> Result<(), Failure> {
+        let usage = |message: &str| Err(Failure::usage("usage", message.to_string()));
+        if self.last == Some(0) {
+            return usage("--last takes a positive number");
+        }
+        if self.all && (self.last.is_some() || self.before.is_some()) {
+            return usage("--all goes with neither --last nor --before");
+        }
+        if self.before.is_some() && (self.follow || self.after.is_some()) {
+            return usage("--before goes with neither --follow nor --after");
+        }
+        if self.after.is_some() && (!self.follow || self.last.is_some() || self.all) {
+            return usage("--after goes with --follow only");
+        }
+        Ok(())
+    }
+}
+
+/// `latch audit`: the records `range` picks from the log in `dir`, as JSON
+/// lines given to `send` until it returns false (or, following, until
+/// `hangup` closes): `hello`, a `snapshot` with the id before the first one
+/// and whether older ones exist, a `record` line each, then `caught_up`;
+/// with `follow`, then each new record as it is written. `whose` names the
+/// log in an error (`studio's`).
+///
+/// A record names an anchor the log does not hold: `cursor_expired`. A log
+/// that fails its checks, or no longer begins with what was sent, stops it
+/// with `audit_broken`.
+pub fn read(
     dir: &Path,
+    whose: &str,
+    range: &Range,
     hangup: Option<std::os::fd::RawFd>,
-    mut send: impl FnMut(&[Value]) -> bool,
+    mut send: impl FnMut(&Value) -> bool,
 ) -> Result<(), Failure> {
+    range.check()?;
     let path = dir.join(FILE);
     let watching =
         |err: std::io::Error| Failure::failed("watch_failed", format!("{}: {err}", dir.display()));
-    let mut watch =
-        crate::watch::Watch::new(dir, std::slice::from_ref(&path), hangup).map_err(watching)?;
-    let mut printed: Option<(usize, String)> = None;
-    let mut opened = false;
-    loop {
+    // Armed before the first look, so nothing written after it is missed.
+    let mut watch = match range.follow {
+        true => Some(
+            crate::watch::Watch::new(dir, std::slice::from_ref(&path), hangup).map_err(watching)?,
+        ),
+        false => None,
+    };
+    if let Some(watch) = &mut watch {
         watch.arm().map_err(watching)?;
-        let records = read_all(&path)?;
-        let from = match &printed {
-            None => 0,
-            Some((count, hash)) if records.get(count - 1).is_some_and(|r| &r.hash == hash) => {
-                *count
-            }
-            Some(_) => return Err(broken(&path, "it no longer begins with what was shown")),
-        };
-        let lines: Vec<Value> = records[from..].iter().map(shown).collect();
-        if (!opened || !lines.is_empty()) && !send(&lines) {
+    }
+    let records = read_all(&path)?;
+    let index = |id: &str| -> Result<usize, Failure> {
+        if id == GENESIS {
+            return Ok(0);
+        }
+        match records.iter().position(|record| record.hash == id) {
+            Some(at) => Ok(at + 1),
+            None => Err(Failure::usage(
+                "cursor_expired",
+                format!(
+                    "that record isn't in {whose} audit; read it again without --after or --before"
+                ),
+            )),
+        }
+    };
+    let (start, end) = match (&range.after, &range.before) {
+        (Some(after), _) => (index(after)?, records.len()),
+        (None, before) => {
+            let end = match before {
+                // Not the anchor itself: the records before it.
+                Some(before) => index(before)?.saturating_sub(1),
+                None => records.len(),
+            };
+            let start = match range.all {
+                true => 0,
+                false => end.saturating_sub(range.last.unwrap_or(PAGE)),
+            };
+            (start, end)
+        }
+    };
+    let id_before = |at: usize| match at {
+        0 => GENESIS.to_string(),
+        at => records[at - 1].hash.clone(),
+    };
+    let has_older = start > 0;
+    let mut lines = vec![
+        json!({"type": "hello", "schema": SCHEMA}),
+        json!({"type": "snapshot", "cursor": id_before(start), "has_older": has_older}),
+    ];
+    lines.extend(records[start..end].iter().map(record_line));
+    lines.push(json!({"type": "caught_up", "cursor": id_before(end), "has_older": has_older}));
+    for line in &lines {
+        if !send(line) {
             return Ok(());
         }
-        opened = true;
-        if let Some(last) = records.last() {
-            printed = Some((records.len(), last.hash.clone()));
-        }
+    }
+    let Some(mut watch) = watch else {
+        return Ok(());
+    };
+    // What was sent ends here: each later look must still begin with it.
+    let mut sent = (
+        records.len(),
+        records.last().map(|record| record.hash.clone()),
+    );
+    loop {
         match watch.wait().map_err(watching)? {
             crate::watch::Woke::HungUp => return Ok(()),
             crate::watch::Woke::Changed => {}
         }
+        watch.arm().map_err(watching)?;
+        let records = read_all(&path)?;
+        let (count, last) = &sent;
+        let continues = match last {
+            None => true,
+            Some(hash) => records.get(count - 1).is_some_and(|r| &r.hash == hash),
+        };
+        if !continues || records.len() < *count {
+            return Err(broken(&path, "it no longer begins with what was shown"));
+        }
+        for record in &records[*count..] {
+            if !send(&record_line(record)) {
+                return Ok(());
+            }
+        }
+        sent = (
+            records.len(),
+            records.last().map(|record| record.hash.clone()),
+        );
     }
+}
+
+/// One record as `latch audit` shows it, its arguments with
+/// credential-looking values hidden (`redact.rs`), best effort.
+fn record_line(record: &Record) -> Value {
+    let shown = json!({
+        "id": record.hash, "time": record.time, "caller": record.caller, "caller_name": null,
+        "agent": record.agent, "op": record.op, "decision": record.decision,
+        "outcome": record.outcome,
+        "details": {"started": record.started, "args": crate::redact::shown(&record.op, &record.args),
+                    "gate": record.gate},
+    });
+    json!({"type": "record", "cursor": record.hash, "record": shown})
 }
 
 /// The log's text, read under the audit lock, so a record being appended
@@ -747,5 +844,150 @@ mod tests {
         let last = serde_json::from_str::<Line>(last.lines().last().unwrap()).unwrap();
         assert_eq!(last.kid, "k2");
         assert_eq!(read_all(&path).unwrap()[3].caller, "caller-three");
+    }
+
+    /// The lines `latch audit` gives for `range`, or its failure.
+    fn lines(dir: &Path, range: &Range) -> Result<Vec<Value>, Failure> {
+        let mut lines = Vec::new();
+        read(dir, "studio's", range, None, |line| {
+            lines.push(line.clone());
+            true
+        })?;
+        Ok(lines)
+    }
+
+    fn ids(lines: &[Value]) -> Vec<String> {
+        lines
+            .iter()
+            .filter(|line| line["type"] == "record")
+            .map(|line| line["cursor"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_read_pages_back_from_the_newest_and_masks_the_arguments() {
+        let (dir, path) = log_with_three_records();
+        let all: Vec<String> = read_all(&path)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.hash)
+            .collect();
+
+        let newest = lines(
+            dir.path(),
+            &Range {
+                last: Some(2),
+                ..Range::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(newest[0], json!({"type": "hello", "schema": 1}));
+        assert_eq!(
+            newest[1],
+            json!({"type": "snapshot", "cursor": all[0], "has_older": true})
+        );
+        assert_eq!(ids(&newest), all[1..]);
+        assert_eq!(
+            newest.last().unwrap(),
+            &json!({"type": "caught_up", "cursor": all[2], "has_older": true})
+        );
+        let exec = &newest[2]["record"];
+        assert_eq!(exec["op"], "exec");
+        assert_eq!(exec["id"], all[1]);
+        assert!(exec["details"]["args"]["argv"].is_array(), "{exec}");
+        assert!(!newest.iter().any(|line| line.to_string().contains(SECRET)));
+
+        // The page before the first row: the one oldest record, and no more.
+        let before = Range {
+            before: Some(all[1].clone()),
+            ..Range::default()
+        };
+        let earlier = lines(dir.path(), &before).unwrap();
+        assert_eq!(ids(&earlier), all[..1]);
+        assert_eq!(
+            earlier[1],
+            json!({"type": "snapshot", "cursor": GENESIS, "has_older": false})
+        );
+        assert_eq!(earlier.last().unwrap()["cursor"], all[0]);
+
+        let every = lines(
+            dir.path(),
+            &Range {
+                all: true,
+                ..Range::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(ids(&every), all);
+    }
+
+    #[test]
+    fn a_follower_resumes_after_its_last_id_and_an_unknown_one_has_expired() {
+        let (dir, path) = log_with_three_records();
+        let all: Vec<String> = read_all(&path)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.hash)
+            .collect();
+        let after = |id: &str| Range {
+            after: Some(id.into()),
+            follow: true,
+            ..Range::default()
+        };
+        // Ends at once: the watch's hang-up is already closed.
+        let (hangup, closed) = std::io::pipe().unwrap();
+        drop(closed);
+        let mut resumed = Vec::new();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&hangup);
+        read(dir.path(), "studio's", &after(&all[0]), Some(fd), |line| {
+            resumed.push(line.clone());
+            true
+        })
+        .unwrap();
+        assert_eq!(ids(&resumed), all[1..]);
+        assert_eq!(resumed[1]["cursor"], all[0]);
+
+        // Nothing after the newest: caught up at the anchor itself.
+        let (hangup, closed) = std::io::pipe().unwrap();
+        drop(closed);
+        let mut none = Vec::new();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&hangup);
+        read(dir.path(), "studio's", &after(&all[2]), Some(fd), |line| {
+            none.push(line.clone());
+            true
+        })
+        .unwrap();
+        assert_eq!(none.last().unwrap()["cursor"], all[2]);
+        assert_eq!(ids(&none), Vec::<String>::new());
+
+        let expired = lines(dir.path(), &after(&"f".repeat(64))).unwrap_err();
+        assert_eq!(
+            (expired.exit, expired.code.as_str()),
+            (crate::failure::Exit::Usage, "cursor_expired")
+        );
+        assert!(
+            expired.message.contains("studio's audit"),
+            "{}",
+            expired.message
+        );
+        let bad = Range {
+            before: Some("f".repeat(64)),
+            ..Range::default()
+        };
+        assert_eq!(lines(dir.path(), &bad).unwrap_err().code, "cursor_expired");
+    }
+
+    #[test]
+    fn an_empty_log_reads_as_caught_up_at_the_genesis() {
+        let dir = test_dir();
+        let empty = lines(dir.path(), &Range::default()).unwrap();
+        assert_eq!(
+            empty,
+            [
+                json!({"type": "hello", "schema": 1}),
+                json!({"type": "snapshot", "cursor": GENESIS, "has_older": false}),
+                json!({"type": "caught_up", "cursor": GENESIS, "has_older": false}),
+            ]
+        );
     }
 }

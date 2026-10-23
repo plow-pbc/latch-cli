@@ -181,10 +181,8 @@ pub enum Command {
     /// The connectors on a host: list them; on the host itself, its owner
     /// turns one on (running its setup) or off
     Plugins(PluginsArgs),
-    /// This machine's host audit log: its records in full (or another host's, with --host), its chain checked without the key, or a new key
+    /// This machine's host audit log (or another host's, with --host): its newest records as JSON lines, an earlier page, or with --follow each new one; its chain checked without the key, or a new key
     Audit(AuditArgs),
-    /// This machine's host (or another, with --host) as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
-    Events(EventsArgs),
     /// Run this machine as a host, as a service of this user's: with its
     /// dashboard (Ctrl-C stops the host), or detached with -d
     #[command(after_help = SERVE_HELP)]
@@ -850,39 +848,35 @@ pub enum DevicesAction {
     },
 }
 
+/// `latch audit`: with no command, its records; with one, the log's upkeep.
 #[derive(Args, Debug)]
-pub struct EventsArgs {
-    /// Keep printing changes as they happen, until stopped (or, when stdin is a pipe, until it closes)
+#[command(args_conflicts_with_subcommands = true)]
+pub struct AuditArgs {
+    #[command(subcommand)]
+    pub action: Option<AuditAction>,
+    /// How many of the newest records to read [default: 50]; with --before, how many before it
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..),
+          conflicts_with = "all")]
+    pub last: Option<u64>,
+    /// Every record the log holds
     #[arg(long)]
+    pub all: bool,
+    /// The records before this one (its id, a record line's `cursor`), to read an earlier page
+    #[arg(long, value_name = "ID", conflicts_with_all = ["follow", "all", "after"])]
+    pub before: Option<String>,
+    /// Then each new record as it is written, until stopped (or, when stdin is a pipe, until it closes)
+    #[arg(long, short)]
     pub follow: bool,
-    /// Pick up right after this cursor, from an earlier line; one that cannot be honoured gets `reset` and a fresh snapshot
-    #[arg(long, value_name = "CURSOR")]
+    /// With --follow: every record after this one (its id, the last `cursor` you got), then the new ones
+    #[arg(long, value_name = "ID", requires = "follow", conflicts_with_all = ["last", "all"])]
     pub after: Option<String>,
-    /// Only the host's state changes, no activity
-    #[arg(long)]
-    pub lifecycle_only: bool,
-    /// Another serving machine of the owner's to ask, the same lines as there (owner devices only) [default: this machine's host]
+    /// Another serving machine of the owner's to read, the same lines as there (owner devices only) [default: this machine's host]
     #[arg(long)]
     pub host: Option<String>,
 }
 
-#[derive(Args, Debug)]
-pub struct AuditArgs {
-    #[command(subcommand)]
-    pub action: AuditAction,
-}
-
 #[derive(Subcommand, Debug)]
 pub enum AuditAction {
-    /// Every record, opened with the key: each command in full, as it ran
-    Show {
-        /// One record per line, then each new one as it is written, until stopped
-        #[arg(long, short)]
-        follow: bool,
-        /// Another serving machine of the owner's to ask, the same records as there (owner devices only) [default: this machine's host]
-        #[arg(long)]
-        host: Option<String>,
-    },
     /// Check every record's place in the chain, without the key
     Verify,
     /// Seal new records under a new key and keep every old one; a running `latch serve` uses it from its next record
@@ -897,6 +891,7 @@ pub struct FollowArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(group = clap::ArgGroup::new("target").args(["local", "host"]))]
 pub struct StatusArgs {
     /// Show a card for a person, with key art to compare between machines, instead of JSON
     #[arg(long)]
@@ -909,6 +904,9 @@ pub struct StatusArgs {
     /// --local`, the same JSON as there (owner devices only)
     #[arg(long, conflicts_with_all = ["pretty", "local"])]
     pub host: Option<String>,
+    /// With --local or --host: as JSON lines, then again each time it changes, until stopped (or, when stdin is a pipe, until it closes)
+    #[arg(long, requires = "target")]
+    pub follow: bool,
 }
 
 #[derive(Args, Debug)]

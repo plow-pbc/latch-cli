@@ -1,13 +1,13 @@
-//! The `status`, `audit` and `events` operations: what this host's owner
-//! reads from another machine with `--host`, the same output as `latch
-//! status --local`, `audit show [--follow]` and `events` give on the host
-//! itself. From the owner's own devices only; an agent's key gets exit 4
-//! `owner_only`.
+//! The `status` and `audit` operations: what this host's owner reads from
+//! another machine with `--host`, the same output as `latch status --local
+//! [--follow]` and `latch audit` give on the host itself. From the owner's
+//! own devices only; an agent's key gets exit 4 `owner_only`.
 //!
-//! `audit` with `follow` and `events` stream: each batch of lines, the
-//! opening first, goes to the caller as one `{"ok": {"lines": [...]}}`
-//! frame, until the lines end, the caller leaves or this host stops; then
-//! the final answer (see `wire.rs`).
+//! `audit` and `status` with `follow` stream: each line goes to the caller
+//! as its own `{"ok": {"line": LINE}}` frame, until the lines end, the
+//! caller leaves or this host stops; then the final answer (see `wire.rs`).
+//! A line too large for a frame ends it with `record_too_large`, never a
+//! line left out.
 
 use std::future::Future;
 use std::os::fd::{AsRawFd, RawFd};
@@ -16,15 +16,13 @@ use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
 use super::Host;
-use crate::cli::{AuditAction, EventsArgs};
 use crate::failure::{Exit, Failure};
 use crate::serve::Done;
 use crate::state::StateDir;
 use crate::transport::SendStream;
 use crate::wire::{self, Response};
 
-/// How many batches of lines may wait for a slow caller before the reader
-/// waits too.
+/// How many lines may wait for a slow caller before the reader waits too.
 const QUEUED: usize = 64;
 
 pub(super) async fn run(
@@ -50,43 +48,29 @@ async fn read(
     cut_off: impl Future<Output = &'static str>,
 ) -> Result<Value, Failure> {
     let dir = host.workers.state_dir.clone();
-    let follow = args["follow"] == true;
     match op {
-        "status" => {
+        "status" if args["follow"] != true => {
             blocking(move || {
                 let status = crate::status::local(&StateDir { path: dir })?;
                 Ok(serde_json::to_value(status).expect("a status serializes"))
             })
             .await
         }
-        "audit" if !follow => {
-            blocking(move || {
-                let show = AuditAction::Show {
-                    follow: false,
-                    host: None,
-                };
-                crate::audit::run(&StateDir { path: dir }, show)
-            })
-            .await
-        }
-        "audit" => {
+        "status" => {
             stream(host, send, cut_off, move |hangup, lines| {
-                crate::audit::follow_lines(&dir, Some(hangup), |batch| {
-                    lines.blocking_send(batch.to_vec()).is_ok()
+                crate::status::follow(&dir, Some(hangup), |line| {
+                    lines.blocking_send(line.clone()).is_ok()
                 })
             })
             .await
         }
         _ => {
-            let events = EventsArgs {
-                follow,
-                after: args["after"].as_str().map(str::to_string),
-                lifecycle_only: args["lifecycle_only"] == true,
-                host: None,
-            };
+            let range: crate::audit::Range = serde_json::from_value(args.clone())
+                .map_err(|err| Failure::usage("usage", format!("not an audit range: {err}")))?;
+            let whose = format!("{}'s", host.name);
             stream(host, send, cut_off, move |hangup, lines| {
-                crate::events::stream(&dir, &events, Some(hangup), |batch| {
-                    lines.blocking_send(batch.to_vec()).is_ok()
+                crate::audit::read(&dir, &whose, &range, Some(hangup), |line| {
+                    lines.blocking_send(line.clone()).is_ok()
                 })
             })
             .await
@@ -116,7 +100,7 @@ async fn blocking(
         .map_err(|err| Failure::failed("read_failed", err.to_string()))?
 }
 
-/// Sends the caller each batch of lines `lines` gives, as it gives it. It
+/// Sends the caller each line `lines` gives, as it gives it. It
 /// runs on a thread of its own, waiting on the folder, until it ends or the
 /// hang-up descriptor it is given closes: once the caller leaves or the
 /// host stops, even while a caller that stopped reading holds up a send.
@@ -124,7 +108,7 @@ async fn stream(
     host: &Host,
     send: &mut SendStream,
     cut_off: impl Future<Output = &'static str>,
-    lines: impl FnOnce(RawFd, mpsc::Sender<Vec<Value>>) -> Result<(), Failure> + Send + 'static,
+    lines: impl FnOnce(RawFd, mpsc::Sender<Value>) -> Result<(), Failure> + Send + 'static,
 ) -> Result<Value, Failure> {
     let (hangup, hold) =
         std::io::pipe().map_err(|err| Failure::failed("watch_failed", err.to_string()))?;
@@ -140,16 +124,20 @@ async fn stream(
     tokio::pin!(stopping);
     let forward = async {
         // Until the reader is done, and every line it gave was sent.
-        while let Some(lines) = queued.recv().await {
-            let frame = Response::Ok(json!({"lines": lines}));
-            let json = serde_json::to_vec(&frame).expect("lines serialize");
+        while let Some(line) = queued.recv().await {
+            let frame = Response::Ok(json!({"line": line}));
+            let json = serde_json::to_vec(&frame).expect("a line serializes");
+            if json.len() > wire::MAX_FRAME {
+                return Err(too_large(&line, json.len()));
+            }
             if wire::write_frame(send, &json).await.is_err() {
                 break;
             }
         }
+        Ok(())
     };
     let ended = tokio::select! {
-        () = forward => Ok(()),
+        sent = forward => sent,
         _ = &mut cut_off => Ok(()),
         () = &mut stopping => Err(stopped(&host.name)),
     };
@@ -161,6 +149,20 @@ async fn stream(
         .await
         .map_err(|err| Failure::failed("read_failed", err.to_string()))?;
     ended.and(read).map(|()| json!({}))
+}
+
+/// A record whose line is larger than the wire carries in one frame.
+fn too_large(line: &Value, size: usize) -> Failure {
+    let id = &line["record"]["id"];
+    let mut failure = Failure::failed(
+        "record_too_large",
+        format!(
+            "the record {id} is {size} bytes, more than the {} one frame carries; read it on that host",
+            wire::MAX_FRAME
+        ),
+    );
+    failure.details = json!({"id": id, "size": size, "limit": wire::MAX_FRAME});
+    failure
 }
 
 fn stopped(name: &str) -> Failure {
