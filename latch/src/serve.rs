@@ -776,7 +776,14 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     let refusal = match host.check(caller).await {
         Ok(identity) => {
             let who = format!("{} ({})", identity.name, identity.kind);
-            let record = audit::record(caller, identity.agent_uid, "connect", "allow", "connected");
+            let mut record = audit::record(
+                caller,
+                identity.agent_uid.clone(),
+                "connect",
+                "allow",
+                "connected",
+            );
+            record.caller_name = host.known_name(&identity);
             match host.append(record).await {
                 Ok(_) => {
                     log(&format!("connect: {who} {caller}: allowed"));

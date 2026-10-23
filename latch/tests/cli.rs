@@ -2514,6 +2514,16 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     // Nothing was written on the machines the commands came from.
     assert!(!owner.join("rules").exists() && !agent.join("rules").exists());
 
+    // Connections are named as their calls are: the owner's machine at once.
+    let connects: Vec<Value> = audit_records(&host)
+        .into_iter()
+        .filter(|record| record["op"] == "connect" && record["agent"].is_null())
+        .map(|record| record["caller_name"].clone())
+        .collect();
+    assert!(
+        !connects.is_empty() && connects.iter().all(|name| name == "owner-mac"),
+        "{connects:?}"
+    );
     // The host audited every command by revision, never by text, and
     // named each caller: a machine by its name, the agent by its name in
     // Plow once the host has looked it up (never waiting to, so not on its
