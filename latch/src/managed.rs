@@ -308,7 +308,7 @@ fn saved(dir: &Path) -> Result<Option<(Vec<String>, ServeArgs)>, Failure> {
     )
     .map_err(|_| invalid())?;
     match parsed.command {
-        crate::cli::Command::Serve(args) => Ok(Some((given, args))),
+        Some(crate::cli::Command::Serve(args)) => Ok(Some((given, args))),
         _ => Err(invalid()),
     }
 }

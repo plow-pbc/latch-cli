@@ -153,8 +153,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub pretty: bool,
 
+    /// None: a bare `latch`, the overview (`overview.rs`).
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1481,7 +1482,7 @@ mod tests {
     fn serve(args: &[&str]) -> ServeArgs {
         let args = [&["latch", "serve"], args].concat();
         match Cli::try_parse_from(args).unwrap().command {
-            Command::Serve(serve) => serve,
+            Some(Command::Serve(serve)) => serve,
             other => panic!("{other:?}"),
         }
     }
@@ -1489,7 +1490,7 @@ mod tests {
     #[test]
     fn a_screenshot_takes_its_path_as_an_argument() {
         let parsed = Cli::try_parse_from(["latch", "browser", "screenshot", "page.png"]).unwrap();
-        let Command::Browser(args) = parsed.command else {
+        let Some(Command::Browser(args)) = parsed.command else {
             panic!("not a browser command");
         };
         let BrowserCommand::Screenshot { output } = args.command else {
@@ -1526,7 +1527,7 @@ mod tests {
             "two@example.com",
         ])
         .unwrap();
-        let Command::Google(args) = args.command else {
+        let Some(Command::Google(args)) = args.command else {
             panic!("google");
         };
         assert_eq!(args.account, ["one@example.com"]);
@@ -1544,7 +1545,7 @@ mod tests {
             Cli::try_parse_from(argv)
         };
         let parsed = edit(&["--no-sites", "--no-other-top-sites"]).unwrap();
-        let Command::Vault(VaultArgs {
+        let Some(Command::Vault(VaultArgs {
             command:
                 VaultCommand::Edit {
                     no_sites,
@@ -1552,7 +1553,7 @@ mod tests {
                     ..
                 },
             ..
-        }) = parsed.command
+        })) = parsed.command
         else {
             panic!("vault edit");
         };

@@ -678,7 +678,7 @@ mod tests {
         use crate::cli::{Cli, Command};
         use clap::Parser;
         let cli = Cli::try_parse_from(["latch", "browser", "close"]).unwrap();
-        let Command::Browser(args) = cli.command else {
+        let Some(Command::Browser(args)) = cli.command else {
             panic!("browser");
         };
         let mut request = json!({"session": null});
@@ -698,7 +698,7 @@ mod tests {
         use clap::Parser;
         let sent = |argv: &[&str]| {
             let cli = Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).unwrap();
-            let Command::Browser(args) = cli.command else {
+            let Some(Command::Browser(args)) = cli.command else {
                 panic!("browser");
             };
             let mut request = json!({"session": "s1"});
@@ -740,7 +740,7 @@ mod tests {
             &["fill-code", "--item", "v1", "--field", "e4"],
         ] {
             let cli = Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).unwrap();
-            let Command::Browser(args) = cli.command else {
+            let Some(Command::Browser(args)) = cli.command else {
                 panic!("browser");
             };
             let failure = run(&state, args).await.unwrap_err();
@@ -762,7 +762,7 @@ mod tests {
         let state = StateDir::new(Some(dir.path().to_path_buf())).unwrap();
         let parse = |argv: &[&str]| {
             let cli = Cli::try_parse_from(["latch", "browser", "do"].iter().chain(argv)).unwrap();
-            let Command::Browser(args) = cli.command else {
+            let Some(Command::Browser(args)) = cli.command else {
                 panic!("browser");
             };
             args
@@ -815,7 +815,7 @@ mod tests {
             "--dry-run",
         ])
         .unwrap();
-        let Command::Browser(args) = cli.command else {
+        let Some(Command::Browser(args)) = cli.command else {
             panic!("browser");
         };
         let shown = run(&state, args).await.unwrap();
@@ -853,7 +853,7 @@ mod tests {
                 argv.push("--dry-run".into());
             }
             let cli = Cli::try_parse_from(&argv).unwrap();
-            let Command::Browser(args) = cli.command else {
+            let Some(Command::Browser(args)) = cli.command else {
                 panic!("browser");
             };
             let shown = run(&state, args).await;
@@ -877,7 +877,7 @@ mod tests {
         .unwrap();
         let parse = |argv: &[&str]| {
             let cli = Cli::try_parse_from(["latch", "browser"].iter().chain(argv)).unwrap();
-            let Command::Browser(args) = cli.command else {
+            let Some(Command::Browser(args)) = cli.command else {
                 panic!("browser");
             };
             args

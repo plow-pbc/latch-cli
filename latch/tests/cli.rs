@@ -1478,6 +1478,99 @@ fn status_names_the_account_this_machine_and_each_host_once() {
 }
 
 #[test]
+fn bare_latch_piped_says_it_needs_a_terminal_and_where_to_look() {
+    let dir = test_dir();
+    let output = latch(&dir.path().join("state"), &[], &[]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+    assert_eq!(error["error"]["next"], "latch status", "{error}");
+}
+
+/// The end of each frame a bare `latch` draws.
+const FRAME_END: &str = "\x1b[?2026l";
+
+/// What a bare `latch` showed on a terminal `size` (columns, rows), and how
+/// long it took to give the prompt back.
+fn overview(
+    state: &Path,
+    env: &[(&str, &Path)],
+    size: (u16, u16),
+) -> (String, std::time::Duration) {
+    let started = std::time::Instant::now();
+    let (mut child, _terminal, shown) = at_a_terminal_of(state, &[], env, size);
+    let status = exits_within(&mut child, 10);
+    let took = started.elapsed();
+    let mut all = String::new();
+    while let Ok(more) = shown.recv_timeout(std::time::Duration::from_secs(1)) {
+        all.push_str(&more);
+    }
+    assert!(status.success(), "{status:?}: {all}");
+    (all, took)
+}
+
+#[test]
+fn bare_latch_draws_what_it_knows_at_once_and_plow_as_it_answers() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+
+    let (shown, took) = overview(&host, &[], (100, 30));
+    let first = &shown[..shown.find(FRAME_END).expect(&shown)];
+    // This machine's rows are there from the first frame; Plow's wait.
+    for row in ["this ", "host", "stopped", "Account", "…", "Folder"] {
+        assert!(
+            first.contains(row),
+            "{row:?} not in the first frame: {first}"
+        );
+    }
+    // Plow's answer is drawn while the mark still moves.
+    let filled = shown.find("Ada Example").expect(&shown);
+    assert!(shown[filled..].matches(FRAME_END).count() > 5, "{shown}");
+    assert!(shown.contains("not listed as a host"), "{shown}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    println!("Plow answering: prompt back after {took:?}");
+
+    // A Plow that takes the connection and never answers: the rest still
+    // shows, and the prompt comes back at the deadline.
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", silent.local_addr().unwrap());
+    thread::spawn(move || {
+        let held: Vec<_> = silent.incoming().collect();
+        drop(held);
+    });
+    use_plow(&host, &url);
+    let (shown, took) = overview(&host, &[], (100, 30));
+    let last = &shown[shown.rfind("\x1b[?2026h").unwrap()..];
+    assert_eq!(last.matches("Plow didn't answer").count(), 2, "{last}");
+    assert!(last.contains("didn't answer"), "{last}");
+    assert!(!last.contains("not signed in"), "{last}");
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    println!("Plow silent: prompt back after {took:?}");
+}
+
+#[test]
+fn bare_latch_narrow_puts_the_mark_above_and_no_color_keeps_it_still() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let no_color = [("NO_COLOR", Path::new("1"))];
+    let (shown, _) = overview(&state, &no_color, (60, 24));
+    assert!(!shown.contains("\x1b[0;"), "colored: {shown:?}");
+    // The still mark first, on lines of its own, then the facts.
+    let mark = shown.find("███▄").expect(&shown);
+    let header = shown.find("latch 0.1.0").expect(&shown);
+    assert!(mark < header, "{shown}");
+    assert!(!shown[mark..header].contains("Account"), "{shown}");
+    assert!(
+        shown.contains("isn't signed in to Plow. Run: latch setup"),
+        "{shown}"
+    );
+    assert!(!state.exists(), "the overview made the state folder");
+}
+
+#[test]
 fn exec_stdin_that_is_not_judgeable_or_never_ends_runs_nothing() {
     use std::process::Stdio;
     let dir = test_dir();
@@ -6126,7 +6219,6 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
 /// way a shell starts it: Ctrl-C typed there interrupts it, and closing
 /// the terminal hangs it up. Returns the process and the terminal's side
 /// we type into and read.
-#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn at_its_own_terminal(
     state: &Path,
     args: &[&str],
@@ -6136,12 +6228,26 @@ fn at_its_own_terminal(
     fs::File,
     std::sync::mpsc::Receiver<String>,
 ) {
+    at_a_terminal_of(state, args, env, (120, 30))
+}
+
+/// `at_its_own_terminal`, on a terminal `columns` wide and `rows` high.
+fn at_a_terminal_of(
+    state: &Path,
+    args: &[&str],
+    env: &[(&str, &Path)],
+    (columns, rows): (u16, u16),
+) -> (
+    std::process::Child,
+    fs::File,
+    std::sync::mpsc::Receiver<String>,
+) {
     use std::os::fd::FromRawFd;
     use std::os::unix::process::CommandExt;
     let (mut main, mut side) = (0, 0);
     let size = libc::winsize {
-        ws_row: 30,
-        ws_col: 120,
+        ws_row: rows,
+        ws_col: columns,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
@@ -6204,7 +6310,6 @@ fn at_its_own_terminal(
 /// Reads what the terminal shows until it has shown `text`, within a
 /// minute in all: a screen that keeps redrawing without it fails rather
 /// than waits forever.
-#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut all = String::new();
@@ -6223,7 +6328,6 @@ fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     all
 }
 
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::ExitStatus {
     let mut status = None;
     assert!(

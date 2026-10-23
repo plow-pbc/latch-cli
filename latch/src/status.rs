@@ -64,19 +64,39 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
             default_host_reason: Some(code::not_logged_in.name.to_string()),
         });
     }
+    let directory = directory(state).await.map_err(|mut failure| {
+        if failure.code == code::plow_unreachable.name {
+            failure.next = Some("latch status --local".into());
+        }
+        failure
+    })?;
+    Ok(Status {
+        account: Some(directory.account),
+        local,
+        hosts: Some(directory.hosts),
+        default_host: directory.default_host,
+        default_host_reason: directory.default_host_reason,
+    })
+}
+
+/// What Plow says of the account this machine is logged in to.
+pub struct Directory {
+    pub account: Account,
+    /// This machine first; the rest in Plow's order.
+    pub hosts: Vec<Host>,
+    pub default_host: Option<String>,
+    pub default_host_reason: Option<String>,
+}
+
+/// Asks Plow, all at once, who the account is and which hosts it has, and
+/// picks the host a command without `--host` goes to, as `hosts::resolve`
+/// would, without registering or dialing anything.
+pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
     let config = state.require_login()?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?);
     let (peers, owner_uid, display_name) =
-        tokio::try_join!(plow.list_peers(), plow.owner_uid(), plow.display_name()).map_err(
-            |mut failure| {
-                if failure.code == code::plow_unreachable.name {
-                    failure.next = Some("latch status --local".into());
-                }
-                failure
-            },
-        )?;
+        tokio::try_join!(plow.list_peers(), plow.owner_uid(), plow.display_name())?;
     let mut listed = hosts::only_hosts(peers, &config.peer.key);
-    // This machine first; the rest in Plow's order.
     listed.sort_by_key(|host| !host.this_machine);
     let asked = std::env::var("LATCH_HOST").ok();
     let default = if hosts::this_machine_chosen(state, &config, asked.as_deref()) {
@@ -88,24 +108,21 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
         Ok(name) => (Some(name), None),
         Err(failure) => (None, Some(failure.code)),
     };
-    Ok(Status {
-        account: Some(Account {
+    Ok(Directory {
+        account: Account {
             owner_uid,
             display_name,
-        }),
-        local,
-        hosts: Some(
-            listed
-                .into_iter()
-                .map(|peer| Host {
-                    name: peer.name,
-                    key: peer.key,
-                    this_machine: peer.this_machine,
-                    online: peer.online,
-                    last_seen_at: peer.last_seen_at,
-                })
-                .collect(),
-        ),
+        },
+        hosts: listed
+            .into_iter()
+            .map(|peer| Host {
+                name: peer.name,
+                key: peer.key,
+                this_machine: peer.this_machine,
+                online: peer.online,
+                last_seen_at: peer.last_seen_at,
+            })
+            .collect(),
         default_host,
         default_host_reason,
     })
