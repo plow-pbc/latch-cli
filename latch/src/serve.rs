@@ -1750,6 +1750,7 @@ mod tests {
             details: Value::Null,
             code: "sandbox_denied".to_string(),
             message: "/etc/hosts: Operation not permitted".to_string(),
+            next: None,
         };
         assert_eq!(decision(&refused), "deny");
         assert_eq!(decision(&Response::Ok(Value::Null)), "allow");

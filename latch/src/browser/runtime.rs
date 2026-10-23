@@ -283,19 +283,9 @@ impl Worker {
         if read == 0 {
             return Err(lost());
         }
-        match serde_json::from_str(&line).map_err(|_| lost())? {
-            Response::Ok(value) => Ok(value),
-            Response::Error {
-                exit,
-                code,
-                message,
-                details,
-            } => {
-                let mut failure = Failure::relayed(exit, &code, message);
-                failure.details = details;
-                Err(failure)
-            }
-        }
+        serde_json::from_str::<Response>(&line)
+            .map_err(|_| lost())?
+            .into_result()
     }
 }
 

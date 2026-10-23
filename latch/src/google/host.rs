@@ -445,16 +445,9 @@ async fn invoke(
                 .map_err(|_| problem(code::google_worker_failed, json!({})))?;
             Ok((worker, output, folder))
         }
-        Response::Error {
-            exit,
-            code,
-            message,
-            details,
-        } => {
+        error @ Response::Error { .. } => {
             let _ = worker.finish().await;
-            let mut failure = Failure::relayed(exit, &code, message);
-            failure.details = details;
-            Err(failure)
+            Err(error.into_result().expect_err("an error"))
         }
     }
 }
