@@ -313,7 +313,7 @@ final class Onboarding {
     static func smsLink(to number: String) -> URL {
         // Only URL-unreserved characters stay as they are.
         let body = demoRequest.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? ""
-        return URL(string: "sms:\(number)&body=\(body)")!
+        return URL(string: "sms:\(number)?&body=\(body)")!
     }
 
     private var verified: Bool {

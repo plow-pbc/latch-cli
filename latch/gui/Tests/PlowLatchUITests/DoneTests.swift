@@ -25,7 +25,7 @@ struct DoneTests {
         let (flow, opened) = try done([agent("scout", number: "+15550000002", status: "active", created: "2026-10-23T05:37:45.397426")])
         #expect(flow.primaryTitle == "Text scout")
         flow.primary()
-        #expect(opened() == [URL(string: "sms:+15550000002&body=Use%20Latch%20to%20say%20%22hello%20world%22%20out%20loud%20on%20my%20Mac.")!])
+        #expect(opened() == [URL(string: "sms:+15550000002?&body=Use%20Latch%20to%20say%20%22hello%20world%22%20out%20loud%20on%20my%20Mac.")!])
         // Texting leaves Done up; Open Latch finishes.
         #expect(!flow.progress.finished)
         flow.finish()
@@ -56,7 +56,7 @@ struct DoneTests {
         ])
         #expect(flow.primaryTitle == "Text newer")
         flow.primary()
-        #expect(opened().map(\.absoluteString).allSatisfy { $0.hasPrefix("sms:+15550000003&body=") })
+        #expect(opened().map(\.absoluteString).allSatisfy { $0.hasPrefix("sms:+15550000003?&body=") })
         #expect(opened().count == 1)
     }
 }
