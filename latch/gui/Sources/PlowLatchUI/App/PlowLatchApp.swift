@@ -13,6 +13,7 @@ nonisolated public func latchGUIMain(_ executable: UnsafePointer<CChar>, _ state
         let client = LiveLatchClient(executable: latch, stateDir: state)
         PlowLatchApp.model = AppModel(client: client, loginItemOffered: isDefault)
         #if LATCH_TEST_HOOKS
+        if let fixture = TestHooks.fixture(stateDir: state) { PlowLatchApp.model = fixture }
         TestHooks.install(PlowLatchApp.model)
         #endif
         PlowLatchApp.main()

@@ -1,4 +1,5 @@
 import Observation
+import os
 import SwiftUI
 
 /// The app's state: this Mac's latch as `status --local` last said, and the
@@ -159,6 +160,8 @@ final class AppModel {
     /// a task that's cancelled when the screen or host changes: a cancelled
     /// read keeps what was held, and the reads after it don't start.
     func enter(_ section: SidebarItem, host: HostEntry?, refresh: Bool = false) async {
+        let interval = Self.signposter.beginInterval("enter", id: Self.signposter.makeSignpostID(), "\(section.rawValue, privacy: .public)")
+        defer { Self.signposter.endInterval("enter", interval) }
         switch section {
         case .home:
             if let host { await readSummary(of: host, vault: true, refresh: refresh) }
@@ -199,6 +202,10 @@ final class AppModel {
         await refreshAccount()
         await enter(section, host: host, refresh: true)
     }
+
+    /// Marks screen entries (and a test build's timed hooks) for
+    /// Instruments' Points of Interest.
+    static let signposter = OSSignposter(subsystem: "co.plow.latch", category: .pointsOfInterest)
 
     /// A read's answer, or nil when the task asking was cancelled: a
     /// cancelled read is no failure, and it leaves what was held as it was.

@@ -1,5 +1,6 @@
-#if LATCH_TEST_HOOKS
+#if DEBUG || LATCH_TEST_HOOKS
 import AppKit
+import QuartzCore
 
 /// A test build's remote control (`gui/build.sh --test-hooks`): distributed
 /// notifications `co.plow.latch.test.BUNDLE_ID.COMMAND`, with an argument
@@ -30,6 +31,24 @@ enum TestHooks {
         return "\(url.scheme ?? "")://\(url.host ?? "")\(url.port.map { ":\($0)" } ?? "")\(url.path[..<code.upperBound])…"
     }
 
+    /// The app on `SyntheticLatchClient`'s data instead of latch's, set up
+    /// and in the main window, when opened with `LATCH_HOOKS_FIXTURE` set
+    /// to its spec (`hooks.sh open --fixture SPEC`).
+    static func fixture(stateDir: String) -> AppModel? {
+        guard let text = ProcessInfo.processInfo.environment["LATCH_HOOKS_FIXTURE"] else { return nil }
+        guard let spec = SyntheticLatchClient.Spec(text) else {
+            FileHandle.standardError.write(Data("LATCH_HOOKS_FIXTURE: no such spec: \(text)\n".utf8))
+            exit(2)
+        }
+        let store = ProgressStore(memory: .init(), stateDir: stateDir)
+        store.save(Progress(passed: [:], finished: true))
+        return AppModel(client: SyntheticLatchClient(spec, stateDir: stateDir), store: store, loginItemOffered: false)
+    }
+
+    /// Where `measure` appends each hook's time to the window's next frame;
+    /// nil when not measuring.
+    static var timings: URL?
+
     static func install(_ app: AppModel) {
         // Nothing leaves the app: links and Finder reveals are recorded.
         app.open = { opened.append("open \(recorded($0))") }
@@ -54,9 +73,11 @@ enum TestHooks {
         func on(_ command: String, _ act: @escaping @MainActor (String?) -> Void) {
             center.addObserver(forName: .init("co.plow.latch.test.\(Bundle.main.bundleIdentifier ?? "").\(command)"), object: nil, queue: .main) { note in
                 let argument = note.object as? String
-                MainActor.assumeIsolated { act(argument) }
+                MainActor.assumeIsolated { run(command, argument, act) }
             }
         }
+        // Times each hook after it, until "measure" with no path (`run`).
+        on("measure") { path in timings = path.map { URL(filePath: $0) } }
         on("primary") { _ in app.onboarding?.primary() }
         on("skip") { _ in app.onboarding?.skip() }
         on("back") { _ in app.onboarding?.back() }
@@ -286,6 +307,77 @@ enum TestHooks {
             ]
             try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys]).write(to: URL(filePath: path))
         }
+    }
+}
+
+extension TestHooks {
+    /// A hook's action, timed while measuring: one JSON line per action
+    /// appended to `timings`, with the hook's name and never its argument,
+    /// which may be a value typed into the vault.
+    static func run(_ command: String, _ argument: String?, _ act: @MainActor (String?) -> Void) {
+        guard let timings, command != "measure" else { return act(argument) }
+        measure(command, to: timings) { act(argument) }
+    }
+
+    /// Runs an action and times it two ways, from just before it:
+    /// `next_refresh_ms`, when the display refresh after it is due (a
+    /// scheduling proxy: it doesn't show the change made that refresh), and
+    /// `visible_ms`, when the window server's image of the window first
+    /// differs from the one before the action, looked at on each refresh
+    /// for up to two seconds (null if nothing changed). Signposted too,
+    /// for Instruments' Points of Interest.
+    private static func measure(_ command: String, to file: URL, _ act: () -> Void) {
+        let window = NSApp?.windows.first { $0.isVisible && $0.canBecomeMain }
+        let before = window.flatMap(Render.image)
+        let start = CACurrentMediaTime()
+        let interval = AppModel.signposter.beginInterval("hook", id: AppModel.signposter.makeSignpostID(), "\(command, privacy: .public)")
+        act()
+        func ms(_ seconds: CFTimeInterval) -> Double { (seconds * 1000 * 10).rounded() / 10 }
+        guard let window, let view = window.contentView, let before else {
+            AppModel.signposter.endInterval("hook", interval)
+            return append(["command": command, "next_refresh_ms": NSNull(), "visible_ms": NSNull()], to: file)
+        }
+        var refresh: Double?
+        Refreshes.each(view) { link in
+            if refresh == nil { refresh = ms(link.targetTimestamp - start) }
+            let now = CACurrentMediaTime()
+            let changed = Render.image(window).map { $0.dataProvider?.data != before.dataProvider?.data } ?? false
+            guard changed || now - start > 2 else { return false }
+            AppModel.signposter.endInterval("hook", interval)
+            append(["command": command, "next_refresh_ms": refresh ?? NSNull(), "visible_ms": changed ? ms(now - start) : NSNull()], to: file)
+            return true
+        }
+    }
+
+    private static func append(_ line: [String: Any], to file: URL) {
+        guard var data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]) else { return }
+        data.append(UInt8(ascii: "\n"))
+        if let handle = try? FileHandle(forWritingTo: file) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: file)
+        }
+    }
+}
+
+/// A window's display refreshes: its display link's ticks, each handed
+/// over until one says it's done.
+private final class Refreshes: NSObject {
+    private let tick: (CADisplayLink) -> Bool
+
+    private init(_ tick: @escaping (CADisplayLink) -> Bool) {
+        self.tick = tick
+    }
+
+    static func each(_ view: NSView, _ tick: @escaping (CADisplayLink) -> Bool) {
+        // The display link holds it until it's invalidated.
+        view.displayLink(target: Refreshes(tick), selector: #selector(ticked)).add(to: .main, forMode: .common)
+    }
+
+    @objc private func ticked(_ link: CADisplayLink) {
+        if tick(link) { link.invalidate() }
     }
 }
 #endif
