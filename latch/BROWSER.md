@@ -251,7 +251,9 @@ reservations read the full addresses.
 A ref is bound to its frame's document: after a navigation, a ref from
 before it is refused with `stale_snapshot`, with a fresh element list in
 the error. A target that is hidden, disabled, covered or still moving is
-refused with `covered_target`. Input is the engine's own mouse and keys at a
+refused with `covered_target`; a covered one's `covered_by` names what a
+click would land on instead (its role and name, or a frame's site), and
+one under a layer of the page around its frame says so. Input is the engine's own mouse and keys at a
 person's pace (`isTrusted` is true); `select` focuses the list and types
 the option's label, as a person picks one without opening it. `type`
 types what the agent gives it into any text field, a password or a

@@ -184,7 +184,11 @@ search field; a code never into the sign-in's password field; a card's
 number and code only into a text, tel or number input whose token, if any,
 is theirs; anything else unless the markup contradicts it. Hidden,
 `aria-hidden`, inert, disabled, read-only and covered elements are
-refused. A weak mismatch (an email into a box marked `tel-national`) fills,
+refused, a covered one naming what covers it. A value goes in with no
+click, so only a layer that keeps a person from the field covers it:
+another control, a frame or a dialog that does not hold the field; its
+own floating label or a page's fixed banner does not. A press button is
+covered by anything on top of it. A weak mismatch (an email into a box marked `tel-national`) fills,
 flagged `hint_mismatch` in the result and the audit. These checks reject
 what the page's markup contradicts; they can't prove what a page means,
 so the mapping supplies the purpose and the site rule bounds who gets the

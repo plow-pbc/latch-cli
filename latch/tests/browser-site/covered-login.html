@@ -1,0 +1,28 @@
+<!doctype html><title>latch covered login test</title>
+<!-- A login whose password field has something drawn over its middle:
+     ?label, its own floating label (a span, not tied to the field);
+     ?footer, the page's fixed banner; ?prompt=PORT, another site's
+     sign-in prompt frame (from http://localhost:PORT/cross.html). Only
+     the frame keeps a person from the field. Posts to /welcome. -->
+<style>
+  body { margin: 0; }
+  input, button { position: absolute; left: 20px; width: 280px; height: 36px; box-sizing: border-box; }
+  #email { top: 20px; } #password { top: 80px; } #submit { top: 140px; }
+  #over { position: fixed; left: 0; top: 70px; width: 360px; height: 56px; border: 0; }
+</style>
+<form method="post" action="welcome">
+  <input id="email" type="email" name="email" autocomplete="username" aria-label="Email">
+  <input id="password" type="password" name="password" autocomplete="current-password" aria-label="Password">
+  <button id="submit" type="submit">Sign in</button>
+</form>
+<script>
+  const query = new URLSearchParams(location.search);
+  const over = query.has('prompt') ? document.createElement('iframe') : document.createElement('div');
+  over.id = 'over';
+  if (query.has('prompt')) over.src = 'http://localhost:' + query.get('prompt') + '/cross.html';
+  else if (query.has('label')) {
+    Object.assign(over.style, { left: '20px', top: '80px', width: '280px', height: '36px', position: 'absolute', padding: '8px', color: '#888' });
+    over.textContent = 'Password';
+  } else over.textContent = 'We use cookies to deliver your order faster.';
+  document.body.append(over);
+</script>
