@@ -42,7 +42,7 @@ it. Options after the tag (or alone) go to the installer: `--bin-dir DIR`,
 | The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer says so; add it. On macOS it links into `~/Applications/Plow Latch.app`. |
 | Your machine's state: its key, Plow login, config, audit log | `~/.latch` (made by the installer, filled in by `latch login`) |
 | gog, the Google CLI a host runs for `latch google` | `~/.latch/plugins/gog/<version>/` |
-| Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64; about 200 MB), unless `--no-browser` | `~/.latch/plugins/cft/<version>/` |
+| Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64/x86_64; about 200 MB), unless `--no-browser` | `~/.latch/plugins/cft/<version>/` |
 | Camoufox, with `--browser camoufox` (macOS, Linux arm64 and x86_64; about 1 GB on macOS, 1.5 GB on Linux) | `~/.latch/plugins/camoufox/<version>/` |
 
 `latch browser setup --engine chrome|camoufox` installs an engine later, on

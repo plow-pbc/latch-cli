@@ -2,7 +2,7 @@
 
 A host runs Chrome for Testing (CfT), the release pinned in
 `src/browser/cft.json`. latch downloads it, it does not ship it: on macOS
-and on Linux arm64 (the Pi) `install.sh` fetches the zip for the machine's
+and on Linux arm64/x86_64 `install.sh` fetches the zip for the machine's
 architecture by default, checks its sha256 against the pin, unpacks it
 (`ditto` on macOS, `unzip` on Linux) into `<state-dir>/plugins/cft/<version>/`
 (beside older versions, as gog's are) and copies the pin in as
@@ -11,12 +11,18 @@ installs Xvfb, for hosts with no screen. `install.sh --no-browser` installs
 no engine; `--browser camoufox` installs Camoufox instead (name both
 engines with `--browser chrome --browser camoufox`).
 
+On Linux x86_64, both engines are verified in headless mode: start the host
+with `latch serve --headless-browsers`. Headed startup currently fails with
+the pathname `DISPLAY` latch supplies for its private Xvfb display (Chrome
+reports "Missing X server or $DISPLAY"). Installing a `linux64` build does
+not fix that display limitation.
+
 The download is `browser-engines.sh`'s, beside `install-binary.sh`, which
 `install.sh` runs. `latch browser setup [--engine chrome|camoufox]` runs a
 copy of it that latch carries, with the same pins, to install an engine
 later; it is the host's owner's command, run on the host, and refuses a
 latch logged in as an agent. On Linux, installing Chrome either way first
-installs unzip and Xvfb if they are missing, asking for sudo once. An agent's browser call never downloads anything: with no engine it
+installs unzip, Xvfb and its runtime libraries if they are missing, asking for sudo once. An agent's browser call never downloads anything: with no engine it
 fails with `engine_not_installed`, whose `details.setup` is the owner's
 command (`latch browser setup --engine chrome`).
 
@@ -753,7 +759,7 @@ through Plow, are built only with `--features live-model`, which `just
 gatekeeper` runs.
 
 On Linux they are built only with `--features linux-browser-tests`, which
-`just test` (on Linux arm64, or `--linux` in the test container) builds
+`just test` (on Linux, or `--linux` in the test container) builds
 with, against the engines installed in `.dev/cft-state` or
 `LATCH_CFT_STATE`. Missing GTK3/audio/X11/DBus libraries join the
 installer's root package step; browser, Node and helper files stay inside
