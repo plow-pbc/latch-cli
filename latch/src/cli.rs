@@ -206,8 +206,8 @@ pub enum Command {
     /// Set this machine up, at a terminal: log in, connect Google, on a Mac
     /// turn on Messages and Contacts, all with no host running, then offer to
     /// start latch. Each step runs a latch command and is skipped once done,
-    /// so it can be run again any time
-    Setup,
+    /// so it can be run again any time; `--status` only lists the steps
+    Setup(SetupArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),
@@ -232,6 +232,14 @@ pub struct UpdateArgs {
     /// Only say whether a newer build is available; changes nothing
     #[arg(long)]
     pub check: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SetupArgs {
+    /// Only list each step as JSON: done, needed or blocked, why, and the
+    /// command that does it. Changes nothing and needs no terminal or host
+    #[arg(long)]
+    pub status: bool,
 }
 
 #[derive(Args, Debug)]

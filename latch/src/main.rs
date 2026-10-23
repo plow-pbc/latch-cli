@@ -95,7 +95,7 @@ fn main() -> ExitCode {
     let command = match cli.command {
         Command::Worker(args) => return worker::run(args),
         // At a terminal, running other latch commands; no runtime of its own.
-        Command::Setup => return setup::run(cli.state_dir),
+        Command::Setup(args) if !args.status => return setup::run(cli.state_dir),
         // A browser worker drives its engine on plain threads, no runtime.
         Command::BrowserWorker(args) => {
             return match StateDir::new(cli.state_dir) {
@@ -125,7 +125,8 @@ fn main() -> ExitCode {
         }
         command => command,
     };
-    let notice = !matches!(command, Command::Update(_));
+    // `setup --status` changes nothing, not even when the notice was shown.
+    let notice = !matches!(command, Command::Update(_) | Command::Setup(_));
     let state_dir = cli.state_dir.clone();
     let exit = run_async(cli.state_dir, command);
     if notice && let Ok(state) = StateDir::new(state_dir) {
@@ -209,6 +210,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             }
         },
         Command::Status(args) if args.local => to_json(status::local(&state)?),
+        Command::Setup(_) => to_json(setup::status(&state)?),
         Command::Status(args) => {
             let output = status::run(&state).await?;
             if !args.pretty {
@@ -363,11 +365,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             let connector = plugins::Connector::named(&name)?;
             to_json(messages::access::check_here(&state, connector).await?)
         }
-        Command::Worker(_)
-        | Command::BrowserWorker(_)
-        | Command::Help(_)
-        | Command::Skill
-        | Command::Setup => {
+        Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
             unreachable!("handled in main")
         }
     }

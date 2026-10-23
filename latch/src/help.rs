@@ -1073,16 +1073,16 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "setup",
         runs_on: |_| RunsOn::Local,
-        output: "At a terminal, each step and the latch command it ran; skipped steps say so.",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so. With --status, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host).",
         effect: Repeatable(
-            "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped",
+            "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
         ),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Set up this machine, or finish setting it up",
-            &["setup"],
-        )],
+        examples: &[
+            ex("Set up this machine, or finish setting it up", &["setup"]),
+            ex("See which setup steps are done", &["setup", "--status"]),
+        ],
     },
     Entry {
         id: "skill",
