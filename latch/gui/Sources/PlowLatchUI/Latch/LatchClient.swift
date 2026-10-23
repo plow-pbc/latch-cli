@@ -52,6 +52,11 @@ nonisolated protocol LatchClient: Sendable {
     func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
+    /// `latch plugins enable google --events [--add-account]`: each sign-in
+    /// link latch gets from Plow while it waits for a new Google account,
+    /// then Google on. Ends with no `enabled` only when stopped. Stopping
+    /// the iteration ends the wait.
+    func signInGoogle(addAccount: Bool) -> AsyncThrowingStream<GoogleSignInEvent, Error>
     /// `latch status --local --follow`: this Mac's state, again whenever it
     /// changes. Stopping the iteration ends it.
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error>
@@ -246,6 +251,12 @@ nonisolated struct LiveLatchClient: LatchClient {
     func enable(_ plugin: String) async throws -> GoogleEnabled? {
         let data = try await run(["plugins", "enable", plugin])
         return plugin == "google" ? try decode(GoogleEnabled.self, data) : nil
+    }
+
+    func signInGoogle(addAccount: Bool) -> AsyncThrowingStream<GoogleSignInEvent, Error> {
+        stream(["plugins", "enable", "google", "--events"] + (addAccount ? ["--add-account"] : [])) {
+            try decode(GoogleSignInLine.self, $0).event
+        }
     }
 
     func perform(_ args: [String]) async throws {

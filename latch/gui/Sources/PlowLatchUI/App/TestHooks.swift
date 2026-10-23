@@ -20,9 +20,16 @@ enum TestHooks {
     /// A helper floated by `grant-helper`.
     static var helper: GrantHelper?
 
+    /// A link as `state` records it. A Google sign-in link's code is a
+    /// credential until used, so only the link's shape is kept.
+    static func recorded(_ url: URL) -> String {
+        guard let code = url.path.range(of: "/connect/") else { return url.absoluteString }
+        return "\(url.scheme ?? "")://\(url.host ?? "")\(url.port.map { ":\($0)" } ?? "")\(url.path[..<code.upperBound])…"
+    }
+
     static func install(_ app: AppModel) {
         // Nothing leaves the app: links and Finder reveals are recorded.
-        app.open = { opened.append("open \($0.absoluteString)") }
+        app.open = { opened.append("open \(recorded($0))") }
         app.reveal = { opened.append("reveal \($0.path)") }
         GrantHelper.settingsApp = { standIn }
         let guide = app.guideGrant
@@ -76,11 +83,11 @@ enum TestHooks {
         on("record") { id in app.selectedRecord = id }
         on("filter") { name in if let filter = name.flatMap(ActivityView.Filter.init(rawValue:)) { app.activityFilter = filter } }
         on("connections") { value in app.showConnections = value == "1" }
-        // Try a request: "AS|REQUEST", AS being you, new, or an agent's uid.
+        // Try a request: "AS|REQUEST", AS being new or an agent's uid.
         on("try") { argument in
             guard let argument, let bar = argument.firstIndex(of: "|"), let host = app.host else { return }
             let who = String(argument[..<bar])
-            app.trial.caller = who == "you" ? .you : who == "new" ? .newAgent : .agent(who)
+            app.trial.caller = who == "new" ? .newAgent : .agent(who)
             app.trial.request = String(argument[argument.index(after: bar)...])
             Task { await app.trial.run(on: host, app: app) }
         }

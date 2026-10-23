@@ -24,8 +24,7 @@ and `status --local --follow`.
   picks it.
 - Never copy or borrow a device login (a machine's state folder or its
   token) onto another machine to act from there: hosts would take that
-  for the owner's own request, not judge it against what the owner asked
-  you.
+  for the owner's own request instead of judging it as yours.
 - Learn a command as you need it: `latch help COMMAND`, then
   `latch help COMMAND --examples`. `latch help --json` describes every
   command: its inputs, output, side effects and retry rule.
@@ -103,8 +102,16 @@ shell-expanded arguments are visible in the trusted host's process list.
 
 ## The gatekeeper judges your calls
 
-The host's gatekeeper checks what you ask for against what the owner
-asked for, in their Plow chat with you and in their rules on the host.
+Everyday work for the owner needs no request: looking things up
+(calendar, email, messages, contacts, files) and creating or editing their
+ordinary files. Anything riskier needs the owner's OK, in their rules on
+the host or their Plow chat with you: sending or posting, buying or paying,
+deleting, changing a calendar, an account or a shared system, installing or
+running software from the internet, giving a command network access,
+reading passwords, keys or other secrets, and sending files or data off the
+machine. An OK to read something isn't an OK to change it. Respect a "do
+not" in either, everyday work included. Connector, path and sandbox limits
+apply either way.
 An agent whose line has several Plow chats selects the one it acts for
 with `--plow-chat C` or `LATCH_PLOW_CHAT` on exec, file, Google, Messages,
 Contacts and browser session calls. Exit 2, `which_chat`, lists the choices;
@@ -116,6 +123,7 @@ Exit 4 is a refusal, and its code says what you may do:
 
 - `gatekeeper_denied` with reason `not_covered`: ask the owner in your
   Plow chat, naming exactly what you will do, and retry once they agree.
+  For work you'll repeat, the owner can allow it in their rules instead.
 - `confirm_needed`: a browser step that can't be undone, nothing sent. If
   it is what the task needs, carry it out with `latch browser do --confirm
   C`, as its message says.

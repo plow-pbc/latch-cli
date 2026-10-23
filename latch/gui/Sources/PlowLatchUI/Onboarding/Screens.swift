@@ -45,7 +45,7 @@ struct WelcomeView: View {
             .accessibilityAddTraits(.isHeader)
             .opacity(frame.tagline)
             .offset(y: frame.taglineOffset)
-            Text("Your agent can use this Mac. Nothing runs unless you asked for it.")
+            Text("Your agent can do everyday work on this Mac. Anything riskier needs your OK.")
                 .font(Brand.lead)
                 .foregroundStyle(Brand.muted)
                 .multilineTextAlignment(.center)
@@ -271,10 +271,10 @@ struct PrivacyView: View {
                 .font(.callout)
                 .foregroundStyle(Brand.volt)
             ScreenHeader(title: "You decide what your agents do on this Mac.",
-                         lead: "Their requests are checked against what you asked for, and every one is on the record. The connection is encrypted end to end.")
+                         lead: "Their requests are checked before they run, and every one is on the record. The connection is encrypted end to end.")
             VStack(alignment: .leading, spacing: 0) {
                 statement("checkmark", "Checked before it runs.",
-                          "Commands, file changes, Google calls and browser plans are checked against what you asked for. If the check can't run, nothing runs.")
+                          "Commands, file changes, Google calls and browser plans are checked, and anything risky needs your OK. If the check can't run, nothing runs.")
                 Rectangle().fill(Brand.line).frame(height: 1).padding(.leading, 44)
                 statement("list.bullet", "On the record.",
                           "Every request, allowed or refused, goes in a sealed log on this Mac.")
@@ -351,8 +351,9 @@ struct GoogleView: View {
                     ProgressView().controlSize(.small).accessibilityHidden(true)
                     Text("Finish signing in with Google in your browser. This screen updates when you're done.")
                 }
-                Button("Open the sign-in page again") { flow.connectGoogle() }
+                Button("Open the sign-in page again") { flow.openGoogleSignInAgain() }
                     .buttonStyle(.link).foregroundStyle(Brand.volt)
+                    .disabled(flow.googleSignInLink == nil)
             }
         case .connected:
             if !flow.googleAccounts.isEmpty {

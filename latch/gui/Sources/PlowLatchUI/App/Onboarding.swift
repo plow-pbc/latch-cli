@@ -34,7 +34,7 @@ final class Onboarding {
         case checking
         /// No Google account connected in Plow yet.
         case notConnected
-        /// The person went to sign in; the screen checks every few seconds.
+        /// The person went to sign in; latch waits for the account.
         case waiting
         /// On here, with an account connected in Plow.
         case connected
@@ -71,9 +71,9 @@ final class Onboarding {
 
     static let decks = [
         Deck(name: "Personal assistant",
-             rules: "Allow agents to check our calendar, find messages about dinner, order groceries online and save shopping lists in ~/Documents. Do not send email or write files outside ~/Documents.",
+             rules: "Allow agents to read our calendar, find messages about dinner, order groceries online and save shopping lists in ~/Documents. Do not send email or write files outside ~/Documents.",
              examples: [
-                 Example(title: "Check our calendar", symbol: "calendar",
+                 Example(title: "Read our calendar", symbol: "calendar",
                          shown: "latch google -- calendar events primary --from 2026-10-26 --to 2026-11-02",
                          request: ["google", "--", "calendar", "events", "primary", "--from", "2026-10-26", "--to", "2026-11-02"]),
                  Example(title: "Find messages about dinner", symbol: "message",
@@ -89,7 +89,7 @@ final class Onboarding {
                          request: ["google", "--", "gmail", "send", "--to", "jordan@example.com", "--subject", "Update", "--body", "Ready for review."]),
              ]),
         Deck(name: "Executive assistant",
-             rules: "Allow agents to read and send work email, check my calendar and install dependencies in ~/work with network access. Do not read my personal messages.",
+             rules: "Allow agents to read and send email, read my calendar and install dependencies in ~/work with network access. Do not read or search this Mac's Messages.",
              examples: [
                  Example(title: "Find unread email", symbol: "envelope",
                          shown: "latch google -- gmail search is:unread", request: ["google", "--", "gmail", "search", "is:unread"]),
@@ -100,9 +100,9 @@ final class Onboarding {
                          shown: "latch google -- calendar freebusy primary --from 2026-10-26 --to 2026-11-02",
                          request: ["google", "--", "calendar", "freebusy", "primary", "--from", "2026-10-26", "--to", "2026-11-02"]),
                  Example(title: "Install project dependencies", symbol: "shippingbox",
-                         shown: "latch exec --write ~/Documents --network -- npm install",
-                         request: ["exec", "--write", "~/Documents", "--network", "--", "npm", "install"]),
-                 Example(title: "Search personal messages", symbol: "message",
+                         shown: "latch exec --write ~/work --network -- npm install",
+                         request: ["exec", "--write", "~/work", "--network", "--", "npm", "install"]),
+                 Example(title: "Search this Mac's Messages", symbol: "message",
                          shown: "latch messages search dinner", request: ["messages", "search", "dinner"]),
              ]),
     ]
@@ -134,10 +134,10 @@ final class Onboarding {
     // Connect Google.
     var google: Google = .checking
     var googleAccounts: [String] = []
-    /// Where latch says to connect Google, once it has said.
-    var googleConnectURL: URL?
     /// The last wait for a sign-in ended with no account in Plow.
     var googleWaitEnded = false
+    /// The newest sign-in link latch gave, kept only to open again.
+    private(set) var googleSignInLink: URL?
     private var googleTask: Task<Void, Never>?
     /// Try again's or a return's check, which leaving the screen stops.
     private var googleCheck: Task<Void, Never>?
@@ -236,6 +236,7 @@ final class Onboarding {
         googleTask = nil
         googleCheck?.cancel()
         googleCheck = nil
+        googleSignInLink = nil
         if google == .waiting { google = .notConnected }
         accessTask?.cancel()
         accessTask = nil
@@ -482,11 +483,6 @@ final class Onboarding {
 
     // MARK: Connect Google
 
-    /// How often the screen checks while the person signs in, and for how
-    /// long, as `latch plugins enable google` waits at a terminal.
-    var googleRecheck: Duration = .seconds(3)
-    var googleWaitLimit: Duration = .seconds(300)
-
     /// What latch says of Google now: on arrival, on every return to the
     /// app, and on Try again. An account connected in Plow turns Google on
     /// here, with no press.
@@ -500,33 +496,53 @@ final class Onboarding {
     }
 
     /// Try again, or the app back in front: a check that leaving the
-    /// screen stops. One already under way stands for it.
+    /// screen stops. One already under way stands for it, and while latch
+    /// waits for a sign-in, its answer does.
     func recheckGoogle() {
-        guard step == .google, !lookingAtGoogle else { return }
+        guard step == .google, !lookingAtGoogle, google != .waiting else { return }
         googleCheck = Task { await checkGoogle() }
     }
 
-    /// "Connect Google": the page latch names opens in the browser, and the
-    /// screen waits for an account, checking every few seconds while it
-    /// shows; only ever on a click.
+    /// "Connect Google": latch gets a sign-in link from Plow, which opens in
+    /// the browser, and waits (up to 5 minutes, while the screen shows) for
+    /// the account, then turns Google on; only ever on a click.
     func connectGoogle() {
-        guard let url = googleConnectURL else { return }
         googleWaitEnded = false
         google = .waiting
-        app.open(url)
         googleTask?.cancel()
         googleTask = Task {
-            let deadline = ContinuousClock.now + googleWaitLimit
-            while !Task.isCancelled, ContinuousClock.now < deadline {
-                try? await Task.sleep(for: googleRecheck)
-                guard !Task.isCancelled, google == .waiting else { return }
-                await checkGoogle()
-            }
-            if !Task.isCancelled, google == .waiting {
-                google = .notConnected
-                googleWaitEnded = true
+            do {
+                let accounts = try await app.signInWithGoogle(addAccount: false) { googleSignInLink = $0 }
+                guard !Task.isCancelled else { return }
+                googleSignInLink = nil
+                guard let accounts else {
+                    // latch stopped before it answered: what is there now.
+                    google = .checking
+                    return await checkGoogle()
+                }
+                googleAccounts = accounts
+                google = .connected
+            } catch {
+                guard !Task.isCancelled else { return }
+                googleSignInLink = nil
+                if (error as? LatchError)?.code == "sign_in_timeout" {
+                    google = .notConnected
+                    googleWaitEnded = true
+                } else {
+                    google = Self.googleProblem(error)
+                }
             }
         }
+    }
+
+    /// "Open the sign-in page again": the newest link latch gave.
+    func openGoogleSignInAgain() {
+        if let googleSignInLink { app.open(googleSignInLink) }
+    }
+
+    /// For snapshots: latch has given a sign-in link.
+    func stage(googleSignInLink: URL) {
+        self.googleSignInLink = googleSignInLink
     }
 
     /// One look: `setup --status` reads what Plow says without changing
@@ -547,16 +563,13 @@ final class Onboarding {
         guard let accounts = step.accounts else { return .unreachable }
         googleAccounts = accounts
         if step.state == "done" { return .connected }
-        guard !accounts.isEmpty else {
-            googleConnectURL = step.connectUrl
-            if google == .waiting { return .waiting }
-            return step.connectUrl == nil ? .failed(Self.couldNotCheck) : .notConnected
-        }
+        // While latch waits for a sign-in, turning Google on is its to do.
+        if google == .waiting { return .waiting }
+        guard !accounts.isEmpty else { return .notConnected }
         // Turning Google on is this screen's alone: not once it was left.
         guard !Task.isCancelled, self.step == .google else { return nil }
         do {
             googleAccounts = try await client.enable("google")?.accounts ?? accounts
-            googleTask?.cancel()
             return .connected
         } catch {
             return Task.isCancelled ? nil : Self.googleProblem(error)

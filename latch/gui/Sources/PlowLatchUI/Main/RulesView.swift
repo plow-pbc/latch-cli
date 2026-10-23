@@ -179,7 +179,7 @@ private struct RulesEditor: View {
 }
 
 /// Try a request: the verdict the gatekeeper would give it on this host
-/// now, as you, an agent, or a new agent. Nothing runs.
+/// now, as an agent or a new agent. Nothing runs.
 private struct TryPanel: View {
     var host: HostEntry
     var everyAgentSaved: String
@@ -188,8 +188,7 @@ private struct TryPanel: View {
     var body: some View {
         @Bindable var trial = app.trial
         Section {
-            Picker("As", selection: $trial.caller) {
-                Text("You").tag(Caller.you)
+            Picker("Agent", selection: $trial.caller) {
                 ForEach(app.agents ?? []) { Text($0.name).tag(Caller.agent($0.uid)) }
                 Text("A new agent").tag(Caller.newAgent)
             }
@@ -205,7 +204,7 @@ private struct TryPanel: View {
                     .onAppear { if trial.draft.isEmpty { trial.draft = everyAgentSaved } }
             }
             HStack {
-                Text("Nothing runs and nothing is recorded. Each try is billed like a real judgment, about $0.0001.")
+                Text("Defaults and these rules; chat isn't included; nothing runs. Previews don't appear in Activity. Each try is billed like a real judgment, about $0.0001.")
                     .font(.callout).foregroundStyle(.secondary)
                 Spacer()
                 Button(trial.trying ? "Trying…" : "Try") { Task { await trial.run(on: host, app: app) } }
@@ -227,14 +226,14 @@ private struct TryPanel: View {
 }
 
 /// Who a try is judged as.
-enum Caller: Hashable { case you, newAgent, agent(String) }
+enum Caller: Hashable { case newAgent, agent(String) }
 
 /// Try a request's state, kept while the person moves around: the request,
 /// who it's tried as, a draft, and each host's last verdict.
 @Observable
 final class Trial {
     var request = ""
-    var caller = Caller.you
+    var caller = Caller.newAgent
     var draft = ""
     var useDraft = false
     private(set) var trying = false
@@ -295,9 +294,8 @@ struct VerdictView: View {
     var title: String {
         switch verdict.verdict {
         case "allow": "Would be allowed"
-        case "not_covered": "Not covered: would be refused"
+        case "not_covered": "Needs your OK: would be refused"
         case "owner_said_no": "You said no: would be refused"
-        case "no_intent": "No instructions from you: would be refused"
         case "host_refused": "The host refuses it: would be refused"
         default: verdict.verdict.replacingOccurrences(of: "_", with: " ")
         }
@@ -306,7 +304,7 @@ struct VerdictView: View {
     private var symbol: String {
         switch verdict.verdict {
         case "allow": "checkmark.circle.fill"
-        case "not_covered", "no_intent": "questionmark.circle.fill"
+        case "not_covered": "questionmark.circle.fill"
         case "host_refused": "nosign"
         default: "xmark.circle.fill"
         }
@@ -315,7 +313,7 @@ struct VerdictView: View {
     private var tint: Color {
         switch verdict.verdict {
         case "allow": .green
-        case "not_covered", "no_intent": .orange
+        case "not_covered": .orange
         default: .red
         }
     }

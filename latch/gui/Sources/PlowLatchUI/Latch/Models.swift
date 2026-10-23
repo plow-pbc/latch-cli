@@ -315,7 +315,7 @@ nonisolated struct ImportResult: Decodable, Equatable {
 
 /// `latch rules try`: the verdict a request would get now, without running it.
 nonisolated struct RulesTry: Decodable, Equatable {
-    /// `allow`, `not_covered`, `owner_said_no`, `no_intent` or `host_refused`.
+    /// `allow`, `not_covered`, `owner_said_no` or `host_refused`.
     var verdict: String
     /// Why the host refused it before asking the judge, for `host_refused`.
     var refused: LatchFailure?
@@ -339,8 +339,6 @@ nonisolated struct SetupStatus: Decodable, Equatable {
         var enabled: Bool?
         /// Google's: the accounts connected in Plow, when Plow said.
         var accounts: [String]?
-        /// Google's, when none is connected in Plow: where to connect one.
-        var connectUrl: URL?
         /// Messages' and Contacts', when asked: whether Plow Latch has Full
         /// Disk Access (`granted`, `not_granted` or `unknown`).
         var access: String?
@@ -366,6 +364,33 @@ nonisolated struct PluginsList: Decodable, Equatable {
 /// `latch plugins enable google`'s answer.
 nonisolated struct GoogleEnabled: Decodable, Equatable {
     var accounts: [String]
+}
+
+/// An event of `latch plugins enable google --events`.
+nonisolated enum GoogleSignInEvent: Equatable {
+    /// A single-use Google sign-in link, a credential until used: opened in
+    /// the browser, never shown, saved or logged. A later one replaces it.
+    case link(URL)
+    /// Google is on, with these accounts.
+    case enabled(GoogleEnabled)
+}
+
+/// A line of `latch plugins enable google --events`: its event, or nil for
+/// the opening `hello`, the closing `error` (latch's error comes on stderr
+/// as for any command) and any type a newer latch adds.
+nonisolated struct GoogleSignInLine: Decodable {
+    var event: GoogleSignInEvent?
+
+    private enum Keys: String, CodingKey { case type, url, result }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        switch try c.decode(String.self, forKey: .type) {
+        case "link": event = .link(try c.decode(URL.self, forKey: .url))
+        case "result": event = .enabled(try c.decode(GoogleEnabled.self, forKey: .result))
+        default: event = nil
+        }
+    }
 }
 
 nonisolated enum LatchJSON {

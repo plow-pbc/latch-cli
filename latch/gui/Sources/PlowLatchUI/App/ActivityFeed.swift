@@ -159,7 +159,7 @@ nonisolated extension AuditRecord {
             case .connected: "Connected"
             case let .allowed(note): note.map { "Allowed · \($0)" } ?? "Allowed"
             case let .refused(why): "Refused · \(why)"
-            case .notCovered: "Refused · not covered"
+            case .notCovered: "Refused · needed your OK"
             }
         }
     }
@@ -170,7 +170,6 @@ nonisolated extension AuditRecord {
         switch outcome {
         case "exec_denied": return .refused("exec is off for this agent")
         case "not_enabled": return .refused("\(op.capitalized) is off")
-        case "no_intent": return .refused("no instructions from you")
         case "gatekeeper_unavailable": return .refused("judge unavailable")
         case "caller_denied": return .refused("caller not allowed")
         case "owner_only": return .refused("the owner's only")

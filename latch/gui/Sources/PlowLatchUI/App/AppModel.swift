@@ -249,10 +249,81 @@ final class AppModel {
         connections = Connections(try? await client.setupStatus())
     }
 
-    /// "Connect…" or "Add another account…": the page latch names, only on
-    /// a click.
-    func connectGoogle() {
-        if case let .google(_, connect?)? = connections { open(connect) }
+    /// Connections' sign-in with Google while its sheet shows, and the
+    /// newest link latch gave, kept only to open again.
+    private(set) var googleSignIn: GoogleSignIn?
+    private var googleSignInTask: Task<Void, Never>?
+    private var googleSignInLink: URL?
+
+    /// "Connect Google Account…" or "Add Another Account…" (`adding`), and
+    /// the sheet's Try Again: latch gets a sign-in link from Plow and waits
+    /// for the new account, then turns Google on here; the sheet shows while
+    /// it waits and goes once Google is on. Only ever on a click.
+    func connectGoogle(adding: Bool) {
+        let sheet = GoogleSignIn(adding: adding)
+        endGoogleSignIn()
+        googleSignIn = sheet
+        googleSignInTask = Task {
+            let signedIn = await Self.result {
+                try await self.signInWithGoogle(addAccount: sheet.adding) { self.googleSignInLink = $0 }
+            }
+            guard !Task.isCancelled else { return }
+            switch signedIn {
+            case .success(_?):
+                googleSignInTask = nil
+                googleSignInLink = nil
+                googleSignIn = nil
+                await refreshConnections()
+                if let mac = hosts.first(where: \.isThisMac) {
+                    summaries[mac.name, default: HostSummary()].plugins = await Self.result { try await self.client.pluginsList(host: nil) }
+                }
+            case .success(nil):
+                googleSignIn?.failure = GoogleSignIn.stopped
+            case let .failure(error):
+                googleSignIn?.failure = GoogleSignIn.problem(error, adding: sheet.adding)
+            }
+        }
+    }
+
+    /// The sheet's "Open the Sign-In Page Again": the newest link.
+    func openGoogleSignInAgain() {
+        if let googleSignInLink { open(googleSignInLink) }
+    }
+
+    var canOpenGoogleSignInAgain: Bool { googleSignInLink != nil }
+
+    /// Cancel, or the sheet going: latch stops waiting.
+    func endGoogleSignIn() {
+        googleSignInTask?.cancel()
+        googleSignInTask = nil
+        googleSignInLink = nil
+        googleSignIn = nil
+    }
+
+    /// Signs in with Google through latch: the first link it gives opens in
+    /// the browser, and each is handed to `newLink` for opening again. The
+    /// accounts once Google is on; nil if latch stopped before.
+    func signInWithGoogle(addAccount: Bool, newLink: (URL) -> Void) async throws -> [String]? {
+        var opened = false
+        for try await event in client.signInGoogle(addAccount: addAccount) {
+            switch event {
+            case let .link(url):
+                newLink(url)
+                if !opened {
+                    opened = true
+                    open(url)
+                }
+            case let .enabled(result):
+                return result.accounts
+            }
+        }
+        return nil
+    }
+
+    /// For snapshots: Connections' sign-in sheet.
+    func stage(googleSignIn: GoogleSignIn?, link: URL? = nil) {
+        self.googleSignIn = googleSignIn
+        googleSignInLink = link
     }
 
     /// A plugin's "Manage accounts…": the account's connections.
