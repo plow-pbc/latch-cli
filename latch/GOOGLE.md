@@ -21,7 +21,9 @@ none connected, it gets a single-use Google sign-in link from Plow (it
 works once, for about 2 minutes): at a terminal it shows the link and a QR
 code and waits up to 5 minutes for the account, then turns Google on;
 otherwise it fails with `google_not_connected`, the link in `connect_url`.
-`--events` reports the link, then the result, as JSON lines for an app. The
+`--events` reports the link, then the result, as JSON lines for an app.
+`--add-account` gets the same link to add another Google account when one
+is connected already. The
 link is a credential until used: latch never writes it to the audit or a
 log. Until then every Google call gets `not_enabled`. `latch plugins disable google`
 only stops this host asking Plow for Google credentials; nothing is revoked

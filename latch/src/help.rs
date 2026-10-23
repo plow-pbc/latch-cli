@@ -1157,7 +1157,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "plugins.enable",
         runs_on: |_| RunsOn::Local,
-        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do. When Plow has no Google account yet, `enable google` gets a single-use sign-in link from Plow: at a terminal it shows the link and a QR code and waits up to 5 minutes for the account; otherwise it fails with google_not_connected, the link in `connect_url` with its `expires_at`. With --events, JSON lines instead: `connect` (`connect_url`, `expires_at`), `waiting`, then `enabled` (the result) or `error` (connect_timeout, exit 5, when no account appeared: the person may still be signing in).",
+        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do. When Plow has no Google account yet, `enable google` gets a single-use sign-in link from Plow: at a terminal it shows the link and a QR code and waits up to 5 minutes for the account; otherwise it fails with google_not_connected, the link in `connect_url` with its `expires_at`. With --events, JSON lines instead: `connect` (`connect_url`, `expires_at`), `waiting`, then `enabled` (the result) or `error` (connect_timeout, exit 5, when no account appeared: the person may still be signing in). With --add-account, the same link to add another Google account even when one is connected, and the same wait; without a terminal or --events, the answer is the link (`connect_url`, `expires_at`).",
         effect: Repeatable(
             "runs the connector's setup and, if it succeeds, turns it on for this host",
         ),
@@ -1168,6 +1168,10 @@ const ENTRIES: &[Entry] = &[
             ex(
                 "From an app: get the sign-in link as a line, then the result",
                 &["plugins", "enable", "google", "--events"],
+            ),
+            ex(
+                "Add another Google account",
+                &["plugins", "enable", "google", "--add-account"],
             ),
         ],
     },

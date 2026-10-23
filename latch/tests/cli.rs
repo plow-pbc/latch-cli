@@ -1712,6 +1712,8 @@ struct LiveState {
     seen: Vec<(String, Option<String>)>,
     /// The token minted for the one connected Google account, if any.
     google: Option<String>,
+    /// Google accounts added after that one, listed by `GET /v1/connectors`.
+    added_google: Vec<String>,
     /// The real Plow decision route and the login to ask it with: its
     /// decisions go there instead (`real_judge`).
     judge: Option<(String, String)>,
@@ -1733,6 +1735,7 @@ impl LivePlow {
                 peers: Vec::new(),
                 seen: Vec::new(),
                 google: None,
+                added_google: Vec::new(),
                 judge: None,
             })),
         };
@@ -1820,11 +1823,14 @@ impl LivePlow {
         match (method, path) {
             // Which accounts are connected, as Plow says, and where it connects them.
             ("GET", "/v1/connectors") if kind == "device" => {
-                let accounts: Vec<Value> = state
+                let mut accounts: Vec<Value> = state
                     .google
                     .iter()
                     .map(|_| json!({"account": "owner@example.com", "is_default": true}))
                     .collect();
+                for added in &state.added_google {
+                    accounts.push(json!({"account": added, "is_default": false}));
+                }
                 (
                     200,
                     json!({"gmail": {"connected": !accounts.is_empty(), "connector": "gmail",
@@ -5055,13 +5061,46 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     let all = all + &shows(&shown, "\"enabled\"");
     assert!(enabling.wait().unwrap().success(), "{all}");
 
-    // Four links, each minted once, none kept anywhere in the state folder.
+    // Connected already: a plain enable mints nothing, and `--add-account`
+    // offers a link for another account. From a pipe the link is the answer.
+    let output = latch(&host, &enable, &[]);
+    assert!(output.status.success(), "{output:?}");
+    let adding = ["plugins", "enable", "google", "--add-account"];
+    let output = latch(&host, &adding, &[]);
+    assert!(output.status.success(), "{output:?}");
+    let offered: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(offered["connect_url"], link(5), "{offered}");
+    assert!(offered["expires_at"].is_string(), "{offered}");
+    // With `--events`, it waits for the second account, then reports both.
+    let mut child = latch_command(&host, &[&adding[..], &["--events"]].concat(), &[])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
+    assert_eq!(next()["connect_url"], link(6));
+    assert_eq!(next()["type"], "waiting");
+    plow.state.lock().unwrap().added_google = vec!["second@example.com".into()];
+    let enabled = next();
+    assert_eq!(enabled["type"], "enabled", "{enabled}");
+    assert!(child.wait().unwrap().success());
+    #[cfg(target_os = "macos")]
+    {
+        let messages = ["plugins", "enable", "messages", "--add-account"];
+        let output = latch(&host, &messages, &[]);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let refused: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(refused["error"]["code"], "bad_arguments");
+    }
+
+    // Six links, each minted once, none kept anywhere in the state folder.
     let minted = plow
         .seen()
         .iter()
         .filter(|(line, _)| line.contains("connect-code"))
         .count();
-    assert_eq!(minted, 4);
+    assert_eq!(minted, 6);
     fn kept(dir: &Path, found: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();

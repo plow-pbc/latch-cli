@@ -26,6 +26,13 @@ const HOLD_WITHIN: Duration = Duration::from_secs(60);
 
 pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> {
     let events = matches!(args.command, PluginsCommand::Enable { events: true, .. });
+    let adding = matches!(
+        args.command,
+        PluginsCommand::Enable {
+            add_account: true,
+            ..
+        }
+    );
     let (host, args) = match args.command {
         PluginsCommand::List { host } if hosts::local_target(state, host.as_deref())? => {
             return super::list_saved(state);
@@ -34,10 +41,18 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
             hosts::resolve(state, host).await?,
             json!({"command": "list"}),
         ),
-        PluginsCommand::Enable { name, .. } => (
-            this_host(state)?,
-            json!({"command": "enable", "name": name}),
-        ),
+        PluginsCommand::Enable {
+            name, add_account, ..
+        } => {
+            if add_account && Connector::named(&name)? != Connector::Google {
+                let message = "only Google takes --add-account".to_string();
+                return Err(Failure::usage("bad_arguments", message));
+            }
+            (
+                this_host(state)?,
+                json!({"command": "enable", "name": name}),
+            )
+        }
         PluginsCommand::Disable { name } => (
             this_host(state)?,
             json!({"command": "disable", "name": name}),
@@ -58,9 +73,12 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
             answer => answer,
         }
     };
+    if adding {
+        return super::connect::google(state, None, events, send).await;
+    }
     match send().await {
         Err(failure) if failure.code == "google_not_connected" => {
-            super::connect::google(state, failure, events, send).await
+            super::connect::google(state, Some(failure), events, send).await
         }
         answer => answer,
     }

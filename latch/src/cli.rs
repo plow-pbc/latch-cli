@@ -754,6 +754,11 @@ pub enum PluginsCommand {
         /// first (`connect`), then the result once the account appears
         #[arg(long)]
         events: bool,
+        /// Google only: sign in with another Google account and add it to
+        /// Plow, even when one is connected already. Without a terminal or
+        /// --events, the answer is the link (`connect_url`, `expires_at`)
+        #[arg(long)]
+        add_account: bool,
     },
     /// Turn NAME off on this machine's host: a running one refuses new calls
     /// at once, and this returns once its running ones have finished (owner only)

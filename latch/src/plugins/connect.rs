@@ -4,6 +4,9 @@
 //! QR code, and the command waits for the account, then enables Google. An
 //! app (`--events`) gets the link as a line first and the result once the
 //! account appears. Anything else fails as before, the link in the error.
+//! With Google already connected, `--add-account` offers the same link to
+//! add another account; without a terminal or `--events`, the link is the
+//! answer.
 //!
 //! The link carries a credential until it is used or expires, so it goes to
 //! the person or the app only: never into the audit, a log, or a message.
@@ -25,12 +28,13 @@ const GIVE_UP_AFTER: Duration = Duration::from_secs(5 * 60);
 
 const AGAIN: &str = "latch plugins enable google";
 
-/// `refused` is the enable's `google_not_connected`; `enable` runs the
-/// enable again. Without a sign-in link from Plow, `refused` stands as it
+/// `refused` is the enable's `google_not_connected`, or none when the
+/// owner asked to add another account (`--add-account`); `enable` runs the
+/// enable (again). Without a sign-in link from Plow, `refused` stands as it
 /// is, pointing at Plow's Connections page.
 pub(super) async fn google<F, Fut>(
     state: &StateDir,
-    refused: Failure,
+    refused: Option<Failure>,
     events: bool,
     enable: F,
 ) -> Result<Value, Failure>
@@ -38,30 +42,38 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Value, Failure>>,
 {
-    let Ok(plow) = Plow::from_state(state) else {
-        return Err(refused);
+    let adding = refused.is_none();
+    let asked = async {
+        let plow = Plow::from_state(state)?;
+        let before = accounts(&plow.connectors().await?);
+        let link = plow.google_connect_link().await?;
+        Ok::<_, Failure>((plow, before, link))
     };
-    let before = match plow.connectors().await {
-        Ok(connectors) => accounts(&connectors),
-        Err(_) => return Err(refused),
-    };
-    let Ok(link) = plow.google_connect_link().await else {
-        return Err(refused);
+    let (plow, before, link) = match (asked.await, refused) {
+        (Ok(asked), _) => asked,
+        (Err(_), Some(refused)) => return Err(refused),
+        (Err(failure), None) => return Err(failure),
     };
     if events {
         login::event(json!({"type": "connect", "connect_url": link.url,
                             "expires_at": link.expires_at}));
         login::event(json!({"type": "waiting"}));
     } else if term::interactive() {
-        eprintln!(
-            "Sign in with Google to connect it to Plow. {}",
-            works_once(&link.expires_at)
-        );
+        let what = if adding {
+            "Sign in with another Google account to add it to Plow."
+        } else {
+            "Sign in with Google to connect it to Plow."
+        };
+        eprintln!("{what} {}", works_once(&link.expires_at));
         for line in term::qr(&link.url).lines() {
             eprintln!("{}", term::link(&link.url, line));
         }
         eprintln!("{}", term::link(&link.url, &link.url));
         eprintln!("Waiting for the account… (Ctrl-C stops waiting)");
+    } else if adding {
+        // What was asked for, done: the link, for the caller to open.
+        return Ok(json!({"plugin": "google", "connect_url": link.url,
+                         "expires_at": link.expires_at}));
     } else {
         let mut failure = Failure::failed(
             "google_not_connected",
