@@ -419,6 +419,26 @@ mod pinned {
         let listed = ok(t.local_call("google", accounts()).await);
         assert_eq!(listed["accounts"], json!(["me@example.com"]));
 
+        // The account gone from Plow: said as such, not as Plow's 412. An
+        // agent, refused `plugins enable`, is told to ask the owner.
+        t.plow.world.lock().unwrap().google_accounts.clear();
+        let agent = t.caller("agent").await;
+        let (refused, _) = t.call(&agent, "google", accounts()).await;
+        assert_eq!(refusal(&refused).1, "google_not_connected");
+        let ask = format!(
+            "ask the owner to run `latch plugins enable google` on {}",
+            t.host.name
+        );
+        let Response::Error { next, .. } = &refused else {
+            unreachable!()
+        };
+        assert_eq!(next.as_deref(), Some(ask.as_str()));
+        let Response::Error { next, .. } = t.local_call("google", accounts()).await else {
+            panic!("the owner's call is refused too")
+        };
+        assert_eq!(next.as_deref(), Some("latch plugins enable google"));
+        t.plow.world.lock().unwrap().google_accounts = vec!["me@example.com".into()];
+
         // A host started again on this state folder keeps it enabled.
         let state = crate::state::StateDir {
             path: t.state.clone(),
@@ -509,5 +529,14 @@ mod pinned {
             vec!["me@example.com".into(), "work@example.com".into()];
         let (refused, _) = t.call(&agent, "google", accounts()).await;
         assert_eq!(refusal(&refused).1, "google_needs_sign_in");
+        // None works: only the owner's enable on this host signs them in.
+        let Response::Error { next, .. } = &refused else {
+            unreachable!()
+        };
+        let ask = format!(
+            "ask the owner to run `latch plugins enable google` on {}",
+            t.host.name
+        );
+        assert_eq!(next.as_deref(), Some(ask.as_str()));
     }
 }

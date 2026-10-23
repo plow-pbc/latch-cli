@@ -106,11 +106,11 @@ where
             // final second still counts; nothing is renewed or waited for.
             Err(_) => {
                 let Some(wanted) = goal.borrow().clone() else {
-                    return Err(timed_out());
+                    return Err(timed_out(again.as_deref()));
                 };
                 match tokio::time::timeout(LAST_LOOK, reached(&plow, &wanted)).await {
                     Ok(Ok(true)) => Ok(Connecting::Appeared),
-                    _ => Err(timed_out()),
+                    _ => Err(timed_out(again.as_deref())),
                 }
             }
         }
@@ -147,10 +147,7 @@ where
             None => {
                 let mut failure = match &again {
                     Some(accounts) => crate::google::needs_sign_in(accounts.clone()),
-                    None => Failure::new(
-                        code::google_not_connected,
-                        "No Google account is connected in Plow.".into(),
-                    ),
+                    None => crate::google::not_connected(),
                 };
                 failure.next =
                     Some(format!("open sign_in_url, finish Google sign-in, then {ENABLE}").into());
@@ -203,22 +200,28 @@ async fn reached(plow: &Plow, goal: &Goal) -> Result<bool, Failure> {
     }
 }
 
-fn timed_out() -> Failure {
-    let mut timeout = Failure::new(
-        code::sign_in_timeout,
-        "No new Google account was observed before the wait ended.".into(),
-    );
+/// The wait ended: for a new account, or for `again`, the accounts Google
+/// asked to sign in with again.
+fn timed_out(again: Option<&[String]>) -> Failure {
+    let message = match again {
+        Some(accounts) => format!(
+            "{} wasn't signed in again before the wait ended.",
+            accounts.join(", ")
+        ),
+        None => "No new Google account was observed before the wait ended.".into(),
+    };
+    let mut timeout = Failure::new(code::sign_in_timeout, message);
     timeout.next = Some("latch setup --status".into());
     timeout
 }
 
 /// Stopped before the final enable was sent: the wait turned nothing on.
-/// With `--add-account`, the enable before the wait may already have turned
-/// Google on for this host. A sign-in already started in a browser is left
-/// to finish or not.
+/// With `--add-account`, the enable before the wait already turned Google
+/// on for this host. A sign-in already started in a browser is left to
+/// finish or not.
 fn cancelled(adding: bool) -> Failure {
     let message = if adding {
-        "Stopped waiting for Google sign-in. Google may already be on for this host, from the \
+        "Stopped waiting for another Google account. Google is on for this host, from the \
          enable before the wait."
     } else {
         "Stopped waiting for Google sign-in."
@@ -326,8 +329,12 @@ fn stdout_gone() -> bool {
     ready > 0 && out.revents & (libc::POLLERR | libc::POLLHUP) != 0
 }
 
-/// Tests shorten the wait (`LATCH_TEST_CONNECT_WITHIN`, in seconds).
+/// Tests shorten the wait (`LATCH_TEST_CONNECT_WITHIN`, in seconds), in a
+/// debug build only.
 fn give_up_after() -> Duration {
+    if !cfg!(debug_assertions) {
+        return GIVE_UP_AFTER;
+    }
     std::env::var("LATCH_TEST_CONNECT_WITHIN")
         .ok()
         .and_then(|secs| secs.parse().ok())

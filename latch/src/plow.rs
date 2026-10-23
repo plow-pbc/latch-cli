@@ -554,6 +554,10 @@ impl Plow {
                 .and_then(|said| said.needs_sign_in.clone())
             {
                 Some(accounts) => crate::google::needs_sign_in(accounts),
+                // Plow's answer when the owner has no Google account connected.
+                None if failure.code == code::precondition_failed.name => {
+                    crate::google::not_connected()
+                }
                 None => failure,
             }
         })?;

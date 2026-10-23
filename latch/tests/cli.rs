@@ -5836,10 +5836,11 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
         "{stopped}"
     );
     assert_eq!(stopped["error"]["exit"], 1, "{stopped}");
-    // The enable before an --add-account wait may already have turned it on.
-    let message = stopped["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("Google may already be on for this host"),
+    // The enable before an --add-account wait turned it on.
+    assert_eq!(
+        stopped["error"]["message"],
+        "Stopped waiting for another Google account. Google is on for this host, from the \
+         enable before the wait.",
         "{stopped}"
     );
     assert_eq!(child.wait().unwrap().code(), Some(1));
@@ -6001,6 +6002,17 @@ fn signing_in_again_is_offered_and_waited_for() {
     assert_eq!(
         step["args"],
         json!(["plugins", "enable", "google", "--events"])
+    );
+
+    // A wait that ends first says the account wasn't signed in again.
+    let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("1"))];
+    let output = latch(&host, &["plugins", "enable", "google", "--events"], &within);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "sign_in_timeout", "{error}");
+    assert_eq!(
+        error["error"]["message"],
+        "owner@example.com wasn't signed in again before the wait ended."
     );
 
     // `--events` waits until the account works again, then enables.
