@@ -13,7 +13,7 @@ struct RulesView: View {
                 Text("Meet the Gatekeeper")
                     .font(.system(size: 34, weight: .semibold))
                     .accessibilityAddTraits(.isHeader)
-                Text("Before anything runs, the Gatekeeper checks that you asked for it, in your Plow chat or in your rules.")
+                Text("Your agents can look things up and create or edit ordinary files on their own. Anything riskier, like sending, buying, deleting or giving a program internet access, needs your OK in your rules or your Plow chat.")
                     .font(.system(size: 15))
                     .lineSpacing(4)
                     .foregroundStyle(Brand.muted)
@@ -235,7 +235,7 @@ private struct Lane: View {
             case "allow": "Allowed"
             case "owner_said_no": "You said no"
             case "host_refused": "Refused by this Mac"
-            default: "Not in your rules"
+            default: "Needs your OK"
             }
         }
     }

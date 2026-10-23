@@ -76,11 +76,11 @@ enum TestHooks {
         on("record") { id in app.selectedRecord = id }
         on("filter") { name in if let filter = name.flatMap(ActivityView.Filter.init(rawValue:)) { app.activityFilter = filter } }
         on("connections") { value in app.showConnections = value == "1" }
-        // Try a request: "AS|REQUEST", AS being you, new, or an agent's uid.
+        // Try a request: "AS|REQUEST", AS being new or an agent's uid.
         on("try") { argument in
             guard let argument, let bar = argument.firstIndex(of: "|"), let host = app.host else { return }
             let who = String(argument[..<bar])
-            app.trial.caller = who == "you" ? .you : who == "new" ? .newAgent : .agent(who)
+            app.trial.caller = who == "new" ? .newAgent : .agent(who)
             app.trial.request = String(argument[argument.index(after: bar)...])
             Task { await app.trial.run(on: host, app: app) }
         }

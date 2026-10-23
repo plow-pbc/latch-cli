@@ -20,8 +20,8 @@ struct ActivityTests {
         let all = try records(Fixtures.studioAudit) + records(Fixtures.kitchenAudit)
         let titles = Set(all.map(\.status.title))
         #expect(titles.isSuperset(of: [
-            "Connected", "Allowed", "Refused · not covered", "Refused · you said no",
-            "Refused · exec is off for this agent", "Refused · Google is off", "Refused · no instructions from you",
+            "Connected", "Allowed", "Refused · needed your OK", "Refused · you said no",
+            "Refused · exec is off for this agent", "Refused · Google is off",
         ]))
     }
 
@@ -62,7 +62,7 @@ struct ActivityTests {
         feed.start()
         for _ in 0..<200 where !feed.caughtUp { try await Task.sleep(for: .milliseconds(5)) }
         #expect(feed.caughtUp)
-        #expect(feed.records.contains { $0.outcome == "no_intent" })
+        #expect(feed.records.contains { $0.gate?.source == "defaults" })
         feed.stop()
     }
 }

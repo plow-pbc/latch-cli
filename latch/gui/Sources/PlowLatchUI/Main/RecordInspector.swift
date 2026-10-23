@@ -139,15 +139,15 @@ struct Why: View {
 
     static let sources = [
         "owner_request": "Your own request",
-        "rules": "Rules only (no chat)",
-        "chat_and_rules": "Your chat with the agent + rules",
-        "chat": "Your chat with the agent",
+        "defaults": "Defaults only (no rules, no chat)",
+        "rules": "Defaults and rules (no chat)",
+        "chat_and_rules": "Defaults, rules and your chat with the agent",
+        "chat": "Defaults and your chat with the agent",
     ]
     static let verdicts = [
         "allow": "Allowed",
-        "not_covered": "Not covered",
+        "not_covered": "Needed your OK",
         "owner_said_no": "You said no",
-        "no_intent": "No instructions from you",
     ]
 }
 
