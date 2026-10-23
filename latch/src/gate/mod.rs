@@ -41,9 +41,8 @@ use crate::failure::{Exit, Failure};
 use crate::model::{self, Answer, Kind, Model, Provider, Question, REQUEST_BUDGET, request_size};
 use crate::plow::Plow;
 use crate::state::to_hex;
-#[cfg(test)]
-pub use action::JUDGED_STDIN;
 pub use action::{Gated, gated};
+pub(crate) use action::{JUDGED_STDIN, judged_stdin};
 use chat::Conversation;
 use rules::{Rules, RulesSource};
 

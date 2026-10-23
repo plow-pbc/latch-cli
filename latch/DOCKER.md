@@ -92,18 +92,22 @@ services:
     command: [latch, --state-dir, /state, serve, --foreground]
 ```
 
-## AppArmor hosts: unverified
+## AppArmor hosts
 
 On Ubuntu, Docker's `docker-default` AppArmor profile denies mounts independently
 of seccomp. An administrator must load and validate a suitable container profile
 before selecting `--security-opt=apparmor=latch-bwrap` (Compose:
-`apparmor=latch-bwrap` in `security_opt`). The candidate
-[`docker/latch-bwrap.apparmor`](docker/latch-bwrap.apparmor) is **untested on an
-AppArmor-enforcing host**; only its syntax was checked during research. It is
-derived from Moby's default, replacing the mount denial with mount, pivot and
-user-namespace allowances. Its broad mount allowance needs host-side review.
+`apparmor=latch-bwrap` in `security_opt`).
+[`docker/latch-bwrap.apparmor`](docker/latch-bwrap.apparmor) is derived from
+Moby's default, replacing the mount denial with mount, pivot and
+user-namespace allowances. It permits writing only `/proc/sys/user/max_user_namespaces`
+under `/proc/sys/user/`, which bubblewrap needs for `--disable-userns`; the limit
+is lowered in an ancestor user namespace so the worker cannot undo it. Other
+`/proc/sys` write denials remain. Its broad mount allowance needs host-side review.
 It does not replace the separate bare-host bwrap user-namespace profile installed
-by install.sh. AppArmor validation is outside this POC's acceptance.
+by install.sh. The restricted-Ubuntu CI job loads this container profile in
+enforce mode, checks its sysctl write rules and tests that exec workers still
+cannot create nested user namespaces.
 
 ## Kubernetes: untested
 

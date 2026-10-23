@@ -158,7 +158,7 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
 
 /// An exec's stdin as the judge reads it: text, at most `JUDGED_STDIN`
 /// bytes. None when it brings none.
-fn judged_stdin(stdin: &Value) -> Result<Option<String>, Failure> {
+pub(crate) fn judged_stdin(stdin: &Value) -> Result<Option<String>, Failure> {
     if stdin.is_null() {
         return Ok(None);
     }

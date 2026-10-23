@@ -1146,7 +1146,7 @@ fn status_shows_this_machine_once_as_plow_lists_it() {
 }
 
 #[test]
-fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
+fn exec_stdin_that_is_not_judgeable_or_never_ends_runs_nothing() {
     use std::process::Stdio;
     let dir = test_dir();
     let state = dir.path().join("none");
@@ -1171,15 +1171,23 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
             .stderr(Stdio::piped());
         command.spawn().unwrap()
     };
-    // More than 256 KiB: refused as soon as the 256 KiB + 1st byte arrives.
-    let mut big = run("60");
-    let mut pipe = big.stdin.take().unwrap();
-    let _ = pipe.write_all(&vec![b'x'; 300 * 1024]);
-    let output = big.wait_with_output().unwrap();
-    drop(pipe);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "stdin_too_big");
+    // Valid text reaches the login check; unjudgeable input is refused first.
+    for (bytes, expected) in [
+        (vec![b'x'; 16 * 1024], "not_logged_in"),
+        ("é".repeat(8 * 1024).into_bytes(), "not_logged_in"),
+        (vec![b'x'; 16 * 1024 + 1], "stdin_not_judgeable"),
+        (vec![0xff], "stdin_not_judgeable"),
+        (vec![b'x'; 300 * 1024], "stdin_not_judgeable"),
+    ] {
+        let mut child = run("60");
+        let mut pipe = child.stdin.take().unwrap();
+        let _ = pipe.write_all(&bytes);
+        drop(pipe);
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], expected, "{output:?}");
+    }
 
     // A pipe left open: refused once --timeout passes, not run on what came.
     let started = std::time::Instant::now();
@@ -1724,6 +1732,55 @@ impl LivePlow {
                     .collect();
                 (200, json!({"data": listed}))
             }
+            // Plow's catalog, its own kind among the cloud ones.
+            ("GET", "/v1/agents/providers") if kind == "device" => (
+                200,
+                json!([{"id": "exe:hermes", "name": "Hermes", "image": "img", "settings": {}},
+                       {"id": "self_hosted", "name": "Self-hosted", "image": null, "settings": {}}]),
+            ),
+            // Plow's lines: one free, one held, one whose create is lost, and a mailbox.
+            ("GET", "/v1/lines") if kind == "device" => {
+                let line = |uid: &str, kind: &str, key: &str, available: bool| {
+                    json!({"uid": uid, "object": "line", "provider_type": kind, "provider_key": key,
+                           "display_name": null, "available": available, "agent_uid": null})
+                };
+                (
+                    200,
+                    json!({"object": "list", "has_more": false, "data": [
+                        line("ln_free", "imessage", "+15550000002", true),
+                        line("ln_taken", "imessage", "+15550000003", false),
+                        line("ln_lost", "imessage", "+15550000004", true),
+                        line("ln_mail", "email", "agent@example.com", true)]}),
+                )
+            }
+            ("POST", "/v1/agents") if kind == "device" => {
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                match sent["line_uid"].as_str().unwrap() {
+                    "ln_taken" => (409, json!({"detail": {"code": "AGENT_EXISTS",
+                        "agent_uid": AGENT_UID, "message": "Delete the existing agent before creating another."}})),
+                    "ln_lost" => (500, json!({})),
+                    line => {
+                        let own = sent["provider"] == "self_hosted";
+                        let agent = json!({"uid": "fedcba9876543210fedcba9876543210",
+                            "name": sent["name"], "provider": sent["provider"],
+                            "line": {"uid": line, "object": "line", "provider_type": "imessage",
+                                     "provider_key": "+15550000002", "display_name": null},
+                            "created_at": "2026-10-23T10:00:00Z",
+                            "status": if own { Value::Null } else { json!("provisioning") },
+                            "failure_code": null, "credential": null});
+                        let token = if own { json!("made-up-agent-credential") } else { Value::Null };
+                        (201, json!({"agent": agent, "token": token}))
+                    }
+                }
+            }
+            ("DELETE", path) if kind == "device" && path == format!("/v1/agents/{AGENT_UID}") => (
+                200,
+                json!({"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                       "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
+                                "provider_key": "+14155550123", "display_name": "Research line"},
+                       "created_at": "2026-10-20T10:00:00Z", "status": null,
+                       "failure_code": null, "credential": null}),
+            ),
             // As Plow lists them: one agent its owner runs.
             ("GET", "/v1/agents") if kind == "device" => (
                 200,
@@ -2399,6 +2456,219 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
     let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
     assert_eq!(error["error"]["code"], "owner_only");
     assert_eq!(plow.seen().len(), seen);
+}
+
+/// The owner reads Plow's catalog and lines, creates an own agent whose
+/// credential goes only to a new private file, and removes an agent once
+/// told to; latch never resends a create whose answer was lost.
+#[test]
+fn agents_are_shown_created_and_removed_by_their_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap_or(Value::Null);
+        (output.status.code(), json, output)
+    };
+    let posts = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with("POST /v1/agents "))
+            .count()
+    };
+
+    let (code, catalog, _) = run(&["agents", "catalog"]);
+    assert_eq!(code, Some(0), "{catalog}");
+    assert_eq!(
+        catalog,
+        json!({"kinds": [{"id": "exe:hermes", "name": "Hermes"}]})
+    );
+    let (_, lines, _) = run(&["agents", "lines"]);
+    let numbers: Vec<&Value> = lines["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| &l["number"])
+        .collect();
+    assert_eq!(
+        numbers,
+        ["+15550000002", "+15550000003", "+15550000004"],
+        "no mailbox"
+    );
+    assert_eq!(lines["lines"][1]["available"], false);
+
+    let (code, shown, _) = run(&["agents", "show", "Research bot"]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(shown["agent"]["uid"], AGENT_UID);
+    let (_, by_uid, _) = run(&["agents", "show", AGENT_UID]);
+    assert_eq!(by_uid, shown);
+    let (code, missing, _) = run(&["agents", "show", "Nobody"]);
+    assert_eq!(
+        (code, &missing["error"]["code"]),
+        (Some(2), &json!("no_such_agent"))
+    );
+
+    // An own agent: its credential only in the new file, mode 600.
+    let token_file = dir.path().join("scout.token");
+    let path = token_file.to_str().unwrap();
+    let new_own = [
+        "agents",
+        "new",
+        "--own",
+        "--token-file",
+        path,
+        "--name",
+        " Scout ",
+        "--line",
+        "+15550000002",
+    ];
+    let (code, made, output) = run(&new_own);
+    assert_eq!(code, Some(0), "{made}");
+    assert_eq!(made["agent"]["name"], "Scout");
+    assert_eq!(made["agent"]["kind"], "own");
+    assert_eq!(made["token_file"], path);
+    assert_eq!(made["api_url"], plow.url.as_str());
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        "made-up-agent-credential\n"
+    );
+    assert_eq!(
+        fs::metadata(&token_file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("made-up-agent-credential"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("made-up-agent-credential"));
+
+    // The same file again: refused before Plow is asked, the file untouched.
+    let before = posts();
+    let (code, error, _) = run(&new_own);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("token_file_exists"))
+    );
+    assert_eq!(posts(), before);
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--own",
+        "--token-file",
+        "-",
+        "--name",
+        "S",
+        "--line",
+        "ln_free",
+    ]);
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+
+    // A held line, then a lost answer: the reserved file goes, and the lost
+    // create is reported, never resent.
+    let taken = dir.path().join("taken.token");
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--own",
+        "--token-file",
+        taken.to_str().unwrap(),
+        "--name",
+        "Two",
+        "--line",
+        "ln_taken",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("line_taken")),
+        "{error}"
+    );
+    assert!(!taken.exists());
+    let before = posts();
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "exe:hermes",
+        "--name",
+        "H",
+        "--line",
+        "ln_lost",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(5), &json!("outcome_unknown")),
+        "{error}"
+    );
+    assert_eq!(posts(), before + 1, "sent once");
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "self_hosted",
+        "--name",
+        "H",
+        "--line",
+        "ln_free",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("unknown_cloud_kind"))
+    );
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "exe:hermes",
+        "--name",
+        "H",
+        "--line",
+        "+1999",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("no_such_line"))
+    );
+    let (code, cloud, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "exe:hermes",
+        "--name",
+        "Hermes",
+        "--line",
+        "ln_free",
+    ]);
+    assert_eq!(code, Some(0), "{cloud}");
+    assert_eq!(
+        (
+            &cloud["agent"]["status"],
+            &cloud["token_file"],
+            &cloud["api_url"]
+        ),
+        (&json!("provisioning"), &Value::Null, &Value::Null)
+    );
+
+    // Removing asks first; with no one to ask, --yes.
+    let deletes = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with("DELETE "))
+            .count()
+    };
+    let (code, error, _) = run(&["agents", "remove", "Research bot"]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("confirmation_required"))
+    );
+    assert_eq!(deletes(), 0);
+    let (code, removed, _) = run(&["agents", "remove", "Research bot", "--yes"]);
+    assert_eq!(code, Some(0), "{removed}");
+    assert_eq!(removed["removed"]["uid"], AGENT_UID);
+    assert_eq!(deletes(), 1);
 }
 
 #[test]

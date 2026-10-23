@@ -128,7 +128,13 @@ No Homebrew tap is included.
   last used its credential), from one of your own machines. `latch agents
   --host NAME` adds each one's standing on that host: whether it has rules
   of its own there and whether the host refuses it `exec`. Audit records
-  name each caller as it was then (`caller_name`).
+  name each caller as it was then (`caller_name`). `latch agents catalog`
+  and `latch agents lines` list the cloud agents Plow runs and its phone
+  lines; `latch agents new --line LINE --name NAME` creates one, either
+  `--cloud KIND` or `--own --token-file FILE` (the credential goes only to
+  that new file, mode 600; its program logs in with
+  `PLOW_TOKEN_FILE=FILE latch login`); `latch agents show AGENT` follows a
+  cloud agent's start, and `latch agents remove AGENT` removes one.
 - Exec and file calls need no shared-folder setup. They read home and the
   system's files (programs, libraries, developer tools and certificates),
   except `~/.latch`, this host's state directory, and on macOS `~/Library`
