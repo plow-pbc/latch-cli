@@ -79,6 +79,13 @@ enum TestHooks {
         }
         on("focus") { uid in app.rulesFocus = uid }
         on("agent") { uid in app.agentsPath = uid.map { [$0] } ?? [] }
+        // A host pill's click: "HOST|UID".
+        on("pill") { argument in
+            guard let parts = argument?.split(separator: "|"), parts.count == 2 else { return }
+            app.chosenHost = String(parts[0])
+            app.rulesFocus = String(parts[1])
+            app.section = .rules
+        }
         // Saves "UID|TEXT" (UID empty: every agent's) on the selected host
         // as Save does, over the revision on screen.
         on("save-rules") { argument in

@@ -169,6 +169,15 @@ final class AppModel {
     var agentsPath: [String] = []
     /// The agent whose rules the Rules screen brings into view.
     var rulesFocus: String?
+
+    /// The agent's rules to scroll to on a host's Rules screen: the one
+    /// asked for, once its editor exists (the host's rules read and the
+    /// agent listed); nil until then.
+    func rulesScrollTarget(on host: HostEntry) -> String? {
+        guard let uid = rulesFocus, case .success? = summaries[host.name]?.rules,
+              agents?.contains(where: { $0.uid == uid }) == true else { return nil }
+        return uid
+    }
     /// Rules' Try a request.
     let trial = Trial()
 

@@ -124,3 +124,23 @@ struct RulesTests {
         #expect(refused.refused?.code == "exec_denied")
     }
 }
+
+@MainActor
+struct RulesScrollTests {
+    // A pill sets the agent before its host's rules have loaded; the scroll
+    // waits for the editor rather than firing at nothing.
+    @Test func aPillScrollsOnceTheRulesHaveLoaded() async throws {
+        let client = RulesClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        let host = try #require(app.host)
+        let scout = try #require(client.show.agents?.first?.agentUid)
+        app.rulesFocus = scout
+        #expect(app.rulesScrollTarget(on: host) == nil)
+        await app.refreshRules(on: host)
+        #expect(app.rulesScrollTarget(on: host) == nil)
+        await app.refreshAgents()
+        #expect(app.rulesScrollTarget(on: host) == scout)
+    }
+}

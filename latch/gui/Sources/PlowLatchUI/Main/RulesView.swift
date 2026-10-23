@@ -63,12 +63,22 @@ private struct HostRules: View {
                 }
             }
             .formStyle(.grouped)
-            .onChange(of: app.rulesFocus, initial: true) { _, uid in
+            // A pill or "Rules on…" asks for an agent's rules: scroll once
+            // its editor is on screen, which may be only after the rules
+            // and agents have loaded; then the ask is done.
+            .onChange(of: app.rulesScrollTarget(on: host), initial: true) { _, uid in
                 guard let uid else { return }
-                withAnimation { scroller.scrollTo(uid, anchor: .top) }
+                app.rulesFocus = nil
+                // The editors appear in this same update and aren't laid
+                // out yet, so the scroll waits a moment; and it isn't
+                // animated: an animated scrollTo in this Form never moves.
+                Task {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    scroller.scrollTo(uid, anchor: .top)
+                }
             }
             .onChange(of: app.trial.results[host.name]) {
-                withAnimation { scroller.scrollTo(Self.verdictAnchor, anchor: .bottom) }
+                scroller.scrollTo(Self.verdictAnchor, anchor: .bottom)
             }
         }
         .task {
