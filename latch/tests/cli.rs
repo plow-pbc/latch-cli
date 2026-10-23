@@ -1627,10 +1627,10 @@ fn bare_latch_narrow_puts_the_mark_above_and_no_color_keeps_it_still() {
     let header = shown.find("latch 0.1.0").expect(&shown);
     assert!(mark < header, "{shown}");
     assert!(!shown[mark..header].contains("Account"), "{shown}");
-    assert!(
-        shown.contains("isn't logged in to Plow. Run: latch"),
-        "{shown}"
-    );
+    // Too long for the line, the command goes on one of its own, whole.
+    assert!(shown.contains("isn't logged in to Plow. Run:"), "{shown}");
+    let command = format!("latch --state-dir {} setup", state.display());
+    assert!(shown.contains(&command), "{shown}");
     assert!(!state.exists(), "the overview made the state folder");
 }
 
