@@ -449,11 +449,13 @@ async fn show(
             crate::cli::version()
         )
     });
+    // Install every handler before the first frame advertises Ctrl-C.
+    let mut interrupt = signal(SignalKind::interrupt()).expect("an interrupt handler");
     let mut hangup = signal(SignalKind::hangup()).expect("a hangup handler");
     let mut terminate = signal(SignalKind::terminate()).expect("a terminate handler");
     let until = async move {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
+            _ = interrupt.recv() => {}
             _ = hangup.recv() => {}
             _ = terminate.recv() => {}
         }
