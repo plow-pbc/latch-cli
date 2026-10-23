@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import PlowLatchUI
 
@@ -113,15 +114,57 @@ struct GatekeeperTests {
         for _ in 0..<200 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
     }
 
-    @Test func examplesWaitForTheNextLatchWithoutVerdicts() async {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+    @Test func examplesAreJudgedOnTheDraftAsANewAgent() async {
+        let client = ScriptedClient { _ in nil }
+        client.verdict = { draft, request in draft.contains("Do not send email") && request.contains("send") ? "owner_said_no" : "allow" }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
-        flow.choose(Onboarding.decks[1])
-        #expect(flow.draftRules == Onboarding.decks[1].rules)
-        #expect(flow.previewNote == "Previews arrive with the next Latch update.")
-        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .notChecked })
-        await flow.loadRules()
-        #expect(flow.previewNote == "Previews arrive with the next Latch update.")
+        flow.choose(Onboarding.decks[0])
+        #expect(flow.reviewing)
+        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .checking })
+        await until { !flow.reviewing }
+        let verdicts = flow.deck.examples.map { if case let .verdict(answer)? = flow.previews[$0.id] { answer.verdict } else { "-" } }
+        #expect(verdicts == ["allow", "allow", "allow", "allow", "owner_said_no"])
+        #expect(client.tries.allSatisfy { $0.draft == Onboarding.decks[0].rules })
+        #expect(client.saved.isEmpty)
+    }
+
+    @Test func anEmptyBoxPreviewsTheSavedRulesItKeeps() async {
+        let client = ScriptedClient { _ in nil }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.savedRules = "Allow everything."
+        flow.draftRules = "  "
+        flow.draftChanged()
+        await until { !flow.reviewing && !client.tries.isEmpty }
+        // Continue keeps the saved rules, so they are what the examples show.
+        #expect(flow.primaryTitle == "Continue")
+        #expect(!client.tries.isEmpty && client.tries.allSatisfy { $0.draft == "Allow everything." })
+    }
+
+    @Test func typingWaitsASecondAndDropsOlderAnswers() async throws {
+        let client = ScriptedClient(pause: .milliseconds(300)) { _ in nil }
+        client.verdict = { draft, _ in draft == "second" ? "not_covered" : "allow" }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.draftRules = "first"
+        flow.draftChanged()
+        // Checking at once, but nothing asked before the person pauses.
+        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .checking })
+        try await Task.sleep(for: .milliseconds(1100))
+        #expect(client.tries.map(\.draft).allSatisfy { $0 == "first" } && !client.tries.isEmpty)
+        // A change while "first" is out: its answers never show.
+        flow.draftRules = "second"
+        flow.draftChanged()
+        await until { client.tries.contains { $0.draft == "second" } }
+        await until { !flow.reviewing }
+        #expect(flow.deck.examples.allSatisfy { if case let .verdict(answer)? = flow.previews[$0.id] { answer.verdict == "not_covered" } else { false } })
+        // The same text again asks nothing new.
+        let asked = client.tries.count
+        flow.draftRules = " second "
+        flow.draftChanged()
+        try await Task.sleep(for: .milliseconds(1200))
+        #expect(client.tries.count == asked)
     }
 
     @Test func startAtLoginOnlyWithRunInTheBackground() async {
@@ -235,7 +278,21 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
         try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google, access: access))
     }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
-    func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
+    func rulesSet(_ text: String) async throws {
+        saved.append(text)
+        try await Task.sleep(for: pause)
+    }
+    private(set) var saved: [String] = []
+    /// What `rules try` answers for a draft and request, and what it was asked.
+    var verdict: @Sendable (String, [String]) -> String = { _, _ in "allow" }
+    /// `rules try` runs several at once.
+    private let asked = Mutex<[(draft: String, request: [String])]>([])
+    var tries: [(draft: String, request: [String])] { asked.withLock { $0 } }
+    func rulesTry(draft: String, request: [String]) async throws -> RulesTry {
+        asked.withLock { $0.append((draft, request)) }
+        try await Task.sleep(for: pause)
+        return try Fixtures.decode(#"{"verdict":"\#(verdict(draft, request))","host":"studio","as":"new agent","gate":null}"#)
+    }
     /// How a setup step (`serve -d`) fails, if it does.
     var serveFailure: LatchFailure?
     func perform(_ args: [String]) async throws {

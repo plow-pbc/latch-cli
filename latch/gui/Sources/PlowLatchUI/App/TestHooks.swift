@@ -40,6 +40,10 @@ enum TestHooks {
             app.onboarding?.useAnotherName()
         }
         on("replace") { _ in app.onboarding?.replaceMachine() }
+        on("deck") { index in
+            guard let index = Int(index ?? ""), Onboarding.decks.indices.contains(index) else { return }
+            app.onboarding?.choose(Onboarding.decks[index])
+        }
         on("start-at-login") { value in app.onboarding?.startAtLogin = value == "1" }
         on("set-up-again") { _ in app.setUpAgain() }
         // Moves the window off every display, where the window server still
@@ -87,7 +91,15 @@ enum TestHooks {
                 "primary": flow.map { "\($0.primaryTitle)\($0.primaryEnabled ? "" : " (disabled)")" } ?? "",
                 "login": flow.map { "\($0.login)" } ?? "",
                 "rules": flow?.savedRules ?? "",
-                "preview": flow?.previewNote ?? "",
+                "previews": (flow?.deck.examples ?? []).map { example in
+                    switch flow?.previews[example.id] {
+                    case let .verdict(answer)?: "\(example.title): \(answer.verdict)"
+                    case let .failed(message)?: "\(example.title): failed \(message)"
+                    case .checking?: "\(example.title): checking"
+                    default: "\(example.title): not checked"
+                    }
+                },
+                "reviewing": flow?.reviewing ?? false,
                 "google": flow.map { "\($0.google)" } ?? "",
                 "messages": flow.map { "\($0.messages)" } ?? "",
                 "contacts": flow.map { "\($0.contacts)" } ?? "",
