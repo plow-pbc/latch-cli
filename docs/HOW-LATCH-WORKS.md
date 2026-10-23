@@ -40,7 +40,7 @@ open pull request; **Planned** marks work with no pull request yet.
 |---|---|---|---|---|---|
 | **Owner** (your CLI) | A machine logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: list them on any host; turn them on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` or `LATCH_HOST` naming another machine. An agent running there counts. | That host, through its private local socket; other hosts as the owner. | Yes, on that host. Rules and vault work without `latch serve` or the decision model. | It is the host. | Exactly like the owner; recorded as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It may list connectors. | No. latch saves no Plow token for an agent's login, so `latch serve` stops with `not_logged_in`. **Planned:** an explicit refusal. | Against your messages in your Plow chat with that agent, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It may list connectors. | No: agent hosting isn't supported. With the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. **Planned:** an explicit refusal. | Against your messages in your Plow chat with that agent, plus the host's rules. |
 
 - **Every machine logged in with your own Plow login is the owner today.**
   There's no host-only or view-only login yet (see section 10).
@@ -254,10 +254,12 @@ host. With no hosts you get `no_host`, and with several and none named
   chat with the agent and the rules included) goes to Plow's decision
   route, and the browser's own model checks send it lines of the page they
   look at. Plow also answers who a caller is, where your hosts are and,
-  for Google, short-lived access tokens. File bytes and command output go
-  only between the two machines, over their encrypted connection. A
-  program with `--network`, a browser upload or a Google send goes where
-  it's told.
+  for Google, short-lived access tokens. The bytes of `file get` and
+  `file put`, and the output a command returns, go only between the two
+  machines, over their encrypted connection, and aren't copied into the
+  judgment. Exec stdin is different: the judge reads it, so it goes to
+  Plow as text. A program with `--network`, a browser upload or a Google
+  send goes where it's told.
 
 ## 8. Install, update, log out
 
@@ -300,7 +302,7 @@ host. With no hosts you get `no_host`, and with several and none named
 | Chrome on Linux x86_64 | No build; use `--engine camoufox` |
 | Browser handoff on a Linux host or with `--headless-browsers` | Not supported |
 | A host with no sandbox; Windows | Not supported |
-| An agent's login running a host | Not supported: latch saves no Plow token for an agent's login, so `latch serve` stops with `not_logged_in` |
+| An agent's login running a host | Not supported. With the usual agent credential, login saves no Plow token, so `latch serve` stops with `not_logged_in` |
 | Turning connectors on or off from another machine | Not supported |
 | Another machine's audit log, dashboard or logs | Not supported |
 | Exec stdin over 16 KiB, or stdin that isn't UTF-8 text | Refused (`stdin_not_judgeable`, exit 2) |
@@ -324,5 +326,5 @@ gives each login one role: owner (manage and call), host (serve only) or
 agent (call, judged). Under it, a web-exposed cloud VM would get a
 host-only login that can never act as you on your Mac or your Plow
 account, and `latch serve` would refuse an agent's login outright, rather
-than stopping with `not_logged_in` for want of a saved Plow token. This is
+than relying on the usual agent login having no saved Plow token. This is
 a proposal, not a promise.
