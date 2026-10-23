@@ -359,7 +359,7 @@ final class AppModel {
         let result = try await client.logout()
         if let device = result.device, !device.removed {
             logOutWarning = "This Mac is logged out, but Plow couldn't take \(device.name) out of your account. "
-                + "Remove it in Connections on another of your Macs."
+                + "It may still be listed until Plow can be reached."
         }
         await refreshStatus()
     }

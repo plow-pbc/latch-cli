@@ -228,21 +228,14 @@ enum PluginCopy {
         switch error.code {
         case "google_not_connected"?: "Connect a Google account first, in Connections."
         case "needs_setup"?: needs(plugin) + "."
-        default:
-            plain(error.message) ? error.message : "Couldn't turn \(title(plugin)) \(on ? "on" : "off")."
+        default: "Couldn't turn \(title(plugin)) \(on ? "on" : "off")."
         }
     }
 
     private static func needs(_ plugin: String) -> String {
         switch plugin {
-        case "google": "Needs a Google account, in Connections"
         case "messages", "contacts": "Needs Full Disk Access for Plow Latch, in System Settings"
         default: "Needs setting up"
         }
-    }
-
-    /// Prose with no command or address in it.
-    static func plain(_ message: String) -> Bool {
-        !message.contains("`") && !message.contains("://")
     }
 }

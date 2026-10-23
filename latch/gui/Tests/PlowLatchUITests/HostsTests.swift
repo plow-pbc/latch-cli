@@ -151,18 +151,21 @@ struct HostSettingsTests {
     @Test func pluginsAreSaidWithoutCommandsOrAddresses() throws {
         let plugins = try (Fixtures.decode(Fixtures.studioPluginsSetUp) as PluginsList).plugins
         #expect(plugins.map(PluginCopy.state) == ["On", "Needs Full Disk Access for Plow Latch, in System Settings", "Off"])
-        #expect(plugins.contains { !PluginCopy.plain($0.reason ?? "") })
+        #expect(plugins.contains { $0.reason?.contains("`") == true })
+        // Google saves needs_setup for any failed setup, not only a missing account.
+        let google = PluginsList.Plugin(name: "google", state: "needs_setup", reason: "gog 0.45.0 is not installed at /s/plugins/gog/0.45.0/gog; run install.sh")
+        #expect(PluginCopy.state(google) == "Needs setting up")
         let refusals = [
             ("google", LatchFailure(code: "google_not_connected", message: "Plow has no Google account this host can use; connect one at http://localhost:3000/connections, then run `latch plugins enable google` again")),
             ("messages", LatchFailure(code: "needs_setup", message: "this host has no Full Disk Access; turn it on for /Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), then run `latch plugins enable messages` again")),
             ("contacts", LatchFailure(code: "serve_required", message: "this machine needs a live receiver; start `latch serve` on this state folder, then retry")),
-            ("contacts", LatchFailure(code: "state_busy", message: "a latch host (pid 4242) still holds this state folder; run this again")),
+            ("google", LatchFailure(code: "gog_not_configured", message: "gog 0.45.0 is not installed at /s/plugins/gog/0.45.0/gog; run install.sh")),
         ]
         #expect(refusals.map { PluginCopy.refusal(.failed($1), plugin: $0, on: true) } == [
             "Connect a Google account first, in Connections.",
             "Needs Full Disk Access for Plow Latch, in System Settings.",
             "Couldn't turn Contacts on.",
-            "a latch host (pid 4242) still holds this state folder; run this again",
+            "Couldn't turn Google on.",
         ])
     }
 
@@ -214,7 +217,7 @@ struct AccountTests {
         let app = AppModel(client: AccountClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         try await app.logOut()
-        #expect(app.logOutWarning == "This Mac is logged out, but Plow couldn't take studio out of your account. Remove it in Connections on another of your Macs.")
+        #expect(app.logOutWarning == "This Mac is logged out, but Plow couldn't take studio out of your account. It may still be listed until Plow can be reached.")
         #expect(app.onboarding == nil)
         app.acknowledgeLogOutWarning()
         #expect(app.onboarding != nil)
