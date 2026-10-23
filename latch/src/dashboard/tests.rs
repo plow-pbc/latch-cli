@@ -194,10 +194,7 @@ fn a_browser_session_groups_its_calls_and_a_plan_its_steps() {
     assert_eq!(exec.calls[0].outcome.line(), "Done - exit 0");
     let upload = board.tasks.front().unwrap();
     assert_eq!(upload.title, "Write: report.pdf");
-    assert_eq!(
-        upload.outcome().line(),
-        "Refused - outside your instructions"
-    );
+    assert_eq!(upload.outcome().line(), "Refused - needed the owner's OK");
     let detail = &upload.calls[0].detail;
     assert!(detail.audit_id.as_deref().unwrap().starts_with("27ff057f"));
 }
@@ -386,10 +383,7 @@ fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_command_at_80() {
             .iter()
             .map(|line| line.get(result..).unwrap_or_default().trim())
             .collect();
-        assert_eq!(
-            words.join(" ").trim(),
-            "refused · outside your instructions"
-        );
+        assert_eq!(words.join(" ").trim(), "refused · needed the owner's OK");
         assert!(!lines.iter().any(|line| line.contains('…')));
         let footer = lines[lines.len() - 2..].join("\n");
         assert!(
@@ -442,7 +436,7 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
     );
     assert!(steps.contains("[Steps]"));
     assert!(
-        steps.contains("REFUSED - outside your instructions. This action did not run."),
+        steps.contains("REFUSED - needed the owner's OK. This action did not run."),
         "{steps}"
     );
     assert!(steps.contains("The owner's messages don't cover this."));
@@ -981,7 +975,7 @@ fn a_fill_refused_part_way_through_a_plan_says_what_ran_first() {
     assert_eq!(call.outcome.line(), "Stopped - step 3; 2 ran");
     assert_eq!(
         call.steps[2].outcome.as_ref().map(Outcome::line).as_deref(),
-        Some("Refused - outside your instructions")
+        Some("Refused - needed the owner's OK")
     );
     // So it reads after a restart too, from its audit record alone.
     let mut record = crate::audit::record(
@@ -1259,7 +1253,7 @@ fn a_board_starts_with_the_calls_the_audit_log_holds() {
     assert_eq!(at("browser     close"), at("open https://example.com/") + 1);
     let refused = &lines[at("cargo test")];
     assert!(
-        refused.contains("agent agent-ke") && refused.contains("refused · outside your"),
+        refused.contains("agent agent-ke") && refused.contains("refused · needed the owner"),
         "{refused}"
     );
 }

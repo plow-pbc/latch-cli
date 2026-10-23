@@ -604,9 +604,8 @@ fn refusal(code: &str, details: &Value) -> Option<Outcome> {
     let why = match code {
         "gatekeeper_denied" => match details["reason"].as_str() {
             Some("owner_said_no") => "owner said no",
-            _ => "outside your instructions",
+            _ => "needed the owner's OK",
         },
-        "no_intent" => "no instructions from the owner",
         "gatekeeper_unavailable" => "judge unavailable",
         "exec_denied" => "exec is off for this agent",
         "not_enabled" => "connector not enabled",
