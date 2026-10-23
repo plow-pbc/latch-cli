@@ -1,16 +1,17 @@
 name: deny
 
 # latch's dependencies against latch/deny.toml: published advisories,
-# licenses, bans and sources. Runs when the dependencies or the policy change,
+# licenses, bans and sources, for latch and for the phone page (its own
+# workspace, built for the browser). Runs when the dependencies or the policy change,
 # and daily, since an advisory can be published against an unchanged
 # Cargo.lock.
 on:
   push:
     branches: [main]
-    paths: ["latch/Cargo.toml", "latch/Cargo.lock", "latch/deny.toml", ".github/workflows/deny.yml"]
+    paths: ["latch/Cargo.toml", "latch/Cargo.lock", "latch/phone/Cargo.toml", "latch/phone/Cargo.lock", "latch/deny.toml", ".github/workflows/deny.yml"]
   pull_request:
     branches: [main]
-    paths: ["latch/Cargo.toml", "latch/Cargo.lock", "latch/deny.toml", ".github/workflows/deny.yml"]
+    paths: ["latch/Cargo.toml", "latch/Cargo.lock", "latch/phone/Cargo.toml", "latch/phone/Cargo.lock", "latch/deny.toml", ".github/workflows/deny.yml"]
   schedule:
     - cron: "17 6 * * *"
 
@@ -29,3 +30,5 @@ jobs:
         with:
           tool: cargo-deny@0.20.2
       - run: cargo deny --locked check
+      # The same policy; the phone page is built only for wasm.
+      - run: cargo deny --locked --manifest-path phone/Cargo.toml --target wasm32-unknown-unknown --config deny.toml check
