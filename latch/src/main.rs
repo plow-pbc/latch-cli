@@ -411,3 +411,25 @@ fn report(failure: &Failure) {
         eprintln!("{}", failure.to_json());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_result_is_one_line_or_indented_with_the_same_content() {
+        let result =
+            json!({"host": "mac", "sessions": [{"id": "s1", "tabs": 2}], "note": "café\nnext"});
+        let Ok(Printed(compact)) = json(false, &result) else {
+            unreachable!()
+        };
+        let Ok(Printed(pretty)) = json(true, &result) else {
+            unreachable!()
+        };
+        assert!(!compact.contains('\n'), "{compact}");
+        assert!(pretty.contains("\n  \"host\""), "{pretty}");
+        for text in [&compact, &pretty] {
+            assert_eq!(serde_json::from_str::<Value>(text).unwrap(), result);
+        }
+    }
+}

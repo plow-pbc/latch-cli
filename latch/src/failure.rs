@@ -581,4 +581,14 @@ mod tests {
         );
         assert!(!failure.to_json().contains('\n'));
     }
+
+    #[test]
+    fn an_error_lines_exit_is_the_process_exit() {
+        for exit in Exit::ALL {
+            let line: Value =
+                serde_json::from_str(&Failure::new(exit, "c", "m".into()).to_json()).unwrap();
+            assert_eq!(line["error"]["exit"], u8::from(exit));
+            assert_eq!(ExitCode::from(exit), ExitCode::from(u8::from(exit)));
+        }
+    }
 }

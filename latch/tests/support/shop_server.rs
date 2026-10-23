@@ -1,6 +1,5 @@
 //! The test shop (`tests/browser-shop`) served on 127.0.0.1, for the
-//! browser unit tests and the CLI tests alike (each includes this file);
-//! and the test site (`tests/browser-site`) the same way, for the CLI's.
+//! browser unit tests and the CLI tests alike (each includes this file).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -17,17 +16,7 @@ pub fn serve_shop() -> String {
 /// of each `POST /returns`, which answers with `return-submitted.html`.
 #[allow(dead_code)]
 pub fn serve_shop_recording() -> (String, Arc<Mutex<Vec<String>>>) {
-    serve_folder("tests/browser-shop")
-}
-
-/// The test site's pages, for as long as the test runs; returns its origin.
-#[allow(dead_code)]
-pub fn serve_site() -> String {
-    serve_folder("tests/browser-site").0
-}
-
-fn serve_folder(folder: &str) -> (String, Arc<Mutex<Vec<String>>>) {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(folder);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-shop");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let returns = Arc::new(Mutex::new(Vec::new()));
