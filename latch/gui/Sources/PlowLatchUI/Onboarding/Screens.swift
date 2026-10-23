@@ -337,7 +337,14 @@ struct AccessView: View {
             ForEach([flow.messages, flow.contacts].compactMap { if case let .failed(m) = $0 { m } else { nil } }, id: \.self) {
                 Text($0).foregroundStyle(Brand.clay).font(.callout)
             }
-            if flow.backgroundHostNeedsRestart {
+            if let error = flow.restartError {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(flow.app.status?.serve.state == "serving" ? "Latch couldn't restart." : "Latch is stopped. It couldn't start again.")
+                    Text(error).font(.callout).foregroundStyle(Brand.clay)
+                    Button(flow.restarting ? "Restarting…" : "Try again") { Task { await flow.restartLatch() } }
+                        .disabled(flow.restarting)
+                }
+            } else if flow.backgroundHostNeedsRestart {
                 HStack(spacing: 12) {
                     Text("After you turn on access, restart Latch so it can use it.").foregroundStyle(Brand.muted)
                     Spacer()

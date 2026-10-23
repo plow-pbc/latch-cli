@@ -123,6 +123,10 @@ package enum SnapshotRunner {
             ("06-access-restart-latch", .access, Fixtures.serving, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
             }),
+            ("06-access-restart-failed", .access, Fixtures.stopped, Progress(), {
+                $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
+                $0.restartError = "the host did not answer within 30 s; see /Users/me/.latch/serve.log"
+            }),
             ("06-access-terminal-host", .access, Fixtures.servingAttached, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
                 $0.accessMessage = "this host has no Full Disk Access; turn it on for /Users/me/Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), restart the host, then run `latch plugins enable messages` again"

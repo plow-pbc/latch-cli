@@ -43,28 +43,13 @@ struct ResumeTests {
     }
 
     @Test func progressIsKeptPerStateFolder() {
-        let scratch = ScratchDefaults()
-        let home = ProgressStore(defaults: scratch.defaults, stateDir: "/Users/me/.latch")
-        let dev = ProgressStore(defaults: scratch.defaults, stateDir: "/Users/me/dev/.dev/state")
+        let memory = ProgressStore.Memory()
+        let home = ProgressStore(memory: memory, stateDir: "/Users/me/.latch")
+        let dev = ProgressStore(memory: memory, stateDir: "/Users/me/dev/.dev/state")
         let progress = Progress(passed: [.welcome: .continued, .google: .skipped], finished: true)
         home.save(progress)
         #expect(home.load() == progress)
         #expect(dev.load() == Progress())
-    }
-}
-
-/// A throwaway preferences suite, removed with its file when the test ends,
-/// so no test leaves preferences behind.
-final class ScratchDefaults {
-    let name = "PlowLatchUITests.\(UUID().uuidString)"
-    let defaults: UserDefaults
-
-    init() { defaults = UserDefaults(suiteName: name)! }
-
-    deinit {
-        UserDefaults.standard.removePersistentDomain(forName: name)
-        let file = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Preferences/\(name).plist")
-        try? FileManager.default.removeItem(at: file)
     }
 }
 
@@ -111,8 +96,7 @@ struct GatekeeperTests {
     }
 
     @Test func examplesWaitForTheNextLatchWithoutVerdicts() async {
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: FakeLatchClient(), defaults: scratch.defaults, still: true)
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
         flow.choose(Onboarding.decks[1])
         #expect(flow.draftRules == Onboarding.decks[1].rules)
@@ -123,8 +107,7 @@ struct GatekeeperTests {
     }
 
     @Test func startAtLoginOnlyWithRunInTheBackground() async {
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped), defaults: scratch.defaults, still: true)
+        let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var loginItem: [Bool] = []
         app.setLoginItem = { loginItem.append($0) }
         let flow = app.stage(.start)
@@ -139,8 +122,7 @@ struct GatekeeperTests {
     }
 
     @Test func connectGoogleInPlowOpensWhatLatchNames() {
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: FakeLatchClient(), defaults: scratch.defaults, still: true)
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var opened: [URL] = []
         app.open = { opened.append($0) }
         let flow = app.stage(.google)
@@ -157,8 +139,7 @@ struct GatekeeperTests {
     }
 
     @Test func setupRowsComeFromLatchNotFromScreensPassed() {
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: FakeLatchClient(), defaults: scratch.defaults, still: true)
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.stage(status: try? Fixtures.decode(Fixtures.serving))
         // Every screen continued, but latch says nothing is on.
         _ = app.stage(.done, progress: Progress(passed: [.rules: .continued, .google: .continued, .access: .continued]))
@@ -170,8 +151,7 @@ struct GatekeeperTests {
     }
 
     @Test func aFailedStatusReadSaysSo() {
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: FakeLatchClient(), defaults: scratch.defaults, still: true)
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.stage(status: nil, error: "Latch returned an unreadable response.")
         app.stage(rulesSaved: nil, plugins: nil)
         let states = Summary.rows(app: app, flow: nil).map(\.state)
@@ -206,8 +186,16 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func rulesSet(_ text: String) async throws {}
     func rulesTry(_ request: [String]) async throws -> RulesTry { throw CancellationError() }
     func pluginsList() async throws -> PluginsList { throw CancellationError() }
-    func serve(again: Bool) async throws { served.append(again) }
-    func stop() async throws { stopped += 1 }
+    /// How `serve -d` fails, if it does.
+    var serveFailure: LatchFailure?
+    func serve(again: Bool) async throws {
+        served.append(again)
+        if let serveFailure { throw LatchError.failed(serveFailure) }
+    }
+    func stop() async throws {
+        stopped += 1
+        status = Fixtures.stopped
+    }
     func enable(_ plugin: String) async throws -> GoogleEnabled? {
         enabled.append(plugin)
         try await Task.sleep(for: pause)
@@ -236,8 +224,7 @@ struct ClosingTests {
         let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access", grant: "/Applications/Plow Latch.app",
                                       settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
         let client = ScriptedClient(pause: .milliseconds(300)) { _ in throw LatchError.failed(notGranted) }
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: client, defaults: scratch.defaults, still: true)
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var opened: [URL] = []
         app.open = { opened.append($0) }
         app.reveal = { opened.append($0) }
@@ -253,8 +240,7 @@ struct ClosingTests {
     }
 
     @Test func aRerunShowsTheLoginItemAsItIs() {
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: FakeLatchClient(), defaults: scratch.defaults, still: true)
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.loginItemIsOn = { false }
         #expect(app.stage(.start, progress: Progress(rerun: true)).startAtLogin == false)
         #expect(app.stage(.start, progress: Progress()).startAtLogin == true)
@@ -266,8 +252,7 @@ struct ClosingTests {
     @Test func connectGoogleInPlowOnlyWithLatchsURL() async {
         let quiet = LatchFailure(code: "google_not_connected", message: "connect a Google account in Plow")
         let client = ScriptedClient { _ in throw LatchError.failed(quiet) }
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: client, defaults: scratch.defaults, still: true)
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var opened: [URL] = []
         app.open = { opened.append($0) }
         let flow = app.stage(.google)
@@ -283,8 +268,7 @@ struct ClosingTests {
     }
 
     @Test func notSetUpIsOnlyLatchsAnswer() {
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: FakeLatchClient(), defaults: scratch.defaults, still: true)
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.stage(status: try? Fixtures.decode(Fixtures.stopped))
         _ = app.stage(.done, progress: Progress(passed: [.google: .skipped, .access: .skipped, .rules: .skipped]))
         app.stage(rulesSaved: true, plugins: nil)
@@ -297,8 +281,7 @@ struct ClosingTests {
                                       grant: "/Applications/Plow Latch.app", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
         let client = ScriptedClient { _ in throw LatchError.failed(notGranted) }
         client.status = #"{"peer":{"name":"studio"},"serve":{"state":"serving","ready":true,"managed":true,"attached":false,"blocked":null},"last_error":null}"#
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: client, defaults: scratch.defaults, still: true)
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.open = { _ in }
         app.reveal = { _ in }
         await app.refreshStatus()
@@ -321,8 +304,7 @@ struct ClosingTests {
                                       grant: "/Applications/Plow Latch.app", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
         let client = ScriptedClient { _ in throw LatchError.failed(notGranted) }
         client.status = #"{"peer":{"name":"studio"},"serve":{"state":"serving","ready":true,"managed":true,"attached":true,"blocked":null},"last_error":null}"#
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: client, defaults: scratch.defaults, still: true)
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         await app.refreshStatus()
         let flow = app.stage(.access)
         flow.checkAccess()
@@ -335,8 +317,7 @@ struct ClosingTests {
 
     @Test func setUpAgainShowsGoogleAsItIs() async {
         let client = ScriptedClient { _ in GoogleEnabled(accounts: ["owner@example.com"]) }
-        let scratch = ScratchDefaults()
-        let app = AppModel(client: client, defaults: scratch.defaults, still: true)
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.google, progress: Progress(rerun: true))
         await flow.googleAppeared()
         #expect(flow.google == .done)
@@ -346,5 +327,27 @@ struct ClosingTests {
         let first = app.stage(.google)
         await first.googleAppeared()
         #expect(first.google == .unknown)
+    }
+
+    @Test func aFailedRestartSaysTheHostIsStoppedAndWhyAndRetries() async {
+        let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access; restart the host",
+                                      grant: "/Applications/Plow Latch.app", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        let client = ScriptedClient { _ in throw LatchError.failed(notGranted) }
+        client.status = #"{"peer":{"name":"studio"},"serve":{"state":"serving","ready":true,"managed":true,"attached":false,"blocked":null},"last_error":null}"#
+        client.serveFailure = LatchFailure(code: "serve_failed", message: "the host did not answer within 30 s; see serve.log")
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        await app.refreshStatus()
+        let flow = app.stage(.access)
+        flow.checkAccess()
+        await until { flow.messages.isNeeded && flow.contacts.isNeeded }
+        await flow.restartLatch()
+        #expect(flow.restartError == "the host did not answer within 30 s; see serve.log")
+        #expect(app.status?.serve.state == "stopped")
+        // Try again: the host is stopped already, so it is only started.
+        client.serveFailure = nil
+        await flow.restartLatch()
+        #expect(client.stopped == 1)
+        #expect(client.served == [true, true])
+        #expect(flow.restartError == nil)
     }
 }

@@ -31,10 +31,10 @@ final class AppModel {
     /// Onboarding progress for this state folder, in the app's preferences.
     let store: ProgressStore
 
-    init(client: any LatchClient, defaults: UserDefaults = .standard, still: Bool = false) {
+    init(client: any LatchClient, store: ProgressStore? = nil, still: Bool = false) {
         self.client = client
         self.still = still
-        store = ProgressStore(defaults: defaults, stateDir: client.stateDir)
+        self.store = store ?? ProgressStore(defaults: .standard, stateDir: client.stateDir)
     }
 
     var progress: Progress { onboarding?.progress ?? store.load() }

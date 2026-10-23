@@ -52,13 +52,30 @@ struct Progress: Equatable {
 /// Where the app keeps onboarding progress: its own preferences, one entry
 /// per state folder, so each latch it runs for has its own.
 struct ProgressStore {
-    let defaults: UserDefaults
     let stateDir: String
+    private let read: () -> [String: [String: Any]]
+    private let write: ([String: [String: Any]]) -> Void
     private static let key = "Onboarding"
 
+    init(defaults: UserDefaults, stateDir: String) {
+        self.stateDir = stateDir
+        read = { defaults.dictionary(forKey: Self.key) as? [String: [String: Any]] ?? [:] }
+        write = { defaults.set($0, forKey: Self.key) }
+    }
+
+    /// Kept in memory only, for tests: nothing reaches the preferences.
+    final class Memory {
+        var all: [String: [String: Any]] = [:]
+    }
+
+    init(memory: Memory, stateDir: String) {
+        self.stateDir = stateDir
+        read = { memory.all }
+        write = { memory.all = $0 }
+    }
+
     func load() -> Progress {
-        let all = defaults.dictionary(forKey: Self.key) as? [String: [String: Any]] ?? [:]
-        let saved = all[stateDir] ?? [:]
+        let saved = read()[stateDir] ?? [:]
         var passed: [Step: Passed] = [:]
         for (step, how) in saved["passed"] as? [String: String] ?? [:] {
             if let step = Step(rawValue: step), let how = Passed(rawValue: how) { passed[step] = how }
@@ -67,12 +84,12 @@ struct ProgressStore {
     }
 
     func save(_ progress: Progress) {
-        var all = defaults.dictionary(forKey: Self.key) as? [String: [String: Any]] ?? [:]
+        var all = read()
         all[stateDir] = [
             "passed": Dictionary(uniqueKeysWithValues: progress.passed.map { ($0.key.rawValue, $0.value.rawValue) }),
             "finished": progress.finished,
             "rerun": progress.rerun,
         ]
-        defaults.set(all, forKey: Self.key)
+        write(all)
     }
 }

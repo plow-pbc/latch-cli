@@ -122,6 +122,8 @@ final class Onboarding {
     /// latch's own words about access, for a host a terminal holds.
     var accessMessage: String?
     var restarting = false
+    /// Why Restart Latch failed, while it shows.
+    var restartError: String?
     // Start Latch.
     /// Starting at login runs `serve -d --again`, which needs a host this
     /// Mac started in the background before; so it's only on with it.
@@ -515,17 +517,20 @@ final class Onboarding {
     }
 
     /// The person's "Restart Latch": stops the background host and starts
-    /// it again with its last flags, then checks access again.
+    /// it again with its last flags, then checks access again. A failure
+    /// stays on screen, with Try again, which starts it (stopping it first
+    /// only if it is still running).
     func restartLatch() async {
         restarting = true
         defer { restarting = false }
+        restartError = nil
         do {
-            try await client.stop()
+            if app.status?.serve.state == "serving" { try await client.stop() }
             try await client.serve(again: true)
             await app.refreshStatus()
             checkAccess()
         } catch {
-            accessMessage = (error as? LatchError)?.message ?? error.localizedDescription
+            restartError = (error as? LatchError)?.message ?? error.localizedDescription
             await app.refreshStatus()
         }
     }
