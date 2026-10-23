@@ -181,10 +181,12 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     }
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
+    func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
     func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
-    func rulesShow() async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
-    func pluginsList() async throws -> PluginsList { throw CancellationError() }
+    func pluginsList(host: String?) async throws -> PluginsList { throw CancellationError() }
+    func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     /// How `serve -d` fails, if it does.
     var serveFailure: LatchFailure?
     func serve(again: Bool) async throws {

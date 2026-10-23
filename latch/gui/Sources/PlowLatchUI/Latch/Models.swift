@@ -9,6 +9,8 @@ nonisolated struct LocalStatus: Decodable, Equatable {
     struct Serve: Decodable, Equatable {
         /// `starting`, `serving`, `stopped` or `error`.
         var state: String
+        /// A `latch serve` holds this state folder.
+        var running: Bool
         var ready: Bool
         /// Run as this user's service: `serve -d` (in the background), or a
         /// `latch serve` held by a terminal (`attached`).
@@ -27,6 +29,35 @@ nonisolated struct LocalStatus: Decodable, Equatable {
     var serve: Serve
     var lastError: LatchFailure?
     var update: Update?
+}
+
+/// `latch status`: the account's hosts, as Plow's directory lists them.
+nonisolated struct AccountStatus: Decodable, Equatable {
+    struct Host: Decodable, Equatable {
+        var key: String
+        var name: String
+        /// When Plow last heard from it, and whether it counts it online.
+        var lastSeenAt: Date?
+        var online: Bool?
+        /// This machine, the one that ran `latch status`.
+        var isThisMac: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case key, name, lastSeenAt, online
+            case isThisMac = "self"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            key = try c.decode(String.self, forKey: .key)
+            name = try c.decode(String.self, forKey: .name)
+            lastSeenAt = try c.decodeIfPresent(Date.self, forKey: .lastSeenAt)
+            online = try c.decodeIfPresent(Bool.self, forKey: .online)
+            isThisMac = try c.decodeIfPresent(Bool.self, forKey: .isThisMac) ?? false
+        }
+    }
+
+    var hosts: [Host]
 }
 
 /// What to text, from `latch login --events`. The code is a credential:
@@ -67,10 +98,19 @@ nonisolated extension LoginEvent: Decodable {
     }
 }
 
-/// `latch rules show`: the rules for every agent on this Mac's host.
+/// `latch rules show`: the rules for every agent on a host, and each
+/// agent's own rules there.
 nonisolated struct RulesShow: Decodable, Equatable {
     struct Text: Decodable, Equatable { var text: String }
+    struct Agent: Decodable, Equatable { var agentName: String? }
     var everyAgent: Text?
+    var agents: [Agent]?
+}
+
+/// `latch vault list`: a host's vault items, never their secrets.
+nonisolated struct VaultList: Decodable, Equatable {
+    struct Item: Decodable, Equatable { var item: String }
+    var items: [Item]
 }
 
 /// `latch rules try`: the verdict a request would get now, without running it.

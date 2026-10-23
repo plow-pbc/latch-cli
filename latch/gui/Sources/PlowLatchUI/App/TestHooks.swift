@@ -2,12 +2,13 @@
 import AppKit
 
 /// A test build's remote control (`gui/build.sh --test-hooks`): distributed
-/// notifications `co.plow.latch.test.COMMAND`, with an argument as the
+/// notifications `BUNDLE_ID.test.COMMAND`, with an argument as the
 /// object, press the same buttons a person does, write the window to a PNG
 /// and the flow's state to JSON, so an end-to-end run needs no
 /// Accessibility or screen-recording permission. Nothing it does reaches
 /// the rest of the Mac: links, Finder reveals and the login item are
-/// recorded, never made.
+/// recorded, never made. The bundle id in the name keeps two test apps on
+/// one Mac from driving (or quitting) each other.
 enum TestHooks {
     /// What the app would have opened, for `state`.
     static var opened: [String] = []
@@ -24,8 +25,9 @@ enum TestHooks {
         }
         app.loginItemIsOn = { loginItem }
         let center = DistributedNotificationCenter.default()
+        let prefix = "\(Bundle.main.bundleIdentifier ?? "co.plow.latch").test."
         func on(_ command: String, _ act: @escaping @MainActor (String?) -> Void) {
-            center.addObserver(forName: .init("co.plow.latch.test.\(command)"), object: nil, queue: .main) { note in
+            center.addObserver(forName: .init(prefix + command), object: nil, queue: .main) { note in
                 let argument = note.object as? String
                 MainActor.assumeIsolated { act(argument) }
             }
@@ -36,10 +38,19 @@ enum TestHooks {
         on("type") { text in app.onboarding?.draftRules = text ?? "" }
         on("start-at-login") { value in app.onboarding?.startAtLogin = value == "1" }
         on("set-up-again") { _ in app.setUpAgain() }
+        // Moves the window off every display, where the window server still
+        // draws it while the screen is locked or asleep (snapshots of an
+        // on-screen window come back blank then).
+        on("offscreen") { _ in
+            NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+        }
+        // The main window's host picker and sidebar, as a click picks them.
+        on("host") { name in app.chosenHost = name }
+        on("section") { item in if let item = item.flatMap(SidebarItem.init(rawValue:)) { app.section = item } }
         on("quit") { _ in NSApp.terminate(nil) }
         on("snapshot") { path in
-            guard let path, let view = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain })?.contentView else { return }
-            try? Render.png(view, to: URL(filePath: path))
+            guard let path, let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }
+            try? Render.window(window, to: URL(filePath: path))
         }
         // A key press, delivered to the app as the keyboard would: `return`,
         // `tab` or `space`; nothing outside the app is touched.

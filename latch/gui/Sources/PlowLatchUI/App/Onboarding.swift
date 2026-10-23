@@ -493,11 +493,7 @@ final class Onboarding {
         startError = nil
         do {
             if runInBackground, app.status?.serve.state != "serving" {
-                do {
-                    try await client.serve(again: true)
-                } catch let error as LatchError where error.code == "nothing_to_start_again" {
-                    try await client.serve(again: false)
-                }
+                try await app.startHost()
             }
             if app.loginItemOffered { try app.setLoginItem(runInBackground && startAtLogin) }
             started = runInBackground
