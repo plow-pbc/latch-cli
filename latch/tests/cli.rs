@@ -5952,7 +5952,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
         (Some(2), &json!("not_previewable"))
     );
 
-    // The host's audit has the previews, and no exec.
+    // Previews are not audited: the host's audit has no preview and no exec.
     drop(serve);
     let records = audit_records(&host);
     let ops: Vec<&str> = records
@@ -5960,7 +5960,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
         .filter(|record| record["op"] != "connect")
         .map(|record| record["op"].as_str().unwrap())
         .collect();
-    assert_eq!(ops, ["rules_try"; 6], "{records:?}");
+    assert!(ops.is_empty(), "{records:?}");
     assert!(!home.join("out").exists());
 }
 

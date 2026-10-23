@@ -892,6 +892,16 @@ async fn serve_request(
                 message: denial.message,
             }
         }
+        // A preview runs nothing, so it is neither audited nor on the board.
+        Ok(identity) if op == "rules_try" => {
+            let response = rules_try::run(host, &identity, local, &request.args).await;
+            let outcome = match &response {
+                Response::Ok(answer) => answer["verdict"].as_str().unwrap_or_default(),
+                Response::Error { code, .. } => code,
+            };
+            log(&format!("{op}: {caller}: {outcome}"));
+            response
+        }
         Ok(identity) => {
             // On the board, running, from now until it is audited.
             let asked = request.args.clone();
@@ -911,8 +921,6 @@ async fn serve_request(
                 judgment,
                 stop,
             } = check(host, &identity, local, chat.as_deref(), &mut request).await;
-            // A preview's own judgment, which its record keeps.
-            let mut tried = None;
             let done = if let Some(stop) = stop {
                 stop.done()
             } else {
@@ -994,12 +1002,6 @@ async fn serve_request(
                         )
                         .await
                     }
-                    "rules_try" => {
-                        let (done, gate) =
-                            rules_try::run(host, &identity, local, &request.args).await;
-                        tried = gate;
-                        done
-                    }
                     "google" => {
                         crate::google::host::run(
                             &host.workers,
@@ -1017,17 +1019,13 @@ async fn serve_request(
                     ),
                 }
             };
-            // A preview that found a refusal is recorded as one.
-            let decision = match done.audit_args["verdict"].as_str() {
-                Some(verdict) if op == "rules_try" && verdict != "allow" => "deny",
-                _ => decision(&done.response),
-            };
+            let decision = decision(&done.response);
             log(&format!(
                 "{op}: {caller}: {decision}: {} {}",
                 done.outcome,
                 crate::redact::shown(op, &done.audit_args)
             ));
-            let judged = judgment.map(|judgment| judgment.gate).or(tried);
+            let judged = judgment.map(|judgment| judgment.gate);
             let mut record = audit::record(
                 caller,
                 identity.agent_uid.clone(),

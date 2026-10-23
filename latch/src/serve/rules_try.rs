@@ -6,50 +6,23 @@
 //!
 //! A refusal is a verdict, not an error: `not_covered`, `owner_said_no`,
 //! `no_intent`, or `host_refused` for a refusal the host makes without
-//! asking the judge (`--deny-exec`, a connector that is off). Its record
-//! is a `rules_try` one, with the judgment's details, never the request's.
+//! asking the judge (`--deny-exec`, a connector that is off). A preview
+//! runs nothing, so it is not audited and not shown on the dashboard.
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
-use super::{Done, Host, Stop, check, exec_denied};
+use super::{Host, Stop, check, exec_denied};
 use crate::failure::{Exit, Failure};
 use crate::gate;
 use crate::plow::{Identity, Permissions};
 use crate::wire::{Request, Response};
 
-/// The preview's answer, and the judgment's details for its record.
-pub(super) async fn run(
-    host: &Host,
-    identity: &Identity,
-    local: bool,
-    args: &Value,
-) -> (Done, Option<Value>) {
-    let mut audit = Map::new();
-    let (result, judged) = preview(host, identity, local, args, &mut audit).await;
-    // The record says what the preview found: its verdict, and whether
-    // that was a refusal (its decision).
-    if let Ok(answer) = &result {
-        audit.insert("verdict".into(), answer["verdict"].clone());
-        if let Some(code) = answer["refused"]["code"].as_str() {
-            audit.insert("refused".into(), json!(code));
-        }
+/// The preview's answer: what it found, or why it could not preview.
+pub(super) async fn run(host: &Host, identity: &Identity, local: bool, args: &Value) -> Response {
+    match preview(host, identity, local, args).await {
+        Ok(answer) => Response::Ok(answer),
+        Err(response) => response,
     }
-    let done = match result {
-        Ok(answer) => Done {
-            outcome: answer["verdict"].as_str().unwrap_or_default().to_string(),
-            response: Response::Ok(answer),
-            audit_args: Value::Object(audit),
-        },
-        Err(response) => Done {
-            outcome: match &response {
-                Response::Error { code, .. } => code.clone(),
-                Response::Ok(_) => String::new(),
-            },
-            response,
-            audit_args: Value::Object(audit),
-        },
-    };
-    (done, judged)
 }
 
 async fn preview(
@@ -57,9 +30,8 @@ async fn preview(
     identity: &Identity,
     local: bool,
     args: &Value,
-    audit: &mut Map<String, Value>,
-) -> (Result<Value, Response>, Option<Value>) {
-    let refused = |failure: Failure| (Err(Response::error(&failure)), None);
+) -> Result<Value, Response> {
+    let refused = |failure: Failure| Err(Response::error(&failure));
     if let Err(failure) = gate::owner::owner_only(&identity.kind) {
         return refused(failure);
     }
@@ -67,7 +39,6 @@ async fn preview(
         let message = "The request to preview is not a latch request.".to_string();
         return refused(Failure::usage("bad_request", message));
     };
-    audit.insert("op".into(), json!(request.op));
     if gate::gated(&request.op, &request.args).is_none() {
         return refused(not_previewable(&request.op));
     }
@@ -77,7 +48,6 @@ async fn preview(
     let (judged_as, judged_local, shown_as) = match args["from"].as_str() {
         Some(from) => match gate::owner::agent(&host.plow, from).await {
             Ok((uid, name)) => {
-                audit.insert("from".into(), json!(uid));
                 let shown = json!({"agent_uid": uid, "agent_name": name});
                 agent = Identity {
                     key: uid.clone(),
@@ -106,15 +76,9 @@ async fn preview(
     if exec_off && let Ok(prepared) = crate::exec::normalize(&host.workers, &request.args) {
         request.args = serde_json::to_value(&prepared).expect("prepared exec serializes");
     }
-    // The answer shows the action as the judge was shown it; the record
-    // keeps it as the audit keeps the real call's.
-    let gated = gate::gated(&request.op, &request.args);
-    let action = gated
-        .as_ref()
-        .map(|gated| judged_action(&request.op, gated));
-    if let Some(gated) = gated {
-        audit.insert("action".into(), gated.audit);
-    }
+    // The action as the judge was shown it.
+    let action =
+        gate::gated(&request.op, &request.args).map(|gated| judged_action(&request.op, &gated));
     let answer = |verdict: &str| {
         // One shape whatever the verdict: no judgment is a null `gate`,
         // and a judgment with no rules has null `rules`.
@@ -138,7 +102,7 @@ async fn preview(
 
     // A judgment is there only if nothing stopped the request before the
     // judge; the judge's own no is its verdict.
-    let result = match (checked.judgment, checked.stop) {
+    match (checked.judgment, checked.stop) {
         (Some(judgment), _) => match judgment.verdict {
             Ok(()) => Ok(answer("allow")),
             // A refusal the judge makes is the preview's verdict; one it
@@ -160,8 +124,7 @@ async fn preview(
         },
         (None, Some(Stop::Refused(done))) => Err(done.response),
         (None, None) => Err(Response::error(&not_previewable(&request.op))),
-    };
-    (result, judged)
+    }
 }
 
 /// What the judge was shown, masked as the audit keeps the same request:

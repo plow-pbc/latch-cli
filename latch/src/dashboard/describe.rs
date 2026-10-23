@@ -82,7 +82,7 @@ pub fn finished(
     let title = title(op, request, audit);
     let (kind, command) = command(op, request, audit);
     let steps = plan_steps(request, audit);
-    let (mut outcome, code, message) = match response {
+    let (outcome, code, message) = match response {
         Response::Ok(_) => (done(op, audit, &steps), None, None),
         Response::Error {
             code,
@@ -95,10 +95,6 @@ pub fn finished(
             Some(message.clone()),
         ),
     };
-    // A preview that worked says what it found, refusal or not.
-    if op == "rules_try" && audit["verdict"].is_string() {
-        outcome = preview_outcome(audit);
-    }
     // A plan that stopped answers with the page as it ended, where it
     // stopped; else the page the audit names. Never its query.
     let ended = match response {
@@ -237,16 +233,6 @@ fn command(op: &str, request: &Value, audit: &Value) -> (String, String) {
     let words = |value: Value| -> Vec<String> { serde_json::from_value(value).unwrap_or_default() };
     let mut line: Vec<String> = Vec::new();
     let kind = match op {
-        "rules_try" => {
-            let (previewed, asked, kept) = previewed(request, audit);
-            line.push("try".into());
-            if let Some(from) = request["from"].as_str().or(audit["from"].as_str()) {
-                line.extend(["--from".into(), quoted(from)]);
-            }
-            let (kind, words) = command(&previewed, &asked, &kept);
-            line.extend(["--".into(), kind, words]);
-            "rules"
-        }
         "exec" => {
             let writes = words(pick("writes"));
             // The folder it runs in by default (its first write folder,
@@ -391,10 +377,6 @@ fn title(op: &str, request: &Value, audit: &Value) -> String {
             .to_string()
     };
     match op {
-        "rules_try" => {
-            let (previewed, asked, kept) = previewed(request, audit);
-            format!("Preview: {}", title(&previewed, &asked, &kept))
-        }
         "exec" => {
             let argv = if audit["argv"].is_array() {
                 audit
@@ -409,10 +391,7 @@ fn title(op: &str, request: &Value, audit: &Value) -> String {
         "file_get" => format!("Read: {}", pick_path(request, audit)),
         "file_put" => format!("Write: {}", pick_path(request, audit)),
         "messages" | "contacts" => {
-            let action = request["action"].as_str().or(audit["action"].as_str());
-            let action = action
-                .unwrap_or_default()
-                .trim_start_matches(&format!("{op}."));
+            let action = request["action"].as_str().unwrap_or_default();
             match (op, action) {
                 ("messages", "search") => "Search Messages".to_string(),
                 ("messages", "thread") => "Read a Messages thread".to_string(),
@@ -424,10 +403,7 @@ fn title(op: &str, request: &Value, audit: &Value) -> String {
         "google" => {
             let words: Vec<String> =
                 serde_json::from_value(request["gog_args"].clone()).unwrap_or_default();
-            match audit["command"].as_str() {
-                Some(command) if words.is_empty() => format!("Google: {command}"),
-                _ => format!("Google: {}", crate::google::policy::command_prefix(&words)),
-            }
+            format!("Google: {}", crate::google::policy::command_prefix(&words))
         }
         "browser" => browser_title(request, audit),
         "vault_link" => format!("Phone link: {}", pick("op")),
@@ -441,42 +417,6 @@ fn title(op: &str, request: &Value, audit: &Value) -> String {
         }
         op => capitalized(&op.replace('_', " ")),
     }
-}
-
-/// A preview's request as a call is read: its operation, the request as
-/// the owner sent it with what the record kept of it laid over (its paths
-/// resolved), and what the record kept.
-fn previewed(request: &Value, audit: &Value) -> (String, Value, Value) {
-    let op = request["request"]["op"]
-        .as_str()
-        .or(audit["op"].as_str())
-        .unwrap_or_default();
-    let kept = audit["action"].clone();
-    let mut asked = request["request"]["args"].clone();
-    match (&mut asked, &kept) {
-        (Value::Object(asked), Value::Object(kept)) => asked.extend(kept.clone()),
-        (asked, kept) if asked.is_null() => *asked = kept.clone(),
-        _ => {}
-    }
-    (op.to_string(), asked, kept)
-}
-
-/// What a preview found: the request would be allowed, or refused and why,
-/// in the words a refused call's row uses.
-fn preview_outcome(audit: &Value) -> Outcome {
-    let verdict = audit["verdict"].as_str().unwrap_or_default();
-    if verdict == "allow" {
-        return Outcome::new(State::Done, Some("would be allowed".into()));
-    }
-    let code = match verdict {
-        "owner_said_no" | "not_covered" => "gatekeeper_denied",
-        "host_refused" => audit["refused"].as_str().unwrap_or_default(),
-        verdict => verdict,
-    };
-    let why = refusal(code, &serde_json::json!({"reason": verdict}))
-        .and_then(|refused| refused.text)
-        .unwrap_or_else(|| verdict.replace('_', " "));
-    Outcome::new(State::Done, Some(format!("would be refused: {why}")))
 }
 
 fn pick_path(request: &Value, audit: &Value) -> String {

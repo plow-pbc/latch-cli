@@ -36,6 +36,29 @@ fn answer(response: Response) -> Value {
     }
 }
 
+/// The audit's operations and the dashboard's call kinds, in order: a
+/// preview adds to neither.
+fn traces(t: &super::gated_tests::TestHost) -> (Vec<String>, Vec<String>) {
+    let ops = t
+        .audit()
+        .iter()
+        .map(|record| record["op"].as_str().unwrap().to_string())
+        .collect();
+    let watching = t.host.dashboard.watch();
+    let board = watching.borrow();
+    let kinds = board
+        .tasks
+        .iter()
+        .flat_map(|task| &task.calls)
+        .map(|call| call.kind.clone())
+        .collect();
+    (ops, kinds)
+}
+
+fn untouched() -> (Vec<String>, Vec<String>) {
+    (Vec::new(), Vec::new())
+}
+
 #[tokio::test]
 async fn an_exec_preview_is_judged_and_runs_nothing() {
     let t = start(chat_with(always_covered)).await;
@@ -64,21 +87,8 @@ async fn an_exec_preview_is_judged_and_runs_nothing() {
     assert!(!fresh.exists());
     assert!(!t.host.workers.home.join("ran").exists());
 
-    // Its record is a preview's, and no exec record exists.
-    let records = t.audit();
-    assert_eq!(records.len(), 1, "{records:?}");
-    let record = &records[0];
-    assert_eq!(record["op"], "rules_try");
-    assert_eq!(record["decision"], "allow");
-    assert_eq!(record["outcome"], "allow");
-    assert_eq!(record["args"]["op"], "exec");
-    assert_eq!(record["args"]["action"]["network"], true);
-    assert_eq!(record["gate"]["verdict"], "allow");
-    assert!(
-        !serde_json::to_string(&records)
-            .unwrap()
-            .contains("s3cret-value")
-    );
+    // Not audited, not on the dashboard.
+    assert_eq!(traces(&t), untouched());
 }
 
 #[tokio::test]
@@ -95,7 +105,7 @@ async fn an_agent_cannot_preview() {
     let (exit, code, _) = refusal(&response);
     assert_eq!((exit, code), (Exit::Denied, "owner_only"));
     assert_eq!(t.judged(), 0);
-    assert_eq!(t.audit()[0]["decision"], "deny");
+    assert_eq!(traces(&t), untouched());
 }
 
 #[tokio::test]
@@ -133,11 +143,9 @@ async fn from_judges_as_that_agent_with_its_rules_and_chat() {
                "rules for this agent": "Builds are fine."})
     );
     assert_eq!(asked["conversation"][0]["text"], "please build the site");
-    let record = t.audit().into_iter().last().unwrap();
-    assert_eq!(
-        (&record["op"], &record["outcome"], &record["args"]["from"]),
-        (&json!("rules_try"), &json!("not_covered"), &json!(AGENT))
-    );
+    // Only the two rules commands were audited and shown.
+    let rules = vec!["rules".to_string(), "rules".to_string()];
+    assert_eq!(traces(&t), (rules.clone(), rules));
 
     // The same request from the owner: shared rules only, no chat.
     let (response, _) = t
@@ -210,7 +218,7 @@ async fn the_hosts_own_refusals_are_previewed_without_the_judge() {
         assert!(message.starts_with(whom), "{message}");
         assert_eq!(t.judged(), 0, "{flags}");
         assert!(!t.host.workers.home.join("ran").exists());
-        assert_eq!(t.audit()[0]["outcome"], "host_refused");
+        assert_eq!(traces(&t), untouched());
         // The owner is never refused exec.
         let (response, _) = t
             .call(&device, "rules_try", try_args("exec", exec(), None, None))
@@ -298,11 +306,11 @@ async fn the_owner_on_the_host_previews_over_the_socket() {
     assert_eq!(tried["verdict"], "allow");
     assert_eq!(tried["gate"]["caller"], "agent");
     assert!(!tried.to_string().contains("own words"), "no file content");
-    assert_eq!(t.audit()[0]["op"], "rules_try");
+    assert_eq!(traces(&t), untouched());
 }
 
 #[tokio::test]
-async fn a_previewed_exec_is_shown_with_its_credentials_hidden() {
+async fn a_preview_leaves_nothing_in_the_audit_log_or_dashboard() {
     let t = start(chat_with(always_covered)).await;
     let device = t.caller("device").await;
     let secret = "synthetic-preview-credential-4c1e";
@@ -315,22 +323,20 @@ async fn a_previewed_exec_is_shown_with_its_credentials_hidden() {
         )
         .await;
     assert_eq!(answer(response)["verdict"], "allow");
-
-    // The record keeps the request as it was asked, sealed on disk.
-    assert_eq!(t.audit()[0]["args"]["action"]["argv"], argv);
-
-    // serve.log and the dashboard show it with the credential hidden.
+    assert_eq!(traces(&t), untouched());
+    let on_disk = std::fs::read_to_string(t.state.join(crate::audit::FILE)).unwrap_or_default();
+    assert!(!on_disk.contains("--token"));
+    // serve.log has one line for it: who asked, and what it found.
     let logged: Vec<String> = crate::log::captured()
         .into_iter()
-        .filter(|line| line.contains("rules_try:") && line.contains("--token"))
+        .filter(|line| line.contains("rules_try:"))
         .collect();
     assert!(!logged.is_empty());
     assert!(
-        logged.iter().all(|line| !line.contains(secret)),
+        logged.iter().all(|line| !line.contains("--token")),
         "{logged:?}"
     );
     let board = serde_json::to_string(&*t.host.dashboard.watch().borrow()).unwrap();
-    assert!(board.contains("--token"), "{board}");
     assert!(!board.contains(secret), "{board}");
 }
 
@@ -383,17 +389,7 @@ async fn the_answer_shows_the_action_as_the_judge_saw_it() {
         crate::exec::stdin_audit(&script)
     );
 
-    // The records keep each request as the audit keeps the real call's.
-    let records = t.audit();
-    assert_eq!(
-        records[0]["args"]["action"],
-        json!({"command": "gmail.send"})
-    );
-    assert!(
-        !serde_json::to_string(&records)
-            .unwrap()
-            .contains("See you at 6.")
-    );
+    assert_eq!(traces(&t), untouched());
 }
 
 /// A contacts page's cursor holds the name the page before ended on: the
@@ -436,28 +432,18 @@ async fn a_previewed_contacts_page_does_not_show_where_the_last_page_ended() {
         !text.contains("Ann Example") && !text.contains(&next),
         "{text}"
     );
-    let record = t.audit().into_iter().last().unwrap();
-    assert_eq!(record["op"], "rules_try");
-    assert_eq!(record["args"]["action"]["plan"]["after"]["key"], "[name]");
-    let watching = t.host.dashboard.watch();
-    let board = watching.borrow();
-    let titles: Vec<&str> = board
-        .tasks
-        .iter()
-        .flat_map(|task| &task.calls)
-        .map(|call| call.title.as_str())
-        .collect();
-    assert!(titles.contains(&"Preview: Search Contacts"), "{titles:?}");
+    // Only the real first page was audited and shown.
+    let contacts = vec!["contacts".to_string()];
+    assert_eq!(traces(&t), (contacts.clone(), contacts));
 }
 
 #[tokio::test]
-async fn a_preview_is_recorded_and_shown_with_what_it_found() {
+async fn every_verdict_has_one_answer_shape() {
     let deny = DenyExec::from_flags(&[AGENT.to_string()]);
     let t = start_denying(chat_with(covered_after_a_yes), deny).await;
     let device = t.caller("device").await;
     let build = json!({"argv": ["npm", "run", "build"], "writes": ["~/site"], "timeout": 30});
 
-    // Refused by the judge: the record says so, and so does the board.
     let (response, _) = t
         .call(
             &device,
@@ -506,68 +492,5 @@ async fn a_preview_is_recorded_and_shown_with_what_it_found() {
     );
     assert!(!site.exists());
 
-    let records = t.audit();
-    let kept: Vec<(&str, &str, &str)> = records
-        .iter()
-        .map(|record| {
-            (
-                record["decision"].as_str().unwrap(),
-                record["outcome"].as_str().unwrap(),
-                record["args"]["verdict"].as_str().unwrap(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        kept,
-        [
-            ("allow", "allow", "allow"),
-            ("deny", "not_covered", "not_covered"),
-            ("deny", "host_refused", "host_refused"),
-        ]
-    );
-    assert_eq!(records[2]["args"]["refused"], "exec_denied");
-
-    let watching = t.host.dashboard.watch();
-    let board = watching.borrow();
-    let shown: Vec<_> = board
-        .tasks
-        .iter()
-        .flat_map(|task| &task.calls)
-        .map(|call| {
-            (
-                call.title.as_str(),
-                call.command.as_str(),
-                call.outcome.text.as_deref().unwrap(),
-            )
-        })
-        .collect();
-    let line = format!(
-        "try --from Juno -- exec --write {} --timeout 30 npm run build",
-        site.display()
-    );
-    assert_eq!(
-        shown,
-        [
-            (
-                "Preview: Run: npm run build",
-                line.as_str(),
-                "would be refused: exec is off for this agent"
-            ),
-            (
-                "Preview: Google: gmail.search",
-                "try --from Juno -- google --account owner@example.com gmail search",
-                "would be refused: outside your instructions"
-            ),
-            (
-                "Preview: Run: npm run build",
-                format!(
-                    "try -- exec --write {} --timeout 30 npm run build",
-                    site.display()
-                )
-                .as_str(),
-                "would be allowed"
-            ),
-        ],
-        "{shown:#?}"
-    );
+    assert_eq!(traces(&t), untouched());
 }
