@@ -133,8 +133,9 @@ impl Model {
 
     /// The chance that `action` (a click on an element, or Enter in a
     /// field, which submits its form) can't be undone: paying, ordering,
-    /// sending, publishing, deleting or closing something, signing out,
-    /// creating credentials and the like. `lines` are the lines around the
+    /// sending, publishing or deleting something, closing or cancelling an
+    /// account or an order, signing out, creating credentials and the like;
+    /// never dismissing a dialog. `lines` are the lines around the
     /// element on the page.
     pub async fn risky(
         &mut self,
@@ -167,7 +168,7 @@ impl Model {
 }
 
 /// The risk question, for one action named after it.
-const RISK_QUESTION: &str = "Would this action spend money or pay, place an order, send a message, publish, delete or close something, sign out of an account, create credentials or keys (such as an API key, token or password), or otherwise do something that cannot be undone?";
+const RISK_QUESTION: &str = "Would this action spend money or pay, place an order, send a message, publish or delete something, close or cancel an account, order, subscription or ticket, sign out of an account, create credentials or keys (such as an API key, token or password), or otherwise do something that cannot be undone? Closing or dismissing a dialog, popup, banner or menu is none of these.";
 
 /// What an instruction step's operations do, as the model reads them.
 const OPERATIONS: [(&str, &str); 12] = [
