@@ -77,6 +77,16 @@ nonisolated struct RulesTry: Decodable, Equatable {
     var refused: LatchFailure?
 }
 
+/// `latch plugins list`: each connector and whether it's on.
+nonisolated struct PluginsList: Decodable, Equatable {
+    struct Plugin: Decodable, Equatable {
+        var name: String
+        /// `enabled`, `disabled` or `needs_setup`.
+        var state: String
+    }
+    var plugins: [Plugin]
+}
+
 /// `latch plugins enable google`'s answer.
 nonisolated struct GoogleEnabled: Decodable, Equatable {
     var accounts: [String]

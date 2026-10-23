@@ -20,13 +20,13 @@ struct RulesView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("What access should Latch allow to your Mac?")
+            Text("What may your agents do on this Mac?")
                 .font(.system(size: 14, weight: .medium))
                 .padding(.top, 24)
                 .padding(.bottom, 10)
             field
             HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Text("Use a default:").foregroundStyle(Brand.muted)
+                Text("Start with:").foregroundStyle(Brand.muted)
                 ForEach(Onboarding.decks) { deck in
                     Button(deck.name) { flow.choose(deck) }
                         .buttonStyle(.plain)
@@ -63,7 +63,7 @@ struct RulesView: View {
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Brand.fieldBorder))
             .overlay(alignment: .topLeading) {
                 if flow.draftRules.isEmpty {
-                    Text("Your rules for agents on this Mac (optional)")
+                    Text("Write your rules here (optional).")
                         .font(.system(size: 13.5))
                         .foregroundStyle(Brand.muted)
                         .padding(.horizontal, 13)
@@ -155,7 +155,7 @@ private struct Lane: View {
                     .frame(width: pillWidth, height: 36, alignment: .leading)
                     .offset(x: bump)
                     .accessibilityLabel("\(example.title): \(verdictWord)")
-                    .accessibilityHint(open ? "Hides the request" : "Shows the request and the verdict")
+                    .accessibilityHint(open ? "Hides the request and decision." : "Shows the request and decision.")
                 Ellipse()
                     .fill(RadialGradient(colors: [(look == .allowed ? Brand.voltFill : Color(light: 0xA14A2B, dark: 0xD89478)).opacity(0.8), .clear],
                                          center: .center, startRadius: 0, endRadius: 15))
@@ -197,7 +197,7 @@ private struct Lane: View {
         switch look {
         case .allowed: Text("✓").font(.system(size: 13.5, weight: .bold)).foregroundStyle(Brand.volt).transition(.scale(scale: 0.8).combined(with: .opacity))
         case .refused: Text("✕").font(.system(size: 13.5, weight: .bold)).foregroundStyle(Color(light: 0xA14A2B, dark: 0xD89478)).transition(.scale(scale: 0.8).combined(with: .opacity))
-        case .checking: Text("Analyzing…").font(.system(size: 12, weight: .medium)).foregroundStyle(Brand.muted)
+        case .checking: Text("Checking…").font(.system(size: 12, weight: .medium)).foregroundStyle(Brand.muted)
         default: EmptyView()
         }
     }
@@ -229,14 +229,15 @@ private struct Lane: View {
     private var verdictWord: String {
         switch preview {
         case .notChecked: "Not checked"
-        case .checking: "Analyzing…"
+        case .checking: "Checking…"
         case .failed: "Couldn't check"
         case let .verdict(answer):
             switch answer.verdict {
             case "allow": "Allowed"
             case "owner_said_no": "You said no"
             case "host_refused": "Refused by this Mac"
-            default: "Not covered"
+            case "no_intent": "No instructions yet"
+            default: "Not in your rules"
             }
         }
     }
@@ -255,7 +256,7 @@ private struct Lane: View {
                 .font(.system(size: 11.5, design: .monospaced))
                 .foregroundStyle(Brand.text)
                 .textSelection(.enabled)
-            (Text("Gatekeeper Verdict: ").fontWeight(.semibold).foregroundStyle(Brand.text)
+            (Text("Decision: ").fontWeight(.semibold).foregroundStyle(Brand.text)
                 + Text(verdictWord + (reason.map { ". \($0)" } ?? "")))
                 .font(.system(size: 12))
                 .foregroundStyle(Brand.muted)

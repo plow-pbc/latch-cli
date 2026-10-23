@@ -135,8 +135,8 @@ nonisolated final class LatchProcess: @unchecked Sendable {
                 running[ObjectIdentifier(process)] = process
             }
         } catch {
-            let path = process.executableURL?.path ?? "latch"
-            throw LatchError.unreachable("Latch couldn't run \(path): \(error.localizedDescription)")
+            let reason = error.localizedDescription.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            throw LatchError.unreachable("Latch couldn't start: \(reason).")
         }
     }
 
@@ -159,8 +159,10 @@ nonisolated final class LatchProcess: @unchecked Sendable {
         if let line = try? LatchJSON.decoder.decode(ErrorLine.self, from: last) {
             return .failed(line.error)
         }
-        let text = String(decoding: stderr.suffix(300), as: UTF8.self)
-        return .unreachable("latch exited with status \(status): \(text)")
+        // Not latch's error JSON: the exit status and the end of what it
+        // printed go along as detail.
+        let text = String(decoding: stderr.suffix(300), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return .unreachable("Latch couldn't complete this step. (exit \(status)\(text.isEmpty ? "" : ": \(text)"))")
     }
 }
 

@@ -20,6 +20,9 @@ nonisolated struct FakeLatchClient: LatchClient {
     func rulesTry(_ request: [String]) async throws -> RulesTry {
         throw LatchError.failed(tryFailure)
     }
+    func pluginsList() async throws -> PluginsList {
+        throw LatchError.failed(tryFailure)
+    }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func serve(again: Bool) async throws {}
 }
@@ -119,8 +122,15 @@ package enum SnapshotRunner {
             ("07-start-error", .start, Fixtures.stopped, Progress(), {
                 $0.startError = "the host did not answer within 30 s; see /Users/me/.latch/serve.log"
             }),
-            ("08-done-all-set", .done, Fixtures.serving, full, { $0.savedRules = rules }),
-            ("08-done-with-skips", .done, Fixtures.serving, skipped, { _ in }),
+            ("08-done-all-set", .done, Fixtures.serving, full, {
+                $0.app.stage(rulesSaved: true, plugins: ["google": "enabled", "messages": "enabled", "contacts": "enabled"])
+            }),
+            ("08-done-with-skips", .done, Fixtures.serving, skipped, {
+                $0.app.stage(rulesSaved: false, plugins: ["google": "disabled", "messages": "disabled", "contacts": "disabled"])
+            }),
+            ("08-done-not-running", .done, Fixtures.stopped, full, {
+                $0.app.stage(rulesSaved: true, plugins: nil); $0.google = .done
+            }),
         ]
 
         for dark in [false, true] {
@@ -132,10 +142,17 @@ package enum SnapshotRunner {
                 try await render(OnboardingView(entranceTime: step == .welcome ? 10 : nil).environment(app),
                                  size: Brand.windowSize, dark: dark, file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
-            for (name, status, progress) in [("09-main-running", Fixtures.serving, full), ("09-main-skipped-update", Fixtures.stopped, skipped),
-                                             ("09-main-logged-out", Fixtures.loggedOut, full)] {
-                let app = AppModel(client: FakeLatchClient(status: status), still: true)
-                app.stage(status: try Fixtures.decode(status))
+            let mains: [(String, String?, Progress, Bool?, [String: String]?)] = [
+                ("09-main-running", Fixtures.serving, full, true, ["google": "enabled", "messages": "enabled", "contacts": "enabled"]),
+                ("09-main-stopped-skipped-update", Fixtures.stopped, skipped, false, nil),
+                ("09-main-logged-out", Fixtures.loggedOut, full, nil, nil),
+                ("09-main-status-failed", nil, full, nil, nil),
+            ]
+            for (name, status, progress, rulesSaved, plugins) in mains {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try status.map { try Fixtures.decode($0) },
+                          error: status == nil ? "Latch couldn't start: The file “latch” doesn't exist." : nil)
+                app.stage(rulesSaved: rulesSaved, plugins: plugins)
                 _ = app.stage(.done, progress: progress)
                 try await render(MainView().environment(app), size: CGSize(width: 520, height: 420), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))

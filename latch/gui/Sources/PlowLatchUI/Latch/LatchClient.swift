@@ -11,6 +11,8 @@ nonisolated protocol LatchClient: Sendable {
     func rulesSet(_ text: String) async throws
     /// `latch rules try -- REQUEST`, as the owner.
     func rulesTry(_ request: [String]) async throws -> RulesTry
+    /// `latch plugins list`, on this Mac's host (it must be running).
+    func pluginsList() async throws -> PluginsList
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
     /// `latch serve -d`, `--again` to start with the last serve's flags.
@@ -59,6 +61,10 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(RulesTry.self, try await run(["rules", "try", "--"] + request))
     }
 
+    func pluginsList() async throws -> PluginsList {
+        try decode(PluginsList.self, try await run(["plugins", "list"]))
+    }
+
     func enable(_ plugin: String) async throws -> GoogleEnabled? {
         let data = try await run(["plugins", "enable", plugin])
         return plugin == "google" ? try decode(GoogleEnabled.self, data) : nil
@@ -81,6 +87,6 @@ nonisolated private func decode<T: Decodable>(_ type: T.Type, _ data: Data) thro
     do {
         return try LatchJSON.decoder.decode(type, from: data)
     } catch {
-        throw LatchError.unreachable("latch printed something unexpected: \(String(decoding: data.prefix(200), as: UTF8.self))")
+        throw LatchError.unreachable("Latch returned an unreadable response.")
     }
 }

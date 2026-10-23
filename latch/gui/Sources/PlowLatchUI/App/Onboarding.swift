@@ -20,6 +20,8 @@ final class Onboarding {
         case done
         case needed(String)
         case failed(String)
+
+        var isNeeded: Bool { if case .needed = self { true } else { false } }
     }
 
     enum Preview: Equatable {
@@ -51,30 +53,30 @@ final class Onboarding {
         Deck(name: "Personal assistant",
              rules: "Allow my family assistant to check our calendar, search messages about dinner, and order groceries online. Never let it send email or write outside the project folder.",
              examples: [
-                 Example(title: "Check the family calendar", symbol: "calendar",
+                 Example(title: "Check our calendar", symbol: "calendar",
                          shown: "latch google -- calendar events primary --from 2026-10-26 --to 2026-11-02",
                          request: ["google", "--", "calendar", "events", "primary", "--from", "2026-10-26", "--to", "2026-11-02"]),
                  Example(title: "Find messages about dinner", symbol: "message",
                          shown: "latch messages search dinner", request: ["messages", "search", "dinner"]),
-                 Example(title: "Save a shopping list", symbol: "cart",
+                 Example(title: "Start a shopping list", symbol: "cart",
                          shown: "latch exec --write ~/Documents -- touch shopping-list.txt",
                          request: ["exec", "--write", "~/Documents", "--", "touch", "shopping-list.txt"]),
                  Example(title: "Write anywhere on this Mac", symbol: "folder",
                          shown: "latch exec --write / --network -- npm install",
                          request: ["exec", "--write", "/", "--network", "--", "npm", "install"]),
-                 Example(title: "Send a work email", symbol: "envelope",
+                 Example(title: "Send an email", symbol: "envelope",
                          shown: #"latch google -- gmail send --to jordan@example.com --subject Update --body "Ready for review.""#,
                          request: ["google", "--", "gmail", "send", "--to", "jordan@example.com", "--subject", "Update", "--body", "Ready for review."]),
              ]),
         Deck(name: "Executive assistant",
              rules: "Allow my work assistant to read and send work email, check my calendar, and install dependencies in ~/work/demo with network access. Keep it out of my personal messages.",
              examples: [
-                 Example(title: "Find unread work email", symbol: "envelope",
+                 Example(title: "Find unread email", symbol: "envelope",
                          shown: "latch google -- gmail search is:unread", request: ["google", "--", "gmail", "search", "is:unread"]),
-                 Example(title: "Send a reply to a customer", symbol: "arrowshape.turn.up.left",
+                 Example(title: "Send an email", symbol: "arrowshape.turn.up.left",
                          shown: #"latch google -- gmail send --to jordan@example.com --subject Update --body "Ready for review.""#,
                          request: ["google", "--", "gmail", "send", "--to", "jordan@example.com", "--subject", "Update", "--body", "Ready for review."]),
-                 Example(title: "Find a free hour next week", symbol: "calendar",
+                 Example(title: "Check when I'm free", symbol: "calendar",
                          shown: "latch google -- calendar freebusy primary --from 2026-10-26 --to 2026-11-02",
                          request: ["google", "--", "calendar", "freebusy", "primary", "--from", "2026-10-26", "--to", "2026-11-02"]),
                  Example(title: "Install project dependencies", symbol: "shippingbox",
@@ -194,11 +196,11 @@ final class Onboarding {
     var primaryTitle: String {
         switch step {
         case .welcome: "Get started"
-        case .login: verified ? "Continue" : "Waiting…"
-        case .privacy, .rules: "Continue"
-        case .google: google == .done ? "Continue" : google == .unknown ? "Check Google" : "Check again"
-        case .access: accessDone ? "Continue" : "Open System Settings"
-        case .start: "Start Latch"
+        case .login, .privacy: "Continue"
+        case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
+        case .google: google == .done ? "Continue" : google == .unknown ? "Check connection" : "Check again"
+        case .access: accessDone ? "Continue" : accessFailed ? "Check again" : "Open System Settings"
+        case .start: starting ? "Starting…" : runInBackground && app.status?.serve.state != "serving" ? "Start Latch" : "Continue"
         case .done: "Open Latch"
         }
     }
@@ -231,6 +233,18 @@ final class Onboarding {
     }
 
     var accessDone: Bool { messages == .done && contacts == .done }
+    /// A connector failed for a reason other than access: System Settings
+    /// won't help.
+    var accessFailed: Bool {
+        [messages, contacts].contains { if case .failed = $0 { true } else { false } }
+    }
+
+    /// Whether Continue on the rules screen saves: the box holds rules
+    /// other than the saved ones.
+    var rulesChanged: Bool {
+        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !draft.isEmpty && draft != savedRules?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     // MARK: Log in to Plow
 
@@ -250,7 +264,7 @@ final class Onboarding {
                         login = .verified(name: name)
                         await app.refreshStatus()
                     case .expired:
-                        if case let .waiting(code) = login { login = .expired(code) } else { login = .failed("The code expired.") }
+                        if case let .waiting(code) = login { login = .expired(code) } else { login = .failed("This code expired.") }
                     case let .error(failure): login = .failed(failure.message)
                     }
                 }
@@ -332,7 +346,7 @@ final class Onboarding {
     private func judge(_ current: Int) async {
         guard draftRules == (savedRules ?? "") else {
             for example in deck.examples { previews[example.id] = .notChecked }
-            previewNote = "Verdicts show your saved rules. Continue to save these."
+            previewNote = "The examples can't check unsaved rules yet."
             return
         }
         reviewing = true
@@ -375,8 +389,8 @@ final class Onboarding {
     /// Continue: saves the rules only if the person changed them. An empty
     /// box never clears rules that are saved.
     func saveRules() async {
+        guard rulesChanged else { return next() }
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !draft.isEmpty, draft != savedRules?.trimmingCharacters(in: .whitespacesAndNewlines) else { return next() }
         savingRules = true
         defer { savingRules = false }
         do {

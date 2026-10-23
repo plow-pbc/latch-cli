@@ -82,7 +82,7 @@ struct LoginView: View {
                 .font(Brand.headline)
                 .accessibilityAddTraits(.isHeader)
                 .padding(.top, 48)
-            Text(verified ? "This Mac is logged in." : "Scan with your iPhone, or text the code below.")
+            Text(verified ? "This Mac is logged in." : "Scan with your phone's camera, or text the code below.")
                 .font(Brand.lead)
                 .foregroundStyle(Brand.muted)
             hero
@@ -106,6 +106,16 @@ struct LoginView: View {
 
     private var expired: Bool {
         if case .expired = flow.login { true } else { false }
+    }
+
+    private var qrLabel: String {
+        switch flow.login {
+        case .starting: "Getting a code"
+        case .waiting: "Scan this code to prepare a login text."
+        case .expired: "Expired login code"
+        case .failed: "Couldn't get a login code"
+        case .verified: "Logged in"
+        }
     }
 
     /// The white QR card, which shrinks and rounds into the check.
@@ -136,7 +146,7 @@ struct LoginView: View {
         .shadow(color: Brand.voltFill.opacity(verified ? 0.35 : 0.1), radius: 24)
         .animation(reduceMotion ? nil : .spring(duration: 0.55, bounce: 0.25), value: verified)
         .accessibilityElement()
-        .accessibilityLabel(verified ? "Logged in" : code == nil ? "Getting a code" : "QR code that texts the login code")
+        .accessibilityLabel(qrLabel)
     }
 
     @ViewBuilder private var caption: some View {
@@ -155,16 +165,16 @@ struct LoginView: View {
                 if expired {
                     HStack(spacing: 10) {
                         Text("This code expired.").foregroundStyle(Brand.muted)
-                        Button("Get a new code") { flow.startLogin() }.buttonStyle(.link).foregroundStyle(Brand.volt)
+                        Button("Get a new code.") { flow.startLogin() }.buttonStyle(.link).foregroundStyle(Brand.volt)
                     }
                 } else {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.mini)
-                        Text("Waiting for your text").foregroundStyle(Brand.muted)
                         if let expires = code.expiresAt {
-                            Text(timerInterval: Date.now...max(expires, .now), countsDown: true)
-                                .monospacedDigit()
+                            Text("Waiting for your text. Code expires in \(Text(timerInterval: Date.now...max(expires, .now), countsDown: true).monospacedDigit()).")
                                 .foregroundStyle(Brand.muted)
+                        } else {
+                            Text("Waiting for your text.").foregroundStyle(Brand.muted)
                         }
                     }
                     Button("Open in Messages") { flow.openMessages() }.buttonStyle(.link).foregroundStyle(Brand.volt)
@@ -181,7 +191,7 @@ struct LoginView: View {
                 Button("Try again") { flow.startLogin() }.buttonStyle(.link).foregroundStyle(Brand.volt)
             }
         case let .verified(name):
-            Text("Logged in as \(name).").foregroundStyle(Brand.muted)
+            Text("This Mac is named \(name) in Plow.").foregroundStyle(Brand.muted)
         }
     }
 
@@ -248,9 +258,9 @@ struct GoogleView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             PlowMark().fill(Brand.volt, style: FillStyle(eoFill: true)).frame(width: 56, height: 56).accessibilityHidden(true)
-            ScreenHeader(title: "Connect Google", lead: "Let your agent work with Gmail and Calendar. Connect Google in Plow, then come back here.")
+            ScreenHeader(title: "Connect Google", lead: "Let your agents use Gmail and Calendar. Connect your Google account in Plow, then come back here.")
             Panel {
-                PanelRow(symbol: "g.circle", title: "Google account", state: state, stateColor: color)
+                PanelRow(symbol: "g.circle", title: "Google accounts", state: state, stateColor: color)
             }
             if case let .failed(message) = flow.google {
                 Text(message).foregroundStyle(Brand.clay).font(.callout)
@@ -262,8 +272,6 @@ struct GoogleView: View {
             if flow.google == .done, !flow.googleAccounts.isEmpty {
                 Text(flow.googleAccounts.joined(separator: ", ")).foregroundStyle(Brand.muted)
             }
-            Text("The gatekeeper checks each Google request against the task you approved.")
-                .foregroundStyle(Brand.muted)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 56)
@@ -300,7 +308,7 @@ struct AccessView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             ScreenHeader(title: "Contacts & Messages",
-                         lead: "Let your agent search your messages and contacts on this Mac. Latch needs Full Disk Access to read them.")
+                         lead: "Let your agents search your messages and contacts on this Mac. macOS requires Full Disk Access for this.")
             Panel {
                 HStack(spacing: 12) {
                     Image(systemName: "lock.shield").frame(width: 20).foregroundStyle(Brand.muted).accessibilityHidden(true)
@@ -321,10 +329,12 @@ struct AccessView: View {
             ForEach([flow.messages, flow.contacts].compactMap { if case let .failed(m) = $0 { m } else { nil } }, id: \.self) {
                 Text($0).foregroundStyle(Brand.clay).font(.callout)
             }
-            Text(flow.waitingForAccess
-                 ? "Latch checks every few seconds and carries on once access is on."
-                 : "Open System Settings, then drag Plow Latch from the Finder window into the list.")
-                .foregroundStyle(Brand.muted)
+            if flow.waitingForAccess {
+                Text("This screen updates when access is granted.").foregroundStyle(Brand.muted)
+            } else if flow.messages.isNeeded || flow.contacts.isNeeded {
+                Text("Drag Plow Latch from the Finder window into the Full Disk Access list, then switch it on.")
+                    .foregroundStyle(Brand.muted)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 56)
@@ -336,8 +346,8 @@ struct AccessView: View {
         switch check {
         case .unknown: "Not checked"
         case .checking: "Checking…"
-        case .done: "Allowed"
-        case .needed: "Waiting for access"
+        case .done: "On"
+        case .needed: "Access needed"
         case .failed: "Couldn't turn on"
         }
     }
@@ -360,17 +370,16 @@ struct StartView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             PlowMark().fill(Brand.volt, style: FillStyle(eoFill: true)).frame(width: 56, height: 56).accessibilityHidden(true)
-            ScreenHeader(title: "Keep Latch running",
-                         lead: "Keep your Mac ready for your agents. Latch runs in the background when you close this window.")
+            ScreenHeader(title: "Start Latch", lead: "Choose when Latch runs on this Mac.")
             Panel {
-                toggle("Run in the background", "arrow.clockwise", $flow.runInBackground)
+                toggle("Run Latch now", "arrow.clockwise", $flow.runInBackground)
                 Rectangle().fill(Brand.line).frame(height: 1)
                 toggle("Start when you log in", "clock", $flow.startAtLogin)
                     .disabled(!flow.runInBackground)
                     .opacity(flow.runInBackground ? 1 : 0.5)
             }
             if !flow.runInBackground {
-                Text("Latch starts at login only when it runs in the background.").foregroundStyle(Brand.muted)
+                Text("Latch can start when you log in only if it runs now.").foregroundStyle(Brand.muted)
             }
             if let blocked = app.status?.serve.blocked {
                 Text(blocked.message).foregroundStyle(Brand.clay).font(.callout)
@@ -385,7 +394,7 @@ struct StartView: View {
         }
         .padding(.horizontal, 56)
         .padding(.top, 52)
-        .task { await app.refreshStatus() }
+        .task { if !app.still { await app.refreshStatus() } }
     }
 
     private func toggle(_ title: String, _ symbol: String, _ on: Binding<Bool>) -> some View {
@@ -416,22 +425,29 @@ struct DoneView: View {
                 .padding(.top, 56)
             Text("You're all set").font(Brand.headline).accessibilityAddTraits(.isHeader)
             Panel {
-                ForEach(Array(Summary.rows(flow: flow, status: app.status).enumerated()), id: \.offset) { index, row in
+                ForEach(Array(Summary.rows(app: app, flow: flow).enumerated()), id: \.offset) { index, row in
                     if index > 0 { Rectangle().fill(Brand.line).frame(height: 1) }
                     PanelRow(symbol: row.symbol, title: row.title, state: row.state, stateColor: row.set ? Brand.volt : Brand.muted)
                 }
             }
-            Text("Your agents can now use this Mac. The gatekeeper reviews their requests.")
+            Text(app.status?.serve.state == "serving" ? "Your agents can now use this Mac." : "You can review or change your setup in Latch.")
                 .foregroundStyle(Brand.muted)
                 .multilineTextAlignment(.center)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 56)
-        .task { await app.refreshStatus() }
+        .task {
+            guard !app.still else { return }
+            await app.refreshStatus()
+            await app.refreshSetup()
+        }
     }
 }
 
 /// Done's and the main window's list of what onboarding set up.
+/// Done's and the main window's list of what's set up, all from latch: its
+/// status, its rules, its connectors (and, during onboarding, what latch
+/// answered on its screens when the host isn't running to ask).
 enum Summary {
     struct Row {
         var symbol: String
@@ -440,20 +456,34 @@ enum Summary {
         var set: Bool
     }
 
-    static func rows(flow: Onboarding?, status: LocalStatus?, progress: Progress? = nil) -> [Row] {
-        let passed = progress?.passed ?? flow?.progress.passed ?? [:]
-        func step(_ step: Step, done: Bool, _ title: String, _ symbol: String, on: String) -> Row {
-            if done { return Row(symbol: symbol, title: title, state: on, set: true) }
-            return Row(symbol: symbol, title: title, state: "Not set up", set: false)
+    static func rows(app: AppModel, flow: Onboarding?) -> [Row] {
+        let failed = app.status == nil && app.statusError != nil
+        let loggedIn = app.status?.peer != nil
+        let serving = app.status?.serve.state == "serving"
+        let passed = (flow?.progress ?? app.progress).passed
+        // Connectors' state needs the host; without it, what latch answered
+        // on their screens this time, or a skip, is what is known.
+        func connector(_ names: [String], _ step: Step, answered: Bool) -> (String, Bool) {
+            if let plugins = app.plugins {
+                let on = names.allSatisfy { plugins[$0] == "enabled" }
+                return (on ? "On" : "Not set up", on)
+            }
+            if answered { return ("On", true) }
+            return (passed[step] == .skipped ? "Not set up" : "Couldn't check", false)
         }
-        let loggedIn = status?.peer != nil
-        let serving = status?.serve.state == "serving"
+        let google = connector(["google"], .google, answered: flow?.google == .done)
+        let access = connector(["messages", "contacts"], .access, answered: flow?.accessDone == true)
+        let rules: (String, Bool) = switch app.rulesSaved {
+        case true?: ("Saved", true)
+        case false?: ("Not set up", false)
+        case nil: ("Couldn't check", false)
+        }
         return [
-            Row(symbol: "checkmark", title: "Logged in to Plow", state: loggedIn ? "Done" : "Not logged in", set: loggedIn),
-            step(.rules, done: passed[.rules] == .continued && flow?.savedRules?.isEmpty != true, "Your rules", "text.alignleft", on: "Set"),
-            step(.google, done: passed[.google] == .continued, "Google", "g.circle", on: "Connected"),
-            step(.access, done: passed[.access] == .continued, "Contacts & Messages", "message", on: "Allowed"),
-            Row(symbol: "arrow.clockwise", title: "Latch", state: serving ? "Running" : "Not running", set: serving),
+            Row(symbol: "checkmark", title: "Plow", state: failed ? "Couldn't check" : loggedIn ? "Logged in" : "Not logged in", set: loggedIn),
+            Row(symbol: "text.alignleft", title: "Your rules", state: rules.0, set: rules.1),
+            Row(symbol: "g.circle", title: "Google", state: google.1 ? "Connected" : google.0, set: google.1),
+            Row(symbol: "message", title: "Contacts & Messages", state: access.0, set: access.1),
+            Row(symbol: "arrow.clockwise", title: "Latch", state: failed ? "Couldn't check" : serving ? "Running" : "Not running", set: serving),
         ]
     }
 }

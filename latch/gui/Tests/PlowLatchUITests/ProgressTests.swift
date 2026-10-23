@@ -136,4 +136,29 @@ struct GatekeeperTests {
         let line = try LatchJSON.decoder.decode(Line.self, from: Data(json.utf8))
         #expect(line.error.connectUrl == URL(string: "https://plow.co/connect/google"))
     }
+
+    @Test func setupRowsComeFromLatchNotFromScreensPassed() {
+        let app = AppModel(client: FakeLatchClient(), still: true)
+        app.stage(status: try? Fixtures.decode(Fixtures.serving))
+        // Every screen continued, but latch says nothing is on.
+        _ = app.stage(.done, progress: Progress(passed: [.rules: .continued, .google: .continued, .access: .continued]))
+        app.stage(rulesSaved: false, plugins: ["google": "disabled", "messages": "enabled", "contacts": "disabled"])
+        let states = Summary.rows(app: app, flow: nil).map(\.state)
+        #expect(states == ["Logged in", "Not set up", "Not set up", "Not set up", "Running"])
+        app.stage(rulesSaved: true, plugins: ["google": "enabled", "messages": "enabled", "contacts": "enabled"])
+        #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Saved", "Connected", "On", "Running"])
+    }
+
+    @Test func aFailedStatusReadSaysSo() {
+        let app = AppModel(client: FakeLatchClient(), still: true)
+        app.stage(status: nil, error: "Latch returned an unreadable response.")
+        app.stage(rulesSaved: nil, plugins: nil)
+        let states = Summary.rows(app: app, flow: nil).map(\.state)
+        #expect(states == ["Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check"])
+    }
+
+    @Test func onlyMissingAccessIsAccessNeeded() {
+        #expect(Onboarding.Check.needed("Waiting for access").isNeeded)
+        #expect(!Onboarding.Check.failed("the Messages reader is missing").isNeeded)
+    }
 }

@@ -34,6 +34,23 @@ final class AppModel {
 
     var progress: Progress { onboarding?.progress ?? Progress.load() }
 
+    /// What's set up, as latch says: whether shared rules are saved, and
+    /// each connector's state; nil where latch couldn't say (a connector's
+    /// state needs this Mac's host running).
+    private(set) var rulesSaved: Bool?
+    private(set) var plugins: [String: String]?
+
+    func refreshSetup() async {
+        rulesSaved = (try? await client.rulesShow()).map { $0.everyAgent != nil }
+        plugins = (try? await client.pluginsList()).map { Dictionary(uniqueKeysWithValues: $0.plugins.map { ($0.name, $0.state) }) }
+    }
+
+    /// For snapshots: what latch said is set up.
+    func stage(rulesSaved: Bool?, plugins: [String: String]?) {
+        self.rulesSaved = rulesSaved
+        self.plugins = plugins
+    }
+
     func refreshStatus() async {
         do {
             status = try await client.localStatus()
@@ -93,7 +110,8 @@ final class AppModel {
     }
 
     /// For snapshots: as `status --local` said.
-    func stage(status: LocalStatus?) {
+    func stage(status: LocalStatus?, error: String? = nil) {
         self.status = status
+        statusError = error
     }
 }
