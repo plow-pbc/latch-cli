@@ -101,9 +101,9 @@ private struct HostSection: View {
 
     private func stateText(_ state: HostState) -> String {
         if host.isThisMac {
-            if let serve = app.status?.serve, let pid = serve.pid, serve.running {
+            if let serve = app.status?.serve, serve.running {
                 let how = serve.managed ? " · in the background" : serve.attached == true ? " · in a terminal" : ""
-                return "\(state.title)\(how) · pid \(pid)"
+                return "\(state.title)\(how)"
             }
             return state.title
         }
@@ -177,7 +177,7 @@ private struct PluginsSection: View {
                         }
                     }
                 }
-                if let error { ErrorText(error: error, host: host.name).foregroundStyle(.red) }
+                if let error { ErrorText(error: error, host: host.spoken).foregroundStyle(.red) }
             }
         } header: {
             Text("Plugins")
@@ -209,7 +209,7 @@ private struct PluginsSection: View {
 
 /// A plugin in the app's words: latch's reasons and refusals name commands
 /// and pages to visit, which the app has buttons for.
-enum PluginCopy {
+nonisolated enum PluginCopy {
     static func title(_ name: String) -> String {
         name.prefix(1).uppercased() + name.dropFirst()
     }

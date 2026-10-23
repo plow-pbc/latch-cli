@@ -211,9 +211,20 @@ struct NewAgentSheet: View {
 
 /// The agent latch created: your own agent's key file, or a cloud agent's
 /// start.
-private struct CreatedView: View {
+struct CreatedView: View {
     var created: AgentCreated
     @Environment(AppModel.self) private var app
+
+    /// Where the key is, by the file's name alone.
+    static func keySaved(_ file: String) -> String {
+        "Its key is saved in “\(URL(filePath: file).lastPathComponent)”. Give your agent the file and the login instructions."
+    }
+
+    /// For the agent, on the clipboard: how to use the key file wherever it
+    /// ends up, never the key nor this Mac's path to it.
+    static let loginInstructions = "Use the key file your owner supplied as your Plow agent credential. "
+        + "Set PLOW_TOKEN_FILE to the file's path on the computer where you run Latch, and keep it set for every Latch call. "
+        + "Then run latch login."
 
     var body: some View {
         let agent = created.agent
@@ -226,12 +237,12 @@ private struct CreatedView: View {
                 .foregroundStyle(.secondary)
             if let file = created.tokenFile {
                 VStack(spacing: 8) {
-                    Text("Its key is saved to \((file as NSString).abbreviatingWithTildeInPath). Give this file to your agent; it logs in with:")
+                    Text(Self.keySaved(file))
                         .multilineTextAlignment(.center)
-                    Text("PLOW_TOKEN_FILE=\(file) latch login")
-                        .font(.body.monospaced()).textSelection(.enabled)
-                        .padding(8).background(.quaternary, in: .rect(cornerRadius: 6))
-                    Button("Show in Finder") { app.reveal(URL(filePath: file)) }
+                    HStack {
+                        Button("Copy Login Instructions") { app.copy(Self.loginInstructions) }
+                        Button("Show in Finder") { app.reveal(URL(filePath: file)) }
+                    }
                 }
             } else if let status = agent.status {
                 HStack(spacing: 8) {

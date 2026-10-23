@@ -64,6 +64,11 @@ struct HostEntry: Equatable, Identifiable {
     }
 }
 
+extension HostEntry {
+    /// How an error sentence names it: "this Mac" for this Mac's own host.
+    var spoken: String { isThisMac ? ErrorCopy.thisMac : name }
+}
+
 /// A host's state in a word or two, as the picker and Home show it.
 enum HostState: Equatable {
     case serving, notReady, starting, stopped, failed, blocked
