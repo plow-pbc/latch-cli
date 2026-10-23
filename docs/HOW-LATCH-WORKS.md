@@ -276,7 +276,8 @@ The few commands that take `--host` but run only on this machine
   Linux arm64 (`--browser camoufox` for Camoufox, `--no-browser` for none).
   A first install at a terminal then runs `latch setup`: log in, connect
   Google, on a Mac turn on Messages and Contacts, then offer to start the
-  host. A release build logs in to `https://api.plow.co` by default.
+  host. On macOS 26 or later it opens Plow Latch.app instead, whose window
+  takes the same steps. A release build logs in to `https://api.plow.co` by default.
 - **Update:** `latch update` installs the newest build, `latch update TAG`
   a given one (also how to go back), and `latch update --check` only says
   whether there's a newer one. It checks the release's signed `SHA256SUMS`,

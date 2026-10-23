@@ -6588,6 +6588,41 @@ mod messages {
         assert_eq!(local_serve(&host)["running"], false);
     }
 
+    /// A test's stand-in answer for Full Disk Access (`LATCH_TEST_ACCESS`, debug
+    /// builds only) holds for a running host's check too, so a test never asks
+    /// macOS for a grant it has no way to give: here the host's own home has a
+    /// Messages folder no one may read, and the answer still decides.
+    #[test]
+    fn a_running_hosts_full_disk_access_check_takes_the_tests_answer() {
+        use std::os::unix::fs::PermissionsExt;
+        let plow = LivePlow::start();
+        let (_relay, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let home = dir.path().join("host-home");
+        let messages = home.join("Library/Messages");
+        fs::create_dir_all(&messages).unwrap();
+        fs::write(messages.join("chat.db"), "a synthetic store").unwrap();
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o000)).unwrap();
+        let mut command = serve_command(&host, &relay);
+        command
+            .env("HOME", &home)
+            .env("LATCH_TEST_ACCESS", "granted");
+        let (_serve, _log, _) = serving_with(command);
+
+        let output = latch(&host, &["plugins", "enable", "messages"], &[]);
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o700)).unwrap();
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap();
+        assert_eq!(output.status.code(), Some(0), "{json}");
+        assert_eq!(json["access"], "granted", "{json}");
+        assert_eq!(json["state"], "enabled", "{json}");
+    }
+
     /// The Messages setup asks the running host, whose Full Disk Access is what
     /// counts, never the terminal that runs `plugins enable`. Each side here
     /// has a home of its own, readable for one and not for the other. A host

@@ -23,3 +23,7 @@ test-plan *args:
 # Asks the real decision model through Plow (not tests): checks, replay OUT, scenario.
 gatekeeper *args:
     @just --justfile latch/justfile gatekeeper {{args}}
+
+# This checkout as a dev Mac app (.dev/app/Plow Latch Dev.app), on `just build`'s latch.
+app *args:
+    @just --justfile latch/justfile app {{args}}

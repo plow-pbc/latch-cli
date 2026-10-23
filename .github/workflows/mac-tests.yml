@@ -37,7 +37,8 @@ jobs:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(inputs.shards == 1 && '[1]' || '[1, 2]') }}
-    runs-on: macos-15
+    # macOS 26's Xcode builds the app's window (the macOS 26 SDK).
+    runs-on: macos-26
     timeout-minutes: 30
     defaults:
       run:
@@ -51,7 +52,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: latch -> target
-          shared-key: mac-macos-15
+          shared-key: mac-macos-26
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.shard == 1 }}
       - uses: actions/cache@v4
         with:
