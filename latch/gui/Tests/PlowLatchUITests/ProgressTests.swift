@@ -76,7 +76,7 @@ struct DecodingTests {
         try ("#!/bin/sh\ncat <<'EOF'\n" + lines.joined(separator: "\n") + "\nEOF\n").write(to: latch, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: latch.path)
         var events: [LoginEvent] = []
-        for try await event in LiveLatchClient(executable: latch, stateDir: folder.path).login(name: nil) {
+        for try await event in LiveLatchClient(executable: latch, stateDir: folder.path).login(name: nil, replace: false) {
             events.append(event)
         }
         #expect(events.count == 2)
@@ -194,6 +194,8 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     var connectorsOn: [String] = []
     /// Names `login --events --name` was given.
     private(set) var loginNames: [String?] = []
+    /// Whether each login was given `--replace`.
+    private(set) var replaced: [Bool] = []
     /// How `login --events` ends.
     var loginEvents: [LoginEvent] = []
     let enableAnswer: @Sendable (String) throws -> GoogleEnabled?
@@ -209,8 +211,9 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
     func pluginsList(host: String?) async throws -> PluginsList { throw CancellationError() }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
-    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> {
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
         loginNames.append(name)
+        replaced.append(replace)
         let events = loginEvents
         return AsyncThrowingStream { continuation in
             for event in events { continuation.yield(event) }
@@ -222,6 +225,11 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     var host: String?
     func setupStatus() async throws -> SetupStatus {
         try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
+    }
+    /// What `--check-access` says of Full Disk Access.
+    var access: String?
+    func setupStatusCheckingAccess() async throws -> SetupStatus {
+        try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google, access: access))
     }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
@@ -447,6 +455,26 @@ struct ClosingTests {
         #expect(Summary.rows(app: app, flow: nil).first { $0.title == "Google" }?.state == "Not set up")
     }
 
+    @Test func accessAlreadyGrantedTurnsOnWithoutSystemSettings() async {
+        let client = ScriptedClient { _ in nil }
+        client.access = "granted"
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        app.open = { Issue.record("opened \($0)") }
+        let flow = app.stage(.access)
+        await flow.accessAppeared()
+        #expect(flow.primaryTitle == "Turn on")
+        #expect(client.enabled.isEmpty)
+        flow.primary()
+        await until { flow.accessDone }
+        #expect(client.enabled == ["messages", "contacts"])
+        #expect(flow.primaryTitle == "Continue")
+
+        client.access = "not_granted"
+        let notYet = app.stage(.access)
+        await notYet.accessAppeared()
+        #expect(notYet.primaryTitle == "Open System Settings")
+    }
+
     @Test func arrivingAtAccessOnlyReadsWhatsOn() async throws {
         let client = ScriptedClient { _ in nil }
         client.connectorsOn = ["messages"]
@@ -475,19 +503,31 @@ struct ClosingTests {
         #expect(flow.startError?.hasPrefix("a host from another latch version (pid 4242)") == true)
     }
 
-    @Test func aTakenNameAsksForAnother() async {
+    @Test func aTakenNameAsksForAnotherOrReplacesThatMachine() async throws {
+        let line: LoginLine = try Fixtures.decode(#"{"type":"error","error":{"code":"conflict","message":"a machine named \"studio\" already exists","existing_name":"studio","last_seen_at":"2026-10-21T04:44:15Z"}}"#)
         let client = ScriptedClient { _ in nil }
-        client.loginEvents = [.error(LatchFailure(code: "conflict", message: "a machine named \"studio\" already exists"))]
+        client.loginEvents = [try #require(line.event)]
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.login)
         flow.startLogin()
-        await until { flow.login == .nameTaken }
-        #expect(flow.login == .nameTaken)
+        let taken = Onboarding.Login.nameTaken(existing: "studio", lastSeen: LatchJSON.parseTimestamp("2026-10-21T04:44:15Z"))
+        await until { flow.login == taken }
+        #expect(flow.login == taken)
         client.loginEvents = [.verified(name: "studio-2")]
         flow.loginName = " studio-2 "
         flow.useAnotherName()
         await until { flow.login == .verified(name: "studio-2") }
         #expect(client.loginNames == [nil, "studio-2"])
+        // Replacing is the person's choice, under the name that's taken.
+        #expect(client.replaced == [false, false])
+        client.loginEvents = [line.event!]
+        flow.startLogin()
+        await until { flow.login == taken }
+        client.loginEvents = [.verified(name: "studio")]
+        flow.replaceMachine()
+        await until { flow.login == .verified(name: "studio") }
+        #expect(client.loginNames.last == "studio")
+        #expect(client.replaced == [false, false, false, true])
     }
 
     @Test func aRelaunchWithNoArgumentsKeepsTheStateFolder() throws {

@@ -7,15 +7,18 @@ nonisolated protocol LatchClient: Sendable {
     func localStatus() async throws -> LocalStatus
     /// `latch status`: the account's hosts, from Plow.
     func accountStatus() async throws -> AccountStatus
-    /// `latch login --events [--name NAME]`: the code to text, then how it
-    /// ends. Stopping the iteration cancels the login.
-    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error>
+    /// `latch login --events [--name NAME] [--replace]`: the code to text,
+    /// then how it ends. Stopping the iteration cancels the login.
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error>
     /// `latch rules show`, on this Mac's host or, with `host`, another.
     func rulesShow(host: String?) async throws -> RulesShow
     /// `latch rules set --file -`, the text on stdin.
     func rulesSet(_ text: String) async throws
     /// `latch setup --status`: what's set up, read from the state folder.
     func setupStatus() async throws -> SetupStatus
+    /// The same, with `--check-access`: whether Plow Latch has Full Disk
+    /// Access, which takes a moment.
+    func setupStatusCheckingAccess() async throws -> SetupStatus
     /// `latch plugins list`, on this Mac's host or, with `host`, another.
     func pluginsList(host: String?) async throws -> PluginsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
@@ -45,9 +48,9 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(AccountStatus.self, try await run(["status"]))
     }
 
-    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> {
-        let process = LatchProcess(executable: executable, arguments: withState(["login", "--events"] + (name.map { ["--name", $0] } ?? [])),
-                                   environment: Self.environment)
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
+        let arguments = ["login", "--events"] + (name.map { ["--name", $0] } ?? []) + (replace ? ["--replace"] : [])
+        let process = LatchProcess(executable: executable, arguments: withState(arguments), environment: Self.environment)
         return AsyncThrowingStream { continuation in
             let reader = Task.detached {
                 do {
@@ -78,6 +81,10 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func setupStatus() async throws -> SetupStatus {
         try decode(SetupStatus.self, try await run(["setup", "--status"]))
+    }
+
+    func setupStatusCheckingAccess() async throws -> SetupStatus {
+        try decode(SetupStatus.self, try await run(["setup", "--status", "--check-access"]))
     }
 
     func pluginsList(host: String?) async throws -> PluginsList {

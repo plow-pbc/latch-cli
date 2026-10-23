@@ -143,6 +143,9 @@ nonisolated struct SetupStatus: Decodable, Equatable {
         var accounts: [String]?
         /// Google's, when none is connected in Plow: where to connect one.
         var connectUrl: URL?
+        /// Messages' and Contacts', when asked: whether Plow Latch has Full
+        /// Disk Access (`granted`, `not_granted` or `unknown`).
+        var access: String?
     }
     var steps: [Step]
 
