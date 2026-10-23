@@ -15,7 +15,7 @@ host keeps a sealed audit log of the calls it handles.
 |---|---|---|---|
 | **Owner** | Your machines, logged in with your own Plow login. | Call any host, manage the rules and vault on any host, turn connectors on or off on the host itself, run a host. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as your OS user on the host that uses its state folder. An agent running there counts. | Everything the owner can, on that host, through its local socket. | Like the owner. |
-| **Agent** | An agent logged in with its own Plow agent credential. | Call hosts. It can't manage rules, the vault or connectors, and its login can't run a host. | Against your messages in its Plow chat, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential. | Call hosts. It can't manage rules, the vault or connectors. With the usual agent credential, it can't start a host today. | Against your messages in its Plow chat, plus the host's rules. |
 | **Host** | A machine running `latch serve`. | Runs programs, file copies and connector calls in a sandbox, and holds the vault, rules, browser and audit log. | Its gatekeeper judges the work that needs judging; work it can't judge doesn't run. |
 
 **Read more:** [who's who in detail](#2-whos-who) ·
@@ -40,7 +40,7 @@ open pull request; **Planned** marks work with no pull request yet.
 |---|---|---|---|---|---|
 | **Owner** (your CLI) | A machine logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: list them on any host; turn them on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` or `LATCH_HOST` naming another machine. An agent running there counts. | That host, through its private local socket; other hosts as the owner. | Yes, on that host. Rules and vault work without `latch serve` or the decision model. | It is the host. | Exactly like the owner; recorded as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It may list connectors. | No: agent hosting isn't supported. With the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. **Planned:** an explicit refusal. | Against your messages in your Plow chat with that agent, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It may list connectors. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
 
 - **Every machine logged in with your own Plow login is the owner today.**
   There's no host-only or view-only login yet (see section 10).
@@ -112,7 +112,7 @@ open sessions with `--engine camoufox`.
 - Send texts or iMessages, change contacts, or script other apps (latch's
   workers can't send Apple Events).
 - Read another machine's audit log, dashboard or logs.
-- Run a host: not supported (see section 2).
+- Start a host with the usual agent credential, today (see section 2).
 
 ## 5. The gatekeeper
 
@@ -302,7 +302,7 @@ host. With no hosts you get `no_host`, and with several and none named
 | Chrome on Linux x86_64 | No build; use `--engine camoufox` |
 | Browser handoff on a Linux host or with `--headless-browsers` | Not supported |
 | A host with no sandbox; Windows | Not supported |
-| An agent's login running a host | Not supported. With the usual agent credential, login saves no Plow token, so `latch serve` stops with `not_logged_in` |
+| An agent's login running a host | Doesn't work today: with the usual agent credential, login saves no Plow token, so `latch serve` stops with `not_logged_in` |
 | Turning connectors on or off from another machine | Not supported |
 | Another machine's audit log, dashboard or logs | Not supported |
 | Exec stdin over 16 KiB, or stdin that isn't UTF-8 text | Refused (`stdin_not_judgeable`, exit 2) |
@@ -325,6 +325,4 @@ login is the owner and can manage and call any host. A proposed design
 gives each login one role: owner (manage and call), host (serve only) or
 agent (call, judged). Under it, a web-exposed cloud VM would get a
 host-only login that can never act as you on your Mac or your Plow
-account, and `latch serve` would refuse an agent's login outright, rather
-than relying on the usual agent login having no saved Plow token. This is
-a proposal, not a promise.
+account. This is a proposal, not a promise.
