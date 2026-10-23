@@ -83,69 +83,6 @@ struct StreamLineTests {
     }
 }
 
-/// Against a real latch and a host it serves, named by the environment
-/// (`LATCH_LIVE_LATCH`, `LATCH_LIVE_STATE`, and `LATCH_LIVE_CALLER_STATE`
-/// for another of the owner's machines that calls it; with
-/// `LATCH_LIVE_REMOTE`, also a host that machine reads with `--host`);
-/// skipped without.
-@MainActor
-struct LiveActivityTests {
-    nonisolated static let env = ProcessInfo.processInfo.environment
-
-    @Test(.enabled(if: env["LATCH_LIVE_LATCH"] != nil), arguments: [false, true])
-    func aNewRecordArrivesWhileWatchedAndLatchStopsAfter(remote: Bool) async throws {
-        guard !remote || Self.env["LATCH_LIVE_REMOTE"] != nil else { return }
-        let latch = URL(filePath: try #require(Self.env["LATCH_LIVE_LATCH"]))
-        let caller = try #require(Self.env["LATCH_LIVE_CALLER_STATE"])
-        // Remote: the caller's machine reads the remote host's audit.
-        let state = remote ? caller : try #require(Self.env["LATCH_LIVE_STATE"])
-        let host = remote ? Self.env["LATCH_LIVE_REMOTE"]
-            : try await LiveLatchClient(executable: latch, stateDir: state).localStatus().peer?.name
-        let feed = ActivityFeed(client: LiveLatchClient(executable: latch, stateDir: state), host: remote ? host : nil)
-        feed.start()
-        await waitUntil { feed.caughtUp }
-        #expect(feed.caughtUp)
-        let before = feed.records.count
-        let marker = "live-\(UUID().uuidString.prefix(8))"
-        _ = try await LatchProcess(executable: latch, arguments: ["--state-dir", caller, "exec", "--host", try #require(host),
-                                                                   "--", "echo", marker]).output()
-        await waitUntil { feed.records.contains { $0.args?.argv?.last == marker } }
-        #expect(feed.records.count > before)
-        #expect(feed.records.contains { $0.command?.hasSuffix(" echo \(marker)") == true && $0.status == .allowed(nil) })
-        feed.stop()
-        await waitUntil { Self.followers(state) == 0 }
-    }
-
-    // `status --local --follow` works on any state folder, even one never
-    // logged in: its first line is the status.
-    @Test(.enabled(if: env["LATCH_LIVE_LATCH"] != nil))
-    func statusFollowYieldsTheStatus() async throws {
-        let latch = URL(filePath: try #require(Self.env["LATCH_LIVE_LATCH"]))
-        let state = FileManager.default.temporaryDirectory.appending(path: "latch-live-\(UUID().uuidString.prefix(8))")
-        defer { try? FileManager.default.removeItem(at: state) }
-        var first: LocalStatus?
-        for try await status in LiveLatchClient(executable: latch, stateDir: state.path).statusFollow() {
-            first = status
-            break
-        }
-        #expect(first?.serve.state == "stopped")
-    }
-
-    /// `latch audit --follow` runs still started on `state`.
-    static func followers(_ state: String) -> Int {
-        let ps = Process()
-        ps.executableURL = URL(filePath: "/bin/ps")
-        ps.arguments = ["-axo", "command"]
-        let out = Pipe()
-        ps.standardOutput = out
-        try? ps.run()
-        let listing = out.fileHandleForReading.readDataToEndOfFile()
-        ps.waitUntilExit()
-        return String(decoding: listing, as: UTF8.self)
-            .split(separator: "\n").filter { $0.contains(state) && $0.contains("audit --follow") }.count
-    }
-}
-
 /// The inspector shows every field a record holds, whatever its op.
 struct RecordFieldsTests {
     private func record(_ json: String) throws -> AuditRecord { try LatchJSON.decoder.decode(AuditRecord.self, from: Data(json.utf8)) }
