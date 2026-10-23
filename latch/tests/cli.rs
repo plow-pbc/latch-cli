@@ -122,6 +122,7 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         .env_remove("PLOW_API_BASE")
         .env_remove("PLOW_AGENT_TOKEN")
         .env_remove("LATCH_HOST")
+        .env_remove("LATCH_PLOW_CHAT")
         .env_remove("LATCH_TRACE")
         .arg("--state-dir")
         .arg(state)
@@ -130,6 +131,81 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         command.env(name, value);
     }
     command
+}
+
+#[test]
+fn local_commands_refuse_unused_selectors_before_touching_local_state() {
+    for args in [
+        &["browser", "handoff", "done"][..],
+        &["browser", "do", "click e1", "--dry-run"],
+        &["browser", "setup", "--engine", "camoufox"],
+        &["google", "--", "help"],
+        &["google", "--", "--help"],
+        &["google", "--", "-h"],
+    ] {
+        for (flag, env, code) in [
+            ("--host", "LATCH_HOST", "host_not_supported"),
+            ("--plow-chat", "LATCH_PLOW_CHAT", "plow_chat_not_supported"),
+        ] {
+            for from_env in [false, true] {
+                let dir = test_dir();
+                let state = dir.path().join("state");
+                let mut argv = args.to_vec();
+                if !from_env {
+                    argv.splice(1..1, [flag, "routing-probe"]);
+                }
+                let mut command = latch_command(&state, &argv, &[]);
+                if from_env {
+                    command.env(env, "routing-probe");
+                }
+                let output = command.output().unwrap();
+                println!("{args:?}, {flag} from env={from_env}: {output:?}");
+                assert_eq!(output.status.code(), Some(2), "{output:?}");
+                assert!(output.stdout.is_empty(), "{output:?}");
+                let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+                assert_eq!(error["error"]["code"], code);
+                assert!(!state.exists(), "{args:?} touched local state");
+            }
+        }
+    }
+}
+
+#[test]
+fn owner_calls_refuse_a_plow_chat() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _serve = serving(&host, &relay);
+    for args in [
+        &["exec", "--", "echo", "must-not-run"][..],
+        &["browser", "sessions"],
+        &["google", "--", "gmail", "search", "invoice"],
+    ] {
+        for from_env in [false, true] {
+            let mut argv = args.to_vec();
+            if !from_env {
+                argv.splice(1..1, ["--plow-chat", "chat_a"]);
+            }
+            let mut command = latch_command(&host, &argv, &[]);
+            if from_env {
+                command.env("LATCH_PLOW_CHAT", "chat_a");
+            }
+            let output = command.output().unwrap();
+            println!("{args:?}, plow chat from env={from_env}: {output:?}");
+            assert_eq!(output.status.code(), Some(2), "{output:?}");
+            assert!(output.stdout.is_empty(), "{output:?}");
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "plow_chat_not_supported");
+            assert!(
+                error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("--plow-chat")
+            );
+        }
+    }
+    assert!(plow.state.lock().unwrap().decisions.is_empty());
 }
 
 /// Runs latch with its stdin and stderr on a terminal (a pty) with `typed`
@@ -2430,7 +2506,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let before = local(&never);
     assert!(!never.exists(), "status --local made the state folder");
     assert_eq!(before["peer"], Value::Null);
-    assert_eq!(before["protocol"], 2);
+    assert_eq!(before["protocol"], 3);
     assert_eq!(
         before["serve"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
@@ -2928,7 +3004,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve-v2.sock").exists() {
+    while !host.join("serve-v3.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -3115,7 +3191,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v2.sock")).unwrap();
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v3.sock")).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -3143,7 +3219,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     google_enabled(&host);
     let _serve = serving(&host, &relay);
     assert_eq!(
-        fs::metadata(host.join("serve-v2.sock"))
+        fs::metadata(host.join("serve-v3.sock"))
             .unwrap()
             .permissions()
             .mode()
@@ -4406,7 +4482,7 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v2.sock")).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v3.sock")).unwrap();
     thread::spawn(move || {
         let mut held = Vec::new();
         for connection in listener.incoming() {
@@ -5437,7 +5513,7 @@ mod lifecycle {
     fn a_stale_socket_of_this_version_is_never_taken_for_its_host() {
         let (_dir, state, _) = owner_host();
         let (_old, _socket, said) = old_host(&state);
-        let current = state.join("serve-v2.sock");
+        let current = state.join("serve-v3.sock");
         // A socket no one listens on any more, then a plain file.
         drop(std::os::unix::net::UnixListener::bind(&current).unwrap());
         let serve = local_serve(&state);

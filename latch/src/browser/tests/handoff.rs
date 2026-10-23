@@ -11,6 +11,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use super::{Calm, Host, act, latch, local_page, test_state};
+use crate::browser::engine::named;
 use crate::browser::handoff;
 use crate::browser::host::Browsers;
 
@@ -39,7 +40,7 @@ fn browsers(state: &std::path::Path, screen: bool) -> Arc<Browsers> {
 }
 
 async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let page = local_page();
     let browsers = browsers(&state, true);
     let open = || async {
@@ -47,7 +48,7 @@ async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back(engine: &str
             &browsers,
             OWNER_AGENT.into(),
             "open",
-            "default",
+            named(engine),
             json!({"url": page}),
         )
         .await;
@@ -141,11 +142,11 @@ async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back(engine: &str
 }
 
 async fn a_host_with_no_screen_answers_needs_owner_at_once(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let mut host = Host::new(&state);
     host.browsers.screen = Some(false);
     let (id, _) = host
-        .open(OWNER_AGENT, "default", json!({"url": local_page()}))
+        .open(OWNER_AGENT, engine, json!({"url": local_page()}))
         .await;
     let started = Instant::now();
     let failure = host
@@ -188,13 +189,13 @@ fn slow_page() -> String {
 }
 
 async fn a_plan_running_when_the_handoff_starts_sends_nothing_more(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let browsers = browsers(&state, true);
     let (opened, _) = super::run_as(
         &browsers,
         OWNER_AGENT.into(),
         "open",
-        "default",
+        named(engine),
         json!({"url": slow_page()}),
     )
     .await;
@@ -254,7 +255,7 @@ async fn a_plan_running_when_the_handoff_starts_sends_nothing_more(engine: &str)
 }
 
 async fn refs_are_forgotten_even_while_another_session_holds_the_browser(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let browsers = browsers(&state, true);
     let page = slow_page();
     let open = || async {
@@ -262,7 +263,7 @@ async fn refs_are_forgotten_even_while_another_session_holds_the_browser(engine:
             &browsers,
             OWNER_AGENT.into(),
             "open",
-            "default",
+            named(engine),
             json!({"url": page}),
         )
         .await;

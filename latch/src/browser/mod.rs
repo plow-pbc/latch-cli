@@ -3,7 +3,7 @@
 //! - `engine.rs`: the pinned engine plugins (Chrome for Testing, Camoufox)
 //!   and their checks.
 //! - `setup.rs`: `latch browser setup`, which installs an engine later.
-//! - `profile.rs`: latch-owned browser profiles in the state directory.
+//! - `profile.rs`: each session's own browser profile in the state directory.
 //! - `client.rs`: the agent's side; `latch browser …` commands.
 //! - `host.rs`: the host's `browser` operation; sessions and their owners.
 //! - `fill.rs`: the host's half of `fill`, for every vault kind.
@@ -14,8 +14,8 @@
 //!   `find` and `wait`.
 //! - `journal.rs`: each plan request's journal, for `do --history`.
 //! - `model.rs`: the decision model, behind a swappable provider.
-//! - `runtime.rs`: a profile's browser worker, as the host starts and calls it.
-//! - `session.rs`: one session's handle on its profile's worker.
+//! - `runtime.rs`: a session's browser worker, as the host starts and calls it.
+//! - `session.rs`: one session's handle on its worker.
 //! - `worker.rs`: the long-lived browser worker; runs each session's core.
 //! - `core.rs`: the shared core: snapshots, refs, actions and results.
 //! - `shown.rs`: what an answer shows the agent of a page.

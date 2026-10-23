@@ -82,8 +82,8 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
 /// latch would send it, then previewed on the host (the `rules_try`
 /// operation), which runs nothing. The host is the one `--host` names, or
 /// this machine's own, as for every rules command: never `LATCH_HOST`, and
-/// a `--host` inside REQUEST is refused. Its `--chat` (or `LATCH_CHAT`)
-/// means what it would on the real call.
+/// a `--host` inside REQUEST is refused. Its `--plow-chat` (or
+/// `LATCH_PLOW_CHAT`) means what it would on the real call.
 async fn preview(
     state: &StateDir,
     host: Option<String>,
@@ -125,7 +125,7 @@ async fn preview(
             let (_, args) = transfer::put_args(&local_path, &remote_path).await?;
             ("file_put", args, host)
         }
-        Latch::Google(args) if !google::client::is_help(&args) => {
+        Latch::Google(args) if !args.local_help() => {
             let prepared = google::client::prepare(&args).await?;
             let request = serde_json::to_value(&prepared.request).expect("request serializes");
             ("google", request, args.host)
@@ -157,7 +157,7 @@ async fn preview(
     };
     let request = Request {
         op: "rules_try".to_string(),
-        args: json!({"request": {"op": op, "args": args, "chat": asked.chat}, "from": from}),
+        args: json!({"request": {"op": op, "args": args, "chat": asked.plow_chat}, "from": from}),
         chat: None,
     };
     dial::call(state, &peer, &request, ANSWER_WITHIN).await

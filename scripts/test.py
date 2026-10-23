@@ -227,7 +227,7 @@ def engines_state(where):
     return DEV / ("linux-cft-state" if where == "container" else "cft-state")
 
 
-def steps(where, suites, gate, shard, archive=None):
+def steps(where, suites, gate, shard, archive=None, ci=False):
     """What runs, in order: (name, suites it serves, command, cwd). With
     `archive` ("out", PATH), the run only lints and builds the tests into a
     nextest archive; with ("in", PATH), it tests that archive's build."""
@@ -267,8 +267,10 @@ def steps(where, suites, gate, shard, archive=None):
         # paths compiled into them (CARGO_BIN_EXE_latch, CARGO_MANIFEST_DIR).
         source = (["--archive-file", str(archive[1]), "--workspace-remap", str(LATCH), "--extract-to",
                    str(LATCH), "--extract-overwrite"] if built else ["--locked", "--features", features])
-        out.append(("rust", rust, ["cargo", "nextest", "run", *source, "--no-fail-fast", *partition,
-                                   "-E", union], LATCH))
+        # CI's profile (latch/.config/nextest.toml) for latch's run only.
+        profile = ["--profile", "ci"] if ci else []
+        out.append(("rust", rust, ["cargo", "nextest", "run", *source, *profile, "--no-fail-fast",
+                                   *partition, "-E", union], LATCH))
     if "messages" in suites and first_shard:
         out.append(("swift reader", ["messages"], ["env", "LATCH_FUZZ_ITERATIONS=50000", "swift", "test"],
                     LATCH / "messages-reader"))
@@ -312,7 +314,7 @@ def print_plan(where, suites, gate, not_here, args):
     if "browser" in suites and restricted(where):
         print("  browser: Ubuntu's user-namespace restriction is on, so latch runs Chrome with page "
               "isolation off: only Chrome's conformance checks (browser::tests::cft::)")
-    for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive):
+    for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive, args.ci):
         print(f"  {name:<18} [{', '.join(serves)}] {show(command)}")
 
 
@@ -340,7 +342,7 @@ def run(args):
     print_plan(where, suites, gate, not_here, args)
     env = cargo_env(where)
     results = []
-    for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive):
+    for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive, args.ci):
         print(f"\n== {name} [{', '.join(serves)}]", flush=True)
         began = time.monotonic()
         detail = None

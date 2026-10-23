@@ -59,8 +59,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::Parser;
 use clap::error::ErrorKind;
+use clap::{CommandFactory, FromArgMatches};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -82,20 +82,26 @@ fn main() -> ExitCode {
         logo::show(color);
         return ExitCode::SUCCESS;
     }
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
         Err(err) => return usage_error(err),
     };
+    if let Err(failure) = help::check_selectors(&matches) {
+        report(&failure);
+        return failure.exit.into();
+    }
+    let cli = Cli::from_arg_matches(&matches).expect("the command line was validated");
     // Workers confine the initial thread before any runtime threads exist.
     let command = match cli.command {
         Command::Worker(args) => return worker::run(args),
         // At a terminal, running other latch commands; no runtime of its own.
-        Command::Setup => return setup::run(cli.state_dir),
+        Command::Setup(args) if !args.status => return setup::run(cli.state_dir),
         // A browser worker drives its engine on plain threads, no runtime.
         Command::BrowserWorker(args) => {
             return match StateDir::new(cli.state_dir) {
                 Ok(state) => browser::worker::run(
                     &state.path,
+                    &args.engine,
                     &args.profile,
                     &args.scratch,
                     Duration::from_secs(args.idle_timeout),
@@ -119,7 +125,8 @@ fn main() -> ExitCode {
         }
         command => command,
     };
-    let notice = !matches!(command, Command::Update(_));
+    // `setup --status` changes nothing, not even when the notice was shown.
+    let notice = !matches!(command, Command::Update(_) | Command::Setup(_));
     let state_dir = cli.state_dir.clone();
     let exit = run_async(cli.state_dir, command);
     if notice && let Ok(state) = StateDir::new(state_dir) {
@@ -203,6 +210,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             }
         },
         Command::Status(args) if args.local => to_json(status::local(&state)?),
+        Command::Setup(_) => to_json(setup::status(&state)?),
         Command::Status(args) => {
             let output = status::run(&state).await?;
             if !args.pretty {
@@ -221,7 +229,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::get(&state, &peer, host.chat, &remote_path, local_dest).await?)
+            to_json(transfer::get(&state, &peer, host.plow_chat, &remote_path, local_dest).await?)
         }
         Command::File(FileCommand::Put {
             local_path,
@@ -229,7 +237,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?)
+            to_json(transfer::put(&state, &peer, host.plow_chat, &local_path, &remote_path).await?)
         }
         Command::Google(args) => to_json(google::client::run(&state, args).await?),
         Command::Browser(args) => {
@@ -351,11 +359,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             let connector = plugins::Connector::named(&name)?;
             to_json(messages::access::check_here(&state, connector).await?)
         }
-        Command::Worker(_)
-        | Command::BrowserWorker(_)
-        | Command::Help(_)
-        | Command::Skill
-        | Command::Setup => {
+        Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
             unreachable!("handled in main")
         }
     }
@@ -373,7 +377,7 @@ async fn call_host(
     let request = Request {
         op: op.to_string(),
         args,
-        chat: host.chat,
+        chat: host.plow_chat,
     };
     dial::call(state, &peer, &request, answer_within).await
 }

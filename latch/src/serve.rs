@@ -61,9 +61,9 @@ struct Host {
     /// `serve/control.rs`).
     lifetime: Lifetime,
     workers: WorkerSetup,
-    /// Open browser sessions, one per profile.
+    /// Open browser sessions, each in a browser of its own.
     browsers: crate::browser::host::Browsers,
-    /// The host's vault, shared by every engine and profile.
+    /// The host's vault, shared by every session.
     vault: std::sync::Arc<crate::vault::host::Vault>,
     /// Our own endpoint and name, which a phone link points at.
     endpoint: Endpoint,
@@ -357,6 +357,7 @@ async fn run_host(
         stopping: watch::Sender::new(Stopping::No),
     });
     watch_binary(&host, BINARY_CHECK_EVERY);
+    sweep_browsers(&host);
     crate::update::watch(&state.path, &host.dashboard);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(
@@ -583,6 +584,21 @@ fn watch_binary(host: &Arc<Host>, every: Duration) {
                 .unwrap_or_default();
             host.dashboard.updated(updated_to(&version));
             return;
+        }
+    });
+}
+
+/// Every minute, lets go of the browser sessions that ended or idled out,
+/// and with them their profiles, for as long as the host runs.
+fn sweep_browsers(host: &Arc<Host>) {
+    let host = Arc::downgrade(host);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            host.browsers.sweep().await;
         }
     });
 }
@@ -1123,14 +1139,7 @@ async fn check<'a>(
     let op = op.as_str();
     // Any caller's exec, file or Google operation runs only if the
     // gatekeeper allows it.
-    let gate = if local {
-        Ok(Gate {
-            keeper: &host.gatekeeper,
-            caller: Caller::OwnerOnHost,
-        })
-    } else {
-        host.gate(identity, chat)
-    };
+    let gate = host.gate(identity, local, chat);
     // An exec this host's owner denies is refused without asking.
     let denied_exec = op == "exec" && host.deny_exec.refuses(identity);
     // A worker started now would run the new latch under this old
@@ -1205,7 +1214,16 @@ async fn check<'a>(
         audit_args,
         outcome: failure.code,
     };
-    let stop = if upgraded {
+    // A chat named where none can be is refused before anything else.
+    let stop = if chat.is_some()
+        && let Err(failure) = &gate
+    {
+        Some(Stop::Refused(Done {
+            response: Response::error(failure),
+            audit_args: Value::Null,
+            outcome: failure.code.clone(),
+        }))
+    } else if upgraded {
         Some(Stop::Refused(refused_now(host_upgraded(), Value::Null)))
     } else if let Some(failure) = exec_failure {
         Some(Stop::Refused(refused_now(failure, Value::Null)))
@@ -1421,12 +1439,23 @@ impl Host {
     fn gate<'a>(
         &'a self,
         identity: &'a Identity,
+        local: bool,
         chat: Option<&'a str>,
     ) -> Result<Gate<'a>, Failure> {
-        if identity.kind == "device" {
+        if local || identity.kind == "device" {
+            if chat.is_some() {
+                return Err(Failure::usage(
+                    "plow_chat_not_supported",
+                    "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat; omit them on owner calls".into(),
+                ));
+            }
             return Ok(Gate {
                 keeper: &self.gatekeeper,
-                caller: Caller::Owner,
+                caller: if local {
+                    Caller::OwnerOnHost
+                } else {
+                    Caller::Owner
+                },
             });
         }
         match identity.agent_uid.as_deref() {

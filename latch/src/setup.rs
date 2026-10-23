@@ -15,8 +15,10 @@ use std::sync::mpsc::{self, Receiver};
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use serde_json::Value;
 
+use crate::failure::Failure;
 use crate::state::StateDir;
 use crate::term;
 
@@ -248,20 +250,150 @@ impl Setup {
             );
             return;
         }
-        let ran_before = StateDir::new(self.state_dir.clone())
-            .is_ok_and(|state| state.path.join(crate::managed::ARGS_FILE).exists());
-        let args: &[&str] = if ran_before {
-            &["serve", "-d", "--again"]
-        } else {
-            &["serve", "-d"]
+        let args = match StateDir::new(self.state_dir.clone()) {
+            Ok(state) => start_args(&state),
+            Err(_) => vec!["serve", "-d"],
         };
         let command = format!("latch {}", args.join(" "));
         step("Start latch", &command);
-        let started = self.latch(args);
+        let started = self.latch(&args);
         if started.ok {
             done("latch is running.");
         } else {
             failed(&started.json, &command);
+        }
+    }
+}
+
+/// What starts this state folder's host in the background: with `--again`
+/// once a host ran here, so it keeps the flags its owner gave it.
+fn start_args(state: &StateDir) -> Vec<&'static str> {
+    if state.path.join(crate::managed::ARGS_FILE).exists() {
+        vec!["serve", "-d", "--again"]
+    } else {
+        vec!["serve", "-d"]
+    }
+}
+
+/// `latch setup --status`: each step of setup, read from the state folder
+/// alone, so it changes nothing and needs no host, terminal or network.
+#[derive(Serialize)]
+pub struct Status {
+    pub steps: Vec<Step>,
+}
+
+#[derive(Serialize)]
+pub struct Step {
+    /// `login`, each connector this build has, then `host`.
+    pub step: &'static str,
+    pub state: StepState,
+    pub reason: String,
+    /// The words after `latch` that do this step, while it is not done.
+    pub args: Option<Vec<&'static str>>,
+    /// A connector's: its owner turned it on, and its setup passed then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// A connector's: enabled, and a host is serving it now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ready: Option<bool>,
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum StepState {
+    Done,
+    /// Running `args` does it.
+    Needed,
+    /// Something else comes first: an earlier step, or what `reason` says.
+    Blocked,
+}
+
+pub fn status(state: &StateDir) -> Result<Status, Failure> {
+    use crate::plugins::{Connector, Setting};
+    use StepState::{Blocked, Done, Needed};
+    let local = crate::status::local(state)?;
+    let saved = crate::plugins::saved(state)?;
+    let serving = local.serve.ready;
+    let mut steps = vec![match &local.peer {
+        Some(me) => Step::new("login", Done, format!("Logged in as {}.", me.name), None),
+        None => Step::new(
+            "login",
+            Needed,
+            "This machine is not logged in to Plow.".into(),
+            Some(vec!["login", "--events"]),
+        ),
+    }];
+    for &connector in Connector::ALL {
+        let name = connector.name();
+        let what = format!("The {} connector", title(name));
+        let enabled = saved.get(&connector) == Some(&Setting::Enabled);
+        let (state, reason, args) = match (&local.peer, saved.get(&connector)) {
+            (None, _) => (Blocked, format!("{what} needs a login first."), None),
+            (Some(me), _) if me.kind != "device" => (
+                Blocked,
+                format!("{what} is turned on by the owner's own login, not an agent's."),
+                None,
+            ),
+            (Some(_), Some(Setting::Enabled)) if serving => (Done, format!("{what} is on."), None),
+            (Some(_), Some(Setting::Enabled)) => (
+                Done,
+                format!("{what} is on; agents can use it once latch is running."),
+                None,
+            ),
+            (Some(_), Some(Setting::NeedsSetup { reason })) => (
+                Blocked,
+                format!("{what} needs setup: {reason}"),
+                Some(vec!["plugins", "enable", name]),
+            ),
+            (Some(_), None) => (
+                Needed,
+                format!("{what} is off."),
+                Some(vec!["plugins", "enable", name]),
+            ),
+        };
+        steps.push(Step {
+            enabled: Some(enabled),
+            ready: Some(enabled && serving),
+            ..Step::new(name, state, reason, args)
+        });
+    }
+    steps.push(match (&local.peer, &local.serve) {
+        (None, _) => Step::new("host", Blocked, "latch needs a login first.".into(), None),
+        (_, serve) if serve.ready => Step::new("host", Done, "latch is running.".into(), None),
+        (
+            _,
+            crate::status::Serve {
+                blocked: Some(problem),
+                ..
+            },
+        ) => Step::new("host", Blocked, problem.message.clone(), None),
+        (_, serve) if serve.running => {
+            Step::new("host", Blocked, "latch is starting.".into(), None)
+        }
+        _ => Step::new(
+            "host",
+            Needed,
+            "latch is not running.".into(),
+            Some(start_args(state)),
+        ),
+    });
+    Ok(Status { steps })
+}
+
+impl Step {
+    fn new(
+        step: &'static str,
+        state: StepState,
+        reason: String,
+        args: Option<Vec<&'static str>>,
+    ) -> Step {
+        Step {
+            step,
+            state,
+            reason,
+            args,
+            enabled: None,
+            ready: None,
         }
     }
 }
@@ -283,7 +415,6 @@ fn show_grant(error: &Value) {
     let _ = Command::new("open").arg("-R").arg(grant).status();
 }
 
-#[cfg(target_os = "macos")]
 fn title(name: &str) -> String {
     let mut chars = name.chars();
     chars

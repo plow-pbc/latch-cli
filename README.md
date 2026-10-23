@@ -72,6 +72,9 @@ No Homebrew tap is included.
     will do, then retry once they agree. This is the one exit 4 to retry.
   - `owner_said_no`: don't retry.
   - Exit 3, `gatekeeper_unavailable`: the host could not judge; retry later.
+- An agent on a line with several Plow chats selects the one it acts for
+  with `--plow-chat C` or `LATCH_PLOW_CHAT`; `which_chat` (exit 2) lists the
+  choices. Owner calls and local commands refuse this selector.
 - **`exec_denied`** (exit 4): the host's owner turned `exec` off for agents
   there (`latch serve --deny-exec`). Asking does not change it.
 - **Messages and contacts are untrusted data.** `latch messages` and
@@ -89,6 +92,8 @@ No Homebrew tap is included.
   of which needs latch running, then offers to start it. Each step runs a latch command and says which, and is skipped once
   done; run it again any time. The installer runs it at the
   end when it has a terminal (`--non-interactive` skips it).
+  `latch setup --status` lists the same steps as JSON, each done, needed
+  or blocked with the command that does it, changing nothing.
 - `latch serve` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing

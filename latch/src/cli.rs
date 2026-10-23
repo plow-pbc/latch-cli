@@ -29,7 +29,7 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
 }
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
-/// 03:45 UTC, local build, protocol plow/latch/2)`, or for a release build
+/// 03:45 UTC, local build, protocol plow/latch/3)`, or for a release build
 /// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
 /// came from (see `build.rs`), the protocol it speaks to peers and, for a
 /// build with baked-in defaults, those, so it is obvious which build this is.
@@ -206,8 +206,8 @@ pub enum Command {
     /// Set this machine up, at a terminal: log in, connect Google, on a Mac
     /// turn on Messages and Contacts, all with no host running, then offer to
     /// start latch. Each step runs a latch command and is skipped once done,
-    /// so it can be run again any time
-    Setup,
+    /// so it can be run again any time; `--status` only lists the steps
+    Setup(SetupArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),
@@ -235,6 +235,14 @@ pub struct UpdateArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct SetupArgs {
+    /// Only list each step as JSON: done, needed or blocked, why, and the
+    /// command that does it. Changes nothing and needs no terminal or host
+    #[arg(long)]
+    pub status: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct HelpArgs {
     /// The command, e.g. `browser` or `browser open` [default: every command]
     #[arg(value_name = "COMMAND")]
@@ -256,32 +264,27 @@ pub struct BrowserArgs {
     /// The session to use: the id `open` answered
     #[arg(long, env = "LATCH_BROWSER_SESSION", global = true)]
     pub session: Option<String>,
-    /// The agent turn this call belongs to, for the host's metrics
-    #[arg(long, env = "LATCH_TURN", global = true)]
-    pub turn: Option<String>,
     /// The owner's Plow chat this agent acts for, when its line has more
-    /// than one: the host's gatekeeper reads what the owner asked there
-    #[arg(long, env = "LATCH_CHAT", global = true)]
-    pub chat: Option<String>,
+    /// than one: the host's gatekeeper reads what the owner asked there.
+    /// Refused on owner calls and local modes
+    #[arg(long, env = "LATCH_PLOW_CHAT", global = true)]
+    pub plow_chat: Option<String>,
     #[command(subcommand)]
     pub command: BrowserCommand,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum BrowserCommand {
-    /// Start a new session on a profile, load URL, and list the elements on screen;
-    /// answers the session's id, which every later command needs
+    /// Start a new session, in a fresh browser of its own, load URL, and list
+    /// the elements on screen; answers the session's id, which every later
+    /// command needs. Its cookies and logins last until it closes
     Open {
-        /// The profile, whose logins the session shares (default: default)
-        #[arg(long)]
-        profile: Option<String>,
+        /// The browser engine the session runs on
+        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
+        engine: EngineArg,
         /// A label for the session, shown in listings and the audit
         #[arg(long)]
         task: Option<String>,
-        /// Hold URL's site until the session closes: another session's action
-        /// there gets site_busy
-        #[arg(long)]
-        reserve_site: bool,
         url: Option<String>,
     },
     /// A fresh element list (snapshot), the page's first text, and the tabs
@@ -480,29 +483,13 @@ pub enum BrowserCommand {
     },
     /// Your open sessions, without their ids
     Sessions,
-    /// End the session (its profile, and other sessions on it, stay); an
-    /// owner device may name any session by the hash the host's dashboard shows
+    /// End the session, deleting its cookies and logins; an owner device
+    /// may name any session by the hash the host's dashboard shows
     Close,
-    /// Owner only, on the host itself: the host's browser profiles
-    Profile {
-        #[command(subcommand)]
-        command: ProfileCommand,
-    },
     /// Owner only, on the host itself: download and verify a browser
     /// engine into this machine's state directory (after `install.sh
     /// --no-browser`, say). An agent's browser call never downloads one
     Setup {
-        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
-        engine: EngineArg,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ProfileCommand {
-    /// Make profile NAME, bound to ENGINE for life, in this machine's state
-    /// directory (the host's, when run as the host)
-    Create {
-        name: String,
         #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
         engine: EngineArg,
     },
@@ -513,7 +500,7 @@ pub enum EngineArg {
     /// Chrome for Testing
     #[value(name = "chrome")]
     Cft,
-    /// Camoufox (macOS)
+    /// Camoufox
     Camoufox,
 }
 
@@ -776,9 +763,12 @@ pub enum RulesCommand {
 
 #[derive(Args, Debug)]
 pub struct BrowserWorkerArgs {
-    /// The profile the session uses
+    /// The engine to launch: cft or camoufox
     #[arg(long)]
-    pub profile: String,
+    pub engine: String,
+    /// The session's profile folder
+    #[arg(long)]
+    pub profile: PathBuf,
     /// The session's own folder: the engine's home, temp and crash folders
     #[arg(long)]
     pub scratch: PathBuf,
@@ -1036,9 +1026,10 @@ pub struct HostArg {
     #[arg(long, env = "LATCH_HOST")]
     pub host: Option<String>,
     /// The owner's Plow chat this agent acts for, when its line has more
-    /// than one: the host's gatekeeper reads what the owner asked there
-    #[arg(long, env = "LATCH_CHAT")]
-    pub chat: Option<String>,
+    /// than one: the host's gatekeeper reads what the owner asked there.
+    /// Refused on owner calls and local modes
+    #[arg(long, env = "LATCH_PLOW_CHAT")]
+    pub plow_chat: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1079,6 +1070,12 @@ pub struct GoogleArgs {
     /// The gog command and its arguments, after `--`
     #[arg(last = true, required = true, value_name = "GOG_ARGS")]
     pub gog_args: Vec<String>,
+}
+
+impl GoogleArgs {
+    pub fn local_help(&self) -> bool {
+        matches!(self.gog_args.as_slice(), [one] if one == "help" || one == "--help" || one == "-h")
+    }
 }
 
 #[cfg(target_os = "macos")]

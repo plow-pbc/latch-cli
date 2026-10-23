@@ -62,7 +62,7 @@ pub async fn read(
         (Some(named), _) if on_line.iter().any(|c| c == named) => named.to_string(),
         (Some(named), _) => {
             return Err(which_chat(format!(
-                "chat {named} is not one of this agent's chats ({}); name one of those with --chat or $LATCH_CHAT",
+                "chat {named} is not one of this agent's chats ({}); name one of those with --plow-chat or $LATCH_PLOW_CHAT",
                 listed(&on_line)
             )));
         }
@@ -70,7 +70,7 @@ pub async fn read(
         (None, [only]) => only.clone(),
         (None, _) => {
             return Err(which_chat(format!(
-                "this agent is in {} chats ({}); name the one you act for with --chat or $LATCH_CHAT",
+                "this agent is in {} chats ({}); name the one you act for with --plow-chat or $LATCH_PLOW_CHAT",
                 on_line.len(),
                 listed(&on_line)
             )));

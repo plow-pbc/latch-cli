@@ -148,7 +148,7 @@ pub(super) fn plan_of(case: &Case, site: &str) -> Result<Plan, String> {
 const VAULT_KINDS: [&str; 3] = ["card", "login", "login-no-password"];
 
 /// The stop codes a plan can end with (exit 1 and exit 4).
-const STOP_CODES: [&str; 31] = [
+const STOP_CODES: [&str; 30] = [
     "check_not_met",
     "unconfirmed",
     "already_true",
@@ -167,7 +167,6 @@ const STOP_CODES: [&str; 31] = [
     "stale_snapshot",
     "covered_target",
     "session_paused",
-    "site_busy",
     "model_unavailable",
     "request_too_large",
     "no_such_session",
@@ -282,17 +281,12 @@ fn the_plan_suite_is_well_formed() {
 
 #[tokio::test]
 async fn each_checker_tells_its_right_state_from_the_near_misses() {
-    let (_dir, state, _area) = test_state("cft", &["b5c-shop"]);
+    let (_dir, state, _area) = test_state("cft");
     let site = serve_shop();
-    let mut session = Session::start_with(
-        &latch(),
-        &state,
-        "b5c-shop",
-        Duration::from_secs(300),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
+    let mut session =
+        Session::start_with(&latch(), &state, "cft", Duration::from_secs(300), HEADLESS)
+            .await
+            .unwrap();
     let mut wrong = Vec::new();
     for case in suite() {
         // Every case starts on a page the shop has.
@@ -348,17 +342,12 @@ async fn each_checker_tells_its_right_state_from_the_near_misses() {
 
 #[tokio::test]
 async fn the_view_shows_what_a_decision_needs() {
-    let (_dir, state, _area) = test_state("cft", &["b5c-view"]);
+    let (_dir, state, _area) = test_state("cft");
     let site = serve_shop();
-    let mut session = Session::start_with(
-        &latch(),
-        &state,
-        "b5c-view",
-        Duration::from_secs(300),
-        HEADLESS,
-    )
-    .await
-    .unwrap();
+    let mut session =
+        Session::start_with(&latch(), &state, "cft", Duration::from_secs(300), HEADLESS)
+            .await
+            .unwrap();
     let mut call = async |call: serde_json::Value| {
         session
             .call(call)
@@ -570,7 +559,7 @@ const SUITE_PER_MINUTE: usize = 30;
 /// host's own `do`, with the model reached through Plow's decision route
 /// on the login of the host in `LATCH_SUITE_HOST_STATE` (a dev Plow stack's:
 /// prod Plow has no such route). Each run's cases, audit records and
-/// metrics go to a new folder under `LATCH_SUITE_OUT`. The profile is on the
+/// metrics go to a new folder under `LATCH_SUITE_OUT`. The session is on the
 /// engine `LATCH_SUITE_ENGINE` names, Chrome for Testing if none.
 #[tokio::test]
 #[ignore = "calls the decision model through a dev Plow stack: `just plan-suite`"]
@@ -590,10 +579,11 @@ async fn the_plan_suite_on_the_decision_model() {
     );
     std::fs::create_dir_all(&run).unwrap();
     let engine = std::env::var("LATCH_SUITE_ENGINE").unwrap_or_else(|_| "cft".into());
-    let (_dir, state, _area) = test_state(&engine, &["default"]);
+    let (_dir, state, _area) = test_state(&engine);
     let site = serve_shop();
     let mut h = Harness::start_with(
         &state,
+        &engine,
         Some(std::sync::Arc::new(plow)),
         vec![(site.clone(), "https://shop.example".into())],
     )
@@ -751,7 +741,7 @@ async fn the_plan_suite_on_the_decision_model() {
         for mut audit in audits {
             audit.insert("command".into(), json!("do"));
             audit.insert("session".into(), json!(case.name));
-            audit.insert("turn".into(), json!(case.name));
+            audit.insert("ppid".into(), json!(std::os::unix::process::parent_id()));
             let line = json!({"time": jiff::Timestamp::now().to_string(), "caller": "suite",
                               "agent": null, "op": "browser", "args": audit, "decision": "allow",
                               "outcome": "ok", "prev": "", "hash": ""});

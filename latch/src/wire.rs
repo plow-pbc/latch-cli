@@ -23,8 +23,10 @@ use crate::state::to_hex;
 
 /// The protocol name both sides announce when connecting (QUIC "ALPN"). A
 /// host only accepts connections that speak exactly this version. Version 2
-/// requires per-call exec writes and opt-in network access.
-pub const ALPN: &[u8] = b"plow/latch/2";
+/// requires per-call exec writes and opt-in network access; version 3 makes
+/// every browser `open` a disposable session on the engine it names, which
+/// an older host would run on its persistent default profile instead.
+pub const ALPN: &[u8] = b"plow/latch/3";
 
 /// The protocol version in `ALPN`, as a number.
 pub fn protocol() -> u32 {

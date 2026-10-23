@@ -17,7 +17,7 @@ use crate::wire;
 pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
     // `latch google -- help` (or `--help`) answers here, without a host:
     // the list of what a host would run.
-    if is_help(&args) {
+    if args.local_help() {
         return Ok(json!({
             "allowed": policy::allowed_commands(),
             "usage": "latch google [--host HOST] [--account EMAIL] -- <command> [args]; \
@@ -32,15 +32,10 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
     } = prepare(&args).await?;
     let host = crate::hosts::resolve(state, args.host.host).await?;
     let link = dial::connect(state, &host).await?;
-    let chat = args.host.chat;
+    let chat = args.host.plow_chat;
     let result = exchange(&link.connection, chat, request, files, plan.as_ref()).await;
     link.close();
     result
-}
-
-/// Whether this is `latch google -- help`, which no host answers.
-pub fn is_help(args: &GoogleArgs) -> bool {
-    matches!(args.gog_args.as_slice(), [one] if one == "help" || one == "--help" || one == "-h")
 }
 
 /// A `google` operation, ready to send: its arguments, the client files
