@@ -62,8 +62,8 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
 - **Owner provenance is Plow's classification** of chat messages, not proven
   ingress.
 - **A device login placed where an agent runs is judged as the owner**:
-  only against the host's rules, not against what the owner asked the
-  agent. The docs tell agents to use their own credential; the
+  allowed unless the host's rules forbid it, instead of being judged as
+  the agent's call. The docs tell agents to use their own credential; the
   host cannot tell.
 - **The gatekeeper does not remember what a caller already ran.** The same
   send or purchase asked twice is judged twice, on its own. Repeats are

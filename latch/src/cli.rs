@@ -67,8 +67,8 @@ Agents:
   --host: they reach this host as its owner. From another machine, log in
   with your own Plow agent credential (`latch login` finds it). Never copy
   a device login (a machine's state folder or its token) onto another
-  machine: hosts would take it for the owner's own request, not judge it
-  against what the owner asked you for.
+  machine: hosts would take it for the owner's own request instead of
+  judging it as yours.
 
   Exit 4 means denied. A host's gatekeeper refusal, gatekeeper_denied with
   reason not_covered, is the one to retry: ask the owner in your Plow chat,
