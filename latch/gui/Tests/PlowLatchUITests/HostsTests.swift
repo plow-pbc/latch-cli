@@ -95,6 +95,15 @@ struct HostSettingsTests {
         #expect(!check.available && check.current == nil && check.latest?.tag != nil)
     }
 
+    /// A released host's `status --local` gives the build it found as a
+    /// number, once its daily lookup has run.
+    @Test func aReleasedHostsStatusDecodes() throws {
+        let status: LocalStatus = try Fixtures.decode(Fixtures.serving.replacingOccurrences(
+            of: #""update":{"available":false,"build":null,"checked_at":null}"#,
+            with: #""update":{"available":false,"build":138,"checked_at":"2026-10-23T08:00:00Z"}"#))
+        #expect(status.update?.build == 138)
+    }
+
     /// A released latch's `update --check` gives its build as a number.
     @Test func aReleasedBuildsUpdateCheckDecodes() throws {
         let check: UpdateCheck = try Fixtures.decode(#"{"available":true,"current":137,"latest":{"build":138,"tag":"v0.1.0-138"}}"#)

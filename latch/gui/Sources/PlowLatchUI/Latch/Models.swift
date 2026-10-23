@@ -26,7 +26,8 @@ nonisolated struct LocalStatus: Decodable, Equatable {
 
     struct Update: Decodable, Equatable {
         var available: Bool
-        var build: String?
+        /// The newest build the host's last lookup found, a number.
+        var build: Int?
     }
 
     var peer: Peer?

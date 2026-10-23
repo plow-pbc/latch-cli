@@ -326,7 +326,7 @@ private struct UpdatesSection: View {
             guard let current = check.current else { return "A local build · latest is \(check.latest?.tag ?? "unknown")" }
             return "Up to date · build \(current)"
         default:
-            if let update = app.status?.update, update.available { return "Build \(update.build ?? "?") is available" }
+            if let update = app.status?.update, update.available { return "Build \(update.build.map(String.init) ?? "?") is available" }
             return "Not checked yet"
         }
     }

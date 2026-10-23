@@ -110,7 +110,7 @@ private struct NeedsSection: View {
     }
 
     private enum Needed: Hashable {
-        case unchecked(String), blocked(String), stopped(lastError: String?), update(build: String?)
+        case unchecked(String), blocked(String), stopped(lastError: String?), update(build: Int?)
     }
 
     /// What the person should act on, as latch reports it.
