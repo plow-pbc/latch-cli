@@ -1222,14 +1222,15 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
     session.close().await.unwrap();
 }
 
-/// Closing a session never waits on it: with a call under way in it that
-/// takes seconds, `close` answers at once, the session is gone, and its
-/// browser closes once that call ends.
+/// Closing a session never waits on it: with a wait under way in it,
+/// `close` answers at once and the session is gone, but its browser closes
+/// only once the wait has answered, in full.
 async fn close_answers_at_once_while_a_call_holds_the_session(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let mut h = Host::new(&state);
     let (id, _) = h.open(CALLER, engine, json!({"url": local_page()})).await;
-    let slow = json!({"script": "new Promise(done => setTimeout(() => done(1), 5000))"});
+    // A wait is many worker calls; the browser stays until it answers.
+    let wait = json!({"text": "never on this page", "within": 4});
     let close = async {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let started = std::time::Instant::now();
@@ -1248,11 +1249,22 @@ async fn close_answers_at_once_while_a_call_holds_the_session(engine: &str) {
         .0;
         (closed, started.elapsed())
     };
-    let ((ended, _), (closed, took)) =
-        tokio::join!(run_as(&h.browsers, CALLER.into(), "eval", &id, slow), close);
-    println!("close during a 5 s eval: {closed} after {took:?}; the eval: {ended:?}");
+    let started = std::time::Instant::now();
+    let ((waited, _), (closed, took)) =
+        tokio::join!(run_as(&h.browsers, CALLER.into(), "wait", &id, wait), close);
+    let waited_for = started.elapsed();
+    println!(
+        "close during a 4 s wait: {closed} after {took:?}; the wait: {waited:?} after {waited_for:?}"
+    );
     assert_eq!(closed["closed"], true);
     assert!(took < Duration::from_secs(1), "close took {took:?}");
+    // The wait's own answer, the condition unmet, not a browser gone.
+    let waited = waited.unwrap_err();
+    assert_eq!(
+        (waited.code.as_str(), &waited.details["met"]),
+        ("timeout", &json!(false))
+    );
+    assert!(waited_for >= Duration::from_secs(4), "{waited_for:?}");
     let gone = run_as(&h.browsers, CALLER.into(), "observe", &id, json!({}))
         .await
         .0;

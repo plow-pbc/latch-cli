@@ -61,8 +61,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::Parser;
 use clap::error::ErrorKind;
+use clap::{CommandFactory, FromArgMatches};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -84,10 +84,15 @@ fn main() -> ExitCode {
         logo::show(color);
         return ExitCode::SUCCESS;
     }
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
         Err(err) => return usage_error(err),
     };
+    if let Err(failure) = help::check_selectors(&matches) {
+        report(&failure);
+        return failure.exit.into();
+    }
+    let cli = Cli::from_arg_matches(&matches).expect("the command line was validated");
     // Workers confine the initial thread before any runtime threads exist.
     let command = match cli.command {
         Command::Worker(args) => return worker::run(args),
@@ -243,7 +248,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::get(&state, &peer, host.chat, &remote_path, local_dest).await?)
+            to_json(transfer::get(&state, &peer, host.plow_chat, &remote_path, local_dest).await?)
         }
         Command::File(FileCommand::Put {
             local_path,
@@ -251,7 +256,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?)
+            to_json(transfer::put(&state, &peer, host.plow_chat, &local_path, &remote_path).await?)
         }
         Command::Google(args) => to_json(google::client::run(&state, args).await?),
         Command::Browser(args) => {
@@ -339,13 +344,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             )
         }
         Command::Exec(args) => {
-            let secret_env = exec::parse_secret_env(&args.secret_env)?;
-            let mut request = json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout,
-                        "writes": args.writes, "network": args.network, "secret_env": secret_env });
-            if args.stdin {
-                let bytes = input::read_all(Duration::from_secs(args.timeout))?;
-                request["stdin"] = json!(bytes);
-            }
+            let request = exec::request(&args)?;
             // The host may let the program run for its whole timeout.
             let answer_within = Duration::from_secs(args.timeout) + dial::ANSWER_MARGIN;
             let result = call_host(&state, args.host, "exec", request, answer_within).await?;
@@ -356,8 +355,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             Ok(printed)
         }
         Command::Serve(args) if args.foreground => {
-            let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
-            serve::run(&state, args.headless_browsers, deny_exec, args.attached).await?;
+            serve::run(&state, &args).await?;
             // A clean stop prints nothing: the host's output was its log.
             Ok(Printed {
                 text: String::new(),
@@ -416,7 +414,7 @@ async fn call_host(
     let request = Request {
         op: op.to_string(),
         args,
-        chat: host.chat,
+        chat: host.plow_chat,
     };
     dial::call(state, &peer, &request, answer_within).await
 }

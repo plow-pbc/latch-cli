@@ -101,8 +101,12 @@ impl<'a> From<&'a str> for Caller<'a> {
 
 /// One open session, and what the host knows about it between calls.
 pub(super) struct Entry {
-    /// Held for the whole of each request: a session's requests take turns.
+    /// Held for each worker call: a session's calls take turns.
     pub(super) session: Mutex<Session>,
+    /// Held, shared, for the whole of each request, however many worker
+    /// calls it makes (a `wait`, a plan): a close takes it whole, and so
+    /// closes the browser only once every request under way has ended.
+    calls: tokio::sync::RwLock<()>,
     pub(super) runtime: Arc<Runtime>,
     /// The key of the caller that opened the session.
     owner: String,
@@ -306,6 +310,7 @@ impl Browsers {
             task: task.map(str::to_string),
             seen: std::sync::Mutex::new((Instant::now(), None)),
             serial: Mutex::new(()),
+            calls: Default::default(),
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
@@ -426,13 +431,15 @@ impl Browsers {
         closing.join_all().await;
     }
 
-    /// A session the map no longer has: its browser closes, after any call
-    /// under way in it, and its profile goes once the last call holding it
-    /// has ended. Neither waits: the answer is at once.
+    /// A session the map no longer has: its browser closes once every
+    /// request under way in it has answered (a `wait` or a plan, not only
+    /// the worker call in flight), and its profile goes with it. Neither
+    /// waits: the answer is at once.
     fn end(&self, entry: Arc<Entry>) -> Value {
         let mut closing = self.closing.lock().expect("closing lock");
         while closing.try_join_next().is_some() {}
         closing.spawn(async move {
+            let _all = entry.calls.write().await;
             let _turn = entry.session.lock().await;
             let _ = tokio::time::timeout(CLOSING, entry.runtime.close()).await;
         });
@@ -460,10 +467,8 @@ pub async fn run(
     .to_string();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
-    for key in ["ppid", "turn"] {
-        if !args[key].is_null() {
-            audit.insert(key.into(), args[key].clone());
-        }
+    if !args["ppid"].is_null() {
+        audit.insert("ppid".into(), args["ppid"].clone());
     }
     if command == "eval" {
         eval_audit(args["script"].as_str().unwrap_or_default(), &mut audit);
@@ -648,6 +653,12 @@ async fn answer(
     }
     let entry = browsers.session(name, key).await?;
     entry.note(audit);
+    // Under way until it answers, so a close waits for it; a handoff waits
+    // on the owner, not the browser, and a close ends it.
+    let _under_way = match command {
+        "close" | "handoff" => None,
+        _ => Some(entry.calls.read().await),
+    };
     // While the owner has the session, only `close` reaches it.
     if entry.handing.load(Ordering::SeqCst) && command != "close" {
         return Err(super::handoff::handed_off());

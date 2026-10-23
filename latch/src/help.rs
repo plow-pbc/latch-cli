@@ -5,15 +5,15 @@
 //! The parser in `cli.rs` is the registry: each command's inputs, and the
 //! text `--help` prints, are read from the same clap definitions that
 //! validate a command line, so they cannot disagree. What clap does not hold
-//! (examples, output, side effects) is in `ENTRIES`, one per command, and
-//! the tests below fail when an entry and the parser part ways.
+//! (execution location, examples, output, side effects) is in `ENTRIES`, one
+//! per command; the tests below fail when an entry and the parser part ways.
 
 use std::process::ExitCode;
 
-use clap::{ArgAction, CommandFactory};
+use clap::{ArgAction, ArgMatches, CommandFactory, FromArgMatches};
 use serde::Serialize;
 
-use crate::cli::{Cli, HelpArgs};
+use crate::cli::{Cli, GoogleArgs, HandoffAction, HelpArgs};
 use crate::failure::{Exit, Failure};
 use crate::google::policy::{self, Allowed};
 
@@ -21,6 +21,8 @@ use crate::google::policy::{self, Allowed};
 struct Entry {
     /// The command's words joined by `.` (`browser.tab.new`): its stable action id.
     id: &'static str,
+    /// Where this command runs, including modes that only prepare or show a call.
+    runs_on: fn(&ArgMatches) -> RunsOn,
     /// What it prints on success.
     output: &'static str,
     effect: Effect,
@@ -29,6 +31,16 @@ struct Entry {
     /// The connector it belongs to, which may be turned off on a host.
     connector: Option<&'static str>,
     examples: &'static [Example],
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum RunsOn {
+    /// The calling machine, without selecting a host.
+    Local,
+    /// The selected host's receiver, including this machine's own receiver.
+    Host,
+    /// Local state by default, or the selected host's state.
+    Either,
 }
 
 /// What running a command changes, which decides whether to resend it.
@@ -77,6 +89,7 @@ use Effect::{Once, ReadOnly, Repeatable};
 const ENTRIES: &[Entry] = &[
     Entry {
         id: "login",
+        runs_on: |_| RunsOn::Local,
         output: "This peer (name, key, kind) and whether its key was created now; with --events, JSON lines (code, waiting, verified, expired, error) instead.",
         effect: Repeatable("creates this peer's key if missing and registers it with Plow"),
         owner_only: false,
@@ -91,6 +104,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "logout",
+        runs_on: |_| RunsOn::Local,
         output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name` and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`.",
         effect: Repeatable(
             "stops this state folder's host, takes this machine out of the Plow account and signs out its login, and deletes its key and Plow token; with --purge also its vault and audit keys and the folder itself",
@@ -107,6 +121,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "devices",
+        runs_on: |_| RunsOn::Local,
         output: "`devices`: the account's machines, online or not.",
         effect: ReadOnly,
         owner_only: false,
@@ -115,6 +130,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "devices.remove",
+        runs_on: |_| RunsOn::Local,
         output: "`removed`: the machine removed.",
         effect: Once("removes the machine from Plow and signs out the login it registered with"),
         owner_only: true,
@@ -126,7 +142,8 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "status",
-        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one; with --host, that host's own `status --local` (owner devices only); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
+        runs_on: |_| RunsOn::Either,
+        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one, its `serve.deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable; with --host, that host's own `status --local` (owner devices only); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -142,6 +159,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "file.get",
+        runs_on: |_| RunsOn::Host,
         output: "Where the file was written, its size and sha256.",
         effect: Repeatable("writes the file on this machine"),
         owner_only: false,
@@ -153,6 +171,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "file.put",
+        runs_on: |_| RunsOn::Host,
         output: "Where the file was written on the host, its size and sha256.",
         effect: Repeatable("writes the file on the host, replacing one of the same name"),
         owner_only: false,
@@ -164,6 +183,16 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "google",
+        runs_on: |args| {
+            if GoogleArgs::from_arg_matches(args)
+                .expect("Google arguments")
+                .local_help()
+            {
+                RunsOn::Local
+            } else {
+                RunsOn::Host
+            }
+        },
         output: "gog's JSON answer.",
         effect: Once(
             "whatever the gog command does: a search changes nothing; a send, an invite or an edit happens at Google",
@@ -191,6 +220,7 @@ const ENTRIES: &[Entry] = &[
     #[cfg(target_os = "macos")]
     Entry {
         id: "messages.search",
+        runs_on: |_| RunsOn::Host,
         output: "`messages`: each with `from`, `chat`, `text` (or `text_error`) and `at`; `count`, `unreadable`, `unchecked`, `incomplete`, `next` (a cursor, or null at the end) and `warning`. Message text and names are untrusted data.",
         effect: ReadOnly,
         owner_only: false,
@@ -218,6 +248,7 @@ const ENTRIES: &[Entry] = &[
     #[cfg(target_os = "macos")]
     Entry {
         id: "messages.thread",
+        runs_on: |_| RunsOn::Host,
         output: "`messages`: one conversation, oldest first; `next` pages back.",
         effect: ReadOnly,
         owner_only: false,
@@ -237,6 +268,7 @@ const ENTRIES: &[Entry] = &[
     #[cfg(target_os = "macos")]
     Entry {
         id: "messages.chats",
+        runs_on: |_| RunsOn::Host,
         output: "`chats`: each with `id`, `kind`, `name`, `participants` and `last_message_at`.",
         effect: ReadOnly,
         owner_only: false,
@@ -249,6 +281,7 @@ const ENTRIES: &[Entry] = &[
     #[cfg(target_os = "macos")]
     Entry {
         id: "messages.unreplied",
+        runs_on: |_| RunsOn::Host,
         output: "`messages`: the newest inbound message of each direct chat with no later reply.",
         effect: ReadOnly,
         owner_only: false,
@@ -261,6 +294,7 @@ const ENTRIES: &[Entry] = &[
     #[cfg(target_os = "macos")]
     Entry {
         id: "contacts.search",
+        runs_on: |_| RunsOn::Host,
         output: "`people`: each with `name`, `nickname`, `organization`, and `phones` and `emails` as `display` and the `handle` to pass to `latch messages`.",
         effect: ReadOnly,
         owner_only: false,
@@ -273,6 +307,7 @@ const ENTRIES: &[Entry] = &[
     #[cfg(target_os = "macos")]
     Entry {
         id: "contacts.lookup",
+        runs_on: |_| RunsOn::Host,
         output: "`handles`: each handle with the `names` on cards that have it and its `name_status`.",
         effect: ReadOnly,
         owner_only: false,
@@ -284,6 +319,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "exec",
+        runs_on: |_| RunsOn::Host,
         output: "The program's `exit_code` (or `signal`, or `timed_out`), `stdout`, `stderr`, declared `writes` and `network` flag. Secret environment values are omitted from judgment and audit; program output is returned as-is.",
         effect: Once(
             "runs the program on the host, inside its sandbox; its effects are the program's",
@@ -330,6 +366,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.open",
+        runs_on: |_| RunsOn::Host,
         output: "The new session's id (shown only now: keep it), its engine, and the elements on screen.",
         effect: Once(
             "starts a browser session, in a fresh browser of its own, on the host and loads the page",
@@ -359,6 +396,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.observe",
+        runs_on: |_| RunsOn::Host,
         output: "A snapshot: refs (e1, e2, …) for the elements, the page's first text and the tabs.",
         effect: ReadOnly,
         owner_only: false,
@@ -373,6 +411,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.text",
+        runs_on: |_| RunsOn::Host,
         output: "The page's text, at most 20,000 characters (`truncated` when cut); with --raw, the text alone.",
         effect: ReadOnly,
         owner_only: false,
@@ -381,6 +420,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.screenshot",
+        runs_on: |_| RunsOn::Host,
         output: "Where the PNG was written.",
         effect: Repeatable("writes the PNG on this machine"),
         owner_only: false,
@@ -392,6 +432,13 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.do",
+        runs_on: |args| {
+            if args.get_flag("dry_run") {
+                RunsOn::Local
+            } else {
+                RunsOn::Host
+            }
+        },
         output: "Each step's outcome (`steps`) and, if the plan stopped, its `stop`: step, code and message.",
         effect: Once("acts on the page: clicks, typing, choices, fills"),
         owner_only: false,
@@ -427,6 +474,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.act",
+        runs_on: |_| RunsOn::Host,
         output: "The step's outcome, as a plan of one step.",
         effect: Once("one click, keypress, choice, scroll or Back on the page"),
         owner_only: false,
@@ -453,6 +501,16 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.handoff",
+        runs_on: |args| {
+            if matches!(
+                args.get_one::<HandoffAction>("action"),
+                Some(HandoffAction::Done)
+            ) {
+                RunsOn::Local
+            } else {
+                RunsOn::Host
+            }
+        },
         output: "How the owner handed the session back.",
         effect: Once("hands the session's window to the owner until they hand it back"),
         owner_only: false,
@@ -470,6 +528,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.find",
+        runs_on: |_| RunsOn::Host,
         output: "Candidate refs; nothing is done to them.",
         effect: ReadOnly,
         owner_only: false,
@@ -483,6 +542,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.wait",
+        runs_on: |_| RunsOn::Host,
         output: "Whether the condition held before the deadline.",
         effect: ReadOnly,
         owner_only: false,
@@ -502,6 +562,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.goto",
+        runs_on: |_| RunsOn::Host,
         output: "The page's elements.",
         effect: Repeatable("loads the page in the active tab"),
         owner_only: false,
@@ -519,6 +580,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.tab.new",
+        runs_on: |_| RunsOn::Host,
         output: "The new tab and its elements.",
         effect: Once("opens a tab"),
         owner_only: false,
@@ -537,6 +599,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.tab.switch",
+        runs_on: |_| RunsOn::Host,
         output: "The tab, now active.",
         effect: Repeatable("makes the tab the active one"),
         owner_only: false,
@@ -548,6 +611,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.tab.close",
+        runs_on: |_| RunsOn::Host,
         output: "The tabs left.",
         effect: Once("closes a tab"),
         owner_only: false,
@@ -559,6 +623,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.dialog",
+        runs_on: |_| RunsOn::Host,
         output: "The page after the dialog.",
         effect: Once("answers the page's open dialog"),
         owner_only: false,
@@ -570,6 +635,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.eval",
+        runs_on: |_| RunsOn::Host,
         output: "The script's JSON value.",
         effect: Once("runs the script in the page"),
         owner_only: false,
@@ -588,6 +654,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.upload",
+        runs_on: |_| RunsOn::Host,
         output: "The file's name, size and sha256.",
         effect: Once("puts the file into the page's file input"),
         owner_only: false,
@@ -599,6 +666,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.downloads",
+        runs_on: |_| RunsOn::Host,
         output: "The session's downloads, as handles (d1, d2, …).",
         effect: ReadOnly,
         owner_only: false,
@@ -610,6 +678,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.download.get",
+        runs_on: |_| RunsOn::Host,
         output: "Where the file was written, its size and sha256.",
         effect: Repeatable("writes the file on this machine"),
         owner_only: false,
@@ -630,6 +699,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.fill",
+        runs_on: |_| RunsOn::Host,
         output: "What was filled (never a value), or a confirmation to carry out with `do --confirm`.",
         effect: Once("fills the page from a vault item, and presses the button named"),
         owner_only: false,
@@ -669,6 +739,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.sessions",
+        runs_on: |_| RunsOn::Host,
         output: "Your open sessions, without their ids.",
         effect: ReadOnly,
         owner_only: false,
@@ -680,6 +751,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.close",
+        runs_on: |_| RunsOn::Host,
         output: "The session closed.",
         effect: Repeatable("ends the session and deletes its cookies and logins"),
         owner_only: false,
@@ -691,6 +763,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.setup",
+        runs_on: |_| RunsOn::Local,
         output: "The engine installed: its name, version and folder.",
         effect: Repeatable(
             "downloads and verifies a browser engine into this machine's state folder",
@@ -707,6 +780,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "vault.list",
+        runs_on: |_| RunsOn::Either,
         output: "Every item's metadata: id, kind, title, sites, revision; never a value.",
         effect: ReadOnly,
         owner_only: true,
@@ -715,6 +789,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "vault.add",
+        runs_on: |_| RunsOn::Either,
         output: "The item added.",
         effect: Once("adds an item to the host's vault"),
         owner_only: true,
@@ -739,6 +814,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "vault.edit",
+        runs_on: |_| RunsOn::Either,
         output: "The item at its new revision.",
         effect: Once("changes the item"),
         owner_only: true,
@@ -760,6 +836,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "vault.link",
+        runs_on: |_| RunsOn::Either,
         output: "A one-time link (and a QR code on a terminal) for 15 minutes.",
         effect: Once("makes a one-time link that adds an item from a phone"),
         owner_only: true,
@@ -782,6 +859,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "vault.remove",
+        runs_on: |_| RunsOn::Either,
         output: "The item removed.",
         effect: Once("removes the item"),
         owner_only: true,
@@ -793,6 +871,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "vault.import",
+        runs_on: |_| RunsOn::Either,
         output: "The items imported.",
         effect: Once("adds the rows picked at the prompt"),
         owner_only: true,
@@ -804,6 +883,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "rules.set",
+        runs_on: |_| RunsOn::Either,
         output: "The rules saved, with their revision.",
         effect: Repeatable("replaces the rules"),
         owner_only: true,
@@ -819,17 +899,19 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "rules.edit",
+        runs_on: |_| RunsOn::Either,
         output: "The rules saved, with their revision.",
         effect: Once("changes the rules"),
         owner_only: true,
         connector: None,
         examples: &[ex(
             "Edit one agent's rules",
-            &["rules", "--from", "ada", "edit"],
+            &["rules", "edit", "--from", "ada"],
         )],
     },
     Entry {
         id: "rules.clear",
+        runs_on: |_| RunsOn::Either,
         output: "The rules removed.",
         effect: Repeatable("removes the rules"),
         owner_only: true,
@@ -838,15 +920,43 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "rules.show",
-        output: "The rules for every agent and each agent's own, with their revisions.",
+        runs_on: |_| RunsOn::Either,
+        output: "The rules for every agent and each agent's own, with their revisions, and `deny_exec`: the agents the host refuses exec (`every_agent`, `agent_uids`), as it runs or last ran, null if its saved flags are unreadable.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
         examples: &[ex("Show the rules", &["rules", "show"])],
     },
     Entry {
+        id: "rules.try",
+        runs_on: |_| RunsOn::Host,
+        output: "`verdict`: allow, not_covered, owner_said_no, no_intent, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, chat window, rule revisions, model, latency, cost). A refusal is a preview that worked: exit 0.",
+        effect: Repeatable(
+            "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001); the request itself never runs, and the preview is not audited",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Would Penny be allowed to build the site?",
+                &[
+                    "rules", "try", "--from", "Penny", "--", "exec", "--write", "~/site", "--",
+                    "npm", "run", "build",
+                ],
+            ),
+            ex(
+                "Preview a mail search on another host, as yourself",
+                &[
+                    "rules", "try", "--host", "mac", "--", "google", "--", "gmail", "search",
+                    "invoice",
+                ],
+            ),
+        ],
+    },
+    Entry {
         id: "plugins.list",
-        output: "`plugins`: each connector's `name` and `state` (enabled, disabled or needs_setup); one not enabled has a `reason` and the owner's `enable` command.",
+        runs_on: |_| RunsOn::Either,
+        output: "`plugins`: each connector's `name` and `state` (enabled, disabled or needs_setup); one not enabled has a `reason` and the owner's `enable` command. This machine's are read from its state folder, so they show with no host running.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -854,6 +964,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "plugins.enable",
+        runs_on: |_| RunsOn::Local,
         output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do.",
         effect: Repeatable(
             "runs the connector's setup and, if it succeeds, turns it on for this host",
@@ -864,6 +975,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "plugins.disable",
+        runs_on: |_| RunsOn::Local,
         output: "The connector's `state`, disabled, and `waited_for`: how many running calls it waited for.",
         effect: Repeatable("turns the connector off for this host; nothing is revoked"),
         owner_only: true,
@@ -875,6 +987,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "audit",
+        runs_on: |_| RunsOn::Either,
         output: "JSON lines: `hello`; a `snapshot` (`cursor`, the id before the first record shown, and `has_older`); a `record` line each (`cursor`, its id, and `record`: id, time, caller, caller_name, agent, op, decision, outcome, and `details` with started, args and gate, credential-looking values hidden, best effort); then `caught_up` (the last `cursor`, `has_older`). With --follow, then each new record. The newest 50 unless --last N or --all; --before ID reads the page before. With --host, another host's, the same lines.",
         effect: ReadOnly,
         owner_only: true,
@@ -895,6 +1008,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "audit.verify",
+        runs_on: |_| RunsOn::Local,
         output: "How many `records` the chain holds and the `last` one's hash, checked without the key.",
         effect: ReadOnly,
         owner_only: true,
@@ -903,6 +1017,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "audit.rotate-key",
+        runs_on: |_| RunsOn::Local,
         output: "The `current` key and every key kept; a running `latch serve` seals its next record with the new one.",
         effect: Once("makes a new audit key for new records; old records keep theirs"),
         owner_only: true,
@@ -914,6 +1029,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "serve",
+        runs_on: |_| RunsOn::Local,
         output: "With -d, the host once it answers: `state_dir`, `pid`, `run`, `version`, `log`. Otherwise the dashboard until Ctrl-C, then how the host stopped; with --foreground, log lines until stopped.",
         effect: Once("runs this machine's host, as a service of this user's unless --foreground"),
         owner_only: true,
@@ -926,6 +1042,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "update",
+        runs_on: |_| RunsOn::Local,
         output: "`updated` and the build installed (`to`), or with --check `current`, `latest` and `available`.",
         effect: Repeatable(
             "installs another latch build on this machine and restarts a `serve -d` host on it",
@@ -940,6 +1057,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "stop",
+        runs_on: |_| RunsOn::Local,
         output: "`stopped` (whether a host was running), `state_dir`, `state` and, if it failed, `error`.",
         effect: Repeatable("stops this state folder's host and removes its service"),
         owner_only: true,
@@ -948,6 +1066,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "dashboard",
+        runs_on: |_| RunsOn::Local,
         output: "The running host's dashboard, until Ctrl-C; needs a terminal.",
         effect: ReadOnly,
         owner_only: true,
@@ -956,6 +1075,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "logs",
+        runs_on: |_| RunsOn::Local,
         output: "The host's log (serve.log); with --follow, then what is added.",
         effect: ReadOnly,
         owner_only: true,
@@ -964,6 +1084,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "help",
+        runs_on: |_| RunsOn::Local,
         output: "Help text; with --json, every command described as JSON.",
         effect: ReadOnly,
         owner_only: false,
@@ -979,6 +1100,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "setup",
+        runs_on: |_| RunsOn::Local,
         output: "At a terminal, each step and the latch command it ran; skipped steps say so. With --status, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host).",
         effect: Repeatable(
             "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
@@ -992,6 +1114,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "skill",
+        runs_on: |_| RunsOn::Local,
         output: "SKILL.md, for this version of latch.",
         effect: ReadOnly,
         owner_only: false,
@@ -1052,7 +1175,7 @@ pub fn run(args: HelpArgs) -> ExitCode {
     }
     let mut runnable = Vec::new();
     if gog_words.is_empty() {
-        actions(command, path, &mut runnable);
+        actions(command, path, false, &mut runnable);
     }
     let mut listed: Vec<Action> = runnable.iter().map(|(id, cmd)| describe(id, cmd)).collect();
     let google = find(&mut root, &["google".to_string()]).expect("latch google");
@@ -1123,16 +1246,20 @@ fn find<'a>(root: &'a mut clap::Command, path: &[String]) -> Option<&'a mut clap
 fn actions<'a>(
     command: &'a clap::Command,
     path: &[String],
+    include_hidden: bool,
     out: &mut Vec<(String, &'a clap::Command)>,
 ) {
     let runs = !command.has_subcommands() || !command.is_subcommand_required_set();
     if !path.is_empty() && runs {
         out.push((path.join("."), command));
     }
-    for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+    for sub in command
+        .get_subcommands()
+        .filter(|sub| include_hidden || !sub.is_hide_set())
+    {
         let mut path = path.to_vec();
         path.push(sub.get_name().to_string());
-        actions(sub, &path, out);
+        actions(sub, &path, include_hidden, out);
     }
 }
 
@@ -1141,6 +1268,45 @@ fn entry(id: &str) -> &'static Entry {
         .iter()
         .find(|entry| entry.id == id)
         .unwrap_or_else(|| panic!("no help entry for `{id}`"))
+}
+
+fn selected(mut args: &ArgMatches) -> (String, &ArgMatches) {
+    let mut path = Vec::new();
+    while let Some((name, child)) = args.subcommand() {
+        path.push(name);
+        args = child;
+    }
+    (path.join("."), args)
+}
+
+/// Refuse selectors that this operation would ignore, before touching state.
+pub fn check_selectors(matches: &ArgMatches) -> Result<(), Failure> {
+    let (id, args) = selected(matches);
+    let has = |name| args.try_get_one::<String>(name).ok().flatten().is_some();
+    // Unregistered internal or removed commands cannot accept a host either.
+    let location = ENTRIES
+        .iter()
+        .find(|entry| entry.id == id)
+        .map_or(RunsOn::Local, |entry| (entry.runs_on)(args));
+    if has("host") && location == RunsOn::Local {
+        return Err(Failure::usage(
+            "host_not_supported",
+            format!(
+                "`latch {}` runs locally; omit --host and unset LATCH_HOST. Run it on the intended machine",
+                id.replace('.', " ")
+            ),
+        ));
+    }
+    if has("plow_chat") && location != RunsOn::Host {
+        return Err(Failure::usage(
+            "plow_chat_not_supported",
+            format!(
+                "`latch {}` does not use a Plow chat; omit --plow-chat and unset LATCH_PLOW_CHAT",
+                id.replace('.', " ")
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -1371,19 +1537,13 @@ mod tests {
         let mut root = Cli::command();
         root.build();
         let mut out = Vec::new();
-        actions(&root, &[], &mut out);
+        actions(&root, &[], false, &mut out);
         out.into_iter().map(|(id, _)| id).collect()
     }
 
     /// The words of the command a parsed line ran, joined like an id.
     fn ran(matches: &clap::ArgMatches) -> String {
-        let mut words = Vec::new();
-        let mut matches = matches;
-        while let Some((name, sub)) = matches.subcommand() {
-            words.push(name.to_string());
-            matches = sub;
-        }
-        words.join(".")
+        selected(matches).0
     }
 
     #[test]
@@ -1424,6 +1584,73 @@ mod tests {
                     .try_get_matches_from(argv)
                     .unwrap_or_else(|err| panic!("`{}`: {err}", quoted(example.args)));
                 assert_eq!(ran(&matches), entry.id, "{}", quoted(example.args));
+            }
+        }
+    }
+
+    #[test]
+    fn every_selector_is_routed_or_refused_by_the_registry() {
+        let mut root = Cli::command();
+        root.build();
+        let mut runnable = Vec::new();
+        actions(&root, &[], true, &mut runnable);
+        for (id, command) in runnable {
+            for (selector, flag) in [("host", "--host"), ("plow_chat", "--plow-chat")] {
+                let accepts_selector = command.get_arguments().any(|arg| arg.get_id() == selector);
+                let entry = ENTRIES.iter().find(|entry| entry.id == id);
+                let examples: Vec<Vec<&str>> = entry.map_or_else(
+                    || vec![id.split('.').collect()],
+                    |entry| {
+                        entry
+                            .examples
+                            .iter()
+                            .map(|example| example.args.to_vec())
+                            .collect()
+                    },
+                );
+                for example in examples {
+                    let mut words = example.iter().copied();
+                    let mut argv = Vec::new();
+                    while let Some(word) = words.next() {
+                        if word == flag {
+                            words.next();
+                        } else {
+                            argv.push(word);
+                        }
+                    }
+                    let with_selector = (0..=argv.len()).find_map(|at| {
+                        let mut candidate = argv.clone();
+                        candidate.splice(at..at, [flag, "routing-probe"]);
+                        let matches = root
+                            .clone()
+                            .try_get_matches_from(std::iter::once("latch").chain(candidate))
+                            .ok()?;
+                        let (found, args) = selected(&matches);
+                        let value = args.try_get_one::<String>(selector).ok().flatten();
+                        (found == id && value.is_some_and(|value| value == "routing-probe"))
+                            .then_some(matches)
+                    });
+                    assert_eq!(
+                        with_selector.is_some(),
+                        accepts_selector,
+                        "{id}: {}",
+                        quoted(&example)
+                    );
+                    if let Some(matches) = with_selector {
+                        let (_, args) = selected(&matches);
+                        let routes = entry.is_some_and(|entry| match selector {
+                            "host" => (entry.runs_on)(args) != RunsOn::Local,
+                            _ => (entry.runs_on)(args) == RunsOn::Host,
+                        });
+                        assert_eq!(check_selectors(&matches).is_ok(), routes, "{id}");
+                        if !routes {
+                            assert_eq!(
+                                check_selectors(&matches).unwrap_err().code,
+                                format!("{selector}_not_supported")
+                            );
+                        }
+                    }
+                }
             }
         }
     }

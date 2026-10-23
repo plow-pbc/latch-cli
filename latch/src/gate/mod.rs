@@ -43,7 +43,7 @@ use crate::plow::Plow;
 use crate::state::to_hex;
 #[cfg(test)]
 pub use action::JUDGED_STDIN;
-pub use action::gated;
+pub use action::{Gated, gated};
 use chat::Conversation;
 use rules::{Rules, RulesSource};
 

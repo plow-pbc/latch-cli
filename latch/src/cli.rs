@@ -263,13 +263,11 @@ pub struct BrowserArgs {
     /// The session to use: the id `open` answered
     #[arg(long, env = "LATCH_BROWSER_SESSION", global = true)]
     pub session: Option<String>,
-    /// The agent turn this call belongs to, for the host's metrics
-    #[arg(long, env = "LATCH_TURN", global = true)]
-    pub turn: Option<String>,
     /// The owner's Plow chat this agent acts for, when its line has more
-    /// than one: the host's gatekeeper reads what the owner asked there
-    #[arg(long, env = "LATCH_CHAT", global = true)]
-    pub chat: Option<String>,
+    /// than one: the host's gatekeeper reads what the owner asked there.
+    /// Refused on owner calls and local modes
+    #[arg(long, env = "LATCH_PLOW_CHAT", global = true)]
+    pub plow_chat: Option<String>,
     #[command(subcommand)]
     pub command: BrowserCommand,
 }
@@ -676,15 +674,20 @@ pub enum VaultCommand {
 /// Arguments the host gives a browser worker (see `browser/worker.rs`).
 #[derive(Args, Debug)]
 pub struct RulesArgs {
+    #[command(subcommand)]
+    pub command: RulesCommand,
+}
+
+/// Which rules a rules command is about.
+#[derive(Args, Debug)]
+pub struct RulesScope {
     /// The serving machine the rules are for [default: this machine's own host state]
-    #[arg(long, global = true)]
+    #[arg(long)]
     pub host: Option<String>,
     /// Whose rules: an agent's name, the peer name of the latch it calls
     /// from, or its agent uid, resolved once to the uid [default: every agent's]
-    #[arg(long, global = true, value_name = "NAME")]
+    #[arg(long, value_name = "NAME")]
     pub from: Option<String>,
-    #[command(subcommand)]
-    pub command: RulesCommand,
 }
 
 #[derive(Args, Debug)]
@@ -695,7 +698,8 @@ pub struct PluginsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PluginsCommand {
-    /// Every connector: enabled, disabled or needs_setup, with the reason
+    /// Every connector: enabled, disabled or needs_setup, with the reason;
+    /// this machine's, running or not, unless --host names another
     List {
         /// Name of the host to ask
         #[arg(long, env = "LATCH_HOST")]
@@ -717,13 +721,44 @@ pub enum RulesCommand {
         text: Option<String>,
         #[arg(long, value_name = "F")]
         file: Option<PathBuf>,
+        #[command(flatten)]
+        scope: RulesScope,
     },
     /// Change the rules in $EDITOR; saved only if they did not change meanwhile
-    Edit,
+    Edit {
+        #[command(flatten)]
+        scope: RulesScope,
+    },
     /// Remove the rules
-    Clear,
+    Clear {
+        #[command(flatten)]
+        scope: RulesScope,
+    },
     /// The rules for every agent and each agent's own, with their revisions
-    Show,
+    Show {
+        #[command(flatten)]
+        scope: RulesScope,
+    },
+    /// Preview the verdict the gatekeeper would give a request right now,
+    /// without running it: as the agent --from names, or as you. The verdict
+    /// is the gatekeeper's judgment at this moment, so a close call can come
+    /// out differently next time; the answer's `gate.p` shows how sure it
+    /// was. Each preview is billed to your Plow balance like a real
+    /// judgment, about $0.0001
+    Try {
+        /// The host to preview on [default: this machine's own host]
+        #[arg(long)]
+        host: Option<String>,
+        /// Judge the request as this agent: its name, the peer name of the
+        /// latch it calls from, or its agent uid [default: you]
+        #[arg(long, value_name = "NAME")]
+        from: Option<String>,
+        /// The latch command to preview, after `--`, as an agent would send
+        /// it: exec, file, google, messages or contacts. Example: `-- exec
+        /// --write ~/site -- npm run build`
+        #[arg(last = true, required = true, value_name = "REQUEST")]
+        request: Vec<String>,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -1032,9 +1067,10 @@ pub struct HostArg {
     #[arg(long, env = "LATCH_HOST")]
     pub host: Option<String>,
     /// The owner's Plow chat this agent acts for, when its line has more
-    /// than one: the host's gatekeeper reads what the owner asked there
-    #[arg(long, env = "LATCH_CHAT")]
-    pub chat: Option<String>,
+    /// than one: the host's gatekeeper reads what the owner asked there.
+    /// Refused on owner calls and local modes
+    #[arg(long, env = "LATCH_PLOW_CHAT")]
+    pub plow_chat: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1075,6 +1111,12 @@ pub struct GoogleArgs {
     /// The gog command and its arguments, after `--`
     #[arg(last = true, required = true, value_name = "GOG_ARGS")]
     pub gog_args: Vec<String>,
+}
+
+impl GoogleArgs {
+    pub fn local_help(&self) -> bool {
+        matches!(self.gog_args.as_slice(), [one] if one == "help" || one == "--help" || one == "-h")
+    }
 }
 
 #[cfg(target_os = "macos")]

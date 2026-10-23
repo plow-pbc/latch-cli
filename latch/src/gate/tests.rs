@@ -388,6 +388,16 @@ async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
     let failure = judgment.verdict.unwrap_err();
     assert_eq!(failure.exit, Exit::Usage);
     assert!(
+        failure.message.contains("--plow-chat"),
+        "{}",
+        failure.message
+    );
+    assert!(
+        failure.message.contains("LATCH_PLOW_CHAT"),
+        "{}",
+        failure.message
+    );
+    assert!(
         failure.message.contains("chat_a, chat_b"),
         "{}",
         failure.message

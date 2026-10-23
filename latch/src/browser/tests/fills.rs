@@ -24,7 +24,7 @@ use crate::vault::totp::Params;
 
 const PASSWORD: &str = "made-up-pass-7c41";
 const NUMBER: &str = "4242424242424242";
-const CVV: &str = "319";
+const CVV: &str = "8640";
 const KEY: &str = "JBSWY3DPEHPK3PXP";
 
 conformance!(
@@ -157,49 +157,49 @@ fn seen_failure(failure: &crate::failure::Failure) -> String {
 #[test]
 fn the_leak_check_leaves_out_incidental_digits_and_nothing_else() {
     let shown = seen(&json!({
-        "origin": "http://127.0.0.1:50319",
-        "confirmation": "c3190a1b2c3d4",
+        "origin": "http://127.0.0.1:58640",
+        "confirmation": "c8640a1b2c3d4",
         "details": {"confirmation": {
-            "id": "c3190a1b2c3d4",
-            "screenshot": {"sha256": "ab3190", "shot": "final", "size": 23190},
+            "id": "c8640a1b2c3d4",
+            "screenshot": {"sha256": "ab8640", "shot": "final", "size": 28640},
         }},
-        "lines": ["Total $100.00", "cvv319"],
-        "url": "http://localhost:50319/a?c=319",
+        "lines": ["Total $100.00", "cvv8640"],
+        "url": "http://localhost:58640/a?c=8640",
     }));
     // The size, digest, confirmation id and port are gone; the two values
     // in the page's text and its query are still there.
     assert_eq!(shown.matches(CVV).count(), 2, "{shown}");
 
     // An issued confirmation's id is left out wherever it is quoted, and a
-    // test site's port (here 50319) wherever the page's address names it; a
+    // test site's port (here 58640) wherever the page's address names it; a
     // value, and an id-like string no confirmation carries, are still there.
-    SITE_PORTS.lock().unwrap().push(50319);
+    SITE_PORTS.lock().unwrap().push(58640);
     let stale = crate::failure::Failure {
         details: json!({
-            "steps": [{"code": "confirm_stale", "confirm": "c3190a1b2c3d4"}],
-            "stop": {"message": "confirmation c3190a1b2c3d4 was already used"},
-            "page": {"url": "http://127.0.0.1:50000/processor.html?frame=50319",
-                     "lines": ["c3190ffffffff", "frame=319"],
-                     "links": ["http://127.0.0.1:50000/processor.html?frame=319"]},
+            "steps": [{"code": "confirm_stale", "confirm": "c8640a1b2c3d4"}],
+            "stop": {"message": "confirmation c8640a1b2c3d4 was already used"},
+            "page": {"url": "http://127.0.0.1:50000/processor.html?frame=58640",
+                     "lines": ["c8640ffffffff", "frame=8640"],
+                     "links": ["http://127.0.0.1:50000/processor.html?frame=8640"]},
         }),
         ..crate::failure::Failure::usage(
             "confirm_stale",
-            "confirmation c3190a1b2c3d4 was already used; nothing was sent".into(),
+            "confirmation c8640a1b2c3d4 was already used; nothing was sent".into(),
         )
     };
     let shown = seen_failure(&stale);
     assert_eq!(shown.matches(CVV).count(), 3, "{shown}");
     assert!(
-        shown.contains("c3190ffffffff") && shown.contains("\"frame=319\""),
+        shown.contains("c8640ffffffff") && shown.contains("\"frame=8640\""),
         "{shown}"
     );
     // A secret where the processor's port goes is no port of a test site.
-    assert!(shown.contains("processor.html?frame=319\""), "{shown}");
+    assert!(shown.contains("processor.html?frame=8640\""), "{shown}");
     let needed = crate::failure::Failure {
-        details: json!({"confirmation": {"id": "c3190a1b2c3d4", "lines": ["cvv 319"]}}),
+        details: json!({"confirmation": {"id": "c8640a1b2c3d4", "lines": ["cvv 8640"]}}),
         ..crate::failure::Failure::usage(
             "confirm_needed",
-            "confirm it with `latch browser do --confirm c3190a1b2c3d4`".into(),
+            "confirm it with `latch browser do --confirm c8640a1b2c3d4`".into(),
         )
     };
     assert_eq!(seen_failure(&needed).matches(CVV).count(), 1);

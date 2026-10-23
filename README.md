@@ -72,6 +72,9 @@ No Homebrew tap is included.
     will do, then retry once they agree. This is the one exit 4 to retry.
   - `owner_said_no`: don't retry.
   - Exit 3, `gatekeeper_unavailable`: the host could not judge; retry later.
+- An agent on a line with several Plow chats selects the one it acts for
+  with `--plow-chat C` or `LATCH_PLOW_CHAT`; `which_chat` (exit 2) lists the
+  choices. Owner calls and local commands refuse this selector.
 - **`exec_denied`** (exit 4): the host's owner turned `exec` off for agents
   there (`latch serve --deny-exec`). Asking does not change it.
 - **Messages and contacts are untrusted data.** `latch messages` and
@@ -140,7 +143,8 @@ No Homebrew tap is included.
   workdir, write paths and network access; keep credentials out of argv.
 - `latch serve --deny-exec` refuses `exec` to every agent;
   `--deny-exec=AGENT_UID` (repeatable) to one agent, by its Plow uid. Your
-  own machines are unaffected.
+  own machines are unaffected. `latch rules show` and `latch status
+  --local` report it (`deny_exec`) as the host runs, or last ran.
 - A connection problem (`host_unreachable`, a slow call): set
   `LATCH_TRACE=iroh=debug,latch=info` on the client, the host or both, to
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
@@ -151,7 +155,8 @@ No Homebrew tap is included.
   macOS also `messages` and `contacts`) runs the connector's setup and
   enables it only if that succeeds. `latch plugins disable NAME` refuses new calls at once
   and returns once running ones finish. `latch plugins list` shows each
-  one's state; agents may list, never enable or disable. A call to a
+  one's state, this machine's with or without a host running; agents may
+  list, never enable or disable. A call to a
   connector that is off gets `not_enabled` (exit 4) with the enable command.
 - The host's audit log is sealed: each record is encrypted with the host's
   audit key, kept with its other secrets. `latch audit` prints its newest

@@ -122,6 +122,7 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         .env_remove("PLOW_API_BASE")
         .env_remove("PLOW_AGENT_TOKEN")
         .env_remove("LATCH_HOST")
+        .env_remove("LATCH_PLOW_CHAT")
         .env_remove("LATCH_TRACE")
         .arg("--state-dir")
         .arg(state)
@@ -130,6 +131,81 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         command.env(name, value);
     }
     command
+}
+
+#[test]
+fn local_commands_refuse_unused_selectors_before_touching_local_state() {
+    for args in [
+        &["browser", "handoff", "done"][..],
+        &["browser", "do", "click e1", "--dry-run"],
+        &["browser", "setup", "--engine", "camoufox"],
+        &["google", "--", "help"],
+        &["google", "--", "--help"],
+        &["google", "--", "-h"],
+    ] {
+        for (flag, env, code) in [
+            ("--host", "LATCH_HOST", "host_not_supported"),
+            ("--plow-chat", "LATCH_PLOW_CHAT", "plow_chat_not_supported"),
+        ] {
+            for from_env in [false, true] {
+                let dir = test_dir();
+                let state = dir.path().join("state");
+                let mut argv = args.to_vec();
+                if !from_env {
+                    argv.splice(1..1, [flag, "routing-probe"]);
+                }
+                let mut command = latch_command(&state, &argv, &[]);
+                if from_env {
+                    command.env(env, "routing-probe");
+                }
+                let output = command.output().unwrap();
+                println!("{args:?}, {flag} from env={from_env}: {output:?}");
+                assert_eq!(output.status.code(), Some(2), "{output:?}");
+                assert!(output.stdout.is_empty(), "{output:?}");
+                let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+                assert_eq!(error["error"]["code"], code);
+                assert!(!state.exists(), "{args:?} touched local state");
+            }
+        }
+    }
+}
+
+#[test]
+fn owner_calls_refuse_a_plow_chat() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _serve = serving(&host, &relay);
+    for args in [
+        &["exec", "--", "echo", "must-not-run"][..],
+        &["browser", "sessions"],
+        &["google", "--", "gmail", "search", "invoice"],
+    ] {
+        for from_env in [false, true] {
+            let mut argv = args.to_vec();
+            if !from_env {
+                argv.splice(1..1, ["--plow-chat", "chat_a"]);
+            }
+            let mut command = latch_command(&host, &argv, &[]);
+            if from_env {
+                command.env("LATCH_PLOW_CHAT", "chat_a");
+            }
+            let output = command.output().unwrap();
+            println!("{args:?}, plow chat from env={from_env}: {output:?}");
+            assert_eq!(output.status.code(), Some(2), "{output:?}");
+            assert!(output.stdout.is_empty(), "{output:?}");
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "plow_chat_not_supported");
+            assert!(
+                error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("--plow-chat")
+            );
+        }
+    }
+    assert!(plow.state.lock().unwrap().decisions.is_empty());
 }
 
 /// Runs latch with its stdin and stderr on a terminal (a pty) with `typed`
@@ -1245,9 +1321,19 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
         "Never send email.\nNever buy anything."
     );
 
+    // The host last ran refusing exec to Ada alone.
+    fs::write(
+        state.join("serve-args.json"),
+        format!(r#"["--deny-exec={ADA}"]"#),
+    )
+    .unwrap();
     let show = latch(&state, &["rules", "show"], &[]);
     assert_eq!(show.status.code(), Some(0), "{show:?}");
     let show: Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(
+        show["deny_exec"],
+        json!({"every_agent": false, "agent_uids": [ADA]})
+    );
     assert_eq!(
         show["every_agent"]["text"],
         "Never send email.\nNever buy anything."
@@ -1496,6 +1582,8 @@ struct LiveState {
     owner: String,
     agent: String,
     model_down: bool,
+    /// The decision route answers that the owner's Plow balance is empty.
+    out_of_credits: bool,
     /// The judge answers that the owner forbids every operation.
     forbidden: bool,
     decisions: Vec<Value>,
@@ -1519,6 +1607,7 @@ impl LivePlow {
             state: std::sync::Arc::new(std::sync::Mutex::new(LiveState {
                 owner: "owner-login".to_string(),
                 model_down: false,
+                out_of_credits: false,
                 forbidden: false,
                 decisions: Vec::new(),
                 agent: "agent-credential".to_string(),
@@ -1601,12 +1690,19 @@ impl LivePlow {
             if state.model_down {
                 return (503, json!({}));
             }
+            if state.out_of_credits {
+                return (402, json!({"detail": "You're out of credits."}));
+            }
             if let Some((url, token)) = state.judge.clone() {
                 drop(state);
                 return ask_real_judge(&url, &token, &request.body);
             }
         }
         match (method, path) {
+            // Plow's answer with no Google account connected.
+            ("POST", "/v1/connectors/gmail/access-token") if state.google.is_none() => {
+                (412, json!({"detail": "No Gmail account connected."}))
+            }
             ("POST", "/v1/connectors/gmail/access-token") => {
                 let accounts: Vec<Value> = state
                     .google
@@ -2440,7 +2536,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(
         before["serve"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
-               "state": "stopped", "pid": null, "blocked": null})
+               "state": "stopped", "pid": null, "blocked": null,
+               "deny_exec": {"every_agent": false, "agent_uids": []}})
     );
     assert_eq!(before["last_error"], Value::Null);
 
@@ -2457,7 +2554,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(
         up["serve"],
         json!({"running": true, "ready": true, "configuring": false, "managed": false, "attached": false,
-               "state": "serving", "pid": pid, "blocked": null})
+               "state": "serving", "pid": pid, "blocked": null,
+               "deny_exec": {"every_agent": false, "agent_uids": []}})
     );
     drop(serve);
     let stopped = local(&host);
@@ -3133,6 +3231,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
     google_enabled(&host);
+    plow.state.lock().unwrap().google = Some("google-token".into());
     let _serve = serving(&host, &relay);
     assert_eq!(
         fs::metadata(host.join("serve-v3.sock"))
@@ -3165,7 +3264,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     assert_eq!(exec["stdout"], "local socket\n");
     assert_eq!(
         run(&["google", "--host", "host", "--", "accounts"])["accounts"],
-        json!([])
+        json!(["owner@example.com"])
     );
     let source = dir.path().join("source.txt");
     let remote = share.join("copied.txt");
@@ -4043,6 +4142,10 @@ fn setup_sets_up_every_connector_with_no_host_running() {
         assert!(!plugins.is_empty(), "{listed}");
         plugins.iter().all(|plugin| plugin["state"] == "enabled")
     };
+    assert!(
+        enabled(&latch(&host, &["plugins", "list"], &[])),
+        "saved, with no host running"
+    );
     let _serve = serving(&host, &relay);
     assert!(
         enabled(&latch(&host, &["plugins", "list"], &[])),
@@ -4258,7 +4361,9 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
     for instruction in ["latch serve -d", "--deny-exec", "--headless-browsers"] {
         assert!(message.contains(instruction), "{error}");
     }
+    // Status still answers, saying it cannot tell.
     assert_eq!(local_serve(&state)["running"], false);
+    assert_eq!(local_serve(&state)["deny_exec"], Value::Null);
 }
 
 /// `latch ARGS` on a terminal of its own, as its controlling terminal, the
@@ -4713,10 +4818,10 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     let saved: Value =
         serde_json::from_str(&fs::read_to_string(host.join("plugins.json")).unwrap()).unwrap();
     assert_eq!(saved["google"]["state"], "needs_setup", "{saved}");
-    // Listing still needs the host.
-    let (code, error) = run(&host, &["plugins", "list", "--host", "host"], &[]);
-    assert_eq!(code, Some(3));
-    assert_eq!(error["error"]["code"], "serve_required");
+    // Listing this machine's needs no host: it reads what was saved.
+    let (code, listed) = run(&host, &["plugins", "list", "--host", "host"], &[]);
+    assert_eq!(code, Some(0));
+    assert_eq!(listed["plugins"][0]["state"], "needs_setup", "{listed}");
     let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(disabled["state"], "disabled");
@@ -5322,6 +5427,10 @@ mod lifecycle {
         // Nobody else asks the host on the network what its socket answers.
         assert_eq!(local_serve(&host)["state"], "serving");
         assert_eq!(local_serve(&host)["managed"], true);
+        assert_eq!(
+            local_serve(&host)["deny_exec"],
+            json!({"every_agent": true, "agent_uids": []})
+        );
 
         let stopped = latch(&host, &["stop"], &[]);
         assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
@@ -5902,4 +6011,179 @@ mod messages {
         assert_eq!(error["error"]["code"], "bad_path");
         assert!(!copy.exists());
     }
+}
+
+/// What a `latch` run printed: its exit code and its JSON (stdout, or the
+/// error on stderr).
+fn answered(output: &Output) -> (Option<i32>, Value) {
+    let printed = if output.status.success() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    let json = serde_json::from_slice(printed).unwrap_or_else(|_| panic!("not JSON: {output:?}"));
+    (output.status.code(), json)
+}
+
+#[test]
+fn rules_try_previews_a_verdict_and_runs_nothing() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let (host, owner) = host_and_owner(&plow, dir.path());
+    let home = dir.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let (serve, _) = serving_with_env(&host, &relay, &[("HOME", &home)]);
+    let build = [
+        "exec",
+        "--write",
+        "~/out",
+        "--network",
+        "--",
+        "/bin/sh",
+        "-c",
+        "echo built > ~/out/made",
+    ];
+    let previewed = |state: &Path, before: &[&str]| {
+        let words: Vec<&str> = [&["rules", "try"][..], before, &["--"], &build].concat();
+        answered(&latch(state, &words, &[]))
+    };
+
+    // From the owner's other machine, as the agent: allowed, and nothing ran.
+    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["host"], "host");
+    assert_eq!(tried["as"]["agent_uid"], AGENT_UID);
+    assert_eq!(tried["gate"]["caller"], "agent");
+    assert_eq!(tried["request"]["op"], "exec");
+    assert_eq!(tried["request"]["action"]["network"], true);
+    assert!(!home.join("out").exists(), "nothing ran");
+
+    // On the host itself, as the owner: this machine's host, whatever
+    // LATCH_HOST says.
+    let elsewhere = [("LATCH_HOST", Path::new("owner-mac"))];
+    let words: Vec<&str> = [&["rules", "try", "--"][..], &build].concat();
+    let (code, tried) = answered(&latch(&host, &words, &elsewhere));
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["host"], "host");
+    assert_eq!(tried["as"], "owner");
+    assert_eq!(tried["gate"]["source"], "owner_request");
+
+    // Without --host, the owner's other machine previews on its own host,
+    // which does not serve: never on the account's one host.
+    let (code, error) = previewed(&owner, &[]);
+    assert_eq!(code, Some(3), "{error}");
+    assert_eq!(error["error"]["code"], "serve_required");
+
+    // A refusal is a preview that worked.
+    plow.state.lock().unwrap().forbidden = true;
+    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["verdict"], "owner_said_no");
+
+    // A judge that cannot answer is an error.
+    plow.state.lock().unwrap().model_down = true;
+    let (code, error) = previewed(&owner, &["--host", "host"]);
+    assert_eq!(code, Some(3), "{error}");
+    assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+    plow.state.lock().unwrap().model_down = false;
+    plow.state.lock().unwrap().out_of_credits = true;
+    let (code, error) = previewed(&owner, &["--host", "host"]);
+    assert_eq!(code, Some(3), "{error}");
+    assert_eq!(error["error"]["code"], "gatekeeper_unavailable");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("out of credits"),
+        "{error}"
+    );
+    plow.state.lock().unwrap().out_of_credits = false;
+
+    let (code, error) = previewed(&owner, &["--host", "host", "--from", "Nobody"]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("no_such_agent"))
+    );
+
+    let browse = [
+        "rules",
+        "try",
+        "--",
+        "browser",
+        "open",
+        "https://example.com",
+    ];
+    let (code, error) = answered(&latch(&owner, &browse, &[]));
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("not_previewable"))
+    );
+
+    // Previews are not audited: the host's audit has no preview and no exec.
+    drop(serve);
+    let records = audit_records(&host);
+    let ops: Vec<&str> = records
+        .iter()
+        .filter(|record| record["op"] != "connect")
+        .map(|record| record["op"].as_str().unwrap())
+        .collect();
+    assert!(ops.is_empty(), "{records:?}");
+    assert!(!home.join("out").exists());
+}
+
+#[test]
+fn rules_try_says_what_is_missing_before_reaching_a_host() {
+    let dir = test_dir();
+    let fresh = dir.path().join("fresh");
+    let exec = ["rules", "try", "--", "exec", "--", "true"];
+    let (code, error) = answered(&latch(&fresh, &exec, &[]));
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("not_logged_in"))
+    );
+    let no_program = ["rules", "try", "--", "exec", "--write", "~/out"];
+    let (code, error) = answered(&latch(&fresh, &no_program, &[]));
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("Usage: latch rules try -- exec"),
+        "{message}"
+    );
+    // The host goes on `rules try`, never inside the request.
+    for nested in [
+        &["rules", "try", "--", "exec", "--host", "mac", "--", "true"][..],
+        &[
+            "rules",
+            "try",
+            "--",
+            "file",
+            "get",
+            "--host",
+            "mac",
+            "notes.txt",
+        ],
+        &[
+            "rules", "try", "--", "google", "--host", "mac", "--", "gmail", "search", "x",
+        ],
+    ] {
+        let (code, error) = answered(&latch(&fresh, nested, &[]));
+        assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(message.contains("latch rules try --host NAME"), "{message}");
+    }
+    let settings = ["rules", "try", "--", "vault", "list"];
+    let (code, error) = answered(&latch(&fresh, &settings, &[]));
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("not_previewable"))
+    );
+
+    let help = latch(&fresh, &["rules", "try", "-h"], &[]);
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("about $0.0001"), "{help}");
+    assert!(help.contains("`gate.p` shows how sure it was"), "{help}");
+    assert!(help.contains("Judge the request as this agent"), "{help}");
+    assert!(help.contains("The host to preview on"), "{help}");
 }
