@@ -465,8 +465,10 @@ deadline; nothing is replayed or retried. Exit 0 is `reached` or
 `step_not_allowed`.
 
 **Confirmations.** Before a click, latch asks the decision model whether it
-would pay, place an order, send, publish, delete or close something, sign
-out, create credentials or otherwise can't be undone, judged on the exact
+would pay, place an order, send, publish or delete something, close or
+cancel an account, order, subscription or ticket, sign out, create
+credentials or otherwise can't be undone (closing a dialog, popup, banner
+or menu is none of these), judged on the exact
 element, its row text, the page title and the lines of the form or section
 around it; an Enter in a field is judged as its form's submit (the form's
 submit control, else the form), and so is `type` text with a line break,

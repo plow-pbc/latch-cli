@@ -948,6 +948,17 @@ async fn live_the_model_asks_for_a_confirmation_only_where_one_is_needed() {
     let fine = h.act(ActAction::Click, &[&back], None).await.unwrap();
     println!("back to basket: risk {}", fine["trail"][0]["risk_p"]);
     assert_eq!(fine["page"]["title"], "Basket · Shop");
+    let page = h.open(&format!("{site}/sign-in-prompt.html")).await;
+    let close = find(&page, "button", "Close");
+    let dismissed = h.act(ActAction::Click, &[&close], None).await;
+    println!(
+        "close the sign-in prompt: {:?}",
+        dismissed
+            .as_ref()
+            .map(|d| &d["trail"][0]["risk_p"])
+            .map_err(|f| (f.code.clone(), confirmation(f)["risk_p"].clone()))
+    );
+    assert_eq!(dismissed.unwrap()["status"], "dispatched");
     let page = h.open(&format!("{site}/expense-new.html")).await;
     let save = find(&page, "button", "Save draft");
     let saved = h
