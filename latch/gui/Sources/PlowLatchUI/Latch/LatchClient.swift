@@ -5,9 +5,9 @@ nonisolated protocol LatchClient: Sendable {
     /// The state folder every run is given.
     var stateDir: String { get }
     func localStatus() async throws -> LocalStatus
-    /// `latch login --events [--name NAME]`: the code to text, then how it
-    /// ends. Stopping the iteration cancels the login.
-    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error>
+    /// `latch login --events [--name NAME] [--replace]`: the code to text,
+    /// then how it ends. Stopping the iteration cancels the login.
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error>
     func rulesShow() async throws -> RulesShow
     /// `latch rules set --file -`, the text on stdin.
     func rulesSet(_ text: String) async throws
@@ -33,8 +33,9 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(LocalStatus.self, try await run(["status", "--local"]))
     }
 
-    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> {
-        let process = LatchProcess(executable: executable, arguments: withState(["login", "--events"] + (name.map { ["--name", $0] } ?? [])))
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
+        let arguments = ["login", "--events"] + (name.map { ["--name", $0] } ?? []) + (replace ? ["--replace"] : [])
+        let process = LatchProcess(executable: executable, arguments: withState(arguments))
         return AsyncThrowingStream { continuation in
             let reader = Task.detached {
                 do {

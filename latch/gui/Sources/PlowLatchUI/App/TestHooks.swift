@@ -39,6 +39,7 @@ enum TestHooks {
             app.onboarding?.loginName = name ?? ""
             app.onboarding?.useAnotherName()
         }
+        on("replace") { _ in app.onboarding?.replaceMachine() }
         on("start-at-login") { value in app.onboarding?.startAtLogin = value == "1" }
         on("set-up-again") { _ in app.setUpAgain() }
         on("quit") { _ in NSApp.terminate(nil) }

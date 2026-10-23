@@ -11,9 +11,10 @@ final class Onboarding {
         case waiting(LoginCode)
         case expired(LoginCode)
         case failed(String)
-        /// Plow already has a machine by this Mac's name; the text was
-        /// received, so another name logs in with no second text.
-        case nameTaken
+        /// Another of the owner's machines has this Mac's name, and when
+        /// Plow last saw it. The text was received, so another name, or
+        /// replacing that machine, logs in with no second text.
+        case nameTaken(existing: String?, lastSeen: Date?)
         case verified(name: String)
     }
 
@@ -292,11 +293,12 @@ final class Onboarding {
 
     /// Runs `latch login --events` until it ends or the screen goes. A Mac
     /// already logged in goes straight to verified. `name`, when given, is
-    /// the name this Mac takes in Plow.
-    func startLogin(name: String? = nil) {
+    /// the name this Mac takes in Plow; `replace` takes it from the machine
+    /// that has it, only ever on the person's choice.
+    func startLogin(name: String? = nil, replace: Bool = false) {
         loginTask?.cancel()
         login = .starting
-        let events = client.login(name: name)
+        let events = client.login(name: name, replace: replace)
         loginTask = Task {
             do {
                 for try await event in events {
@@ -308,7 +310,9 @@ final class Onboarding {
                         await app.refreshStatus()
                     case .expired:
                         if case let .waiting(code) = login { login = .expired(code) } else { login = .failed("This code expired.") }
-                    case let .error(failure): login = failure.code == "conflict" ? .nameTaken : .failed(failure.message)
+                    case let .error(failure) where failure.code == "conflict":
+                        login = .nameTaken(existing: failure.existingName, lastSeen: failure.lastSeenAt)
+                    case let .error(failure): login = .failed(failure.message)
                     }
                 }
             } catch is CancellationError {
@@ -326,6 +330,13 @@ final class Onboarding {
         let name = loginName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         startLogin(name: name)
+    }
+
+    /// "Replace studio": that machine leaves the account, signed out of
+    /// Plow, and this Mac takes its name.
+    func replaceMachine() {
+        guard case let .nameTaken(existing?, _) = login else { return }
+        startLogin(name: existing, replace: true)
     }
 
     /// The person clicked the code: Messages opens with the text filled in.

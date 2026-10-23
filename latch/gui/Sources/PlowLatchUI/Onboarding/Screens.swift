@@ -75,10 +75,12 @@ struct WelcomeView: View {
 /// Plow has another machine by this Mac's name: pick another one.
 private struct NameTaken: View {
     @Bindable var flow: Onboarding
+    var existing: String?
+    var lastSeen: Date?
 
     var body: some View {
         VStack(spacing: 12) {
-            Text("Another machine in your Plow account already has this Mac's name. Choose a new name for this Mac.")
+            Text("Another machine in your Plow account already has this Mac's name\(existing.map { ", “\($0)”" } ?? ""). Choose a new name for this Mac, or replace that machine.")
                 .multilineTextAlignment(.center)
             HStack {
                 TextField("New name", text: $flow.loginName)
@@ -87,11 +89,23 @@ private struct NameTaken: View {
                 Button("Use this name") { flow.useAnotherName() }
                     .disabled(flow.loginName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            Text("To replace that machine instead, run `latch login` in Terminal.")
-                .font(.callout)
-                .foregroundStyle(Brand.muted)
+            if let existing {
+                VStack(spacing: 4) {
+                    Button("Replace \(existing)") { flow.replaceMachine() }
+                    Text("\(existing) is signed out of Plow and leaves your account, and this Mac takes its name.\(seen)")
+                        .font(.callout)
+                        .foregroundStyle(Brand.muted)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .frame(maxWidth: 380)
+    }
+
+    private var seen: String {
+        guard let lastSeen else { return "" }
+        return " It was last seen \(lastSeen.formatted(date: .abbreviated, time: .shortened))."
     }
 }
 
@@ -147,6 +161,14 @@ struct LoginView: View {
         }
     }
 
+    /// The login stopped short: a taken name or a failure.
+    private var stopped: Bool {
+        switch flow.login {
+        case .nameTaken, .failed: true
+        default: false
+        }
+    }
+
     /// The white QR card, which shrinks and rounds into the check.
     private var hero: some View {
         let side: CGFloat = verified ? 120 : 220
@@ -163,7 +185,7 @@ struct LoginView: View {
                     .font(.system(size: 50, weight: .bold))
                     .foregroundStyle(Brand.onVolt)
                     .transition(.symbolEffect(.drawOn))
-            } else if flow.login == .nameTaken || { if case .failed = flow.login { true } else { false } }() {
+            } else if stopped {
                 Image(systemName: "exclamationmark")
                     .font(.system(size: 44, weight: .bold))
                     .foregroundStyle(Brand.clay)
@@ -219,8 +241,8 @@ struct LoginView: View {
                 Text(message).foregroundStyle(Brand.clay).multilineTextAlignment(.center)
                 Button("Try again") { flow.startLogin() }.buttonStyle(.link).foregroundStyle(Brand.volt)
             }
-        case .nameTaken:
-            NameTaken(flow: flow)
+        case let .nameTaken(existing, lastSeen):
+            NameTaken(flow: flow, existing: existing, lastSeen: lastSeen)
         case .verified:
             EmptyView()
         }
