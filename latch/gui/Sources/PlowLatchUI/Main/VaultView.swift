@@ -175,10 +175,6 @@ private struct HostVault: View {
         } message: { _ in
             Text("Agents can no longer fill it. This can't be undone.")
         }
-        .task {
-            guard !app.still else { return }
-            await app.refreshVault(on: host)
-        }
     }
 
     private var removingBinding: Binding<Bool> {
@@ -637,8 +633,9 @@ final class VaultImport {
     }
 
     func load(app: AppModel) async {
-        preview = await AppModel.result { try await app.previewImport(self.file, on: host) }
-        if case let .success(preview)? = preview { picked = Set(preview.items.filter { !$0.duplicate }.map(\.pick)) }
+        guard let read = await AppModel.result({ try await app.previewImport(self.file, on: host) }) else { return }
+        preview = read
+        if case let .success(shown) = read { picked = Set(shown.items.filter { !$0.duplicate }.map(\.pick)) }
     }
 
     /// Imports the picked rows. If the vault or the export changed since the

@@ -243,7 +243,7 @@ struct RecentTests {
         let feed = ActivityFeed(client: client, host: nil)
         feed.stage(client.newest)
         #expect(feed.records.filter { !$0.isBackground }.isEmpty && feed.hasOlder)
-        await feed.loadOlder(until: 5)
+        await feed.loadOlder(until: 5, pages: ActivityFeed.homePages)
         #expect(feed.records.filter { !$0.isBackground }.count == 6)
         #expect(client.pages == 1)
     }

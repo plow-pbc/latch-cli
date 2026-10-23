@@ -120,34 +120,100 @@ final class AppModel {
     /// name; Home shows the selected host's.
     private(set) var summaries: [String: HostSummary] = [:]
 
-    /// Reads the selected host's summary: this Mac's from its own state
-    /// folder, another host's with `--host`. One read at a time (a remote
-    /// read in parallel is no faster), each shown as it answers. Another
-    /// host Plow counts offline isn't asked; this Mac always is.
+    /// Reads the selected host's whole summary again.
     func refreshSummary() async {
-        guard let host, host.isThisMac || host.online != false else { return }
+        guard let host else { return }
+        await readSummary(of: host, vault: true, refresh: true)
+    }
+
+    /// Reads a host's summary: this Mac's from its own state folder,
+    /// another host's with `--host`. One read at a time (a remote read in
+    /// parallel is no faster), each shown as it answers; only what isn't
+    /// held yet unless `refresh`, and the vault only when `vault`. Another
+    /// host Plow counts offline isn't asked; this Mac always is.
+    private func readSummary(of host: HostEntry, vault: Bool, refresh: Bool) async {
+        guard host.isThisMac || host.online != false else { return }
         let target = host.isThisMac ? nil : host.name
-        let rules = await Self.result { try await self.client.rulesShow(host: target) }
-        summaries[host.name, default: HostSummary()].rules = rules
-        let vault = await Self.result { try await self.client.vaultList(host: target) }
-        summaries[host.name, default: HostSummary()].vault = vault
-        let plugins = await Self.result { try await self.client.pluginsList(host: target) }
-        summaries[host.name, default: HostSummary()].plugins = plugins
+        if refresh || !Self.held(summaries[host.name]?.rules) {
+            guard let rules = await Self.result({ try await self.client.rulesShow(host: target) }) else { return }
+            summaries[host.name, default: HostSummary()].rules = rules
+        }
+        if vault, refresh || !Self.held(summaries[host.name]?.vault) {
+            guard let items = await Self.result({ try await self.client.vaultList(host: target) }) else { return }
+            summaries[host.name, default: HostSummary()].vault = items
+        }
+        if refresh || !Self.held(summaries[host.name]?.plugins) {
+            guard let plugins = await Self.result({ try await self.client.pluginsList(host: target) }) else { return }
+            summaries[host.name, default: HostSummary()].plugins = plugins
+        }
     }
 
     /// Another host's own status (Host Settings' version), asked only of a
     /// host Plow doesn't count offline.
     func refreshHostStatus() async {
-        guard let host, !host.isThisMac, host.online != false else { return }
-        summaries[host.name, default: HostSummary()].status = await Self.result { try await self.client.hostStatus(host.name) }
+        guard let host else { return }
+        await readHostStatus(of: host, refresh: true)
     }
 
-    static func result<T>(_ read: () async throws -> T) async -> Result<T, LatchError> {
-        do {
-            return .success(try await read())
-        } catch {
-            return .failure(.from(error))
+    private func readHostStatus(of host: HostEntry, refresh: Bool) async {
+        guard !host.isThisMac, host.online != false, refresh || !Self.held(summaries[host.name]?.status) else { return }
+        guard let status = await Self.result({ try await self.client.hostStatus(host.name) }) else { return }
+        summaries[host.name, default: HostSummary()].status = status
+    }
+
+    /// What a screen reads when it shows, decided here, not by the screen:
+    /// only what it uses, and only what isn't held yet, so coming back to
+    /// a screen reads nothing again (`refresh` reads it all again). Run in
+    /// a task that's cancelled when the screen or host changes: a cancelled
+    /// read keeps what was held, and the reads after it don't start.
+    func enter(_ section: SidebarItem, host: HostEntry?, refresh: Bool = false) async {
+        switch section {
+        case .home:
+            if let host { await readSummary(of: host, vault: true, refresh: refresh) }
+        case .settings:
+            guard let host else { return }
+            await readSummary(of: host, vault: false, refresh: refresh)
+            await readHostStatus(of: host, refresh: refresh)
+        case .rules:
+            guard let host, host.isThisMac || host.online != false else { return }
+            if refresh || agents == nil { await refreshAgents() }
+            if refresh || !Self.held(summaries[host.name]?.rules) { await refreshRules(on: host) }
+        case .vault:
+            guard let host, host.isThisMac || host.online != false else { return }
+            if refresh || !Self.held(summaries[host.name]?.vault) { await refreshVault(on: host) }
+        case .agents:
+            if refresh || agents == nil { await refreshAgents() }
+        case .connections:
+            if refresh || connections == nil { await refreshConnections() }
+            if refresh || !Self.held(devices) { await refreshDevices() }
+        case .activity:
+            // Its feed is the window's (`activityFeed`).
+            break
         }
+    }
+
+    /// The app came to the front: what can change while it's elsewhere
+    /// (Plow's hosts, a Google account connected in the browser) is read
+    /// again, once, here.
+    func activated() async {
+        await refreshAccount()
+        if section == .home || section == .connections { await enter(section, host: host, refresh: true) }
+    }
+
+    /// A read's answer, or nil when the task asking was cancelled: a
+    /// cancelled read is no failure, and it leaves what was held as it was.
+    static func result<T>(_ read: () async throws -> T) async -> Result<T, LatchError>? {
+        do {
+            let answer = try await read()
+            return Task.isCancelled ? nil : .success(answer)
+        } catch {
+            return error is CancellationError || Task.isCancelled ? nil : .failure(.from(error))
+        }
+    }
+
+    /// An answer is held: read, and not a failure.
+    static func held<T>(_ answer: Result<T, LatchError>?) -> Bool {
+        if case .success? = answer { true } else { false }
     }
 
     /// For snapshots: what a host said.
@@ -164,13 +230,13 @@ final class AppModel {
 
     /// Reads a host's vault again (the Vault screen, after a change).
     func refreshVault(on host: HostEntry) async {
-        let vault = await Self.result { try await self.client.vaultList(host: host.isThisMac ? nil : host.name) }
+        guard let vault = await Self.result({ try await self.client.vaultList(host: host.isThisMac ? nil : host.name) }) else { return }
         summaries[host.name, default: HostSummary()].vault = vault
     }
 
     /// Reads an item's non-secret values.
     func showVaultItem(_ item: String, on host: HostEntry) async {
-        let show = await Self.result { try await self.client.vaultShow(item, host: host.isThisMac ? nil : host.name) }
+        guard let show = await Self.result({ try await self.client.vaultShow(item, host: host.isThisMac ? nil : host.name) }) else { return }
         vaultShows[host.name, default: [:]][item] = show
     }
 
@@ -270,10 +336,9 @@ final class AppModel {
         endGoogleSignIn()
         googleSignIn = sheet
         googleSignInTask = Task {
-            let signedIn = await Self.result {
+            guard let signedIn = await Self.result({
                 try await self.signInWithGoogle(addAccount: sheet.adding) { self.googleSignInLink = $0 }
-            }
-            guard !Task.isCancelled else { return }
+            }) else { return }
             // Over, with an account or not: no link to open again.
             googleSignInLink = nil
             switch signedIn {
@@ -281,8 +346,9 @@ final class AppModel {
                 googleSignInTask = nil
                 googleSignIn = nil
                 await refreshConnections()
-                if let mac = hosts.first(where: \.isThisMac) {
-                    summaries[mac.name, default: HostSummary()].plugins = await Self.result { try await self.client.pluginsList(host: nil) }
+                if let mac = hosts.first(where: \.isThisMac),
+                   let plugins = await Self.result({ try await self.client.pluginsList(host: nil) }) {
+                    summaries[mac.name, default: HostSummary()].plugins = plugins
                 }
             case .success(nil):
                 googleSignIn?.failure = GoogleSignIn.stopped
@@ -355,7 +421,7 @@ final class AppModel {
     enum HostAction { case stopping, restarting }
 
     func refreshDevices() async {
-        devices = await Self.result { try await self.client.devices().devices }
+        if let devices = await Self.result({ try await self.client.devices().devices }) { self.devices = devices }
     }
 
     /// Logged-in machines that don't host: what the account's devices list
@@ -372,7 +438,7 @@ final class AppModel {
     /// Removes a machine from the account; it's logged out there. A
     /// refusal is kept for Connections to say.
     func removeDevice(_ name: String) async {
-        let removed = await Self.result { try await self.client.removeDevice(name) }
+        guard let removed = await Self.result({ try await self.client.removeDevice(name) }) else { return }
         await refreshDevices()
         if case let .failure(error) = removed { deviceRemoveError = error } else { deviceRemoveError = nil }
     }
@@ -380,7 +446,7 @@ final class AppModel {
     func checkForUpdate() async {
         checkingUpdate = true
         defer { checkingUpdate = false }
-        update = await Self.result { try await self.client.updateCheck() }
+        if let update = await Self.result({ try await self.client.updateCheck() }) { self.update = update }
     }
 
     /// Stops this Mac's host; agents can't reach it until it's started.
@@ -411,10 +477,12 @@ final class AppModel {
     /// Turns a plugin on this Mac's host on or off, then reads the plugins
     /// again. A refusal is thrown in the app's words.
     func setConnector(_ name: String, on: Bool, host: HostEntry) async throws {
-        let changed = await Self.result {
+        guard let changed = await Self.result({
             if on { _ = try await self.client.enable(name) } else { try await self.client.disable(name) }
+        }) else { throw CancellationError() }
+        if let plugins = await Self.result({ try await self.client.pluginsList(host: nil) }) {
+            summaries[host.name, default: HostSummary()].plugins = plugins
         }
-        summaries[host.name, default: HostSummary()].plugins = await Self.result { try await self.client.pluginsList(host: nil) }
         if case let .failure(error) = changed { throw LatchError.unreachable(PluginCopy.refusal(error, plugin: name, on: on), detail: error.details) }
     }
 
@@ -482,20 +550,23 @@ final class AppModel {
     private(set) var standings: [String: Result<[String: AgentsList.Agent.Standing], LatchError>] = [:]
 
     func refreshAgents() async {
-        do {
-            agents = try await client.agents(host: nil).agents
+        switch await Self.result({ try await self.client.agents(host: nil).agents }) {
+        case nil: return
+        case let .success(listed)?:
+            agents = listed
             agentsError = nil
-        } catch {
-            agentsError = .from(error)
+        case let .failure(error)?:
+            agentsError = error
         }
         // One host at a time: each is a read over latch's connection.
         for host in hosts where host.isThisMac || host.online != false {
+            guard !Task.isCancelled else { return }
             await refreshStanding(on: host)
         }
     }
 
     func refreshStanding(on host: HostEntry) async {
-        let result = await Self.result { try await self.client.agents(host: host.name) }
+        guard let result = await Self.result({ try await self.client.agents(host: host.name) }) else { return }
         standings[host.name] = result.map { Dictionary($0.agents.compactMap { agent in agent.standing.map { (agent.uid, $0) } },
                                                         uniquingKeysWith: { first, _ in first }) }
     }
@@ -518,7 +589,7 @@ final class AppModel {
 
     /// Reads a host's rules again (the Rules screen, after a save).
     func refreshRules(on host: HostEntry) async {
-        let rules = await Self.result { try await self.client.rulesShow(host: host.isThisMac ? nil : host.name) }
+        guard let rules = await Self.result({ try await self.client.rulesShow(host: host.isThisMac ? nil : host.name) }) else { return }
         summaries[host.name, default: HostSummary()].rules = rules
     }
 
@@ -553,6 +624,18 @@ final class AppModel {
 
     /// Each host's activity, by host name, made when a screen first shows it.
     private var feeds: [String: ActivityFeed] = [:]
+
+    /// The feed Home or Activity shows for the selected host, while one of
+    /// them is the screen; the window runs it.
+    var activityFeed: ActivityFeed? {
+        guard section == .home || section == .activity, let host, host.isThisMac || host.online != false else { return nil }
+        return feed(for: host)
+    }
+
+    /// The window closed: every feed stops now, not after its grace.
+    func endFeeds() {
+        feeds.values.forEach { $0.end() }
+    }
 
     func feed(for host: HostEntry) -> ActivityFeed {
         if let feed = feeds[host.name] { return feed }

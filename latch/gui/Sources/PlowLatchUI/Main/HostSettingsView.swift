@@ -25,11 +25,6 @@ struct HostSettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Host Settings")
         .navigationSubtitle(app.host?.name ?? "")
-        .task(id: app.host?.id) {
-            guard !app.still else { return }
-            await app.refreshSummary()
-            await app.refreshHostStatus()
-        }
         .confirmationDialog("Stop Latch on this Mac?", isPresented: $stopping) {
             Button("Stop", role: .destructive) { Task { await app.stopHost() } }
         } message: {

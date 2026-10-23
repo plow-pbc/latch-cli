@@ -32,19 +32,36 @@ struct MainView: View {
             guard !app.still else { return }
             await app.refreshStatus()
             app.leaveMainIfLoggedOut()
-            await app.refreshAccount()
             await app.followStatus()
         }
+        // Plow's list of hosts, which can be slow, arrives when it does;
+        // this Mac's status doesn't wait for it.
+        .task {
+            guard !app.still else { return }
+            await app.refreshAccount()
+        }
+        // Each screen's reads, decided by the model: a change of screen or
+        // host cancels the last one's.
+        .task(id: Entry(section: app.section, host: app.host?.id, online: app.host?.online)) {
+            guard !app.still else { return }
+            await app.enter(app.section, host: app.host)
+        }
+        // Home and Activity share the selected host's feed: going between
+        // them keeps it running.
+        .following(app.activityFeed, still: app.still)
+        .onDisappear { app.endFeeds() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             guard !app.still else { return }
-            Task {
-                await app.refreshAccount()
-                if app.section == .home { await app.refreshSummary() }
-                // Back from connecting an account in Plow.
-                if app.section == .connections { await app.refreshConnections() }
-            }
+            Task { await app.activated() }
         }
     }
+}
+
+/// What a screen's reads depend on.
+private struct Entry: Hashable {
+    var section: SidebarItem
+    var host: String?
+    var online: Bool?
 }
 
 private struct Sidebar: View {
