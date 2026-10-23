@@ -155,7 +155,7 @@ struct Inspector: View {
             if let item = app.inspectedVaultItem(on: host) {
                 VaultItemInspector(item: item, show: app.vaultShows[host.name]?[item.item], hostName: host.name,
                                    edit: { Task { await app.beginVaultEdit(item, on: host) } },
-                                   remove: { app.removingVaultItem = item })
+                                   remove: { app.askToRemove(item, on: host) })
                     .task(id: "\(host.name)/\(item.item)@\(item.revision)") {
                         guard !app.still else { return }
                         await app.showVaultItem(item.item, on: host)

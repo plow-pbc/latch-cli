@@ -108,7 +108,7 @@ private struct HostVault: View {
                 .contextMenu(forSelectionType: VaultList.Item.ID.self) { ids in
                     if let item = item(ids, in: vault) {
                         Button("Edit…", systemImage: "pencil") { edit(item) }
-                        Button("Remove…", systemImage: "trash", role: .destructive) { app.removingVaultItem = item }
+                        Button("Remove…", systemImage: "trash", role: .destructive) { app.askToRemove(item, on: host) }
                     }
                 } primaryAction: { ids in
                     if let item = item(ids, in: vault) { edit(item) }
@@ -135,8 +135,8 @@ private struct HostVault: View {
                 .background(.bar)
             }
         }
-        .confirmationDialog("Remove “\(app.removingVaultItem?.title ?? "")” from \(host.name)?", isPresented: removingBinding,
-                            presenting: app.removingVaultItem) { item in
+        .confirmationDialog("Remove “\(app.removal(on: host)?.title ?? "")” from \(host.name)?", isPresented: removingBinding,
+                            presenting: app.removal(on: host)) { item in
             Button("Remove", role: .destructive) {
                 Task { await app.removeVaultItem(item, on: host) }
             }
@@ -146,7 +146,7 @@ private struct HostVault: View {
     }
 
     private var removingBinding: Binding<Bool> {
-        Binding { app.removingVaultItem != nil } set: { if !$0 { app.removingVaultItem = nil } }
+        Binding { app.removal(on: host) != nil } set: { if !$0 { app.endRemoval() } }
     }
 
     /// The list's selection: an item on this host.

@@ -348,8 +348,28 @@ final class AppModel {
         return vaultRows(VaultList(items: [item])).isEmpty ? nil : item
     }
 
-    /// The item whose removal is being confirmed.
-    var removingVaultItem: VaultList.Item?
+    /// The item whose removal is being confirmed, on the host it's on:
+    /// confirmed only on that host's Vault, whatever another host's shows.
+    private var removing: OnHost?
+    private var removingItem: VaultList.Item?
+
+    /// Remove…: asks to confirm removing an item from a host's vault.
+    func askToRemove(_ item: VaultList.Item, on host: HostEntry) {
+        removing = OnHost(host: host.name, id: item.item)
+        removingItem = item
+    }
+
+    /// The item a host's Vault asks to confirm removing; nil on any other
+    /// host.
+    func removal(on host: HostEntry) -> VaultList.Item? {
+        removing?.host == host.name ? removingItem : nil
+    }
+
+    /// The confirmation went, removed or not.
+    func endRemoval() {
+        removing = nil
+        removingItem = nil
+    }
 
     /// Why the last removal from a vault failed, until it's dismissed.
     var vaultRemoveError: LatchError?

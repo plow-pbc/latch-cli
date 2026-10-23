@@ -17,6 +17,7 @@ struct ShellTests {
 
     @Test func pickingAHostKeepsTheScreenEvenAfterAnAccountPage() throws {
         let app = try app()
+        #expect(app.inspecting == HostScreen.inspected)
         app.place = .host(.rules)
         app.showHost("pi-kitchen")
         #expect(app.route == .host(.rules, try host(app, "pi-kitchen")))
@@ -85,10 +86,16 @@ struct ShellTests {
         #expect(app.inspectedVaultItem(on: studio)?.item == "v1")
     }
 
-    @Test func activityAndVaultEachKeepTheirInspector() throws {
+    // Remove… asked on one host is confirmed only on that host's Vault:
+    // another host's item with the same id is never offered.
+    @Test func aRemovalAskedOnOneHostIsNeverConfirmedOnAnother() throws {
         let app = try app()
-        #expect(app.inspecting == HostScreen.inspected)
-        app.inspecting.remove(.activity)
-        #expect(app.inspecting == [.vault])
+        let studio = try host(app, "studio"), kitchen = try host(app, "pi-kitchen")
+        let item = try #require((try Fixtures.decode(Fixtures.remoteVaultItems) as VaultList).items.first)
+        app.askToRemove(item, on: kitchen)
+        #expect(app.removal(on: studio) == nil)
+        #expect(app.removal(on: kitchen) == item)
+        app.endRemoval()
+        #expect(app.removal(on: kitchen) == nil)
     }
 }

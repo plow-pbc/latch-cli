@@ -586,19 +586,7 @@ package enum SnapshotRunner {
                 try await render(Inspector(route: app.route).environment(app), size: CGSize(width: 320, height: 600), dark: dark,
                                  file: output.appending(path: "25-shell-inspector-record-\(dark ? "dark" : "light").png"))
             }
-            for (name, stage) in shells {
-                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
-                    let app = AppModel(client: FakeLatchClient(), still: true)
-                    app.stage(status: try Fixtures.decode(Fixtures.serving))
-                    app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-                    guard let studio = app.host else { continue }
-                    stage(app, studio)
-                    _ = app.stage(.done, progress: full)
-                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
-                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
-                }
-            }
-            for (name, stage) in scopes {
+            for (name, stage) in shells + scopes {
                 for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
                     let app = AppModel(client: FakeLatchClient(), still: true)
                     app.stage(status: try Fixtures.decode(Fixtures.serving))
