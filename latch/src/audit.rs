@@ -18,10 +18,13 @@
 //! that no longer holds the record its head names had records cut off its
 //! end. Without the key the head's hash is still compared; the key also
 //! checks its seal, so it can't be made up. The head may name the record
-//! before the newest, as a crash between the two writes leaves it. A log
-//! with no head (one an older latch wrote) is trusted as it is: opening it
-//! for writing, or `latch audit verify`, gives it a head naming its last
-//! record. So a log cut short before its head was made, or a head deleted
+//! before the newest, as a crash between the two writes leaves it. A record
+//! is appended only to a log that still reaches its head, so a log cut
+//! short can't be given a new, valid head by writing on. A log with no
+//! head is trusted as it is: a folder of state format 2 (whose latch kept
+//! none) gets one as it is upgraded (`upgrade`), and opening a log for
+//! writing, or `latch audit verify`, gives one to a log without it, naming
+//! its last record. So a log cut short before its head was made, or a head deleted
 //! along with the end of the log, is not caught; nor is a head copied from
 //! earlier and put back with the log cut to match.
 //!
@@ -341,8 +344,9 @@ impl AuditLog {
     /// file's own last line, read under the audit lock, and is sealed with
     /// the keys as they are now, so a `latch audit rotate-key` since takes
     /// effect at once. The log is opened only once the lock is held, so it
-    /// is never a file a conversion has since replaced. Then the head is
-    /// moved on to it.
+    /// is never a file a conversion has since replaced. A log that no
+    /// longer reaches its head is refused before anything is written, and
+    /// otherwise the head is moved on to the new record.
     pub fn append(&mut self, record: Record) -> Result<String, Failure> {
         let dir = self.path.parent().unwrap_or(Path::new("."));
         let _lock = lock(dir)?;
@@ -355,6 +359,19 @@ impl AuditLog {
             .open(&self.path)
             .map_err(|err| io_failure(&self.path, err))?;
         let prev = last_hash(&mut file).map_err(|err| io_failure(&self.path, err))?;
+        if let Some(head) = read_head(dir)? {
+            // Usually the head names the last line; otherwise the whole
+            // log is checked to still reach it.
+            let at_end = serde_json::from_str::<Head>(&head)
+                .is_ok_and(|head| head.hash == prev && keys.opens_head(&head));
+            if !at_end {
+                let text =
+                    fs::read_to_string(&self.path).map_err(|err| io_failure(&self.path, err))?;
+                chain(&text)
+                    .and_then(|hashes| check_head(Some(&head), Some(&keys), &hashes))
+                    .map_err(|problem| broken(&self.path, &problem))?;
+            }
+        }
         let line = keys.seal(&record, &prev);
         let text = serde_json::to_string(&line).expect("a line serializes");
         file.write_all(format!("{text}\n").as_bytes())
@@ -590,6 +607,26 @@ fn create_head(path: &Path, keys: &Keys) -> Result<bool, Failure> {
     let hashes = chain(&text).map_err(|problem| broken(path, &problem))?;
     write_head(dir, &keys.seal_head(hashes.last().expect("genesis")))?;
     Ok(true)
+}
+
+/// Upgrades the log in `dir` from state format 2, whose latch kept no head,
+/// or kept one only some of the time: once its records are checked, and
+/// the head it has, if any, is found reached, its head names its last
+/// record. A log this folder has no key for is left as it is.
+pub fn upgrade(dir: &Path) -> Result<(), Failure> {
+    let path = dir.join(FILE);
+    let _lock = lock(dir)?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(io_failure(&path, err)),
+    };
+    let Some(keys) = Keys::existing(dir)? else {
+        return Ok(());
+    };
+    let records = open_all(&keys, &text, read_head(dir)?.as_deref(), &path)?;
+    let last = records.last().map_or(GENESIS, |record| &record.hash);
+    write_head(dir, &keys.seal_head(last))
 }
 
 /// Writes the head in `dir`, whole. Only with the audit lock held.
@@ -908,6 +945,67 @@ mod tests {
         write_head(dir.path(), &keys.seal_head(&forged.hash)).unwrap();
         assert_eq!(read_all(&path).unwrap().len(), 3);
         assert_eq!(checked(&path).unwrap().0, 3);
+    }
+
+    #[test]
+    fn nothing_is_appended_to_a_log_cut_short() {
+        let (dir, path) = log_with_three_records();
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let head = fs::read_to_string(dir.path().join(HEAD)).unwrap();
+        let cut = [lines[0], lines[1]].join("\n") + "\n";
+        fs::write(&path, &cut).unwrap();
+        let mut log = AuditLog {
+            path: path.clone(),
+            records: 2,
+            recent: Vec::new(),
+        };
+        let refused = log.append(exec_record("caller-three")).unwrap_err();
+        assert_eq!(refused.code, "audit_broken");
+        assert!(
+            refused.message.contains("records were cut off its end"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), cut);
+        assert_eq!(fs::read_to_string(dir.path().join(HEAD)).unwrap(), head);
+
+        // A head one behind, as a crash leaves it, is written on.
+        fs::write(&path, &text).unwrap();
+        let keys = Keys::existing(dir.path()).unwrap().unwrap();
+        let second = serde_json::from_str::<Line>(lines[1]).unwrap().hash;
+        write_head(dir.path(), &keys.seal_head(&second)).unwrap();
+        let hash = log.append(exec_record("caller-three")).unwrap();
+        assert_eq!(checked(&path).unwrap(), (4, hash));
+    }
+
+    #[test]
+    fn upgrading_gives_a_log_a_head_naming_its_last_record() {
+        let (dir, path) = log_with_three_records();
+        let last = serde_json::from_str::<Line>(
+            fs::read_to_string(&path).unwrap().lines().last().unwrap(),
+        )
+        .unwrap()
+        .hash;
+        let keys = Keys::existing(dir.path()).unwrap().unwrap();
+
+        // No head, or one an older latch left behind as it wrote on.
+        for head in [None, Some(keys.seal_head(GENESIS))] {
+            match &head {
+                None => fs::remove_file(dir.path().join(HEAD)).unwrap(),
+                Some(head) => write_head(dir.path(), head).unwrap(),
+            }
+            upgrade(dir.path()).unwrap();
+            let made: Head =
+                serde_json::from_str(&fs::read_to_string(dir.path().join(HEAD)).unwrap()).unwrap();
+            assert_eq!(made.hash, last);
+            assert!(keys.opens_head(&made));
+        }
+
+        // A head the log no longer reaches is not upgraded away.
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, text.lines().next().unwrap().to_string() + "\n").unwrap();
+        assert_eq!(upgrade(dir.path()).unwrap_err().code, "audit_broken");
     }
 
     #[test]

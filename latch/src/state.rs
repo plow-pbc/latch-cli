@@ -48,9 +48,12 @@ pub struct Config {
 
 /// The layout of the files in a state folder. A latch reads only a folder
 /// of exactly its own format: an older latch would misread a newer folder (or
-/// silently drop what it does not know when it saves), and no newer latch
-/// converts older folders. Raise it with a change an older latch would misread.
-const FORMAT: u32 = 2;
+/// silently drop what it does not know when it saves). Raise it with a change
+/// an older latch would misread. The one older folder a latch converts is
+/// format 2, the same as 3 but for the audit log's head, which a format-2
+/// latch does not move on as it writes: the log gets one (`audit::upgrade`)
+/// and the folder is marked 3, so that latch refuses it from then on.
+const FORMAT: u32 = 3;
 
 /// `latch.json`: the folder's format, and which latch first marked it.
 #[derive(Serialize, Deserialize)]
@@ -140,6 +143,17 @@ impl StateDir {
                 return Ok(());
             }
             std::cmp::Ordering::Greater => "update this latch",
+            std::cmp::Ordering::Less if marker.format == 2 => {
+                crate::audit::upgrade(&self.path)?;
+                self.save_json(
+                    "latch.json",
+                    &Marker {
+                        format: FORMAT,
+                        written_by: marker.written_by,
+                    },
+                )?;
+                return self.check_format();
+            }
             std::cmp::Ordering::Less => "use the latch that wrote it",
         };
         let message = format!(
@@ -351,7 +365,7 @@ mod tests {
 
         for (format, fix) in [
             (FORMAT + 1, "update this latch"),
-            (FORMAT - 1, "use the latch that wrote it"),
+            (1, "use the latch that wrote it"),
         ] {
             let other = format!(r#"{{"format": {format}, "written_by": "9.9.9"}}"#);
             fs::write(&marker, &other).unwrap();
@@ -361,6 +375,32 @@ mod tests {
             assert!(refused.message.contains("9.9.9"), "{}", refused.message);
             assert_eq!(fs::read_to_string(&marker).unwrap(), other);
         }
+    }
+
+    #[test]
+    fn a_format_2_folder_is_upgraded_in_place() {
+        let dir = test_dir();
+        let state = StateDir::new(Some(dir.path().join("state"))).unwrap();
+        state.create().unwrap();
+        let log = state.path.join(crate::audit::FILE);
+        crate::audit::AuditLog::open(log.clone())
+            .unwrap()
+            .append(crate::audit::record("k1", None, "rules", "allow", "ok"))
+            .unwrap();
+        // As a format-2 latch leaves it: no head.
+        let head = state.path.join(crate::audit::HEAD);
+        fs::remove_file(&head).unwrap();
+        let marker = state.path.join("latch.json");
+        fs::write(&marker, r#"{"format": 2, "written_by": "0.1.136"}"#).unwrap();
+
+        state.check_format().unwrap();
+        let upgraded: Marker = serde_json::from_str(&fs::read_to_string(&marker).unwrap()).unwrap();
+        assert_eq!(
+            (upgraded.format, upgraded.written_by.as_str()),
+            (FORMAT, "0.1.136")
+        );
+        assert!(head.exists());
+        assert_eq!(crate::audit::read_all(&log).unwrap().len(), 1);
     }
 
     #[test]

@@ -348,9 +348,10 @@ Your own machines need the model for every judged call (`exec`, `file`,
 model. Page reads (`text`, `screenshot`) in an existing session and your
 settings (`rules`, `vault`) work without it.
 
-**`state_format` (exit 1): "… is in state format 2, set up by latch …; this
-latch … reads only format 1".** That state folder was set up by a newer latch
-(update this one) or an older one (use that one). Nothing was read or
+**`state_format` (exit 1): "… is in state format 4, set up by latch …; this
+latch … reads only format 3".** That state folder was set up by a newer latch
+(update this one) or an older one (use that one). A format-2 folder is
+upgraded in place, after which a format-2 latch refuses it. Nothing was read or
 changed. Don't edit `latch.json` by hand.
 
 **`not_configured` (exit 2) on the first login: "first login needs

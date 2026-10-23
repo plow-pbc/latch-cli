@@ -475,7 +475,7 @@ fn logged_in(stub: &Stub, kind: &str, files: &[(&str, &str)]) -> PathBuf {
     let config = serde_json::json!({"api_url": "http://127.0.0.1:9", "peer": peer});
     fs::write(
         state.join("latch.json"),
-        r#"{"format":2,"written_by":"test"}"#,
+        r#"{"format":3,"written_by":"test"}"#,
     )
     .unwrap();
     fs::write(state.join("config.json"), config.to_string()).unwrap();
