@@ -300,3 +300,68 @@ struct TooLargeRecordTests {
         feed.stop()
     }
 }
+
+/// Activity holds each record once, oldest first, however it arrives: from
+/// the stream, an earlier page, or again after the host reset its cursor.
+@MainActor
+struct ActivityOrderTests {
+    private static func line(_ n: Int) throws -> AuditLine {
+        try LatchJSON.decoder.decode(AuditLine.self, from: Data(PagedClient.line(n, op: "exec").utf8))
+    }
+
+    @Test func aRecordStreamedTwiceIsHeldOnce() throws {
+        let feed = ActivityFeed(client: PagedClient(), host: nil)
+        for n in [1, 2, 1, 3, 2] { feed.apply(try Self.line(n)) }
+        #expect(feed.records.map(\.id) == [1, 2, 3].map { String(format: "%064d", $0) })
+    }
+
+    @Test func anEarlierPageGoesFirstAndItsRecordsAreHeldOnce() async throws {
+        let feed = ActivityFeed(client: PagedClient(), host: nil)
+        feed.stage(PagedClient().newest)
+        await feed.loadOlder()
+        // The earlier page (94…99) went before the newest (100…149); a
+        // record of it streamed again isn't held twice.
+        feed.apply(try Self.line(95))
+        #expect(feed.records.map(\.id) == (94..<150).map { String(format: "%064d", $0) })
+    }
+
+    @Test func afterTheHostResetsItsCursorTheRecordsComeBackOnce() async throws {
+        final class Resetting: LatchClient, @unchecked Sendable {
+            let stateDir = "/s"
+            private(set) var follows = 0
+            func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+                follows += 1
+                let first = follows == 1
+                return AsyncThrowingStream { continuation in
+                    continuation.yield(try! LatchJSON.decoder.decode(AuditLine.self, from: Data(PagedClient.line(1, op: "exec").utf8)))
+                    if first {
+                        continuation.finish(throwing: LatchError.failed(LatchFailure(code: "cursor_expired", message: "that record isn't in this audit")))
+                    } else {
+                        continuation.yield(.caughtUp(cursor: String(format: "%064d", 1), hasOlder: false))
+                    }
+                }
+            }
+            func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
+            func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
+            func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+            func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
+            func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
+            func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+            func rulesSet(_ text: String) async throws {}
+            func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
+            func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
+            func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
+            func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
+            func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
+            func perform(_ args: [String]) async throws {}
+            func stop() async throws {}
+        }
+        let client = Resetting()
+        let feed = ActivityFeed(client: client, host: nil)
+        feed.start()
+        await waitUntil { feed.caughtUp }
+        #expect(client.follows == 2)
+        #expect(feed.records.map(\.id) == [String(format: "%064d", 1)])
+        feed.stop()
+    }
+}

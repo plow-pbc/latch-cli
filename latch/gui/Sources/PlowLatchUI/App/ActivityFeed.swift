@@ -13,6 +13,9 @@ final class ActivityFeed {
 
     /// Oldest first.
     private(set) var records: [AuditRecord] = []
+    /// The ids of `records`, kept with them: a record already held is
+    /// found without going through them all.
+    @ObservationIgnored private var ids: Set<AuditRecord.ID> = []
     /// Records older than the first held exist on the host.
     private(set) var hasOlder = false
     /// Every record up to now has arrived.
@@ -76,6 +79,7 @@ final class ActivityFeed {
                 if failure.code == "cursor_expired" {
                     cursor = nil
                     records = []
+                    ids = []
                     continue
                 }
                 guard !Task.isCancelled else { return }
@@ -104,7 +108,7 @@ final class ActivityFeed {
         case let .record(cursor, record):
             self.cursor = cursor
             error = nil
-            guard !records.contains(where: { $0.id == record.id }) else { return }
+            guard ids.insert(record.id).inserted else { return }
             records.append(record)
         case let .caughtUp(cursor, hasOlder):
             self.cursor = cursor
@@ -123,8 +127,8 @@ final class ActivityFeed {
         defer { loadingOlder = false }
         do {
             let page = try await client.audit(host: host, before: first.id)
-            let held = Set(records.map(\.id))
-            records.insert(contentsOf: page.records.filter { !held.contains($0.id) }, at: 0)
+            let earlier = page.records.filter { ids.insert($0.id).inserted }
+            records.insert(contentsOf: earlier, at: 0)
             hasOlder = page.hasOlder
         } catch {
             self.error = .from(error)
