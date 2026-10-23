@@ -4533,6 +4533,49 @@ fn audit_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() {
     assert!(cut.stdout.is_empty(), "nothing of a broken log is shown");
 }
 
+#[test]
+fn only_a_follow_ends_with_stdin_even_while_its_opening_is_stuck_in_a_write() {
+    let (_dir, state, _) = owner_host();
+    // More records than a pipe holds: about 400 bytes a line.
+    for _ in 0..250 {
+        let shown = latch(&state, &["rules", "show"], &[]);
+        assert_eq!(shown.status.code(), Some(0), "{shown:?}");
+    }
+    // A read that ends by itself ignores stdin, closed from the start, and
+    // prints every line.
+    let mut read = latch_command(&state, &["audit", "--all"], &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(read.stdin.take());
+    let output = read.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let lines = event_lines(&output);
+    assert_eq!(lines.last().unwrap()["type"], "caught_up");
+    assert_eq!(records_in(&lines).len(), 250);
+
+    // A follow whose reader never reads ends once its stdin closes, though
+    // its opening is stuck in a write.
+    let mut follow = latch_command(&state, &["audit", "--follow", "--all"], &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _unread = follow.stdout.take();
+    thread::sleep(std::time::Duration::from_secs(1));
+    drop(follow.stdin.take());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while follow.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the follow outlived its stdin"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(follow.wait().unwrap().success());
+}
+
 /// A follower sleeps while the log is quiet: its own reads (under the audit
 /// lock) must not wake its watch of the folder.
 #[cfg(target_os = "linux")]

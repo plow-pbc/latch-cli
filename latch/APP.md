@@ -103,6 +103,7 @@ This reads the host's audit log, as JSON lines, every form alike:
 - With `--follow`, each new record follows `caught_up` as it is written. To pick up where you left off, `--follow --after` the last `cursor` you got: every record after it, then the new ones. Nothing is missed or repeated, across host restarts too.
 - A record's id is the `audit_id` its caller got back. The cursor before the first record is 64 zeros.
 - Don't treat a page as complete before `caught_up`.
+- Without `--follow` it ignores stdin and always prints the whole page. With `--follow`, it exits once stdin (a pipe) closes, at any point, even in the middle of the opening.
 - Each record is opened with the state folder's key on the host, so the app never holds the key. Its `details.args` hide credential-looking values, as the dashboard does: best effort, some can slip through.
 
 Errors:

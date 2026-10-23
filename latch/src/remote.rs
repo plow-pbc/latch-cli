@@ -5,7 +5,7 @@
 //! machine's own state; naming this machine reads it here.
 
 use std::future::Future;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -44,58 +44,48 @@ pub async fn call(state: &StateDir, host: &Peer, op: &str, args: Value) -> Resul
 /// How many lines may wait for a slow reader of our stdout.
 const QUEUED: usize = 64;
 
-/// Prints each line `host` streams, one JSON line each, as it comes: until
-/// the host ends them, nobody reads our stdout, or we are asked to stop
-/// (Ctrl-C, SIGTERM, or, when stdin is a pipe, its closing). Stopping
-/// closes the connection at once, so the host stops reading for us too.
-pub async fn stream(state: &StateDir, host: &Peer, op: &str, args: Value) -> Result<(), Failure> {
+/// Prints each line `host` streams, one JSON line each, as it comes,
+/// until the host ends them or nobody reads our stdout. A followed read
+/// (`follow`) also ends when we are asked to stop (Ctrl-C, SIGTERM, or,
+/// when stdin is a pipe, its closing), from its first line on; stopping
+/// closes the connection at once, so the host stops reading for us too. A
+/// read that ends by itself never looks at stdin: it always prints whole.
+pub async fn stream(
+    state: &StateDir,
+    host: &Peer,
+    op: &str,
+    args: Value,
+    follow: bool,
+) -> Result<(), Failure> {
     let request = request(op, args);
     let link = dial::connect(state, host).await?;
-    let printed = print_stream(
-        &link.connection,
-        host,
-        &request,
-        std::io::stdout(),
-        stop_requested,
-    )
-    .await;
+    let stop = follow.then_some(stop_requested);
+    let printed = print_stream(&link.connection, host, &request, std::io::stdout(), stop).await;
     link.close();
     printed
 }
 
-/// The opening (an audit read through `caught_up`, a status through its
-/// first `status`) is printed whole before anything can stop it, as the
-/// host's own command prints it; only then is `stop` asked for. After it,
-/// lines go through a printer thread, so a stop ends this even while a
-/// reader that stopped reading holds up a write.
+/// Lines go through a printer thread, so a stop ends this even while a
+/// reader that stopped reading holds up a write. Without `stop`, it ends
+/// once every line is printed.
 async fn print_stream<S: Future<Output = ()>>(
     connection: &Connection,
     host: &Peer,
     request: &Request,
-    mut out: impl Write + Send + 'static,
-    stop: impl FnOnce() -> S,
+    out: impl Write + Send + 'static,
+    stop: Option<impl FnOnce() -> S>,
 ) -> Result<(), Failure> {
-    let (mut send, mut recv) = dial::start(connection, request).await?;
-    send.finish().map_err(|_| dial::lost(connection, true))?;
-    loop {
-        let answer = dial::answer(connection, &mut recv, ANSWER_WITHIN).await;
-        let Some(line) = line(answer, host)? else {
-            return Ok(());
-        };
-        if !print(&mut out, &line) {
-            return Ok(());
-        }
-        if matches!(line["type"].as_str(), Some("caught_up" | "status")) {
-            break;
-        }
-    }
     let (printer, printed) = printer(out);
-    let following = async {
-        // A followed host may say nothing for hours.
-        while let Some(line) = line(
-            dial::answer(connection, &mut recv, Duration::MAX).await,
-            host,
-        )? {
+    let reading = async {
+        let (mut send, mut recv) = dial::start(connection, request).await?;
+        send.finish().map_err(|_| dial::lost(connection, true))?;
+        // The opening comes at once; after it, a followed host may say
+        // nothing for hours.
+        let mut within = ANSWER_WITHIN;
+        while let Some(line) = line(dial::answer(connection, &mut recv, within).await, host)? {
+            if matches!(line["type"].as_str(), Some("caught_up" | "status")) {
+                within = Duration::MAX;
+            }
             if printer.send(line).await.is_err() {
                 // Nobody reads our stdout.
                 return Ok(());
@@ -105,9 +95,12 @@ async fn print_stream<S: Future<Output = ()>>(
         let _ = printed.await;
         Ok(())
     };
-    tokio::select! {
-        result = following => result,
-        () = stop() => Ok(()),
+    match stop {
+        Some(stop) => tokio::select! {
+            result = reading => result,
+            () = stop() => Ok(()),
+        },
+        None => reading.await,
     }
 }
 
@@ -169,9 +162,7 @@ async fn stdin_closed() {
     }
     let (closed, close) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let mut buffer = [0u8; 512];
-        let mut stdin = std::io::stdin();
-        while matches!(stdin.read(&mut buffer), Ok(read) if read > 0) {}
+        crate::watch::wait_for_stdin_to_close();
         let _ = closed.send(());
     });
     let _ = close.await;
@@ -227,42 +218,48 @@ mod tests {
         }
     }
 
+    /// A stop that is never asked for: a read that ends by itself.
+    const NO_STOP: Option<fn() -> std::future::Ready<()>> = None;
+
     #[tokio::test]
-    async fn the_opening_is_printed_whole_even_when_asked_to_stop_at_once() {
-        let opening = [
+    async fn a_read_that_ends_by_itself_prints_every_line() {
+        let lines = [
             json!({"type": "hello", "schema": 1}),
             json!({"type": "snapshot", "cursor": "0".repeat(64), "has_older": false}),
             json!({"type": "record", "cursor": "a".repeat(64), "record": {"op": "exec"}}),
             json!({"type": "caught_up", "cursor": "a".repeat(64), "has_older": false}),
         ];
-        let mut answers: Vec<Value> = opening.iter().map(|line| json!({"line": line})).collect();
-        answers.push(json!({"line": {"type": "record", "cursor": "b".repeat(64)}}));
+        let mut answers: Vec<Value> = lines.iter().map(|line| json!({"line": line})).collect();
+        answers.push(json!({"audit_id": "b".repeat(64)}));
         let connection = host_answering(answers);
         let out = Printed::default();
-        let request = request("audit", json!({"follow": true}));
-        print_stream(&connection, &host(), &request, out.clone(), || async {})
+        let request = request("audit", json!({}));
+        print_stream(&connection, &host(), &request, out.clone(), NO_STOP)
             .await
             .unwrap();
         let printed = String::from_utf8(out.0.lock().unwrap().clone()).unwrap();
-        let expected: String = opening.iter().map(|line| format!("{line}\n")).collect();
-        assert!(printed.starts_with(&expected), "{printed}");
+        let expected: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        assert_eq!(printed, expected);
     }
 
     #[test]
-    fn a_stop_ends_the_stream_while_a_write_to_a_stalled_reader_is_stuck() {
+    fn a_stop_ends_a_follow_while_its_opening_is_stuck_in_a_write_to_a_stalled_reader() {
         // A pipe nobody reads: a write past its buffer never returns.
         let (_unread, stalled) = std::io::pipe().unwrap();
         let (ended, end) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             let result = runtime.block_on(async {
+                // The opening never reaches `caught_up`: its first record
+                // is more than the pipe holds.
                 let connection = host_answering(vec![
-                    json!({"line": {"type": "caught_up"}}),
+                    json!({"line": {"type": "hello", "schema": 1}}),
                     json!({"line": {"type": "record", "big": "x".repeat(1 << 20)}}),
+                    json!({"line": {"type": "caught_up"}}),
                 ]);
                 let request = request("audit", json!({"follow": true}));
                 let stop = || tokio::time::sleep(Duration::from_millis(300));
-                print_stream(&connection, &host(), &request, stalled, stop).await
+                print_stream(&connection, &host(), &request, stalled, Some(stop)).await
             });
             let _ = ended.send(result.is_ok());
             // The printer stays stuck in its write; this runtime is left behind.

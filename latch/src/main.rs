@@ -57,7 +57,6 @@ mod wire;
 mod worker;
 
 use std::io::Write;
-use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -212,13 +211,14 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             match remote::other_host(&state, args.host).await? {
                 Some(host) if follow => {
                     let request = json!({"follow": true});
-                    streamed(remote::stream(&state, &host, "status", request).await)
+                    streamed(remote::stream(&state, &host, "status", request, true).await)
                 }
                 Some(host) => to_json(remote::call(&state, &host, "status", json!({})).await?),
                 None if follow => {
                     // Before the first login, too.
                     state.create()?;
-                    print_local(|hangup, send| status::follow(&state.path, hangup, send))
+                    let dir = state.path.clone();
+                    print_local(true, move |send| status::follow(&dir, None, send))
                 }
                 None => to_json(status::local(&state)?),
             }
@@ -287,7 +287,8 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             match remote::other_host(&state, args.host).await? {
                 Some(host) => {
                     let request = serde_json::to_value(&range).expect("a range serializes");
-                    streamed(remote::stream(&state, &host, "audit", request).await)
+                    let follow = range.follow;
+                    streamed(remote::stream(&state, &host, "audit", request, follow).await)
                 }
                 None => {
                     state.create()?;
@@ -295,8 +296,9 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                         Some(config) => format!("{}'s", config.peer.name),
                         None => "this machine's".to_string(),
                     };
-                    print_local(|hangup, send| {
-                        audit::read(&state.path, &whose, &range, hangup, send)
+                    let dir = state.path.clone();
+                    print_local(range.follow, move |send| {
+                        audit::read(&dir, &whose, &range, None, send)
                     })
                 }
             }
@@ -413,16 +415,34 @@ async fn call_host(
 }
 
 /// Prints a stream of this machine's lines on stdout as they come, until
-/// nobody reads them, or stdin, when it is a pipe, closes. They are its
-/// whole output.
+/// they end or nobody reads them. They are its whole output. A followed
+/// stream (`follow`) also ends once stdin, when it is a pipe, closes, even
+/// while a write to a reader that stopped reading is stuck: the lines come
+/// from a thread of their own. A stream that ends by itself never looks
+/// at stdin.
 fn print_local(
-    lines: impl FnOnce(Option<RawFd>, &mut dyn FnMut(&Value) -> bool) -> Result<(), Failure>,
+    follow: bool,
+    lines: impl FnOnce(&mut dyn FnMut(&Value) -> bool) -> Result<(), Failure> + Send + 'static,
 ) -> Result<Printed, Failure> {
-    let mut out = std::io::stdout().lock();
-    let stdin = watch::stdin_is_a_pipe().then_some(libc::STDIN_FILENO);
-    streamed(lines(stdin, &mut |line| {
+    let print = |line: &Value| {
+        let mut out = std::io::stdout().lock();
         writeln!(out, "{line}").and_then(|()| out.flush()).is_ok()
-    }))
+    };
+    if !follow {
+        return streamed(lines(&mut |line| print(line)));
+    }
+    let (ended, end) = std::sync::mpsc::channel();
+    let stdin_closed = ended.clone();
+    std::thread::spawn(move || {
+        let _ = ended.send(lines(&mut |line| print(line)));
+    });
+    if watch::stdin_is_a_pipe() {
+        std::thread::spawn(move || {
+            watch::wait_for_stdin_to_close();
+            let _ = stdin_closed.send(Ok(()));
+        });
+    }
+    streamed(end.recv().expect("the stream says how it ended"))
 }
 
 /// A stream's lines, printed as they came, are its whole output.

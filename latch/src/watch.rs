@@ -32,6 +32,14 @@ pub fn stdin_is_a_pipe() -> bool {
     kind == libc::S_IFIFO || kind == libc::S_IFSOCK
 }
 
+/// Blocks until stdin is closed, dropping what it reads. On a thread of
+/// its own, which never keeps the process from exiting.
+pub fn wait_for_stdin_to_close() {
+    let mut buffer = [0u8; 512];
+    let mut stdin = std::io::stdin();
+    while matches!(io::Read::read(&mut stdin, &mut buffer), Ok(read) if read > 0) {}
+}
+
 fn check(result: libc::c_int) -> io::Result<libc::c_int> {
     if result < 0 {
         Err(io::Error::last_os_error())
