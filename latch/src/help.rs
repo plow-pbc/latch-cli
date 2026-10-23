@@ -829,7 +829,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "rules.edit",
-        output: "The rules saved, with their revision.",
+        output: "At a terminal, the person's editor, then a line when the rules are saved; without one, `no_terminal` (use `rules set`).",
         effect: Once("changes the rules"),
         owner_only: true,
         connector: None,
@@ -960,7 +960,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "dashboard",
-        output: "The running host's dashboard, until Ctrl-C; needs a terminal.",
+        output: "The running host's dashboard, until Ctrl-C; without a terminal, `no_terminal` (use `events --follow`).",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -991,7 +991,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "setup",
-        output: "At a terminal, each step and the latch command it ran; skipped steps say so.",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done.",
         effect: Repeatable(
             "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped",
         ),

@@ -41,6 +41,13 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                 .await
         }
         RulesCommand::Edit => {
+            // It opens the person's editor: a program sets the rules instead.
+            if !crate::term::interactive() {
+                let message = "`latch rules edit` opens your editor, so it needs a terminal";
+                let mut failure = Failure::usage("no_terminal", message.into());
+                failure.next = Some("latch rules set TEXT".into());
+                return Err(failure);
+            }
             let shown = target
                 .call(json!({"command": "show", "from": from}))
                 .await?;

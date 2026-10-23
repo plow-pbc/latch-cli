@@ -34,7 +34,11 @@ case "$*" in
         read -r answer; echo "$answer" >> "$STUB/login-answers"
       fi
     fi
-    echo "Logged in as mac."; touch "$STUB/peer" ;;
+    # A login by text ends in a person's line; one that asks no one
+    # (`json-login`) answers its JSON.
+    if [ -f "$STUB/json-login" ]; then echo '{"peer":{"name":"mac","key":"k","kind":"device"},"key_created":true}'
+    else echo "Logged in as mac." >&2; fi
+    touch "$STUB/peer" ;;
   "serve -d"|"serve -d --again") touch "$STUB/ready"; echo '{"pid":4242}' ;;
   "plugins list")
     out='{"plugins":['; sep=''
@@ -91,7 +95,6 @@ impl Stub {
 
     /// `name` enabled, as the stand-in's host lists it and as the host
     /// saves it in the state folder.
-    #[cfg(target_os = "macos")]
     fn enable(&self, name: &str) {
         self.file(&format!("enabled-{name}"), "");
         let state = self.root.join("state");
@@ -297,18 +300,56 @@ fn a_failed_step_says_why_and_the_next_one_still_runs() {
     assert!(shown.contains("Start latch now? [Y/n]"), "{shown}");
 }
 
+/// With no terminal, setup asks nothing and changes nothing: it fails with
+/// `no_terminal`, naming as `next` the first step not done yet.
 #[test]
-fn setup_needs_a_terminal() {
+fn setup_without_a_terminal_names_the_first_step_not_done() {
     let stub = Stub::new();
-    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .arg("setup")
-        .env("LATCH_SETUP_LATCH", stub.root.join("latch-stub"))
-        .env("STUB", stub.root.join("stub"))
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("run it at a terminal"));
-    assert!(!stub.has("calls"));
+    let next = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_latch"))
+            .arg("--state-dir")
+            .arg(stub.root.join("state"))
+            .arg("setup")
+            .env("LATCH_SETUP_LATCH", stub.root.join("latch-stub"))
+            .env("STUB", stub.root.join("stub"))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+        error["error"]["next"].as_str().unwrap().to_string()
+    };
+    assert_eq!(next(), "latch login --events");
+    stub.file("peer", "");
+    assert_eq!(next(), "latch plugins enable google");
+    stub.enable("google");
+    if cfg!(target_os = "macos") {
+        assert_eq!(next(), "latch plugins enable messages");
+        stub.enable("messages");
+        assert_eq!(next(), "latch plugins enable contacts");
+        stub.enable("contacts");
+    }
+    assert_eq!(next(), "latch serve -d");
+    stub.file("ready", "");
+    assert_eq!(next(), "latch status");
+    let calls = stub.read("calls");
+    assert!(
+        !calls.contains("login\n") && !calls.contains("enable") && !calls.contains("serve"),
+        "it only looked: {calls}"
+    );
+}
+
+/// A login that asks no one answers JSON: setup reads it and says so in
+/// its own line, and never shows the JSON.
+#[test]
+fn a_login_that_asks_no_one_is_read_not_shown() {
+    let stub = Stub::new();
+    stub.file("json-login", "");
+    let (code, shown) = stub.setup("n\nn\nn\n");
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(shown.contains("✓ Logged in as mac."), "{shown}");
+    assert!(!shown.contains("{\"peer\""), "{shown}");
 }
 
 #[cfg(target_os = "macos")]

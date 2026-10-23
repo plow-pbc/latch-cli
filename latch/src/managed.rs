@@ -107,10 +107,11 @@ pub enum Attached {
 
 pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Attached, Failure> {
     if !term::stdout_is_terminal() || !term::interactive() {
-        let message = "`latch serve` shows the host's dashboard, so it needs a terminal; \
-                       `latch serve -d` starts the host detached"
-            .to_string();
-        return Err(Failure::usage("no_terminal", message));
+        let message =
+            "`latch serve` shows the host's dashboard, so it needs a terminal".to_string();
+        let mut failure = Failure::usage("no_terminal", message);
+        failure.next = Some("latch serve -d".into());
+        return Err(failure);
     }
     let (dir, hello) = launch(state, args, true).await?;
     // Only this host is ours to stop: by the time this serve cleans up,
@@ -144,10 +145,10 @@ pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Attached, Fail
 /// `latch dashboard`: watches the running host until Ctrl-C.
 pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
     if !term::stdout_is_terminal() {
-        let message = "the dashboard needs a terminal; `latch status --local` and \
-                       `latch events` say what the host is doing as JSON"
-            .to_string();
-        return Err(Failure::usage("no_terminal", message));
+        let message = "the dashboard needs a terminal".to_string();
+        let mut failure = Failure::usage("no_terminal", message);
+        failure.next = Some("latch events --follow".into());
+        return Err(failure);
     }
     // The write side stays open while the view does: the host takes its
     // end as the viewer gone.

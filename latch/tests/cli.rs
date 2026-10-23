@@ -474,7 +474,9 @@ fn an_agent_with_neither_a_token_a_file_nor_a_proxy_has_no_credential() {
     let login = latch(&dir.path().join("state"), &args, &env);
     assert_eq!(login.status.code(), Some(2), "{login:?}");
     let error: Value = serde_json::from_slice(&login.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "no_credential");
+    // All that is left is a login by text, which needs a person there.
+    assert_eq!(error["error"]["code"], "no_terminal");
+    assert_eq!(error["error"]["next"], "latch login --events");
 }
 
 #[test]
@@ -1477,8 +1479,11 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     )
     .unwrap();
     fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let edit = latch(&state, &["rules", "edit"], &[("EDITOR", editor.as_path())]);
-    assert_eq!(edit.status.code(), Some(0), "{edit:?}");
+    // A person's command: at a terminal, it ends in a line, not JSON.
+    let env = [("EDITOR", editor.as_path())];
+    let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", true, &env);
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(shown.trim(), "Saved the rules for every agent on studio.");
     assert_eq!(
         fs::read_to_string(state.join("rules/host.txt")).unwrap(),
         "Never send email.\nNever buy anything."
@@ -2538,6 +2543,13 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let serve = serving(&host, &relay);
 
     let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
+        // `rules edit` opens the person's editor: at a terminal, where a
+        // saved edit says so in a line, and a failure is its JSON.
+        if args[1] == "edit" {
+            let (code, shown, _) = latch_at_a_terminal(state, args, "", true, env);
+            let json = serde_json::from_str::<Value>(shown.trim()).unwrap_or(json!(shown.trim()));
+            return (code, json);
+        }
         let output = latch(state, args, env);
         let printed = if output.status.success() {
             &output.stdout
@@ -2608,7 +2620,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     );
     assert_eq!(set_agent["agent_uid"], AGENT_UID);
     assert_eq!(set_agent["agent_name"], "Research bot");
-    assert_eq!(edited["agent_uid"], AGENT_UID);
+    assert_eq!(edited, "Saved the rules for Research bot on host.");
     let edited_text = "Run tests in the shared folder. Nothing else.";
     assert_eq!(shown["every_agent"]["text"], "Never send email.");
     assert_eq!(shown["agents"][0]["text"], edited_text);
@@ -4848,16 +4860,44 @@ fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::Ex
     status.unwrap()
 }
 
+/// Each human command, run with no terminal, exits 2 with `no_terminal`
+/// and names, as `next`, the regular command a program uses instead. A
+/// login that needs no one still works there, in JSON.
 #[test]
-fn the_dashboard_and_an_attached_serve_need_a_terminal() {
+fn a_human_command_without_a_terminal_names_its_machine_equivalent() {
+    let plow = LivePlow::start();
     let dir = test_dir();
-    let state = dir.path().join("state");
-    let view = latch(&state, &["dashboard"], &[]);
-    assert_eq!(view.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&view.stderr).contains("no_terminal"));
-    let serve = latch(&state, &["serve"], &[]);
-    assert_eq!(serve.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&serve.stderr).contains("serve -d"));
+    let owner = owner_host_on(&plow, dir.path());
+    let fresh = dir.path().join("fresh");
+    for (state, args, next) in [
+        (&fresh, &["setup"][..], "latch login --events"),
+        (
+            &fresh,
+            &["login", "--api-url", "http://127.0.0.1:9"],
+            "latch login --events",
+        ),
+        (&owner, &["serve"], "latch serve -d"),
+        (&owner, &["dashboard"], "latch events --follow"),
+        (&owner, &["rules", "edit"], "latch rules set TEXT"),
+    ] {
+        let output = latch(state, args, &[]);
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        assert_eq!(error["error"]["code"], "no_terminal", "{args:?}: {error}");
+        assert_eq!(error["error"]["next"], next, "{args:?}: {error}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+    // An existing login, and an agent's own credential: JSON, no terminal.
+    let again = latch(&owner, &["login"], &[]);
+    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["peer"]["kind"], "device");
+    let token = dir.path().join("agent.token");
+    fs::write(&token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let login = ["login", "--api-url", plow.url.as_str()];
+    let agent = latch(&agent, &login, &[("PLOW_TOKEN_FILE", token.as_path())]);
+    assert_eq!(agent.status.code(), Some(0), "{agent:?}");
+    let agent: Value = serde_json::from_slice(&agent.stdout).unwrap();
+    assert_eq!(agent["peer"]["kind"], "agent");
 }
 
 #[test]

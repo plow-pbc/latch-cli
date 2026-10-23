@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::failure::Failure;
 use crate::state::StateDir;
 use crate::term;
 
@@ -27,15 +28,16 @@ const RECHECK_EVERY: Duration = Duration::from_secs(2);
 const RECHECK_FOR: Duration = Duration::from_secs(180);
 
 pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
-    if !term::interactive() {
-        eprintln!("latch setup asks questions: run it at a terminal");
-        return ExitCode::from(2);
-    }
     let mut setup = Setup {
         latch: latch_program(),
         state_dir,
         input: None,
     };
+    if !term::interactive() {
+        let failure = setup.no_terminal();
+        eprintln!("{}", failure.to_json());
+        return failure.exit.into();
+    }
     say("Setting up latch. Each step runs a latch command; you can run it yourself later.");
     if setup.log_in() {
         setup.google();
@@ -120,6 +122,30 @@ impl Setup {
         self.latch(&["status", "--local"]).json
     }
 
+    /// Without a terminal nobody answers setup's questions: it names, as
+    /// `next`, the first of its steps not done yet.
+    fn no_terminal(&self) -> Failure {
+        let local = self.local();
+        let off = |name: &str| self.plugin_state(name).as_deref() != Some("enabled");
+        let next = if local["peer"].is_null() {
+            "latch login --events"
+        } else if off("google") {
+            "latch plugins enable google"
+        } else if cfg!(target_os = "macos") && off("messages") {
+            "latch plugins enable messages"
+        } else if cfg!(target_os = "macos") && off("contacts") {
+            "latch plugins enable contacts"
+        } else if local["serve"]["ready"] != true {
+            "latch serve -d"
+        } else {
+            "latch status"
+        };
+        let message = "latch setup asks questions, so it needs a terminal".to_string();
+        let mut failure = Failure::usage("no_terminal", message);
+        failure.next = Some(next.into());
+        failure
+    }
+
     /// Step 1: a login, by text at this terminal.
     fn log_in(&mut self) -> bool {
         if let Some(name) = self.local()["peer"]["name"].as_str() {
@@ -127,8 +153,20 @@ impl Setup {
             return true;
         }
         step("Log in", "latch login");
-        let status = self.command(&["login"]).status();
-        if status.is_ok_and(|status| status.success()) {
+        // Its questions, and a login by text's screen, are the person's at
+        // this terminal; the JSON of a login that asks nothing is read.
+        let login = self
+            .command(&["login"])
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .output();
+        if let Ok(output) = login
+            && output.status.success()
+        {
+            let answer: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+            if let Some(name) = answer["peer"]["name"].as_str() {
+                done(&format!("Logged in as {name}."));
+            }
             return true;
         }
         say(

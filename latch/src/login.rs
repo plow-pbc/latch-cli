@@ -72,11 +72,14 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     } else if args.events || term::interactive() {
         Source::ByText
     } else {
-        // Never wait on a text nobody will see.
+        // Never wait on a text nobody will see: a login by text is a
+        // person's, at a terminal; a program's is `--events`.
         let message = "no Plow credential: pass --token-file FILE with the owner's Plow login, \
                        or run `latch login` at a terminal to log in by text"
             .to_string();
-        return Err(Failure::usage("no_credential", message));
+        let mut failure = Failure::usage("no_terminal", message);
+        failure.next = Some("latch login --events".into());
+        return Err(failure);
     };
     let owner = !matches!(source, Source::Agent(_));
     let save_token = matches!(source, Source::Given(_));
