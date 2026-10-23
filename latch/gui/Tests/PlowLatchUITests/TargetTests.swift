@@ -55,6 +55,28 @@ struct TargetTests {
         #expect(app.activityFeed == nil)
     }
 
+    // Agents asks each host it can for its standing: hosts Plow lists
+    // after Agents showed are asked then; picking a host asks nothing.
+    @Test func agentsReadsAgainForHostsListedLaterButNotForAPickedHost() async throws {
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.place = .account(.agents)
+        let before = app.entry
+        await app.enter(app.route)
+        #expect(app.standings.keys.sorted() == ["studio"])
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        #expect(app.entry != before)
+        await app.enter(app.route)
+        #expect(app.standings.keys.sorted() == ["pi-kitchen", "sidecar", "studio"])
+        let listed = app.entry
+        app.chosenHost = "pi-kitchen"
+        #expect(app.entry == listed)
+        app.place = .account(.connections)
+        let connections = app.entry
+        app.chosenHost = "studio"
+        #expect(app.entry == connections)
+    }
+
     @Test func connectionsReadsOnlyTheAccount() async throws {
         let client = CountingClient()
         let app = try app(client)
@@ -143,6 +165,39 @@ struct ActivityScopeTests {
         #expect(app.selectedRecord(in: app.activityRows(records, on: studio)) == nil)
         app.activityFilter = .all
         #expect(app.selectedRecord(in: app.activityRows(records, on: studio)) == allowed)
+    }
+
+    // Home's recent request opens in Activity even where a filter left
+    // there would hide it; filters it passes are kept.
+    @Test func aRecentRequestFromHomeIsShownWhateverWasFiltered() throws {
+        let (app, studio) = try app()
+        let records = app.feed(for: studio).records
+        let other = try #require(records.last { $0.agent == nil && !$0.isBackground && !$0.isRefused })
+        app.openActivity(studio, agent: scout)
+        app.activityFilter = .refused
+        app.activitySearch = "Finance"
+        app.place = .host(.home)
+        app.openRecord(other, on: studio)
+        #expect(app.route == .host(.activity, studio))
+        #expect(app.selectedRecord(in: app.activityRows(records, on: studio)) == other)
+
+        let refused = try #require(records.last { $0.agent == scout && $0.isRefused && $0.command?.contains("Finance") == true })
+        app.openActivity(studio, agent: scout)
+        app.activityFilter = .refused
+        app.openRecord(refused, on: studio)
+        #expect(app.activityFilter == .refused && app.activityAgent(on: studio) == scout)
+        #expect(app.selectedRecord(in: app.activityRows(records, on: studio)) == refused)
+    }
+
+    @Test func showAllActivityShowsAllOfIt() throws {
+        let (app, studio) = try app()
+        let records = app.feed(for: studio).records
+        app.openActivity(studio, agent: scout)
+        app.activityFilter = .refused
+        app.activitySearch = "Finance"
+        app.place = .host(.home)
+        app.openActivity(studio)
+        #expect(app.activityRows(records, on: studio).count == records.filter { !$0.isBackground }.count)
     }
 
     @Test func filteringNeverStartsTheStreamAgain() async throws {

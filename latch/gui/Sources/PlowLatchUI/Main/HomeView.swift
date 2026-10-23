@@ -168,8 +168,7 @@ private struct ActivitySections: View {
                 }
                 ForEach(calls.suffix(5).reversed()) { record in
                     Button {
-                        app.selectedRecord = record.id
-                        app.place = .host(.activity)
+                        app.openRecord(record, on: host)
                     } label: {
                         RecentRow(record: record, caller: record.callerLabel(hostKey: app.key(of: host), hostName: host.name,
                                                                             isThisMac: host.isThisMac))
@@ -181,7 +180,7 @@ private struct ActivitySections: View {
                 if calls.count < 5, feed.hasOlder, !feed.loadingOlder {
                     Button("Load Earlier") { Task { await feed.loadOlder() } }
                 }
-                Button("Show All Activity") { app.place = .host(.activity) }
+                Button("Show All Activity") { app.openActivity(host) }
             }
             // The newest page may be all connections and reads: reach back
             // for five requests, or to the start.

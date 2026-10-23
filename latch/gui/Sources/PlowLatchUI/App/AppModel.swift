@@ -117,6 +117,23 @@ final class AppModel {
         }
     }
 
+    /// What a screen's reads depend on, which the window keys them by: a
+    /// host's screen, its host and whether Plow counts it online; Agents,
+    /// every host it can ask; Connections, no host.
+    struct Entry: Hashable {
+        var place: Place
+        var hosts: [String] = []
+        var online: Bool?
+    }
+
+    var entry: Entry {
+        switch route {
+        case .account(.agents): Entry(place: place, hosts: hosts.filter { $0.isThisMac || $0.online != false }.map(\.name))
+        case .account: Entry(place: place)
+        case let .host(_, host): Entry(place: place, hosts: host.map { [$0.name] } ?? [], online: host?.online)
+        }
+    }
+
     /// The picker's hosts, this Mac first.
     var hosts: [HostEntry] { HostEntry.list(local: status, account: account) }
 
@@ -777,14 +794,27 @@ final class AppModel {
     var activitySearch = ""
     var activityAgent: AgentTarget?
 
-    /// An agent's requests of a host: that host's Activity, narrowed to
-    /// that agent, every outcome and no search.
-    func openActivity(_ host: HostEntry, agent uid: String) {
+    /// A host's requests, or one agent's there: that host's Activity with
+    /// every outcome and no search.
+    func openActivity(_ host: HostEntry, agent uid: String? = nil) {
         chosenHost = host.name
         place = .host(.activity)
-        activityAgent = AgentTarget(host: host.name, agent: uid)
+        activityAgent = uid.map { AgentTarget(host: host.name, agent: $0) }
         activityFilter = .all
         activitySearch = ""
+    }
+
+    /// One request on a host: that host's Activity, the request selected
+    /// and shown. Filters it passes are kept; if one would hide it, the
+    /// outcome, search and agent filters go.
+    func openRecord(_ record: AuditRecord, on host: HostEntry) {
+        if activityRows([record], on: host).isEmpty {
+            openActivity(host)
+        } else {
+            chosenHost = host.name
+            place = .host(.activity)
+        }
+        selectedRecord = record.id
     }
 
     /// The selected record, while Activity lists it.

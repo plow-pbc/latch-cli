@@ -42,8 +42,8 @@ struct MainView: View {
             await app.refreshAccount()
         }
         // Each screen's reads, decided by the model, for the route that
-        // keyed them: a change of route cancels the last one's.
-        .task(id: Entry(route)) {
+        // keyed them: a change of what they depend on cancels the last one's.
+        .task(id: app.entry) {
             guard !app.still else { return }
             await app.enter(route)
         }
@@ -54,20 +54,6 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             guard !app.still else { return }
             Task { await app.activated() }
-        }
-    }
-}
-
-/// What a screen's reads depend on: an account page's, on no host.
-private struct Entry: Hashable {
-    var place: Place
-    var host: String?
-    var online: Bool?
-
-    init(_ route: Route) {
-        switch route {
-        case let .account(page): place = .account(page)
-        case let .host(screen, host): (place, self.host, online) = (.host(screen), host?.name, host?.online)
         }
     }
 }
