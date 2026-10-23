@@ -27,9 +27,10 @@ concurrency:
 
 jobs:
   # What this run tests: everything, except a pull request that changes
-  # only docs. Pull requests test on Linux, and run the macOS archives on
-  # older Macs (mac-smoke); the full Mac suite runs on main, and by hand on
-  # any branch with the mac-tests workflow.
+  # only docs. Pull requests test on Linux, run the Mac app's Swift tests
+  # (mac-smoke-build), and run the macOS archives on older Macs (mac-smoke);
+  # the full Mac suite runs on main, and by hand on any branch with the
+  # mac-tests workflow.
   changes:
     if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
     runs-on: ubuntu-24.04
@@ -329,6 +330,12 @@ jobs:
             cargo build --locked --target "$target"
             sh ../scripts/package-release.sh v0.0.0-smoke "$target" "$PWD/target/$target/debug/latch"
           done
+      # The app's model tests, and its contract tests on the arm64 latch just
+      # built. Main's full `mac` job runs them itself.
+      - name: Swift app tests
+        if: github.event_name != 'push' && inputs.mode != 'main'
+        working-directory: latch/gui
+        run: LATCH_CONTRACT_LATCH="$PWD/../target/aarch64-apple-darwin/debug/latch" swift test
       - uses: actions/upload-artifact@v4
         with:
           name: mac-smoke
