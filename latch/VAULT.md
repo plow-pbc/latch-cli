@@ -214,7 +214,11 @@ values and answers `confirm_stale`.
 
 While a fill runs, its session is paused: every other call in it answers
 `session_paused`. Each value is set in one step after the
-field's element, document and origin are checked again; latch then presses
+field's element, document and origin are checked again. A field that
+formats what it gets (a code as "123 456", a card number in fours) still
+holds the value: only spaces, dashes, dots, slashes, parentheses and plus
+signs may come between its characters, none lost, added or moved; a field
+that holds anything else ends the fill with `needs_owner`. latch then presses
 submit and waits until the values have left the page (clearing them itself
 if the page keeps them). A fill that stops part-way (a covered button, a
 refused field) is cleaned up the same way. If latch cannot confirm the

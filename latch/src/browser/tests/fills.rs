@@ -37,6 +37,7 @@ conformance!(
     a_fill_pauses_its_own_session_and_no_other,
     agent_code_is_noted_per_site_for_its_session_only,
     a_login_after_an_edit_fills_the_new_password,
+    a_field_that_formats_its_value_still_holds_it,
     only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
@@ -2622,5 +2623,40 @@ async fn only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it(engine:
         stopped.details["stop"]["covered_by"]["frame"],
         json!(prompt)
     );
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_field_that_formats_its_value_still_holds_it(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| s.add(item(LOGIN, "Shop", &["shop.example"], &[("totp", KEY)])))
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // The field shows the code as "123 456": it holds the code, and the
+    // page sends it.
+    let page = h
+        .call("open", json!({"url": format!("{local}/totp-spaced.html")}))
+        .await
+        .unwrap();
+    let (verified, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&page, "textbox", "Authentication code")]]],
+            "press": find(&page, "button", "Verify"),
+        }))
+        .await;
+    let verified = verified.unwrap();
+    println!("spaced code: {}", verified["fields"]);
+    assert_eq!(verified["submitted"], true);
+    assert!(h.text().await.contains("code accepted"));
     h.call("close", json!({})).await.ok();
 }
