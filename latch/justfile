@@ -128,9 +128,9 @@ build api="":
 # This checkout as a dev Mac app, ../.dev/app/Plow Latch Dev.app: `just
 # build`'s latch (its state folder and Plow) with the app's window (gui/),
 # under its own bundle id, co.plow.latch.dev, so it never shares the
-# installed app's Full Disk Access, preferences or windows. gog and the
-# Messages reader go into that state folder, as the installer puts them in
-# ~/.latch, so Google and Messages work. `open` it to see the window; its
+# installed app's Full Disk Access, preferences or windows. gog, the
+# Messages reader and Chrome for Testing go into that state folder, as the
+# installer puts them in ~/.latch, so Google, Messages and the browser work. `open` it to see the window; its
 # latch is the CLI as well.
 [macos]
 app api="": (build api)
@@ -144,10 +144,11 @@ app api="": (build api)
     sh ../scripts/macos-app-bundle.sh --id co.plow.latch.dev --name "Plow Latch Dev" "$version" "$root/.dev/bin/latch" "$app"
     sh ../scripts/macos-sign-app.sh "$app"
     # The installer finds the reader beside the latch it installs. Given the
-    # bare latch already in ../.dev/bin, it leaves that latch be and adds gog
-    # and the reader to the state folder that latch has baked in.
+    # bare latch already in ../.dev/bin, it leaves that latch be and adds gog,
+    # the reader and the browser engine to the state folder that latch has
+    # baked in, and nothing under HOME.
     messages-reader/build.sh >/dev/null
     cp messages-reader/dist/latch-messages "$root/.dev/bin/latch-messages"
     state="$("$root/.dev/bin/latch" --version | sed -n 's/.*; state \([^,]*\), Plow.*/\1/p')"
-    sh install-binary.sh --non-interactive --no-browser --bin-dir "$root/.dev/bin" --state-dir "$state" "$root/.dev/bin/latch"
+    sh install-binary.sh --non-interactive --bin-dir "$root/.dev/bin" --state-dir "$state" "$root/.dev/bin/latch"
     echo "$app"
