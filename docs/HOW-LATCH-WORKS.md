@@ -288,6 +288,8 @@ The few commands that take `--host` but run only on this machine
   Google, on a Mac turn on Messages and Contacts, then offer to start the
   host. On macOS 26 or later it opens Plow Latch.app instead, whose window
   takes the same steps. A release build logs in to `https://api.plow.co` by default.
+  An agent's machine or image uses `sh install.sh --client-only`: latch
+  alone, with no helpers, root, setup or questions; then `latch login`.
 - **Update:** `latch update` installs the newest build, `latch update TAG`
   a given one (also how to go back), and `latch update --check` only says
   whether there's a newer one. It checks the release's signed `SHA256SUMS`,

@@ -13,7 +13,7 @@ INSTALLER = Path(__file__).resolve().parents[1] / "install.sh"
 
 class ReleaseInstall(unittest.TestCase):
     def run_install(self, system, machine, target, corrupt=False, relative_state=False,
-                    relative_bin=False, release="v0.1.0"):
+                    relative_bin=False, release="v0.1.0", client_only=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             caller = root / "caller"
@@ -69,6 +69,8 @@ esac
             options = ["--state-dir", state_arg]
             if relative_bin:
                 options += ["--bin-dir", "apps/team tools"]
+            if client_only:
+                options += ["--client-only"]
             result = subprocess.run(
                 ["sh", str(INSTALLER), *([release] if release else []), *options],
                 cwd=caller,
@@ -89,6 +91,9 @@ esac
                 self.assertIn("latch 0.1.0 fixture", result.stdout)
                 if relative_bin:
                     self.assertTrue((caller / "apps/team tools/bin-marker").exists())
+                # Only a host's install mentions gog and bubblewrap.
+                for host_only in ["gog", "bubblewrap"]:
+                    self.assertEqual(host_only in result.stdout, not client_only, host_only)
 
     def test_all_targets_and_setup_arguments(self):
         for system, machine, target in [
@@ -111,6 +116,9 @@ esac
 
     def test_relative_bin_directory_survives_download_cleanup(self):
         self.run_install("Darwin", "arm64", "aarch64-apple-darwin", relative_bin=True)
+
+    def test_client_only_goes_on_to_install_binary_and_mentions_no_host_tools(self):
+        self.run_install("Linux", "x86_64", "x86_64-unknown-linux-musl", client_only=True)
 
     def test_bad_checksum_never_runs_setup(self):
         self.run_install("Darwin", "arm64", "aarch64-apple-darwin", corrupt=True)

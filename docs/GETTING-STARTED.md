@@ -31,8 +31,14 @@ curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 machine (Apple silicon or Intel Mac, Linux x86_64 or arm64, including a
 Raspberry Pi), checks it against the release's `SHA256SUMS`, and installs
 it. Options after the tag (or alone) go to the installer: `--bin-dir DIR`,
-`--state-dir DIR`, `--browser chrome|camoufox` (repeat it for both) and
-`--no-browser`.
+`--state-dir DIR`, `--browser chrome|camoufox` (repeat it for both),
+`--no-browser` and `--client-only`.
+
+**An agent's machine or image** only asks hosts, so it needs latch and
+nothing else: `sh install.sh --client-only` installs the binary alone (no
+gog, browser engine, Messages reader, bubblewrap or root), asks nothing and
+starts no setup, and ends by saying to run `latch login` (see
+[section 5](#5-give-an-agent-access-the-right-way)).
 
 **What it puts where:**
 
@@ -225,7 +231,8 @@ you've told that agent in your Plow chat with it.
 **An agent already running on Plow** has its credential and Plow's address
 in its environment (`$PLOW_AGENT_TOKEN`, the file `$PLOW_TOKEN_FILE` or
 `/config/secrets/plow-api-token`, and `$PLOW_API_BASE`, the proxy that adds the
-credential). Run, in that environment as it is:
+credential). Install latch there with `sh install.sh --client-only`, then
+run, in that environment as it is:
 
 ```sh
 latch --state-dir ~/latch-agent login

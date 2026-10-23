@@ -1,14 +1,15 @@
 #!/bin/sh
 # Installs latch from its releases on releases.plow.co: the newest one, or
 # the tag given first. Options go on to the release's install-binary.sh.
-# Once installed, `latch update` installs newer builds.
+# Once installed, `latch update` installs newer builds. --client-only
+# installs latch alone, for a machine that only asks hosts (an agent's image).
 #
-#   sh install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive]
+#   sh install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive]
 set -eu
 version=latest
 case "${1:-}" in
   -h | --help)
-    echo 'usage: install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive]'
+    echo 'usage: install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive]'
     exit 0
     ;;
   "" | -*) ;;
@@ -49,10 +50,18 @@ fi
 tar -xzf "$archive"
 setup="$tmp/latch-$version-$target"
 cd "$caller"
-echo 'Binary defaults to ~/.local/bin (override with --bin-dir); gog uses ~/.latch/plugins (override with --state-dir).'
+client_only=""
+for option in "$@"; do
+  [ "$option" != --client-only ] || client_only=1
+done
+if [ -n "$client_only" ]; then
+  echo 'Binary defaults to ~/.local/bin (override with --bin-dir); installing latch alone, for asking hosts.'
+else
+  echo 'Binary defaults to ~/.local/bin (override with --bin-dir); gog uses ~/.latch/plugins (override with --state-dir).'
+fi
 if [ "$(uname -s)" = Darwin ]; then
   echo 'On macOS latch lives in ~/Applications/Plow Latch.app; ~/.local/bin/latch links to it.'
 fi
-echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
+[ -n "$client_only" ] || echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
 sh "$setup/install-binary.sh" "$@" "$setup/latch"
 "$setup/latch" --version
