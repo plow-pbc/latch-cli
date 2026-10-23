@@ -433,6 +433,8 @@ async fn run_host(
     sweep_browsers(&host);
     crate::update::watch(&state.path, &host.dashboard);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
+    // Held while this host serves; it lets go as `run_host` returns.
+    let _awake = crate::keep_awake::start(&state.path);
     lifecycle::record(
         &state.path,
         Phase::Serving,

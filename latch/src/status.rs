@@ -191,6 +191,10 @@ pub struct Hosting {
     /// The agents refused `exec` here (`serve --deny-exec`): as the host
     /// runs, or as the last one ran; `null` if its saved flags are unreadable.
     pub deny_exec: Option<crate::serve::DenyExec>,
+    /// Whether the host keeps this machine awake (`latch settings set
+    /// --keep-awake`): the setting, and what the host holds; `null` if the
+    /// saved settings are unreadable.
+    pub keep_awake: Option<crate::keep_awake::KeepAwake>,
 }
 
 /// `status --local`: reads the state folder and asks no one, so it works
@@ -258,6 +262,7 @@ pub fn hosted(state: &StateDir, until: Option<std::time::Instant>) -> Option<Hos
             pid: host.pid,
             blocked,
             deny_exec: crate::managed::saved_deny_exec(&dir),
+            keep_awake: crate::keep_awake::status(&dir, &host).ok(),
         },
         last_error: host.error,
     })

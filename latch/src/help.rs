@@ -245,7 +245,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "status",
         runs_on: |_| RunsOn::Either,
-        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked` and `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required or not_logged_in), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
+        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required or not_logged_in), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -1186,6 +1186,26 @@ const ENTRIES: &[Entry] = &[
             "Turn Google off here",
             &["plugins", "disable", "google"],
         )],
+    },
+    Entry {
+        id: "settings.set",
+        runs_on: |_| RunsOn::Local,
+        output: "`settings`, every setting as saved (`keep_awake`), and `next`: `latch status --local`, whose `this_machine.hosting.keep_awake` (`enabled`; `held`, null while the running host has not said; `reason` when not held: disabled, not_serving, on_battery, unsupported, refused or unknown) says what the host makes of it. Saved is all this says.",
+        effect: Repeatable(
+            "saves this machine's host setting, which a running host picks up without a restart",
+        ),
+        owner_only: false,
+        connector: None,
+        examples: &[
+            ex(
+                "Keep this Mac awake while plugged in, for its host",
+                &["settings", "set", "--keep-awake", "on"],
+            ),
+            ex(
+                "Let it sleep as usual",
+                &["settings", "set", "--keep-awake", "off"],
+            ),
+        ],
     },
     Entry {
         id: "audit",

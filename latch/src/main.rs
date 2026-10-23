@@ -26,6 +26,7 @@ mod heartbeat;
 mod help;
 mod hosts;
 mod input;
+mod keep_awake;
 mod keyart;
 mod lifecycle;
 mod log;
@@ -46,6 +47,7 @@ mod sandbox;
 mod seal;
 mod secrets;
 mod serve;
+mod settings;
 mod setup;
 mod state;
 mod status;
@@ -313,6 +315,9 @@ async fn run(
             Ok(Printed(String::new()))
         }
         Command::Plugins(args) => json(pretty, plugins::client::run(&state, args).await?),
+        Command::Settings(cli::SettingsArgs {
+            command: cli::SettingsCommand::Set { keep_awake },
+        }) => json(pretty, settings::set(&state, keep_awake == cli::OnOff::On)?),
         Command::Update(args) => json(pretty, update::run(&state, args).await?),
         Command::Audit(cli::AuditArgs {
             action: Some(action),

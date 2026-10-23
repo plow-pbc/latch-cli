@@ -38,6 +38,7 @@ fn facts() -> Facts {
                 pid: Some(4242),
                 blocked: None,
                 deny_exec: Some(crate::serve::DenyExec::from_flags(&[])),
+                keep_awake: None,
             },
             last_error: None,
         }),
