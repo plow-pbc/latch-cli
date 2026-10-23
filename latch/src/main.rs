@@ -427,12 +427,7 @@ async fn run(
             logs::run(&state, args.follow)?;
             Ok(Printed(String::new()))
         }
-        // A running host may be another latch's, using what this one would
-        // remove; each host removes them itself as it starts.
-        Command::PruneHelpers if lifecycle::now(&state.path).running => {
-            json(pretty, json!({"removed": [], "host_running": true}))
-        }
-        Command::PruneHelpers => json(pretty, json!({"removed": plugins::prune(&state.path)?})),
+        Command::PruneHelpers => json(pretty, plugins::prune_alone(&state.path)?),
         #[cfg(target_os = "macos")]
         Command::AccessCheck { name } => {
             let connector = plugins::Connector::named(&name)?;

@@ -6359,8 +6359,8 @@ fn helper_versions(state: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
 }
 
 /// The installer's `prune-helpers` removes the helper versions this latch
-/// does not run, and leaves them while a host of another latch, which may
-/// use them, holds the folder.
+/// does not run, holding the state folder as a host does. While a host of
+/// another latch, which may use them, holds it, it touches nothing.
 #[test]
 fn the_installer_removes_older_helper_versions_only_while_no_host_runs() {
     let (_dir, state, _) = owner_host();
@@ -6371,9 +6371,12 @@ fn the_installer_removes_older_helper_versions_only_while_no_host_runs() {
         serde_json::from_slice(&output.stdout).unwrap()
     };
     {
-        let (_old, _socket, _) = old_host(&state);
-        assert_eq!(prune(), json!({"removed": [], "host_running": true}));
-        assert!(older.iter().all(|folder| folder.exists()));
+        let (old, _socket, _) = old_host(&state);
+        let held = prune();
+        assert_eq!(held["removed"], json!([]), "{held}");
+        let holder = held["held_by"].as_str().unwrap();
+        assert!(holder.contains(&format!("pid {}", old.0.id())), "{held}");
+        assert!(older.iter().all(|folder| folder.join("helper").exists()));
     }
     let mut removed: Vec<String> = serde_json::from_value(prune()["removed"].clone()).unwrap();
     removed.sort();

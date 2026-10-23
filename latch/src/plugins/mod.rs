@@ -319,6 +319,25 @@ fn pinned_helpers(state_dir: &Path) -> [PathBuf; 4] {
     ]
 }
 
+/// `latch prune-helpers`, the installer's: `prune`, holding the state
+/// folder as a host does, so no host starts meanwhile. One already held, by
+/// a host (perhaps another latch's, using what this one would remove) or
+/// anything else: nothing is removed, and `held_by` says who holds it.
+pub fn prune_alone(state_dir: &Path) -> Result<Value, Failure> {
+    if !state_dir.join("plugins").is_dir() {
+        return Ok(json!({"removed": []}));
+    }
+    // Another command lets go once it is done; a host never does.
+    let serving = |holder: &str| holder.starts_with("latch serve");
+    let within = std::time::Duration::from_secs(60);
+    match crate::serve::hold_state(state_dir, crate::lifecycle::PRUNING, within, |h| {
+        !serving(h)
+    })? {
+        Ok(_held) => Ok(json!({"removed": prune(state_dir)?})),
+        Err(holder) => Ok(json!({"removed": [], "held_by": holder})),
+    }
+}
+
 /// Removes the helper versions this latch does not run, which an older
 /// latch installed: every version folder beside each pinned one. Only
 /// while no host runs on `state_dir`, or by the host itself as it starts,
