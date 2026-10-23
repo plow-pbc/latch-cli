@@ -310,6 +310,21 @@ async fn run_locked(
     })?;
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
     exec::sweep_tmpdirs();
+    // Holding the folder, no other host runs here to use an older latch's.
+    match crate::plugins::prune(&state.path) {
+        Ok(removed) => {
+            for path in removed {
+                log(&format!(
+                    "removed {}, which this latch does not run",
+                    path.display()
+                ));
+            }
+        }
+        Err(failure) => log(&format!(
+            "could not remove old helper versions: {}",
+            failure.message
+        )),
+    }
     let config = state.require_login()?;
     run_host(
         state,

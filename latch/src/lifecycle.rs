@@ -56,6 +56,8 @@ struct Written {
 pub const CONFIGURING: &str = "latch plugins ";
 /// How `serve.lock` begins while `latch logout` holds it.
 pub const LOGGING_OUT: &str = "latch logout";
+/// How `serve.lock` begins while `latch prune-helpers` holds it.
+pub const PRUNING: &str = "latch prune-helpers";
 
 /// The host now: its step, and, while one runs or last ran, its process and
 /// run. A serve that has just locked the folder has no run yet.
@@ -116,8 +118,11 @@ pub fn record(
 pub fn now(state_dir: &Path) -> Host {
     let held = holds_lock(state_dir);
     let configuring = held
-        && fs::read_to_string(state_dir.join("serve.lock"))
-            .is_ok_and(|holder| holder.starts_with(CONFIGURING) || holder.starts_with(LOGGING_OUT));
+        && fs::read_to_string(state_dir.join("serve.lock")).is_ok_and(|holder| {
+            [CONFIGURING, LOGGING_OUT, PRUNING]
+                .iter()
+                .any(|busy| holder.starts_with(busy))
+        });
     let running = held && !configuring;
     let written = fs::read(state_dir.join("serve.json"))
         .ok()

@@ -424,6 +424,7 @@ async fn run(
             logs::run(&state, args.follow)?;
             Ok(Printed(String::new()))
         }
+        Command::PruneHelpers => json(pretty, plugins::prune_alone(&state.path)?),
         #[cfg(target_os = "macos")]
         Command::AccessCheck { name } => {
             let connector = plugins::Connector::named(&name)?;

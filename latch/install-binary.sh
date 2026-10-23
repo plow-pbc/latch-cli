@@ -41,6 +41,10 @@
 # did, into <state-dir>/plugins/messages/<latch version>/latch-messages; latch
 # runs only the reader it was built with.
 #
+# Once the new versions are in, it removes the ones this latch does not
+# run (an older latch's gog, reader and browser engines), unless a host it
+# could not stop still runs.
+#
 # It also installs a browser engine for `latch browser`, with
 # browser-engines.sh next to this script: Chrome for Testing by default (on
 # macOS and Linux arm64/x86_64), or the engines `--browser` names (chrome,
@@ -384,7 +388,15 @@ if [ -n "$browsers" ]; then
   sh "$(dirname "$0")/browser-engines.sh" --state-dir "$state_dir" $browsers
 fi
 
-# 6. The host stopped in step 0, started again by the new latch.
+# 6. The helper versions an older latch installed and this one does not
+# run. The host was stopped in step 0; one this latch could not stop keeps
+# them, and removes them itself once it starts again on this latch.
+if [ -z "$client_only" ]; then
+  "$dest" --state-dir "$state_dir" prune-helpers > /dev/null ||
+    say "could not remove older helper versions from $state_dir/plugins (see above)"
+fi
+
+# 7. The host stopped in step 0, started again by the new latch.
 if [ -n "$restart_host" ]; then
   "$dest" --state-dir "$state_dir" serve -d --again > /dev/null ||
     die "the new latch did not start the host again (see above)"

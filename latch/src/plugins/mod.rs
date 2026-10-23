@@ -300,3 +300,79 @@ impl Drop for Running<'_> {
         self.plugins.ended.notify_waiters();
     }
 }
+
+/// The helpers each latch installs under `<state-dir>/plugins/`, one folder
+/// per version (Chrome for Testing, Camoufox, gog, the Messages reader):
+/// the version this latch runs of each.
+fn pinned_helpers(state_dir: &Path) -> [PathBuf; 4] {
+    let reader = crate::messages::host::reader(state_dir);
+    [
+        crate::browser::engine::CFT.folder(state_dir),
+        crate::browser::engine::CAMOUFOX.folder(state_dir),
+        state_dir
+            .join("plugins/gog")
+            .join(&crate::google::PIN.version),
+        reader
+            .parent()
+            .expect("the reader is in a folder")
+            .to_path_buf(),
+    ]
+}
+
+/// `latch prune-helpers`, the installer's: `prune`, holding the state
+/// folder as a host does, so no host starts meanwhile. One already held, by
+/// a host (perhaps another latch's, using what this one would remove) or
+/// anything else: nothing is removed, and `held_by` says who holds it.
+pub fn prune_alone(state_dir: &Path) -> Result<Value, Failure> {
+    if !state_dir.join("plugins").is_dir() {
+        return Ok(json!({"removed": []}));
+    }
+    // Another command lets go once it is done; a host never does.
+    let serving = |holder: &str| holder.starts_with("latch serve");
+    let within = std::time::Duration::from_secs(60);
+    match crate::serve::hold_state(state_dir, crate::lifecycle::PRUNING, within, |h| {
+        !serving(h)
+    })? {
+        Ok(_held) => Ok(json!({"removed": prune(state_dir)?})),
+        Err(holder) => Ok(json!({"removed": [], "held_by": holder})),
+    }
+}
+
+/// Removes the helper versions this latch does not run, which an older
+/// latch installed: every version folder beside each pinned one. Only
+/// while no host runs on `state_dir`, or by the host itself as it starts,
+/// since a running host of another latch may still use them. Returns what
+/// it removed.
+pub fn prune(state_dir: &Path) -> Result<Vec<PathBuf>, Failure> {
+    let io = |path: &Path, err: std::io::Error| {
+        Failure::new(code::state_io, format!("{}: {err}", path.display()))
+    };
+    let mut removed = Vec::new();
+    for pinned in pinned_helpers(state_dir) {
+        let helper = pinned
+            .parent()
+            .expect("a version is in its helper's folder");
+        let entries = match std::fs::read_dir(helper) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(io(helper, err)),
+        };
+        for entry in entries {
+            let path = entry.map_err(|err| io(helper, err))?.path();
+            if path == pinned {
+                continue;
+            }
+            let gone = match path
+                .symlink_metadata()
+                .map_err(|err| io(&path, err))?
+                .is_dir()
+            {
+                true => std::fs::remove_dir_all(&path),
+                false => std::fs::remove_file(&path),
+            };
+            gone.map_err(|err| io(&path, err))?;
+            removed.push(path);
+        }
+    }
+    Ok(removed)
+}
