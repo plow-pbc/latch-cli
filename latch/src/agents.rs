@@ -413,10 +413,6 @@ fn not_created(failure: Failure, line: &str) -> Failure {
             failure.details = json!({"next": "latch agents lines"});
             failure
         }
-        ("conflict", Some("NO_FREE_LINE")) => Failure::failed(
-            "no_free_line",
-            "all of this account's lines are busy".into(),
-        ),
         (code, _) if lost(code) => {
             let message = "Plow may or may not have created the agent: its answer was lost; look before trying again";
             let mut failure = Failure::new(Exit::Unknown, "outcome_unknown", message.into());

@@ -2676,51 +2676,25 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         "{error}"
     );
     assert!(!taken.exists());
-    let before = posts();
-    let (code, error, _) = run(&[
-        "agents",
-        "new",
-        "--cloud",
-        "exe:hermes",
-        "--name",
-        "H",
-        "--line",
-        "ln_lost",
-    ]);
-    assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(5), &json!("outcome_unknown")),
-        "{error}"
-    );
-    assert_eq!(posts(), before + 1, "sent once");
-    let (code, error, _) = run(&[
-        "agents",
-        "new",
-        "--cloud",
-        "self_hosted",
-        "--name",
-        "H",
-        "--line",
-        "ln_free",
-    ]);
-    assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(2), &json!("unknown_cloud_kind"))
-    );
-    let (code, error, _) = run(&[
-        "agents",
-        "new",
-        "--cloud",
-        "exe:hermes",
-        "--name",
-        "H",
-        "--line",
-        "+1999",
-    ]);
-    assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(2), &json!("no_such_line"))
-    );
+    // A lost answer is sent once, never resent; an unknown kind or line is
+    // refused before anything is sent.
+    for (kind, line, exit, code, sent) in [
+        ("exe:hermes", "ln_lost", 5, "outcome_unknown", 1),
+        ("self_hosted", "ln_free", 2, "unknown_cloud_kind", 0),
+        ("exe:hermes", "+1999", 2, "no_such_line", 0),
+    ] {
+        let before = posts();
+        let new_cloud = [
+            "agents", "new", "--cloud", kind, "--name", "H", "--line", line,
+        ];
+        let (exit_code, error, _) = run(&new_cloud);
+        assert_eq!(
+            (exit_code, &error["error"]["code"]),
+            (Some(exit), &json!(code)),
+            "{error}"
+        );
+        assert_eq!(posts(), before + sent, "{code}");
+    }
     let (code, cloud, _) = run(&[
         "agents",
         "new",
