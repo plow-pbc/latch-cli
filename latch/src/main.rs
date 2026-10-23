@@ -283,6 +283,28 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         }
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
+        Command::Plugins(args)
+            if matches!(
+                args.command,
+                cli::PluginsCommand::Enable { events: true, .. }
+            ) =>
+        {
+            // As `login --events`: every ending is a line too.
+            match plugins::client::run(&state, args).await {
+                Ok(mut result) => {
+                    result["type"] = json!("enabled");
+                    login::event(result);
+                    Ok(Printed {
+                        text: String::new(),
+                        exit: ExitCode::SUCCESS,
+                    })
+                }
+                Err(failure) => {
+                    login::event(json!({"type": "error", "error": failure.error()}));
+                    Err(failure)
+                }
+            }
+        }
         Command::Plugins(args) => to_json(plugins::client::run(&state, args).await?),
         Command::Update(args) => to_json(update::run(&state, args).await?),
         Command::Audit(cli::AuditArgs {

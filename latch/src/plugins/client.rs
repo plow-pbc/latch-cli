@@ -25,6 +25,7 @@ use crate::wire::Request;
 const HOLD_WITHIN: Duration = Duration::from_secs(60);
 
 pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> {
+    let events = matches!(args.command, PluginsCommand::Enable { events: true, .. });
     let (host, args) = match args.command {
         PluginsCommand::List { host } if hosts::local_target(state, host.as_deref())? => {
             return super::list_saved(state);
@@ -33,7 +34,7 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
             hosts::resolve(state, host).await?,
             json!({"command": "list"}),
         ),
-        PluginsCommand::Enable { name } => (
+        PluginsCommand::Enable { name, .. } => (
             this_host(state)?,
             json!({"command": "enable", "name": name}),
         ),
@@ -47,9 +48,19 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
         args,
         chat: None,
     };
-    match dial::call(state, &host, &request, ANSWER_WITHIN).await {
-        Err(failure) if failure.code == "serve_required" && request.args["name"].is_string() => {
-            without_a_host(state, &request.args).await
+    let send = || async {
+        match dial::call(state, &host, &request, ANSWER_WITHIN).await {
+            Err(failure)
+                if failure.code == "serve_required" && request.args["name"].is_string() =>
+            {
+                without_a_host(state, &request.args).await
+            }
+            answer => answer,
+        }
+    };
+    match send().await {
+        Err(failure) if failure.code == "google_not_connected" => {
+            super::connect::google(state, failure, events, send).await
         }
         answer => answer,
     }

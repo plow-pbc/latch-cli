@@ -11,6 +11,7 @@
 //! core, like exec and files, and never a plugin.
 
 pub mod client;
+mod connect;
 pub mod host;
 
 use std::collections::BTreeMap;

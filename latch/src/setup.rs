@@ -168,11 +168,16 @@ impl Setup {
             return;
         }
         step("Connect Google", "latch plugins enable google");
-        let enabled = self.latch(&["plugins", "enable", "google"]);
-        if enabled.ok {
+        // At this terminal, so a Google sign-in shows its link and waits for
+        // the account; a failure says why there itself.
+        let enabled = self
+            .command(&["plugins", "enable", "google"])
+            .stdout(Stdio::null())
+            .status();
+        if enabled.is_ok_and(|status| status.success()) {
             done("Google is connected.");
         } else {
-            failed(&enabled.json, "latch plugins enable google");
+            eprintln!("✗ Google is not on yet.\n  Try again later: latch plugins enable google");
         }
     }
 

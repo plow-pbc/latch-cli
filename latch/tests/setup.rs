@@ -289,7 +289,9 @@ fn a_failed_step_says_why_and_the_next_one_still_runs() {
     stub.file("enable-google", "fail\n");
     let (code, shown) = stub.setup("y\nn\nn\n");
     assert_eq!(code, Some(0), "{shown}");
-    assert!(shown.contains("✗ Plow has no Google account"), "{shown}");
+    // The enable says why itself, at the same terminal.
+    assert!(shown.contains("Plow has no Google account"), "{shown}");
+    assert!(shown.contains("✗ Google is not on yet."), "{shown}");
     assert!(
         shown.contains("Try again later: latch plugins enable google"),
         "{shown}"

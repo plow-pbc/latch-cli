@@ -743,8 +743,18 @@ pub enum PluginsCommand {
         host: Option<String>,
     },
     /// Run NAME's setup for this machine's host, running or not; NAME is
-    /// enabled only if it succeeds (owner only)
-    Enable { name: String },
+    /// enabled only if it succeeds (owner only). When Plow has no Google
+    /// account yet, `enable google` gets a sign-in link from Plow: at a
+    /// terminal it shows the link and a QR code and waits for the account
+    /// (up to 5 minutes); otherwise the error carries it in `connect_url`
+    Enable {
+        name: String,
+        /// For an app: report as JSON lines on stdout (connect, waiting,
+        /// enabled, error). When Google needs signing in, the link comes
+        /// first (`connect`), then the result once the account appears
+        #[arg(long)]
+        events: bool,
+    },
     /// Turn NAME off on this machine's host: a running one refuses new calls
     /// at once, and this returns once its running ones have finished (owner only)
     Disable { name: String },

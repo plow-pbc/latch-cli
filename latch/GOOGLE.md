@@ -16,8 +16,14 @@ file workers can neither read nor run anything under the state directory.
 
 Google is off on a host until its owner runs `latch plugins enable google`
 there, with or without `latch serve` running: the setup checks that gog is installed
-and that Plow has a Google account connected for this host to use. Until
-then every Google call gets `not_enabled`. `latch plugins disable google`
+and that Plow has a Google account connected for this host to use. With
+none connected, it gets a single-use Google sign-in link from Plow (it
+works once, for about 2 minutes): at a terminal it shows the link and a QR
+code and waits up to 5 minutes for the account, then turns Google on;
+otherwise it fails with `google_not_connected`, the link in `connect_url`.
+`--events` reports the link, then the result, as JSON lines for an app. The
+link is a credential until used: latch never writes it to the audit or a
+log. Until then every Google call gets `not_enabled`. `latch plugins disable google`
 only stops this host asking Plow for Google credentials; nothing is revoked
 at Google or Plow, and other hosts keep their access.
 
