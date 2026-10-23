@@ -137,7 +137,7 @@ final class Onboarding {
     /// The last wait for a sign-in ended with no account in Plow.
     var googleWaitEnded = false
     /// The newest sign-in link latch gave, kept only to open again.
-    private(set) var googleSignInLink: URL?
+    private var googleSignInLink: URL?
     private var googleTask: Task<Void, Never>?
     /// Try again's or a return's check, which leaving the screen stops.
     private var googleCheck: Task<Void, Never>?
@@ -539,6 +539,8 @@ final class Onboarding {
     func openGoogleSignInAgain() {
         if let googleSignInLink { app.open(googleSignInLink) }
     }
+
+    var canOpenGoogleSignInAgain: Bool { googleSignInLink != nil }
 
     /// For snapshots: latch has given a sign-in link.
     func stage(googleSignInLink: URL) {
