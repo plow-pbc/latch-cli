@@ -2124,6 +2124,15 @@ fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
         .collect();
     assert_eq!(commands, ["set", "show"]);
 
+    // A log with no head, as an older latch left it, gets one, once.
+    fs::remove_file(state.join("audit.head")).unwrap();
+    for created in [true, false] {
+        let (code, verified) = run(&["audit", "verify"]);
+        assert_eq!(code, Some(0), "{verified}");
+        assert_eq!(verified["head_created"], created, "{verified}");
+        assert_eq!(verified["head_seal_checked"], !created, "{verified}");
+    }
+
     // Without the key the chain still checks; the records do not open.
     fs::remove_file(state.join("audit.keys")).unwrap();
     let (code, verified) = run(&["audit", "verify"]);

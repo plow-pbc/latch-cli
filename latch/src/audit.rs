@@ -15,12 +15,15 @@
 //! The chain alone can't tell a log cut short at its end from one that
 //! ended there. So beside it, `audit.head` names the newest record's hash,
 //! sealed with the audit key, and is rewritten after each record: a log
-//! that no longer holds the record its head names, or has lines but no
-//! head, had records cut off its end. Without the key the head's hash is
-//! still compared; the key also checks its seal, so it can't be made up.
-//! The head may name the record before the newest, as a crash between the
-//! two writes leaves it. A head copied from earlier, put back with the log
-//! cut to match, is not caught.
+//! that no longer holds the record its head names had records cut off its
+//! end. Without the key the head's hash is still compared; the key also
+//! checks its seal, so it can't be made up. The head may name the record
+//! before the newest, as a crash between the two writes leaves it. A log
+//! with no head (one an older latch wrote) is trusted as it is: opening it
+//! for writing, or `latch audit verify`, gives it a head naming its last
+//! record. So a log cut short before its head was made, or a head deleted
+//! along with the end of the log, is not caught; nor is a head copied from
+//! earlier and put back with the log cut to match.
 //!
 //! The keys are the state folder's secret (see `secrets.rs`), and rotate:
 //! `latch audit rotate-key` starts a new key and keeps the old ones, so every
@@ -301,8 +304,10 @@ impl AuditLog {
         };
         let all = open_all(&keys, &text, head.as_deref(), &path)?;
         if head.is_none() {
-            // A log just started: its head names no record yet.
-            write_head(&dir, &keys.seal_head(GENESIS))?;
+            // A log just started, or one an older latch wrote: trusted as
+            // it is.
+            let last = all.last().map_or(GENESIS, |record| &record.hash);
+            write_head(&dir, &keys.seal_head(last))?;
         }
         let records = all.len();
         let mut recent: Vec<Record> = all
@@ -381,9 +386,14 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
             let keys = Keys::existing(&state.path)?;
             let (records, last) = verify(&text, head.as_deref(), keys.as_ref())
                 .map_err(|problem| broken(&path, &problem))?;
+            let head_created = match &keys {
+                Some(keys) if head.is_none() && records > 0 => create_head(&path, keys)?,
+                _ => false,
+            };
             Ok(
                 json!({"records": records, "last": last, "checked_without_the_key": true,
-                      "head_seal_checked": keys.is_some()}),
+                      "head_seal_checked": keys.is_some() && !head_created,
+                      "head_created": head_created}),
             )
         }
         AuditAction::RotateKey => {
@@ -444,17 +454,12 @@ fn chain(text: &str) -> Result<Vec<String>, String> {
 }
 
 /// Checks the log's `head` (the file's text, if there is one) against
-/// `hashes`, the chain's from `GENESIS` on: a log with lines has a head,
-/// and the record it names is still there. Given `keys`, the head must
-/// open with one.
+/// `hashes`, the chain's from `GENESIS` on: the record it names is still
+/// there. Given `keys`, the head must open with one. A log with no head
+/// passes: it gets one as it is (see `create_head`).
 fn check_head(head: Option<&str>, keys: Option<&Keys>, hashes: &[String]) -> Result<(), String> {
     let Some(head) = head else {
-        if hashes.len() == 1 {
-            return Ok(());
-        }
-        return Err(format!(
-            "its head ({HEAD}) is missing: records may have been cut off its end"
-        ));
+        return Ok(());
     };
     let head: Head =
         serde_json::from_str(head).map_err(|_| format!("its head ({HEAD}) is damaged"))?;
@@ -571,6 +576,20 @@ fn read_head(dir: &Path) -> Result<Option<String>, Failure> {
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
         Err(err) => Err(io_failure(&path, err)),
     }
+}
+
+/// Gives the log at `path`, which has records, a head naming its last one,
+/// under the audit lock. `false` when another process made one first.
+fn create_head(path: &Path, keys: &Keys) -> Result<bool, Failure> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let _lock = lock(dir)?;
+    if read_head(dir)?.is_some() {
+        return Ok(false);
+    }
+    let text = fs::read_to_string(path).map_err(|err| io_failure(path, err))?;
+    let hashes = chain(&text).map_err(|problem| broken(path, &problem))?;
+    write_head(dir, &keys.seal_head(hashes.last().expect("genesis")))?;
+    Ok(true)
 }
 
 /// Writes the head in `dir`, whole. Only with the audit lock held.
@@ -850,18 +869,31 @@ mod tests {
             }
         }
 
-        // The head removed too.
+        // No head, as an older latch left the log: trusted as it is, and
+        // given a head naming its last record.
         cut(&lines[..2]);
         let sealed = fs::read_to_string(&head).unwrap();
         fs::remove_file(&head).unwrap();
-        assert!(checked(&path).unwrap_err().contains("is missing"));
-        assert!(AuditLog::open(path.clone()).is_err());
+        assert_eq!(checked(&path).unwrap().0, 2);
+        assert_eq!(AuditLog::open(path.clone()).unwrap().len(), 2);
+        let created: Head = serde_json::from_str(&fs::read_to_string(&head).unwrap()).unwrap();
+        assert_eq!(
+            created.hash,
+            serde_json::from_str::<Line>(lines[1]).unwrap().hash
+        );
+        cut(&lines[..1]);
+        assert!(
+            checked(&path)
+                .unwrap_err()
+                .starts_with("records were cut off its end")
+        );
 
         // A head made up for the shorter log passes without the key, but
         // not with it.
         let mut forged: Head = serde_json::from_str(&sealed).unwrap();
         forged.hash = serde_json::from_str::<Line>(lines[1]).unwrap().hash;
         fs::write(&head, serde_json::to_string(&forged).unwrap()).unwrap();
+        cut(&lines[..2]);
         assert!(checked(&path).is_ok());
         let refused = read_all(&path).unwrap_err();
         assert!(

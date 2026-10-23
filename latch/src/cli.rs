@@ -912,7 +912,7 @@ pub enum AuditAction {
         #[arg(long, short)]
         follow: bool,
     },
-    /// Check every record's place in the chain, and that none were cut off its end; the key, if here, also checks the head's seal
+    /// Check every record's place in the chain, and that none were cut off its end; the key, if here, also checks the head's seal, or makes a head for a log without one
     Verify,
     /// Seal new records under a new key and keep every old one; a running `latch serve` uses it from its next record
     RotateKey,
