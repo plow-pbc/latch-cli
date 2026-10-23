@@ -36,8 +36,8 @@ final class ContractTests {
 
     @Test func statusOfAFreshStateFolder() async throws {
         let status = try await client.localStatus()
-        #expect(status.peer == nil)
-        #expect(status.serve.state == "stopped" && !status.serve.running)
+        #expect(status.login == nil)
+        #expect(status.thisMachine.hosting.state == "stopped" && !status.thisMachine.hosting.running)
     }
 
     /// The first line of `status --local --follow` is the status; stopping
@@ -48,7 +48,7 @@ final class ContractTests {
             first = status
             break
         }
-        #expect(first?.serve.state == "stopped")
+        #expect(first?.thisMachine.hosting.state == "stopped")
         await waitUntil { latchRuns(on: state.path, doing: "status --local --follow") == 0 }
     }
 
@@ -67,12 +67,18 @@ final class ContractTests {
         #expect(plugins.plugins.allSatisfy { $0.state == "disabled" })
     }
 
+    /// `status` before login answers here, asking no one: no hosts.
+    @Test func accountStatusOfAFreshStateFolder() async throws {
+        let account = try await client.accountStatus()
+        #expect(account.hosts == nil)
+    }
+
     /// A command that needs a login refuses with latch's typed error, which
     /// the app decides on.
     @Test func plowReadsRefuseWithoutALogin() async throws {
-        let refusal = await AppModel.result { try await client.accountStatus() }
+        let refusal = await AppModel.result { try await client.agents(host: nil) }
         guard case let .failure(error) = refusal else {
-            Issue.record("`status` answered without a login: \(refusal)")
+            Issue.record("`agents` answered without a login: \(refusal)")
             return
         }
         #expect(error.code == "not_logged_in")

@@ -38,7 +38,7 @@ struct HostsTests {
                            store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.stopped))
         let offline: AccountStatus = try Fixtures.decode(Fixtures.studioHosts.replacingOccurrences(
-            of: #""online":true,"self":true"#, with: #""online":false,"self":true"#))
+            of: #""self":true,"online":true"#, with: #""self":true,"online":false"#))
         app.stage(account: plowAnswered ? offline : nil, error: plowAnswered ? nil : unreachable)
         #expect(app.hosts.map(\.name) == (plowAnswered ? ["studio", "pi-kitchen", "sidecar"] : ["studio"]))
         #expect(app.host?.isThisMac == true && !app.viewerOnly)
@@ -122,8 +122,8 @@ struct HostSettingsTests {
     /// `--host`; one Plow counts offline isn't asked.
     @Test func anotherHostsVersionIsWhatItSays() async throws {
         let app = AppModel(client: FakeLatchClient(account: Fixtures.studioHosts.replacingOccurrences(
-            of: #""name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:33.384336Z","online":true"#,
-            with: #""name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":null,"online":false"#)),
+            of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z""#,
+            with: #""self":false,"online":false,"last_seen_at":null"#)),
                            store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         await app.refreshStatus()
         await app.refreshAccount()

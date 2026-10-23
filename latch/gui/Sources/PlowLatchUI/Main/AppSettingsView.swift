@@ -25,9 +25,9 @@ struct AppSettingsView: View {
                 }
             }
             Section {
-                if let me = app.status?.peer {
+                if let name = app.status?.loggedInAs {
                     HStack {
-                        LabeledContent("Logged in as", value: me.name)
+                        LabeledContent("Logged in as", value: name)
                         Button("Log Out…") { loggingOut = true }
                     }
                     if let logOutError { ErrorText(error: logOutError).foregroundStyle(.red) }

@@ -67,7 +67,7 @@ private struct ViewerSection: View {
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("This Mac (\(app.status?.peer?.name ?? "")) isn't hosting.").font(.headline)
+                    Text("This Mac (\(app.status?.thisMachine.name ?? "")) isn't hosting.").font(.headline)
                     Text("You're viewing your hosts. Your agents' work runs on them, not here.")
                         .foregroundStyle(.secondary)
                     if let error = app.startHostError {
@@ -114,9 +114,9 @@ private struct NeedsSection: View {
         var needs: [Needed] = []
         if let error = app.statusError { needs.append(.unchecked(error)) }
         guard let status = app.status else { return needs }
-        if let blocked = status.serve.blocked {
+        if let blocked = status.thisMachine.hosting.blocked {
             needs.append(.blocked(.failed(blocked)))
-        } else if status.serve.state == "stopped" || status.serve.state == "error" {
+        } else if status.thisMachine.hosting.state == "stopped" || status.thisMachine.hosting.state == "error" {
             needs.append(.stopped(lastError: status.lastError.map(LatchError.failed)))
         }
         if let update = status.update, update.available { needs.append(.update(build: update.build)) }

@@ -248,10 +248,10 @@ async fn update(
     if tag.is_none() && release.build <= current {
         return Ok(json!({"updated": false, "current": current, "latest": release}));
     }
-    let before = crate::status::local(state)?.serve;
+    let before = crate::status::local(state)?.this_machine.hosting;
     install(state, source, &release, bin).await?;
     let mut answer = json!({"updated": true, "from": current, "to": release});
-    let after = crate::status::local(state)?.serve.running;
+    let after = crate::status::local(state)?.this_machine.hosting.running;
     if let Some(host) = host_after(before.running, before.attached, after) {
         answer["host"] = host;
     }

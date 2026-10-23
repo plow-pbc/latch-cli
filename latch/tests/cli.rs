@@ -1382,51 +1382,99 @@ fn help_and_skill_need_no_login_and_carry_this_version() {
 }
 
 #[test]
-fn status_shows_this_machine_once_as_plow_lists_it() {
-    let relay = json!("https://relay.example/");
-    let (url, server) = fake_plow(vec![(
-        200,
-        peer(Value::Null, "mac", "device", relay.clone()),
-    )]);
+fn status_names_the_account_this_machine_and_each_host_once() {
+    let plow = LivePlow::start();
     let dir = test_dir();
-    let owner_token = dir.path().join("owner.token");
-    fs::write(&owner_token, "owner-login\n").unwrap();
-    let state = dir.path().join("state");
-    let args = [
-        "login",
-        "--api-url",
-        &url,
-        "--token-file",
-        owner_token.to_str().unwrap(),
-        "--name",
-        "mac",
-    ];
-    let login = latch(&state, &args, &[]);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let own_key = serde_json::from_slice::<Value>(&login.stdout).unwrap()["peer"]["key"].clone();
-    server.join().unwrap();
+    let status = |state: &Path, env: &[(&str, &Path)]| {
+        let output = latch(state, &["status"], env);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
 
-    // Login saved this machine as online; Plow now lists it offline.
-    let mut listed = peer(own_key.clone(), "mac", "device", relay.clone());
-    listed["online"] = json!(false);
-    let pi = peer(json!("c".repeat(64)), "pi", "device", relay);
-    let (url, server) = fake_plow(vec![(200, json!({"data": [listed, pi]}))]);
-    let config_path = state.join("config.json");
-    let mut config: Value =
-        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-    config["api_url"] = json!(url);
-    fs::write(&config_path, config.to_string()).unwrap();
+    // Before login it answers here, asking no one.
+    let never = dir.path().join("never");
+    let before = status(&never, &[]);
+    assert!(!never.exists(), "status made the state folder");
+    assert_eq!(before["login"], Value::Null, "{before}");
+    assert_eq!(before["account"], Value::Null);
+    assert_eq!(before["hosts"], Value::Null);
+    assert_eq!(before["this_machine"]["name"], Value::Null);
+    assert_eq!(before["this_machine"]["hosting"]["state"], "stopped");
+    assert_eq!(before["default_host"], Value::Null);
+    assert_eq!(before["default_host_reason"], "not_logged_in");
+    assert!(plow.seen().is_empty(), "{:?}", plow.seen());
 
-    let status = latch(&state, &["status"], &[]);
-    assert_eq!(status.status.code(), Some(0), "{status:?}");
-    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(status["peer"]["online"], false, "{status}");
-    let hosts = status["hosts"].as_array().unwrap();
-    assert_eq!(hosts[0]["key"], own_key);
-    assert_eq!(hosts[0]["online"], false);
-    assert_eq!(hosts[0]["self"], true);
-    assert!(hosts[1].get("self").is_none(), "{status}");
-    server.join().unwrap();
+    // Plow lists another host first, and this one not online and never
+    // seen, as it may: each shows once, as Plow says it.
+    let host = owner_host_on(&plow, dir.path());
+    let own_key = {
+        let mut state = plow.state.lock().unwrap();
+        let (own, _) = &mut state.peers[0];
+        own["relay_url"] = json!("https://relay.example/");
+        own["online"] = json!(false);
+        own["last_seen_at"] = Value::Null;
+        let own_key = own["key"].clone();
+        let pi = peer(
+            json!("c".repeat(64)),
+            "pi",
+            "device",
+            json!("https://relay.example/"),
+        );
+        state.peers.insert(0, (pi, "owner-login".to_string()));
+        own_key
+    };
+    let status_of = |env: &[(&str, &Path)]| status(&host, env);
+    let logged_in = status_of(&[]);
+    assert_eq!(logged_in["login"], json!({"kind": "device"}), "{logged_in}");
+    assert_eq!(
+        logged_in["account"],
+        json!({"owner_uid": "usr_synthetic", "display_name": "Ada Example"})
+    );
+    assert_eq!(logged_in["this_machine"]["name"], "host");
+    assert_eq!(logged_in["this_machine"]["key"], own_key);
+    assert_eq!(
+        logged_in["hosts"],
+        json!([
+            {"name": "host", "key": own_key, "self": true, "online": false, "last_seen_at": null},
+            {"name": "pi", "key": "c".repeat(64), "self": false, "online": true,
+             "last_seen_at": "2026-10-15T01:30:12Z"},
+        ])
+    );
+    for gone in ["peer", "serve", "art", "relay_url"] {
+        assert!(
+            !logged_in.to_string().contains(&format!("\"{gone}\"")),
+            "{logged_in}"
+        );
+    }
+    // Never served here, with two hosts: none is the default.
+    assert_eq!(logged_in["default_host"], Value::Null);
+    assert_eq!(logged_in["default_host_reason"], "host_required");
+    let pi = status_of(&[("LATCH_HOST", Path::new("pi"))]);
+    assert_eq!(
+        (&pi["default_host"], &pi["default_host_reason"]),
+        (&json!("pi"), &Value::Null)
+    );
+    let unknown = status_of(&[("LATCH_HOST", Path::new("gone"))]);
+    assert_eq!(unknown["default_host_reason"], "unknown_host");
+
+    // --local is the same, without what Plow says.
+    let asked = plow.seen().len();
+    let local = latch(&host, &["status", "--local"], &[]);
+    let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(plow.seen().len(), asked, "status --local asked Plow");
+    let mut full = logged_in.clone();
+    for plow_only in ["account", "hosts", "default_host", "default_host_reason"] {
+        full.as_object_mut().unwrap().remove(plow_only);
+    }
+    assert_eq!(local, full);
+
+    // Plow down: the command fails, and says what answers without it.
+    use_plow(&host, "http://127.0.0.1:1");
+    let down = latch(&host, &["status"], &[]);
+    assert_eq!(down.status.code(), Some(1), "{down:?}");
+    let error: Value = serde_json::from_slice(&down.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "plow_unreachable", "{error}");
+    assert_eq!(error["error"]["next"], "latch status --local");
 }
 
 #[test]
@@ -2209,6 +2257,11 @@ impl LivePlow {
                                        "created_at": "2026-10-20T10:00:00Z",
                                        "last_seen_at": "2026-10-22T09:00:00Z"}}]),
             ),
+            ("GET", "/v1/auth/owner-uid") => (200, json!({"owner_uid": "usr_synthetic"})),
+            ("GET", "/v1/auth/profile") => (
+                200,
+                json!({"display_name": "Ada Example", "photo_url": null}),
+            ),
             ("GET", "/v1/agents/me") if kind == "agent" => (
                 200,
                 json!({"agent": {"uid": AGENT_UID, "name": "Research bot"}}),
@@ -2663,7 +2716,7 @@ fn a_host_runs_exec_and_files_under_home() {
     let (serve, _) = serving_with_env(&host, &relay, &[("HOME", &home)]);
     let local = latch(&host, &["status", "--local"], &[]);
     let local: Value = serde_json::from_slice(&local.stdout).unwrap();
-    assert_eq!(local["serve"]["state"], "serving");
+    assert_eq!(local["this_machine"]["hosting"]["state"], "serving");
 
     let into = dir.path().join("hosts");
     let into = into.to_str().unwrap();
@@ -3329,10 +3382,11 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let never = dir.path().join("never");
     let before = local(&never);
     assert!(!never.exists(), "status --local made the state folder");
-    assert_eq!(before["peer"], Value::Null);
+    assert_eq!(before["login"], Value::Null);
+    assert_eq!(before["this_machine"]["name"], Value::Null);
     assert_eq!(before["protocol"], 4);
     assert_eq!(
-        before["serve"],
+        before["this_machine"]["hosting"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
                "state": "stopped", "pid": null, "blocked": null,
                "deny_exec": {"every_agent": false, "agent_uids": []}})
@@ -3341,30 +3395,30 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
 
     let host = owner_host_on(&plow, dir.path());
     let logged_in = local(&host);
-    assert_eq!(logged_in["peer"]["name"], "host");
-    assert_eq!(logged_in["peer"]["kind"], "device");
-    assert_eq!(logged_in["serve"]["running"], false);
+    assert_eq!(logged_in["this_machine"]["name"], "host");
+    assert_eq!(logged_in["login"]["kind"], "device");
+    assert_eq!(logged_in["this_machine"]["hosting"]["running"], false);
     let asked = plow.seen().len();
 
     let serve = serving(&host, &relay);
     let pid = serve.0.id();
     let up = local(&host);
     assert_eq!(
-        up["serve"],
+        up["this_machine"]["hosting"],
         json!({"running": true, "ready": true, "configuring": false, "managed": false, "attached": false,
                "state": "serving", "pid": pid, "blocked": null,
                "deny_exec": {"every_agent": false, "agent_uids": []}})
     );
     drop(serve);
     let stopped = local(&host);
-    assert_eq!(stopped["serve"]["state"], "stopped");
+    assert_eq!(stopped["this_machine"]["hosting"]["state"], "stopped");
     assert_eq!(stopped["last_error"], Value::Null);
 
     let mut killed = serving(&host, &relay);
     killed.0.kill().unwrap();
     killed.0.wait().unwrap();
     let ended = local(&host);
-    assert_eq!(ended["serve"]["state"], "error");
+    assert_eq!(ended["this_machine"]["hosting"]["state"], "error");
     assert_eq!(ended["last_error"]["code"], "serve_ended");
     // Only the serves spoke to Plow; status --local never did.
     let statuses = plow.seen()[asked..]
@@ -3432,7 +3486,7 @@ impl Lines {
         loop {
             let line = self.next();
             assert_eq!(line["type"], "status", "{line}");
-            if line["status"]["serve"]["state"] == state {
+            if line["status"]["this_machine"]["hosting"]["state"] == state {
                 return line["status"].clone();
             }
         }
@@ -3543,15 +3597,21 @@ fn status_follow_says_each_change_of_the_host_through_a_restart() {
     let host = owner_host_on(&plow, dir.path());
 
     let status = Lines::start(&host, &["status", "--local", "--follow"]);
-    assert_eq!(status.status_in("stopped")["serve"]["running"], false);
+    assert_eq!(
+        status.status_in("stopped")["this_machine"]["hosting"]["running"],
+        false
+    );
     let serve = serving(&host, &relay);
     let first = status.status_in("serving");
-    assert_eq!(first["serve"]["ready"], true);
+    assert_eq!(first["this_machine"]["hosting"]["ready"], true);
     drop(serve);
     status.status_in("stopped");
     let _serve = serving(&host, &relay);
     let again = status.status_in("serving");
-    assert_ne!(again["serve"]["pid"], first["serve"]["pid"]);
+    assert_ne!(
+        again["this_machine"]["hosting"]["pid"],
+        first["this_machine"]["hosting"]["pid"]
+    );
     assert!(status.close().success());
 }
 
@@ -4844,11 +4904,11 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
     );
     assert!(plow.state.lock().unwrap().peers.is_empty());
     assert_eq!(secret_files_in(&host), ["vault.key", "audit.keys"]);
-    // Logged out as far as setup and an app can tell: no peer, and
+    // Logged out as far as setup and an app can tell: no login, and
     // anything needing the login says to log in.
     let local = latch(&host, &["status", "--local"], &[]);
     let local: Value = serde_json::from_slice(&local.stdout).unwrap();
-    assert_eq!(local["peer"], Value::Null, "{local}");
+    assert_eq!(local["login"], Value::Null, "{local}");
     let shown = latch(&host, &["rules", "show"], &[]);
     assert_eq!(shown.status.code(), Some(2), "{shown:?}");
     let error: Value = serde_json::from_slice(&shown.stderr).unwrap();
@@ -6016,7 +6076,7 @@ fn registered(state: &Path) -> bool {
 
 fn local_serve(state: &Path) -> Value {
     let output = latch(state, &["status", "--local"], &[]);
-    serde_json::from_slice::<Value>(&output.stdout).unwrap()["serve"].clone()
+    serde_json::from_slice::<Value>(&output.stdout).unwrap()["this_machine"]["hosting"].clone()
 }
 
 /// Waits up to `limit` for `done`.

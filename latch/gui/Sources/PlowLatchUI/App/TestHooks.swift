@@ -280,7 +280,7 @@ enum TestHooks {
                 "start_error": flow?.startError?.message ?? "",
                 "passed": app.progress.passed.mapValues(\.rawValue).reduce(into: [String: String]()) { $0[$1.key.rawValue] = $1.value },
                 "finished": app.progress.finished,
-                "status": app.status.map { ["peer": $0.peer?.name ?? "", "serve": $0.serve.state] } ?? [:],
+                "status": app.status.map { ["this_machine": $0.thisMachine.name ?? "", "hosting": $0.thisMachine.hosting.state] } ?? [:],
                 "opened": opened,
             ]
             try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys]).write(to: URL(filePath: path))

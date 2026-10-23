@@ -82,8 +82,8 @@ private struct Sidebar: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let me = app.status?.peer {
-                Text(app.viewerOnly ? "Logged in as \(me.name) · viewing only" : "Logged in as \(me.name)")
+            if let name = app.status?.loggedInAs {
+                Text(app.viewerOnly ? "Logged in as \(name) · viewing only" : "Logged in as \(name)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -105,10 +105,10 @@ struct HostPicker: View {
 
     var body: some View {
         Menu {
-            if app.viewerOnly, let me = app.status?.peer {
+            if app.viewerOnly, let name = app.status?.loggedInAs {
                 Section {
                     Button {} label: {
-                        Text("This Mac (\(me.name))")
+                        Text("This Mac (\(name))")
                         Text("Not hosting · you're viewing your hosts")
                     }
                     .disabled(true)

@@ -11,7 +11,7 @@ final class AppModel {
     /// stopped because nothing was hosted here.
     private(set) var status: LocalStatus? {
         didSet {
-            if status?.serve.state == "serving", let name = status?.peer?.name { feeds[name]?.retry() }
+            if status?.thisMachine.hosting.state == "serving", let name = status?.thisMachine.name { feeds[name]?.retry() }
         }
     }
     private(set) var statusError: LatchError?
@@ -114,7 +114,7 @@ final class AppModel {
 
     /// Logged in, with nothing served here: this Mac only views its hosts.
     /// Known once Plow has listed them.
-    var viewerOnly: Bool { status?.peer != nil && account != nil && !hosts.contains(where: \.isThisMac) }
+    var viewerOnly: Bool { status?.login != nil && account != nil && !hosts.contains(where: \.isThisMac) }
 
     /// What each host last said of its rules, vault and connectors, by host
     /// name; Home shows the selected host's.
@@ -736,7 +736,7 @@ final class AppModel {
     /// The key on records of a host's requests of itself: this Mac's own,
     /// else Plow's for that host.
     func key(of host: HostEntry) -> String? {
-        host.isThisMac ? status?.peer?.key ?? host.key : host.key
+        host.isThisMac ? status?.thisMachine.key ?? host.key : host.key
     }
 
     /// The record Activity's inspector shows; Home's recent rows set it.
@@ -815,7 +815,7 @@ final class AppModel {
         guard onboarding == nil else { return }
         await refreshStatus()
         let progress = store.load()
-        switch progress.destination(loggedIn: status?.peer != nil) {
+        switch progress.destination(loggedIn: status?.login != nil) {
         case .main: finishOnboarding()
         case let .onboarding(step): onboarding = Onboarding(app: self, step: step, progress: progress)
         }
@@ -831,14 +831,14 @@ final class AppModel {
     func setUpAgain() {
         let progress = store.load().settingUpAgain()
         store.save(progress)
-        guard case let .onboarding(step) = progress.destination(loggedIn: status?.peer != nil) else { return }
+        guard case let .onboarding(step) = progress.destination(loggedIn: status?.login != nil) else { return }
         beginOnboarding(at: step, progress: progress)
     }
 
     /// The main window learned this Mac is logged out (a `latch logout`):
     /// onboarding takes over, at Log in.
     func leaveMainIfLoggedOut() {
-        guard let status, status.peer == nil, onboarding == nil, !loggingOut, logOutWarning == nil else { return }
+        guard let status, status.login == nil, onboarding == nil, !loggingOut, logOutWarning == nil else { return }
         let progress = store.load()
         guard case let .onboarding(step) = progress.destination(loggedIn: false) else { return }
         beginOnboarding(at: step, progress: progress)
