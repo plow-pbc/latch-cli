@@ -590,34 +590,23 @@ fn an_update_read_before_a_hand_edit_is_refused() {
     );
 }
 
-/// Two runs of one export, a preview and then a pick, each read the vault
-/// afresh; the pick's `expect` refuses when the second read would touch
-/// the vault differently from what the preview showed.
+/// A pick given the preview's `expect` reads the vault again in the same
+/// transaction as its save: an edit made since the preview, even after
+/// this run read the export, refuses the whole import with nothing saved.
 #[test]
 fn a_pick_expecting_the_preview_refuses_a_vault_changed_since() {
     let (_dir, mut vault) = store();
     run(&mut vault, APPLE);
-    let rotated = APPLE.replace("drop-secret", "drop-rotated");
-    let marked = |vault: &OwnStore| {
-        let mut parsed = parse_text(&rotated).unwrap();
-        mark_against(vault, &mut parsed).unwrap();
-        parsed
-    };
-    let previewed = preview(&marked(&vault))["expect"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(previewed.len(), 64);
-    // Nothing changed: the same token, and the pick goes ahead. Nor does an
-    // item no row touches change it.
-    check(&marked(&vault), &previewed).unwrap();
-    run(
-        &mut vault,
-        "Title,URL,Username,Password,Notes,OTPAuth\nOther,https://other.example,jo,other-secret,,",
+    let export = format!(
+        "{}\nFresh,https://fresh.example,jo,fresh-secret,,",
+        APPLE.replace("drop-secret", "drop-rotated")
     );
-    check(&marked(&vault), &previewed).unwrap();
+    let mut parsed = parse_text(&export).unwrap();
+    mark_against(&vault, &mut parsed).unwrap();
+    let previewed = preview(&parsed)["expect"].as_str().unwrap().to_string();
+    assert_eq!(previewed.len(), 64);
 
-    // Another device edits the item the preview would update.
+    // Another device edits the item row 2 would update.
     let stored = vault
         .list()
         .into_iter()
@@ -627,15 +616,36 @@ fn a_pick_expecting_the_preview_refuses_a_vault_changed_since() {
     edited.raw.login.as_mut().unwrap().password = Some("typed-by-hand".into());
     vault.update(edited, stored.revision).unwrap();
 
-    let parsed = marked(&vault);
-    let refused = check(&parsed, &previewed).unwrap_err();
+    let refused = commit_expecting(&mut vault, &mut parsed, &[1, 2, 3], &previewed).unwrap_err();
     assert_eq!(
         (refused.exit, refused.code.as_str()),
         (Exit::Denied, "stale_revision")
     );
-    assert_eq!(refused.details["expect"], preview(&parsed)["expect"]);
     assert_ne!(refused.details["expect"], json!(previewed));
     assert!(!format!("{refused:?}").contains("drop-rotated"));
+    assert_eq!(vault.list().len(), 2, "not even the new row is saved");
+    assert_eq!(
+        vault.release(&stored.item, "password").unwrap(),
+        "typed-by-hand"
+    );
+
+    // With the token it gave, the pick goes ahead; an item no row touches
+    // doesn't change it.
+    let again = refused.details["expect"].as_str().unwrap().to_string();
+    run(
+        &mut vault,
+        "Title,URL,Username,Password,Notes,OTPAuth\nOther,https://other.example,jo,other-secret,,",
+    );
+    let outcome = commit_expecting(&mut vault, &mut parsed, &[1, 2, 3], &again).unwrap();
+    assert_eq!(
+        outcome,
+        Outcome {
+            saved: 1,
+            updated: 1,
+            duplicates: 1,
+            ..Outcome::default()
+        }
+    );
 }
 
 const TWINS: &str = "Title,URL,Username,Password,Notes,OTPAuth\n\

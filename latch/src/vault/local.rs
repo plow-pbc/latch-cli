@@ -83,16 +83,16 @@ pub(super) fn import(
     expect: Option<&str>,
 ) -> Result<Value, Failure> {
     audited(state, "import", |vault, audit| {
-        let parsed = read_export(vault, path)?;
+        let mut parsed = read_export(vault, path)?;
         audit.insert("source".into(), json!(parsed.source));
         audit.insert("rows".into(), json!(parsed.items.len()));
         let preview = import::preview(&parsed);
         let picks = client::choose(&preview, pick)?;
-        if let Some(expect) = expect {
-            import::check(&parsed, expect)?;
-        }
         // No lock is held while the owner chooses. Commit checks current revisions.
-        let outcome = vault.with(|store| Ok(import::commit(store, &parsed, &picks)))?;
+        let outcome = vault.with(|store| match expect {
+            Some(expect) => import::commit_expecting(store, &mut parsed, &picks, expect),
+            None => Ok(import::commit(store, &parsed, &picks)),
+        })?;
         audit.insert("picked".into(), json!(picks.len()));
         audit.insert("result".into(), json!({"saved": outcome.saved, "updated": outcome.updated, "duplicates": outcome.duplicates, "failed": outcome.failed.len()}));
         let mut result = json!(outcome);

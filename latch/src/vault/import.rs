@@ -701,7 +701,13 @@ fn parse_bitwarden_json(root: &Value) -> Result<Parsed, Failure> {
 /// first, an update happens only when one row and one item are left facing
 /// each other, rows with no items left are new, and anything else is left
 /// alone, saying so, rather than guessing which password to write over.
+/// Marking again starts over from the rows as parsed.
 pub fn mark_against(vault: &dyn Backend, parsed: &mut Parsed) -> Result<(), Failure> {
+    for row in &mut parsed.items {
+        row.duplicate = false;
+        row.update = None;
+        row.warnings.retain(|w| w != TWINS_LEFT_ALONE);
+    }
     let key =
         |title: &str, username: &str, site: &str| format!("{title}\u{0}{username}\u{0}{site}");
     let held = vault.list();
@@ -784,13 +790,13 @@ pub fn mark_against(vault: &dyn Backend, parsed: &mut Parsed) -> Result<(), Fail
         for i in unmatched {
             let row = &mut parsed.items[rows[i]];
             row.duplicate = true;
-            row.warnings.push(
-                "several entries share this name, username and site; left alone rather than guess which updates which".into(),
-            );
+            row.warnings.push(TWINS_LEFT_ALONE.into());
         }
     }
     Ok(())
 }
+
+const TWINS_LEFT_ALONE: &str = "several entries share this name, username and site; left alone rather than guess which updates which";
 
 /// What the owner is shown before picking: never a value.
 pub fn preview(parsed: &Parsed) -> Value {
@@ -885,9 +891,21 @@ pub fn expect(parsed: &Parsed) -> String {
     crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(rows.as_bytes()))
 }
 
-/// Refuses, before anything is saved, when the export no longer means what
-/// the preview that gave `expected` showed.
-pub fn check(parsed: &Parsed, expected: &str) -> Result<(), Failure> {
+/// Saves the picked rows only if, read again in the same vault transaction
+/// as the save, every row still means what the preview that gave `expected`
+/// showed; otherwise refuses with nothing saved.
+pub fn commit_expecting(
+    vault: &mut dyn Backend,
+    parsed: &mut Parsed,
+    picks: &[usize],
+    expected: &str,
+) -> Result<Outcome, Failure> {
+    mark_against(vault, parsed)?;
+    check(parsed, expected)?;
+    Ok(commit(vault, parsed, picks))
+}
+
+fn check(parsed: &Parsed, expected: &str) -> Result<(), Failure> {
     let now = expect(parsed);
     if now == expected {
         return Ok(());
