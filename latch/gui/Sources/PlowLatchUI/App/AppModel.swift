@@ -160,7 +160,7 @@ final class AppModel {
     /// a task that's cancelled when the screen or host changes: a cancelled
     /// read keeps what was held, and the reads after it don't start.
     func enter(_ section: SidebarItem, host: HostEntry?, refresh: Bool = false) async {
-        let interval = Self.signposter.beginInterval("enter", "\(section.rawValue, privacy: .public)")
+        let interval = Self.signposter.beginInterval("enter", id: Self.signposter.makeSignpostID(), "\(section.rawValue, privacy: .public)")
         defer { Self.signposter.endInterval("enter", interval) }
         switch section {
         case .home:

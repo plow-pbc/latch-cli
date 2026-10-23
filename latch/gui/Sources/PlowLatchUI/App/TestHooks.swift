@@ -1,4 +1,4 @@
-#if LATCH_TEST_HOOKS
+#if DEBUG || LATCH_TEST_HOOKS
 import AppKit
 import QuartzCore
 
@@ -73,15 +73,10 @@ enum TestHooks {
         func on(_ command: String, _ act: @escaping @MainActor (String?) -> Void) {
             center.addObserver(forName: .init("co.plow.latch.test.\(Bundle.main.bundleIdentifier ?? "").\(command)"), object: nil, queue: .main) { note in
                 let argument = note.object as? String
-                MainActor.assumeIsolated {
-                    guard let timings, command != "measure" else { return act(argument) }
-                    measure(command, argument, to: timings) { act(argument) }
-                }
+                MainActor.assumeIsolated { run(command, argument, act) }
             }
         }
-        // Times each hook after it, until "measure" with no path: from the
-        // action to the first frame the window shows after the change, one
-        // JSON line per action appended to PATH.
+        // Times each hook after it, until "measure" with no path (`run`).
         on("measure") { path in timings = path.map { URL(filePath: $0) } }
         on("primary") { _ in app.onboarding?.primary() }
         on("skip") { _ in app.onboarding?.skip() }
@@ -316,21 +311,41 @@ enum TestHooks {
 }
 
 extension TestHooks {
-    /// Runs a hook's action and appends how long the window took to show
-    /// its next frame after it: the action, SwiftUI's update and the commit
-    /// it makes, to when that frame is due on screen. Signposted too, for
-    /// Instruments' Points of Interest.
-    static func measure(_ command: String, _ argument: String?, to file: URL, _ act: () -> Void) {
+    /// A hook's action, timed while measuring: one JSON line per action
+    /// appended to `timings`, with the hook's name and never its argument,
+    /// which may be a value typed into the vault.
+    static func run(_ command: String, _ argument: String?, _ act: @MainActor (String?) -> Void) {
+        guard let timings, command != "measure" else { return act(argument) }
+        measure(command, to: timings) { act(argument) }
+    }
+
+    /// Runs an action and times it two ways, from just before it:
+    /// `next_refresh_ms`, when the display refresh after it is due (a
+    /// scheduling proxy: it doesn't show the change made that refresh), and
+    /// `visible_ms`, when the window server's image of the window first
+    /// differs from the one before the action, looked at on each refresh
+    /// for up to two seconds (null if nothing changed). Signposted too,
+    /// for Instruments' Points of Interest.
+    private static func measure(_ command: String, to file: URL, _ act: () -> Void) {
+        let window = NSApp?.windows.first { $0.isVisible && $0.canBecomeMain }
+        let before = window.flatMap(Render.image)
         let start = CACurrentMediaTime()
-        let interval = AppModel.signposter.beginInterval("hook", "\(command, privacy: .public)")
+        let interval = AppModel.signposter.beginInterval("hook", id: AppModel.signposter.makeSignpostID(), "\(command, privacy: .public)")
         act()
-        guard let view = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain })?.contentView else {
+        func ms(_ seconds: CFTimeInterval) -> Double { (seconds * 1000 * 10).rounded() / 10 }
+        guard let window, let view = window.contentView, let before else {
             AppModel.signposter.endInterval("hook", interval)
-            return append(["command": command, "argument": argument ?? NSNull(), "frame_ms": NSNull()], to: file)
+            return append(["command": command, "next_refresh_ms": NSNull(), "visible_ms": NSNull()], to: file)
         }
-        NextFrame.after(view) { due in
+        var refresh: Double?
+        Refreshes.each(view) { link in
+            if refresh == nil { refresh = ms(link.targetTimestamp - start) }
+            let now = CACurrentMediaTime()
+            let changed = Render.image(window).map { $0.dataProvider?.data != before.dataProvider?.data } ?? false
+            guard changed || now - start > 2 else { return false }
             AppModel.signposter.endInterval("hook", interval)
-            append(["command": command, "argument": argument ?? NSNull(), "frame_ms": ((due - start) * 1000 * 10).rounded() / 10], to: file)
+            append(["command": command, "next_refresh_ms": refresh ?? NSNull(), "visible_ms": changed ? ms(now - start) : NSNull()], to: file)
+            return true
         }
     }
 
@@ -347,27 +362,22 @@ extension TestHooks {
     }
 }
 
-/// The window's next frame: its display link's first tick, after the run
-/// loop turn in which the change was committed, with when that frame is
-/// due on screen.
-private final class NextFrame: NSObject {
-    private let done: (CFTimeInterval) -> Void
-    private var link: CADisplayLink?
+/// A window's display refreshes: its display link's ticks, each handed
+/// over until one says it's done.
+private final class Refreshes: NSObject {
+    private let tick: (CADisplayLink) -> Bool
 
-    private init(_ done: @escaping (CFTimeInterval) -> Void) {
-        self.done = done
+    private init(_ tick: @escaping (CADisplayLink) -> Bool) {
+        self.tick = tick
     }
 
-    static func after(_ view: NSView, _ done: @escaping (CFTimeInterval) -> Void) {
-        let frame = NextFrame(done)
-        // The display link holds it until it ticks.
-        frame.link = view.displayLink(target: frame, selector: #selector(tick))
-        frame.link?.add(to: .main, forMode: .common)
+    static func each(_ view: NSView, _ tick: @escaping (CADisplayLink) -> Bool) {
+        // The display link holds it until it's invalidated.
+        view.displayLink(target: Refreshes(tick), selector: #selector(ticked)).add(to: .main, forMode: .common)
     }
 
-    @objc private func tick(_ link: CADisplayLink) {
-        link.invalidate()
-        done(link.targetTimestamp)
+    @objc private func ticked(_ link: CADisplayLink) {
+        if tick(link) { link.invalidate() }
     }
 }
 #endif

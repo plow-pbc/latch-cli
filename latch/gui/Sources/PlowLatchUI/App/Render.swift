@@ -45,14 +45,18 @@ enum Render {
     /// offers the call (ScreenCaptureKit replaced it, and asks permission
     /// even for one's own windows), so it's looked up at run time.
     static func window(_ window: NSWindow, to file: URL) throws {
-        typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
-        let includingWindow: UInt32 = 1 << 3, ignoreFraming: UInt32 = 1 << 0
-        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage"),
-              let image = unsafeBitCast(symbol, to: CreateImage.self)(.null, includingWindow, UInt32(window.windowNumber), ignoreFraming)?
-                  .takeRetainedValue(),
-              let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+        guard let image = image(window), let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
         else { throw CocoaError(.fileWriteUnknown) }
         try png.write(to: file)
+    }
+
+    /// The window as the window server shows it now.
+    static func image(_ window: NSWindow) -> CGImage? {
+        typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        let includingWindow: UInt32 = 1 << 3, ignoreFraming: UInt32 = 1 << 0
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return nil }
+        return unsafeBitCast(symbol, to: CreateImage.self)(.null, includingWindow, UInt32(window.windowNumber), ignoreFraming)?
+            .takeRetainedValue()
     }
 }
 #endif

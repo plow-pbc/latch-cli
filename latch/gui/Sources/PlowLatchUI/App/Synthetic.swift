@@ -142,8 +142,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     /// and refused, their connections, and the owner's own reads.
     private func record(_ n: Int, on host: String) -> String {
         // Each kind of record for every agent in turn.
-        let agent = n / 5 % spec.agents, name = Spec.agentNames[agent]
-        let id = Self.hex(n, salt: 0xc0de + (Spec.names.firstIndex(of: host) ?? 0), width: 64)
+        let agent = n / 5 % spec.agents, name = Spec.agentNames[agent], id = recordID(n, on: host)
         let time = Date(timeIntervalSince1970: 1_792_700_000 + Double(n)).formatted(.iso8601)
         let line: String = switch n % 5 {
         case 0: #""agent":"\#(agentUid(agent))","caller":"\#(Self.hex(agent, salt: 0xca11, width: 64))","caller_name":"\#(name)","decision":"allow","details":null,"op":"connect","outcome":"ok""#
@@ -154,12 +153,18 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         return #"{"cursor":"\#(id)","record":{"id":"\#(id)","time":"\#(time)",\#(line)},"type":"record"}"#
     }
 
+    /// A record's id, and its cursor: its last eight digits are its number.
+    private func recordID(_ n: Int, on host: String) -> String {
+        Self.hex(n, salt: 0xc0de + (Spec.names.firstIndex(of: host) ?? 0), width: 64)
+    }
+
     func audit(host: String?, before: String?) async throws -> AuditPage {
         if spec.delay > 0 { try await Task.sleep(for: .milliseconds(spec.delay)) }
         return AuditPage(records: [], hasOlder: false)
     }
 
-    /// Every record at once, then, with a rate, new ones until stopped.
+    /// Every record at once, or those after `after`, then, with a rate, new
+    /// ones until stopped.
     func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
         let host = self.host(host), client = self
         return AsyncThrowingStream { continuation in
@@ -168,11 +173,17 @@ nonisolated struct SyntheticLatchClient: LatchClient {
                     if let line = try? LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)) { continuation.yield(line) }
                 }
                 if client.spec.delay > 0 { try? await Task.sleep(for: .milliseconds(client.spec.delay)) }
-                send(#"{"cursor":"\#(String(repeating: "0", count: 64))","has_older":false,"type":"snapshot"}"#)
-                for n in 0..<client.spec.records { send(client.record(n, on: host)) }
-                send(#"{"cursor":"\#(String(repeating: "0", count: 64))","has_older":false,"type":"caught_up"}"#)
+                let start = String(repeating: "0", count: 64)
+                var cursor = after ?? start
+                var n = after.flatMap { $0 == start ? nil : Int($0.suffix(8), radix: 16) }.map { $0 + 1 } ?? 0
+                send(#"{"cursor":"\#(cursor)","has_older":false,"type":"snapshot"}"#)
+                while n < client.spec.records {
+                    send(client.record(n, on: host))
+                    cursor = client.recordID(n, on: host)
+                    n += 1
+                }
+                send(#"{"cursor":"\#(cursor)","has_older":false,"type":"caught_up"}"#)
                 guard client.spec.rate > 0 else { return }
-                var n = client.spec.records
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(1) / client.spec.rate)
                     send(client.record(n, on: host))

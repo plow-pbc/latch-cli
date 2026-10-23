@@ -46,6 +46,31 @@ struct SyntheticTests {
         #expect(try await client.rulesShow(host: "mini").agents?.count == 3)
     }
 
+    // Coming back after the grace, the stream picks up after the last
+    // record held: new records at once, none held already.
+    @Test func aFollowPicksUpAfterItsCursor() async throws {
+        let client = SyntheticLatchClient(try #require(.init("records=10")), stateDir: "/s")
+        // Up to caught up: a follow then waits for more.
+        func lines(after: String?) async throws -> [AuditLine] {
+            var lines: [AuditLine] = []
+            for try await line in client.auditFollow(host: nil, after: after) {
+                lines.append(line)
+                if case .caughtUp = line { break }
+            }
+            return lines
+        }
+        let first = try await lines(after: nil)
+        guard case let .caughtUp(cursor, _)? = first.last, case let .record(_, newest)? = first.dropLast().last else {
+            Issue.record("no records then caught up: \(first)")
+            return
+        }
+        #expect(cursor == newest.id)
+        func records(_ lines: [AuditLine]) -> [AuditRecord] { lines.compactMap { if case let .record(_, record) = $0 { record } else { nil } } }
+        let rest = records(try await lines(after: records(first)[5].id))
+        #expect(rest.count == 4 && rest.last == newest)
+        #expect(records(try await lines(after: cursor)).isEmpty)
+    }
+
     @Test func newRecordsArriveAtTheRateAsked() async throws {
         let client = SyntheticLatchClient(try #require(.init("records=0,rate=100")), stateDir: "/s")
         let feed = ActivityFeed(client: client, host: nil)

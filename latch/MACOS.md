@@ -82,17 +82,22 @@ main window: `hosts=` 1–8 (this Mac, one online, one offline, then a long
 name and one whose state Plow can't say), `records=` on each host,
 `vault=` items on each, `agents=` 1–8, `rate=` new records a second, and
 `delay=` milliseconds each read takes. `send measure PATH` then times every
-hook after it, from the action to the window's next frame, one JSON line
-each in PATH (`frame_ms` is null with no window); `send measure` with no
-path stops. Each timed hook and each screen's reads are signposted
-(`co.plow.latch`, Points of Interest) for Instruments.
+hook after it, one JSON line each in PATH, with the hook's name but never
+its argument (a vault value can be one): `visible_ms`, until the window
+server's image of the window first changes, looked at on each display
+refresh for up to 2 s (null if it didn't change), and `next_refresh_ms`,
+when the refresh after the action was due, which only schedules a frame
+and is no proof the change was on it. Both are null with no window. `send
+measure` with no path stops. Each timed hook and each screen's reads are
+signposted (`co.plow.latch`, Points of Interest) for Instruments, the
+evidence for a visible-response budget alongside `visible_ms`.
 
 ```sh
 latch/gui/hooks.sh build --window
 latch/gui/hooks.sh open --fixture hosts=8,records=10000,vault=1000,agents=5
 latch/gui/hooks.sh send measure "$PWD/.dev/tests/timings.jsonl"
 latch/gui/hooks.sh send host pi-kitchen
-latch/gui/hooks.sh send section activity   # {"command":"section","frame_ms":…}
+latch/gui/hooks.sh send section activity   # {"command":"section","next_refresh_ms":…,"visible_ms":…}
 latch/gui/hooks.sh quit
 ```
 
