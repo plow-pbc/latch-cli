@@ -31,7 +31,12 @@ struct SyntheticTests {
         await waitUntil(within: .seconds(30)) { feed.caughtUp }
         #expect(feed.records.count == 10000)
         #expect(Set(feed.records.map(\.id)).count == 10000)
-        #expect(feed.records.contains { $0.isRefused } && feed.records.contains { $0.isBackground })
+        // Every agent has requests allowed and refused, not one kind each.
+        for uid in Set(feed.records.compactMap(\.agent)) {
+            let own = feed.records.filter { $0.agent == uid }
+            #expect(own.contains { $0.isRefused } && own.contains { !$0.isRefused && !$0.isBackground } && own.contains(where: \.isBackground))
+        }
+        #expect(Set(feed.records.compactMap(\.agent)).count == 5)
         feed.end()
 
         #expect(try await client.vaultList(host: "nas").items.count == 1000)

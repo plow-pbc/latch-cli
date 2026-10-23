@@ -141,7 +141,8 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     /// The `n`th record on a host, oldest first: agents' requests allowed
     /// and refused, their connections, and the owner's own reads.
     private func record(_ n: Int, on host: String) -> String {
-        let agent = n % spec.agents, name = Spec.agentNames[agent]
+        // Each kind of record for every agent in turn.
+        let agent = n / 5 % spec.agents, name = Spec.agentNames[agent]
         let id = Self.hex(n, salt: 0xc0de + (Spec.names.firstIndex(of: host) ?? 0), width: 64)
         let time = Date(timeIntervalSince1970: 1_792_700_000 + Double(n)).formatted(.iso8601)
         let line: String = switch n % 5 {
