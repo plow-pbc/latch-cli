@@ -75,7 +75,8 @@ CSV, Chrome's CSV and Bitwarden's CSV and unencrypted JSON. It shows every
 row (values reduced to whether they are there), marks rows the vault
 already holds or that would update a changed password, and imports only
 the rows you pick; nothing is picked by default. Without a prompt,
-`--preview` returns that preview as JSON and imports nothing, and `--pick
+`--preview` returns that preview as JSON, imports nothing and, like a
+rules preview, is not audited; and `--pick
 1,3-5` (or `all`) imports those rows of it. For a remote import,
 the uploaded copy stays on the host only while the command runs: if you
 quit, the connection drops, or you pick nothing within 15 minutes, it is

@@ -158,16 +158,14 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             preview,
             pick,
         } => {
-            let picking = match (preview, pick) {
-                (true, _) => Picking::Preview,
-                (false, Some(rows)) => Picking::Rows(rows),
-                (false, None) => Picking::Asked,
-            };
             let Some(host) = &target.host else {
-                return super::local::import(state, &file, &picking);
+                return match preview {
+                    true => super::local::preview(state, &file),
+                    false => super::local::import(state, &file, pick.as_deref()),
+                };
             };
             let link = dial::connect(state, host).await?;
-            let result = import(&link.connection, &file, &picking).await;
+            let result = import(&link.connection, &file, preview, pick.as_deref()).await;
             link.close();
             result
         }
@@ -370,36 +368,14 @@ fn link_url(page: &str, opened: &Value) -> String {
     format!("{page}#h={}&r={relay}&c={}", part("host"), part("code"))
 }
 
-/// How an import's rows are picked: at a prompt, none (the preview is the
-/// answer), or the rows `--pick` names.
-pub(super) enum Picking {
-    Asked,
-    Preview,
-    Rows(String),
-}
-
-impl Picking {
-    /// The answer: the preview itself, or the outcome with what was picked.
-    pub(super) fn answer(&self, preview: &Value, mut outcome: Value, picks: &[usize]) -> Value {
-        if let Picking::Preview = self {
-            // A host's own answer carries its audit id; keep it.
-            let mut answer = json!({"preview": preview});
-            if let Some(id) = outcome.get("audit_id") {
-                answer["audit_id"] = id.clone();
-            }
-            return answer;
-        }
-        outcome["source"] = preview["source"].clone();
-        outcome["picked"] = json!(picks);
-        outcome
-    }
-}
-
-/// Sends the export, gets the preview, picks rows, and commits only those.
+/// Sends the export and gets the preview; with `preview` that is the
+/// answer, and the host keeps nothing. Otherwise picks rows (`pick`, or at
+/// a prompt) and commits only those.
 async fn import(
     connection: &crate::transport::Connection,
     path: &Path,
-    picking: &Picking,
+    preview: bool,
+    pick: Option<&str>,
 ) -> Result<Value, Failure> {
     let local =
         |err: std::io::Error| Failure::usage("local_file", format!("{}: {err}", path.display()));
@@ -407,7 +383,7 @@ async fn import(
     let size = file.metadata().await.map_err(local)?.len();
     let request = Request {
         op: "vault".to_string(),
-        args: json!({"command": "import", "size": size}),
+        args: json!({"command": if preview { "preview" } else { "import" }, "size": size}),
         chat: None,
     };
     // One stream: the go-ahead, the bytes, the preview, the picks, the
@@ -417,36 +393,38 @@ async fn import(
     wire::copy(&mut file, &mut send, size)
         .await
         .map_err(|_| dial::lost(connection, true))?;
+    if preview {
+        send.finish().map_err(|_| dial::lost(connection, true))?;
+        return dial::answer(connection, &mut recv, ANSWER_WITHIN).await;
+    }
     let previewed = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     let preview = &previewed["preview"];
-    let picks = choose(preview, picking)?;
+    let picks = choose(preview, pick)?;
     let picked = serde_json::to_vec(&json!({"picks": picks})).expect("serializes");
     wire::write_frame(&mut send, &picked)
         .await
         .map_err(|_| dial::lost(connection, true))?;
     send.finish().map_err(|_| dial::lost(connection, true))?;
-    let outcome = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    Ok(picking.answer(preview, outcome, &picks))
+    let mut outcome = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
+    outcome["source"] = preview["source"].clone();
+    outcome["picked"] = json!(picks);
+    Ok(outcome)
 }
 
-pub(super) fn choose(preview: &Value, picking: &Picking) -> Result<Vec<usize>, Failure> {
+/// The rows `given` names (`--pick`), or those picked at a prompt.
+pub(super) fn choose(preview: &Value, given: Option<&str>) -> Result<Vec<usize>, Failure> {
     let rows = preview["items"].as_array().map_or(0, Vec::len);
-    match picking {
-        Picking::Preview => Ok(Vec::new()),
-        Picking::Rows(rows_given) => pick(rows_given, rows),
-        Picking::Asked => {
-            show(preview);
-            if rows == 0 {
-                return Ok(Vec::new());
-            }
-            pick(
-                &term::ask(
-                    "Import which? Numbers or ranges (1,3-5), \"all\", or nothing to import none: ",
-                ),
-                rows,
-            )
-        }
+    if let Some(given) = given {
+        return pick(given, rows);
     }
+    show(preview);
+    if rows == 0 {
+        return Ok(Vec::new());
+    }
+    pick(
+        &term::ask("Import which? Numbers or ranges (1,3-5), \"all\", or nothing to import none: "),
+        rows,
+    )
 }
 
 /// The preview, for the owner, on stderr: stdout stays the command's JSON.

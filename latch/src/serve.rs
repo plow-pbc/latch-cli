@@ -975,6 +975,23 @@ async fn serve_request(
                 message: denial.message,
             }
         }
+        // An import's preview saves nothing: neither audited nor on the board.
+        Ok(identity) if op == "vault" && request.args["command"] == "preview" => {
+            let response = crate::vault::host::preview(
+                &host.vault,
+                &identity.kind,
+                &request.args,
+                &mut send,
+                &mut recv,
+            )
+            .await;
+            let outcome = match &response {
+                Response::Ok(_) => "ok",
+                Response::Error { code, .. } => code,
+            };
+            log(&format!("vault preview: {caller}: {outcome}"));
+            response
+        }
         // A preview runs nothing, so it is neither audited nor on the board.
         Ok(identity) if op == "rules_try" => {
             let response = rules_try::run(&host.checks(), &identity, local, &request.args).await;

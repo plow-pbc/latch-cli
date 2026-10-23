@@ -44,37 +44,52 @@ pub(super) fn call(state: &StateDir, args: Value) -> Result<Value, Failure> {
     })
 }
 
-pub(super) fn import(
-    state: &StateDir,
-    path: &Path,
-    picking: &client::Picking,
-) -> Result<Value, Failure> {
+/// An export in `path`, parsed and marked against the vault.
+fn read_export(vault: &host::Vault, path: &Path) -> Result<import::Parsed, Failure> {
+    let io = |err| Failure::usage("local_file", format!("{}: {err}", path.display()));
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(io)?
+        .take(300 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() > 300 * 1024 * 1024 {
+        return Err(Failure::usage(
+            "file_too_large",
+            "that export is too large".into(),
+        ));
+    }
+    let mut parsed = import::parse(&bytes)?;
+    drop(bytes);
+    vault.with(|store| import::mark_against(store, &mut parsed))?;
+    Ok(parsed)
+}
+
+/// What an export holds, as an import would show it. It changes nothing,
+/// so, like a rules preview, it is not audited.
+pub(super) fn preview(state: &StateDir, path: &Path) -> Result<Value, Failure> {
+    let config = state.require_login()?;
+    host::owner_only(&config.peer.kind)?;
+    let parsed = read_export(&host::Vault::new(state.path.clone()), path)?;
+    Ok(json!({"preview": import::preview(&parsed)}))
+}
+
+/// Imports the rows `pick` names, or those picked at a prompt.
+pub(super) fn import(state: &StateDir, path: &Path, pick: Option<&str>) -> Result<Value, Failure> {
     audited(state, "import", |vault, audit| {
-        let io = |err| Failure::usage("local_file", format!("{}: {err}", path.display()));
-        let mut bytes = Vec::new();
-        fs::File::open(path)
-            .map_err(io)?
-            .take(300 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(io)?;
-        if bytes.len() > 300 * 1024 * 1024 {
-            return Err(Failure::usage(
-                "file_too_large",
-                "that export is too large".into(),
-            ));
-        }
-        let mut parsed = import::parse(&bytes)?;
-        drop(bytes);
-        vault.with(|store| import::mark_against(store, &mut parsed))?;
+        let parsed = read_export(vault, path)?;
         let preview = import::preview(&parsed);
-        let picks = client::choose(&preview, picking)?;
+        let picks = client::choose(&preview, pick)?;
         // No lock is held while the owner chooses. Commit checks current revisions.
         let outcome = vault.with(|store| Ok(import::commit(store, &parsed, &picks)))?;
         audit.insert("source".into(), json!(parsed.source));
         audit.insert("rows".into(), json!(parsed.items.len()));
         audit.insert("picked".into(), json!(picks.len()));
         audit.insert("result".into(), json!({"saved": outcome.saved, "updated": outcome.updated, "duplicates": outcome.duplicates, "failed": outcome.failed.len()}));
-        Ok(picking.answer(&preview, json!(outcome), &picks))
+        let mut result = json!(outcome);
+        result["source"] = preview["source"].clone();
+        result["picked"] = json!(picks);
+        Ok(result)
     })
 }
 

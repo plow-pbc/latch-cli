@@ -289,16 +289,22 @@ fn remove(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result
     Ok(json!({"removed": item}))
 }
 
-/// One import on one stream: the host's go-ahead, the export's bytes,
-/// the preview, the owner's picks, then the outcome. The export lives only
-/// while this runs.
-async fn import(
+fn lost() -> Failure {
+    Failure::new(
+        Exit::Unknown,
+        "connection_lost",
+        "the import broke off; nothing was saved".into(),
+    )
+}
+
+/// An export sent on the stream after the host's go-ahead, parsed and
+/// marked against the vault.
+async fn receive(
     vault: &Vault,
     args: &Value,
     send: &mut SendStream,
     recv: &mut RecvStream,
-    audit: &mut Map<String, Value>,
-) -> Result<Value, Failure> {
+) -> Result<import::Parsed, Failure> {
     let size = args["size"]
         .as_u64()
         .ok_or_else(|| Failure::usage("bad_arguments", "the export's size is missing".into()))?;
@@ -308,14 +314,6 @@ async fn import(
             "that export is too large".into(),
         ));
     }
-    let lost = || {
-        Failure::new(
-            Exit::Unknown,
-            "connection_lost",
-            "the import broke off; nothing was saved".into(),
-        )
-    };
-    let frame = |value: Value| serde_json::to_vec(&Response::Ok(value)).expect("serializes");
     wire::write_frame(send, &frame(json!({})))
         .await
         .map_err(|_| lost())?;
@@ -326,6 +324,45 @@ async fn import(
     let mut parsed = import::parse(&bytes)?;
     drop(bytes);
     vault.with(|store| import::mark_against(store, &mut parsed))?;
+    Ok(parsed)
+}
+
+fn frame(value: Value) -> Vec<u8> {
+    serde_json::to_vec(&Response::Ok(value)).expect("serializes")
+}
+
+/// `preview`: what an export sent on the stream holds, as `import` shows
+/// it. It changes nothing, so serve answers it unaudited, as a rules
+/// preview; the export is dropped as soon as it is answered.
+pub async fn preview(
+    vault: &Vault,
+    kind: &str,
+    args: &Value,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+) -> Response {
+    let previewed = async {
+        owner_only(kind)?;
+        let parsed = receive(vault, args, send, recv).await?;
+        Ok(json!({"preview": import::preview(&parsed)}))
+    };
+    match previewed.await {
+        Ok(answer) => Response::Ok(answer),
+        Err(failure) => Response::error(&failure),
+    }
+}
+
+/// One import on one stream: the host's go-ahead, the export's bytes,
+/// the preview, the owner's picks, then the outcome. The export lives only
+/// while this runs.
+async fn import(
+    vault: &Vault,
+    args: &Value,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    let parsed = receive(vault, args, send, recv).await?;
     audit.insert("source".into(), json!(parsed.source));
     audit.insert("rows".into(), json!(parsed.items.len()));
     wire::write_frame(send, &frame(json!({"preview": import::preview(&parsed)})))

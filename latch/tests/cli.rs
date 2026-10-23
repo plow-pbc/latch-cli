@@ -3255,8 +3255,15 @@ fn vault_takes_secrets_as_json_on_stdin_and_shows_only_what_is_not_secret() {
     assert!(!imported.to_string().contains("made-up-pass-chrome"));
     assert_eq!(listed(&host), 2);
 
-    // The audit names fields, never a value.
-    let records = serde_json::to_string(&audit_records(&host)).unwrap();
+    // A preview is not audited; the import is. The audit names fields,
+    // never a value.
+    let audited = audit_records(&host);
+    let imports = audited
+        .iter()
+        .filter(|r| r["args"]["command"] == "import")
+        .count();
+    assert_eq!(imports, 1);
+    let records = serde_json::to_string(&audited).unwrap();
     for secret in secrets.iter().chain(&["made-up-pass-chrome"]) {
         assert!(!records.contains(secret), "{secret} audited");
     }
@@ -3410,6 +3417,28 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
         7,
         "local and remote writes must share one verified audit chain"
     );
+
+    // Another machine previews an export on the host, then imports a row
+    // of it: only the import is audited.
+    let export = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/import/chrome.csv"
+    );
+    let previewed = remote(&["vault", "import", "--host", "host", export, "--preview"]);
+    assert_eq!(previewed["preview"]["items"][0]["pick"], 1, "{previewed}");
+    assert!(!previewed.to_string().contains("made-up-pass-chrome"));
+    let imported = remote(&["vault", "import", "--host", "host", export, "--pick", "1"]);
+    assert_eq!(imported["saved"], 1, "{imported}");
+    let imports = audit_records(&host)
+        .iter()
+        .filter(|r| {
+            r["op"] == "vault"
+                && ["import", "preview"]
+                    .contains(&r["args"]["command"].as_str().unwrap_or_default())
+        })
+        .map(|r| r["args"]["command"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(imports, [json!("import")]);
 }
 
 #[test]

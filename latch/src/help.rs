@@ -919,7 +919,9 @@ const ENTRIES: &[Entry] = &[
         id: "vault.import",
         runs_on: |_| RunsOn::Either,
         output: "How many rows were `saved`, `updated` (a changed password or authenticator key), left as `duplicates`, and which `failed` and why, with the `source` and the rows `picked`. With --preview, only `preview`: its `source` and `items`, each row's `pick` number, kind, title, username and site, whether it holds a password or authenticator key, whether the vault already holds it or it would update one, and the rows set aside; never a secret.",
-        effect: Once("adds the rows picked at the prompt or with --pick; --preview adds nothing"),
+        effect: Once(
+            "adds the rows picked at the prompt or with --pick; --preview adds nothing and is not audited",
+        ),
         owner_only: true,
         connector: None,
         examples: &[
