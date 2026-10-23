@@ -33,6 +33,8 @@ struct LiveTests {
     private func recordArrives(latch: URL, state: String, feedHost: String?, host: String) async throws {
         let caller = try Self.input("LATCH_LIVE_CALLER_STATE")
         let feed = ActivityFeed(client: LiveLatchClient(executable: latch, stateDir: state), host: feedHost)
+        // A short grace, so latch stops soon after the last watcher goes.
+        feed.grace = .milliseconds(40)
         feed.start()
         await waitUntil { feed.caughtUp }
         let before = feed.records.count
