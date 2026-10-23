@@ -25,6 +25,16 @@ nonisolated protocol LatchClient: Sendable {
     func vaultList(host: String?) async throws -> VaultList
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
+    /// `latch status --local --follow`: this Mac's state, again whenever it
+    /// changes. Stopping the iteration ends it.
+    func statusFollow() -> AsyncThrowingStream<LocalStatus, Error>
+    /// `latch audit [--before ID]`: a page of a host's audit, this Mac's or,
+    /// with `host`, another's.
+    func audit(host: String?, before: String?) async throws -> AuditPage
+    /// `latch audit --follow`: the newest page, then each new record;
+    /// `after` picks up after that record instead. Stopping the iteration
+    /// ends it.
+    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error>
     /// A setup step, as `setup --status` gives its words after `latch`.
     func perform(_ args: [String]) async throws
     /// `latch stop`: stops the host on this state folder.
@@ -50,13 +60,41 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
         let arguments = ["login", "--events"] + (name.map { ["--name", $0] } ?? []) + (replace ? ["--replace"] : [])
+        return stream(arguments) { try decode(LoginLine.self, $0).event }
+    }
+
+    func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> {
+        stream(["status", "--local", "--follow"]) { data -> LocalStatus? in
+            guard case let .status(status) = try decode(StatusLine.self, data) else { return nil }
+            return status
+        }
+    }
+
+    func audit(host: String?, before: String?) async throws -> AuditPage {
+        let data = try await run(["audit"] + (before.map { ["--before", $0] } ?? []) + on(host))
+        do {
+            return try AuditPage.parse(data)
+        } catch {
+            throw LatchError.unreachable("Latch returned an unreadable response.")
+        }
+    }
+
+    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+        stream(["audit", "--follow"] + (after.map { ["--after", $0] } ?? []) + on(host)) { try decode(AuditLine.self, $0) }
+    }
+
+    /// Runs latch and yields each JSON line it prints (skipping those
+    /// `decodeLine` gives nil for), then latch's error if it failed.
+    /// Stopping the iteration stops latch.
+    private func stream<T: Sendable>(_ arguments: [String], _ decodeLine: @escaping @Sendable (Data) throws -> T?)
+        -> AsyncThrowingStream<T, Error> {
         let process = LatchProcess(executable: executable, arguments: withState(arguments), environment: Self.environment)
         return AsyncThrowingStream { continuation in
             let reader = Task.detached {
                 do {
                     for await line in try process.lines() {
-                        guard let event = try decode(LoginLine.self, Data(line.utf8)).event else { continue }
-                        continuation.yield(event)
+                        guard let value = try decodeLine(Data(line.utf8)) else { continue }
+                        continuation.yield(value)
                     }
                     if Task.isCancelled { return continuation.finish() }
                     continuation.finish(throwing: await process.failure())

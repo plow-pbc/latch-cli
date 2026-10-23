@@ -13,6 +13,7 @@ struct MainView: View {
         } detail: {
             switch app.section {
             case .home: HomeView()
+            case .activity: ActivityView()
             default: NotYetView(item: app.section)
             }
         }
@@ -27,12 +28,11 @@ struct MainView: View {
             await app.refreshStatus()
             app.leaveMainIfLoggedOut()
             await app.refreshAccount()
+            await app.followStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             guard !app.still else { return }
             Task {
-                await app.refreshStatus()
-                app.leaveMainIfLoggedOut()
                 await app.refreshAccount()
                 if app.section == .home { await app.refreshSummary() }
             }

@@ -51,6 +51,10 @@ enum TestHooks {
         // The main window's host picker and sidebar, as a click picks them.
         on("host") { name in app.chosenHost = name }
         on("section") { item in if let item = item.flatMap(SidebarItem.init(rawValue:)) { app.section = item } }
+        // Activity's selection and filter, as a click sets them.
+        on("record") { id in app.selectedRecord = id }
+        on("filter") { name in if let filter = name.flatMap(ActivityView.Filter.init(rawValue:)) { app.activityFilter = filter } }
+        on("connections") { value in app.showConnections = value == "1" }
         on("quit") { _ in NSApp.terminate(nil) }
         on("snapshot") { path in
             guard let path, let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }

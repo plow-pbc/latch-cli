@@ -4,6 +4,8 @@ import Foundation
 nonisolated struct LocalStatus: Decodable, Equatable {
     struct Peer: Decodable, Equatable {
         var name: String
+        /// This machine's key: the `caller` on records of its own requests.
+        var key: String?
     }
 
     struct Serve: Decodable, Equatable {

@@ -211,6 +211,9 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
     func pluginsList(host: String?) async throws -> PluginsList { throw CancellationError() }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
+    func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { $0.finish() } }
+    func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
+    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { $0.finish() } }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
         loginNames.append(name)
         replaced.append(replace)

@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Home for the selected host: what needs the person (this Mac's own host
-/// only), and the host's rules, vault and connectors. Another host's
-/// activity can't be read from here yet, so Home says where it is.
+/// only), today's activity and the latest requests, live while on screen,
+/// and the host's rules, vault and connectors.
 struct HomeView: View {
     @Environment(AppModel.self) private var app
 
@@ -26,16 +26,12 @@ struct HomeView: View {
             if let host = app.host {
                 if host.isThisMac {
                     NeedsSection()
+                    ActivitySections(feed: app.feed(for: host), host: host)
                     OnHostSection(host: host)
                 } else if host.online == false {
                     OfflineSection(host: host)
                 } else {
-                    Section("Activity") {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Activity on \(host.name) is kept on \(host.name).")
-                            Text("Open Latch on \(host.name) to see it.").foregroundStyle(.secondary)
-                        }
-                    }
+                    ActivitySections(feed: app.feed(for: host), host: host)
                     OnHostSection(host: host)
                 }
             } else if app.viewerOnly {
@@ -59,6 +55,7 @@ struct HomeView: View {
             guard !app.still else { return }
             await app.refreshSummary()
         }
+        .following(app.host.flatMap { $0.isThisMac || $0.online != false ? app.feed(for: $0) : nil }, still: app.still)
     }
 }
 
@@ -128,6 +125,84 @@ private struct NeedsSection: View {
         }
         if let update = status.update, update.available { needs.append(.update(build: update.build)) }
         return needs
+    }
+}
+
+/// Today's requests on a host and the latest five, from its activity
+/// stream; a row opens it in Activity.
+private struct ActivitySections: View {
+    var feed: ActivityFeed
+    var host: HostEntry
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        // What callers asked of the host: not connections, nor the owner's
+        // own reads (Home's own summary is one).
+        let calls = feed.records.filter { !$0.isBackground }
+        if calls.isEmpty, let error = feed.error {
+            Section("Activity") {
+                Text(error.code == "no_host_here" ? "This Mac keeps no activity yet." : "Couldn't read the activity.")
+                Text(error.message).foregroundStyle(.secondary)
+            }
+        } else if calls.isEmpty, !feed.caughtUp {
+            Section("Today") {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+        } else {
+            let today = calls.filter { Calendar.current.isDateInToday($0.time) }
+            // Only the newest records are held: if the oldest held is from
+            // today, there were more today than these.
+            let more = feed.hasOlder && feed.records.first.map { Calendar.current.isDateInToday($0.time) } == true ? "+" : ""
+            let agents = Array(Set(today.compactMap { $0.agent == nil ? nil : $0.callerName ?? "Agent \($0.agent!.prefix(8))" })).sorted()
+            Section("Today") {
+                LabeledContent("Requests", value: "\(today.count)\(more)")
+                LabeledContent("Refused") {
+                    Text("\(today.filter(\.isRefused).count)\(more)")
+                        .foregroundStyle(today.contains(where: \.isRefused) ? .red : .secondary)
+                }
+                LabeledContent("Agents that called", value: agents.isEmpty ? "None" : agents.joined(separator: ", "))
+            }
+            Section("Recent activity") {
+                if calls.isEmpty {
+                    Text(feed.hasOlder ? "Looking further back…" : "No requests yet.").foregroundStyle(.secondary)
+                }
+                ForEach(calls.suffix(5).reversed()) { record in
+                    Button {
+                        app.selectedRecord = record.id
+                        app.section = .activity
+                    } label: {
+                        RecentRow(record: record, caller: record.callerLabel(hostKey: app.key(of: host), hostName: host.name,
+                                                                            isThisMac: host.isThisMac))
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button("Show All Activity") { app.section = .activity }
+            }
+            // The newest page may be all connections and reads: reach back
+            // for five requests, or to the start.
+            .task(id: feed.caughtUp) {
+                guard feed.caughtUp, !app.still else { return }
+                await feed.loadOlder(until: 5)
+            }
+        }
+    }
+}
+
+private struct RecentRow: View {
+    var record: AuditRecord
+    var caller: (who: String, kind: String)
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(record.command).font(.body.monospaced()).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 8)
+            Text("\(caller.who) · \(caller.kind)").foregroundStyle(.secondary).lineLimit(1)
+            StatusLabel(status: record.status).lineLimit(1)
+            Text(record.time, format: .dateTime.hour().minute()).foregroundStyle(.tertiary).monospacedDigit()
+        }
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens it in Activity")
     }
 }
 
