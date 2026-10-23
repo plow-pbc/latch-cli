@@ -262,13 +262,35 @@ fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, 
         }
     }
     let mut values = Map::new();
+    // Never a prompt nobody sees: without a terminal, the secrets come
+    // from stdin, a line each, in the order asked, or not at all.
+    let person = term::interactive();
+    if !person && !asked.is_empty() && !term::stdin_has_data() {
+        let message = format!(
+            "{} asked for at a prompt, and there is no terminal",
+            asked.join(", ")
+        );
+        let mut failure = Failure::usage("no_terminal", message);
+        failure.next = Some(
+            format!(
+                "pipe the secrets on stdin, a line each: {}",
+                asked.join(", ")
+            )
+            .into(),
+        );
+        return Err(failure);
+    }
     for label in asked {
         let prompt = if label == "totp" {
             "authenticator key (or otpauth:// link)"
         } else {
             label.as_str()
         };
-        let value = term::ask_secret(&format!("{prompt}: "));
+        let value = term::ask_secret(&if person {
+            format!("{prompt}: ")
+        } else {
+            String::new()
+        });
         if value.is_empty() {
             if required {
                 return Err(Failure::usage(

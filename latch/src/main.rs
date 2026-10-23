@@ -319,9 +319,15 @@ async fn run(
         Command::Serve(args) if args.detach => json(pretty, managed::start(&state, &args).await?),
         Command::Serve(args) => {
             paint::set_color(!term::no_color());
+            // A person at the terminal reads one line, however it ends.
             match managed::attach(&state, &args).await? {
-                managed::Attached::Stopped(stopped) => json(pretty, stopped),
-                // A person at the terminal reads one line.
+                managed::Attached::Stopped(stopped) => {
+                    let line = match stopped["error"]["message"].as_str() {
+                        Some(why) => format!("The host stopped: {why}"),
+                        None => "The host stopped.".to_string(),
+                    };
+                    Ok(Printed(line))
+                }
                 managed::Attached::Detached(line) => Ok(Printed(line)),
             }
         }

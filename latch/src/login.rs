@@ -179,15 +179,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         })
     }
     .await;
-    registered.map_err(|failure| if texted { told(failure) } else { failure })
-}
-
-/// A login by text that fails once it has talked to the person says so to
-/// them in a plain line, not JSON.
-fn told(mut failure: Failure) -> Failure {
-    eprintln!("{}", failure.message);
-    failure.said = true;
-    failure
+    registered.map_err(|failure| if texted { failure.told() } else { failure })
 }
 
 /// Registers this peer again as it last was, when Plow no longer lists it:
@@ -244,7 +236,8 @@ async fn by_text(
     let waited = wait_for_text(state, api_url, &plow, &activation.activation_secret).await;
     match events {
         true => waited,
-        false => waited.map_err(told),
+        // Once it has talked to the person, what goes wrong is theirs to read.
+        false => waited.map_err(Failure::told),
     }
 }
 

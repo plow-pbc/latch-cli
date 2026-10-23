@@ -115,6 +115,14 @@ impl Failure {
         Failure::new(Exit::Usage, code, message)
     }
 
+    /// For a human command that fails once it has talked to the person:
+    /// says the message to them in a plain line, and nothing more is printed.
+    pub fn told(mut self) -> Failure {
+        eprintln!("{}", self.message);
+        self.said = true;
+        self
+    }
+
     /// `{"error": {"code", "message", "next", "exit", ...details}}`, one
     /// line. The details go in first, so none of them can stand in for the
     /// code, message, next step or exit.

@@ -39,6 +39,20 @@ pub fn interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
 }
 
+/// Whether stdin holds data a program gave latch: a pipe, a file or a
+/// socket, not a terminal or `/dev/null`.
+pub fn stdin_has_data() -> bool {
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::FileTypeExt;
+    let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() else {
+        return false;
+    };
+    std::fs::File::from(fd).metadata().is_ok_and(|meta| {
+        let kind = meta.file_type();
+        kind.is_fifo() || kind.is_file() || kind.is_socket()
+    })
+}
+
 /// Asks `question` on stderr and returns the line typed, trimmed.
 /// (Empty if stdin closes.)
 pub fn ask(question: &str) -> String {

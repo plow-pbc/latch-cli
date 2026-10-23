@@ -580,8 +580,9 @@ pub struct VaultArgs {
 pub enum VaultCommand {
     /// Every item's metadata (never a value)
     List,
-    /// Add an item; its secrets are asked for at a prompt, never taken from
-    /// the command line or the environment
+    /// Add an item; its secrets are asked for at a prompt (without a
+    /// terminal, read from stdin, a line each), never taken from the command
+    /// line or the environment
     Add {
         /// login, card, identity or note
         #[arg(long)]
@@ -606,8 +607,9 @@ pub enum VaultCommand {
         totp: bool,
     },
     /// Change an item at its current revision: its title, sites and fields.
-    /// Its secrets are asked for at a prompt, never taken from the command
-    /// line or the environment; its kind never changes
+    /// Its secrets are asked for at a prompt (without a terminal, read from
+    /// stdin, a line each), never taken from the command line or the
+    /// environment; its kind never changes
     Edit {
         item: String,
         /// The revision `vault list` shows; an older one is refused

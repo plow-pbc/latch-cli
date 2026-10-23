@@ -958,8 +958,10 @@ fn help_lists_every_error_code_with_its_exit() {
     assert!(codes.iter().all(|code| exits.contains(&&code["exit"])));
 }
 
+/// `rules edit` is a person's command: once their editor opened, a failed
+/// save or editor is a plain line for them, not JSON.
 #[test]
-fn a_failure_with_details_carries_them_in_its_line_at_a_terminal_too() {
+fn a_failed_rules_edit_says_why_in_a_plain_line() {
     let (dir, state, _) = owner_host();
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
@@ -980,13 +982,63 @@ fn a_failure_with_details_carries_them_in_its_line_at_a_terminal_too() {
     let env = [("EDITOR", editor.as_path())];
     let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &env);
     assert_eq!(code, Some(4), "{shown}");
-    let error = one_error_line(&shown, code);
-    let message = error["error"]["message"].as_str().unwrap();
     assert!(
-        message.contains("the rules changed since they were read"),
-        "{message}"
+        shown
+            .trim()
+            .starts_with("the rules changed since they were read"),
+        "{shown}"
     );
-    assert!(error["error"]["revision"].is_string(), "{error}");
+    assert!(!shown.contains("{\"error\""), "{shown}");
+
+    // An editor that fails: nothing is saved, and the person reads why.
+    let failing = [("EDITOR", Path::new("false"))];
+    let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &failing);
+    assert_eq!(code, Some(1), "{shown}");
+    assert!(shown.contains("nothing was saved"), "{shown}");
+    assert!(!shown.contains("{\"error\""), "{shown}");
+}
+
+/// Without a terminal, `vault add` never prompts for a secret: it reads
+/// them from stdin, a line each, or fails naming that way.
+#[test]
+fn vault_secrets_without_a_terminal_come_from_stdin_or_not_at_all() {
+    let (_dir, state, _) = owner_host();
+    let args = [
+        "vault",
+        "add",
+        "--kind",
+        "login",
+        "--title",
+        "Shop",
+        "--site",
+        "shop.example",
+    ];
+    let refused = latch(&state, &args, &[]);
+    let error = one_error_line(&String::from_utf8_lossy(&refused.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+    assert_eq!(
+        error["error"]["next"],
+        "pipe the secrets on stdin, a line each: password"
+    );
+    let listed: Value =
+        serde_json::from_slice(&latch(&state, &["vault", "list"], &[]).stdout).unwrap();
+    assert_eq!(listed["items"], json!([]), "nothing was added: {listed}");
+
+    let mut piped = latch_command(&state, &args, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    piped
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"made-up-pass\n")
+        .unwrap();
+    let piped = piped.wait_with_output().unwrap();
+    assert_eq!(piped.status.code(), Some(0), "{piped:?}");
+    assert!(piped.stderr.is_empty(), "no prompt: {piped:?}");
 }
 
 /// A login by text: Plow gives a code, the phone texts it at once, and
@@ -6005,6 +6057,9 @@ mod lifecycle {
 
         terminal.write_all(b"\x03").unwrap();
         assert!(exits_within(&mut serve, 45).success());
+        // It ends in a line for the person, not JSON.
+        let ended = shows(&shown, "The host stopped.");
+        assert!(!ended.contains("{\"stopped\""), "{ended}");
         assert_eq!(local_serve(&host)["running"], false);
         assert!(!registered(&host), "Ctrl-C left the service registered");
 

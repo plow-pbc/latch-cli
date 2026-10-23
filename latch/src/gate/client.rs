@@ -59,11 +59,14 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                     shown["agents"][0]["agent_uid"].as_str(),
                 ),
             };
-            let text = edited(current["text"].as_str().unwrap_or_default())?;
+            // From the editor on, what goes wrong is the person's to read.
+            let text =
+                edited(current["text"].as_str().unwrap_or_default()).map_err(Failure::told)?;
             target
                 .call(json!({"command": "edit", "from": from, "text": text,
                              "revision": current["revision"]}))
                 .await
+                .map_err(Failure::told)
         }
         RulesCommand::Clear => target.call(json!({"command": "clear", "from": from})).await,
         RulesCommand::Show => target.call(json!({"command": "show", "from": from})).await,
