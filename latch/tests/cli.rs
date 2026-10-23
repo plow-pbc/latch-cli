@@ -4932,21 +4932,17 @@ fn offline_plugin_commands_on_one_state_folder_take_turns() {
     assert_eq!(local_serve(&host)["configuring"], false);
 }
 
-/// Whether launchd still has the one-shot Full Disk Access check's job.
+/// Whether launchd still has a one-shot Full Disk Access check's job for
+/// this state folder.
 #[cfg(target_os = "macos")]
 fn access_job_registered(state: &Path) -> bool {
     use sha2::Digest;
     let real = state.canonicalize().unwrap();
     let hash = sha2::Sha256::digest(real.as_os_str().as_encoded_bytes());
     let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
-    // SAFETY: getuid cannot fail.
-    let job = format!(
-        "gui/{}/co.plow.latch.access.{}",
-        unsafe { libc::getuid() },
-        &hex[..16]
-    );
-    let print = Command::new("launchctl").args(["print", &job]).output();
-    print.unwrap().status.success()
+    let jobs = Command::new("launchctl").arg("list").output().unwrap();
+    let prefix = format!("co.plow.latch.access.{}.", &hex[..16]);
+    String::from_utf8_lossy(&jobs.stdout).contains(&prefix)
 }
 
 /// A managed host's state folder: `latch stop` when the test ends, passing
@@ -6614,6 +6610,23 @@ mod messages {
         assert_eq!(granted["contacts"]["access"], "granted");
         assert_eq!(granted["messages"]["enabled"], false, "nothing turned on");
         assert!(granted["google"].get("access").is_none());
+
+        // Checks at the same time on one state folder (a status beside a
+        // `plugins enable`, say) never stop each other's.
+        let granted = [("LATCH_TEST_ACCESS", Path::new("granted"))];
+        let together: Vec<_> = (0..3)
+            .map(|_| {
+                let host = host.clone();
+                thread::spawn(move || {
+                    latch(&host, &["setup", "--status", "--check-access"], &granted)
+                })
+            })
+            .collect();
+        for check in together {
+            let output = check.join().unwrap();
+            let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(status["steps"][2]["access"], "granted", "{status}");
+        }
 
         assert_eq!(contents(), before, "nothing written in the state folder");
         assert!(!access_job_registered(&host), "the check's job outlived it");
