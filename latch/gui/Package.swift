@@ -9,6 +9,9 @@ let isolated: [SwiftSetting] = [.defaultIsolation(MainActor.self)]
 // The live tests need a real host and its owner's machines; they're built
 // only when asked for: `LATCH_LIVE_TESTS=1 swift test --filter LiveTests`.
 let live = ProcessInfo.processInfo.environment["LATCH_LIVE_TESTS"] != nil
+// The scaling measurements take seconds; they're built only when asked
+// for: `LATCH_SCALING=1 swift test --filter ActivityScalingTests`.
+let scaling = ProcessInfo.processInfo.environment["LATCH_SCALING"] != nil
 
 let package = Package(
     name: "PlowLatchUI",
@@ -22,7 +25,7 @@ let package = Package(
         // `swift test` runs the model tests and `ContractTests`, which run
         // the real debug latch; `swift test --skip ContractTests` needs no
         // Rust build.
-        .testTarget(name: "PlowLatchUITests", dependencies: ["PlowLatchUI"], exclude: live ? [] : ["Live"],
+        .testTarget(name: "PlowLatchUITests", dependencies: ["PlowLatchUI"], exclude: (live ? [] : ["Live"]) + (scaling ? [] : ["Scaling"]),
                     swiftSettings: isolated),
     ]
 )
