@@ -780,7 +780,7 @@ mod platform {
     use std::process::Command;
 
     use super::{STOP_WITHIN, manager};
-    use crate::failure::{Failure, code};
+    use crate::failure::Failure;
 
     fn unit(label: &str) -> String {
         format!("{label}.service")
