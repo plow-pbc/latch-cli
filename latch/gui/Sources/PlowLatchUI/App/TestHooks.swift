@@ -1,5 +1,6 @@
 #if LATCH_TEST_HOOKS
 import AppKit
+import QuartzCore
 
 /// A test build's remote control (`gui/build.sh --test-hooks`): distributed
 /// notifications `co.plow.latch.test.BUNDLE_ID.COMMAND`, with an argument
@@ -30,6 +31,24 @@ enum TestHooks {
         return "\(url.scheme ?? "")://\(url.host ?? "")\(url.port.map { ":\($0)" } ?? "")\(url.path[..<code.upperBound])…"
     }
 
+    /// The app on `SyntheticLatchClient`'s data instead of latch's, set up
+    /// and in the main window, when opened with `LATCH_HOOKS_FIXTURE` set
+    /// to its spec (`hooks.sh open --fixture SPEC`).
+    static func fixture(stateDir: String) -> AppModel? {
+        guard let text = ProcessInfo.processInfo.environment["LATCH_HOOKS_FIXTURE"] else { return nil }
+        guard let spec = SyntheticLatchClient.Spec(text) else {
+            FileHandle.standardError.write(Data("LATCH_HOOKS_FIXTURE: no such spec: \(text)\n".utf8))
+            exit(2)
+        }
+        let store = ProgressStore(memory: .init(), stateDir: stateDir)
+        store.save(Progress(passed: [:], finished: true))
+        return AppModel(client: SyntheticLatchClient(spec, stateDir: stateDir), store: store, loginItemOffered: false)
+    }
+
+    /// Where `measure` appends each hook's time to the window's next frame;
+    /// nil when not measuring.
+    static var timings: URL?
+
     static func install(_ app: AppModel) {
         // Nothing leaves the app: links and Finder reveals are recorded.
         app.open = { opened.append("open \(recorded($0))") }
@@ -54,9 +73,16 @@ enum TestHooks {
         func on(_ command: String, _ act: @escaping @MainActor (String?) -> Void) {
             center.addObserver(forName: .init("co.plow.latch.test.\(Bundle.main.bundleIdentifier ?? "").\(command)"), object: nil, queue: .main) { note in
                 let argument = note.object as? String
-                MainActor.assumeIsolated { act(argument) }
+                MainActor.assumeIsolated {
+                    guard let timings, command != "measure" else { return act(argument) }
+                    measure(command, argument, to: timings) { act(argument) }
+                }
             }
         }
+        // Times each hook after it, until "measure" with no path: from the
+        // action to the first frame the window shows after the change, one
+        // JSON line per action appended to PATH.
+        on("measure") { path in timings = path.map { URL(filePath: $0) } }
         on("primary") { _ in app.onboarding?.primary() }
         on("skip") { _ in app.onboarding?.skip() }
         on("back") { _ in app.onboarding?.back() }
@@ -286,6 +312,62 @@ enum TestHooks {
             ]
             try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys]).write(to: URL(filePath: path))
         }
+    }
+}
+
+extension TestHooks {
+    /// Runs a hook's action and appends how long the window took to show
+    /// its next frame after it: the action, SwiftUI's update and the commit
+    /// it makes, to when that frame is due on screen. Signposted too, for
+    /// Instruments' Points of Interest.
+    static func measure(_ command: String, _ argument: String?, to file: URL, _ act: () -> Void) {
+        let start = CACurrentMediaTime()
+        let interval = AppModel.signposter.beginInterval("hook", "\(command, privacy: .public)")
+        act()
+        guard let view = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain })?.contentView else {
+            AppModel.signposter.endInterval("hook", interval)
+            return append(["command": command, "argument": argument ?? NSNull(), "frame_ms": NSNull()], to: file)
+        }
+        NextFrame.after(view) { due in
+            AppModel.signposter.endInterval("hook", interval)
+            append(["command": command, "argument": argument ?? NSNull(), "frame_ms": ((due - start) * 1000 * 10).rounded() / 10], to: file)
+        }
+    }
+
+    private static func append(_ line: [String: Any], to file: URL) {
+        guard var data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]) else { return }
+        data.append(UInt8(ascii: "\n"))
+        if let handle = try? FileHandle(forWritingTo: file) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: file)
+        }
+    }
+}
+
+/// The window's next frame: its display link's first tick, after the run
+/// loop turn in which the change was committed, with when that frame is
+/// due on screen.
+private final class NextFrame: NSObject {
+    private let done: (CFTimeInterval) -> Void
+    private var link: CADisplayLink?
+
+    private init(_ done: @escaping (CFTimeInterval) -> Void) {
+        self.done = done
+    }
+
+    static func after(_ view: NSView, _ done: @escaping (CFTimeInterval) -> Void) {
+        let frame = NextFrame(done)
+        // The display link holds it until it ticks.
+        frame.link = view.displayLink(target: frame, selector: #selector(tick))
+        frame.link?.add(to: .main, forMode: .common)
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        link.invalidate()
+        done(link.targetTimestamp)
     }
 }
 #endif

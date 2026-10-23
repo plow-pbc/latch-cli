@@ -75,6 +75,27 @@ latch/gui/hooks.sh quit
 
 From `open` to `quit` this took 1.6–2.7 s on an M5 Max.
 
+`open --fixture SPEC` opens it on made-up data instead of latch's
+(`App/Synthetic.swift`): logged in, set up, this Mac serving, and the main
+window showing (with `build --window`). SPEC sizes it, for measuring the
+main window: `hosts=` 1–8 (this Mac, one online, one offline, then a long
+name and one whose state Plow can't say), `records=` on each host,
+`vault=` items on each, `agents=` 1–8, `rate=` new records a second, and
+`delay=` milliseconds each read takes. `send measure PATH` then times every
+hook after it, from the action to the window's next frame, one JSON line
+each in PATH (`frame_ms` is null with no window); `send measure` with no
+path stops. Each timed hook and each screen's reads are signposted
+(`co.plow.latch`, Points of Interest) for Instruments.
+
+```sh
+latch/gui/hooks.sh build --window
+latch/gui/hooks.sh open --fixture hosts=8,records=10000,vault=1000,agents=5
+latch/gui/hooks.sh send measure "$PWD/.dev/tests/timings.jsonl"
+latch/gui/hooks.sh send host pi-kitchen
+latch/gui/hooks.sh send section activity   # {"command":"section","frame_ms":…}
+latch/gui/hooks.sh quit
+```
+
 `scripts/package-release.sh` puts the bundle in a macOS release archive,
 ad hoc signed (`scripts/macos-sign-app.sh`), with a `latch` symlink beside
 `install-binary.sh` that leads into it. The release workflow

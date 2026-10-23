@@ -1,4 +1,4 @@
-#if DEBUG
+#if DEBUG || LATCH_TEST_HOOKS
 import AppKit
 import SwiftUI
 

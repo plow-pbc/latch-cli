@@ -6,7 +6,13 @@
 # involved, so this is not a click test.
 #
 #   hooks.sh build [--window]   the test app, .dev/hooks/Plow Latch Hooks.app
-#   hooks.sh open               opens it on a fresh .dev/tests/hooks/state
+#   hooks.sh open [--fixture SPEC]
+#                               opens it on a fresh .dev/tests/hooks/state;
+#                               with a fixture, on made-up data instead of
+#                               latch's, in the main window (needs --window):
+#                               SPEC is "hosts=3,records=50,vault=100,agents=2"
+#                               (the defaults) plus "rate=N" new records a
+#                               second and "delay=MS" per read
 #   hooks.sh send COMMAND [ARG] one hook (TestHooks.swift lists them)
 #   hooks.sh state              prints the flow's state as the app records it
 #   hooks.sh quit               quits it and deletes its preferences
@@ -65,13 +71,19 @@ build)
   echo "$app"
   ;;
 open)
+  fixture=""
+  if [ $# -eq 3 ] && [ "$2" = --fixture ]; then fixture=$3; else [ $# -eq 1 ] || die "usage: hooks.sh open [--fixture SPEC]"; fi
   [ -d "$app" ] || die "no test app: run hooks.sh build first"
   [ -z "$(pid)" ] || die "the test app is already open: hooks.sh quit first"
   rm -rf "$state" "$state.json"
   mkdir -p "$state"
   chmod 700 "$state"
   forget
-  open -g "$app" --args --state-dir "$state"
+  if [ -n "$fixture" ]; then
+    open -g "$app" --env "LATCH_HOOKS_FIXTURE=$fixture" --args --state-dir "$state"
+  else
+    open -g "$app" --args --state-dir "$state"
+  fi
   for _ in $(seq 50); do
     [ -z "$(pid)" ] || break
     sleep 0.1
