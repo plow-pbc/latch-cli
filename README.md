@@ -22,7 +22,8 @@ number counts release runs; `latch --version` shows it as `0.1.0 (1327)`.
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
 On macOS that is a link into `~/Applications/Plow Latch.app`, the signed app
-latch runs in (no window or Dock icon), which Full Disk Access is granted to.
+latch runs in, which Full Disk Access is granted to; opened from the Finder,
+it shows its window (macOS 26 or later).
 Pass `--bin-dir DIR` (after the tag, if any) to choose another binary directory.
 The archive's executable `install-binary.sh` installs the adjacent `latch` with no
 arguments, accepts options before or after an explicit binary path, and shows
@@ -93,12 +94,14 @@ No Homebrew tap is included.
   connecting Google, and on a Mac turning on Messages and Contacts, none
   of which needs latch running, then offers to start it. Each step runs a latch command and says which, and is skipped once
   done; run it again any time. The installer runs it at the
-  end when it has a terminal (`--non-interactive` skips it).
-  `latch setup --status` lists the same steps as JSON, each done, needed
-  or blocked with the command that does it, changing nothing. Its Google
-  step asks Plow whether Google is connected there, and if not, where to
-  connect it. On a Mac, `--check-access` adds whether Plow Latch already
-  has Full Disk Access, checked as the host would, turning nothing on.
+  end when it has a terminal (`--non-interactive` skips it); on macOS 26
+  or later it opens Plow Latch.app instead, whose window takes the same
+  steps. `latch setup --status` lists the same steps as JSON, each done,
+  needed or blocked with the command that does it, changing nothing. Its
+  Google step asks Plow whether Google is connected there, and if not,
+  where to connect it. On a Mac, `--check-access` adds whether Plow Latch
+  already has Full Disk Access, checked as the host would, turning nothing
+  on.
 - `latch serve` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing
@@ -193,8 +196,9 @@ No Homebrew tap is included.
 After `latch serve` has registered this machine, commands with no `--host`
 use its private local receiver. `--host NAME` or `LATCH_HOST` still selects
 another host; naming this machine uses the same local receiver. Exec,
-files, browser and Google calls pass through the same gatekeeper and audit as remote
-calls, recorded as `owner_on_host`. If the receiver is stopped, start
+files, browser and Google calls, and on macOS `messages` and `contacts`, pass
+through the same gatekeeper and audit as remote calls, recorded as
+`owner_on_host`. If the receiver is stopped, start
 `latch serve` on the same state folder (`serve_required`, exit 3).
 
 Local `vault` and `rules` configuration works without `serve` or

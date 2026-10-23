@@ -16,14 +16,17 @@ on:
       - latch/src/state.rs
       - latch/src/vault/**
       - latch/macos/**
+      - latch/gui/**
       - scripts/macos-app-bundle.sh
+      - scripts/macos-sign-app.sh
       - .github/workflows/keychain.yml
 permissions:
   contents: read
 jobs:
   signed:
     environment: release
-    runs-on: macos-15
+    # macOS 26's Xcode: the app's window (latch/gui) needs the macOS 26 SDK.
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +39,7 @@ jobs:
           rustup toolchain install
           cargo build --release --locked
           cargo test --release --locked --test cli --no-run
+          gui/build.sh
       - name: Load signing credentials
         uses: 1password/load-secrets-action@v2
         with:
@@ -67,9 +71,8 @@ jobs:
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' latch/Cargo.toml | head -1)
           sh scripts/macos-app-bundle.sh "$version" latch/target/release/latch "$app"
           test -f "$app/Contents/embedded.provisionprofile"
-          codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" \
-            --entitlements latch/macos/latch.entitlements --sign "$LATCH_SIGNING_IDENTITY" "$app"
-          codesign --verify --strict --verbose=2 "$app"
+          sh scripts/macos-sign-app.sh "$app" "$LATCH_SIGNING_IDENTITY" "$KEYCHAIN_PATH"
+          codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dvvv --entitlements - "$app" 2>&1
           mkdir -p "$RUNNER_TEMP/bin"
           ln -s "$app/Contents/MacOS/latch" "$RUNNER_TEMP/bin/latch"

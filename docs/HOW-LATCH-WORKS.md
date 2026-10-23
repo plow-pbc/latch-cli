@@ -11,11 +11,16 @@ The host's gatekeeper checks the work that matters (programs, file copies,
 Google, Messages and browser plans) against what you asked for, and the
 host keeps a sealed audit log of the calls it handles.
 
+**Where it runs.** `latch serve` runs in a place you trust: a Plow cloud
+host, a machine in the cloud dedicated to you, or your own Mac. A Linux
+machine of your own works too. You manage any of them from the latch CLI
+on your Mac ([section 10](#10-where-a-host-runs)).
+
 | | Who it is | What it can do | How its calls are judged |
 |---|---|---|---|
 | **Owner** | Your machines, logged in with your own Plow login. | Call any host, manage the rules and vault on any host, turn connectors on or off on the host itself, run a host. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as your OS user on the host that uses its state folder. An agent running there counts. | Everything the owner can, on that host, through its local socket. | Like the owner. |
-| **Agent** | An agent logged in with its own Plow agent credential. | Call hosts. It can't manage rules, the vault or connectors. With the usual agent credential, it can't start a host today. | Against your messages in its Plow chat, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential. | Call hosts. It can't manage rules, the vault or connectors, or read a host's status or audit with `--host`. With the usual agent credential, it can't start a host today. | Against your messages in its Plow chat, plus the host's rules. |
 | **Host** | A machine running `latch serve`. | Runs programs, file copies and connector calls in a sandbox, and holds the vault, rules, browser and audit log. | Its gatekeeper judges the work that needs judging; work it can't judge doesn't run. |
 
 **Read more:** [who's who in detail](#2-whos-who) ·
@@ -25,13 +30,14 @@ host keeps a sealed audit log of the calls it handles.
 [managing a host](#6-managing-a-host) · [trust](#7-trust-model) ·
 [install and update](#8-install-update-log-out) ·
 [not supported](#9-not-supported) ·
-[direction](#10-direction-not-built-yet). For the detail, see
+[where a host runs](#10-where-a-host-runs) ·
+[direction](#11-direction-not-built-yet). For the detail, see
 [Getting started](GETTING-STARTED.md) and the guides for the
 [browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
 [Google](../latch/GOOGLE.md), [macOS](../latch/MACOS.md) and
 [Docker](../latch/DOCKER.md).
 
-Everything here describes `main` today.
+latch's commands and behavior here are `main`'s today.
 
 ## 2. Who's who
 
@@ -39,10 +45,10 @@ Everything here describes `main` today.
 |---|---|---|---|---|---|
 | **Owner** (your CLI) | A machine logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: list them on any host; turn them on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` or `LATCH_HOST` naming another machine. An agent running there counts. | That host, through its private local socket; other hosts as the owner. | Yes, on that host. Rules and vault work without `latch serve` or the decision model. | It is the host. | Exactly like the owner; recorded as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It may list connectors. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host` and `audit --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It may list connectors. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
 
 - **Every machine logged in with your own Plow login is the owner today.**
-  There's no host-only or view-only login yet (see section 10).
+  There's no host-only or view-only login yet (see section 11).
 - **A host knows a remote caller only by its key.** It asks Plow who that
   key is when the caller connects and again before every operation, and
   refuses the call if Plow says no or can't be reached. Callers on the
@@ -152,7 +158,7 @@ ask for this?
   `gatekeeper_unavailable`, exit 3, for you and for agents. Earlier steps
   of a browser plan may already have run, so read its `steps` before
   retrying. With only the model down, rules and vault commands still work;
-  with Plow itself down, remote callers are refused and `rules --from`
+  with Plow itself down, remote callers are refused and `rules … --agent`
   can't look agents up.
 - Rules are judged by a model and aren't guaranteed. To refuse exec
   without asking the model, use `--deny-exec`.
@@ -182,9 +188,9 @@ effort.
 
 | Task | On the host | From another of your machines | Works on the host while `latch serve` is stopped |
 |---|---|---|---|
-| Rules | `latch rules show\|set\|edit\|clear`, `--from AGENT` for one agent's rules | add `--host NAME` (`LATCH_HOST` doesn't apply) | Yes |
+| Rules | `latch rules show\|set\|edit\|clear`, `--agent AGENT` for one agent's rules | add `--host NAME` (`LATCH_HOST` doesn't apply) | Yes |
 | Vault | `latch vault list\|add\|edit\|remove\|import\|link` | add `--host NAME`, or set `LATCH_HOST` | Yes, except `vault link` |
-| Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch plugins list --host NAME` only | Yes for enable and disable; not `list` |
+| Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch plugins list --host NAME` only | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
 | Let the browser reach local addresses | `"allow_local_browsing": true` in `host.json` | No | — |
 | Audit log | `latch audit` (the newest records, args masked; `--before ID`, `--all`), `latch audit verify` (needs no key), `latch audit rotate-key` | `latch audit --host NAME` (`LATCH_HOST` doesn't apply); `verify` and `rotate-key` only on the host | Yes |
@@ -270,7 +276,8 @@ The few commands that take `--host` but run only on this machine
   Linux arm64 (`--browser camoufox` for Camoufox, `--no-browser` for none).
   A first install at a terminal then runs `latch setup`: log in, connect
   Google, on a Mac turn on Messages and Contacts, then offer to start the
-  host. A release build logs in to `https://api.plow.co` by default.
+  host. On macOS 26 or later it opens Plow Latch.app instead, whose window
+  takes the same steps. A release build logs in to `https://api.plow.co` by default.
 - **Update:** `latch update` installs the newest build, `latch update TAG`
   a given one (also how to go back), and `latch update --check` only says
   whether there's a newer one. It checks the release's signed `SHA256SUMS`,
@@ -303,21 +310,29 @@ The few commands that take `--host` but run only on this machine
 | A host with no sandbox; Windows | Not supported |
 | An agent's login running a host | Doesn't work today: with the usual agent credential, login saves no Plow token, so `latch serve` stops with `not_logged_in` |
 | Turning connectors on or off from another machine | Not supported |
-| Another machine's audit log, dashboard or logs | Not supported |
+| Another machine's dashboard or logs | Not supported |
 | Exec stdin over 16 KiB, or stdin that isn't UTF-8 text | Refused (`stdin_not_judgeable`, exit 2) |
 | Browsing anything but web addresses, or local addresses without `host.json` | Refused |
 | Per-agent permission lists | None, by design: write rules for that agent, or use `--deny-exec=AGENT_UID` |
 | A state folder in a format this latch doesn't read | Refused; there's no migration |
 
-## 10. Direction (not built yet)
+## 10. Where a host runs
 
-**A cloud host.** The direction is a one-click deploy from Plow that gives
-you a host in the cloud: a VM running `latch serve` with the browser ready,
-an empty vault and your connectors set up. Your Plow agents could use it
-right away, and you'd manage it from the CLI on your own machine (vault
-passwords, a 1Password import, rules) with `--host`, as you can manage any
-host today. Your Mac could be a second host. The one-click cloud host isn't
-built yet.
+`latch serve` always runs in a place you trust. There are three ways to
+run it; the first two are the main ones.
+
+| | What it is |
+|---|---|
+| **A Plow cloud host** | A machine in the cloud dedicated to you, one per user, on exe.dev, set up from Plow in one click. It runs `latch serve` with files, a browser and connectors: a secure place in the cloud for all your stuff. Any of your agents can connect to it, and its gatekeeper judges what they do against your chats with them and your rules, as on any host. |
+| **Your Mac** | `latch serve` on your own Mac (section 3). |
+| **A Linux machine you choose** | `latch serve` on a Linux machine of your own, a Raspberry Pi included (section 3). |
+
+Whichever you choose, you manage it from the latch CLI on your Mac: on the
+host itself when that's your Mac, and on another host with `--host` for its
+rules and vault, such as `latch vault import FILE --host NAME` to bring a
+password manager's export into that host's vault (section 6).
+
+## 11. Direction (not built yet)
 
 **Who may do what.** Today every machine logged in with your own Plow
 login is the owner and can manage and call any host. A proposed design

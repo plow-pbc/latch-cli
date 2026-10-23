@@ -584,7 +584,7 @@ pub struct VaultArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum VaultCommand {
-    /// Every item's metadata (never a value)
+    /// Every item's metadata, a login's username included (never a secret value)
     List,
     /// One item's metadata and its non-secret values (never a secret one)
     Show { item: String },
@@ -1155,6 +1155,10 @@ pub struct LoginArgs {
     /// For an app: report the login as JSON lines on stdout (code, waiting, verified, expired, error), logging in by text with no terminal needed. Never prints the token
     #[arg(long)]
     pub events: bool,
+
+    /// If another of your machines already has this name, replace it: it is removed from your account, which signs it out of Plow, and this machine takes the name. Without it, a taken name is an error (at a terminal, a question). An agent's name is never taken over
+    #[arg(long)]
+    pub replace: bool,
 }
 
 /// Which host a command goes to. Without `--host` or `$LATCH_HOST`, latch

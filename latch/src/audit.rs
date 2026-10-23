@@ -1,5 +1,6 @@
 //! The host's audit log: one JSON line per record (NDJSON), append-only, in
-//! the host's state directory. It never leaves the host.
+//! the host's state directory. The log stays on the host; the owner's own
+//! devices read its records with `latch audit --host` (`serve/reads.rs`).
 //!
 //! Each line holds one record sealed with AES-256-GCM under an audit key
 //! (`Keys`): its `body` is the whole record (when, who called, what they
@@ -8,7 +9,8 @@
 //! id (`kid`), the `nonce`, `prev` and `hash`. `hash` is the sha256 of the
 //! line written with `hash` empty, and `prev` is the line before's `hash`
 //! (64 zeros for the first). So the chain verifies without the key: a
-//! changed, removed or reordered line is caught, the newest included. The
+//! changed, removed or reordered line is caught. Lines cut off the end are
+//! not, since nothing keeps the newest `hash` apart from the log. The
 //! body is sealed with `kid` and `prev` as associated data, so it can't be
 //! moved to another line either. The log is readable by the host's user
 //! only.
