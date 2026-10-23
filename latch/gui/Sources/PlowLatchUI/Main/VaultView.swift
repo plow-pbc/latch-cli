@@ -32,7 +32,9 @@ struct VaultView: View {
         .searchable(text: $search, placement: .toolbar, prompt: "Search items")
         .toolbar {
             ToolbarItemGroup {
-                Button("New Item", systemImage: "plus") { app.vaultSheet = .editor(VaultEditor()) }
+                Button("New Item", systemImage: "plus") {
+                    if let host = app.host { app.vaultSheet = .editor(VaultEditor(on: host)) }
+                }
                     .help("Add a login, card, identity or note")
                     .disabled(!canChange)
                 Button("Import…", systemImage: "square.and.arrow.down") { choosingExport = true }
@@ -46,16 +48,16 @@ struct VaultView: View {
         }
         .fileImporter(isPresented: $choosingExport, allowedContentTypes: [.commaSeparatedText, .json, .data]) { result in
             guard case let .success(file) = result, let host = app.host else { return }
-            let importer = VaultImport(file: file)
+            let importer = VaultImport(file: file, on: host)
             app.vaultSheet = .importer(importer)
-            Task { await importer.load(on: host, app: app) }
+            Task { await importer.load(app: app) }
         }
+        // A sheet works on the host it was opened for, whatever the picker
+        // shows meanwhile.
         .sheet(item: $app.vaultSheet) { sheet in
-            if let host = app.host {
-                switch sheet {
-                case let .editor(editor): VaultItemSheet(editor: editor, host: host)
-                case let .importer(importer): ImportSheet(importer: importer, host: host)
-                }
+            switch sheet {
+            case let .editor(editor): VaultItemSheet(editor: editor)
+            case let .importer(importer): ImportSheet(importer: importer)
             }
         }
     }
@@ -114,7 +116,7 @@ private struct HostVault: View {
                 } description: {
                     Text("Agents fill logins and cards from here without ever seeing them. Add an item, or import another password manager's export.")
                 } actions: {
-                    Button("New Item…") { app.vaultSheet = .editor(VaultEditor()) }
+                    Button("New Item…") { app.vaultSheet = .editor(VaultEditor(on: host)) }
                 }
             case let .success(vault)?:
                 List(rows(vault), selection: $app.selectedVaultItem) { item in
@@ -146,9 +148,14 @@ private struct HostVault: View {
                 }
             }
         }
+        .alert("Couldn't remove the item", isPresented: removeErrorBinding) {
+            Button("OK") { app.vaultRemoveError = nil }
+        } message: {
+            Text(app.vaultRemoveError ?? "")
+        }
         .confirmationDialog("Remove “\(removing?.title ?? "")” from \(host.name)?", isPresented: removingBinding, presenting: removing) { item in
             Button("Remove", role: .destructive) {
-                Task { try? await app.removeVaultItem(item, on: host) }
+                Task { await app.removeVaultItem(item, on: host) }
             }
         } message: { _ in
             Text("Agents can no longer fill it. This can't be undone.")
@@ -157,6 +164,10 @@ private struct HostVault: View {
             guard !app.still else { return }
             await app.refreshVault(on: host)
         }
+    }
+
+    private var removeErrorBinding: Binding<Bool> {
+        Binding { app.vaultRemoveError != nil } set: { if !$0 { app.vaultRemoveError = nil } }
     }
 
     private var removingBinding: Binding<Bool> {
@@ -286,7 +297,7 @@ struct VaultItemInspector: View {
                     Button("Edit…", action: edit)
                 }
             } footer: {
-                Text("Kept on \(hostName). Agents can ask latch to fill it, but never see what it holds.")
+                Text("Kept on \(hostName). Latch never shows its secret values.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -377,6 +388,8 @@ enum VaultKind: String, CaseIterable, Identifiable {
 /// secret is typed fresh, never read back: left empty, the saved one stays.
 @Observable
 final class VaultEditor {
+    /// The host whose vault this changes: the one it was opened on.
+    let host: HostEntry
     /// The item being changed, as `vault show` said; nil for a new one.
     let original: VaultShow?
     /// An item whose values couldn't be read: the sheet says so, nothing more.
@@ -390,7 +403,8 @@ final class VaultEditor {
     private(set) var saving = false
     var error: String?
 
-    init(kind: VaultKind = .login) {
+    init(kind: VaultKind = .login, on host: HostEntry) {
+        self.host = host
         original = nil
         unreadable = nil
         self.kind = kind
@@ -400,7 +414,8 @@ final class VaultEditor {
         values = [:]
     }
 
-    init(editing show: VaultShow) {
+    init(editing show: VaultShow, on host: HostEntry) {
+        self.host = host
         original = show
         unreadable = nil
         kind = VaultKind(rawValue: show.item.kind) ?? .note
@@ -410,7 +425,8 @@ final class VaultEditor {
         values = show.values
     }
 
-    init(failed item: VaultList.Item, _ message: String) {
+    init(failed item: VaultList.Item, _ message: String, on host: HostEntry) {
+        self.host = host
         original = nil
         unreadable = (item, message)
         kind = VaultKind(rawValue: item.kind) ?? .note
@@ -454,8 +470,8 @@ final class VaultEditor {
                           otherTopSites: kind == .login ? Self.split(otherTopSites) : [], values: changed)
     }
 
-    /// Saves on a host; true once saved.
-    func save(on host: HostEntry, app: AppModel) async -> Bool {
+    /// Saves on its host; true once saved.
+    func save(app: AppModel) async -> Bool {
         guard problem == nil, !saving else { return false }
         saving = true
         defer { saving = false }
@@ -481,7 +497,7 @@ final class VaultEditor {
 /// New Item, or an item's Edit: a grouped form of its kind's fields.
 struct VaultItemSheet: View {
     var editor: VaultEditor
-    var host: HostEntry
+    private var host: HostEntry { editor.host }
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
 
@@ -549,7 +565,7 @@ struct VaultItemSheet: View {
                     .keyboardShortcut(.cancelAction)
                 if editor.unreadable == nil {
                     Button(editor.saving ? "Saving…" : editor.isNew ? "Add" : "Save") {
-                        Task { if await editor.save(on: host, app: app) { dismiss() } }
+                        Task { if await editor.save(app: app) { dismiss() } }
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(editor.saving || editor.problem != nil)
@@ -565,7 +581,7 @@ struct VaultItemSheet: View {
         switch editor.kind {
         case .login: "Latch fills it only on this website (separate several with commas)."
         case .card, .identity: "Leave empty to let it fill on any site you send an agent to."
-        case .note: "A note is never filled into a page; agents can't read it."
+        case .note: "A note isn't tied to a site."
         }
     }
 
@@ -590,20 +606,25 @@ struct VaultItemSheet: View {
 @Observable
 final class VaultImport {
     let file: URL
+    /// The host it imports into: the one it was opened on.
+    let host: HostEntry
     private(set) var preview: Result<ImportPreview, LatchError>?
     /// Rows to import, by preview number; duplicates start unpicked.
     var picked: Set<Int> = []
     private(set) var importing = false
     private(set) var result: Result<ImportResult, LatchError>?
 
-    init(file: URL) { self.file = file }
+    init(file: URL, on host: HostEntry) {
+        self.file = file
+        self.host = host
+    }
 
-    func load(on host: HostEntry, app: AppModel) async {
+    func load(app: AppModel) async {
         preview = await AppModel.result { try await app.previewImport(self.file, on: host) }
         if case let .success(preview)? = preview { picked = Set(preview.items.filter { !$0.duplicate }.map(\.pick)) }
     }
 
-    func run(on host: HostEntry, app: AppModel) async {
+    func run(app: AppModel) async {
         guard !picked.isEmpty, !importing else { return }
         importing = true
         defer { importing = false }
@@ -620,7 +641,7 @@ final class VaultImport {
 
 struct ImportSheet: View {
     var importer: VaultImport
-    var host: HostEntry
+    private var host: HostEntry { importer.host }
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
 
@@ -643,7 +664,7 @@ struct ImportSheet: View {
                 if importer.result == nil {
                     Button("Cancel") { dismiss() }
                         .keyboardShortcut(.cancelAction)
-                    Button(importer.importing ? "Importing…" : "Import") { Task { await importer.run(on: host, app: app) } }
+                    Button(importer.importing ? "Importing…" : "Import") { Task { await importer.run(app: app) } }
                         .keyboardShortcut(.defaultAction)
                         .disabled(importer.importing || importer.picked.isEmpty)
                 } else {

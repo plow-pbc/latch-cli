@@ -477,23 +477,23 @@ package enum SnapshotRunner {
             app.stage(status: try Fixtures.decode(Fixtures.serving))
             app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
             guard let studio = app.host else { return }
-            let newLogin = VaultEditor()
+            let newLogin = VaultEditor(on: studio)
             newLogin.title = "Grocer"; newLogin.sites = "grocer.example"; newLogin.values = ["username": "ada@example.com", "password": "secret"]
-            let editCard = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v3"]!))
-            let stale = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!))
+            let editCard = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v3"]!), on: studio)
+            let stale = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!), on: studio)
             stale.values["username"] = "ada2"; stale.error = AppModel.itemChangedElsewhere
             let preview = (try Fixtures.decode(Fixtures.importPreview) as ImportPreviewFixture).preview
-            let previewing = VaultImport(file: URL(filePath: "/Users/me/Downloads/Chrome Passwords.csv"))
+            let previewing = VaultImport(file: URL(filePath: "/Users/me/Downloads/Chrome Passwords.csv"), on: studio)
             previewing.stage(preview: preview)
-            let imported = VaultImport(file: URL(filePath: "/Users/me/Downloads/Chrome Passwords.csv"))
+            let imported = VaultImport(file: URL(filePath: "/Users/me/Downloads/Chrome Passwords.csv"), on: studio)
             imported.stage(preview: preview, result: try Fixtures.decode(Fixtures.importResult))
             let sheets: [(String, AnyView)] = [
-                ("18-vault-new-login", AnyView(VaultItemSheet(editor: newLogin, host: studio))),
-                ("18-vault-new-identity", AnyView(VaultItemSheet(editor: VaultEditor(kind: .identity), host: studio))),
-                ("18-vault-edit-card", AnyView(VaultItemSheet(editor: editCard, host: studio))),
-                ("18-vault-edit-changed-elsewhere", AnyView(VaultItemSheet(editor: stale, host: studio))),
-                ("18-vault-import-preview", AnyView(ImportSheet(importer: previewing, host: studio))),
-                ("18-vault-import-done", AnyView(ImportSheet(importer: imported, host: studio))),
+                ("18-vault-new-login", AnyView(VaultItemSheet(editor: newLogin))),
+                ("18-vault-new-identity", AnyView(VaultItemSheet(editor: VaultEditor(kind: .identity, on: studio)))),
+                ("18-vault-edit-card", AnyView(VaultItemSheet(editor: editCard))),
+                ("18-vault-edit-changed-elsewhere", AnyView(VaultItemSheet(editor: stale))),
+                ("18-vault-import-preview", AnyView(ImportSheet(importer: previewing))),
+                ("18-vault-import-done", AnyView(ImportSheet(importer: imported))),
             ]
             for (name, sheet) in sheets {
                 let size = name.contains("import") ? CGSize(width: 560, height: 460)

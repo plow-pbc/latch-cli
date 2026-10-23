@@ -7,6 +7,8 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     var staleEdits = false
     private(set) var lists = 0
+    /// The host each edit was sent to (nil: this Mac's).
+    private(set) var editedOn: [String?] = []
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -22,6 +24,7 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     }
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow { try Fixtures.decode(Fixtures.vaultShows[item]!) }
     func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
+        editedOn.append(host)
         if staleEdits {
             throw LatchError.failed(LatchFailure(code: "stale_revision", message: "item v1 is at revision 3, not 2; list it again"))
         }
@@ -49,8 +52,16 @@ struct VaultTests {
         #expect(preview.source == "Chrome" && preview.items.map(\.pick) == [1, 2] && preview.skipped?.count == 1)
     }
 
+    private func app(_ client: VaultClient) throws -> (AppModel, HostEntry) {
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        return (app, try #require(app.host))
+    }
+
     @Test func anEditSendsOnlyWhatChangedAndAnUntypedSecretStays() throws {
-        let editor = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!))
+        let (_, studio) = try app(VaultClient())
+        let editor = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!), on: studio)
         #expect(editor.draft.values.isEmpty)
         #expect(editor.saved("password") && editor.saved("totp"))
         editor.values["username"] = "ada2"
@@ -68,15 +79,31 @@ struct VaultTests {
     @Test func aStaleEditIsRefusedInTheAppsWordsAndTheVaultIsReadAgain() async throws {
         let client = VaultClient()
         client.staleEdits = true
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        let host = try #require(app.host)
-        let editor = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!))
+        let (app, host) = try app(client)
+        let editor = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!), on: host)
         editor.values["username"] = "ada2"
-        #expect(await editor.save(on: host, app: app) == false)
+        #expect(await editor.save(app: app) == false)
         #expect(editor.error == AppModel.itemChangedElsewhere)
         #expect(client.lists == 1)
+    }
+
+    @Test func anEditSavesOnTheHostItWasOpenedOnAfterThePickerMoves() async throws {
+        let client = VaultClient()
+        let (app, studio) = try app(client)
+        let editor = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!), on: studio)
+        editor.values["username"] = "ada2"
+        app.chosenHost = "pi-kitchen"
+        #expect(await editor.save(app: app))
+        #expect(client.editedOn == [nil])
+    }
+
+    @Test func aRefusedRemovalIsKeptToBeShown() async throws {
+        let (app, studio) = try app(VaultClient())
+        let vault: VaultList = try Fixtures.decode(Fixtures.vaultItems)
+        app.selectedVaultItem = vault.items[0].item
+        await app.removeVaultItem(vault.items[0], on: studio)
+        #expect(app.vaultRemoveError == "not scripted")
+        #expect(app.selectedVaultItem == vault.items[0].item)
     }
 
     /// The bundle's latch is given every value on stdin, never in argv.

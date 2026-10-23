@@ -111,7 +111,10 @@ enum TestHooks {
             return vault.items.first { $0.item == id }
         }
         on("vault-select") { id in app.selectedVaultItem = id }
-        on("vault-new") { kind in app.vaultSheet = .editor(VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login)) }
+        on("vault-new") { kind in
+            guard let host = app.host else { return }
+            app.vaultSheet = .editor(VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login, on: host))
+        }
         on("vault-edit") { id in
             guard let item = vaultItem(id), let host = app.host else { return }
             Task { await app.beginVaultEdit(item, on: host) }
@@ -127,22 +130,22 @@ enum TestHooks {
             }
         }
         on("vault-save") { _ in
-            guard case let .editor(editor)? = app.vaultSheet, let host = app.host else { return }
-            Task { if await editor.save(on: host, app: app) { app.vaultSheet = nil } }
+            guard case let .editor(editor)? = app.vaultSheet else { return }
+            Task { if await editor.save(app: app) { app.vaultSheet = nil } }
         }
         on("vault-remove") { id in
             guard let item = vaultItem(id), let host = app.host else { return }
-            Task { try? await app.removeVaultItem(item, on: host) }
+            Task { await app.removeVaultItem(item, on: host) }
         }
         on("vault-import") { path in
             guard let path, let host = app.host else { return }
-            let importer = VaultImport(file: URL(filePath: path))
+            let importer = VaultImport(file: URL(filePath: path), on: host)
             app.vaultSheet = .importer(importer)
-            Task { await importer.load(on: host, app: app) }
+            Task { await importer.load(app: app) }
         }
         on("vault-import-run") { _ in
-            guard case let .importer(importer)? = app.vaultSheet, let host = app.host else { return }
-            Task { await importer.run(on: host, app: app) }
+            guard case let .importer(importer)? = app.vaultSheet else { return }
+            Task { await importer.run(app: app) }
         }
         on("sheet-close") { _ in app.vaultSheet = nil }
         // The main window's open sheet, as the window server shows it.

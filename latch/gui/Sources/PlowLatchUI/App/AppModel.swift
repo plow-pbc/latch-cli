@@ -162,8 +162,8 @@ final class AppModel {
     func beginVaultEdit(_ item: VaultList.Item, on host: HostEntry) async {
         await showVaultItem(item.item, on: host)
         switch vaultShows[host.name]?[item.item] {
-        case let .success(show)?: vaultSheet = .editor(VaultEditor(editing: show))
-        case let .failure(error)?: vaultSheet = .editor(VaultEditor(failed: item, error.message))
+        case let .success(show)?: vaultSheet = .editor(VaultEditor(editing: show, on: host))
+        case let .failure(error)?: vaultSheet = .editor(VaultEditor(failed: item, error.message, on: host))
         case nil: break
         }
     }
@@ -181,10 +181,20 @@ final class AppModel {
         await showVaultItem(item.item, on: host)
     }
 
-    func removeVaultItem(_ item: VaultList.Item, on host: HostEntry) async throws {
-        try await vaultChange(on: host) { try await self.client.vaultRemove(item.item, revision: item.revision, host: $0) }
-        if selectedVaultItem == item.item { selectedVaultItem = nil }
-        vaultShows[host.name]?[item.item] = nil
+    /// Why the last removal from a vault failed, until it's dismissed.
+    var vaultRemoveError: String?
+
+    /// Removes an item at the revision the person saw; a refusal is kept
+    /// for the Vault screen to say.
+    func removeVaultItem(_ item: VaultList.Item, on host: HostEntry) async {
+        do {
+            try await vaultChange(on: host) { try await self.client.vaultRemove(item.item, revision: item.revision, host: $0) }
+            vaultRemoveError = nil
+            if selectedVaultItem == item.item { selectedVaultItem = nil }
+            vaultShows[host.name]?[item.item] = nil
+        } catch {
+            vaultRemoveError = (error as? LatchError)?.message ?? error.localizedDescription
+        }
     }
 
     /// `latch vault import FILE --preview` on a host.
