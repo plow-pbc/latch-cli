@@ -192,9 +192,8 @@ struct GatekeeperTests {
         flow.draftChanged()
         await waitUntil { client.tries.count == 2 * deck.examples.count }
         held.open()
-        await flow.reviewTask?.value
+        await waitUntil { deck.examples.allSatisfy { if case .verdict? = flow.previews[$0.id] { true } else { false } } }
         await stopped?.value
-        #expect(deck.examples.allSatisfy { if case .verdict? = flow.previews[$0.id] { true } else { false } })
     }
 
     @Test func aCheckThatNeverAnswersSaysSo() async {
