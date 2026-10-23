@@ -111,9 +111,9 @@ struct HostSettingsTests {
         func connections(_ google: String) throws -> Connections {
             Connections(try Fixtures.decode(Fixtures.setup(on: [], google: google)) as SetupStatus)
         }
-        #expect(try connections(Fixtures.googleNotConnected) == .google(accounts: []))
+        #expect(try connections(Fixtures.googleNotConnected) == .google(GoogleAccounts(accounts: [])))
         #expect(try connections(Fixtures.googleConnected(["ada@example.com", "ada.work@example.com"]))
-            == .google(accounts: ["ada@example.com", "ada.work@example.com"]))
+            == .google(GoogleAccounts(accounts: ["ada@example.com", "ada.work@example.com"])))
         #expect(try connections(Fixtures.googleUnreachable) == .unknown)
         #expect(Connections(nil) == .unknown)
     }

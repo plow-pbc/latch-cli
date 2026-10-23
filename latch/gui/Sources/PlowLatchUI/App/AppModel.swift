@@ -374,9 +374,9 @@ final class AppModel {
     }
 
     /// Signs in with Google through latch: the first link it gives opens in
-    /// the browser, and each is handed to `newLink` for opening again. The
-    /// accounts once Google is on; nil if latch stopped before.
-    func signInWithGoogle(addAccount: Bool, newLink: (URL) -> Void) async throws -> [String]? {
+    /// the browser, and each is handed to `newLink` for opening again.
+    /// latch's enable once Google is on; nil if latch stopped before.
+    func signInWithGoogle(addAccount: Bool, newLink: (URL) -> Void) async throws -> GoogleEnabled? {
         var opened = false
         for try await event in client.signInGoogle(addAccount: addAccount) {
             switch event {
@@ -387,7 +387,7 @@ final class AppModel {
                     open(url)
                 }
             case let .enabled(result):
-                return result.accounts
+                return result
             }
         }
         return nil
