@@ -430,23 +430,18 @@ class HostUpgrade(unittest.TestCase):
 
     def test_a_managed_host_is_stopped_then_started_again_by_the_new_latch(self):
         log = self.log()
-        result, calls, dest = self.upgrade(fake_latch("0.1.0 (1)", log), fake_latch("0.1.0 (2)", log), log)
+        # Older helper versions go while the host is stopped, before it starts again.
+        prune = f'echo "0.1.0 (2) prune-helpers" >> "{log}"; echo \'{{"removed":[]}}\''
+        new = fake_latch("0.1.0 (2)", log, prune=prune)
+        result, calls, dest = self.upgrade(fake_latch("0.1.0 (1)", log), new, log)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
+        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) prune-helpers",
+                                 "0.1.0 (2) serve -d --again"])
         self.assertIn("started the host", result.stdout)
         self.assertIn("it starts again with the new latch once the install is done",
                       result.stdout, "the stop says it will start again after installation")
         self.assertNotIn("is stopped", result.stderr)
         self.assertIn('"0.1.0 (2)"', subprocess.check_output([str(dest), "--version"], text=True))
-
-    def test_old_helper_versions_go_once_the_host_is_stopped_before_it_starts_again(self):
-        log = self.log()
-        prune = f'echo "0.1.0 (2) prune-helpers" >> "{log}"; echo \'{{"removed":[]}}\''
-        new = fake_latch("0.1.0 (2)", log, prune=prune)
-        result, calls, _ = self.upgrade(fake_latch("0.1.0 (1)", log), new, log)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) prune-helpers",
-                                 "0.1.0 (2) serve -d --again"])
 
     def mac_upgrade(self, old_version, new_version, log, old_window="", new_window=""):
         """Installs an app whose latch says `new_version` over one whose
