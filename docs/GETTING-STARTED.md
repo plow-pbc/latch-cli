@@ -12,9 +12,9 @@ Most commands print one JSON object on stdout on success and
 `{"error": …}` on stderr on failure. At a terminal an error prints its
 message and any details; `login` prints for a person when stdout is a
 terminal. `status --pretty` prints a card even to a pipe. Other output
-includes `help` and `skill` (text), `login --events`, `events` and
-`audit show -f` (JSON lines), `logs`, `serve` without `-d`, `dashboard`,
-interactive `setup`, and `browser text --raw`.
+includes `help` and `skill` (text), `login --events`, `audit` and
+`status --local --follow` (JSON lines), `logs`, `serve` without `-d`,
+`dashboard`, interactive `setup`, and `browser text --raw`.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 host unreachable, 4 denied,
 5 connection lost after sending.

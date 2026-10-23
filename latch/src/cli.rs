@@ -154,7 +154,8 @@ pub enum Command {
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
     /// The account's agents, with their lines and Plow status; with --host,
-    /// each one's standing on that host (owner only)
+    /// each one's standing on that host. Also shows, creates and removes
+    /// them (owner only)
     Agents(AgentsArgs),
     /// Print this peer's identity and the hosts it can reach
     Status(StatusArgs),
@@ -184,10 +185,9 @@ pub enum Command {
     /// The connectors on a host: list them; on the host itself, its owner
     /// turns one on (running its setup) or off
     Plugins(PluginsArgs),
-    /// This machine's host audit log: its records in full, its chain checked without the key, or a new key
+    /// This machine's host audit log (or another host's, with --host): its newest records as JSON lines, an earlier page, or with --follow each new one; its chain checked without the key, or a new key
+    #[command(after_help = AUDIT_HELP)]
     Audit(AuditArgs),
-    /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
-    Events(EventsArgs),
     /// Run this machine as a host, as a service of this user's: with its
     /// dashboard (Ctrl-C stops the host), or detached with -d
     #[command(after_help = SERVE_HELP)]
@@ -581,8 +581,11 @@ pub struct VaultArgs {
 pub enum VaultCommand {
     /// Every item's metadata, a login's username included (never a secret value)
     List,
-    /// Add an item; its secrets are asked for at a prompt, never taken from
-    /// the command line or the environment
+    /// One item's metadata and its non-secret values (never a secret one)
+    Show { item: String },
+    /// Add an item; its secrets are asked for at a prompt, or read from
+    /// stdin with --stdin, never taken from the command line or the
+    /// environment
     Add {
         /// login, card, identity or note
         #[arg(long)]
@@ -605,10 +608,16 @@ pub enum VaultCommand {
         /// Also ask for a login's authenticator key
         #[arg(long)]
         totp: bool,
+        /// Read field values from stdin instead of asking for them: one JSON
+        /// object of strings by label, secrets included, e.g.
+        /// {"password": "…", "totp": "…"}
+        #[arg(long, conflicts_with_all = ["ask", "totp"])]
+        stdin: bool,
     },
     /// Change an item at its current revision: its title, sites and fields.
-    /// Its secrets are asked for at a prompt, never taken from the command
-    /// line or the environment; its kind never changes
+    /// Its secrets are asked for at a prompt, or read from stdin with
+    /// --stdin, never taken from the command line or the environment; its
+    /// kind never changes
     Edit {
         item: String,
         /// The revision `vault list` shows; an older one is refused
@@ -636,6 +645,11 @@ pub enum VaultCommand {
         /// authenticator key), a card's number or code, …
         #[arg(long)]
         ask: Vec<String>,
+        /// Read changed field values from stdin instead of asking for them:
+        /// one JSON object of strings by label, secrets included; an empty
+        /// string clears a field
+        #[arg(long, conflicts_with = "ask")]
+        stdin: bool,
     },
     /// A one-time link through a running serve that adds an item from your phone: the phone page
     /// connects to the host itself, and the value goes straight there.
@@ -672,7 +686,17 @@ pub enum VaultCommand {
     },
     /// Import another password manager's export (1PUX, CSV, JSON): shows
     /// what it holds and imports only the rows you pick
-    Import { file: std::path::PathBuf },
+    Import {
+        file: std::path::PathBuf,
+        /// Return the preview as JSON and import nothing: each row's
+        /// number, kind, title, username and site, never a secret
+        #[arg(long, conflicts_with = "pick")]
+        preview: bool,
+        /// Import these rows of the preview without asking: numbers or
+        /// ranges (1,3-5), or all
+        #[arg(long, value_name = "ROWS")]
+        pick: Option<String>,
+    },
 }
 
 /// Arguments the host gives a browser worker (see `browser/worker.rs`).
@@ -882,11 +906,57 @@ pub enum WorkerAction {
 }
 
 #[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct AgentsArgs {
     /// Also show each agent's standing on this host: its own rules there,
     /// and whether the host refuses it exec. Never taken from $LATCH_HOST
     #[arg(long)]
     pub host: Option<String>,
+    #[command(subcommand)]
+    pub action: Option<AgentsAction>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentsAction {
+    /// One agent, by its uid or its exact name: its line and Plow status
+    /// (a cloud agent's starts as provisioning)
+    Show { agent: String },
+    /// The kinds of cloud agent Plow can run, for `agents new --cloud`
+    Catalog,
+    /// Plow's phone lines, and which are free for a new agent
+    Lines,
+    /// Create an agent on a free phone line: a cloud agent Plow runs, or
+    /// your own, whose credential is written to a new private file. It
+    /// returns at once; `agents show` follows a cloud agent's start
+    New {
+        /// A cloud agent of this kind, from `latch agents catalog`
+        #[arg(long, value_name = "KIND", required_unless_present = "own")]
+        cloud: Option<String>,
+        /// An agent you run yourself, with --token-file
+        #[arg(long, conflicts_with = "cloud", requires = "token_file")]
+        own: bool,
+        /// Where to write your own agent's credential: a new file, made
+        /// private (mode 600) before the agent is created, never
+        /// overwritten. Its program logs in with
+        /// `PLOW_TOKEN_FILE=FILE latch login`
+        #[arg(long, value_name = "FILE", requires = "own")]
+        token_file: Option<PathBuf>,
+        /// The agent's name; names need not be unique
+        #[arg(long)]
+        name: String,
+        /// The phone line it answers on: a line's uid or number, from
+        /// `latch agents lines`
+        #[arg(long)]
+        line: String,
+    },
+    /// Remove an agent, by its uid or its exact name: its credential stops
+    /// working and its line is freed
+    Remove {
+        agent: String,
+        /// Remove without asking (required when no one is at a terminal)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -906,33 +976,35 @@ pub enum DevicesAction {
     },
 }
 
+/// `latch audit`: with no command, its records; with one, the log's upkeep.
 #[derive(Args, Debug)]
-pub struct EventsArgs {
-    /// Keep printing changes as they happen, until stopped (or, when stdin is a pipe, until it closes)
-    #[arg(long)]
-    pub follow: bool,
-    /// Pick up right after this cursor, from an earlier line; one that cannot be honoured gets `reset` and a fresh snapshot
-    #[arg(long, value_name = "CURSOR")]
-    pub after: Option<String>,
-    /// Only the host's state changes, no activity
-    #[arg(long)]
-    pub lifecycle_only: bool,
-}
-
-#[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct AuditArgs {
     #[command(subcommand)]
-    pub action: AuditAction,
+    pub action: Option<AuditAction>,
+    /// How many of the newest records to read [default: 50]; with --before, how many before it
+    #[arg(long, value_name = "N", value_parser = positive, allow_hyphen_values = true,
+          conflicts_with = "all")]
+    pub last: Option<usize>,
+    /// Every record the log holds
+    #[arg(long)]
+    pub all: bool,
+    /// The records before this one (its id, a record line's `cursor`), to read an earlier page
+    #[arg(long, value_name = "ID", conflicts_with_all = ["follow", "all", "after"])]
+    pub before: Option<String>,
+    /// Then each new record as it is written, until stopped (or, when stdin is a pipe, until it closes)
+    #[arg(long, short)]
+    pub follow: bool,
+    /// With --follow: every record after this one (its id, the last `cursor` you got), then the new ones
+    #[arg(long, value_name = "ID", requires = "follow", conflicts_with_all = ["last", "all"])]
+    pub after: Option<String>,
+    /// Another serving machine of the owner's to read, the same lines as there (owner devices only) [default: this machine's host]
+    #[arg(long)]
+    pub host: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum AuditAction {
-    /// Every record, opened with the key: each command in full, as it ran
-    Show {
-        /// One record per line, then each new one as it is written, until stopped
-        #[arg(long, short)]
-        follow: bool,
-    },
     /// Check every record's place in the chain, without the key
     Verify,
     /// Seal new records under a new key and keep every old one; a running `latch serve` uses it from its next record
@@ -947,6 +1019,7 @@ pub struct FollowArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(group = clap::ArgGroup::new("target").args(["local", "host"]).multiple(true))]
 pub struct StatusArgs {
     /// Show a card for a person, with key art to compare between machines, instead of JSON
     #[arg(long)]
@@ -955,6 +1028,14 @@ pub struct StatusArgs {
     /// whether a host serves it and version. Works offline and before login
     #[arg(long, conflicts_with = "pretty")]
     pub local: bool,
+    /// Another serving machine of the owner's to ask for its own `status
+    /// --local`, the same JSON as there, with or without --local (owner
+    /// devices only)
+    #[arg(long, conflicts_with = "pretty")]
+    pub host: Option<String>,
+    /// With --local or --host: as JSON lines, then again each time it changes, until stopped (or, when stdin is a pipe, until it closes)
+    #[arg(long, requires = "target")]
+    pub follow: bool,
 }
 
 #[derive(Args, Debug)]
@@ -992,6 +1073,37 @@ pub struct ServeArgs {
 }
 
 /// What `latch serve --help` adds after the options.
+/// `--last N`: a page of at least one record.
+fn positive(text: &str) -> Result<usize, String> {
+    match text.parse() {
+        Ok(count) if count > 0 => Ok(count),
+        _ => Err("--last takes a whole number of records, 1 or more, such as 50".into()),
+    }
+}
+
+/// What `latch audit --help` adds after the options.
+const AUDIT_HELP: &str = "\
+What it prints, as JSON lines, with or without --follow:
+  {\"type\":\"hello\",\"schema\":1}
+  {\"type\":\"snapshot\",\"cursor\":ID,\"has_older\":BOOL}
+      ID is the record just before the first one shown (64 zeros: none);
+      has_older says whether there are older records than this page.
+  {\"type\":\"record\",\"cursor\":ID,\"record\":{...}}, one line per record:
+      id, time, caller, caller_name, agent, op, decision, outcome, and
+      details: started, args, gate. A record's id is the audit_id its
+      caller got back.
+  {\"type\":\"caught_up\",\"cursor\":ID,\"has_older\":BOOL}
+      The page is complete here; ID is the last record shown.
+  With --follow, then one record line for each new record.
+For an earlier page, pass --before the first record's id. To resume a
+follow, pass --follow --after the last cursor you got: every record after
+it, then the new ones, across host restarts too.
+Masking: each record's args have credential-looking values (tokens,
+passwords, keys) hidden, as the serve dashboard hides them. This is best
+effort: some can slip through. The stored values are never printed.
+Without --follow it ignores stdin and prints the whole page; with
+--follow it ends once stdin, when it is a pipe, closes.";
+
 const SERVE_HELP: &str = "\
 What callers can reach (each exec and file call is judged):
   Read: your home folder and system files (programs, libraries, developer

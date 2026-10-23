@@ -268,10 +268,10 @@ class Plans(unittest.TestCase):
         args = runner.argparse.Namespace(suites=["browser"], linux=True, shard=None, ci=False,
                                          dry_run=False, build_archive=None, from_archive=None,
                                          only="a_check")
-        with mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=0)) as ran, \
-                mock.patch.object(runner, "container_seccomp", return_value=Path("/x.json")):
+        with mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=0)) as ran:
             runner.in_container(args)
         inner = ran.call_args_list[-1].args[0]
+        self.assertIn(f"--security-opt=seccomp={runner.LATCH / 'docker/seccomp.json'}", inner)
         self.assertEqual(inner[inner.index("scripts/test.py"):], ["scripts/test.py", "browser", "--only", "a_check"])
         with self.assertRaises(SystemExit) as refused:
             args = runner.argparse.Namespace(suites=["installer"], linux=False, shard=None, ci=False,

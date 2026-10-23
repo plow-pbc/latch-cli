@@ -193,8 +193,8 @@ effort.
 | Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch plugins list --host NAME` only | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
 | Let the browser reach local addresses | `"allow_local_browsing": true` in `host.json` | No | — |
-| Audit log | `latch audit show`, `latch audit verify` (needs no key), `latch audit rotate-key` | No | Yes |
-| Watch it | `latch dashboard`, `latch logs`, `latch events` | No | Yes, except `dashboard` |
+| Audit log | `latch audit` (the newest records, args masked; `--before ID`, `--all`), `latch audit verify` (needs no key), `latch audit rotate-key` | `latch audit --host NAME` (`LATCH_HOST` doesn't apply); `verify` and `rotate-key` only on the host | Yes |
+| Watch it | `latch dashboard`, `latch logs`, `latch audit --follow`, `latch status --local --follow` | `latch audit --follow --host NAME`, `latch status --host NAME --follow` | Yes, except `dashboard` |
 
 - **Rules** are plain text in your own words: one text for every agent,
   which your own calls are judged against too, and one per agent. Together
@@ -218,7 +218,7 @@ effort.
   call never falls back to this machine's rules or vault.
 
 **Which host a command goes to** (for commands that call a host):
-`--host NAME` or `LATCH_HOST` (`rules` reads only `--host`); otherwise this
+`--host NAME` or `LATCH_HOST` (`rules`, `audit` and `status` read only `--host`); otherwise this
 machine, if it has ever run a host (until you log out); otherwise your only
 host. With no hosts you get `no_host`, and with several and none named
 `host_required` (both exit 2).

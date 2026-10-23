@@ -109,7 +109,16 @@ impl World {
             return (200, identity.clone());
         }
         if method == "GET" && path == "/v1/connectors" {
-            return (200, json!({"web_base_url": "https://app.example.com/"}));
+            let accounts: Vec<Value> = self
+                .google_accounts
+                .iter()
+                .map(|account| json!({"account": account}))
+                .collect();
+            return (
+                200,
+                json!({"gmail": {"connected": !accounts.is_empty(), "accounts": accounts},
+                       "web_base_url": "https://app.example.com/"}),
+            );
         }
         if path == "/v1/agents" {
             return (

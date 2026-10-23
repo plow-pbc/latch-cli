@@ -60,17 +60,21 @@ bubblewrap sets up their sandbox. Browser workers retain nested namespaces
 for the engine's own sandbox.
 
 The profile is Moby's published Docker default at commit
-`4b8214fc4971e06172938a1f1554ccff6647ee80`, plus four allowance groups:
+`4b8214fc4971e06172938a1f1554ccff6647ee80`, plus these allowance groups:
 
-- `clone` with `CLONE_NEWUSER` (amd64/arm64; excludes new UTS/cgroup namespaces).
-- `unshare(CLONE_NEWUSER)`.
+- `clone` with or without `CLONE_NEWUSER` (amd64/arm64; excludes new UTS/cgroup namespaces).
+- `unshare` of user, PID, network, IPC and mount namespaces (excludes new UTS/cgroup namespaces).
+- `chroot`, for the browser engines' own sandboxes inside their user namespaces.
 - `mount` and `pivot_root`.
 - `umount2` with `MNT_DETACH`.
 
 Other default rules remain, including `clone3` returning ENOSYS. This is a pinned
 published baseline, not a claim that every Docker version embeds identical rules.
 The extra mount syscalls expose more kernel surface; kernel user-namespace and
-capability checks still apply. No host capabilities are granted.
+capability checks still apply. No host capabilities are granted. Exec, file and
+Google workers still drop all capabilities, disable further user namespaces and
+block `unshare` in their inner seccomp filter; these outer allowances do not
+let a worker regain privileges. The Linux test container uses this same profile.
 
 ## Compose
 

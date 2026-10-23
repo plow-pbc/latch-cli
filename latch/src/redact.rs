@@ -1,12 +1,14 @@
 //! Hiding credential-looking values from what people are shown: the serve
-//! dashboard, `serve.log` and anything else that displays a command. It is
+//! dashboard, `serve.log`, `latch audit` and anything else that displays a
+//! command. It is
 //! best effort and can miss things, and says so (`NOTE`). The audit log
 //! keeps each command as run (it is encrypted); this is for display only.
 
 use serde_json::{Value, json};
 
 /// What a display says next to commands shown through this module.
-pub const NOTE: &str = "credential-looking values in commands are hidden, best effort: some can slip through; `latch audit show` has them in full";
+pub const NOTE: &str =
+    "credential-looking values in commands are hidden, best effort: some can slip through";
 
 /// An operation's audit details as shown to people: an exec's argv, and
 /// everything of a browser action the gatekeeper judged, with

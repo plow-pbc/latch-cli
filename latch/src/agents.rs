@@ -1,18 +1,28 @@
-//! `latch agents [--host NAME]`: the account's agents, as Plow lists them,
-//! for their owner. With `--host`, each agent's standing on that host as its
-//! rules read says: whether it has rules of its own there, and whether the
-//! host refuses it `exec`. The standing comes from `rules show`, on this
-//! machine's state or from the host named, never from anywhere else.
+//! `latch agents`: the account's agents, for their owner. Without a
+//! subcommand, the list as Plow gives it; with `--host`, each agent's
+//! standing on that host as its rules read says: whether it has rules of its
+//! own there, and whether the host refuses it `exec`. The standing comes from
+//! `rules show`, on this machine's state or from the host named, never from
+//! anywhere else.
+//!
+//! `show`, `catalog`, `lines`, `new` and `remove` read and change the account
+//! through Plow, which runs and assigns everything: latch never waits for a
+//! cloud agent to start, never picks a line itself and never resends a change
+//! whose answer was lost.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::cli::AgentsArgs;
+use crate::cli::{AgentsAction, AgentsArgs};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
 use crate::hosts;
 use crate::plow::{ListedAgent, Plow};
 use crate::state::StateDir;
+use crate::term;
 use crate::wire::Request;
 
 #[derive(Serialize)]
@@ -60,18 +70,60 @@ pub struct Standing {
     pub exec_blocked: Option<bool>,
 }
 
-pub async fn run(state: &StateDir, args: AgentsArgs) -> Result<AgentsOutput, Failure> {
+pub async fn run(state: &StateDir, args: AgentsArgs) -> Result<Value, Failure> {
     let config = state.require_login()?;
     if config.peer.kind != "device" {
-        let message = "agents are listed by their owner, from the owner's own machines";
+        let message = "agents are managed by their owner, from the owner's own machines";
         return Err(Failure::new(Exit::Denied, "owner_only", message.into()));
     }
     let plow = Plow::from_state(state)?;
+    managed(state, &plow, &config.api_url, args)
+        .await
+        .map_err(|mut failure| {
+            if failure.code == "plow_denied" {
+                failure.details =
+                    json!({"next": "Use an owner login that can manage agents on Plow."});
+            }
+            failure
+        })
+}
+
+async fn managed(
+    state: &StateDir,
+    plow: &Plow,
+    api_url: &str,
+    args: AgentsArgs,
+) -> Result<Value, Failure> {
+    Ok(match args.action {
+        // Plain strings and lists, so this cannot fail.
+        None => serde_json::to_value(list(state, plow, args.host).await?).expect("serializes"),
+        Some(AgentsAction::Show { agent }) => {
+            let agent = resolve(plow, &agent).await?;
+            json!({"agent": agent_shown(agent, None)})
+        }
+        Some(AgentsAction::Catalog) => catalog(plow).await?,
+        Some(AgentsAction::Lines) => lines(plow).await?,
+        Some(AgentsAction::New {
+            cloud,
+            token_file,
+            name,
+            line,
+            ..
+        }) => new(plow, api_url, cloud, token_file, &name, &line).await?,
+        Some(AgentsAction::Remove { agent, yes }) => remove(plow, &agent, yes).await?,
+    })
+}
+
+async fn list(
+    state: &StateDir,
+    plow: &Plow,
+    host: Option<String>,
+) -> Result<AgentsOutput, Failure> {
     let listed: Vec<ListedAgent> = plow.agent_list().await?;
-    let (host, rules) = match args.host {
+    let (host, rules) = match host {
         None => (None, None),
         Some(name) => {
-            let (host, rules) = rules_on(state, &plow, name).await?;
+            let (host, rules) = rules_on(state, plow, name).await?;
             (Some(host), Some(rules))
         }
     };
@@ -83,7 +135,7 @@ pub async fn run(state: &StateDir, args: AgentsArgs) -> Result<AgentsOutput, Fai
         .into_iter()
         .map(|agent| {
             let standing = rules.as_ref().map(|rules| rules.standing(&agent.uid));
-            shown(agent, standing)
+            agent_shown(agent, standing)
         })
         .collect();
     Ok(AgentsOutput { host, agents })
@@ -187,7 +239,7 @@ impl HostRules {
     }
 }
 
-fn shown(agent: ListedAgent, standing: Option<Standing>) -> AgentShown {
+fn agent_shown(agent: ListedAgent, standing: Option<Standing>) -> AgentShown {
     let own = agent.provider == "self_hosted";
     AgentShown {
         uid: agent.uid,
@@ -205,6 +257,285 @@ fn shown(agent: ListedAgent, standing: Option<Standing>) -> AgentShown {
             .credential
             .and_then(|credential| credential.last_seen_at),
         standing,
+    }
+}
+
+/// The agent `named` names: a 32-hex uid is that agent's; anything else is
+/// an exact name, which must be one agent's.
+async fn resolve(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
+    let agents: Vec<ListedAgent> = plow.agent_list().await?;
+    let is_uid = named.len() == 32 && named.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut found: Vec<ListedAgent> = agents
+        .into_iter()
+        .filter(|agent| {
+            if is_uid {
+                agent.uid == named
+            } else {
+                agent.name == named
+            }
+        })
+        .collect();
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        0 => {
+            let message = format!("no agent in this account is called {named:?}");
+            let mut failure = Failure::usage("no_such_agent", message);
+            failure.details = json!({"next": "latch agents"});
+            Err(failure)
+        }
+        n => {
+            let message = format!("{n} agents are called {named:?}: name one by its uid");
+            let mut failure = Failure::usage("ambiguous_agent", message);
+            let agents: Vec<Value> = found
+                .iter()
+                .map(|agent| json!({"uid": agent.uid, "name": agent.name}))
+                .collect();
+            failure.details = json!({"agents": agents});
+            Err(failure)
+        }
+    }
+}
+
+/// The kinds of cloud agent Plow offers.
+async fn catalog(plow: &Plow) -> Result<Value, Failure> {
+    let kinds: Vec<Value> = plow
+        .agent_kinds()
+        .await?
+        .into_iter()
+        .filter(|kind| kind.id != OWN)
+        .map(|kind| json!({"id": kind.id, "name": kind.name}))
+        .collect();
+    Ok(json!({"kinds": kinds}))
+}
+
+/// Plow's provider id for an agent its owner runs.
+const OWN: &str = "self_hosted";
+
+/// Plow's phone lines: the ones an agent can answer on, free or held.
+async fn lines(plow: &Plow) -> Result<Value, Failure> {
+    let lines: Vec<Value> = plow
+        .lines()
+        .await?
+        .into_iter()
+        .filter(|line| line.provider_type == "imessage")
+        .map(|line| {
+            json!({"uid": line.uid, "number": line.provider_key, "name": line.display_name,
+                   "available": line.available, "agent_uid": line.agent_uid})
+        })
+        .collect();
+    Ok(json!({"lines": lines}))
+}
+
+/// Creates an agent on `line`: run by Plow (`cloud`, a catalog kind) or by
+/// its owner, whose credential goes to `token_file`, a new private file
+/// reserved before Plow is asked, so a credential is never left with nowhere
+/// to go. Returns at once.
+async fn new(
+    plow: &Plow,
+    api_url: &str,
+    cloud: Option<String>,
+    token_file: Option<PathBuf>,
+    name: &str,
+    line: &str,
+) -> Result<Value, Failure> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().any(char::is_control) {
+        let message = "an agent's name must have text and no control characters";
+        return Err(Failure::usage("bad_name", message.into()));
+    }
+    if token_file.as_deref() == Some(Path::new("-")) {
+        let message = "an agent's credential is never printed: give --token-file a file";
+        return Err(Failure::usage("usage", message.into()));
+    }
+    let provider = match &cloud {
+        Some(kind) => {
+            let kinds = plow.agent_kinds().await?;
+            if kind == OWN || !kinds.iter().any(|known| &known.id == kind) {
+                let message = format!("Plow offers no cloud agent {kind:?}");
+                let mut failure = Failure::usage("unknown_cloud_kind", message);
+                failure.details = json!({"next": "latch agents catalog"});
+                return Err(failure);
+            }
+            kind.as_str()
+        }
+        None => OWN,
+    };
+    let line_uid = line_named(plow, line).await?;
+    let reserved = match &token_file {
+        Some(path) => Some(TokenFile::reserve(path)?),
+        None => None,
+    };
+    let created = match plow.create_agent(&line_uid, name, provider).await {
+        Ok(created) => created,
+        Err(failure) => {
+            if let Some(reserved) = reserved {
+                reserved.abandon();
+            }
+            return Err(not_created(failure, line));
+        }
+    };
+    let uid = created.agent.uid.clone();
+    let token_file = match reserved {
+        Some(reserved) => Some(reserved.keep(created.token.as_deref(), &uid)?),
+        None => None,
+    };
+    let own = token_file.is_some();
+    Ok(json!({
+        "agent": agent_shown(created.agent, None),
+        "token_file": token_file,
+        "api_url": own.then_some(api_url),
+    }))
+}
+
+/// The uid of the line `named` names: its uid, or its number.
+async fn line_named(plow: &Plow, named: &str) -> Result<String, Failure> {
+    let lines = plow.lines().await?;
+    match lines
+        .into_iter()
+        .find(|line| line.uid == named || line.provider_key == named)
+    {
+        Some(line) => Ok(line.uid),
+        None => {
+            let message = format!("Plow has no line {named:?}");
+            let mut failure = Failure::usage("no_such_line", message);
+            failure.details = json!({"next": "latch agents lines"});
+            Err(failure)
+        }
+    }
+}
+
+/// Why Plow made no agent, or that it may have made one.
+fn not_created(failure: Failure, line: &str) -> Failure {
+    match (failure.code.as_str(), failure.plow_code.as_deref()) {
+        ("conflict", Some("AGENT_EXISTS")) => {
+            let message = format!("line {line} already has an agent; pick a free one");
+            let mut failure = Failure::usage("line_taken", message);
+            failure.details = json!({"next": "latch agents lines"});
+            failure
+        }
+        ("conflict", Some("NO_FREE_LINE")) => Failure::failed(
+            "no_free_line",
+            "all of this account's lines are busy".into(),
+        ),
+        (code, _) if lost(code) => {
+            let message = "Plow may or may not have created the agent: its answer was lost; look before trying again";
+            let mut failure = Failure::new(Exit::Unknown, "outcome_unknown", message.into());
+            failure.details = json!({"next": "latch agents"});
+            failure
+        }
+        _ => failure,
+    }
+}
+
+/// A failure after the request may have reached Plow: it may have done it.
+fn lost(code: &str) -> bool {
+    matches!(code, "plow_unreachable" | "plow_error")
+}
+
+/// Removes `named`, once its owner says so.
+async fn remove(plow: &Plow, named: &str, yes: bool) -> Result<Value, Failure> {
+    let agent = resolve(plow, named).await?;
+    let own = agent.provider == OWN;
+    let what = format!("{} ({})", agent.name, agent.line.provider_key);
+    if !yes {
+        if !term::interactive() {
+            let message = format!("removing {what} signs it out of Plow; pass --yes to do it");
+            return Err(Failure::usage("confirmation_required", message));
+        }
+        let program = if own {
+            " The program you run for it keeps running until you stop it."
+        } else {
+            ""
+        };
+        let question = format!(
+            "Remove {what}? Its credential stops working at once, its line is freed and its \
+             chats are closed.{program}"
+        );
+        if !term::confirm(&question) {
+            let message = format!("kept {what}");
+            return Err(Failure::usage("not_removed", message));
+        }
+    }
+    let uid = agent.uid.clone();
+    match plow.delete_agent(&uid).await {
+        Ok(removed) => Ok(json!({"removed": agent_shown(removed, None)})),
+        Err(failure) if lost(&failure.code) => {
+            let message = format!(
+                "Plow may or may not have removed {what}: its answer was lost; look before trying again"
+            );
+            let mut failure = Failure::new(Exit::Unknown, "outcome_unknown", message);
+            failure.details = json!({"next": format!("latch agents show {uid}")});
+            Err(failure)
+        }
+        Err(failure) => Err(failure),
+    }
+}
+
+/// An own agent's credential file: created empty, private and new before
+/// the agent is, then written once with the credential.
+struct TokenFile {
+    path: PathBuf,
+    file: std::fs::File,
+}
+
+impl TokenFile {
+    fn reserve(path: &Path) -> Result<TokenFile, Failure> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let opened = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            // A link there is "already exists", never followed.
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path);
+        match opened {
+            Ok(file) => Ok(TokenFile { path, file }),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let message = format!(
+                    "{} already exists; the credential goes only to a new file: name another",
+                    path.display()
+                );
+                Err(Failure::usage("token_file_exists", message))
+            }
+            Err(err) => {
+                let message = format!("{} cannot be made: {err}", path.display());
+                Err(Failure::usage("token_file_unwritable", message))
+            }
+        }
+    }
+
+    /// Plow made no agent: the empty file goes.
+    fn abandon(self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+
+    /// Writes `token` and returns the file's path. Plow made `agent_uid`,
+    /// so a credential that cannot be kept is said plainly, and the agent
+    /// left for its owner to remove.
+    fn keep(mut self, token: Option<&str>, agent_uid: &str) -> Result<PathBuf, Failure> {
+        let written = match token {
+            Some(token) => self
+                .file
+                .write_all(format!("{token}\n").as_bytes())
+                .and_then(|()| self.file.sync_all())
+                .map_err(|err| err.to_string()),
+            None => Err("Plow sent no credential".to_string()),
+        };
+        match written {
+            Ok(()) => Ok(self.path),
+            Err(why) => {
+                let file_removed = std::fs::remove_file(&self.path).is_ok();
+                let message = format!(
+                    "the agent was created, but its credential could not be saved to {}: {why}",
+                    self.path.display()
+                );
+                let mut failure = Failure::failed("token_not_saved", message);
+                failure.details = json!({"agent_uid": agent_uid, "path": self.path,
+                    "file_removed": file_removed, "next": format!("latch agents show {agent_uid}")});
+                Err(failure)
+            }
+        }
     }
 }
 

@@ -85,13 +85,13 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
 - **Outside a signed macOS latch, secrets are plaintext 0600 files**: the
   peer's key, the Plow token, the vault's custody key and the audit keys. A
   signed macOS latch keeps them in the Keychain.
-- **Exec argv is stored in full in the audit**, so the owner can see exactly
-  what agents ran (`latch audit show`); credentials an agent puts on a
-  command line are therefore in it. The audit is sealed record by record
-  (AES-256-GCM under the host's audit key), so on disk they are not
-  readable. Where commands are shown to people (`serve.log`, the serve
-  dashboard) credential-looking values are hidden, best effort, and they
-  say so; argv hashing or redaction at write time is declined.
+- **Exec argv is stored in full in the audit**; credentials an agent puts
+  on a command line are therefore in it. The audit is sealed record by
+  record (AES-256-GCM under the host's audit key), so on disk they are not
+  readable. Wherever commands are shown to people (`latch audit`,
+  `serve.log`, the serve dashboard) credential-looking values are hidden,
+  best effort, and they say so; no command prints the stored values, and
+  argv hashing or redaction at write time is declined.
 
 **Reviewer environment note:** the gate is `just test` (it installs the
 pinned browser engines into `.dev/cft-state` first, and runs fmt and clippy)

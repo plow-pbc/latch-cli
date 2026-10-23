@@ -9,8 +9,8 @@ latch reaches one of your owner's machines (a *host*). Most commands
 print one JSON object on stdout on success and `{"error": …}` on stderr
 on failure, with an exit code you can branch on. At a terminal an error
 prints its message and any details. Some commands produce text or JSON
-lines instead, including `help`, `skill`, `browser text --raw`, `logs`,
-`events` and `audit show -f`.
+lines instead, including `help`, `skill`, `browser text --raw`, `logs`
+and `status --local --follow`.
 
 ## Start
 

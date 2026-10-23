@@ -13,8 +13,9 @@
 //!
 //! A refusal is a verdict, not an error: `not_covered`, `owner_said_no`,
 //! `no_intent`, or `host_refused` for a refusal the host makes without
-//! asking the judge (`--deny-exec`, a connector that is off). A preview
-//! runs nothing, so it is not audited and not shown on the dashboard.
+//! asking the judge (`--deny-exec`, a connector that is off, a path it
+//! never lets a worker use). A preview runs nothing, so it is not audited
+//! and not shown on the dashboard.
 
 use serde_json::{Value, json};
 
@@ -88,7 +89,7 @@ async fn preview(
     args: &Value,
 ) -> Result<Value, Response> {
     let refused = |failure: Failure| Err(Response::error(&failure));
-    if let Err(failure) = gate::owner::owner_only(&identity.kind) {
+    if let Err(failure) = gate::owner::owner_only(&identity.kind, "the rules") {
         return refused(failure);
     }
     let Ok(mut request) = serde_json::from_value::<Request>(args["request"].clone()) else {
