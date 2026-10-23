@@ -3554,7 +3554,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
         before["this_machine"]["hosting"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
                "state": "stopped", "pid": null, "blocked": null,
-               "deny_exec": {"every_agent": false, "agent_uids": []}})
+               "deny_exec": {"every_agent": false, "agent_uids": []},
+               "keep_awake": {"enabled": false, "held": false, "reason": "disabled"}})
     );
     assert_eq!(before["last_error"], Value::Null);
 
@@ -3572,7 +3573,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
         up["this_machine"]["hosting"],
         json!({"running": true, "ready": true, "configuring": false, "managed": false, "attached": false,
                "state": "serving", "pid": pid, "blocked": null,
-               "deny_exec": {"every_agent": false, "agent_uids": []}})
+               "deny_exec": {"every_agent": false, "agent_uids": []},
+               "keep_awake": {"enabled": false, "held": false, "reason": "disabled"}})
     );
     drop(serve);
     let stopped = local(&host);
@@ -3591,6 +3593,84 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
         .filter(|(line, _)| !line.contains("/v1/latch/peers") && !line.contains("offline"))
         .count();
     assert_eq!(statuses, 0, "{:?}", plow.seen());
+}
+
+#[test]
+fn keep_awake_is_saved_without_a_host_and_a_serving_host_follows_it_without_a_restart() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let set = |state: &Path, on: &str| {
+        let output = latch(state, &["settings", "set", "--keep-awake", on], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let saved: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let on = on == "on";
+        assert_eq!(
+            saved,
+            json!({"settings": {"keep_awake": on}, "next": "latch status --local"})
+        );
+    };
+    let keep_awake = |state: &Path| {
+        let output = latch(state, &["status", "--local"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        status["this_machine"]["hosting"]["keep_awake"].clone()
+    };
+    let stopped = if cfg!(target_os = "macos") {
+        "not_serving"
+    } else {
+        "unsupported"
+    };
+
+    // Before login: saved, and nothing holds it.
+    let never = dir.path().join("never");
+    set(&never, "on");
+    assert_eq!(
+        keep_awake(&never),
+        json!({"enabled": true, "held": false, "reason": stopped})
+    );
+
+    let host = owner_host_on(&plow, dir.path());
+    set(&host, "on");
+    assert_eq!(
+        keep_awake(&host),
+        json!({"enabled": true, "held": false, "reason": stopped})
+    );
+    let serve = serving(&host, &relay);
+    let pid = serve.0.id();
+    let status = Lines::start(&host, &["status", "--local", "--follow"]);
+    let next_keep_awake = |until: &dyn Fn(&Value) -> bool| loop {
+        let line = status.next();
+        let hosting = &line["status"]["this_machine"]["hosting"];
+        assert_eq!(hosting["pid"], pid, "the host restarted: {line}");
+        if until(&hosting["keep_awake"]) {
+            return hosting["keep_awake"].clone();
+        }
+    };
+    if cfg!(target_os = "macos") {
+        // On AC it holds; on battery it says so.
+        let held = next_keep_awake(&|keep_awake| keep_awake["held"] != Value::Null);
+        assert!(
+            held == json!({"enabled": true, "held": true, "reason": null})
+                || held == json!({"enabled": true, "held": false, "reason": "on_battery"}),
+            "{held}"
+        );
+    } else {
+        let unsupported = next_keep_awake(&|_| true);
+        assert_eq!(
+            unsupported,
+            json!({"enabled": true, "held": false, "reason": "unsupported"})
+        );
+    }
+    set(&host, "off");
+    assert_eq!(
+        // Until the host reads it, the saved choice is off but the hold is
+        // still on.
+        next_keep_awake(&|keep_awake| keep_awake["reason"] == "disabled"),
+        json!({"enabled": false, "held": false, "reason": "disabled"})
+    );
+    status.close();
+    drop(serve);
 }
 
 /// A running stream of lines (`latch audit --follow`, `latch status

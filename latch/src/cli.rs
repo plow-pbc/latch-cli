@@ -187,6 +187,10 @@ pub enum Command {
     /// The connectors on a host: list them; on the host itself, its owner
     /// turns one on (running its setup) or off
     Plugins(PluginsArgs),
+    /// This machine's own host settings, saved in its state folder: a
+    /// running host picks a change up at once, and a stopped one when it
+    /// starts. `status --local` reports what the host makes of them
+    Settings(SettingsArgs),
     /// This machine's host audit log (or another host's, with --host): its newest records as JSON lines, an earlier page, or with --follow each new one; its chain checked without the key, or a new key
     #[command(after_help = AUDIT_HELP)]
     Audit(AuditArgs),
@@ -761,6 +765,30 @@ pub enum PluginsCommand {
     /// Turn NAME off on this machine's host: a running one refuses new calls
     /// at once, and this returns once its running ones have finished (owner only)
     Disable { name: String },
+}
+
+#[derive(Args, Debug)]
+pub struct SettingsArgs {
+    #[command(subcommand)]
+    pub command: SettingsCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SettingsCommand {
+    /// Save a setting for this machine's host; needs no login, host or restart
+    Set {
+        /// Keep this machine from idle sleep while its host serves, on AC
+        /// power only (macOS; elsewhere `unsupported`). The display still
+        /// sleeps and locks, and closing the lid still sleeps it
+        #[arg(long, value_name = "on|off")]
+        keep_awake: OnOff,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Debug)]
+pub enum OnOff {
+    On,
+    Off,
 }
 
 #[derive(Subcommand, Debug)]
