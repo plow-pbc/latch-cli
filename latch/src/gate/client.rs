@@ -27,12 +27,12 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
     let scope = match args.command {
         RulesCommand::Try {
             host,
-            from,
+            agent,
             new_agent,
             draft,
             request,
         } => {
-            let args = json!({"from": from, "new_agent": new_agent});
+            let args = json!({"from": agent, "new_agent": new_agent});
             return preview(state, host, args, draft, request).await;
         }
         RulesCommand::Set { ref scope, .. }
@@ -44,7 +44,9 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         state,
         host: scope.host.clone(),
     };
-    let from = scope.from.clone();
+    // The operation still calls the agent `from`, as hosts of every
+    // version read it.
+    let from = scope.agent.clone();
     match args.command {
         RulesCommand::Set { text, file, .. } => {
             let text = match (text, file) {
@@ -209,6 +211,7 @@ impl Target<'_> {
         .await;
         let decision = crate::serve::decision(&done.response);
         let mut record = audit::record(&config.peer.key, None, "rules", decision, &done.outcome);
+        record.caller_name = Some(config.peer.name.clone());
         record.args = done.audit_args;
         let audit_id = log.append(record)?;
         crate::serve::with_audit_id(done.response, audit_id).into_result()

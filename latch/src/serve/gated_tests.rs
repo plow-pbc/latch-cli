@@ -142,6 +142,7 @@ pub(super) async fn start_with(
         .unwrap(),
         home: home.clone(),
         stopping: tokio::sync::watch::Sender::new(Stopping::No),
+        agent_names: Mutex::default(),
     });
     let serving = host.clone();
     tokio::spawn(async move {
@@ -1185,7 +1186,7 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
     assert_eq!(done["host"], "test-host");
     assert_eq!(done["scope"], "every agent");
     assert_eq!(done["applies"], "applies to the next judgment");
-    // `--from` by the peer name of the agent's latch.
+    // `--agent` by the peer name of the agent's latch.
     let set = json!({"command": "set", "from": "a agent", "text": "Run tests in the work folder."});
     let done = ok(t.call(&device, "rules", set).await.0);
     assert_eq!(
@@ -1193,7 +1194,7 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
         (Some(AGENT), Some("Juno"))
     );
 
-    // `latch rules edit --from Juno`: a show, then an edit at its revision.
+    // `latch rules edit --agent Juno`: a show, then an edit at its revision.
     let shown = ok(t
         .call(&device, "rules", json!({"command": "show", "from": "Juno"}))
         .await
@@ -1286,7 +1287,7 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
     assert_eq!(refusal(&answer).1, "no_intent", "neither chat nor rules");
 
-    // The owner sets the rules as `latch rules set --from Juno` sends
+    // The owner sets the rules as `latch rules set --agent Juno` sends
     // them; the shared folder stands in for ~/work.
     let device = t.caller("device").await;
     let text = format!("run tests in {}, nothing else", t.area.display());
