@@ -180,6 +180,20 @@ jobs:
         with:
           tool: just,cargo-nextest@0.9.148
       - run: test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+      - name: Browser sandboxes under the shipped Docker seccomp profile
+        run: |
+          sudo apt-get install -y -q apparmor
+          sudo apparmor_parser -r latch/docker/latch-bwrap.apparmor
+          docker build -q -t latch-linux-test:ci -f latch/docker/Dockerfile.test latch/docker
+          docker run --rm --init --user "$(id -u):$(id -g)" --cap-drop=ALL \
+            --security-opt=no-new-privileges=true --security-opt=systempaths=unconfined \
+            --security-opt=apparmor=latch-bwrap --security-opt="seccomp=$PWD/latch/docker/seccomp.json" \
+            --shm-size=1g -v "$PWD:$PWD" -w "$PWD" -e HOME=/tmp latch-linux-test:ci \
+            sh -ec 'test "$(cat /proc/self/attr/current)" = "latch-bwrap (enforce)"
+              sh latch/browser-engines.sh --state-dir .dev/cft-state chrome camoufox
+              cd latch
+              cargo nextest run --archive-file ../linux-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
+                --success-output immediate -E "test(the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing)"'
       # The archive's latch, unpacked where it was built, installs Ubuntu's
       # bwrap profile and reports the reduced isolation.
       - run: cargo nextest list --archive-file ../linux-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite > /dev/null
