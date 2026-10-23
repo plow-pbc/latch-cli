@@ -36,7 +36,8 @@ nonisolated struct LiveLatchClient: LatchClient {
             let reader = Task.detached {
                 do {
                     for await line in try process.lines() {
-                        continuation.yield(try decode(LoginEvent.self, Data(line.utf8)))
+                        guard let event = try decode(LoginLine.self, Data(line.utf8)).event else { continue }
+                        continuation.yield(event)
                     }
                     if Task.isCancelled { return continuation.finish() }
                     continuation.finish(throwing: await process.failure())

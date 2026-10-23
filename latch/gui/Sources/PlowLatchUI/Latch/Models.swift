@@ -70,6 +70,21 @@ nonisolated extension LoginEvent: Decodable {
     }
 }
 
+/// A line of `latch login --events`: its event, or nil for a line the app
+/// doesn't act on, the opening `hello` and any type a newer latch adds.
+nonisolated struct LoginLine: Decodable {
+    var event: LoginEvent?
+
+    private enum Keys: String, CodingKey { case type }
+
+    init(from decoder: Decoder) throws {
+        switch try decoder.container(keyedBy: Keys.self).decode(String.self, forKey: .type) {
+        case "code", "waiting", "verified", "expired", "error": event = try LoginEvent(from: decoder)
+        default: event = nil
+        }
+    }
+}
+
 /// `latch rules show`: the rules for every agent on this Mac's host.
 nonisolated struct RulesShow: Decodable, Equatable {
     struct Text: Decodable, Equatable { var text: String }

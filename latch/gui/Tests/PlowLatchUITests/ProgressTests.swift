@@ -66,6 +66,24 @@ struct DecodingTests {
         #expect(error == .error(LatchFailure(code: "code_expired", message: "the code expired")))
     }
 
+    @Test func aLoginSkipsHelloAndEventsItDoesNotKnow() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let latch = folder.appending(path: "latch")
+        let lines = [#"{"type":"hello","schema":1}"#, Fixtures.code, #"{"type":"progress","step":"texted"}"#,
+                     #"{"type":"verified","peer":{"name":"studio"}}"#]
+        try ("#!/bin/sh\ncat <<'EOF'\n" + lines.joined(separator: "\n") + "\nEOF\n").write(to: latch, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: latch.path)
+        var events: [LoginEvent] = []
+        for try await event in LiveLatchClient(executable: latch, stateDir: folder.path).login(name: nil) {
+            events.append(event)
+        }
+        #expect(events.count == 2)
+        guard case .code = events.first else { Issue.record("not a code first"); return }
+        #expect(events.last == .verified(name: "studio"))
+    }
+
     @Test func localStatusDecodes() throws {
         let serving: LocalStatus = try Fixtures.decode(Fixtures.serving)
         #expect(serving.peer?.name == "studio")
