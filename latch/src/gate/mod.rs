@@ -100,6 +100,10 @@ pub enum Caller<'a> {
     /// An agent, by its verified Plow uid, in the chat it named: judged
     /// against the owner's chat and rules.
     Agent { uid: &'a str, chat: Option<&'a str> },
+    /// No agent yet, only the one the owner may add: no Plow chat and no
+    /// rules of its own, so judged against the host's rules alone. Only a
+    /// preview asks as it.
+    NewAgent,
 }
 
 impl Caller<'_> {
@@ -108,6 +112,8 @@ impl Caller<'_> {
         match self {
             Caller::Owner | Caller::OwnerOnHost => "owner",
             Caller::Agent { uid, .. } => uid,
+            // No agent uid, so no rules of its own.
+            Caller::NewAgent => "new_agent",
         }
     }
 
@@ -117,6 +123,7 @@ impl Caller<'_> {
             Caller::Owner => "owner_device",
             Caller::OwnerOnHost => "owner_on_host",
             Caller::Agent { .. } => "agent",
+            Caller::NewAgent => "new_agent",
         }
     }
 }
@@ -159,6 +166,26 @@ impl Gatekeeper {
         model::host_provider(state_dir, MODEL).map(Arc::from)
     }
 
+    /// This gatekeeper with `draft` in place of the rules for every agent
+    /// (`None`: no such rules), and `caller`'s own rules as they are: what
+    /// a preview of a draft judges by.
+    pub fn drafted(
+        &self,
+        caller: Caller<'_>,
+        draft: Option<String>,
+    ) -> Result<Gatekeeper, Failure> {
+        let mut rules = self
+            .rules
+            .rules(caller.key())
+            .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")))?;
+        rules.host = draft;
+        Ok(Gatekeeper::new(
+            self.plow.clone(),
+            self.provider.clone(),
+            Box::new(rules),
+        ))
+    }
+
     /// Whether the owner asked for `action` by `caller`.
     pub async fn judge(&self, caller: Caller<'_>, action: &RawValue) -> Judgment {
         let started = Instant::now();
@@ -181,7 +208,7 @@ impl Gatekeeper {
         gate: &mut Value,
     ) -> Result<(), Failure> {
         let conversation = match caller {
-            Caller::Owner | Caller::OwnerOnHost => None,
+            Caller::Owner | Caller::OwnerOnHost | Caller::NewAgent => None,
             Caller::Agent { uid, chat } => chat::read(&self.plow, uid, chat).await?,
         };
         // The owner's key is no agent uid: only the host's rules apply.

@@ -98,12 +98,6 @@ impl Provider for Recorder {
     }
 }
 
-impl RulesSource for Rules {
-    fn rules(&self, _: &str) -> Result<Rules, String> {
-        Ok(self.clone())
-    }
-}
-
 struct Unreadable;
 
 impl RulesSource for Unreadable {
