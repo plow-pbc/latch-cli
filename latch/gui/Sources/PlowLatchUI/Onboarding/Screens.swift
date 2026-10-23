@@ -518,7 +518,13 @@ struct StartView: View {
             } else if app.status?.thisMachine.hosting.ready == true {
                 Text("Latch is already running on this Mac.").foregroundStyle(Brand.muted)
             }
-            if let error = flow.startError {
+            if flow.loginItemNeedsApproval {
+                // macOS waiting for the person, not a failure.
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(LoginItem.needsApproval.message)
+                    Button("Open Login Items Settings…") { flow.openLoginItemsSettings() }
+                }
+            } else if let error = flow.startError {
                 ErrorText(error: error).foregroundStyle(Brand.clay).font(.callout)
             }
             Text("Your Mac stays reachable while it's awake and Latch is running.").foregroundStyle(Brand.muted)

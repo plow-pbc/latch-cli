@@ -36,6 +36,9 @@ final class AppModel {
     /// Turns "Start when you log in" on or off; a test build records it.
     var setLoginItem: (Bool) throws -> Void = { try LoginItem.set($0) }
     var loginItemIsOn: () -> Bool = { LoginItem.isOn }
+    /// System Settings at Login Items, only ever on a click; a test build
+    /// records it.
+    var openLoginItems: () -> Void = { LoginItem.openSettings() }
     /// The login item starts latch's default state folder, so it's offered
     /// only when the app runs on that folder, never on a `--state-dir` one.
     let loginItemOffered: Bool

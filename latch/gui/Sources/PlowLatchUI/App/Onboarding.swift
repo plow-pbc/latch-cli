@@ -770,6 +770,14 @@ final class Onboarding {
         }
     }
 
+    /// Start is waiting for the login item to be allowed in Login Items.
+    var loginItemNeedsApproval: Bool { startError == LoginItem.needsApproval }
+
+    /// "Open Login Items Settings…".
+    func openLoginItemsSettings() {
+        app.openLoginItems()
+    }
+
     /// Puts the flow at a given point without running it, for snapshots.
     func stage(_ step: Step) {
         self.step = step
@@ -788,11 +796,34 @@ enum LoginItem {
     static var isOn: Bool { service.status == .enabled }
 
     static func set(_ on: Bool) throws {
-        switch (on, service.status) {
+        try set(on, status: { service.status }, register: { try service.register() }, unregister: { try service.unregister() })
+    }
+
+    /// macOS can register the agent but hold it until the person allows it
+    /// in Login Items (`requiresApproval`): then it hasn't started at login,
+    /// so this throws `needsApproval` and leaves it registered, as Login
+    /// Items lists it only while it is.
+    static func set(_ on: Bool, status: () -> SMAppService.Status, register: () throws -> Void,
+                    unregister: () throws -> Void) throws {
+        switch (on, status()) {
         case (true, .enabled), (false, .notRegistered), (false, .notFound): return
-        case (true, _): try service.register()
-        case (false, _): try service.unregister()
+        case (true, .requiresApproval): throw needsApproval
+        case (true, _):
+            do {
+                try register()
+            } catch where status() == .requiresApproval {
+                throw needsApproval
+            }
+            if status() == .requiresApproval { throw needsApproval }
+        case (false, _): try unregister()
         }
+    }
+
+    static let needsApproval = LatchError.unreachable(
+        "Latch is running now. To start it when you log in, allow \(AppName.shown) in Login Items & Extensions. Then click Continue, or turn off “Start when you log in”.")
+
+    static func openSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 }
 
