@@ -268,10 +268,11 @@ final class AppModel {
                 try await self.signInWithGoogle(addAccount: sheet.adding) { self.googleSignInLink = $0 }
             }
             guard !Task.isCancelled else { return }
+            // Over, with an account or not: no link to open again.
+            googleSignInLink = nil
             switch signedIn {
             case .success(_?):
                 googleSignInTask = nil
-                googleSignInLink = nil
                 googleSignIn = nil
                 await refreshConnections()
                 if let mac = hosts.first(where: \.isThisMac) {

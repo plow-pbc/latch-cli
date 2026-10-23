@@ -353,7 +353,7 @@ struct GoogleView: View {
                 }
                 Button("Open the sign-in page again") { flow.openGoogleSignInAgain() }
                     .buttonStyle(.link).foregroundStyle(Brand.volt)
-                    .disabled(flow.googleSignInLink == nil)
+                    .disabled(!flow.canOpenGoogleSignInAgain)
             }
         case .connected:
             if !flow.googleAccounts.isEmpty {
