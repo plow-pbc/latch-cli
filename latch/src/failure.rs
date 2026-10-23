@@ -113,10 +113,15 @@ impl Failure {
 
     /// `{"error": {"code": "...", "message": "..."}}`
     pub fn to_json(&self) -> String {
+        serde_json::json!({"error": self.error()}).to_string()
+    }
+
+    /// `{"code": "...", "message": "...", ...details}`
+    pub fn error(&self) -> Value {
         let mut error = serde_json::json!({ "code": self.code, "message": self.message });
         if let Some(details) = self.details.as_object() {
             error.as_object_mut().unwrap().extend(details.clone());
         }
-        serde_json::json!({"error":error}).to_string()
+        error
     }
 }

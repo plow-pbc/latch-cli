@@ -7,29 +7,29 @@ nonisolated protocol LatchClient: Sendable {
     func localStatus() async throws -> LocalStatus
     /// `latch status`: the account's hosts, from Plow.
     func accountStatus() async throws -> AccountStatus
-    /// `latch login --events`: the code to text, then how it ends. Stopping
-    /// the iteration cancels the login.
-    func login() -> AsyncThrowingStream<LoginEvent, Error>
+    /// `latch login --events [--name NAME]`: the code to text, then how it
+    /// ends. Stopping the iteration cancels the login.
+    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error>
     /// `latch rules show`, on this Mac's host or, with `host`, another.
     func rulesShow(host: String?) async throws -> RulesShow
     /// `latch rules set --file -`, the text on stdin.
     func rulesSet(_ text: String) async throws
-    /// `latch plugins list`, on this Mac's host (it must be running) or,
-    /// with `host`, another.
+    /// `latch setup --status`: what's set up, read from the state folder.
+    func setupStatus() async throws -> SetupStatus
+    /// `latch plugins list`, on this Mac's host or, with `host`, another.
     func pluginsList(host: String?) async throws -> PluginsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
     func vaultList(host: String?) async throws -> VaultList
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
-    /// `latch serve -d`, `--again` to start with the last serve's flags.
-    func serve(again: Bool) async throws
+    /// A setup step, as `setup --status` gives its words after `latch`.
+    func perform(_ args: [String]) async throws
     /// `latch stop`: stops the host on this state folder.
     func stop() async throws
 }
 
 extension LatchClient {
     func rulesShow() async throws -> RulesShow { try await rulesShow(host: nil) }
-    func pluginsList() async throws -> PluginsList { try await pluginsList(host: nil) }
 }
 
 /// The bundle's own latch, by absolute path, always with `--state-dir`.
@@ -45,13 +45,15 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(AccountStatus.self, try await run(["status"]))
     }
 
-    func login() -> AsyncThrowingStream<LoginEvent, Error> {
-        let process = LatchProcess(executable: executable, arguments: withState(["login", "--events"]), environment: Self.environment)
+    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> {
+        let process = LatchProcess(executable: executable, arguments: withState(["login", "--events"] + (name.map { ["--name", $0] } ?? [])),
+                                   environment: Self.environment)
         return AsyncThrowingStream { continuation in
             let reader = Task.detached {
                 do {
                     for await line in try process.lines() {
-                        continuation.yield(try decode(LoginEvent.self, Data(line.utf8)))
+                        guard let event = try decode(LoginLine.self, Data(line.utf8)).event else { continue }
+                        continuation.yield(event)
                     }
                     if Task.isCancelled { return continuation.finish() }
                     continuation.finish(throwing: await process.failure())
@@ -74,6 +76,10 @@ nonisolated struct LiveLatchClient: LatchClient {
         _ = try await run(["rules", "set", "--file", "-"], input: Data(text.utf8))
     }
 
+    func setupStatus() async throws -> SetupStatus {
+        try decode(SetupStatus.self, try await run(["setup", "--status"]))
+    }
+
     func pluginsList(host: String?) async throws -> PluginsList {
         try decode(PluginsList.self, try await run(["plugins", "list"] + on(host)))
     }
@@ -87,8 +93,8 @@ nonisolated struct LiveLatchClient: LatchClient {
         return plugin == "google" ? try decode(GoogleEnabled.self, data) : nil
     }
 
-    func serve(again: Bool) async throws {
-        _ = try await run(["serve", "-d"] + (again ? ["--again"] : []))
+    func perform(_ args: [String]) async throws {
+        _ = try await run(args)
     }
 
     func stop() async throws {

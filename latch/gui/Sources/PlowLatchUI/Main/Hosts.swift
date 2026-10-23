@@ -61,7 +61,7 @@ struct HostEntry: Equatable, Identifiable {
 
 /// A host's state in a word or two, as the picker and Home show it.
 enum HostState: Equatable {
-    case serving, starting, stopped, failed, blocked
+    case serving, notReady, starting, stopped, failed, blocked
     case online, offline, unknown
 
     init(_ host: HostEntry, local: LocalStatus?) {
@@ -69,7 +69,7 @@ enum HostState: Equatable {
             guard let serve = local?.serve else { self = .unknown; return }
             if serve.blocked != nil { self = .blocked; return }
             self = switch serve.state {
-            case "serving": .serving
+            case "serving": serve.ready ? .serving : .notReady
             case "starting": .starting
             case "error": .failed
             default: .stopped
@@ -86,6 +86,7 @@ enum HostState: Equatable {
     var title: String {
         switch self {
         case .serving: "Serving"
+        case .notReady: "Not ready"
         case .starting: "Starting…"
         case .stopped: "Stopped"
         case .failed: "Stopped after an error"

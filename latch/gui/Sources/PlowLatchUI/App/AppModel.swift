@@ -44,20 +44,25 @@ final class AppModel {
     var progress: Progress { onboarding?.progress ?? store.load() }
 
     /// What's set up, as latch says: whether shared rules are saved, and
-    /// each connector's state; nil where latch couldn't say (a connector's
-    /// state needs this Mac's host running).
+    /// each setup step (`setup --status`); nil where latch couldn't say.
     private(set) var rulesSaved: Bool?
-    private(set) var plugins: [String: String]?
+    private(set) var setup: SetupStatus?
 
     func refreshSetup() async {
         rulesSaved = (try? await client.rulesShow()).map { $0.everyAgent != nil }
-        plugins = (try? await client.pluginsList()).map { Dictionary(uniqueKeysWithValues: $0.plugins.map { ($0.name, $0.state) }) }
+        setup = try? await client.setupStatus()
+    }
+
+    /// Whether latch says a connector is set up: on, and for Google still
+    /// connected in Plow; nil before it has said.
+    func connectorOn(_ name: String) -> Bool? {
+        setup.map { $0.step(name)?.state == "done" }
     }
 
     /// For snapshots: what latch said is set up.
-    func stage(rulesSaved: Bool?, plugins: [String: String]?) {
+    func stage(rulesSaved: Bool?, setup: SetupStatus?) {
         self.rulesSaved = rulesSaved
-        self.plugins = plugins
+        self.setup = setup
     }
 
     /// The account's hosts as `latch status` last said; it asks Plow, so it
@@ -146,13 +151,15 @@ final class AppModel {
         await refreshAccount()
     }
 
-    /// Starts this Mac's host in the background, with the last serve's
-    /// flags when there were any.
+    /// Starts this Mac's host the way `setup --status` says (with the last
+    /// serve's flags when there were any). Nothing to do when it isn't
+    /// needed. A host latch says can't start now throws latch's reason.
     func startHost() async throws {
-        do {
-            try await client.serve(again: true)
-        } catch let error as LatchError where error.code == "nothing_to_start_again" {
-            try await client.serve(again: false)
+        guard let host = try await client.setupStatus().step("host") else { return }
+        switch host.state {
+        case "needed": if let args = host.args { try await client.perform(args) }
+        case "blocked": throw HostBlocked(reason: host.reason)
+        default: break
         }
     }
 

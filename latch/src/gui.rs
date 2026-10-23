@@ -67,10 +67,9 @@ fn run(bundle: &CFBundle, state_dir: Option<PathBuf>) -> Result<ExitCode, Failur
         too_old();
         return Ok(ExitCode::SUCCESS);
     }
-    // The login item runs this latch with no --state-dir, so it starts
-    // only the default state folder: the window offers it only there.
-    let default_state = c_int::from(state_dir.is_none());
-    let state = StateDir::new(state_dir.or(crate::cli::BUILD_STATE_DIR.map(PathBuf::from)))?;
+    let default = StateDir::new(crate::cli::BUILD_STATE_DIR.map(PathBuf::from))?;
+    let launched = launched_on(state_dir.as_deref(), &default.path);
+    let state = StateDir::new(state_dir.or(Some(default.path)))?;
     let latch = std::env::current_exe().map_err(|err| missing(err.to_string()))?;
     let library = bundle
         .private_frameworks_url()
@@ -79,6 +78,7 @@ fn run(bundle: &CFBundle, state_dir: Option<PathBuf>) -> Result<ExitCode, Failur
         .join(LIBRARY);
     let c = |path: &std::path::Path| CString::new(path.as_os_str().as_bytes()).unwrap();
     let (library, latch, state) = (c(&library), c(&latch), c(&state.path));
+    let launched = launched as c_int;
     // SAFETY: a NUL-terminated path; the library stays loaded for the life
     // of the process.
     let handle = unsafe { libc::dlopen(library.as_ptr(), libc::RTLD_NOW) };
@@ -93,15 +93,40 @@ fn run(bundle: &CFBundle, state_dir: Option<PathBuf>) -> Result<ExitCode, Failur
         return Err(missing("its library has no latch_gui_main".into()));
     }
     // SAFETY: latch_gui_main is `(const char *latch, const char *state_dir,
-    // int default_state) -> int`
+    // int launched_on) -> int` (a `Launched`)
     // (latch/gui/Sources/PlowLatchUI/App/PlowLatchApp.swift); it runs the
     // app on this, the main, thread and copies both strings first.
     let main: extern "C" fn(*const c_char, *const c_char, c_int) -> c_int =
         unsafe { std::mem::transmute(entry) };
-    Ok(match main(latch.as_ptr(), state.as_ptr(), default_state) {
+    Ok(match main(latch.as_ptr(), state.as_ptr(), launched) {
         0 => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
     })
+}
+
+/// Which state folder a launch names, as the window is told: the window
+/// remembers a `--state-dir` of its own and comes back to it on a launch
+/// with no arguments, such as macOS's Quit & Reopen after Full Disk
+/// Access is granted, which drops them.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Launched {
+    /// A `--state-dir` other than latch's default.
+    Other = 0,
+    /// No `--state-dir`.
+    Unnamed = 1,
+    /// A `--state-dir` naming latch's default.
+    Default = 2,
+}
+
+fn launched_on(state_dir: Option<&std::path::Path>, default: &std::path::Path) -> Launched {
+    let same = |a: &std::path::Path, b: &std::path::Path| {
+        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    };
+    match state_dir {
+        None => Launched::Unnamed,
+        Some(path) if same(path, default) => Launched::Default,
+        Some(_) => Launched::Other,
+    }
 }
 
 fn missing(why: String) -> Failure {
@@ -202,6 +227,17 @@ mod tests {
         ] {
             assert_eq!(gui_args(&args(cli)), None, "{cli:?}");
         }
+    }
+
+    #[test]
+    fn a_launch_says_which_state_folder_it_named() {
+        let default = std::path::Path::new("/Users/me/.latch");
+        assert_eq!(launched_on(None, default), Launched::Unnamed);
+        assert_eq!(launched_on(Some(default), default), Launched::Default);
+        assert_eq!(
+            launched_on(Some(std::path::Path::new("/tmp/dev")), default),
+            Launched::Other
+        );
     }
 
     #[test]
