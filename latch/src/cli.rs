@@ -579,7 +579,7 @@ pub struct VaultArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum VaultCommand {
-    /// Every item's metadata (never a value)
+    /// Every item's metadata, a login's username included (never a secret value)
     List,
     /// One item's metadata and its non-secret values (never a secret one)
     Show { item: String },

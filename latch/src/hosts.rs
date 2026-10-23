@@ -4,7 +4,8 @@
 //! value), then this machine if it has served, otherwise the only host
 //! in the directory, if there is exactly one.
 //! Anything else is a usage error (exit 2) that lists the hosts. Whether the
-//! host is actually up is learned by dialing it, not from its `online` flag.
+//! host is up isn't checked here: `dial::connect` refuses one Plow lists as
+//! offline without dialing, and learns about any other by dialing it.
 
 use crate::failure::Failure;
 use crate::login;

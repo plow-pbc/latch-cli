@@ -8,8 +8,10 @@
 //! values, seeds or screenshots.
 //!
 //! With no provider, or one that fails, whatever needs a new decision stops
-//! with `model_unavailable` before anything is sent: a sentence check, and
-//! a click or Enter's risk decision. There is no keyword stand-in.
+//! with `model_unavailable`: a click or Enter's risk decision before it is
+//! sent, and a plan's sentence checks before it starts. One that fails
+//! while judging a step's sentence check stops the plan after that step's
+//! action was sent. There is no keyword stand-in.
 
 use serde_json::{Value, json};
 
