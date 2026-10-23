@@ -362,7 +362,7 @@ async fn import(
     recv: &mut RecvStream,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
-    let parsed = receive(vault, args, send, recv).await?;
+    let mut parsed = receive(vault, args, send, recv).await?;
     audit.insert("source".into(), json!(parsed.source));
     audit.insert("rows".into(), json!(parsed.items.len()));
     wire::write_frame(send, &frame(json!({"preview": import::preview(&parsed)})))
@@ -384,7 +384,10 @@ async fn import(
         .flatten()
         .filter_map(|p| p.as_u64().map(|p| p as usize))
         .collect();
-    let outcome = vault.with(|store| Ok(import::commit(store, &parsed, &picks)))?;
+    let outcome = vault.with(|store| match picked["expect"].as_str() {
+        Some(expect) => import::commit_expecting(store, &mut parsed, &picks, expect),
+        None => Ok(import::commit(store, &parsed, &picks)),
+    })?;
     audit.insert("picked".into(), json!(picks.len()));
     audit.insert(
         "result".into(),
