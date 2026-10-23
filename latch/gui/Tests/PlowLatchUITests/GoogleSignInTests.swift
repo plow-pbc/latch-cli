@@ -121,7 +121,9 @@ struct GoogleSignInTests {
             await waitUntil { client.events != nil }
             client.events?.yield(.link(first))
             await waitUntil { flow.googleSignInLink != nil }
+            let wait = flow.googleTask
             leave(flow)
+            await wait?.value
             await waitUntil { client.stopped == 1 }
             #expect(client.stopped == 1)
             #expect(flow.google == .notConnected)

@@ -679,6 +679,7 @@ struct ClosingTests {
         app.open = { Issue.record("opened \($0)") }
         let flow = app.stage(.access)
         await flow.accessAppeared()
+        await flow.accessTask?.value
         #expect(flow.messages == .done)
         #expect(flow.contacts == .unknown)
         // Looking turns nothing on.

@@ -138,7 +138,7 @@ final class Onboarding {
     var googleWaitEnded = false
     /// The newest sign-in link latch gave, kept only to open again.
     private(set) var googleSignInLink: URL?
-    private var googleTask: Task<Void, Never>?
+    private(set) var googleTask: Task<Void, Never>?
     /// Try again's or a return's check, which leaving the screen stops.
     private(set) var googleCheck: Task<Void, Never>?
     /// One look at a time: a return to the app during a check adds none.
