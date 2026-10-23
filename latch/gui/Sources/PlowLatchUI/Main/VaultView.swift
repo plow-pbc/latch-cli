@@ -522,6 +522,8 @@ struct VaultItemSheet: View {
                 }
             }
             .formStyle(.grouped)
+            // What's typed during a save couldn't be saved by it.
+            .disabled(editor.saving)
             Divider()
             HStack {
                 // A refused save is said here, beside Save, never below the fold.
