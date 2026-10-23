@@ -17,6 +17,9 @@ Keychain, and it carries the app's window.
 - `Contents/Info.plist`, written by the script: bundle id
   `co.plow.latch.cli`, macOS 13 or later. `CFBundleVersion` is the
   release's build number;
+- `Contents/Library/LaunchAgents/co.plow.latch.cli.login.plist`, the
+  agent behind the window's "Start when you log in": registered with
+  ServiceManagement, it runs the bundle's `latch serve -d --again` at login;
 - `Contents/Resources/AppIcon.icns` (`latch/macos/`);
 - `Contents/embedded.provisionprofile`, the Developer ID profile that lets
   the signature claim latch's keychain group.
@@ -30,6 +33,15 @@ later; below that the app shows one alert pointing to `latch setup` and
 quits. Every other run of the same binary is the CLI and loads no AppKit or
 SwiftUI. The window gets everything it shows from this bundle's own latch,
 run with `--state-dir`.
+
+The window walks a new owner through setup (log in, rules, Google,
+Contacts & Messages, starting latch), each step a latch command
+(`login --events`, `rules show/set`, `rules try`, `plugins enable`,
+`serve -d`), then shows this Mac's `status --local`. It remembers only which
+screens were passed, in its own preferences; a relaunch resumes at the first
+screen not passed. `swift run Snapshots DIR` in `latch/gui` renders every
+screen and state, light and dark, on a sample latch; `gui/build.sh
+--test-hooks` builds a window an end-to-end run can drive.
 
 `scripts/package-release.sh` puts the bundle in a macOS release archive,
 ad hoc signed (`scripts/macos-sign-app.sh`), with a `latch` symlink beside

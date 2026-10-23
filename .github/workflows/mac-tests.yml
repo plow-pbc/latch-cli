@@ -81,8 +81,9 @@ jobs:
           path: .dev/ci/*.json
           if-no-files-found: error
   # The app bundle: latch with its window, built for Apple silicon and
-  # Intel on macOS 26's Xcode (the window needs the macOS 26 SDK), signed ad
-  # hoc and checked whole; its latch runs as the CLI.
+  # Intel on macOS 26's Xcode (the window needs the macOS 26 SDK), the
+  # window's tests, and the bundle signed ad hoc and checked whole; its latch
+  # runs as the CLI.
   app:
     runs-on: macos-26
     timeout-minutes: 30
@@ -101,6 +102,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --locked
       - run: gui/build.sh
+      - run: swift test
+        working-directory: latch/gui
       - run: |
           . macos/identity.sh
           app="$RUNNER_TEMP/$LATCH_APP_NAME.app"

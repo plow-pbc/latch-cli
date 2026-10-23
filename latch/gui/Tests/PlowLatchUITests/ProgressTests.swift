@@ -1,0 +1,110 @@
+import Foundation
+import Testing
+@testable import PlowLatchUI
+
+struct ResumeTests {
+    @Test func aFreshMacStartsAtWelcome() {
+        #expect(Progress().destination(loggedIn: false) == .onboarding(.welcome))
+    }
+
+    @Test func notLoggedInAfterWelcomeResumesAtLogIn() {
+        let progress = Progress(passed: [.welcome: .continued])
+        #expect(progress.destination(loggedIn: false) == .onboarding(.login))
+    }
+
+    @Test func loggedInResumesAtTheFirstScreenNotPassed() {
+        #expect(Progress().destination(loggedIn: true) == .onboarding(.privacy))
+        let skippedRules = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .skipped])
+        #expect(skippedRules.destination(loggedIn: true) == .onboarding(.google))
+        let allPassed = Progress(passed: [.privacy: .continued, .rules: .continued, .google: .skipped, .access: .skipped, .start: .continued])
+        #expect(allPassed.destination(loggedIn: true) == .onboarding(.done))
+    }
+
+    @Test func finishedOpensTheMainWindow() {
+        #expect(Progress(finished: true).destination(loggedIn: false) == .main)
+    }
+
+    @Test func setUpAgainStartsAtTheFirstSkippedScreen() {
+        #expect(Progress(passed: [.rules: .continued, .google: .skipped, .access: .skipped]).setUpAgain() == .google)
+        #expect(Progress(passed: [.rules: .continued]).setUpAgain() == .privacy)
+    }
+
+    @Test func progressIsSavedAndLoaded() throws {
+        let defaults = try #require(UserDefaults(suiteName: "PlowLatchUITests.\(UUID())"))
+        let progress = Progress(passed: [.welcome: .continued, .google: .skipped], finished: true)
+        progress.save(defaults)
+        #expect(Progress.load(defaults) == progress)
+    }
+}
+
+struct DecodingTests {
+    @Test func loginEventsDecodeAsLatchPrintsThem() throws {
+        let code: LoginEvent = try Fixtures.decode(Fixtures.code)
+        guard case let .code(login) = code else { Issue.record("not a code"); return }
+        #expect(login.code == "JFO3S")
+        #expect(login.smsto == "SMSTO:+15550000001:JFO3S")
+        #expect(login.expiresAt == nil)
+        let verified: LoginEvent = try Fixtures.decode(#"{"type":"verified","peer":{"name":"studio","key":"d9438ef1","kind":"device"}}"#)
+        #expect(verified == .verified(name: "studio"))
+        let error: LoginEvent = try Fixtures.decode(#"{"type":"error","error":{"code":"code_expired","message":"the code expired"}}"#)
+        #expect(error == .error(LatchFailure(code: "code_expired", message: "the code expired")))
+    }
+
+    @Test func localStatusDecodes() throws {
+        let serving: LocalStatus = try Fixtures.decode(Fixtures.serving)
+        #expect(serving.peer?.name == "studio")
+        #expect(serving.serve.state == "serving")
+        let blocked: LocalStatus = try Fixtures.decode(Fixtures.otherVersion)
+        #expect(blocked.serve.blocked?.code == "other_version")
+        let loggedOut: LocalStatus = try Fixtures.decode(Fixtures.loggedOut)
+        #expect(loggedOut.peer == nil)
+    }
+
+    @Test func rulesTryVerdictsDecode() throws {
+        let refused: RulesTry = try Fixtures.decode(Fixtures.hostRefused)
+        #expect(refused.verdict == "host_refused")
+        #expect(refused.refused?.code == "plugin_disabled")
+    }
+
+    @Test func timestampsKeepUpToMilliseconds() {
+        #expect(LatchJSON.parseTimestamp("2026-10-22T22:05:50.582906Z") != nil)
+        #expect(LatchJSON.parseTimestamp("2026-10-22T23:59:00Z") != nil)
+    }
+}
+
+@MainActor
+struct GatekeeperTests {
+    /// Waits for `done`, up to two seconds.
+    private func until(_ done: () -> Bool) async {
+        for _ in 0..<200 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    @Test func aDefaultIsTriedAtOnceAndAStoppedLatchSaysSo() async {
+        let app = AppModel(client: FakeLatchClient(), still: true)
+        let flow = app.stage(.rules)
+        flow.choose(Onboarding.decks[1])
+        #expect(flow.draftRules == Onboarding.decks[1].rules)
+        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .checking })
+        // The default isn't saved yet, so it can't be judged until it is.
+        await until { flow.previewNote != nil }
+        #expect(flow.previewNote == "Verdicts show your saved rules. Continue to save these.")
+    }
+
+    @Test func savedRulesAreJudgedAndAStoppedLatchSaysSo() async {
+        let app = AppModel(client: FakeLatchClient(), still: true)
+        let flow = app.stage(.rules)
+        await flow.loadRules()
+        await until { flow.previewNote != nil }
+        #expect(flow.previewNote == "Previews need Latch running.")
+        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .notChecked })
+    }
+
+    @Test func aPathThisMacRefusesIsItsRefusal() async {
+        let refusal = LatchFailure(code: "bad_path", message: "writes outside home are refused")
+        let app = AppModel(client: FakeLatchClient(tryFailure: refusal), still: true)
+        let flow = app.stage(.rules)
+        await flow.loadRules()
+        await until { flow.previews.values.allSatisfy { $0 != .checking } }
+        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .verdict(RulesTry(verdict: "host_refused", refused: refusal)) })
+    }
+}
