@@ -130,6 +130,21 @@ class BinaryInstall(unittest.TestCase):
     def test_options_on_both_sides_of_the_binary(self):
         self.install(custom=True, source="middle")
 
+    def test_latch_state_dir_names_the_state_folder_without_the_option(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            state = root / "state"
+            setup, binary, tools = fixture(root, state, "#!/bin/sh\n")
+            env = {**os.environ, "HOME": str(root / "home"), "LATCH_STATE_DIR": str(state),
+                   "PATH": f"{tools}:{os.environ['PATH']}"}
+            result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--no-browser", str(binary)],
+                                    cwd=root, env=env, capture_output=True, text=True,
+                                    stdin=subprocess.DEVNULL)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"gog 1.0 already installed at {state}/plugins/gog/1.0/gog", result.stdout)
+
     def test_setup_runs_only_at_a_terminal_and_not_when_told_not_to(self):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
@@ -165,10 +180,12 @@ class BinaryInstall(unittest.TestCase):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
         # What a first install ends with: the app opened (its arguments), or
-        # `latch setup` run (latch's), or neither. An explicit --state-dir,
-        # here a relative one, reaches the app as an absolute path.
+        # `latch setup` run (latch's), or neither. An explicit --state-dir
+        # or LATCH_STATE_DIR, here a relative one, reaches the app as an
+        # absolute path.
         for macos, given, extra, upgrade, opens, runs in [
                 ("26.0", True, [], False, "--args --state-dir {state}", ""),
+                ("26.0", "env", [], False, "--args --state-dir {state}", ""),
                 ("27.1", False, [], False, "", ""),
                 ("26.0", True, ["--non-interactive"], False, None, ""),
                 ("26.0", True, [], True, None, ""),
@@ -191,7 +208,9 @@ class BinaryInstall(unittest.TestCase):
                 if upgrade:
                     (state / "config.json").write_text("{}")
                 env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
-                options = ["--state-dir", "state"] if given else []
+                if given == "env":
+                    env["LATCH_STATE_DIR"] = "state"
+                options = ["--state-dir", "state"] if given is True else []
                 result = at_terminal(["sh", str(setup / "install-binary.sh"), *options,
                                       "--no-browser", *extra, str(setup / "latch")], root, env)
                 self.assertEqual(result.returncode, 0, case)

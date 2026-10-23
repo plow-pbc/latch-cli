@@ -88,7 +88,7 @@ latch's commands and behavior here are `main`'s today.
 
 | Command | What it does | Limits |
 |---|---|---|
-| `exec` | Runs one program on the host, with its arguments as given. No shell runs unless you name one. | Reads your home folder and selected system folders. Never `~/.latch`, the host's state folder or, on a Mac, `~/Library` (its `Caches` excepted). Other home files, `~/.ssh` included, are readable; the gatekeeper judges their use. Writes only to `--write PATH` grants (inside home, never home itself), its own temp folder and existing tool caches. No network without `--network`; host Unix sockets stay blocked (a Mac's DNS resolver excepted). Times out after 1–600 seconds (60 by default). Stdin (`-i`) can be at most 16 KiB of UTF-8 text, because the gatekeeper reads all of it. |
+| `exec` | Runs one program on the host, with its arguments as given. No shell runs unless you name one. | Reads your home folder and selected system folders. Never `~/.latch`, the host's state folder, the one `LATCH_STATE_DIR` names or, on a Mac, `~/Library` (its `Caches` excepted). Other home files, `~/.ssh` included, are readable; the gatekeeper judges their use. Writes only to `--write PATH` grants (inside home, never home itself), its own temp folder and existing tool caches. No network without `--network`; host Unix sockets stay blocked (a Mac's DNS resolver excepted). Times out after 1–600 seconds (60 by default). Stdin (`-i`) can be at most 16 KiB of UTF-8 text, because the gatekeeper reads all of it. |
 | `--secret-env NAME=VALUE` | Gives the program a credential through its environment. | The value reaches only the program. The judge and the audit see its name and length. It still shows in the calling machine's process list and shell history. |
 | `file get`, `file put` | Copies a file from or to the host. | `get` reads anything exec can read. `put` writes inside home only, outside the hidden places; the old file stays until the new one has fully arrived, and a replaced file keeps its permissions. |
 | `browser` | Drives a real browser on the host: open, observe, read, screenshot, plans of clicks and typing, fill from the vault, tabs, scripts, uploads and downloads. | Web addresses only (`http`, `https`, `about:blank`). The host's own and private network addresses are refused unless the owner sets `"allow_local_browsing": true` in the state folder's `host.json`. A session belongs to whoever opened it. Fills put vault values into the page without showing them to the agent; a fill that releases a card number, card code or identity number stops until the caller confirms it with `browser do --confirm`. |
@@ -228,7 +228,8 @@ effort.
 - **Starting and stopping:** `latch serve` starts the host and shows its
   dashboard; Ctrl-C stops the host, and `q` leaves it running.
   `latch serve -d` starts it in the background, and `latch stop` stops
-  it. One host runs per state folder.
+  it. One host runs per state folder: `--state-dir DIR`, else
+  `$LATCH_STATE_DIR`, else `~/.latch`.
 - From another machine, the host has to be running. A failed `--host`
   call never falls back to this machine's rules or vault.
 

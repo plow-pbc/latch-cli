@@ -88,6 +88,16 @@ fn main() -> ExitCode {
     if let Some(exit) = gui::launch() {
         return exit;
     }
+    // A relative LATCH_STATE_DIR names a folder from here: made absolute
+    // for every latch this one starts, a host's service in another
+    // working folder included.
+    if let Some(dir) = std::env::var_os(cli::STATE_DIR_ENV).map(PathBuf::from)
+        && dir.is_relative()
+        && let Ok(dir) = std::path::absolute(&dir)
+    {
+        // SAFETY: no other thread exists yet to read or write the environment.
+        unsafe { std::env::set_var(cli::STATE_DIR_ENV, dir) };
+    }
     let matches = match Cli::command().try_get_matches() {
         Ok(matches) => matches,
         Err(err) => return usage_error(err),

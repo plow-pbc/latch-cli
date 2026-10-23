@@ -24,6 +24,9 @@ when there is a next step), with an exit code you can branch on. Branch on
   (`this_machine`), the account's hosts (`self` marks this one) and
   `default_host`, where a command without `--host` goes; name one with
   `--host` (or `$LATCH_HOST`); with only one host, latch picks it.
+- Your login lives in a state folder: `--state-dir DIR`, else
+  `$LATCH_STATE_DIR`, else `~/.latch`. Where `HOME` is not your home,
+  set `LATCH_STATE_DIR` once rather than passing `--state-dir` each time.
 - Never copy or borrow a device login (a machine's state folder or its
   token) onto another machine to act from there: hosts would take that
   for the owner's own request instead of judging it as yours.
@@ -42,8 +45,8 @@ when there is a next step), with an exit code you can branch on. Branch on
   blocked even with network (macOS allows its system DNS resolver).
 - `latch file get` reads a readable host path; `latch file put` writes only
   its judged destination. Exec and file need no shared-folder setup.
-- Hidden for both: `~/.latch`, the host's own state directory, and on macOS
-  `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
+- Hidden for both: `~/.latch`, the host's own state directory, the one
+  `LATCH_STATE_DIR` names, and on macOS `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
   are readable; the gatekeeper judges their use. Writes must stay inside
   home, outside hidden places, and cannot grant home itself.
 - Quote host paths beginning with `~`: latch expands them on the host.

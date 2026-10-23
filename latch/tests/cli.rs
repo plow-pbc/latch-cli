@@ -145,6 +145,7 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         .env_remove("LATCH_HOST")
         .env_remove("LATCH_PLOW_CHAT")
         .env_remove("LATCH_TRACE")
+        .env_remove("LATCH_STATE_DIR")
         .arg("--state-dir")
         .arg(state)
         .args(args);
@@ -432,6 +433,38 @@ fn logged_in_agent(
     let login = latch(&state, &["login", "--api-url", &api_url], &env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     (dir, token_file, server)
+}
+
+/// A machine whose commands run with a home that is not where latch's state
+/// lives (`HOME=/`) finds it through `LATCH_STATE_DIR`; `--state-dir` still wins.
+#[test]
+fn latch_state_dir_names_the_state_folder_a_home_does_not() {
+    let (dir, token_file, _server) = logged_in_agent(vec![]);
+    let state = dir.path().join("state");
+    let status = |state_dir: Option<&Path>, flag: Option<&Path>| {
+        let mut command = latch_process();
+        command
+            .env("HOME", "/")
+            .env("PLOW_TOKEN_FILE", &token_file)
+            .env_remove("LATCH_STATE_DIR");
+        if let Some(dir) = state_dir {
+            command.env("LATCH_STATE_DIR", dir);
+        }
+        if let Some(dir) = flag {
+            command.arg("--state-dir").arg(dir);
+        }
+        let output = command.args(["status", "--local"]).output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let found = status(Some(&state), None);
+    assert_eq!(found["login"]["kind"], "agent", "{found}");
+    assert_eq!(found["state_dir"], json!(state.canonicalize().unwrap()));
+    let elsewhere = dir.path().join("elsewhere");
+    let flagged = status(Some(&state), Some(&elsewhere));
+    assert_eq!(flagged["login"], Value::Null, "{flagged}");
+    let unset = status(None, None);
+    assert_eq!(unset["login"], Value::Null, "{unset}");
 }
 
 #[test]
@@ -2723,8 +2756,36 @@ fn serve_command(host: &Path, relay: &str) -> Command {
         ])
         .env("LATCH_TEST_RELAY_URL", relay)
         .env_remove("LATCH_HOST")
-        .env_remove("LATCH_TRACE");
+        .env_remove("LATCH_TRACE")
+        .env_remove("LATCH_STATE_DIR");
     command
+}
+
+/// A host started where `LATCH_STATE_DIR` names another state folder, the
+/// one a plain `latch` uses there, keeps that folder from its commands too.
+#[test]
+fn a_host_hides_the_state_folder_latch_state_dir_names() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let other = dir.path().join("client");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("key"), "client key").unwrap();
+    let (_serve, _) = serving_with_env(&host, &relay, &[("LATCH_STATE_DIR", &other)]);
+
+    let key = other.join("key");
+    let key = key.to_str().unwrap();
+    let cat = latch(&host, &["exec", "--", "cat", key], &[]);
+    let ran: Value = serde_json::from_slice(&cat.stdout).unwrap();
+    assert_ne!(ran["exit_code"], 0, "{ran}");
+    assert!(!ran.to_string().contains("client key"), "{ran}");
+    let copy = dir.path().join("copy");
+    let get = latch(&host, &["file", "get", key, copy.to_str().unwrap()], &[]);
+    let error: Value = serde_json::from_slice(&get.stderr).unwrap();
+    assert_eq!(get.status.code(), Some(4), "{get:?}");
+    assert_eq!(error["error"]["code"], "bad_path");
+    assert!(!copy.exists());
 }
 
 /// Starts `command`, a `latch serve`, and reads its log up to its
@@ -7821,6 +7882,30 @@ mod lifecycle {
         assert!(log.contains("relay_unreachable"), "{log}");
         assert_eq!(local_serve(&host)["running"], false);
         assert!(!registered(&host));
+    }
+
+    /// A relative `LATCH_STATE_DIR` names a folder from where `serve -d`
+    /// ran: the host's service, which runs elsewhere, still hides it.
+    #[test]
+    fn a_detached_host_hides_a_relative_latch_state_dir() {
+        let plow = LivePlow::start();
+        let (_relay, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let _managed = Managed(host.clone());
+        let key = dir.path().join("client/key");
+        fs::create_dir(dir.path().join("client")).unwrap();
+        fs::write(&key, "client key").unwrap();
+
+        let started = latch_command(&host, &["serve", "-d"], &[])
+            .env("LATCH_TEST_RELAY_URL", &relay)
+            .env("LATCH_STATE_DIR", "client")
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert_eq!(started.status.code(), Some(0), "{started:?}");
+        let read = local_operation(&host, "exec", json!({"argv": ["cat", key], "timeout": 10}));
+        assert!(!read.to_string().contains("client key"), "{read}");
     }
 
     #[test]
