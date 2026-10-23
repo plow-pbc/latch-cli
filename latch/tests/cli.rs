@@ -593,10 +593,13 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     assert!(
         message.contains("`latch login --token-file FILE --name OTHER`")
             && message.contains(&format!(
-                "`latch login --token-file FILE --name {hostname}` again at a terminal to replace it"
+                "`latch login --token-file FILE --name {hostname} --replace` to replace it"
             )),
         "{message}"
     );
+    // And, for an app to ask which, the machine that has the name.
+    assert_eq!(error["error"]["existing_name"], hostname.as_str());
+    assert_eq!(error["error"]["last_seen_at"], "2026-10-15T01:30:12Z");
     assert!(!state.join("config.json").exists());
 
     // One registration, never retried to take the name over.
@@ -605,6 +608,60 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     assert!(body(&requests[0]).get("take_over").is_none());
     assert_eq!(requests.len(), 2);
     assert!(requests[1].starts_with("GET /v1/latch/peers "));
+}
+
+#[test]
+fn replace_takes_another_machines_name_with_no_terminal_and_an_events_login_says_whose_it_is() {
+    let old_key = "c".repeat(64);
+    let holder = peer(json!(old_key), "mac", "device", Value::Null);
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    // Without --replace: the error line says which machine has the name.
+    let (api_url, server) = fake_plow(vec![
+        (200, activation.clone()),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (409, json!({})),
+        (200, json!({"data": [holder.clone()]})),
+    ]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let args = ["login", "--events", "--api-url", &api_url, "--name", "mac"];
+    let login = latch(&state, &args, &[]);
+    assert_eq!(login.status.code(), Some(2), "{login:?}");
+    let error = event_lines(&login).pop().unwrap();
+    assert_eq!(error["type"], "error", "{error}");
+    assert_eq!(error["error"]["code"], "conflict");
+    assert_eq!(error["error"]["existing_name"], "mac");
+    assert_eq!(error["error"]["last_seen_at"], "2026-10-15T01:30:12Z");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--name mac --replace")
+    );
+    assert_eq!(server.join().unwrap().len(), 4, "nothing was removed");
+
+    // With it: the old machine is removed, then this one takes its name,
+    // on the login already in hand.
+    let (api_url, server) = fake_plow(vec![
+        (409, json!({})),
+        (200, json!({"data": [holder.clone()]})),
+        (200, holder),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ]);
+    // The login by text saved its token; point it at this Plow.
+    fs::write(state.join("plow-url"), format!("{api_url}\n")).unwrap();
+    let args = ["login", "--events", "--replace", "--name", "mac"];
+    let login = latch(&state, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    assert_eq!(event_lines(&login).pop().unwrap()["type"], "verified");
+    let requests = server.join().unwrap();
+    assert!(
+        requests[2].starts_with(&format!("DELETE /v1/latch/peers/{old_key} ")),
+        "{}",
+        requests[2]
+    );
+    assert_eq!(body(&requests[3])["name"], "mac");
 }
 
 #[test]
@@ -720,8 +777,9 @@ fn a_name_clash_at_a_terminal_asks_for_another_name_until_one_is_free_or_none_is
         "{shown}"
     );
     assert!(
-        shown
-            .contains(r"`latch login --token-file FILE --name 'Ada'\''s Mac'` again at a terminal"),
+        shown.contains(
+            r"`latch login --token-file FILE --name 'Ada'\''s Mac' --replace` to replace it"
+        ),
         "{shown}"
     );
     assert!(!state.join("config.json").exists());
