@@ -5041,6 +5041,10 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
         let out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
         (child, out)
     };
+    let run_disable = |host: &Path| {
+        let output = latch(host, &["plugins", "disable", "google"], &[]);
+        assert!(output.status.success(), "{output:?}");
+    };
     let next = |out: &mut std::io::Lines<_>| -> Value {
         serde_json::from_str(&out.next().unwrap().unwrap()).unwrap()
     };
@@ -5143,6 +5147,18 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     drop(child.stdin.take());
     assert!(child.wait().unwrap().success());
     assert!(out.next().is_none(), "nothing after the stop");
+    // A reader that goes away stops the wait even with stdin /dev/null:
+    // an account appearing afterwards turns nothing on for no one.
+    plow.state.lock().unwrap().google = None;
+    run_disable(&host);
+    let (mut child, mut out) = spawned(&events, std::process::Stdio::null());
+    assert_eq!(next(&mut out)["type"], "hello");
+    assert_eq!(next(&mut out)["type"], "link");
+    drop(out);
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    assert!(child.wait().unwrap().success());
+    let saved = fs::read_to_string(host.join("plugins.json")).unwrap();
+    assert!(!saved.contains("\"enabled\""), "{saved}");
     #[cfg(target_os = "macos")]
     {
         let messages = ["plugins", "enable", "messages", "--add-account"];

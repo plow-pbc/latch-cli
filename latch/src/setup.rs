@@ -176,7 +176,8 @@ impl Setup {
             .stderr(Stdio::inherit())
             .stdout(Stdio::piped())
             .output();
-        if enabled.is_ok_and(|output| output.status.success()) {
+        // A stopped wait also exits 0, with nothing on stdout.
+        if enabled.is_ok_and(|output| output.status.success() && !output.stdout.is_empty()) {
             done("Google is connected.");
         } else {
             eprintln!("✗ Google is not on yet.\n  Try again later: latch plugins enable google");

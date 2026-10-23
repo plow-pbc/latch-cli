@@ -70,6 +70,9 @@ where
         }
         loop {
             tokio::time::sleep(POLL.min(deadline.saturating_duration_since(Instant::now()))).await;
+            if events && stdout_gone() {
+                return Ok(Connecting::Stopped);
+            }
             // A mint or a look that fails ends the wait with its own failure.
             let now = plow.connectors().await?;
             if Instant::now() >= deadline {
@@ -105,30 +108,30 @@ where
     };
     match connected.map_err(|failure| with_page(failure, &page))? {
         Connecting::Stopped => Ok(None),
+        // Nobody reads the result any more: no enable on their behalf.
+        Connecting::Appeared if events && stdout_gone() => Ok(None),
         Connecting::Appeared => enable().await.map(Some),
-        Connecting::HandedOver(link) => {
-            // No one here to wait with: the link is the answer.
-            let handoff = json!({"sign_in_url": link.url, "expires_at": link.expires_at});
-            match enabled {
-                Some(mut result) => {
-                    merge(&mut result, handoff);
-                    Ok(Some(result))
-                }
-                None => {
-                    let mut failure = Failure::failed(
-                        "google_not_connected",
-                        "No Google account is connected in Plow.".into(),
-                    );
-                    failure.details = handoff;
-                    merge(
-                        &mut failure.details,
-                        json!({"next": format!("Open sign_in_url, finish Google sign-in, then run {ENABLE}."),
-                               "connect_url": page}),
-                    );
-                    Err(failure)
-                }
+        // No one here to wait with: the link is the answer.
+        Connecting::HandedOver(link) => match enabled {
+            Some(mut result) => {
+                result["sign_in_url"] = json!(link.url);
+                result["expires_at"] = json!(link.expires_at);
+                Ok(Some(result))
             }
-        }
+            None => {
+                let mut failure = Failure::failed(
+                    "google_not_connected",
+                    "No Google account is connected in Plow.".into(),
+                );
+                failure.details = json!({
+                    "sign_in_url": link.url,
+                    "expires_at": link.expires_at,
+                    "next": format!("Open sign_in_url, finish Google sign-in, then run {ENABLE}."),
+                    "connect_url": page,
+                });
+                Err(failure)
+            }
+        },
     }
 }
 
@@ -154,7 +157,7 @@ fn timed_out() -> Failure {
 /// `failure`, with the public Connections page as `connect_url` when known.
 fn with_page(mut failure: Failure, page: &Option<String>) -> Failure {
     if let Some(page) = page {
-        merge(&mut failure.details, json!({"connect_url": page}));
+        failure.details["connect_url"] = json!(page);
     }
     failure
 }
@@ -203,13 +206,17 @@ fn accounts(connectors: &plow::Connectors) -> Vec<String> {
         .collect()
 }
 
-fn merge(into: &mut Value, fields: Value) {
-    if into.is_null() {
-        *into = json!({});
-    }
-    if let (Some(into), Value::Object(fields)) = (into.as_object_mut(), fields) {
-        into.extend(fields);
-    }
+/// Whether stdout is a pipe or socket whose reader has gone: the kernel
+/// says so without a write (POLLHUP on macOS, POLLERR on Linux).
+fn stdout_gone() -> bool {
+    let mut out = libc::pollfd {
+        fd: libc::STDOUT_FILENO,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: one pollfd, writable for the call; a zero timeout never blocks.
+    let ready = unsafe { libc::poll(&mut out, 1, 0) };
+    ready > 0 && out.revents & (libc::POLLERR | libc::POLLHUP) != 0
 }
 
 /// Tests shorten the wait (`LATCH_TEST_CONNECT_WITHIN`, in seconds).
