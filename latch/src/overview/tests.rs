@@ -355,35 +355,53 @@ fn a_command_it_suggests_names_the_state_folder_it_showed() {
 }
 
 #[test]
-fn wide_characters_are_cut_by_the_columns_they_take() {
-    let mut facts = facts();
-    facts.name = Some("名".repeat(40));
-    let row = facts
-        .rows(BESIDE)
-        .iter()
-        .map(|row| painted(row, BESIDE))
-        .find(|row| row.contains('名'))
-        .unwrap();
-    assert!(row.width() <= BESIDE, "{row}: {} columns", row.width());
-    assert!(row.ends_with('…'), "{row}");
+fn rows_are_cut_at_the_edge_by_the_columns_they_take() {
+    for (glyph, count, end, exact) in [('x', 80, "x…", Some(BESIDE)), ('名', 40, "…", None)] {
+        let mut facts = facts();
+        facts.name = Some(glyph.to_string().repeat(count));
+        let rows: Vec<String> = facts
+            .rows(BESIDE)
+            .iter()
+            .map(|row| painted(row, BESIDE))
+            .collect();
+        assert!(rows.iter().all(|row| row.width() <= BESIDE), "{rows:#?}");
+        let long = rows.iter().find(|row| row.contains(glyph)).unwrap();
+        assert!(long.ends_with(end), "{long}");
+        if let Some(width) = exact {
+            assert_eq!(long.width(), width, "{long}");
+        }
+    }
 }
 
 #[test]
-fn rows_are_cut_at_the_edge_never_wrapped() {
-    let mut facts = facts();
-    facts.name = Some("x".repeat(80));
-    let rows: Vec<String> = facts
-        .rows(BESIDE)
-        .iter()
-        .map(|row| painted(row, BESIDE))
-        .collect();
-    assert!(
-        rows.iter().all(|row| row.chars().count() <= BESIDE),
-        "{rows:#?}"
+fn room_is_kept_for_the_most_that_can_arrive_later() {
+    let mut waiting = facts();
+    waiting.here_default = None;
+    waiting.plow = Some(Pending::Waiting);
+    waiting.host = Pending::Waiting;
+    // The most: five other hosts, a host stopped by an error, and every
+    // agent refused exec.
+    let mut arrived = facts();
+    arrived.here_default = None;
+    arrived.plow = Some(Pending::Got(directory(&[
+        ("a", false, Some(true)),
+        ("b", false, Some(true)),
+        ("c", false, Some(true)),
+        ("d", false, Some(true)),
+        ("e", false, Some(true)),
+    ])));
+    let hosted = hosted(&mut arrived);
+    hosted.hosting.state = Phase::Error;
+    hosted.hosting.running = false;
+    hosted.last_error = Some(Problem {
+        code: "serve_ended".into(),
+        message: "it was killed".into(),
+    });
+    hosted.hosting.deny_exec = Some(crate::serve::DenyExec::from_flags(&["*".to_string()]));
+    assert_eq!(
+        waiting.rows(BESIDE).len() + ARRIVING_ROWS,
+        arrived.rows(BESIDE).len()
     );
-    let long = rows.iter().find(|row| row.contains("xxx")).unwrap();
-    assert_eq!(long.chars().count(), BESIDE, "{long}");
-    assert!(long.ends_with("x…"), "{long}");
 }
 
 #[test]

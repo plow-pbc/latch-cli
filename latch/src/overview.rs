@@ -732,15 +732,16 @@ struct Screen {
     drawn: usize,
 }
 
-/// The most rows Plow's answer can add to the facts: other hosts and the
-/// line saying how many more.
-const PLOW_ROWS: usize = 4;
+/// The most rows what arrives later can add to the facts: Plow's other
+/// hosts and the line saying how many more (4), and the host's state, an
+/// error's message and the Exec row (2).
+const ARRIVING_ROWS: usize = 6;
 
 impl Screen {
     fn new(columns: usize, rows: usize, color: bool, facts: &Facts) -> Screen {
         let tall = |layout: &Layout| {
             let width = facts_width(columns, layout);
-            let facts = facts.rows(width).len() + PLOW_ROWS;
+            let facts = facts.rows(width).len() + ARRIVING_ROWS;
             let block = match layout {
                 Layout::Beside => facts.max(logo::ROWS),
                 Layout::Above => logo::ROWS + 1 + facts,
