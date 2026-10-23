@@ -17,7 +17,7 @@ struct MainView: View {
             case .agents: AgentsView()
             case .rules: HostRulesView()
             case .vault: VaultView()
-            default: NotYetView(item: app.section)
+            case .settings: HostSettingsView()
             }
         }
         .frame(minWidth: 680, minHeight: 440)
@@ -141,17 +141,5 @@ struct StateDot: View {
             .fill(state?.isUp == true ? Color.green : state?.isProblem == true ? Color.red : Color.secondary)
             .frame(width: 8, height: 8)
             .accessibilityHidden(true)
-    }
-}
-
-/// A screen still to come: its place in the sidebar, honestly empty.
-private struct NotYetView: View {
-    var item: SidebarItem
-    @Environment(AppModel.self) private var app
-
-    var body: some View {
-        ContentUnavailableView(item.title, systemImage: item.symbol, description: Text("Not available yet."))
-            .navigationTitle(item.title)
-            .navigationSubtitle(SidebarItem.host.contains(item) ? app.host?.name ?? "" : "")
     }
 }

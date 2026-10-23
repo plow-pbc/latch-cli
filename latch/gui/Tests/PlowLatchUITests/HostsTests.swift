@@ -82,3 +82,98 @@ struct ChildEnvironmentTests {
         #expect(child == ["HOME": "/Users/me", "PATH": "/bin"])
     }
 }
+
+@MainActor
+struct HostSettingsTests {
+    @Test func loggedInDevicesAreTheAccountsMachinesThatDontHost() throws {
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.stage(devices: try Fixtures.decode(Fixtures.devices), update: nil)
+        #expect(app.loggedInDevices?.map(\.name) == ["laptop"])
+        let check: UpdateCheck = try Fixtures.decode(Fixtures.updateCheck)
+        #expect(!check.available && check.current == nil && check.latest?.tag != nil)
+    }
+
+    /// A released host's `status --local` gives the build it found as a
+    /// number, once its daily lookup has run.
+    @Test func aReleasedHostsStatusDecodes() throws {
+        let status: LocalStatus = try Fixtures.decode(Fixtures.serving.replacingOccurrences(
+            of: #""update":{"available":false,"build":null,"checked_at":null}"#,
+            with: #""update":{"available":false,"build":138,"checked_at":"2026-10-23T08:00:00Z"}"#))
+        #expect(status.update?.build == 138)
+    }
+
+    /// A released latch's `update --check` gives its build as a number.
+    @Test func aReleasedBuildsUpdateCheckDecodes() throws {
+        let check: UpdateCheck = try Fixtures.decode(#"{"available":true,"current":137,"latest":{"build":138,"tag":"v0.1.0-138"}}"#)
+        #expect(check.available && check.current == 137 && check.latest?.build == 138)
+    }
+}
+
+/// A Mac that logs out while Plow can't be told, and an agent Plow starts.
+final class AccountClient: LatchClient, @unchecked Sendable {
+    let stateDir = "/s"
+    private(set) var loggedOut = false
+    /// Whether Plow takes the Mac out of the account at logout.
+    var plowRemoves = false
+
+    func localStatus() async throws -> LocalStatus { try Fixtures.decode(loggedOut ? Fixtures.loggedOut : Fixtures.serving) }
+    func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
+    func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
+    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(Fixtures.rulesStudio) }
+    func rulesSet(_ text: String) async throws {}
+    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
+    func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
+    func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
+    func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
+    func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
+    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
+    func perform(_ args: [String]) async throws {}
+    func stop() async throws {}
+    func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(Fixtures.agents) }
+    func agentShow(_ uid: String) async throws -> AgentsList.Agent {
+        var agent = try #require((try Fixtures.decode(Fixtures.agents) as AgentsList).agents.first { $0.uid == uid })
+        agent.status = "running"
+        return agent
+    }
+    func logout() async throws -> LogoutResult {
+        loggedOut = true
+        if plowRemoves { return try Fixtures.decode(#"{"device":{"name":"studio","removed":true},"purged":false,"stopped":true}"#) }
+        return try Fixtures.decode(#"{"device":{"name":"studio","removed":false,"error":{"code":"plow_unreachable","message":"could not reach Plow"},"next":"`latch devices remove studio` on another of your machines"},"purged":false,"stopped":true}"#)
+    }
+}
+
+@MainActor
+struct AccountTests {
+    @Test func aLogoutPlowDidntHearOfIsSaidBeforeOnboarding() async throws {
+        let app = AppModel(client: AccountClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        try await app.logOut()
+        #expect(app.logOutWarning?.contains("`latch devices remove studio` on another of your machines") == true)
+        #expect(app.onboarding == nil)
+        app.acknowledgeLogOutWarning()
+        #expect(app.onboarding != nil)
+    }
+
+    /// The status stream said "logged out" while the logout still ran.
+    @Test func aLogoutTheStreamAnnouncedFirstStillOpensOnboarding() async throws {
+        let client = AccountClient()
+        client.plowRemoves = true
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        try await app.logOut()
+        #expect(app.logOutWarning == nil)
+        #expect(app.onboarding != nil)
+    }
+
+    @Test func aStartingAgentsNewStatusReachesTheAgentsList() async throws {
+        let app = AppModel(client: AccountClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        await app.refreshAgents()
+        let scout = try #require(app.agents?.first)
+        _ = try await app.agentStatus(scout.uid)
+        #expect(app.agents?.first?.status == "running")
+    }
+}
