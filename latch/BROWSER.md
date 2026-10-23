@@ -5,7 +5,8 @@ A host runs Chrome for Testing (CfT), the release pinned in
 and on Linux arm64/x86_64 `install.sh` fetches the zip for the machine's
 architecture by default, checks its sha256 against the pin, unpacks it
 (`ditto` on macOS, `unzip` on Linux) into `<state-dir>/plugins/cft/<version>/`
-(beside older versions, as gog's are) and copies the pin in as
+(beside older versions, as gog's are, until the new latch removes them
+once no host of an older one runs) and copies the pin in as
 `manifest.json`, which marks the install complete. On Linux it also
 installs Xvfb, for hosts with no screen. `install.sh --no-browser` installs
 no engine; `--browser camoufox` installs Camoufox instead (name both

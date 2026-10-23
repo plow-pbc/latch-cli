@@ -84,6 +84,25 @@ mod saved_flags_tests {
             );
         }
     }
+    #[test]
+    fn a_log_past_its_cap_is_kept_as_the_one_before_and_a_start_begins_anew() {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let (log, before) = (dir.path().join("serve.log"), dir.path().join("serve.log.1"));
+        std::fs::write(&log, vec![b'x'; LOG_CAP as usize]).unwrap();
+        rotate_log(dir.path()).unwrap();
+        assert!(log.exists() && !before.exists(), "at its cap, it is kept");
+        std::fs::write(&before, "older").unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .and_then(|mut file| file.write_all(b"one more line\n"))
+            .unwrap();
+        rotate_log(dir.path()).unwrap();
+        assert!(!log.exists());
+        assert_eq!(std::fs::metadata(&before).unwrap().len(), LOG_CAP + 14);
+    }
 }
 
 /// `latch serve -d`: the host, started and answering.
@@ -223,6 +242,7 @@ async fn launch(
     }
     argv.extend(given.into_iter().map(OsString::from));
 
+    rotate_log(&dir)?;
     let service = Service::new(&dir);
     // A host that ended on its own leaves its service registered.
     service.remove()?;
@@ -234,6 +254,22 @@ async fn launch(
             service.remove()?;
             Err(failure)
         }
+    }
+}
+
+/// How big `serve.log` may grow before the next start begins a new one.
+const LOG_CAP: u64 = 10 * 1024 * 1024;
+
+/// Before a start, with no host writing it: a `serve.log` over `LOG_CAP`
+/// becomes `serve.log.1`, replacing the one before, and the host starts a
+/// new one.
+fn rotate_log(dir: &Path) -> Result<(), Failure> {
+    let log = dir.join("serve.log");
+    match std::fs::metadata(&log) {
+        Ok(meta) if meta.len() > LOG_CAP => {
+            std::fs::rename(&log, dir.join("serve.log.1")).map_err(|err| io_failure(&log, err))
+        }
+        _ => Ok(()),
     }
 }
 

@@ -124,7 +124,8 @@ No Homebrew tap is included.
   stops it, and nothing starts it again until the next `latch serve`.
   `latch dashboard` views a running host (`q` or Ctrl-C closes only the
   view), `latch logs [-f]` shows its log (`serve.log`, a JSON line per
-  record) and `latch audit [-f]` its audit.
+  record; past 10 MB the next start keeps it as `serve.log.1` and begins
+  anew) and `latch audit [-f]` its audit.
 - The dashboard lists what callers asked for and how it went: Done,
   Running, Refused (the gatekeeper or your settings), Stopped (a browser
   safety check) or Failed. A browser session's calls, and a plan's steps,

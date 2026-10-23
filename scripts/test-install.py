@@ -156,7 +156,9 @@ class BinaryInstall(unittest.TestCase):
                                             stdin=subprocess.DEVNULL)
                 self.assertEqual(result.returncode, 0)
                 ran = called.read_text() if called.exists() else ""
-                self.assertEqual(ran, f"--state-dir {state} setup\n" if runs else "",
+                # Every install removes the helper versions the new latch does not run.
+                pruned = f"--state-dir {state} prune-helpers\n"
+                self.assertEqual(ran, pruned + (f"--state-dir {state} setup\n" if runs else ""),
                                  (terminal, extra, upgrade))
 
     def test_a_first_mac_install_at_a_terminal_opens_the_app_from_macos_26(self):
@@ -196,7 +198,8 @@ class BinaryInstall(unittest.TestCase):
                 app = home / "Applications/Plow Latch.app"
                 expected = None if opens is None else f"{app} {opens.format(state=state)}".strip() + "\n"
                 self.assertEqual(opened.read_text() if opened.exists() else None, expected, case)
-                self.assertEqual(called.read_text() if called.exists() else "", runs, case)
+                pruned = f"--state-dir {'state' if given else state} prune-helpers\n"
+                self.assertEqual(called.read_text() if called.exists() else "", pruned + runs, case)
 
     def test_a_mac_before_13_is_refused_and_nothing_installed(self):
         parent = ROOT / ".dev/tests"
@@ -369,10 +372,11 @@ class BinaryInstall(unittest.TestCase):
 
 
 def fake_latch(version, log, managed=True, stop_ok=True, start_ok=True, running=True,
-               attached=False, other_version=False, stop=None):
+               attached=False, other_version=False, stop=None, prune="echo '{\"removed\":[]}'"):
     """A latch that says `version`, reports a host (managed or not, attached
     or not, another version's or not) on `status --local`, and writes each
-    stop and start it does to `log`. `stop`, if given, is its whole stop."""
+    stop and start it does to `log`. `stop`, if given, is its whole stop;
+    `prune`, its whole `prune-helpers`."""
     blocked = '{"code":"other_version","message":"a host from another latch version"}'
     serve = '{"this_machine":{"hosting":{"running":%s,"ready":%s,"managed":%s,"attached":%s,"blocked":%s}}}' % (
         str(running).lower(), str(running and not other_version).lower(), str(managed).lower(),
@@ -386,6 +390,7 @@ case "$*" in
   --version) echo '{{"version":"{version}"}}' ;;
   *"status --local") echo '{serve}' ;;
   *" stop") {stop} ;;
+  *" prune-helpers") {prune} ;;
   *"serve -d --again") echo "{version} serve -d --again" >> "{log}"; {start} ;;
   *) exit 2 ;;
 esac
@@ -433,6 +438,15 @@ class HostUpgrade(unittest.TestCase):
                       result.stdout, "the stop says it will start again after installation")
         self.assertNotIn("is stopped", result.stderr)
         self.assertIn('"0.1.0 (2)"', subprocess.check_output([str(dest), "--version"], text=True))
+
+    def test_old_helper_versions_go_once_the_host_is_stopped_before_it_starts_again(self):
+        log = self.log()
+        prune = f'echo "0.1.0 (2) prune-helpers" >> "{log}"; echo \'{{"removed":[]}}\''
+        new = fake_latch("0.1.0 (2)", log, prune=prune)
+        result, calls, _ = self.upgrade(fake_latch("0.1.0 (1)", log), new, log)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) prune-helpers",
+                                 "0.1.0 (2) serve -d --again"])
 
     def mac_upgrade(self, old_version, new_version, log, old_window="", new_window=""):
         """Installs an app whose latch says `new_version` over one whose

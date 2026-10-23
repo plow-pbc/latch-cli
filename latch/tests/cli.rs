@@ -6215,6 +6215,83 @@ fn install_fake_gog(host: &Path) {
     fs::copy(env!("CARGO_BIN_EXE_latch"), folder.join("gog")).unwrap();
 }
 
+/// In `state`, a folder for each helper version this latch runs and for an
+/// older one beside it, each holding a file. Returns both sets.
+fn helper_versions(state: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let pin = |text: &str| -> String {
+        let pin: Value = serde_json::from_str(text).unwrap();
+        pin["version"].as_str().unwrap().to_string()
+    };
+    let plugins = state.join("plugins");
+    let pinned = vec![
+        plugins
+            .join("cft")
+            .join(pin(include_str!("../src/browser/cft.json"))),
+        plugins
+            .join("camoufox")
+            .join(pin(include_str!("../src/browser/camoufox.json"))),
+        plugins
+            .join("gog")
+            .join(pin(include_str!("../src/google/pin.json"))),
+        plugins.join("messages").join(env!("CARGO_PKG_VERSION")),
+    ];
+    let older: Vec<PathBuf> = pinned
+        .iter()
+        .map(|at| at.with_file_name("0.0.1-old"))
+        .collect();
+    for folder in pinned.iter().chain(&older) {
+        fs::create_dir_all(folder).unwrap();
+        fs::write(folder.join("helper"), "a helper").unwrap();
+    }
+    (pinned, older)
+}
+
+/// The installer's `prune-helpers` removes the helper versions this latch
+/// does not run, and leaves them while a host of another latch, which may
+/// use them, holds the folder.
+#[test]
+fn the_installer_removes_older_helper_versions_only_while_no_host_runs() {
+    let (_dir, state, _) = owner_host();
+    let (pinned, older) = helper_versions(&state);
+    let prune = || -> Value {
+        let output = latch(&state, &["prune-helpers"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    {
+        let (_old, _socket, _) = old_host(&state);
+        assert_eq!(prune(), json!({"removed": [], "host_running": true}));
+        assert!(older.iter().all(|folder| folder.exists()));
+    }
+    let mut removed: Vec<String> = serde_json::from_value(prune()["removed"].clone()).unwrap();
+    removed.sort();
+    let mut expected: Vec<String> = older.iter().map(|at| at.display().to_string()).collect();
+    expected.sort();
+    assert_eq!(removed, expected);
+    assert!(pinned.iter().all(|folder| folder.join("helper").exists()));
+}
+
+/// A starting host holds the folder, so no other host uses an older
+/// latch's helpers: it removes them, and keeps the ones it runs.
+#[test]
+fn a_starting_host_removes_the_helper_versions_it_does_not_run() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let (pinned, older) = helper_versions(&host);
+    let (_serve, lines) = serving_with_env(&host, &relay, &[]);
+    for folder in &older {
+        assert!(!folder.exists(), "{} is left", folder.display());
+        let said = format!(
+            "removed {}, which this latch does not run",
+            folder.display()
+        );
+        assert!(lines.iter().any(|line| line.ends_with(&said)), "{lines:?}");
+    }
+    assert!(pinned.iter().all(|folder| folder.join("helper").exists()));
+}
+
 /// A `latch serve` that holds the state folder but answers no socket this
 /// latch knows (another latch version, still running) is named as the
 /// problem, and its connectors are not changed behind its back.

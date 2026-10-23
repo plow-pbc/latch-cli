@@ -219,6 +219,10 @@ pub enum Command {
     /// Internal: the process a host starts for each browser session
     #[command(hide = true)]
     BrowserWorker(BrowserWorkerArgs),
+    /// Internal: removes the helper versions this latch does not run,
+    /// unless a host runs on the state folder; the installer runs it
+    #[command(hide = true)]
+    PruneHelpers,
     /// Internal: Messages' or Contacts' Full Disk Access check, run as the
     /// app's own job when no host runs: `access` and `reason`, as JSON
     #[cfg(target_os = "macos")]
