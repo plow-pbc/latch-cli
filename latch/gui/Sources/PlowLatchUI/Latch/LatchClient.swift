@@ -7,15 +7,16 @@ nonisolated protocol LatchClient: Sendable {
     func localStatus() async throws -> LocalStatus
     /// `latch status`: the account's hosts, from Plow.
     func accountStatus() async throws -> AccountStatus
-    /// `latch login --events`: the code to text, then how it ends. Stopping
-    /// the iteration cancels the login.
-    func login() -> AsyncThrowingStream<LoginEvent, Error>
+    /// `latch login --events [--name NAME]`: the code to text, then how it
+    /// ends. Stopping the iteration cancels the login.
+    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error>
     /// `latch rules show`, on this Mac's host or, with `host`, another.
     func rulesShow(host: String?) async throws -> RulesShow
     /// `latch rules set --file -`, the text on stdin.
     func rulesSet(_ text: String) async throws
-    /// `latch plugins list`, on this Mac's host (it must be running) or,
-    /// with `host`, another.
+    /// `latch setup --status`: what's set up, read from the state folder.
+    func setupStatus() async throws -> SetupStatus
+    /// `latch plugins list`, on this Mac's host or, with `host`, another.
     func pluginsList(host: String?) async throws -> PluginsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
     func vaultList(host: String?) async throws -> VaultList
@@ -31,15 +32,14 @@ nonisolated protocol LatchClient: Sendable {
     /// `after` picks up after that record instead. Stopping the iteration
     /// ends it.
     func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error>
-    /// `latch serve -d`, `--again` to start with the last serve's flags.
-    func serve(again: Bool) async throws
+    /// A setup step, as `setup --status` gives its words after `latch`.
+    func perform(_ args: [String]) async throws
     /// `latch stop`: stops the host on this state folder.
     func stop() async throws
 }
 
 extension LatchClient {
     func rulesShow() async throws -> RulesShow { try await rulesShow(host: nil) }
-    func pluginsList() async throws -> PluginsList { try await pluginsList(host: nil) }
 }
 
 /// The bundle's own latch, by absolute path, always with `--state-dir`.
@@ -55,8 +55,8 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(AccountStatus.self, try await run(["status"]))
     }
 
-    func login() -> AsyncThrowingStream<LoginEvent, Error> {
-        stream(["login", "--events"]) { try decode(LoginEvent.self, $0) }
+    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> {
+        stream(["login", "--events"] + (name.map { ["--name", $0] } ?? [])) { try decode(LoginLine.self, $0).event }
     }
 
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> {
@@ -89,16 +89,18 @@ nonisolated struct LiveLatchClient: LatchClient {
         stream(["audit", "--follow"] + (after.map { ["--after", $0] } ?? []) + on(host)) { try decode(AuditLine.self, $0) }
     }
 
-    /// Runs latch and yields each JSON line it prints, then latch's error if
-    /// it failed. Stopping the iteration stops latch.
-    private func stream<T: Sendable>(_ arguments: [String], _ decodeLine: @escaping @Sendable (Data) throws -> T)
+    /// Runs latch and yields each JSON line it prints (skipping those
+    /// `decodeLine` gives nil for), then latch's error if it failed.
+    /// Stopping the iteration stops latch.
+    private func stream<T: Sendable>(_ arguments: [String], _ decodeLine: @escaping @Sendable (Data) throws -> T?)
         -> AsyncThrowingStream<T, Error> {
         let process = LatchProcess(executable: executable, arguments: withState(arguments), environment: Self.environment)
         return AsyncThrowingStream { continuation in
             let reader = Task.detached {
                 do {
                     for await line in try process.lines() {
-                        continuation.yield(try decodeLine(Data(line.utf8)))
+                        guard let value = try decodeLine(Data(line.utf8)) else { continue }
+                        continuation.yield(value)
                     }
                     if Task.isCancelled { return continuation.finish() }
                     continuation.finish(throwing: await process.failure())
@@ -121,6 +123,10 @@ nonisolated struct LiveLatchClient: LatchClient {
         _ = try await run(["rules", "set", "--file", "-"], input: Data(text.utf8))
     }
 
+    func setupStatus() async throws -> SetupStatus {
+        try decode(SetupStatus.self, try await run(["setup", "--status"]))
+    }
+
     func pluginsList(host: String?) async throws -> PluginsList {
         try decode(PluginsList.self, try await run(["plugins", "list"] + on(host)))
     }
@@ -134,8 +140,8 @@ nonisolated struct LiveLatchClient: LatchClient {
         return plugin == "google" ? try decode(GoogleEnabled.self, data) : nil
     }
 
-    func serve(again: Bool) async throws {
-        _ = try await run(["serve", "-d"] + (again ? ["--again"] : []))
+    func perform(_ args: [String]) async throws {
+        _ = try await run(args)
     }
 
     func stop() async throws {

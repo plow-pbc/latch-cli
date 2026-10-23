@@ -13,6 +13,7 @@ nonisolated struct LocalStatus: Decodable, Equatable {
         var state: String
         /// A `latch serve` holds this state folder.
         var running: Bool
+        /// It is online and accepting callers.
         var ready: Bool
         /// Run as this user's service: `serve -d` (in the background), or a
         /// `latch serve` held by a terminal (`attached`).
@@ -74,30 +75,31 @@ nonisolated struct LoginCode: Decodable, Equatable {
     var expiresAt: Date?
 }
 
-/// One line of `latch login --events`.
+/// An event of `latch login --events`.
 nonisolated enum LoginEvent: Equatable {
     case code(LoginCode)
     case waiting
     case verified(name: String)
     case expired
     case error(LatchFailure)
-    /// A line this app doesn't act on (`hello`, or a type a newer latch
-    /// adds): skipped, never an error.
-    case other
 }
 
-nonisolated extension LoginEvent: Decodable {
+/// A line of `latch login --events`: its event, or nil for a line the app
+/// doesn't act on, the opening `hello` and any type a newer latch adds.
+nonisolated struct LoginLine: Decodable {
+    var event: LoginEvent?
+
     private enum Keys: String, CodingKey { case type, peer, error }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .type) {
-        case "code": self = .code(try LoginCode(from: decoder))
-        case "waiting": self = .waiting
-        case "verified": self = .verified(name: try c.decode(LocalStatus.Peer.self, forKey: .peer).name)
-        case "expired": self = .expired
-        case "error": self = .error(try c.decode(LatchFailure.self, forKey: .error))
-        default: self = .other
+        case "code": event = .code(try LoginCode(from: decoder))
+        case "waiting": event = .waiting
+        case "verified": event = .verified(name: try c.decode(LocalStatus.Peer.self, forKey: .peer).name)
+        case "expired": event = .expired
+        case "error": event = .error(try c.decode(LatchFailure.self, forKey: .error))
+        default: event = nil
         }
     }
 }
@@ -125,7 +127,31 @@ nonisolated struct RulesTry: Decodable, Equatable {
     var refused: LatchFailure?
 }
 
-/// `latch plugins list`: each connector and whether it's on.
+/// `latch setup --status`: each setup step as the state folder says, with
+/// no host needed.
+nonisolated struct SetupStatus: Decodable, Equatable {
+    struct Step: Decodable, Equatable {
+        /// `login`, a connector's name, or `host`.
+        var step: String
+        /// `done`, `needed` or `blocked`.
+        var state: String
+        /// Why, in latch's words.
+        var reason: String
+        /// The words after `latch` that do this step, while it isn't done.
+        var args: [String]?
+        /// A connector's: its owner turned it on.
+        var enabled: Bool?
+        /// Google's: the accounts connected in Plow, when Plow said.
+        var accounts: [String]?
+        /// Google's, when none is connected in Plow: where to connect one.
+        var connectUrl: URL?
+    }
+    var steps: [Step]
+
+    func step(_ name: String) -> Step? { steps.first { $0.step == name } }
+}
+
+/// `latch plugins list`: each connector on a host and whether it's on.
 nonisolated struct PluginsList: Decodable, Equatable {
     struct Plugin: Decodable, Equatable {
         var name: String

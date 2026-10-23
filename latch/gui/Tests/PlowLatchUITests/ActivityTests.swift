@@ -70,7 +70,7 @@ struct StreamLineTests {
     @Test func unknownLinesAreSkipped() throws {
         for line in [#"{"type":"hello","schema":1}"#, #"{"type":"something_new","x":1}"#] {
             let data = Data(line.utf8)
-            #expect(try LatchJSON.decoder.decode(LoginEvent.self, from: data) == .other)
+            #expect(try LatchJSON.decoder.decode(LoginLine.self, from: data).event == nil)
             #expect(try LatchJSON.decoder.decode(AuditLine.self, from: data) == (line.contains("hello") ? .hello : .other))
             guard case .other = try LatchJSON.decoder.decode(StatusLine.self, from: data) else {
                 Issue.record("status line \(line) wasn't skipped")
@@ -174,7 +174,8 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(hosting ? Fixtures.serving : Fixtures.stopped) }
     func accountStatus() async throws -> AccountStatus { throw LatchError.unreachable("no Plow") }
-    func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws {}
     func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
@@ -192,7 +193,8 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
             continuation.yield(.caughtUp(cursor: String(repeating: "0", count: 64), hasOlder: false))
         }
     }
-    func serve(again: Bool) async throws { hosting = true }
+    /// Start Latch runs the host step's args (`serve -d --again`).
+    func perform(_ args: [String]) async throws { hosting = true }
     func stop() async throws {}
 }
 
@@ -318,7 +320,8 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     }
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
-    func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws {}
     func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
@@ -326,6 +329,6 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
-    func serve(again: Bool) async throws {}
+    func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }

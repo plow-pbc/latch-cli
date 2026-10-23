@@ -243,6 +243,11 @@ pub struct SetupArgs {
     /// command that does it. Changes nothing and needs no terminal or host
     #[arg(long)]
     pub status: bool,
+    /// With --status, on a Mac: also check whether Plow Latch has Full Disk
+    /// Access, as the host would, for the Messages and Contacts steps'
+    /// `access`. Turns nothing on and saves nothing; takes a second or two
+    #[arg(long, requires = "status")]
+    pub check_access: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1150,6 +1155,10 @@ pub struct LoginArgs {
     /// For an app: report the login as JSON lines on stdout (code, waiting, verified, expired, error), logging in by text with no terminal needed. Never prints the token
     #[arg(long)]
     pub events: bool,
+
+    /// If another of your machines already has this name, replace it: it is removed from your account, which signs it out of Plow, and this machine takes the name. Without it, a taken name is an error (at a terminal, a question). An agent's name is never taken over
+    #[arg(long)]
+    pub replace: bool,
 }
 
 /// Which host a command goes to. Without `--host` or `$LATCH_HOST`, latch
