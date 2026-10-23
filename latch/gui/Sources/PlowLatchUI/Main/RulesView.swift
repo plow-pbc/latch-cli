@@ -81,11 +81,6 @@ private struct HostRules: View {
                 scroller.scrollTo(Self.verdictAnchor, anchor: .bottom)
             }
         }
-        .task {
-            guard !app.still else { return }
-            if app.agents == nil { await app.refreshAgents() }
-            await app.refreshRules(on: host)
-        }
     }
 }
 

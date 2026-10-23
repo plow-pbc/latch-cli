@@ -52,11 +52,6 @@ struct HomeView: View {
         .formStyle(.grouped)
         .navigationTitle(app.host?.name ?? "Home")
         .navigationSubtitle(app.host?.subtitle(local: app.status) ?? "")
-        .task(id: app.host?.id) {
-            guard !app.still else { return }
-            await app.refreshSummary()
-        }
-        .following(app.host.flatMap { $0.isThisMac || $0.online != false ? app.feed(for: $0) : nil }, still: app.still)
     }
 }
 
@@ -169,7 +164,7 @@ private struct ActivitySections: View {
             }
             Section("Recent activity") {
                 if calls.isEmpty {
-                    Text(feed.hasOlder ? "Looking further back…" : "No requests yet.").foregroundStyle(.secondary)
+                    Text(feed.loadingOlder ? "Looking further back…" : "No requests yet.").foregroundStyle(.secondary)
                 }
                 ForEach(calls.suffix(5).reversed()) { record in
                     Button {
@@ -181,13 +176,18 @@ private struct ActivitySections: View {
                     }
                     .buttonStyle(.plain)
                 }
+                // Home reaches back only a few pages on its own; the rest is
+                // a click away.
+                if calls.count < 5, feed.hasOlder, !feed.loadingOlder {
+                    Button("Load Earlier") { Task { await feed.loadOlder() } }
+                }
                 Button("Show All Activity") { app.section = .activity }
             }
             // The newest page may be all connections and reads: reach back
             // for five requests, or to the start.
             .task(id: feed.caughtUp) {
                 guard feed.caughtUp, !app.still else { return }
-                await feed.loadOlder(until: 5)
+                await feed.loadOlder(until: 5, pages: ActivityFeed.homePages)
             }
         }
     }

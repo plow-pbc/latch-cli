@@ -52,11 +52,6 @@ struct ConnectionsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Connections")
-        .task {
-            guard !app.still else { return }
-            await app.refreshConnections()
-            await app.refreshDevices()
-        }
         .sheet(isPresented: signingInBinding) {
             GoogleSignInSheet()
         }

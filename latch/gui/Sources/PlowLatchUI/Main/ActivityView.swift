@@ -25,7 +25,6 @@ struct ActivityView: View {
                 } else {
                     Records(feed: app.feed(for: host), host: host, filter: app.activityFilter, showConnections: app.showConnections,
                             search: search, inspecting: $inspecting)
-                        .following(app.feed(for: host), still: app.still)
                         .id(host.id)
                 }
             } else {
@@ -215,7 +214,8 @@ private struct DotLabelStyle: LabelStyle {
 }
 
 extension View {
-    /// Runs `feed`'s stream while this view is on screen.
+    /// Runs `feed`'s stream while this view is on screen, and for its grace
+    /// after.
     func following(_ feed: ActivityFeed?, still: Bool) -> some View {
         task(id: feed.map(ObjectIdentifier.init)) {
             guard let feed, !still else { return }

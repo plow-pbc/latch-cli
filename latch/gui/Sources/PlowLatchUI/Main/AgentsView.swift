@@ -48,10 +48,6 @@ struct AgentsView: View {
             }
         }
         .sheet(item: $app.newAgent) { NewAgentSheet(flow: $0) }
-        .task {
-            guard !app.still else { return }
-            await app.refreshAgents()
-        }
     }
 }
 

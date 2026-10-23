@@ -243,7 +243,7 @@ struct RecentTests {
         let feed = ActivityFeed(client: client, host: nil)
         feed.stage(client.newest)
         #expect(feed.records.filter { !$0.isBackground }.isEmpty && feed.hasOlder)
-        await feed.loadOlder(until: 5)
+        await feed.loadOlder(until: 5, pages: ActivityFeed.homePages)
         #expect(feed.records.filter { !$0.isBackground }.count == 6)
         #expect(client.pages == 1)
     }
@@ -263,10 +263,17 @@ final class PagedClient: LatchClient, @unchecked Sendable {
         ([#"{"type":"snapshot","cursor":"x","has_older":true}"#] + (100..<150).map { Self.line($0, op: "connect") }
             + [#"{"type":"caught_up","cursor":"y","has_older":true}"#]).joined(separator: "\n")
     }
+    /// Each earlier page: six records of `olderOp`, more before them when
+    /// `olderHasMore`; a page throws `olderFails` instead when it's set.
+    var olderOp = "exec"
+    var olderHasMore = false
+    var olderFails: (any Error)?
     func audit(host: String?, before: String?) async throws -> AuditPage {
         pages += 1
-        return try AuditPage.parse(Data(((94..<100).map { Self.line($0, op: "exec") }
-            + [#"{"type":"caught_up","cursor":"z","has_older":false}"#]).joined(separator: "\n").utf8))
+        if let olderFails { throw olderFails }
+        let end = 100 - (pages - 1) * 6
+        return try AuditPage.parse(Data((((end - 6)..<end).map { Self.line($0, op: olderOp) }
+            + [#"{"type":"caught_up","cursor":"z","has_older":\#(olderHasMore)}"#]).joined(separator: "\n").utf8))
     }
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
