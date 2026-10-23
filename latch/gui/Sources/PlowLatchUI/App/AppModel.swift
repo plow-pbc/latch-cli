@@ -281,7 +281,7 @@ final class AppModel {
         do {
             try await run()
         } catch {
-            hostActionError = (error as? LatchError)?.message ?? error.localizedDescription
+            hostActionError = error.localizedDescription
         }
         await refreshStatus()
     }
@@ -296,11 +296,30 @@ final class AppModel {
         try changed.get()
     }
 
-    /// `latch logout`: this Mac leaves the account, and onboarding takes
-    /// over once the status stream says so.
+    /// While `latch logout` runs, and after it if Plow couldn't take this
+    /// Mac out of the account: what the person must do about it, said
+    /// before onboarding takes over.
+    private(set) var loggingOut = false
+    private(set) var logOutWarning: String?
+
+    /// `latch logout`: this Mac leaves the account, then onboarding takes
+    /// over, once the person has read why Plow still lists it, if it does.
     func logOut() async throws {
-        try await client.logout()
+        loggingOut = true
+        defer { loggingOut = false }
+        let result = try await client.logout()
+        if let device = result.device, !device.removed {
+            logOutWarning = "This Mac is logged out, but Plow couldn't take it out of your account"
+                + (device.error.map { ": \($0.message)." } ?? ".")
+                + (device.next.map { " Finish with \($0)." } ?? "")
+        }
         await refreshStatus()
+        leaveMainIfLoggedOut()
+    }
+
+    /// The person read the warning: onboarding takes over.
+    func acknowledgeLogOutWarning() {
+        logOutWarning = nil
         leaveMainIfLoggedOut()
     }
 
@@ -309,7 +328,13 @@ final class AppModel {
 
     func agentCatalog() async throws -> AgentCatalog { try await client.agentCatalog() }
     func agentLines() async throws -> AgentLines { try await client.agentLines() }
-    func agentStatus(_ uid: String) async throws -> AgentsList.Agent { try await client.agentShow(uid) }
+    /// `latch agents show`, kept in the account's agents too, so the
+    /// Agents page shows what the New Agent sheet saw.
+    func agentStatus(_ uid: String) async throws -> AgentsList.Agent {
+        let agent = try await client.agentShow(uid)
+        if let at = agents?.firstIndex(where: { $0.uid == uid }) { agents?[at] = agent }
+        return agent
+    }
 
     /// Creates an agent, then lists the account's agents again.
     func createAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
@@ -515,7 +540,7 @@ final class AppModel {
     /// The main window learned this Mac is logged out (a `latch logout`):
     /// onboarding takes over, at Log in.
     func leaveMainIfLoggedOut() {
-        guard let status, status.peer == nil, onboarding == nil else { return }
+        guard let status, status.peer == nil, onboarding == nil, !loggingOut, logOutWarning == nil else { return }
         let progress = store.load()
         guard case let .onboarding(step) = progress.destination(loggedIn: false) else { return }
         beginOnboarding(at: step, progress: progress)

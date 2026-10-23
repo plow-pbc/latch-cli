@@ -53,7 +53,7 @@ final class NewAgent {
                                                 tokenFile: kind == .own ? tokenFile : nil, line: line)
             error = nil
         } catch {
-            self.error = (error as? LatchError)?.message ?? error.localizedDescription
+            self.error = error.localizedDescription
         }
     }
 

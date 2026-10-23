@@ -60,12 +60,17 @@ struct HostSettingsView: View {
                     do {
                         try await app.logOut()
                     } catch {
-                        logOutError = (error as? LatchError)?.message ?? error.localizedDescription
+                        logOutError = error.localizedDescription
                     }
                 }
             }
         } message: {
             Text("Latch stops here and this Mac leaves your Plow account. Its vault and activity stay, readable after you log in again.")
+        }
+        .alert("Still in your Plow account", isPresented: logOutWarningBinding) {
+            Button("OK") { app.acknowledgeLogOutWarning() }
+        } message: {
+            Text(app.logOutWarning ?? "")
         }
     }
 
@@ -109,6 +114,10 @@ struct HostSettingsView: View {
         } footer: {
             Text("Logged-in devices can send requests as you but don't host.").foregroundStyle(.secondary)
         }
+    }
+
+    private var logOutWarningBinding: Binding<Bool> {
+        Binding { app.logOutWarning != nil } set: { if !$0 { app.acknowledgeLogOutWarning() } }
     }
 
     private var removingBinding: Binding<Bool> {
@@ -273,7 +282,7 @@ private struct ConnectorsSection: View {
                     try await app.setConnector(plugin.name, on: on, host: host)
                     error = nil
                 } catch {
-                    self.error = (error as? LatchError)?.message ?? error.localizedDescription
+                    self.error = error.localizedDescription
                 }
             }
         }

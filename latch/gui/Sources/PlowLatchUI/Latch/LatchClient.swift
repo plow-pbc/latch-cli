@@ -68,7 +68,7 @@ nonisolated protocol LatchClient: Sendable {
     /// `latch update --check`.
     func updateCheck() async throws -> UpdateCheck
     /// `latch logout`: this Mac leaves the account; its vault stays.
-    func logout() async throws
+    func logout() async throws -> LogoutResult
     /// `latch agents catalog`, `latch agents lines`.
     func agentCatalog() async throws -> AgentCatalog
     func agentLines() async throws -> AgentLines
@@ -252,8 +252,8 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(UpdateCheck.self, try await run(["update", "--check"]))
     }
 
-    func logout() async throws {
-        _ = try await run(["logout"])
+    func logout() async throws -> LogoutResult {
+        try decode(LogoutResult.self, try await run(["logout"]))
     }
 
     func agentCatalog() async throws -> AgentCatalog {

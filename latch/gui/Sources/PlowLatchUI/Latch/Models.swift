@@ -233,6 +233,20 @@ nonisolated struct DeviceList: Decodable, Equatable {
     var devices: [Device]
 }
 
+/// `latch logout`'s answer: whether Plow took this machine out of the
+/// account. A local logout succeeds even when Plow couldn't be told.
+nonisolated struct LogoutResult: Decodable, Equatable {
+    struct Device: Decodable, Equatable {
+        var name: String
+        var removed: Bool
+        var error: LatchFailure?
+        /// What finishes it, in latch's words.
+        var next: String?
+    }
+    /// Nil when there was nothing to take out of the account.
+    var device: Device?
+}
+
 /// `latch update --check`: whether a newer Latch is published.
 nonisolated struct UpdateCheck: Decodable, Equatable {
     struct Release: Decodable, Equatable { var build: Int?; var tag: String? }

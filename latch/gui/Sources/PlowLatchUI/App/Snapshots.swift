@@ -65,7 +65,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     func devices() async throws -> DeviceList { try Fixtures.decode(Fixtures.devices) }
     func removeDevice(_ name: String) async throws {}
     func updateCheck() async throws -> UpdateCheck { try Fixtures.decode(Fixtures.updateCheck) }
-    func logout() async throws {}
+    func logout() async throws -> LogoutResult { LogoutResult(device: nil) }
     func agentCatalog() async throws -> AgentCatalog { try Fixtures.decode(Fixtures.catalog) }
     func agentLines() async throws -> AgentLines { try Fixtures.decode(Fixtures.lines) }
     func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
