@@ -41,7 +41,7 @@ struct PlowLatchApp: App {
                 .environment(model)
                 .installWindowActions(model)
         }
-        .defaultSize(width: 900, height: 600)
+        .defaultSize(width: 1120, height: 700)
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(finished ? .presented : .suppressed)
     }

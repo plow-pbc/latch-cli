@@ -34,6 +34,19 @@ struct RecordInspector: View {
                         : (args.secretEnv ?? []).compactMap(\.name).joined(separator: ", "))
                 }
             }
+            let fields = Self.otherFields(of: record)
+            if !fields.isEmpty {
+                Section(record.op == "exec" ? "More" : "Details") {
+                    ForEach(fields, id: \.key) { field in
+                        LabeledContent(Self.label(field.key)) {
+                            Text(Self.value(field.key, field.value))
+                                .font(.body.monospaced())
+                                .multilineTextAlignment(.trailing)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
             if let gate = record.gate {
                 Why(gate: gate, caller: caller.who)
             }
@@ -51,6 +64,40 @@ struct RecordInspector: View {
         }
         .formStyle(.grouped)
         .controlSize(.small)
+    }
+
+    /// Everything else the record holds, by key: each op's own args, and
+    /// any detail beyond args, the judgment and the start time. Exec's
+    /// fields shown above aren't repeated.
+    static func otherFields(of record: AuditRecord) -> [(key: String, value: JSONValue)] {
+        let detailFields = record.details?.fields ?? [:]
+        var fields: [(key: String, value: JSONValue)] = []
+        if case let .object(args)? = detailFields["args"] {
+            let shown: Set<String> = record.op == "exec"
+                ? ["argv", "workdir", "writes", "network", "secret_env", "exit_code", "duration_ms", "stderr_bytes", "timed_out"] : []
+            fields += args.filter { !shown.contains($0.key) && $0.value != .null }.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+        }
+        fields += detailFields.filter { !["args", "gate", "started"].contains($0.key) && $0.value != .null }
+            .sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+        return fields
+    }
+
+    static func label(_ key: String) -> String {
+        switch key {
+        case "sha256": return "SHA-256"
+        case "url": return "URL"
+        default:
+            let words = key.replacingOccurrences(of: "_", with: " ")
+            return words.prefix(1).uppercased() + words.dropFirst()
+        }
+    }
+
+    static func value(_ key: String, _ value: JSONValue) -> String {
+        if key.hasSuffix("size") || key.hasSuffix("bytes"), case let .number(bytes) = value {
+            return Int64(bytes).formatted(.byteCount(style: .file))
+        }
+        if key.hasSuffix("_ms"), case let .number(ms) = value { return "\(Int(ms)) ms" }
+        return value.text
     }
 }
 

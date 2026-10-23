@@ -83,7 +83,7 @@ private struct Records: View {
                     TableColumn("Time") { record in
                         Text(record.time, format: .dateTime.hour().minute().second()).foregroundStyle(.secondary)
                     }
-                    .width(min: 75, ideal: 85, max: 120)
+                    .width(min: 95, ideal: 100, max: 130)
                     TableColumn("Status") { record in StatusLabel(status: record.status).help(record.status.title) }
                         .width(min: 140, ideal: 210, max: 280)
                     TableColumn("Request") { record in

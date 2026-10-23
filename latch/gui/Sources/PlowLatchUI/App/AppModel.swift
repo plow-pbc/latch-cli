@@ -152,13 +152,24 @@ final class AppModel {
     func followStatus() async {
         do {
             for try await status in client.statusFollow() {
-                self.status = status
-                statusError = nil
-                leaveMainIfLoggedOut()
+                statusChanged(status)
             }
         } catch is CancellationError {
         } catch {
             statusError = (error as? LatchError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// A new `status --local` from the stream. When this Mac starts
+    /// serving, its activity, which had nothing to read before, follows
+    /// again.
+    func statusChanged(_ status: LocalStatus) {
+        let wasServing = self.status?.serve.state == "serving"
+        self.status = status
+        statusError = nil
+        leaveMainIfLoggedOut()
+        if status.serve.state == "serving", !wasServing, let name = status.peer?.name {
+            feeds[name]?.retry()
         }
     }
 

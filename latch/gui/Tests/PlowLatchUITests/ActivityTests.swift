@@ -139,3 +139,94 @@ struct LiveActivityTests {
             .split(separator: "\n").filter { $0.contains(state) && $0.contains("audit --follow") }.count
     }
 }
+
+/// The inspector shows every field a record holds, whatever its op.
+struct RecordFieldsTests {
+    private func record(_ json: String) throws -> AuditRecord { try LatchJSON.decoder.decode(AuditRecord.self, from: Data(json.utf8)) }
+
+    // A real `file get` record (path shortened).
+    @Test func aFileGetShowsItsPathSizeAndHash() throws {
+        let file = try record(#"{"agent":null,"caller":"e4144a3a","caller_name":"laptop","decision":"allow","details":{"args":{"path":"/Users/me/Projects/latch-demo/README.md","sha256":"eb9c26baee47f19e4993a77bca936d0ff09e355a82d3db79bf154ebff1a80604","size":5},"gate":null,"started":"2026-10-23T05:27:23.226971Z"},"id":"e5d0","op":"file_get","outcome":"ok","time":"2026-10-23T05:27:23.45253Z"}"#)
+        let shown = RecordInspector.otherFields(of: file).map { (RecordInspector.label($0.key), RecordInspector.value($0.key, $0.value)) }
+        #expect(shown.map(\.0) == ["Path", "SHA-256", "Size"])
+        #expect(shown[0].1 == "/Users/me/Projects/latch-demo/README.md")
+        #expect(shown[1].1.hasPrefix("eb9c26ba"))
+        #expect(shown[2].1 == "5 bytes")
+    }
+
+    // Google's audit fields as `google/host.rs` writes them: command, flags,
+    // recipients, accounts, and each account's outcome.
+    @Test func aGoogleCallShowsRecipientsAndAccounts() throws {
+        let google = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"allow","details":{"args":{"command":"gmail.send","flags":["--to"],"recipients":["ada@example.com","bob@example.com"],"accounts":["me@example.com"],"outcomes":[{"account":"me@example.com","status":"ok"}]},"gate":null,"started":null},"id":"g1","op":"google","outcome":"ok","time":"2026-10-23T05:27:23Z"}"#)
+        let shown = Dictionary(uniqueKeysWithValues: RecordInspector.otherFields(of: google)
+            .map { (RecordInspector.label($0.key), RecordInspector.value($0.key, $0.value)) })
+        #expect(shown["Recipients"] == "ada@example.com\nbob@example.com")
+        #expect(shown["Accounts"] == "me@example.com")
+        #expect(shown["Command"] == "gmail.send")
+        #expect(shown["Outcomes"] == "account: me@example.com, status: ok")
+        #expect(google.command == "google gmail send")
+    }
+
+    // Exec's own fields have their own sections; the rest still shows.
+    @Test func execShowsWhatItsSectionsDont() throws {
+        let exec = try #require(try AuditPage.parse(Data(Fixtures.studioAudit.utf8)).records.first { $0.op == "exec" && $0.args?.exitCode != nil })
+        #expect(RecordInspector.otherFields(of: exec).map(\.key) == ["timeout"])
+    }
+}
+
+/// A latch on a Mac that has never served: `audit --follow` refuses with
+/// `no_host_here` until its host starts, then streams.
+final class NeverServedClient: LatchClient, @unchecked Sendable {
+    let stateDir = "/s"
+    var hosting = false
+    private(set) var follows = 0
+
+    func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.stopped) }
+    func accountStatus() async throws -> AccountStatus { throw LatchError.unreachable("no Plow") }
+    func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+    func rulesSet(_ text: String) async throws {}
+    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
+    func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
+    func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
+    func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
+    func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
+    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+        follows += 1
+        let hosting = hosting
+        return AsyncThrowingStream { continuation in
+            guard hosting else {
+                return continuation.finish(throwing: LatchError.failed(LatchFailure(code: "no_host_here", message: "this machine has never served")))
+            }
+            continuation.yield(.caughtUp(cursor: String(repeating: "0", count: 64), hasOlder: false))
+        }
+    }
+    func serve(again: Bool) async throws {}
+    func stop() async throws {}
+}
+
+@MainActor
+struct NeverServedTests {
+    private func until(_ done: () -> Bool) async {
+        for _ in 0..<300 where !done() { try? await Task.sleep(for: .milliseconds(5)) }
+    }
+
+    @Test func activityFollowsOnceThisMacStartsHosting() async throws {
+        let client = NeverServedClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.stopped))
+        let feed = app.feed(for: try #require(app.host))
+        feed.start()
+        await until { feed.error != nil }
+        #expect(feed.error?.code == "no_host_here")
+        // Waiting alone doesn't ask again.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(client.follows == 1)
+        client.hosting = true
+        app.statusChanged(try Fixtures.decode(Fixtures.serving))
+        await until { feed.caughtUp }
+        #expect(feed.caughtUp)
+        #expect(feed.error == nil)
+        feed.stop()
+    }
+}

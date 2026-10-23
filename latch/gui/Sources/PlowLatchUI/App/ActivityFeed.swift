@@ -27,6 +27,9 @@ final class ActivityFeed {
     private var cursor: String?
     private var task: Task<Void, Never>?
     private var watchers = 0
+    /// The stream is running (it ends on its own after an error that
+    /// waiting won't fix).
+    private var running = false
 
     init(client: any LatchClient, host: String?) {
         self.client = client
@@ -36,7 +39,16 @@ final class ActivityFeed {
     /// A screen showing this feed appeared; the first one starts the stream.
     func start() {
         watchers += 1
-        guard task == nil else { return }
+        guard !running else { return }
+        running = true
+        task = Task { await run() }
+    }
+
+    /// Something changed that may fix the error that stopped the stream
+    /// (this Mac started hosting): while watched, follow again.
+    func retry() {
+        guard watchers > 0, !running else { return }
+        running = true
         task = Task { await run() }
     }
 
@@ -47,12 +59,14 @@ final class ActivityFeed {
         guard watchers == 0 else { return }
         task?.cancel()
         task = nil
+        running = false
     }
 
     /// Follows until stopped. A dropped stream (the host stopped or out of
     /// reach) is picked up again after the last record, waiting longer each
     /// time up to a minute; an error that won't change by waiting stops it.
     private func run() async {
+        defer { if !Task.isCancelled { running = false } }
         var wait = 2
         while !Task.isCancelled {
             do {
@@ -79,7 +93,8 @@ final class ActivityFeed {
         }
     }
 
-    /// Errors that waiting won't fix.
+    /// Errors that waiting won't fix; `no_host_here` until this Mac starts
+    /// hosting (`retry`).
     private static let final: Set<String> = ["no_host_here", "owner_only", "usage", "audit_broken", "unknown_host", "not_logged_in"]
 
     func apply(_ line: AuditLine) {

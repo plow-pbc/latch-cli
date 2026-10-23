@@ -24,16 +24,24 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
 
     struct Details: Decodable, Equatable {
         var started: Date?
+        /// The fields the app formats itself (exec's, mostly).
         var args: Args?
         var gate: Gate?
+        /// Everything the record holds, as latch wrote it: each op's args
+        /// (Google's accounts and recipients, a file's path, size and
+        /// SHA-256, a browser step's place…) and any other detail, so the
+        /// inspector shows all of it, not only what the app knows.
+        var fields: [String: JSONValue]
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             started = try? c.decodeIfPresent(Date.self, forKey: .started)
-            // An op's args have their own shape; what isn't understood is
-            // left out rather than failing the record.
+            // An op's args have their own shape; what the typed view doesn't
+            // understand is still in `fields`.
             args = try? c.decodeIfPresent(Args.self, forKey: .args)
             gate = try? c.decodeIfPresent(Gate.self, forKey: .gate)
+            // Decoded as a dictionary, the keys stay as latch spelled them.
+            fields = (try? decoder.singleValueContainer().decode([String: JSONValue].self)) ?? [:]
         }
 
         private enum CodingKeys: String, CodingKey { case started, args, gate }
@@ -89,6 +97,42 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     var args: Args? { details?.args }
     var gate: Gate? { details?.gate }
     var isRefused: Bool { decision != "allow" }
+}
+
+/// Any JSON value, kept as latch wrote it.
+nonisolated enum JSONValue: Decodable, Equatable, Sendable {
+    case string(String), number(Double), bool(Bool), null
+    case array([JSONValue]), object([String: JSONValue])
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let value = try? c.decode(Bool.self) { self = .bool(value) }
+        else if let value = try? c.decode(Double.self) { self = .number(value) }
+        else if let value = try? c.decode(String.self) { self = .string(value) }
+        else if let value = try? c.decode([JSONValue].self) { self = .array(value) }
+        else { self = .object(try c.decode([String: JSONValue].self)) }
+    }
+
+    /// In words, one line per item: scalars as they are, an object as
+    /// "key: value" pairs.
+    var text: String {
+        switch self {
+        case let .string(value): value
+        case let .number(value): value == value.rounded() && abs(value) < 1e15 ? String(Int64(value)) : String(value)
+        case let .bool(value): value ? "Yes" : "No"
+        case .null: "—"
+        case let .array(values): values.isEmpty ? "None" : values.map(\.text).joined(separator: "\n")
+        case let .object(fields):
+            fields.keys.sorted().map { "\($0.replacingOccurrences(of: "_", with: " ")): \(fields[$0]!.inline)" }.joined(separator: ", ")
+        }
+    }
+
+    private var inline: String {
+        if case let .array(values) = self { return values.map(\.inline).joined(separator: ", ") }
+        if case let .object(fields) = self { return "{\(JSONValue.object(fields).text)}" }
+        return text
+    }
 }
 
 /// A line of `latch audit`: the opening, a record each, then caught up;
