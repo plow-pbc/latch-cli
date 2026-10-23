@@ -1225,60 +1225,7 @@
       "args": [
         {
           "index": 0,
-          "value": 369098752,
-          "valueTwo": 268435456,
-          "op": "SCMP_CMP_MASKED_EQ"
-        }
-      ],
-      "includes": {
-        "arches": [
-          "amd64",
-          "arm64"
-        ]
-      }
-    },
-    {
-      "names": [
-        "unshare"
-      ],
-      "action": "SCMP_ACT_ALLOW",
-      "args": [
-        {
-          "index": 0,
-          "value": 268435456,
-          "op": "SCMP_CMP_EQ"
-        }
-      ]
-    },
-    {
-      "names": [
-        "mount",
-        "pivot_root"
-      ],
-      "action": "SCMP_ACT_ALLOW"
-    },
-    {
-      "names": [
-        "umount2"
-      ],
-      "action": "SCMP_ACT_ALLOW",
-      "args": [
-        {
-          "index": 1,
-          "value": 2,
-          "op": "SCMP_CMP_EQ"
-        }
-      ]
-    },
-    {
-      "names": [
-        "clone"
-      ],
-      "action": "SCMP_ACT_ALLOW",
-      "args": [
-        {
-          "index": 0,
-          "value": 369098752,
+          "value": 100663296,
           "valueTwo": 0,
           "op": "SCMP_CMP_MASKED_EQ"
         }
@@ -1299,8 +1246,28 @@
         {
           "index": 0,
           "value": 100663296,
-          "valueTwo": 0,
-          "op": "SCMP_CMP_MASKED_EQ"
+          "op": "SCMP_CMP_MASKED_EQ",
+          "valueTwo": 0
+        }
+      ]
+    },
+    {
+      "names": [
+        "mount",
+        "pivot_root"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "names": [
+        "umount2"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 1,
+          "value": 2,
+          "op": "SCMP_CMP_EQ"
         }
       ]
     }
