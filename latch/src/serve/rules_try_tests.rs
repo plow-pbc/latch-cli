@@ -1,0 +1,496 @@
+//! `rules_try` on a headless host: the owner previews a verdict, as an
+//! agent or as themselves, and nothing the request asks for runs.
+
+use serde_json::{Value, json};
+
+use super::gated_tests::{always_covered, covered_after_a_yes, refusal, start, start_denying};
+use super::*;
+use crate::failure::Exit;
+use crate::gate::fake::{AGENT, LINE, World, agent_self, message, owner};
+
+fn chat_with(decide: crate::gate::fake::Decide) -> World {
+    let mut world = World::with_chat(
+        "chat_a",
+        vec![
+            message("m1", owner(), "please build the site", 30),
+            message("m2", agent_self(), "On it.", 29),
+        ],
+    );
+    world.decide = Some(decide);
+    world
+}
+
+/// A preview of `op` with `args`, as `from` if given.
+fn try_args(op: &str, args: Value, from: Option<&str>, chat: Option<&str>) -> Value {
+    let mut tried = json!({"request": {"op": op, "args": args, "chat": chat}});
+    if let Some(from) = from {
+        tried["from"] = json!(from);
+    }
+    tried
+}
+
+fn answer(response: Response) -> Value {
+    match response {
+        Response::Ok(answer) => answer,
+        refused => panic!("not previewed: {refused:?}"),
+    }
+}
+
+/// The audit's operations and the dashboard's call kinds, in order: a
+/// preview adds to neither.
+fn traces(t: &super::gated_tests::TestHost) -> (Vec<String>, Vec<String>) {
+    let ops = t
+        .audit()
+        .iter()
+        .map(|record| record["op"].as_str().unwrap().to_string())
+        .collect();
+    let watching = t.host.dashboard.watch();
+    let board = watching.borrow();
+    let kinds = board
+        .tasks
+        .iter()
+        .flat_map(|task| &task.calls)
+        .map(|call| call.kind.clone())
+        .collect();
+    (ops, kinds)
+}
+
+fn untouched() -> (Vec<String>, Vec<String>) {
+    (Vec::new(), Vec::new())
+}
+
+#[tokio::test]
+async fn an_exec_preview_is_judged_and_runs_nothing() {
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    let fresh = t.host.workers.home.join("fresh");
+    let exec = json!({"argv": ["/bin/sh", "-c", "touch ran"], "writes": ["~/fresh"],
+                      "network": true, "secret_env": {"API_TOKEN": "s3cret-value"}});
+    let (response, rest) = t
+        .call(&device, "rules_try", try_args("exec", exec, None, None))
+        .await;
+    let tried = answer(response);
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["as"], "owner");
+    assert_eq!(tried["host"], "test-host");
+    assert_eq!(tried["gate"]["caller"], "owner_device");
+    assert_eq!(tried["gate"]["verdict"], "allow");
+    assert!(tried["gate"]["p"].is_object(), "{tried}");
+    let action = &tried["request"]["action"];
+    assert_eq!(action["writes"], json!([fresh]));
+    assert_eq!(action["network"], true);
+    assert_eq!(action["secret_env"][0]["name"], "API_TOKEN");
+    assert!(!tried.to_string().contains("s3cret-value"), "{tried}");
+    assert!(rest.is_empty());
+    assert_eq!(t.judged(), 1);
+    // Nothing ran: no write folder made, no file written anywhere.
+    assert!(!fresh.exists());
+    assert!(!t.host.workers.home.join("ran").exists());
+
+    // Not audited, not on the dashboard.
+    assert_eq!(traces(&t), untouched());
+}
+
+#[tokio::test]
+async fn an_agent_cannot_preview() {
+    let t = start(chat_with(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let (response, _) = t
+        .call(
+            &agent,
+            "rules_try",
+            try_args("exec", json!({"argv": ["true"]}), None, None),
+        )
+        .await;
+    let (exit, code, _) = refusal(&response);
+    assert_eq!((exit, code), (Exit::Denied, "owner_only"));
+    assert_eq!(t.judged(), 0);
+    assert_eq!(traces(&t), untouched());
+}
+
+#[tokio::test]
+async fn from_judges_as_that_agent_with_its_rules_and_chat() {
+    let t = start(chat_with(covered_after_a_yes)).await;
+    let device = t.caller("device").await;
+    for set in [
+        json!({"command": "set", "text": "Never send email."}),
+        json!({"command": "set", "from": "Juno", "text": "Builds are fine."}),
+    ] {
+        answer(t.call(&device, "rules", set).await.0);
+    }
+    let exec = json!({"argv": ["npm", "run", "build"]});
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", exec, Some("Juno"), None),
+        )
+        .await;
+    let tried = answer(response);
+    // A refusal is the preview's verdict, not an error.
+    assert_eq!(tried["verdict"], "not_covered");
+    assert_eq!(
+        tried["as"],
+        json!({"agent_uid": AGENT, "agent_name": "Juno"})
+    );
+    assert_eq!(tried["gate"]["caller"], "agent");
+    assert_eq!(tried["gate"]["chat"], "chat_a");
+    assert_eq!(tried["gate"]["source"], "chat_and_rules");
+    let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
+    assert_eq!(
+        asked["owner_rules"],
+        json!({"rules for every agent on this host": "Never send email.",
+               "rules for this agent": "Builds are fine."})
+    );
+    assert_eq!(asked["conversation"][0]["text"], "please build the site");
+    // Only the two rules commands were audited and shown.
+    let rules = vec!["rules".to_string(), "rules".to_string()];
+    assert_eq!(traces(&t), (rules.clone(), rules));
+
+    // The same request from the owner: shared rules only, no chat.
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", json!({"argv": ["npm", "run", "build"]}), None, None),
+        )
+        .await;
+    assert_eq!(answer(response)["gate"]["source"], "owner_request");
+    let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
+    assert_eq!(
+        asked["owner_rules"],
+        json!({"rules on this host": "Never send email."})
+    );
+
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", json!({"argv": ["true"]}), Some("Nobody"), None),
+        )
+        .await;
+    assert_eq!(refusal(&response).1, "no_such_agent");
+}
+
+#[tokio::test]
+async fn browser_steps_and_settings_are_not_previewed() {
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    for (op, args) in [
+        (
+            "browser",
+            json!({"command": "open", "url": "https://example.com"}),
+        ),
+        ("vault", json!({"command": "list"})),
+    ] {
+        let (response, _) = t
+            .call(&device, "rules_try", try_args(op, args, None, None))
+            .await;
+        let (exit, code, _) = refusal(&response);
+        assert_eq!((exit, code), (Exit::Usage, "not_previewable"), "{op}");
+    }
+    assert_eq!(t.judged(), 0);
+}
+
+#[tokio::test]
+async fn the_hosts_own_refusals_are_previewed_without_the_judge() {
+    let exec = || json!({"argv": ["/bin/sh", "-c", "touch ran"]});
+    for flags in [crate::cli::EVERY_AGENT.to_string(), AGENT.to_string()] {
+        let deny = DenyExec::from_flags(std::slice::from_ref(&flags));
+        let t = start_denying(chat_with(always_covered), deny).await;
+        let device = t.caller("device").await;
+        let (response, _) = t
+            .call(
+                &device,
+                "rules_try",
+                try_args("exec", exec(), Some("Juno"), None),
+            )
+            .await;
+        let tried = answer(response);
+        assert_eq!(tried["verdict"], "host_refused", "{flags}");
+        assert_eq!(tried["refused"]["code"], "exec_denied");
+        assert_eq!(tried["gate"], Value::Null);
+        let whom = match flags == crate::cli::EVERY_AGENT {
+            true => "You turned exec off for every agent",
+            false => "You turned exec off for this agent",
+        };
+        let message = tried["refused"]["message"].as_str().unwrap();
+        assert!(message.starts_with(whom), "{message}");
+        assert_eq!(t.judged(), 0, "{flags}");
+        assert!(!t.host.workers.home.join("ran").exists());
+        assert_eq!(traces(&t), untouched());
+        // The owner is never refused exec.
+        let (response, _) = t
+            .call(&device, "rules_try", try_args("exec", exec(), None, None))
+            .await;
+        assert_eq!(answer(response)["verdict"], "allow");
+    }
+
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    let off = t
+        .local_call("plugins", json!({"command": "disable", "name": "google"}))
+        .await;
+    assert!(matches!(off, Response::Ok(_)), "{off:?}");
+    let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": [],
+                        "confirm_conflict": false, "inputs": []});
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("google", google, Some("Juno"), None),
+        )
+        .await;
+    let tried = answer(response);
+    assert_eq!(tried["verdict"], "host_refused");
+    assert_eq!(tried["refused"]["code"], "not_enabled");
+    assert_eq!(t.judged(), 0);
+    assert_eq!(
+        t.plow.saw("access-token"),
+        0,
+        "no Google credential fetched"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_with_several_chats_needs_one_named() {
+    let mut world = chat_with(always_covered);
+    world.add(
+        "chat_b",
+        LINE,
+        vec![message("b1", owner(), "yes, build it", 5)],
+    );
+    let t = start(world).await;
+    let device = t.caller("device").await;
+    let exec = || json!({"argv": ["npm", "run", "build"]});
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", exec(), Some("Juno"), None),
+        )
+        .await;
+    let (exit, code, _) = refusal(&response);
+    assert_eq!((exit, code), (Exit::Usage, "which_chat"));
+    assert_eq!(t.judged(), 0);
+
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", exec(), Some("Juno"), Some("chat_b")),
+        )
+        .await;
+    let tried = answer(response);
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["gate"]["chat"], "chat_b");
+    let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
+    assert_eq!(asked["conversation"][0]["text"], "yes, build it");
+}
+
+#[tokio::test]
+async fn the_owner_on_the_host_previews_over_the_socket() {
+    let t = start(chat_with(always_covered)).await;
+    let tried = answer(
+        t.local_call(
+            "rules_try",
+            try_args(
+                "file_get",
+                json!({"remote_path": "area/notes.txt"}),
+                Some("Juno"),
+                None,
+            ),
+        )
+        .await,
+    );
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["gate"]["caller"], "agent");
+    assert!(!tried.to_string().contains("own words"), "no file content");
+    assert_eq!(traces(&t), untouched());
+}
+
+#[tokio::test]
+async fn a_preview_leaves_nothing_in_the_audit_log_or_dashboard() {
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    let secret = "synthetic-preview-credential-4c1e";
+    let argv = json!(["curl", "--token", secret, "https://example.com"]);
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", json!({"argv": argv}), Some("Juno"), None),
+        )
+        .await;
+    assert_eq!(answer(response)["verdict"], "allow");
+    assert_eq!(traces(&t), untouched());
+    let on_disk = std::fs::read_to_string(t.state.join(crate::audit::FILE)).unwrap_or_default();
+    assert!(!on_disk.contains("--token"));
+    // serve.log has one line for it: who asked, and what it found.
+    let logged: Vec<String> = crate::log::captured()
+        .into_iter()
+        .filter(|line| line.contains("rules_try:"))
+        .collect();
+    assert!(!logged.is_empty());
+    assert!(
+        logged.iter().all(|line| !line.contains("--token")),
+        "{logged:?}"
+    );
+    let board = serde_json::to_string(&*t.host.dashboard.watch().borrow()).unwrap();
+    assert!(!board.contains(secret), "{board}");
+}
+
+#[tokio::test]
+async fn the_answer_shows_the_action_as_the_judge_saw_it() {
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    let preview = async |op: &str, args: Value| {
+        let tried = try_args(op, args, Some("Juno"), None);
+        answer(t.call(&device, "rules_try", tried).await.0)
+    };
+
+    let send = json!([
+        "gmail",
+        "send",
+        "--to",
+        "ada@example.com",
+        "--body",
+        "See you at 6."
+    ]);
+    let google = json!({"gog_args": send, "account": ["owner@example.com"],
+                        "confirm_conflict": false, "inputs": []});
+    let tried = preview("google", google).await;
+    let judged = t.plow.world.lock().unwrap().asked.last().unwrap()["proposed_action"].clone();
+    assert_eq!(tried["request"]["action"], judged);
+    assert_eq!(tried["request"]["action"]["command"], send);
+    assert_eq!(
+        tried["request"]["action"]["accounts"],
+        json!(["owner@example.com"])
+    );
+
+    let put = json!({"remote_path": "area/new.txt", "size": 5, "name": "new.txt"});
+    let tried = preview("file_put", put).await;
+    let action = &tried["request"]["action"];
+    assert_eq!(action["operation"], "file_put");
+    assert_eq!(action["file_name"], "new.txt");
+    assert_eq!(action["size"], 5);
+    assert!(
+        action["path"].as_str().unwrap().ends_with("area/new.txt"),
+        "{action}"
+    );
+    assert!(!t.area.join("new.txt").exists());
+
+    // An exec's stdin is shown as the audit keeps it.
+    let script = b"echo hi\n".to_vec();
+    let exec = json!({"argv": ["/bin/sh"], "stdin": script});
+    let tried = preview("exec", exec).await;
+    assert_eq!(
+        tried["request"]["action"]["stdin"],
+        crate::exec::stdin_audit(&script)
+    );
+
+    assert_eq!(traces(&t), untouched());
+}
+
+/// A contacts page's cursor holds the name the page before ended on: the
+/// preview shows its plan as the audit keeps it, without that name.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_previewed_contacts_page_does_not_show_where_the_last_page_ended() {
+    let t = start(chat_with(always_covered)).await;
+    t.with_messages();
+    let device = t.caller("device").await;
+    let first = json!({"action": "search", "args": ["--limit", "1", "--", "a"]});
+    let (listed, _) = t.call(&device, "contacts", first).await;
+    let Response::Ok(first) = listed else {
+        panic!("{listed:?}")
+    };
+    assert_eq!(first["people"][0]["name"], "Ann Example");
+    let next = first["next"].as_str().unwrap().to_string();
+
+    let page = json!({"action": "search", "args": ["--cursor", next.clone()]});
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("contacts", page, Some("Juno"), None),
+        )
+        .await;
+    let tried = answer(response);
+    // The judge saw the page's whole plan; the answer masks its position.
+    let judged = t.plow.world.lock().unwrap().asked.last().unwrap()["proposed_action"].clone();
+    assert_eq!(judged["arguments"]["after"]["key"], "Ann Example");
+    let shown = &tried["request"]["action"];
+    assert_eq!(shown["operation"], "contacts.search");
+    assert_eq!(shown["arguments"]["after"]["key"], "[name]");
+    assert_eq!(
+        shown["arguments"]["after"]["id"],
+        judged["arguments"]["after"]["id"]
+    );
+    let text = tried.to_string();
+    assert!(
+        !text.contains("Ann Example") && !text.contains(&next),
+        "{text}"
+    );
+    // Only the real first page was audited and shown.
+    let contacts = vec!["contacts".to_string()];
+    assert_eq!(traces(&t), (contacts.clone(), contacts));
+}
+
+#[tokio::test]
+async fn every_verdict_has_one_answer_shape() {
+    let deny = DenyExec::from_flags(&[AGENT.to_string()]);
+    let t = start_denying(chat_with(covered_after_a_yes), deny).await;
+    let device = t.caller("device").await;
+    let build = json!({"argv": ["npm", "run", "build"], "writes": ["~/site"], "timeout": 30});
+
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", build.clone(), None, None),
+        )
+        .await;
+    let refused = answer(response);
+    // The owner's own preview: shared rules only, none set, so allowed.
+    assert_eq!(refused["verdict"], "allow");
+    assert_eq!(refused["gate"]["rules"], Value::Null, "{refused}");
+    let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": ["owner@example.com"],
+                        "confirm_conflict": false, "inputs": []});
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("google", google, Some("Juno"), None),
+        )
+        .await;
+    let not_covered = answer(response);
+    assert_eq!(not_covered["verdict"], "not_covered");
+
+    // Refused by the host: the same shape, its paths resolved, no gate.
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", build, Some("Juno"), None),
+        )
+        .await;
+    let host_refused = answer(response);
+    assert_eq!(host_refused["verdict"], "host_refused");
+    assert_eq!(host_refused["gate"], Value::Null);
+    let site = t.host.workers.home.join("site");
+    assert_eq!(host_refused["request"]["action"]["writes"], json!([site]));
+    assert_eq!(
+        host_refused["request"]["action"]["working_folder"],
+        json!(site)
+    );
+    let message = host_refused["refused"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("You turned exec off for this agent")
+            && message.contains(&format!("--deny-exec={AGENT}")),
+        "{message}"
+    );
+    assert!(!site.exists());
+
+    assert_eq!(traces(&t), untouched());
+}

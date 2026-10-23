@@ -8,26 +8,40 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
+use clap::parser::ValueSource;
+use clap::{CommandFactory, FromArgMatches};
 use serde_json::{Value, json};
 
 use super::owner;
 use crate::audit::{self, AuditLog};
-use crate::cli::{RulesArgs, RulesCommand};
+use crate::cli::{Cli, Command as Latch, FileCommand, HostArg, RulesArgs, RulesCommand};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
 use crate::hosts;
-use crate::plow::Plow;
+use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
 use crate::wire::Request;
+use crate::{google, transfer};
 
 pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
+    let scope = match args.command {
+        RulesCommand::Try {
+            host,
+            from,
+            request,
+        } => return preview(state, host, from, request).await,
+        RulesCommand::Set { ref scope, .. }
+        | RulesCommand::Edit { ref scope }
+        | RulesCommand::Clear { ref scope }
+        | RulesCommand::Show { ref scope } => scope,
+    };
     let target = Target {
         state,
-        host: args.host,
+        host: scope.host.clone(),
     };
-    let from = args.from;
+    let from = scope.from.clone();
     match args.command {
-        RulesCommand::Set { text, file } => {
+        RulesCommand::Set { text, file, .. } => {
             let text = match (text, file) {
                 (Some(text), None) => text,
                 (None, Some(file)) => read_file(&file)?,
@@ -40,7 +54,7 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                 .call(json!({"command": "set", "from": from, "text": text}))
                 .await
         }
-        RulesCommand::Edit => {
+        RulesCommand::Edit { .. } => {
             let shown = target
                 .call(json!({"command": "show", "from": from}))
                 .await?;
@@ -58,9 +72,95 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                              "revision": current["revision"]}))
                 .await
         }
-        RulesCommand::Clear => target.call(json!({"command": "clear", "from": from})).await,
-        RulesCommand::Show => target.call(json!({"command": "show", "from": from})).await,
+        RulesCommand::Clear { .. } => target.call(json!({"command": "clear", "from": from})).await,
+        RulesCommand::Show { .. } => target.call(json!({"command": "show", "from": from})).await,
+        RulesCommand::Try { .. } => unreachable!("previewed above"),
     }
+}
+
+/// `latch rules try -- REQUEST`: REQUEST parsed and built exactly as
+/// latch would send it, then previewed on the host (the `rules_try`
+/// operation), which runs nothing. The host is the one `--host` names, or
+/// this machine's own, as for every rules command: never `LATCH_HOST`, and
+/// a `--host` inside REQUEST is refused. Its `--plow-chat` (or
+/// `LATCH_PLOW_CHAT`) means what it would on the real call.
+async fn preview(
+    state: &StateDir,
+    host: Option<String>,
+    from: Option<String>,
+    words: Vec<String>,
+) -> Result<Value, Failure> {
+    // The parser's message, its usage line written as the request goes
+    // after `latch rules try --`.
+    let usage = |err: clap::Error| {
+        let message = err.to_string().trim_end().to_string();
+        let message = message.replacen("Usage: latch ", "Usage: latch rules try -- ", 1);
+        Failure::usage("usage", message)
+    };
+    let matches = Cli::command()
+        .try_get_matches_from(std::iter::once("latch".to_string()).chain(words))
+        .map_err(usage)?;
+    let parsed = Cli::from_arg_matches(&matches).map_err(usage)?;
+    let mut innermost = &matches;
+    while let Some((_, deeper)) = innermost.subcommand() {
+        innermost = deeper;
+    }
+    if innermost.ids().any(|id| id == "host")
+        && innermost.value_source("host") == Some(ValueSource::CommandLine)
+    {
+        let message = "The host goes on `latch rules try`, not on the request: \
+                       latch rules try --host NAME -- <request>";
+        return Err(Failure::usage("usage", message.to_string()));
+    }
+    let (op, args, asked): (&str, Value, HostArg) = match parsed.command {
+        Latch::Exec(args) => ("exec", crate::exec::request(&args)?, args.host),
+        Latch::File(FileCommand::Get {
+            remote_path, host, ..
+        }) => ("file_get", transfer::get_args(&remote_path), host),
+        Latch::File(FileCommand::Put {
+            local_path,
+            remote_path,
+            host,
+        }) => {
+            let (_, args) = transfer::put_args(&local_path, &remote_path).await?;
+            ("file_put", args, host)
+        }
+        Latch::Google(args) if !args.local_help() => {
+            let prepared = google::client::prepare(&args).await?;
+            let request = serde_json::to_value(&prepared.request).expect("request serializes");
+            ("google", request, args.host)
+        }
+        #[cfg(target_os = "macos")]
+        Latch::Messages(command) => (
+            "messages",
+            crate::messages::messages_request(&command),
+            command.host(),
+        ),
+        #[cfg(target_os = "macos")]
+        Latch::Contacts(command) => (
+            "contacts",
+            crate::messages::contacts_request(&command),
+            command.host(),
+        ),
+        _ => {
+            let name = matches.subcommand_name().unwrap_or_default();
+            return Err(crate::serve::not_previewable(name));
+        }
+    };
+    let peer = if hosts::local_target(state, host.as_deref())? {
+        Peer {
+            this_machine: true,
+            ..state.require_login()?.peer
+        }
+    } else {
+        hosts::resolve(state, host).await?
+    };
+    let request = Request {
+        op: "rules_try".to_string(),
+        args: json!({"request": {"op": op, "args": args, "chat": asked.plow_chat}, "from": from}),
+        chat: None,
+    };
+    dial::call(state, &peer, &request, ANSWER_WITHIN).await
 }
 
 /// Where the commands go: the host named by `--host`, or this machine's

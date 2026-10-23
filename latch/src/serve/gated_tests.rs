@@ -13,7 +13,7 @@ use crate::gate::fake::{self, AGENT, FakePlow, World, agent_self, message, owner
 use crate::model;
 
 /// The owner's yes covers an operation; anything else does not.
-fn covered_after_a_yes(state: &Value) -> Option<[f64; 3]> {
+pub(super) fn covered_after_a_yes(state: &Value) -> Option<[f64; 3]> {
     let said_yes = state["conversation"].as_array().is_some_and(|messages| {
         messages
             .iter()
@@ -47,7 +47,7 @@ fn a_chat(decide: fake::Decide) -> World {
 pub(super) struct TestHost {
     pub(super) host: Arc<Host>,
     pub(super) plow: FakePlow,
-    area: PathBuf,
+    pub(super) area: PathBuf,
     pub(super) state: PathBuf,
     /// The owner's home folder, as `messages` and `contacts` read it (macOS).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -69,7 +69,7 @@ pub(super) async fn start(world: World) -> TestHost {
 }
 
 /// A host whose owner denies exec as `deny_exec` says.
-async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
+pub(super) async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
     let fake = fake::serve(world);
     let provider = model::Plow::new(&fake.url, "made-up-login".into()).with_model(gate::MODEL);
     start_with(fake, Arc::new(provider), deny_exec).await

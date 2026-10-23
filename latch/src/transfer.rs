@@ -49,7 +49,7 @@ async fn receive(
 ) -> Result<Value, Failure> {
     let request = Request {
         op: "file_get".to_string(),
-        args: json!({ "remote_path": remote_path }),
+        args: get_args(remote_path),
         chat,
     };
     let (start, done, sha256) = download(connection, &request, local).await?;
@@ -62,15 +62,16 @@ async fn receive(
     }))
 }
 
-/// `latch file put LOCAL REMOTE`.
-pub async fn put(
-    state: &StateDir,
-    host: &Peer,
-    chat: Option<String>,
-    local: &Path,
-    remote_path: &str,
-) -> Result<Value, Failure> {
-    let mut file = File::open(local)
+/// The `file_get` operation's arguments.
+pub fn get_args(remote_path: &str) -> Value {
+    json!({ "remote_path": remote_path })
+}
+
+/// `local`, opened to be sent, and the `file_put` operation's arguments
+/// for it: its size, and its name, sent along so a host can put the file
+/// inside a folder named as the target, as `cp` does.
+pub async fn put_args(local: &Path, remote_path: &str) -> Result<(File, Value), Failure> {
+    let file = File::open(local)
         .await
         .map_err(|err| local_failure(local, err))?;
     let metadata = file
@@ -83,13 +84,22 @@ pub async fn put(
             format!("{} is not a file", local.display()),
         ));
     }
-    let size = metadata.len();
-
-    // Sent along so a host can put the file inside a folder named as the
-    // target, as `cp` does.
     let name = local.file_name().and_then(|name| name.to_str());
+    let args = json!({ "remote_path": remote_path, "size": metadata.len(), "name": name });
+    Ok((file, args))
+}
+
+/// `latch file put LOCAL REMOTE`.
+pub async fn put(
+    state: &StateDir,
+    host: &Peer,
+    chat: Option<String>,
+    local: &Path,
+    remote_path: &str,
+) -> Result<Value, Failure> {
+    let (mut file, args) = put_args(local, remote_path).await?;
     let link = dial::connect(state, host).await?;
-    let result = send(&link.connection, chat, &mut file, size, remote_path, name).await;
+    let result = send(&link.connection, chat, &mut file, args).await;
     link.close();
     let mut result = result?;
     result["local_path"] = json!(local);
@@ -100,13 +110,12 @@ async fn send(
     connection: &Connection,
     chat: Option<String>,
     file: &mut File,
-    size: u64,
-    remote_path: &str,
-    name: Option<&str>,
+    args: Value,
 ) -> Result<Value, Failure> {
+    let size = args["size"].as_u64().expect("put_args sets the size");
     let request = Request {
         op: "file_put".to_string(),
-        args: json!({ "remote_path": remote_path, "size": size, "name": name }),
+        args,
         chat,
     };
     let (done, sha256) = upload(connection, &request, file, size).await?;

@@ -916,7 +916,7 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[ex(
             "Edit one agent's rules",
-            &["rules", "--from", "ada", "edit"],
+            &["rules", "edit", "--from", "ada"],
         )],
     },
     Entry {
@@ -936,6 +936,32 @@ const ENTRIES: &[Entry] = &[
         owner_only: true,
         connector: None,
         examples: &[ex("Show the rules", &["rules", "show"])],
+    },
+    Entry {
+        id: "rules.try",
+        runs_on: |_| RunsOn::Host,
+        output: "`verdict`: allow, not_covered, owner_said_no, no_intent, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, chat window, rule revisions, model, latency, cost). A refusal is a preview that worked: exit 0.",
+        effect: Repeatable(
+            "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001); the request itself never runs, and the preview is not audited",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Would Penny be allowed to build the site?",
+                &[
+                    "rules", "try", "--from", "Penny", "--", "exec", "--write", "~/site", "--",
+                    "npm", "run", "build",
+                ],
+            ),
+            ex(
+                "Preview a mail search on another host, as yourself",
+                &[
+                    "rules", "try", "--host", "mac", "--", "google", "--", "gmail", "search",
+                    "invoice",
+                ],
+            ),
+        ],
     },
     Entry {
         id: "plugins.list",
