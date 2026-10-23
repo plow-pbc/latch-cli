@@ -366,6 +366,10 @@ pub fn lift(args: &[String]) -> Result<Lifted, Failure> {
 /// A refusal can name only grammar literals. Stop before any positional
 /// value, so even a rejected request cannot put a body or query in the log.
 pub fn command_prefix(args: &[String]) -> String {
+    // The host answers this one itself; gog never runs it.
+    if args == ["accounts"] {
+        return "accounts".into();
+    }
     let mut node: &Node = &GRAMMAR;
     let mut path = Vec::new();
     for arg in args {
