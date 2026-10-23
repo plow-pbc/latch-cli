@@ -924,19 +924,31 @@ mod tests {
             .start_exec(&args, &tmp, "startup-test-token", 5)
             .unwrap();
         let pid = child.id().unwrap();
-        #[cfg(target_os = "linux")]
-        let arguments = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap();
-        #[cfg(target_os = "macos")]
-        let arguments = {
-            let output = std::process::Command::new("/bin/ps")
-                .args(["-p", &pid.to_string(), "-o", "command="])
-                .output()
-                .unwrap();
-            assert!(output.status.success());
-            output.stdout
+        let read_arguments = || {
+            #[cfg(target_os = "linux")]
+            let arguments = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+            #[cfg(target_os = "macos")]
+            let arguments = {
+                let output = std::process::Command::new("/bin/ps")
+                    .args(["-p", &pid.to_string(), "-o", "command="])
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                output.stdout
+            };
+            String::from_utf8_lossy(&arguments).into_owned()
         };
-        let arguments = String::from_utf8_lossy(&arguments);
-        assert!(arguments.contains("exec"));
+        // spawn returns once the exec has closed the close-on-exec pipe, which
+        // Linux does before it lays out the new argv: until then the process's
+        // arguments read as empty.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut arguments = read_arguments();
+        while !arguments.contains("exec") && Instant::now() < deadline {
+            assert!(!arguments.contains(marker));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            arguments = read_arguments();
+        }
+        assert!(arguments.contains("exec"), "{arguments:?}");
         assert!(!arguments.contains(marker));
         let header = serde_json::to_vec(&PrivateExec {
             secret_env: BTreeMap::new(),
