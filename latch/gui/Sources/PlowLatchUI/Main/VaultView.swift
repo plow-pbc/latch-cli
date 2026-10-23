@@ -148,11 +148,25 @@ private struct HostVault: View {
                 }
             }
         }
-        .alert("Couldn't remove the item", isPresented: removeErrorBinding) {
-            Button("OK") { app.vaultRemoveError = nil }
-        } message: {
-            // An alert has no room for Details: the app's sentence only.
-            Text(app.vaultRemoveError.flatMap { ErrorCopy.sentence($0, host: host.name) } ?? "")
+        // Said above the list, where latch's reason can sit under Details
+        // (an alert has no room for it).
+        .safeAreaInset(edge: .top) {
+            if let error = app.vaultRemoveError {
+                HStack(alignment: .top) {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Couldn't remove the item")
+                            ErrorText(error: error, host: host.name, titled: true).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                    }
+                    Spacer()
+                    Button("OK") { app.vaultRemoveError = nil }
+                }
+                .padding(10)
+                .background(.bar)
+            }
         }
         .confirmationDialog("Remove “\(removing?.title ?? "")” from \(host.name)?", isPresented: removingBinding, presenting: removing) { item in
             Button("Remove", role: .destructive) {
@@ -165,10 +179,6 @@ private struct HostVault: View {
             guard !app.still else { return }
             await app.refreshVault(on: host)
         }
-    }
-
-    private var removeErrorBinding: Binding<Bool> {
-        Binding { app.vaultRemoveError != nil } set: { if !$0 { app.vaultRemoveError = nil } }
     }
 
     private var removingBinding: Binding<Bool> {

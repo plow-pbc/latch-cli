@@ -241,10 +241,18 @@ private struct Lane: View {
     }
 
     /// Why it couldn't be checked, in the app's words. A refusal's own
-    /// reason is latch's: the decision says it, and the box has no room
-    /// for Details.
+    /// reason is latch's, so it goes only under Details.
     private var reason: String? {
         if case let .failed(error) = preview { ErrorCopy.said(error) } else { nil }
+    }
+
+    /// latch's words for a failed check or a refusal, for Details.
+    private var latchSaid: LatchError? {
+        switch preview {
+        case let .failed(error): error
+        case let .verdict(answer): answer.refused.map(LatchError.failed)
+        default: nil
+        }
     }
 
     private var detail: some View {
@@ -257,6 +265,9 @@ private struct Lane: View {
                 + Text(verdictWord + (reason.map { ". \($0)" } ?? "")))
                 .font(.system(size: 12))
                 .foregroundStyle(Brand.muted)
+            if let latchSaid {
+                ErrorDetails(error: latchSaid).foregroundStyle(Brand.muted)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

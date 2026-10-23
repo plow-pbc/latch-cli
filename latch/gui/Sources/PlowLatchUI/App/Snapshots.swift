@@ -301,6 +301,12 @@ package enum SnapshotRunner {
                 for (example, answer) in zip(deck.examples, Fixtures.executiveTries) { $0.previews[example.id] = .verdict(try! Fixtures.decode(answer)) }
                 $0.openExamples = [deck.examples[4].id]
             }),
+            ("04-rules-personal-host-refused-open", .rules, Fixtures.serving, Progress(), {
+                let deck = Onboarding.decks[0]
+                $0.deck = deck; $0.draftRules = deck.rules
+                for (example, answer) in zip(deck.examples, Fixtures.personalTries) { $0.previews[example.id] = .verdict(try! Fixtures.decode(answer)) }
+                $0.openExamples = [deck.examples[3].id]
+            }),
             ("04-rules-save-failed", .rules, Fixtures.stopped, Progress(), {
                 $0.draftRules = rules
                 $0.rulesError = LatchError.failed(LatchFailure(code: "rules_too_long", message: "rules are at most 8 KB together; shorten them, then save again"))
@@ -546,6 +552,7 @@ package enum SnapshotRunner {
                 ("17-vault-empty", nil, #"{"items":[]}"#, nil, Fixtures.studioHosts),
                 ("17-vault-remote-pi-kitchen", "pi-kitchen", Fixtures.remoteVaultItems, "v1", Fixtures.studioHosts),
                 ("17-vault-remote-offline", "pi-kitchen", #"{"items":[]}"#, nil, piOffline),
+                ("17-vault-remove-failed", nil, Fixtures.vaultItems, "v1", Fixtures.studioHosts),
             ]
             for (name, chosen, items, selected, account) in screens {
                 let app = AppModel(client: FakeLatchClient(), still: true)
@@ -557,6 +564,9 @@ package enum SnapshotRunner {
                 app.chosenHost = chosen
                 app.section = .vault
                 app.selectedVaultItem = selected
+                if name.hasSuffix("remove-failed") {
+                    app.vaultRemoveError = .failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
+                }
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 1020, height: 620), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))

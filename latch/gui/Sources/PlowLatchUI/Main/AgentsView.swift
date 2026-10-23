@@ -164,7 +164,11 @@ struct AgentPage: View {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(host.isThisMac ? "\(host.name) (this Mac)" : host.name)
-                            Text(standingText(on: host)).font(.callout).foregroundStyle(.secondary)
+                            if case let .failure(error)? = app.standings[host.name], host.isThisMac || host.online != false {
+                                ErrorText(error: error, host: host.name).font(.callout).foregroundStyle(.secondary)
+                            } else {
+                                Text(standingText(on: host)).font(.callout).foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
                         Button("Rules on \(host.name)") {

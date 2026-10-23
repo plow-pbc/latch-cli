@@ -84,15 +84,25 @@ struct ErrorText: View {
             if let sentence = said ?? ErrorCopy.sentence(error, host: host) ?? (titled ? nil : ErrorCopy.fallback) {
                 Text(sentence)
             }
-            if let details = error.details {
-                DisclosureGroup("Details") {
-                    Text(details)
-                        .font(.caption)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .font(.caption)
+            ErrorDetails(error: error)
+        }
+    }
+}
+
+/// latch's own words for an error, collapsed under Details; nothing when
+/// it said none.
+struct ErrorDetails: View {
+    var error: LatchError
+
+    var body: some View {
+        if let details = error.details {
+            DisclosureGroup("Details") {
+                Text(details)
+                    .font(.caption)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .font(.caption)
         }
     }
 }
