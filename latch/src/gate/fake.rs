@@ -114,7 +114,11 @@ impl World {
         if path == "/v1/agents" {
             return (
                 200,
-                json!([{"uid": AGENT, "name": "Juno", "provider": "exe"}]),
+                json!([{"uid": AGENT, "name": "Juno", "provider": "exe:juno",
+                        "line": {"uid": LINE, "provider_type": "imessage",
+                                 "provider_key": "+14155550100", "display_name": null},
+                        "created_at": "2026-10-20T10:00:00Z", "status": "running",
+                        "failure_code": null, "credential": null}]),
             );
         }
         if path == "/v1/latch/peers" {

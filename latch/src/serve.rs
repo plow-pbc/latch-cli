@@ -12,6 +12,7 @@
 //! "yes" (unknown key, another account's key, a revoked credential, Plow
 //! unreachable) denies. Every allow and every deny goes into the audit log.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -79,6 +80,9 @@ struct Host {
     home: PathBuf,
     /// How far the host is into stopping.
     stopping: watch::Sender<Stopping>,
+    /// Each agent's name in Plow as last looked up, by agent uid: what
+    /// its audit records are named by, since an audit never waits on Plow.
+    agent_names: Mutex<HashMap<String, String>>,
 }
 
 /// How far a host is into stopping.
@@ -356,6 +360,7 @@ async fn run_host(
         plugins,
         home,
         stopping: watch::Sender::new(Stopping::No),
+        agent_names: Mutex::default(),
     });
     watch_binary(&host, BINARY_CHECK_EVERY);
     sweep_browsers(&host);
@@ -771,7 +776,14 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     let refusal = match host.check(caller).await {
         Ok(identity) => {
             let who = format!("{} ({})", identity.name, identity.kind);
-            let record = audit::record(caller, identity.agent_uid, "connect", "allow", "connected");
+            let mut record = audit::record(
+                caller,
+                identity.agent_uid.clone(),
+                "connect",
+                "allow",
+                "connected",
+            );
+            record.caller_name = host.known_name(&identity);
             match host.append(record).await {
                 Ok(_) => {
                     log(&format!("connect: {who} {caller}: allowed"));
@@ -1054,6 +1066,7 @@ async fn serve_request(
                 decision,
                 &done.outcome,
             );
+            record.caller_name = host.known_name(&identity);
             record.args = done.audit_args.clone();
             record.started = Some(begun_at.to_string());
             record.gate = judged
@@ -1497,9 +1510,25 @@ impl Host {
         if let Some(uid) = &identity.agent_uid
             && let Ok(agent) = self.plow.agent(uid).await
         {
+            let mut names = self.agent_names.lock().expect("names lock");
+            names.insert(uid.clone(), agent.name.clone());
             return agent.name;
         }
         identity.name.clone()
+    }
+
+    /// The caller's name without asking Plow: an agent's as last looked
+    /// up (none before the first lookup), else its machine's.
+    fn known_name(&self, identity: &Identity) -> Option<String> {
+        match &identity.agent_uid {
+            Some(uid) => self
+                .agent_names
+                .lock()
+                .expect("names lock")
+                .get(uid)
+                .cloned(),
+            None => Some(identity.name.clone()),
+        }
     }
 
     /// A caller refused at the door, on the board by its key.

@@ -120,6 +120,21 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "agents",
+        runs_on: |_| RunsOn::Either,
+        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex("List the agents", &["agents"]),
+            ex(
+                "And their standing on the host studio",
+                &["agents", "--host", "studio"],
+            ),
+        ],
+    },
+    Entry {
         id: "devices",
         runs_on: |_| RunsOn::Local,
         output: "`devices`: the account's machines, online or not.",
@@ -1125,8 +1140,11 @@ const ENTRIES: &[Entry] = &[
 
 /// The top-level fields of the answers that are plain structs, checked
 /// against those structs by the tests.
-const OUTPUT_FIELDS: &[(&str, &[&str])] =
-    &[("devices", &["devices"]), ("devices.remove", &["removed"])];
+const OUTPUT_FIELDS: &[(&str, &[&str])] = &[
+    ("agents", &["host", "agents"]),
+    ("devices", &["devices"]),
+    ("devices.remove", &["removed"]),
+];
 
 /// The guide for agents, versioned with the binary.
 const SKILL: &str = include_str!("../SKILL.md");
@@ -1696,6 +1714,13 @@ mod tests {
             this_machine: false,
         };
         let answers = [
+            (
+                "agents",
+                serde_json::to_value(crate::agents::AgentsOutput {
+                    host: None,
+                    agents: vec![],
+                }),
+            ),
             (
                 "devices",
                 serde_json::to_value(crate::devices::DevicesOutput { devices: vec![] }),

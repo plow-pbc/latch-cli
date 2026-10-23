@@ -61,6 +61,11 @@ pub struct Record {
     pub caller: String,
     /// The caller's agent uid, when Plow says the key is an agent's.
     pub agent: Option<String>,
+    /// The caller's name as it was when it called: an agent's name in
+    /// Plow, else its machine's. A label only; `caller` and `agent` are
+    /// who it was.
+    #[serde(default)]
+    pub caller_name: Option<String>,
     pub op: String,
     pub args: Value,
     /// `"allow"` or `"deny"`.
@@ -560,7 +565,7 @@ pub fn read(
 /// credential-looking values hidden (`redact.rs`), best effort.
 fn record_line(record: &Record) -> Value {
     let shown = json!({
-        "id": record.hash, "time": record.time, "caller": record.caller, "caller_name": null,
+        "id": record.hash, "time": record.time, "caller": record.caller, "caller_name": record.caller_name,
         "agent": record.agent, "op": record.op, "decision": record.decision,
         "outcome": record.outcome,
         "details": {"started": record.started, "args": crate::redact::shown(&record.op, &record.args),
@@ -637,6 +642,7 @@ pub fn record(
         started: None,
         caller: caller.to_string(),
         agent,
+        caller_name: None,
         op: op.to_string(),
         args: Value::Null,
         decision: decision.to_string(),

@@ -94,13 +94,14 @@ This reads the host's audit log, as JSON lines, every form alike:
 ```
 {"type":"hello","schema":1}
 {"type":"snapshot","cursor":"<id before the first record shown>","has_older":true}
-{"type":"record","cursor":"27ff057f…","record":{"id":"27ff057f…","time":"2026-10-21T04:44:15.488378Z","caller":"b735f084…","caller_name":null,"agent":null,"op":"exec","decision":"allow","outcome":"ok","details":{"started":"…","args":{"argv":["echo","hi"],…},"gate":null}}}
+{"type":"record","cursor":"27ff057f…","record":{"id":"27ff057f…","time":"2026-10-21T04:44:15.488378Z","caller":"b735f084…","caller_name":"laptop","agent":null,"op":"exec","decision":"allow","outcome":"ok","details":{"started":"…","args":{"argv":["echo","hi"],…},"gate":null}}}
 {"type":"caught_up","cursor":"27ff057f…","has_older":true}
 ```
 
 - It shows the newest 50 records, oldest first; `--last N` shows N, `--all` every one.
 - "Load earlier" is `--before` the first record's id: the page before it, which `has_older` says exists.
 - With `--follow`, each new record follows `caught_up` as it is written. To pick up where you left off, `--follow --after` the last `cursor` you got: every record after it, then the new ones. Nothing is missed or repeated, across host restarts too.
+- `caller_name` is the caller's name as it was when it called: an agent's name in Plow, else its machine's (null on records from before latch kept it).
 - A record's id is the `audit_id` its caller got back. The cursor before the first record is 64 zeros.
 - Don't treat a page as complete before `caught_up`.
 - Without `--follow` it ignores stdin and always prints the whole page. With `--follow`, it exits once stdin (a pipe) closes, at any point, even in the middle of the opening.

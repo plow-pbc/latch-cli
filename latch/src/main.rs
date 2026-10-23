@@ -7,6 +7,7 @@
 
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+mod agents;
 mod audit;
 mod browser;
 mod card;
@@ -205,6 +206,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             })
         }
         Command::Logout(args) => to_json(logout::run(&state, args.purge).await?),
+        Command::Agents(args) => to_json(agents::run(&state, args).await?),
         Command::Devices(args) => match args.action {
             None => to_json(devices::list(&state).await?),
             Some(DevicesAction::Remove { name, yes }) => {

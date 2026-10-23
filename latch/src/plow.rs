@@ -108,6 +108,37 @@ pub struct NamedAgent {
     pub name: String,
 }
 
+/// One of the account's agents, from `GET /v1/agents`, in full.
+#[derive(Deserialize, Debug, Clone)]
+pub struct ListedAgent {
+    pub uid: String,
+    pub name: String,
+    /// `self_hosted` for an agent its owner runs, else the cloud kind
+    /// (`exe:SLUG`).
+    pub provider: String,
+    pub line: ListedLine,
+    pub created_at: String,
+    /// The cloud agent's phase (`provisioning`, `running`, `failed`, …);
+    /// none for one its owner runs.
+    pub status: Option<String>,
+    pub failure_code: Option<String>,
+    pub credential: Option<ListedCredential>,
+}
+
+/// The line an agent serves, as people read it.
+#[derive(Deserialize, Debug, Clone)]
+pub struct ListedLine {
+    /// The phone number or address.
+    pub provider_key: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ListedCredential {
+    /// When the agent's credential was last used, as Plow recorded it.
+    pub last_seen_at: Option<String>,
+}
+
 /// A messaging line (a phone number or a mailbox).
 #[derive(Deserialize, Debug, Clone)]
 pub struct Line {
@@ -330,6 +361,12 @@ impl Plow {
 
     /// Every live agent in the account. Owner logins only.
     pub async fn agents(&self) -> Result<Vec<NamedAgent>, Failure> {
+        self.agent_list().await
+    }
+
+    /// Every live agent in the account, in Plow's (creation) order, as
+    /// `T` reads them. Owner logins only.
+    pub async fn agent_list<T: serde::de::DeserializeOwned>(&self) -> Result<Vec<T>, Failure> {
         let url = format!("{}/v1/agents", self.api_url);
         let response = self.send(self.http.get(url)).await?;
         response.json().await.map_err(|_| bad_answer())

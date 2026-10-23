@@ -195,6 +195,7 @@ impl Target<'_> {
         .await;
         let decision = crate::serve::decision(&done.response);
         let mut record = audit::record(&config.peer.key, None, "rules", decision, &done.outcome);
+        record.caller_name = Some(config.peer.name.clone());
         record.args = done.audit_args;
         let audit_id = log.append(record)?;
         crate::serve::with_audit_id(done.response, audit_id).into_result()
