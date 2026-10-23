@@ -1146,7 +1146,7 @@ fn status_shows_this_machine_once_as_plow_lists_it() {
 }
 
 #[test]
-fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
+fn exec_stdin_that_is_not_judgeable_or_never_ends_runs_nothing() {
     use std::process::Stdio;
     let dir = test_dir();
     let state = dir.path().join("none");
@@ -1171,15 +1171,23 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
             .stderr(Stdio::piped());
         command.spawn().unwrap()
     };
-    // More than 256 KiB: refused as soon as the 256 KiB + 1st byte arrives.
-    let mut big = run("60");
-    let mut pipe = big.stdin.take().unwrap();
-    let _ = pipe.write_all(&vec![b'x'; 300 * 1024]);
-    let output = big.wait_with_output().unwrap();
-    drop(pipe);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "stdin_too_big");
+    // Valid text reaches the login check; unjudgeable input is refused first.
+    for (bytes, expected) in [
+        (vec![b'x'; 16 * 1024], "not_logged_in"),
+        ("é".repeat(8 * 1024).into_bytes(), "not_logged_in"),
+        (vec![b'x'; 16 * 1024 + 1], "stdin_not_judgeable"),
+        (vec![0xff], "stdin_not_judgeable"),
+        (vec![b'x'; 300 * 1024], "stdin_not_judgeable"),
+    ] {
+        let mut child = run("60");
+        let mut pipe = child.stdin.take().unwrap();
+        let _ = pipe.write_all(&bytes);
+        drop(pipe);
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], expected, "{output:?}");
+    }
 
     // A pipe left open: refused once --timeout passes, not run on what came.
     let started = std::time::Instant::now();

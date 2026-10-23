@@ -240,7 +240,14 @@ async fn open_upload(path: &Path) -> Result<Upload, Failure> {
 /// The script, from its file or from stdin (`-`).
 fn read_script(path: &Path) -> Result<String, Failure> {
     let bytes = if path == Path::new("-") {
-        crate::input::read_all(std::time::Duration::from_secs(30))?
+        let limit = 256 * 1024;
+        let bytes = crate::input::read_all(std::time::Duration::from_secs(30), limit)?;
+        if bytes.len() > limit {
+            let message =
+                "stdin is over 256 KiB; nothing was run (put a big input with `latch file put`)";
+            return Err(Failure::usage("stdin_too_big", message.into()));
+        }
+        bytes
     } else {
         std::fs::read(path)
             .map_err(|err| Failure::usage("local_file", format!("{}: {err}", path.display())))?
