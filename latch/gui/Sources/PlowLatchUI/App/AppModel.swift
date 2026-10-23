@@ -450,6 +450,23 @@ final class AppModel {
     }
 
     /// Stops this Mac's host; agents can't reach it until it's started.
+    /// "Keep this Mac awake while plugged in": latch saves it (no host or
+    /// restart needed), then the switch shows what latch reads back.
+    private(set) var settingKeepAwake = false
+    private(set) var keepAwakeError: LatchError?
+
+    func setKeepAwake(_ on: Bool) async {
+        settingKeepAwake = true
+        defer { settingKeepAwake = false }
+        do {
+            try await client.perform(["settings", "set", "--keep-awake", on ? "on" : "off"])
+            keepAwakeError = nil
+        } catch {
+            keepAwakeError = .from(error)
+        }
+        await refreshStatus()
+    }
+
     func stopHost() async {
         await hostAction(.stopping) { try await self.client.stop() }
     }
