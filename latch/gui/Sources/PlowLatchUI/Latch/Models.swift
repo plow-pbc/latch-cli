@@ -165,8 +165,50 @@ nonisolated struct AgentsList: Decodable, Equatable {
 
 /// `latch vault list`: a host's vault items, never their secrets.
 nonisolated struct VaultList: Decodable, Equatable {
-    struct Item: Decodable, Equatable { var item: String }
+    struct Field: Decodable, Equatable, Hashable {
+        var label: String
+        /// A secret: its value never leaves the host.
+        var hidden: Bool
+        var custom: Bool?
+    }
+    struct Item: Decodable, Equatable, Identifiable {
+        var item: String
+        /// Bumped by every change; an edit or removal names the one it saw.
+        var revision: Int
+        /// `login`, `card`, `identity` or `note`.
+        var kind: String
+        var title: String
+        var username: String?
+        /// A login's sites; for a card or identity, the only ones it fills on.
+        var sites: [String]
+        var otherTopSites: [String]?
+        /// The item's fields by label, and which are secret.
+        var fields: [Field]
+        /// A login with an authenticator key.
+        var totp: Bool
+
+        var id: String { item }
+    }
     var items: [Item]
+}
+
+/// A vault item as the person wrote it, for `vault add` or `vault edit`:
+/// the title and sites go in argv, every value only on stdin.
+nonisolated struct VaultDraft: Equatable, Sendable {
+    var kind: String
+    var title: String
+    var sites: [String]
+    var otherTopSites: [String]
+    /// Values by latch's labels, secrets included; for an edit, only those
+    /// that changed (an empty one clears it).
+    var values: [String: String]
+}
+
+/// `latch vault show ITEM`: an item and the values of its fields that
+/// aren't secret, by label.
+nonisolated struct VaultShow: Decodable, Equatable {
+    var item: VaultList.Item
+    var values: [String: String]
 }
 
 /// `latch rules try`: the verdict a request would get now, without running it.

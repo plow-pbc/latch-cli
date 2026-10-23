@@ -34,6 +34,15 @@ nonisolated protocol LatchClient: Sendable {
     func pluginsList(host: String?) async throws -> PluginsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
     func vaultList(host: String?) async throws -> VaultList
+    /// `latch vault show ITEM`: its non-secret values.
+    func vaultShow(_ item: String, host: String?) async throws -> VaultShow
+    /// `latch vault add --stdin`, every value on stdin, never in argv.
+    func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item
+    /// `latch vault edit ITEM --revision R --stdin`: the title, the sites,
+    /// and the values that changed (an empty one clears it), on stdin.
+    func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item
+    /// `latch vault remove ITEM --revision R`.
+    func vaultRemove(_ item: String, revision: Int, host: String?) async throws
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
     /// `latch status --local --follow`: this Mac's state, again whenever it
@@ -167,6 +176,35 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(VaultList.self, try await run(["vault", "list"] + on(host)))
     }
 
+    func vaultShow(_ item: String, host: String?) async throws -> VaultShow {
+        try decode(VaultShow.self, try await run(["vault", "show", item] + on(host)))
+    }
+
+    func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
+        let arguments = ["vault", "add", "--kind", draft.kind, "--title", draft.title]
+            + draft.sites.flatMap { ["--site", $0] } + draft.otherTopSites.flatMap { ["--other-top-site", $0] }
+        let given = draft.values.filter { !$0.value.isEmpty }
+        return try decode(VaultItemAnswer.self, try await run(arguments + ["--stdin"] + on(host), input: try Self.values(given))).item
+    }
+
+    func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
+        var arguments = ["vault", "edit", item, "--revision", String(revision), "--title", draft.title]
+        arguments += draft.sites.isEmpty ? ["--no-sites"] : draft.sites.flatMap { ["--site", $0] }
+        if draft.kind == "login" {
+            arguments += draft.otherTopSites.isEmpty ? ["--no-other-top-sites"] : draft.otherTopSites.flatMap { ["--other-top-site", $0] }
+        }
+        return try decode(VaultItemAnswer.self, try await run(arguments + ["--stdin"] + on(host), input: try Self.values(draft.values))).item
+    }
+
+    func vaultRemove(_ item: String, revision: Int, host: String?) async throws {
+        _ = try await run(["vault", "remove", item, "--revision", String(revision)] + on(host))
+    }
+
+    /// Field values as `--stdin` takes them: one JSON object of strings.
+    private static func values(_ values: [String: String]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: values)
+    }
+
     func enable(_ plugin: String) async throws -> GoogleEnabled? {
         let data = try await run(["plugins", "enable", plugin])
         return plugin == "google" ? try decode(GoogleEnabled.self, data) : nil
@@ -202,6 +240,9 @@ nonisolated struct LiveLatchClient: LatchClient {
         ["--state-dir", stateDir] + arguments
     }
 }
+
+/// `vault add`'s and `vault edit`'s answer: the item as saved.
+nonisolated private struct VaultItemAnswer: Decodable { var item: VaultList.Item }
 
 nonisolated private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
     do {
