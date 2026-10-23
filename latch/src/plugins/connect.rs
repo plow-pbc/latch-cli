@@ -56,14 +56,7 @@ where
     let again: Option<Vec<String>> = refused
         .as_ref()
         .filter(|refused| refused.code == code::google_needs_sign_in.name)
-        .map(|refused| {
-            refused.details["accounts"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|account| account.as_str().map(String::from))
-                .collect()
-        });
+        .map(|refused| crate::google::sign_in_accounts(&refused.details));
     // The public page, from the host's refusal until Plow says it again.
     let mut page = refused
         .as_ref()

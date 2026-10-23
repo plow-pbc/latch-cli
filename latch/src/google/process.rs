@@ -134,7 +134,7 @@ fn execute(
     }
     fs::create_dir_all(&home).map_err(io_error)?;
     let token = std::env::var("GOG_ACCESS_TOKEN")
-        .map_err(|_| super::needs_sign_in(vec![account.to_string()]))?;
+        .map_err(|_| super::needs_sign_in_on(vec![account.to_string()]))?;
     let mut child = Command::new(program)
         .args(["--json", "--no-input", "--wrap-untrusted", "--color=never"])
         .args(if plan.fanout() && plan.projected() {

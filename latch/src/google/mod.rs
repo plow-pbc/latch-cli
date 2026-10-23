@@ -151,9 +151,25 @@ impl Tokens {
     }
 }
 
-/// Google wants the owner to sign in again with `accounts`: one code for
-/// a refused token, a call on such an account and gog's own auth error.
+/// Google wants the owner to sign in again with `accounts`, and no
+/// connected account works: `latch plugins enable google` signs them in.
 pub fn needs_sign_in(accounts: Vec<String>) -> Failure {
+    let mut failure = sign_in_again(accounts);
+    failure.next = Some("latch plugins enable google".into());
+    failure
+}
+
+/// Google wants the owner to sign in again with `accounts`, which a call
+/// needed, while other accounts may still work: then `plugins enable
+/// google` succeeds without a sign-in, so the owner reconnects these in
+/// Plow. One code for a call on such an account and gog's own auth error.
+pub fn needs_sign_in_on(accounts: Vec<String>) -> Failure {
+    let mut failure = sign_in_again(accounts);
+    failure.next = Some("reconnect these accounts on Plow's Connections page".into());
+    failure
+}
+
+fn sign_in_again(accounts: Vec<String>) -> Failure {
     let named = if accounts.is_empty() {
         "a Google account".to_string()
     } else {
@@ -163,9 +179,19 @@ pub fn needs_sign_in(accounts: Vec<String>) -> Failure {
         code::google_needs_sign_in,
         format!("Google needs the owner to sign in again with {named}."),
     );
-    failure.next = Some("latch plugins enable google".into());
     failure.details = json!({"accounts": accounts});
     failure
+}
+
+/// The `accounts` a `google_needs_sign_in` failure's details (or Plow's
+/// `needs_reauth` refusal) name.
+pub fn sign_in_accounts(details: &Value) -> Vec<String> {
+    details["accounts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|account| account.as_str().map(String::from))
+        .collect()
 }
 
 /// gog exited with `code` for `account`: a `google_failed` failure with a
@@ -173,7 +199,7 @@ pub fn needs_sign_in(accounts: Vec<String>) -> Failure {
 /// (exit 4) `google_needs_sign_in`. gog's own error text is never passed on.
 pub fn gog_failure(code: i32, account: &str) -> Failure {
     let reason = match code {
-        4 => return needs_sign_in(vec![account.to_string()]),
+        4 => return needs_sign_in_on(vec![account.to_string()]),
         6 => "permission_denied",
         7 => "rate_limited",
         2 => "invalid_request",

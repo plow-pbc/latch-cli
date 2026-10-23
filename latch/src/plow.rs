@@ -594,14 +594,8 @@ impl Plow {
             .map(|mut body| body["detail"].take())
             .unwrap_or_default();
         let code = detail["code"].as_str().map(Box::from);
-        let needs_sign_in = (detail["reason"] == "needs_reauth").then(|| {
-            detail["accounts"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|account| account.as_str().map(String::from))
-                .collect()
-        });
+        let needs_sign_in =
+            (detail["reason"] == "needs_reauth").then(|| crate::google::sign_in_accounts(&detail));
         failure.plow = Some(Box::new(crate::failure::PlowSaid {
             retry_after,
             code,

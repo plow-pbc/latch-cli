@@ -496,14 +496,9 @@ async fn full_disk_access(_state: &StateDir) -> Option<&'static str> {
 async fn sign_in_again(plow: &crate::plow::Plow) -> Option<Vec<String>> {
     match tokio::time::timeout(SIGN_IN_CHECK_WITHIN, plow.google_tokens()).await {
         Ok(Ok(tokens)) => Some(tokens.needs_sign_in()),
-        Ok(Err(failure)) if failure.code == "google_needs_sign_in" => Some(
-            failure.details["accounts"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|account| account.as_str().map(String::from))
-                .collect(),
-        ),
+        Ok(Err(failure)) if failure.code == "google_needs_sign_in" => {
+            Some(crate::google::sign_in_accounts(&failure.details))
+        }
         _ => None,
     }
 }

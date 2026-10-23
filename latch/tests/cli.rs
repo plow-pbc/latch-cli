@@ -5363,12 +5363,7 @@ fn setup_sets_up_every_connector_with_no_host_running() {
     #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
     let _managed = Managed(host.clone());
     plow.state.lock().unwrap().google = Some("google-token".into());
-    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
-    let gog = host
-        .join("plugins/gog")
-        .join(pin["version"].as_str().unwrap());
-    fs::create_dir_all(&gog).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    install_fake_gog(&host);
 
     let env = [("LATCH_TEST_ACCESS", Path::new("granted"))];
     let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &env);
@@ -5497,12 +5492,7 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
-    let gog = host
-        .join("plugins/gog")
-        .join(pin["version"].as_str().unwrap());
-    fs::create_dir_all(&gog).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    install_fake_gog(&host);
     let minted = || {
         plow.seen()
             .iter()
@@ -5719,12 +5709,7 @@ fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
-    let gog = host
-        .join("plugins/gog")
-        .join(pin["version"].as_str().unwrap());
-    fs::create_dir_all(&gog).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    install_fake_gog(&host);
     plow.state.lock().unwrap().sign_in_slow = std::time::Duration::from_secs(20);
     let events = ["plugins", "enable", "google", "--events"];
 
@@ -5787,12 +5772,7 @@ fn signing_in_again_is_offered_and_waited_for() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
-    let gog = host
-        .join("plugins/gog")
-        .join(pin["version"].as_str().unwrap());
-    fs::create_dir_all(&gog).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    install_fake_gog(&host);
     {
         let mut state = plow.state.lock().unwrap();
         state.google = Some("google-token".into());
@@ -5868,12 +5848,7 @@ fn a_last_second_sign_in_counts_and_a_stop_during_the_enable_is_unknown() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
-    let gog = host
-        .join("plugins/gog")
-        .join(pin["version"].as_str().unwrap());
-    fs::create_dir_all(&gog).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    install_fake_gog(&host);
     let events = ["plugins", "enable", "google", "--events"];
     let spawned = |env: &[(&str, &Path)]| {
         let mut child = latch_command(&host, &events, env)
@@ -5961,6 +5936,17 @@ fn a_last_second_sign_in_counts_and_a_stop_during_the_enable_is_unknown() {
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
     plow.state.lock().unwrap().tokens_slow = std::time::Duration::ZERO;
+}
+
+/// This test build as the host's pinned gog (feature `fake-gog`).
+#[cfg(feature = "fake-gog")]
+fn install_fake_gog(host: &Path) {
+    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
+    let folder = host
+        .join("plugins/gog")
+        .join(pin["version"].as_str().unwrap());
+    fs::create_dir_all(&folder).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_latch"), folder.join("gog")).unwrap();
 }
 
 /// A `latch serve` that holds the state folder but answers no socket this

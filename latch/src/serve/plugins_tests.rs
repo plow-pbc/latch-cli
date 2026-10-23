@@ -470,6 +470,10 @@ mod pinned {
         let (exit, code, details) = refusal(&answer);
         assert_eq!((exit, code), (Exit::Failed, "google_needs_sign_in"));
         assert_eq!(details["accounts"], json!(["me@example.com"]));
+        let Response::Error { next, .. } = &answer else {
+            unreachable!()
+        };
+        assert_eq!(next.as_deref(), Some("latch plugins enable google"));
         assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
 
         {
@@ -492,6 +496,14 @@ mod pinned {
         let (_, code, details) = refusal(&refused);
         assert_eq!(code, "google_needs_sign_in", "{details}");
         assert_eq!(details["accounts"], json!(["work@example.com"]));
+        // Another account works, so an enable would sign nothing in.
+        let Response::Error { next, .. } = &refused else {
+            unreachable!()
+        };
+        assert_eq!(
+            next.as_deref(),
+            Some("reconnect these accounts on Plow's Connections page")
+        );
 
         t.plow.world.lock().unwrap().google_reauth =
             vec!["me@example.com".into(), "work@example.com".into()];

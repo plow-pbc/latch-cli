@@ -221,7 +221,7 @@ async fn operation(
                 .filter_map(|outcome| outcome["account"].as_str().map(String::from))
                 .collect();
             if !again.is_empty() && again.len() == outcomes.len() {
-                return Err(super::needs_sign_in(again));
+                return Err(super::needs_sign_in_on(again));
             }
             return Err(problem(code::google_failed, json!({"accounts":outcomes})));
         }
@@ -406,7 +406,7 @@ async fn invoke(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             if account.needs_sign_in {
-                super::needs_sign_in(vec![account.account.clone()])
+                super::needs_sign_in_on(vec![account.account.clone()])
             } else {
                 problem(code::google_failed, json!({"reason": "unavailable"}))
             }
