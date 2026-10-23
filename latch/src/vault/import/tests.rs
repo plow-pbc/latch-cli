@@ -590,6 +590,54 @@ fn an_update_read_before_a_hand_edit_is_refused() {
     );
 }
 
+/// Two runs of one export, a preview and then a pick, each read the vault
+/// afresh; the pick's `expect` refuses when the second read would touch
+/// the vault differently from what the preview showed.
+#[test]
+fn a_pick_expecting_the_preview_refuses_a_vault_changed_since() {
+    let (_dir, mut vault) = store();
+    run(&mut vault, APPLE);
+    let rotated = APPLE.replace("drop-secret", "drop-rotated");
+    let marked = |vault: &OwnStore| {
+        let mut parsed = parse_text(&rotated).unwrap();
+        mark_against(vault, &mut parsed).unwrap();
+        parsed
+    };
+    let previewed = preview(&marked(&vault))["expect"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(previewed.len(), 64);
+    // Nothing changed: the same token, and the pick goes ahead. Nor does an
+    // item no row touches change it.
+    check(&marked(&vault), &previewed).unwrap();
+    run(
+        &mut vault,
+        "Title,URL,Username,Password,Notes,OTPAuth\nOther,https://other.example,jo,other-secret,,",
+    );
+    check(&marked(&vault), &previewed).unwrap();
+
+    // Another device edits the item the preview would update.
+    let stored = vault
+        .list()
+        .into_iter()
+        .find(|m| m.title == "Dropbox")
+        .unwrap();
+    let mut edited = vault.item(&stored.item).unwrap();
+    edited.raw.login.as_mut().unwrap().password = Some("typed-by-hand".into());
+    vault.update(edited, stored.revision).unwrap();
+
+    let parsed = marked(&vault);
+    let refused = check(&parsed, &previewed).unwrap_err();
+    assert_eq!(
+        (refused.exit, refused.code.as_str()),
+        (Exit::Denied, "stale_revision")
+    );
+    assert_eq!(refused.details["expect"], preview(&parsed)["expect"]);
+    assert_ne!(refused.details["expect"], json!(previewed));
+    assert!(!format!("{refused:?}").contains("drop-rotated"));
+}
+
 const TWINS: &str = "Title,URL,Username,Password,Notes,OTPAuth\n\
     Mail,https://mail.example,jon,first-secret,,\n\
     Mail,https://mail.example,jon,second-secret,,";

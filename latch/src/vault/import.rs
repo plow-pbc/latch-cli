@@ -21,7 +21,7 @@ use super::item::{CARD, IDENTITY, Item, LOGIN, Login, NOTE, Raw, Uri};
 use super::sites;
 use super::store::Backend;
 use super::totp::Params;
-use crate::failure::Failure;
+use crate::failure::{Exit, Failure};
 
 /// Larger than any real export; a cap, not a target.
 pub const MAX_IMPORT_BYTES: usize = 20 * 1024 * 1024;
@@ -844,10 +844,62 @@ pub fn preview(parsed: &Parsed) -> Value {
         .collect();
     json!({
         "source": parsed.source,
+        "expect": expect(parsed),
         "items": items,
         "skipped": parsed.skipped,
         "vaults": vaults.iter().map(|(v, n)| json!({"id": v.id, "name": v.name, "items": n})).collect::<Vec<_>>(),
     })
+}
+
+/// What a pick would do, as a digest: each row as the preview numbers it
+/// (kind, title, username, first site) and what the vault made of it
+/// (new, a duplicate, or an update of which item at which revision and of
+/// which secrets). Never a value. A later run of the same export gets the
+/// same digest only if no row would now touch the vault differently.
+pub fn expect(parsed: &Parsed) -> String {
+    let rows: Vec<Value> = parsed
+        .items
+        .iter()
+        .map(|row| {
+            let username = row
+                .item
+                .raw
+                .login
+                .as_ref()
+                .and_then(|l| l.username.as_deref());
+            let update = row
+                .update
+                .as_ref()
+                .map(|u| json!([u.item, u.revision, u.password, u.totp]));
+            json!([
+                row.item.raw.kind,
+                row.item.raw.name,
+                username,
+                row.item.sites.first(),
+                row.duplicate,
+                update,
+            ])
+        })
+        .collect();
+    let rows = serde_json::to_string(&rows).expect("serializes");
+    crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(rows.as_bytes()))
+}
+
+/// Refuses, before anything is saved, when the export no longer means what
+/// the preview that gave `expected` showed.
+pub fn check(parsed: &Parsed, expected: &str) -> Result<(), Failure> {
+    let now = expect(parsed);
+    if now == expected {
+        return Ok(());
+    }
+    let mut refused = Failure::new(
+        Exit::Denied,
+        "stale_revision",
+        "the vault or the export changed since the preview; nothing was saved; preview it again"
+            .into(),
+    );
+    refused.details = json!({"expect": now});
+    Err(refused)
 }
 
 #[derive(Serialize, Debug, PartialEq, Default)]

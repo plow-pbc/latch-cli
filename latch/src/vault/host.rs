@@ -384,6 +384,9 @@ async fn import(
         .flatten()
         .filter_map(|p| p.as_u64().map(|p| p as usize))
         .collect();
+    if let Some(expect) = picked["expect"].as_str() {
+        import::check(&parsed, expect)?;
+    }
     let outcome = vault.with(|store| Ok(import::commit(store, &parsed, &picks)))?;
     audit.insert("picked".into(), json!(picks.len()));
     audit.insert(

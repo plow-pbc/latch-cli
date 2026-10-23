@@ -77,7 +77,13 @@ already holds or that would update a changed password, and imports only
 the rows you pick; nothing is picked by default. Without a prompt,
 `--preview` returns that preview as JSON, imports nothing and, like a
 rules preview, is not audited; and `--pick
-1,3-5` (or `all`) imports those rows of it. For a remote import,
+1,3-5` (or `all`) imports those rows of it. That pick reads the vault
+again, so pass the preview's `expect` with `--expect`: if what any row
+would do to the vault changed since the preview (an item it would update
+was edited on another device, or a row it would add is now in the
+vault), the import is refused with `stale_revision` (exit 4), the new
+token in its `expect`, and nothing is saved. An edit no row touches
+doesn't count. For a remote import,
 the uploaded copy stays on the host only while the command runs: if you
 quit, the connection drops, or you pick nothing within 15 minutes, it is
 dropped and nothing is saved. A local import reads the file in place;
