@@ -672,6 +672,7 @@ struct ClosingTests {
         let answers: [(String, Onboarding.Google)] = [
             ("plow_unreachable", .unreachable),
             ("gog_not_configured", .failed(Onboarding.toolsMissing)),
+            ("google_needs_sign_in", .notConnected),
             ("something_new", .failed(Onboarding.couldNotCheck)),
         ]
         for (code, shown) in answers {
