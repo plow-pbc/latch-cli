@@ -1481,7 +1481,8 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
 /// a failure that is not a refusal (a missing file) was allowed to run.
 /// A worker that could not apply its sandbox is a "deny" too: the host
 /// refused to run the operation unconfined, so it never ran. So is an
-/// operation the gatekeeper could not judge.
+/// operation the gatekeeper could not judge, and one this host can't run
+/// at all: one it doesn't know, or one its platform lacks.
 pub(crate) fn decision(response: &Response) -> &'static str {
     match response {
         Response::Error {
@@ -1491,7 +1492,9 @@ pub(crate) fn decision(response: &Response) -> &'static str {
         Response::Error { code, .. }
             if code == "sandbox_failed"
                 || code == "gatekeeper_unavailable"
-                || code == "host_upgraded" =>
+                || code == "host_upgraded"
+                || code == "not_built_yet"
+                || code == "unsupported_platform" =>
         {
             "deny"
         }

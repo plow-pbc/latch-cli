@@ -129,6 +129,34 @@ async fn a_disabled_connector_is_refused_before_it_is_judged_or_given_a_credenti
 }
 
 /// Where this host's pinned gog goes.
+/// What this host can't run at all, an operation it doesn't know or a
+/// connector its platform lacks, is its own refusal: audited as a deny, so
+/// no one reads it as allowed, and never judged.
+#[tokio::test]
+async fn what_this_host_cannot_run_is_audited_as_its_refusal() {
+    let t = start(covered()).await;
+    let agent = t.caller("agent").await;
+    let (answer, _) = t.call(&agent, "teleport", json!({})).await;
+    assert_eq!(refusal(&answer).1, "not_built_yet");
+    let mut refused = vec![("teleport", "not_built_yet")];
+    #[cfg(not(target_os = "macos"))]
+    for op in ["messages", "contacts"] {
+        let read = json!({"action": "search", "args": ["--", "code"]});
+        let (answer, _) = t.call(&agent, op, read).await;
+        let (exit, code, _) = refusal(&answer);
+        assert_eq!((exit, code), (Exit::Failed, "unsupported_platform"));
+        refused.push((op, "unsupported_platform"));
+    }
+
+    assert_eq!(t.judged(), 0, "nothing was judged");
+    let records = t.audit();
+    for (op, outcome) in refused {
+        let record = records.iter().find(|r| r["op"] == op).unwrap();
+        assert_eq!(record["decision"], "deny", "{record}");
+        assert_eq!(record["outcome"], outcome, "{record}");
+    }
+}
+
 fn gog_folder(t: &TestHost) -> PathBuf {
     t.state
         .join("plugins/gog")
