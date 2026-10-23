@@ -13,7 +13,11 @@ struct MainView: View {
         } detail: {
             switch app.section {
             case .home: HomeView()
-            default: NotYetView(item: app.section)
+            case .activity: ActivityView()
+            case .agents: AgentsView()
+            case .rules: HostRulesView()
+            case .vault: VaultView()
+            case .settings: HostSettingsView()
             }
         }
         .frame(minWidth: 680, minHeight: 440)
@@ -27,12 +31,11 @@ struct MainView: View {
             await app.refreshStatus()
             app.leaveMainIfLoggedOut()
             await app.refreshAccount()
+            await app.followStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             guard !app.still else { return }
             Task {
-                await app.refreshStatus()
-                app.leaveMainIfLoggedOut()
                 await app.refreshAccount()
                 if app.section == .home { await app.refreshSummary() }
             }
@@ -138,17 +141,5 @@ struct StateDot: View {
             .fill(state?.isUp == true ? Color.green : state?.isProblem == true ? Color.red : Color.secondary)
             .frame(width: 8, height: 8)
             .accessibilityHidden(true)
-    }
-}
-
-/// A screen still to come: its place in the sidebar, honestly empty.
-private struct NotYetView: View {
-    var item: SidebarItem
-    @Environment(AppModel.self) private var app
-
-    var body: some View {
-        ContentUnavailableView(item.title, systemImage: item.symbol, description: Text("Not available yet."))
-            .navigationTitle(item.title)
-            .navigationSubtitle(SidebarItem.host.contains(item) ? app.host?.name ?? "" : "")
     }
 }

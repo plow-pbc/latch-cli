@@ -590,6 +590,64 @@ fn an_update_read_before_a_hand_edit_is_refused() {
     );
 }
 
+/// A pick given the preview's `expect` reads the vault again in the same
+/// transaction as its save: an edit made since the preview, even after
+/// this run read the export, refuses the whole import with nothing saved.
+#[test]
+fn a_pick_expecting_the_preview_refuses_a_vault_changed_since() {
+    let (_dir, mut vault) = store();
+    run(&mut vault, APPLE);
+    let export = format!(
+        "{}\nFresh,https://fresh.example,jo,fresh-secret,,",
+        APPLE.replace("drop-secret", "drop-rotated")
+    );
+    let mut parsed = parse_text(&export).unwrap();
+    mark_against(&vault, &mut parsed).unwrap();
+    let previewed = preview(&parsed)["expect"].as_str().unwrap().to_string();
+    assert_eq!(previewed.len(), 64);
+
+    // Another device edits the item row 2 would update.
+    let stored = vault
+        .list()
+        .into_iter()
+        .find(|m| m.title == "Dropbox")
+        .unwrap();
+    let mut edited = vault.item(&stored.item).unwrap();
+    edited.raw.login.as_mut().unwrap().password = Some("typed-by-hand".into());
+    vault.update(edited, stored.revision).unwrap();
+
+    let refused = commit_expecting(&mut vault, &mut parsed, &[1, 2, 3], &previewed).unwrap_err();
+    assert_eq!(
+        (refused.exit, refused.code.as_str()),
+        (crate::failure::Exit::Denied, "stale_revision")
+    );
+    assert_ne!(refused.details["expect"], json!(previewed));
+    assert!(!format!("{refused:?}").contains("drop-rotated"));
+    assert_eq!(vault.list().len(), 2, "not even the new row is saved");
+    assert_eq!(
+        vault.release(&stored.item, "password").unwrap(),
+        "typed-by-hand"
+    );
+
+    // With the token it gave, the pick goes ahead; an item no row touches
+    // doesn't change it.
+    let again = refused.details["expect"].as_str().unwrap().to_string();
+    run(
+        &mut vault,
+        "Title,URL,Username,Password,Notes,OTPAuth\nOther,https://other.example,jo,other-secret,,",
+    );
+    let outcome = commit_expecting(&mut vault, &mut parsed, &[1, 2, 3], &again).unwrap();
+    assert_eq!(
+        outcome,
+        Outcome {
+            saved: 1,
+            updated: 1,
+            duplicates: 1,
+            ..Outcome::default()
+        }
+    );
+}
+
 const TWINS: &str = "Title,URL,Username,Password,Notes,OTPAuth\n\
     Mail,https://mail.example,jon,first-secret,,\n\
     Mail,https://mail.example,jon,second-secret,,";

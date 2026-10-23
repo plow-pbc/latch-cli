@@ -159,6 +159,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             file,
             preview,
             pick,
+            expect,
         } => {
             // Rows are picked at a prompt only by a person who can see it.
             if !preview && pick.is_none() && !term::interactive() {
@@ -178,11 +179,18 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             let Some(host) = &target.host else {
                 return match preview {
                     true => super::local::preview(state, &file),
-                    false => super::local::import(state, &file, pick.as_deref()),
+                    false => super::local::import(state, &file, pick.as_deref(), expect.as_deref()),
                 };
             };
             let link = dial::connect(state, host).await?;
-            let result = import(&link.connection, &file, preview, pick.as_deref()).await;
+            let result = import(
+                &link.connection,
+                &file,
+                preview,
+                pick.as_deref(),
+                expect.as_deref(),
+            )
+            .await;
             link.close();
             result
         }
@@ -401,12 +409,14 @@ fn link_url(page: &str, opened: &Value) -> String {
 
 /// Sends the export and gets the preview; with `preview` that is the
 /// answer, and the host keeps nothing. Otherwise picks rows (`pick`, or at
-/// a prompt) and commits only those.
+/// a prompt) and commits only those; with `expect`, only if the host finds
+/// the rows unchanged since the preview that gave it.
 async fn import(
     connection: &crate::transport::Connection,
     path: &Path,
     preview: bool,
     pick: Option<&str>,
+    expect: Option<&str>,
 ) -> Result<Value, Failure> {
     let local =
         |err: std::io::Error| Failure::new(code::local_file, format!("{}: {err}", path.display()));
@@ -431,7 +441,17 @@ async fn import(
     let previewed = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     let preview = &previewed["preview"];
     let picks = choose(preview, pick)?;
-    let picked = serde_json::to_vec(&json!({"picks": picks})).expect("serializes");
+    if expect.is_some() && preview["expect"].is_null() {
+        // A host that predates `expect` would import unchecked.
+        let mut outdated = Failure::new(
+            code::host_outdated,
+            "that host's latch can't check --expect".into(),
+        );
+        outdated.next = Some("update latch on that host, or import without --expect".into());
+        return Err(outdated);
+    }
+    let picked =
+        serde_json::to_vec(&json!({"picks": picks, "expect": expect})).expect("serializes");
     wire::write_frame(&mut send, &picked)
         .await
         .map_err(|_| dial::lost(connection, true))?;

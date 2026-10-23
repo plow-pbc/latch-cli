@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::watch;
 
-pub use describe::{Begun, Finished, begun, finished, recorded, refused, session};
+pub use describe::{
+    Begun, Finished, begun, finished, recorded, recorded_command, refused, session,
+};
 pub use show::{Ending, show};
 
 /// How many tasks the board keeps, and how many calls in each: older ones

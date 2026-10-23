@@ -311,9 +311,10 @@ async fn run(
                     // A host's log begins when it first serves, or keeps an
                     // owner command here.
                     if !state.path.join(audit::FILE).exists() {
-                        let message = "this machine has never served, so it keeps no audit; \
-                                       read a host's with `latch audit --host NAME`";
-                        return Err(Failure::new(code::no_host_here, message.into()));
+                        let message = "this machine has never served, so it keeps no audit";
+                        let mut failure = Failure::new(code::no_host_here, message.into());
+                        failure.next = Some("latch audit --host NAME".into());
+                        return Err(failure);
                     }
                     let whose = match state.load_config()? {
                         Some(config) => format!("{}'s", config.peer.name),

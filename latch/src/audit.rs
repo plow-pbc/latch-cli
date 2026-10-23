@@ -562,12 +562,13 @@ pub fn read(
 }
 
 /// One record as `latch audit` shows it, its arguments with
-/// credential-looking values hidden (`redact.rs`), best effort.
+/// credential-looking values hidden (`redact.rs`), best effort, and its
+/// `command` as the board shows it.
 fn record_line(record: &Record) -> Value {
     let shown = json!({
         "id": record.hash, "time": record.time, "caller": record.caller, "caller_name": record.caller_name,
-        "agent": record.agent, "op": record.op, "decision": record.decision,
-        "outcome": record.outcome,
+        "agent": record.agent, "op": record.op, "command": crate::dashboard::recorded_command(record),
+        "decision": record.decision, "outcome": record.outcome,
         "details": {"started": record.started, "args": crate::redact::shown(&record.op, &record.args),
                     "gate": record.gate},
     });
@@ -729,6 +730,46 @@ mod tests {
         log.append(record("caller-two", None, "file_get", "allow", "ok"))
             .unwrap();
         (dir, path)
+    }
+
+    /// `latch audit` gives each record the command the board shows for it,
+    /// from the same function, its credentials hidden as there.
+    #[test]
+    fn a_record_shows_the_command_the_board_shows_its_secrets_hidden() {
+        let mut exec = exec_record("caller-one");
+        exec.args = json!({"argv": ["curl", "-H", format!("Authorization: Bearer {SECRET}")],
+            "writes": ["/work/site"], "workdir": "/work/site", "network": true,
+            "secret_env": [{"name": "TOKEN", "length": 26}]});
+        let mut browser = record("caller-one", None, "browser", "allow", "ok");
+        browser.args =
+            json!({"command": "open", "origin": "https://shop.example", "path": "/cart"});
+        for (record, expected) in [
+            (
+                exec,
+                "latch exec --write /work/site --network --secret-env TOKEN=••• curl -H",
+            ),
+            (browser, "latch browser open https://shop.example/cart"),
+        ] {
+            let shown = &record_line(&record)["record"]["command"];
+            let board = crate::dashboard::recorded(&record, "host-key").unwrap().2;
+            assert_eq!(
+                shown,
+                &json!(crate::dashboard::recorded_command(&record)),
+                "one function"
+            );
+            assert!(shown.as_str().unwrap().starts_with(expected), "{shown}");
+            assert!(
+                shown.as_str().unwrap().ends_with(&board.command),
+                "{shown} vs {}",
+                board.command
+            );
+            assert!(!shown.to_string().contains(SECRET), "{shown}");
+        }
+        // A connection is no command; any other call names its kind.
+        let connect = record("caller-one", None, "connect", "allow", "connected");
+        assert_eq!(record_line(&connect)["record"]["command"], Value::Null);
+        let audit = record("caller-one", None, "audit", "allow", "ok");
+        assert_eq!(record_line(&audit)["record"]["command"], "latch audit");
     }
 
     #[test]

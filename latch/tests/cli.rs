@@ -3885,6 +3885,13 @@ fn vault_management_and_self_rules_are_local_without_serve() {
             .iter()
             .any(|r| r["op"] == "rules" && r["args"]["command"] == "set")
     );
+    // Each record names its command as the board shows it.
+    let commands: Vec<&str> = records
+        .iter()
+        .filter_map(|r| r["command"].as_str())
+        .collect();
+    assert!(commands.contains(&"latch vault edit"), "{commands:?}");
+    assert!(commands.contains(&"latch rules set"), "{commands:?}");
     let sealed = fs::read_to_string(host.join("audit.sealed.ndjson")).unwrap();
     assert!(!sealed.contains("\"op\""), "audit records were not sealed");
     println!("local vault edit and rules set share the sealed audit; no legacy file");
@@ -4030,21 +4037,38 @@ fn vault_takes_secrets_as_json_on_stdin_and_shows_only_what_is_not_secret() {
         listed["items"].as_array().unwrap().len()
     };
     assert_eq!(listed(&host), 1, "a preview imports nothing");
-    let (code, imported) = run(&["vault", "import", export, "--pick", "1"], "");
+    let expect = previewed["preview"]["expect"].as_str().unwrap();
+    let (code, imported) = run(
+        &["vault", "import", export, "--pick", "1", "--expect", expect],
+        "",
+    );
     assert_eq!(code, Some(0), "{imported}");
     assert_eq!(imported["saved"], 1);
     assert_eq!(imported["picked"], json!([1]));
     assert!(!imported.to_string().contains("made-up-pass-chrome"));
     assert_eq!(listed(&host), 2);
+    // That import changed what row 1 means: the old preview's token no
+    // longer holds, and nothing is saved.
+    let (code, stale) = run(
+        &["vault", "import", export, "--pick", "2", "--expect", expect],
+        "",
+    );
+    assert_eq!(
+        (code, &stale["error"]["code"]),
+        (Some(4), &json!("stale_revision")),
+        "{stale}"
+    );
+    assert_ne!(stale["error"]["expect"], json!(expect));
+    assert_eq!(listed(&host), 2);
 
-    // A preview is not audited; the import is. The audit names fields,
-    // never a value.
+    // A preview is not audited; the import is, and so is the refused one.
+    // The audit names fields, never a value.
     let audited = audit_records(&host);
     let imports = audited
         .iter()
         .filter(|r| r["args"]["command"] == "import")
         .count();
-    assert_eq!(imports, 1);
+    assert_eq!(imports, 2);
     let records = serde_json::to_string(&audited).unwrap();
     for secret in secrets.iter().chain(&["made-up-pass-chrome"]) {
         assert!(!records.contains(secret), "{secret} audited");
@@ -4254,8 +4278,25 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     let previewed = remote(&["vault", "import", "--host", "host", export, "--preview"]);
     assert_eq!(previewed["preview"]["items"][0]["pick"], 1, "{previewed}");
     assert!(!previewed.to_string().contains("made-up-pass-chrome"));
-    let imported = remote(&["vault", "import", "--host", "host", export, "--pick", "1"]);
+    let expect = previewed["preview"]["expect"].as_str().unwrap();
+    let imported = remote(&[
+        "vault", "import", "--host", "host", export, "--pick", "1", "--expect", expect,
+    ]);
     assert_eq!(imported["saved"], 1, "{imported}");
+    let stale = latch(
+        &client,
+        &[
+            "vault", "import", "--host", "host", export, "--pick", "2", "--expect", expect,
+        ],
+        &[],
+    );
+    let (code, refused) = answered(&stale);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(4), &json!("stale_revision")),
+        "{refused}"
+    );
+    assert_ne!(refused["error"]["expect"], json!(expect));
     let imports = audit_records(&host)
         .iter()
         .filter(|r| {
@@ -4265,7 +4306,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
         })
         .map(|r| r["args"]["command"].clone())
         .collect::<Vec<_>>();
-    assert_eq!(imports, [json!("import")]);
+    assert_eq!(imports, [json!("import"), json!("import")]);
 }
 
 #[test]
@@ -6033,10 +6074,7 @@ fn audit_says_why_it_cannot_read() {
     // Logged in, never served: no audit here.
     let none = refused(&["audit"]);
     assert_eq!(none["code"], "no_host_here", "{none}");
-    assert!(
-        none["message"].as_str().unwrap().contains("--host"),
-        "{none}"
-    );
+    assert_eq!(none["next"], "latch audit --host NAME", "{none}");
 
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");

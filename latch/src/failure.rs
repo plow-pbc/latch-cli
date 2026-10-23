@@ -298,6 +298,7 @@ codes! {
     host_gone: Failed,
     host_not_supported: Usage,
     host_offline: Unreachable,
+    host_outdated: Usage,
     host_required: Usage,
     host_running: Failed,
     host_stopped: Unreachable,

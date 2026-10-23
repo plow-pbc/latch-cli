@@ -1340,7 +1340,13 @@ async fn check<'a>(
     } else if let Some(failure) = exec_failure {
         Some(Stop::path(refused_now(failure, Value::Null)))
     } else if let Some(failure) = not_enabled {
-        Some(Stop::Host(refused_now(failure, Value::Null)))
+        // A Google call keeps its command, grammar words only, as a judged
+        // one does. A Messages read's details hold the reader's words: none.
+        let audit = match op {
+            "google" => gate::gated(op, &request.args).map_or(Value::Null, |gated| gated.audit),
+            _ => Value::Null,
+        };
+        Some(Stop::Host(refused_now(failure, audit)))
     } else if let Some(unplanned) = unplanned {
         Some(Stop::Refused(unplanned))
     } else if let Some(refused) = refused {

@@ -74,16 +74,25 @@ pub(super) fn preview(state: &StateDir, path: &Path) -> Result<Value, Failure> {
     Ok(json!({"preview": import::preview(&parsed)}))
 }
 
-/// Imports the rows `pick` names, or those picked at a prompt.
-pub(super) fn import(state: &StateDir, path: &Path, pick: Option<&str>) -> Result<Value, Failure> {
+/// Imports the rows `pick` names, or those picked at a prompt; with
+/// `expect`, only if they still mean what that preview showed.
+pub(super) fn import(
+    state: &StateDir,
+    path: &Path,
+    pick: Option<&str>,
+    expect: Option<&str>,
+) -> Result<Value, Failure> {
     audited(state, "import", |vault, audit| {
-        let parsed = read_export(vault, path)?;
+        let mut parsed = read_export(vault, path)?;
+        audit.insert("source".into(), json!(parsed.source));
+        audit.insert("rows".into(), json!(parsed.items.len()));
         let preview = import::preview(&parsed);
         let picks = client::choose(&preview, pick)?;
         // No lock is held while the owner chooses. Commit checks current revisions.
-        let outcome = vault.with(|store| Ok(import::commit(store, &parsed, &picks)))?;
-        audit.insert("source".into(), json!(parsed.source));
-        audit.insert("rows".into(), json!(parsed.items.len()));
+        let outcome = vault.with(|store| match expect {
+            Some(expect) => import::commit_expecting(store, &mut parsed, &picks, expect),
+            None => Ok(import::commit(store, &parsed, &picks)),
+        })?;
         audit.insert("picked".into(), json!(picks.len()));
         audit.insert("result".into(), json!({"saved": outcome.saved, "updated": outcome.updated, "duplicates": outcome.duplicates, "failed": outcome.failed.len()}));
         let mut result = json!(outcome);

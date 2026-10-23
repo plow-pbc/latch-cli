@@ -45,7 +45,8 @@ pub struct Begun {
 
 /// A call `op` as requested, before it runs.
 pub fn begun(op: &str, request: &Value) -> Begun {
-    let (kind, command) = command(op, request, &Value::Null);
+    let (kind, command) =
+        command(op, request, &Value::Null).unwrap_or_else(|| (op.replace('_', " "), String::new()));
     Begun {
         at: Timestamp::now(),
         kind,
@@ -80,7 +81,8 @@ pub fn finished(
     took: Duration,
 ) -> Finished {
     let title = title(op, request, audit);
-    let (kind, command) = command(op, request, audit);
+    let (kind, command) =
+        command(op, request, audit).unwrap_or_else(|| (op.replace('_', " "), String::new()));
     let steps = plan_steps(request, audit);
     let (outcome, code, message) = match response {
         Response::Ok(_) => (done(op, audit, &steps), None, None),
@@ -220,11 +222,32 @@ pub fn refused(op: &str, code: &str, message: &str) -> Finished {
     )
 }
 
+/// The command a call ran, as people read it: `latch KIND COMMAND`, on one
+/// line. The board's detail shows it, and `latch audit` gives it as each
+/// record's `command`, from this one place.
+pub fn command_line(kind: &str, command: &str) -> String {
+    let line = format!(
+        "latch {} {}",
+        crate::term::one_line(kind),
+        crate::term::one_line(command)
+    );
+    line.trim_end().to_string()
+}
+
+/// A recorded call's command, from what its audit record kept, as the
+/// board shows a call it read back from the log; none for a record that is
+/// no command (a connection).
+pub fn recorded_command(record: &crate::audit::Record) -> Option<String> {
+    let (kind, command) = command(&record.op, &Value::Null, &record.args)?;
+    Some(command_line(&kind, &command))
+}
+
 /// What kind of call `op` is (`exec`, `browser`, `google`, …) and its
 /// command, close to what was typed after `latch <kind>`: from the request
 /// as sent, else what the audit kept of it. Never a query, a search or the
-/// text a step types, and credential-looking words hidden.
-fn command(op: &str, request: &Value, audit: &Value) -> (String, String) {
+/// text a step types, and credential-looking words hidden. None for an
+/// operation no latch command sends (a connection).
+fn command(op: &str, request: &Value, audit: &Value) -> Option<(String, String)> {
     let pick = |key: &str| -> Value {
         if request[key].is_null() {
             audit[key].clone()
@@ -356,10 +379,12 @@ fn command(op: &str, request: &Value, audit: &Value) -> (String, String) {
             line.push(pick("op").as_str().unwrap_or_default().to_string());
             "phone link"
         }
-        op => return (op.replace('_', " "), String::new()),
+        // A connection is no command any latch sends.
+        "connect" => return None,
+        op => return Some((op.replace('_', " "), String::new())),
     };
     let line: Vec<String> = line.into_iter().filter(|word| !word.is_empty()).collect();
-    (kind.to_string(), line.join(" "))
+    Some((kind.to_string(), line.join(" ")))
 }
 
 /// `word` as a shell reads it back.

@@ -1010,7 +1010,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "vault.import",
         runs_on: |_| RunsOn::Either,
-        output: "How many rows were `saved`, `updated` (a changed password or authenticator key), left as `duplicates`, and which `failed` and why, with the `source` and the rows `picked`. With --preview, only `preview`: its `source` and `items`, each row's `pick` number, kind, title, username and site, whether it holds a password or authenticator key, whether the vault already holds it or it would update one, and the rows set aside; never a secret.",
+        output: "How many rows were `saved`, `updated` (a changed password or authenticator key), left as `duplicates`, and which `failed` and why, with the `source` and the rows `picked`. With --preview, only `preview`: its `source`, its `expect` token for --pick --expect, and `items`, each row's `pick` number, kind, title, username and site, whether it holds a password or authenticator key, whether the vault already holds it or it would update one, and the rows set aside; never a secret.",
         effect: Once(
             "adds the rows picked at the prompt or with --pick; --preview adds nothing and is not audited",
         ),
@@ -1028,6 +1028,18 @@ const ENTRIES: &[Entry] = &[
             ex(
                 "Then import rows 1 and 3 to 5",
                 &["vault", "import", "export.csv", "--pick", "1,3-5"],
+            ),
+            ex(
+                "Import them only if they still mean what the preview showed (its `expect`); otherwise stale_revision, with the token they are at, and nothing is saved",
+                &[
+                    "vault",
+                    "import",
+                    "export.csv",
+                    "--pick",
+                    "1,3-5",
+                    "--expect",
+                    "4be1…",
+                ],
             ),
         ],
     },
@@ -1168,7 +1180,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "audit",
         runs_on: |_| RunsOn::Either,
-        output: "JSON lines: `hello`; a `snapshot` (`cursor`, the id before the first record shown, and `has_older`); a `record` line each (`cursor`, its id, and `record`: id, time, caller, caller_name, agent, op, decision, outcome, and `details` with started, args and gate, credential-looking values hidden, best effort); then `caught_up` (the last `cursor`, `has_older`). With --follow, then each new record. The newest 50 unless --last N or --all; --before ID reads the page before. With --host, another host's, the same lines.",
+        output: "JSON lines: `hello`; a `snapshot` (`cursor`, the id before the first record shown, and `has_older`); a `record` line each (`cursor`, its id, and `record`: id, time, caller, caller_name, agent, op, command (the command it ran, as `latch KIND …`, as the dashboard shows it, secrets masked; null for a connection), decision, outcome, and `details` with started, args and gate, credential-looking values hidden, best effort); then `caught_up` (the last `cursor`, `has_older`). With --follow, then each new record. The newest 50 unless --last N or --all; --before ID reads the page before. With --host, another host's, the same lines.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,

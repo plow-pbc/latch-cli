@@ -701,6 +701,10 @@ pub enum VaultCommand {
         /// ranges (1,3-5), or all
         #[arg(long, value_name = "ROWS")]
         pick: Option<String>,
+        /// Import only if the rows still mean what the preview showed: its
+        /// `expect`; otherwise stale_revision and nothing is saved
+        #[arg(long, value_name = "TOKEN", requires = "pick")]
+        expect: Option<String>,
     },
 }
 

@@ -4,6 +4,8 @@ import Foundation
 nonisolated struct LocalStatus: Decodable, Equatable {
     struct Peer: Decodable, Equatable {
         var name: String
+        /// This machine's key: the `caller` on records of its own requests.
+        var key: String?
     }
 
     struct Serve: Decodable, Equatable {
@@ -17,17 +19,21 @@ nonisolated struct LocalStatus: Decodable, Equatable {
         /// `latch serve` held by a terminal (`attached`).
         var managed: Bool
         var attached: Bool?
+        var pid: Int?
         /// Set when a running host can't be used, e.g. another latch version's.
         var blocked: LatchFailure?
     }
 
     struct Update: Decodable, Equatable {
         var available: Bool
-        var build: String?
+        /// The newest build the host's last lookup found, a number.
+        var build: Int?
     }
 
     var peer: Peer?
     var serve: Serve
+    /// The bundle's latch, in words: version, commit and build.
+    var version: String?
     var lastError: LatchFailure?
     var update: Update?
 }
@@ -103,18 +109,211 @@ nonisolated struct LoginLine: Decodable {
 }
 
 /// `latch rules show`: the rules for every agent on a host, and each
-/// agent's own rules there.
+/// agent's own rules there, each with the revision a save checks against.
 nonisolated struct RulesShow: Decodable, Equatable {
-    struct Text: Decodable, Equatable { var text: String }
-    struct Agent: Decodable, Equatable { var agentName: String? }
+    struct Text: Decodable, Equatable {
+        var text: String
+        var revision: String?
+    }
+    struct Agent: Decodable, Equatable {
+        var agentName: String?
+        var agentUid: String?
+        var text: String?
+        var revision: String?
+    }
+    /// Agents the host refuses exec (`serve --deny-exec`).
+    struct DenyExec: Decodable, Equatable {
+        var everyAgent: Bool?
+        var agentUids: [String]?
+    }
     var everyAgent: Text?
     var agents: [Agent]?
+    var denyExec: DenyExec?
+
+    func agent(_ uid: String) -> Agent? { agents?.first { $0.agentUid == uid } }
+
+    /// Whether the host refuses this agent exec.
+    func execBlocked(_ uid: String) -> Bool {
+        denyExec?.everyAgent == true || denyExec?.agentUids?.contains(uid) == true
+    }
+}
+
+/// `latch agents [--host NAME]`: the account's agents and, with a host,
+/// each one's standing there.
+nonisolated struct AgentsList: Decodable, Equatable {
+    struct Agent: Decodable, Equatable, Identifiable {
+        struct Line: Decodable, Equatable { var number: String?; var name: String? }
+        struct Standing: Decodable, Equatable {
+            /// It has rules of its own on that host.
+            var ownRules: Bool?
+            /// The host refuses it exec (`serve --deny-exec`).
+            var execBlocked: Bool?
+        }
+        var uid: String
+        var name: String
+        /// `own` or `cloud`.
+        var kind: String?
+        var cloudKind: String?
+        var line: Line?
+        /// Plow's word on a cloud agent (e.g. `provisioning`); nil for own.
+        var status: String?
+        /// As Plow writes them (UTC, no zone); shown as given.
+        var createdAt: String?
+        var lastSeenAt: String?
+        var standing: Standing?
+
+        var id: String { uid }
+    }
+    var agents: [Agent]
 }
 
 /// `latch vault list`: a host's vault items, never their secrets.
 nonisolated struct VaultList: Decodable, Equatable {
-    struct Item: Decodable, Equatable { var item: String }
+    struct Field: Decodable, Equatable, Hashable {
+        var label: String
+        /// A secret: its value never leaves the host.
+        var hidden: Bool
+        var custom: Bool?
+    }
+    struct Item: Decodable, Equatable, Identifiable {
+        var item: String
+        /// Bumped by every change; an edit or removal names the one it saw.
+        var revision: Int
+        /// `login`, `card`, `identity` or `note` (an import may bring others).
+        var kind: String
+        var title: String
+        var username: String?
+        /// A login's sites; for a card or identity, the only ones it fills on.
+        var sites: [String]
+        var otherTopSites: [String]?
+        /// The item's fields by label, and which are secret.
+        var fields: [Field]
+        /// A login with an authenticator key.
+        var totp: Bool
+
+        var id: String { item }
+    }
     var items: [Item]
+}
+
+/// `latch agents catalog`: the cloud agents Plow offers.
+nonisolated struct AgentCatalog: Decodable, Equatable {
+    struct Kind: Decodable, Equatable, Identifiable { var id: String; var name: String }
+    var kinds: [Kind]
+}
+
+/// `latch agents lines`: the account's phone lines, and which are free.
+nonisolated struct AgentLines: Decodable, Equatable {
+    struct Line: Decodable, Equatable, Identifiable {
+        var uid: String
+        var number: String
+        var name: String?
+        var available: Bool
+        var id: String { uid }
+    }
+    var lines: [Line]
+}
+
+/// `latch agents new`'s answer: the agent, and for your own agent the file
+/// its credential was written to (never the credential).
+nonisolated struct AgentCreated: Decodable, Equatable {
+    var agent: AgentsList.Agent
+    var tokenFile: String?
+    var apiUrl: String?
+}
+
+/// `latch devices`: every machine logged in to the account.
+nonisolated struct DeviceList: Decodable, Equatable {
+    struct Device: Decodable, Equatable, Identifiable {
+        var key: String
+        var name: String
+        var online: Bool?
+        var lastSeenAt: Date?
+        var id: String { key }
+    }
+    var devices: [Device]
+}
+
+/// `latch logout`'s answer: whether Plow took this machine out of the
+/// account. A local logout succeeds even when Plow couldn't be told.
+nonisolated struct LogoutResult: Decodable, Equatable {
+    struct Device: Decodable, Equatable {
+        var name: String
+        var removed: Bool
+        var error: LatchFailure?
+        /// What finishes it, in latch's words.
+        var next: String?
+    }
+    /// Nil when there was nothing to take out of the account.
+    var device: Device?
+}
+
+/// `latch update --check`: whether a newer Latch is published.
+nonisolated struct UpdateCheck: Decodable, Equatable {
+    struct Release: Decodable, Equatable { var build: Int?; var tag: String? }
+    var available: Bool
+    /// This latch's build number; nil for a local build.
+    var current: Int?
+    var latest: Release?
+}
+
+/// A vault item as the person wrote it, for `vault add` or `vault edit`:
+/// the title and sites go in argv, every value only on stdin.
+nonisolated struct VaultDraft: Equatable, Sendable {
+    var kind: String
+    var title: String
+    var sites: [String]
+    var otherTopSites: [String]
+    /// Values by latch's labels, secrets included; for an edit, only those
+    /// that changed (an empty one clears it).
+    var values: [String: String]
+}
+
+/// `latch vault show ITEM`: an item and the values of its fields that
+/// aren't secret, by label.
+nonisolated struct VaultShow: Decodable, Equatable {
+    var item: VaultList.Item
+    var values: [String: String]
+}
+
+/// `latch vault import FILE --preview`: what an export holds, never a
+/// secret; each row's `pick` is what `--pick` takes.
+nonisolated struct ImportPreview: Decodable, Equatable {
+    struct Row: Decodable, Equatable, Identifiable {
+        var pick: Int
+        var kind: String
+        var title: String
+        var username: String?
+        var url: String?
+        /// The vault already holds it.
+        var duplicate: Bool
+        /// It updates an item the vault holds: the fields it changes.
+        var changed: [String]?
+        var hasPassword: Bool?
+        var hasTotp: Bool?
+        var warnings: [String]?
+
+        var id: Int { pick }
+    }
+    struct Skipped: Decodable, Equatable {
+        var title: String
+        var reason: String
+    }
+    var source: String
+    /// What `--pick --expect` checks the rows still mean; nil from a host
+    /// whose latch can't check it.
+    var expect: String?
+    var items: [Row]
+    var skipped: [Skipped]?
+}
+
+/// What `latch vault import FILE --pick ROWS` did.
+nonisolated struct ImportResult: Decodable, Equatable {
+    var saved: Int
+    var updated: Int
+    var duplicates: Int
+    /// Rows that couldn't be saved, and why; the rest were.
+    var failed: [ImportPreview.Skipped]
 }
 
 /// `latch rules try`: the verdict a request would get now, without running it.
@@ -123,6 +322,8 @@ nonisolated struct RulesTry: Decodable, Equatable {
     var verdict: String
     /// Why the host refused it before asking the judge, for `host_refused`.
     var refused: LatchFailure?
+    /// The gatekeeper's judgment, when it was asked.
+    var gate: AuditRecord.Gate?
 }
 
 /// `latch setup --status`: each setup step as the state folder says, with
@@ -158,6 +359,9 @@ nonisolated struct PluginsList: Decodable, Equatable {
         var name: String
         /// `enabled`, `disabled` or `needs_setup`.
         var state: String
+        /// Why, in latch's words, and the command that turns it on.
+        var reason: String?
+        var enable: String?
     }
     var plugins: [Plugin]
 }

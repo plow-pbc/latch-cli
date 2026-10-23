@@ -21,6 +21,10 @@ nonisolated enum LatchError: Error, Equatable {
     }
 }
 
+extension LatchError: LocalizedError {
+    var errorDescription: String? { message }
+}
+
 /// latch's error JSON: `{"error": {"code", "message", …}}`, with the
 /// fields the app acts on.
 nonisolated struct LatchFailure: Decodable, Equatable {
