@@ -5006,7 +5006,14 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
     let ready = dir.path().join("ready");
     fs::create_dir_all(&ready).unwrap();
     let ready = owner_host_on(&plow, &ready);
-    let connectors: Vec<String> = ["google", "messages", "contacts"]
+    // Every connector this OS's latch has on: Messages and Contacts are
+    // macOS's, and a Linux latch refuses a plugins.json that names them.
+    let names: &[&str] = if cfg!(target_os = "macos") {
+        &["google", "messages", "contacts"]
+    } else {
+        &["google"]
+    };
+    let connectors: Vec<String> = names
         .iter()
         .map(|name| format!(r#""{name}": {{"state": "enabled"}}"#))
         .collect();
