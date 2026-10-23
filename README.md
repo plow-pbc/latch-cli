@@ -180,6 +180,11 @@ No Homebrew tap is included.
   own machines are unaffected. `latch rules show` and `latch status
   --local` report it (`this_machine.hosting.deny_exec`) as the host runs,
   or last ran.
+- `latch settings set --keep-awake on` keeps a Mac host from idle sleep
+  while it serves on AC power, with no restart; the display still sleeps
+  and locks, and the lid still sleeps it. `latch status --local` reports
+  it (`this_machine.hosting.keep_awake`): saved, and whether the host
+  holds it now. On Linux it is saved and reported `unsupported`.
 - A connection problem (`host_unreachable`, a slow call): set
   `LATCH_TRACE=iroh=debug,latch=info` on the client, the host or both, to
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). A

@@ -774,9 +774,9 @@ package enum SnapshotRunner {
     /// image of it (nor of the sidebar's materials) to give.
     private static func renderWindow(_ view: some View, size: CGSize, dark: Bool, file: URL) async throws {
         guard wanted(file) else { return }
-        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
+        let window = Offscreen(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                               backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentViewController = NSHostingController(rootView: view)
         window.setFrame(CGRect(origin: CGPoint(x: -4000, y: -4000), size: size), display: true)
@@ -794,9 +794,9 @@ package enum SnapshotRunner {
         if !background { host.sizingOptions = [] }
         // A floating panel has no title bar, nor its minimum height.
         // Off every display: nothing shows, and no click lands on it.
-        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
-                              styleMask: background ? [.titled, .fullSizeContentView] : [.borderless],
-                              backing: .buffered, defer: false)
+        let window = Offscreen(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                               styleMask: background ? [.titled, .fullSizeContentView] : [.borderless],
+                               backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
         window.orderFrontRegardless()
@@ -805,5 +805,18 @@ package enum SnapshotRunner {
         window.orderOut(nil)
         print(file.path)
     }
+}
+/// A window for a still, which never shows: kept off every display (a
+/// titled window is otherwise moved onto one, such as a display left of
+/// the main one) and transparent. The stills draw its views, not what the
+/// window server shows.
+private final class Offscreen: NSWindow {
+    override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
+        super.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag)
+        alphaValue = 0
+        ignoresMouseEvents = true
+    }
+
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 #endif

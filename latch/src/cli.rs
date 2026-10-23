@@ -187,6 +187,10 @@ pub enum Command {
     /// The connectors on a host: list them; on the host itself, its owner
     /// turns one on (running its setup) or off
     Plugins(PluginsArgs),
+    /// This machine's own host settings, saved in its state folder: a
+    /// running host picks a change up at once, and a stopped one when it
+    /// starts. `status --local` reports what the host makes of them
+    Settings(SettingsArgs),
     /// This machine's host audit log (or another host's, with --host): its newest records as JSON lines, an earlier page, or with --follow each new one; its chain checked without the key, or a new key
     #[command(after_help = AUDIT_HELP)]
     Audit(AuditArgs),
@@ -293,9 +297,10 @@ pub enum BrowserCommand {
     /// the elements on screen; answers the session's id, which every later
     /// command needs. Its cookies and logins last until it closes
     Open {
-        /// The browser engine the session runs on
-        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
-        engine: EngineArg,
+        /// The browser engine the session runs on [default: chrome if the
+        /// host has it, else camoufox]
+        #[arg(long, value_enum)]
+        engine: Option<EngineArg>,
         /// A label for the session, shown in listings and the audit
         #[arg(long)]
         task: Option<String>,
@@ -745,10 +750,14 @@ pub enum PluginsCommand {
     },
     /// Run NAME's setup for this machine's host, running or not; NAME is
     /// enabled only if it succeeds (owner only). When no Google account is
-    /// connected in Plow, `enable google` gets a single-use sign-in link
-    /// from Plow: at a terminal it shows the link and a QR code and waits
-    /// up to 5 minutes for the account; otherwise the error carries it as
-    /// `sign_in_url`
+    /// connected in Plow, or none works until the owner signs in again,
+    /// `enable google` gets a single-use sign-in link from Plow: at a
+    /// terminal it shows the link and a QR code and waits up to 5 minutes
+    /// for the account (sign_in_timeout when it ends); otherwise the error
+    /// carries it as `sign_in_url`. Accounts that still need signing in
+    /// again while another works are named in `needs_sign_in`. Ctrl-C,
+    /// SIGTERM or closing stdin stops the wait: google_connect_cancelled,
+    /// or outcome_unknown once the enable was sent
     Enable {
         name: String,
         /// For an app: report as JSON lines on stdout (hello, link, then
@@ -764,6 +773,30 @@ pub enum PluginsCommand {
     /// Turn NAME off on this machine's host: a running one refuses new calls
     /// at once, and this returns once its running ones have finished (owner only)
     Disable { name: String },
+}
+
+#[derive(Args, Debug)]
+pub struct SettingsArgs {
+    #[command(subcommand)]
+    pub command: SettingsCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SettingsCommand {
+    /// Save a setting for this machine's host; needs no login, host or restart
+    Set {
+        /// Keep this machine from idle sleep while its host serves, on AC
+        /// power only (macOS; elsewhere `unsupported`). The display still
+        /// sleeps and locks, and closing the lid still sleeps it
+        #[arg(long, value_name = "on|off")]
+        keep_awake: OnOff,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Debug)]
+pub enum OnOff {
+    On,
+    Off,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1357,8 +1390,9 @@ impl MessagesCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ContactsCommand {
-    /// People whose name, nickname or organization contains TEXT, each with
-    /// every phone and email and the handle to pass to `latch messages`
+    /// People whose name, nickname or organization has every word of TEXT
+    /// (ignoring case and accents), each with every phone and email and the
+    /// handle to pass to `latch messages`
     Search {
         /// What to look for (required unless --cursor is given)
         #[arg(required_unless_present = "cursor")]

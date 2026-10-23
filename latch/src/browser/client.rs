@@ -284,10 +284,10 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             if let Some(request) = request.as_object_mut() {
                 request.remove("session");
             }
-            let engine = match engine {
+            let engine = engine.map(|engine| match engine {
                 EngineArg::Cft => "chrome",
                 EngineArg::Camoufox => "camoufox",
-            };
+            });
             set(request, "engine", json!(engine));
             set(request, "task", json!(task));
             set(request, "url", json!(url));

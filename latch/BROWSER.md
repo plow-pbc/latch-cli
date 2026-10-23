@@ -25,7 +25,8 @@ later; it is the host's owner's command, run on the host, and refuses a
 latch logged in as an agent. On Linux, installing Chrome either way first
 installs unzip, Xvfb and its runtime libraries if they are missing, asking for sudo once. An agent's browser call never downloads anything: with no engine it
 fails with `engine_not_installed`, whose `details.setup` is the owner's
-command (`latch browser setup --engine chrome`).
+command (`latch browser setup --engine chrome`; an `open` that names no
+engine also mentions `--engine camoufox`).
 
 A build may add launch arguments of its own (`args`) after the recipe's.
 The macOS builds add `--disable-crashpad-for-testing`, which keeps Chrome's
@@ -107,8 +108,10 @@ returns `serve_required`, with instructions to start `latch serve`.
 ## Sessions
 
 Each `open` makes a new **session** in a browser of its own, its
-**runtime**: a fresh profile, the engine `open` names (`--engine chrome`,
-the default, or `--engine camoufox`), and one long-lived browser worker
+**runtime**: a fresh profile, the engine `open` names (`--engine chrome`
+or `--engine camoufox`; with neither, Chrome if the host has it and it
+checks out, else Camoufox, and the answer's `engine` says which), and one
+long-lived browser worker
 (`latch browser-worker`, hidden) driving it, which the host talks to over
 stdio. The worker drives CfT over `--remote-debugging-pipe` only: CDP on
 Chrome's fds 3 and 4, never a port; Camoufox through its helper (above).

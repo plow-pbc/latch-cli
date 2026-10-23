@@ -19,6 +19,8 @@
 //! - `serve.plist` (macOS) and `launch.lock`, on a host: the managed host's
 //!   service, and the lock that starts and stops it one at a time (see
 //!   `managed.rs`).
+//! - `settings.json`: this machine's host settings (see `settings.rs`);
+//!   `keep-awake.json`, on a host: what it holds (see `keep_awake.rs`).
 //! - `vault.json` and `vault.key`*, on a host: the vault and its custody key
 //!   (see `vault/store.rs`).
 //! - `browser/`, on a host: open sessions' profiles, the model's settings
