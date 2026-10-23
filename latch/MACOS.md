@@ -50,6 +50,31 @@ screen not passed. `swift run Snapshots DIR` in `latch/gui` renders every
 screen and state, light and dark, on a sample latch; `gui/build.sh
 --test-hooks` builds a window an end-to-end run can drive.
 
+`gui/hooks.sh` drives that build from a terminal, for a local check of
+launch, the flow's state and what it records (`App/TestHooks.swift`; not
+run in CI). Its commands are model intents: `send primary` calls the
+flow's primary action as its button would, but no control, focus or
+keyboard is involved, so it is not a click test. It builds its own app,
+`.dev/hooks/Plow Latch Hooks.app` (bundle id `co.plow.latch.hooks`), on
+this checkout's debug latch with no Plow, and opens it on a fresh
+`.dev/tests/hooks/state`. That app is background-only: no window, no Dock
+icon, and its flow starts without a window, so a screen's own work (Log in
+starting a login as it appears) doesn't run. `build --window` makes one
+that shows its window, for the hooks that snapshot or resize it. `quit`
+deletes the app's preferences. For example, Welcome's primary action
+leading to Log in:
+
+```sh
+latch/gui/hooks.sh build    # about 1 min cold, 20 s warm
+latch/gui/hooks.sh open     # "opened on …/.dev/tests/hooks/state"
+latch/gui/hooks.sh state    # "step": "welcome", "windows": []
+latch/gui/hooks.sh send primary
+latch/gui/hooks.sh state    # "step": "login", "passed": {"welcome": "continued"}
+latch/gui/hooks.sh quit
+```
+
+From `open` to `quit` this took 1.6–2.7 s on an M5 Max.
+
 `scripts/package-release.sh` puts the bundle in a macOS release archive,
 ad hoc signed (`scripts/macos-sign-app.sh`), with a `latch` symlink beside
 `install-binary.sh` that leads into it. The release workflow

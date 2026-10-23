@@ -19,6 +19,9 @@ enum TestHooks {
     static var standIn: pid_t?
     /// A helper floated by `grant-helper`.
     static var helper: GrantHelper?
+    /// A background-only test app (gui/hooks.sh's, unless built with
+    /// --window) opens no window, so its flow starts here, not in one.
+    static let headless = Bundle.main.object(forInfoDictionaryKey: "LSBackgroundOnly") as? Bool == true
 
     /// A link as `state` records it. A Google sign-in link's code is a
     /// credential until used, so only the link's shape is kept.
@@ -42,6 +45,9 @@ enum TestHooks {
             opened.append("login item \(on ? "on" : "off")")
         }
         app.loginItemIsOn = { loginItem }
+        if headless {
+            Task { await app.resumeOnboarding() }
+        }
         let center = DistributedNotificationCenter.default()
         func on(_ command: String, _ act: @escaping @MainActor (String?) -> Void) {
             center.addObserver(forName: .init("co.plow.latch.test.\(Bundle.main.bundleIdentifier ?? "").\(command)"), object: nil, queue: .main) { note in
