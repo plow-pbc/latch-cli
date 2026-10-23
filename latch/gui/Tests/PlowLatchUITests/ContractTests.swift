@@ -52,6 +52,17 @@ final class ContractTests {
         await waitUntil { latchRuns(on: state.path, doing: "status --local --follow") == 0 }
     }
 
+    /// The app killed outright: its stream's latch sees its stdin close and
+    /// ends, with no one left to stop it.
+    @Test func aStreamEndsWhenItsAppIsKilled() async throws {
+        let follower = try Follower(latch, ["--state-dir", state.path, "status", "--local", "--follow"])
+        defer { follower.stop() }
+        await waitUntil { latchRuns(on: state.path, doing: "status --local --follow") == 1 }
+        follower.killApp()
+        await waitUntil { !follower.latch.isRunning }
+        #expect(!follower.latch.isRunning)
+    }
+
     @Test func setupStatusOfAFreshStateFolder() async throws {
         let setup = try await client.setupStatus()
         #expect(setup.step("login")?.state == "needed")
@@ -82,6 +93,44 @@ final class ContractTests {
             return
         }
         #expect(error.code == "not_logged_in")
+    }
+}
+
+/// A stream latch runs with its stdin a pipe whose only writer is a
+/// stand-in for the app, as the app holds a stream's stdin open: killing
+/// the stand-in with SIGKILL is the app dying with no chance to stop it.
+struct Follower {
+    let app: Process
+    let latch: Process
+
+    init(_ latch: URL, _ arguments: [String]) throws {
+        var ends: [Int32] = [0, 0]
+        try #require(pipe(&ends) == 0)
+        defer {
+            close(ends[0])
+            close(ends[1])
+        }
+        app = Process()
+        app.executableURL = URL(filePath: "/bin/sleep")
+        app.arguments = ["600"]
+        app.standardOutput = FileHandle(fileDescriptor: ends[1], closeOnDealloc: false)
+        try app.run()
+        self.latch = Process()
+        self.latch.executableURL = latch
+        self.latch.arguments = arguments
+        self.latch.standardInput = FileHandle(fileDescriptor: ends[0], closeOnDealloc: false)
+        self.latch.standardOutput = FileHandle.nullDevice
+        self.latch.standardError = FileHandle.nullDevice
+        try self.latch.run()
+    }
+
+    func killApp() {
+        kill(app.processIdentifier, SIGKILL)
+    }
+
+    func stop() {
+        if app.isRunning { killApp() }
+        if latch.isRunning { latch.terminate() }
     }
 }
 
