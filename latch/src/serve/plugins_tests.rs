@@ -138,18 +138,25 @@ async fn what_this_host_cannot_run_is_audited_as_its_refusal() {
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "teleport", json!({})).await;
     assert_eq!(refusal(&answer).1, "not_built_yet");
-    let mut refused = vec![("teleport", "not_built_yet")];
-    #[cfg(not(target_os = "macos"))]
-    for op in ["messages", "contacts"] {
+    // A Mac host runs these, so only another can refuse them.
+    let elsewhere: &[&str] = if cfg!(target_os = "macos") {
+        &[]
+    } else {
+        &["messages", "contacts"]
+    };
+    for &op in elsewhere {
         let read = json!({"action": "search", "args": ["--", "code"]});
         let (answer, _) = t.call(&agent, op, read).await;
         let (exit, code, _) = refusal(&answer);
         assert_eq!((exit, code), (Exit::Failed, "unsupported_platform"));
-        refused.push((op, "unsupported_platform"));
     }
 
     assert_eq!(t.judged(), 0, "nothing was judged");
     let records = t.audit();
+    let refused = elsewhere
+        .iter()
+        .map(|&op| (op, "unsupported_platform"))
+        .chain([("teleport", "not_built_yet")]);
     for (op, outcome) in refused {
         let record = records.iter().find(|r| r["op"] == op).unwrap();
         assert_eq!(record["decision"], "deny", "{record}");
