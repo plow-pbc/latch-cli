@@ -30,6 +30,7 @@
 //!   program"). A path the sandbox refuses gives the code `sandbox_denied`.
 
 use std::cell::RefCell;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::AsFd;
@@ -96,6 +97,16 @@ pub fn authenticated_worker_error(stderr: &str, token: &str) -> Option<WorkerErr
 /// Homebrew's folders first, as in a macOS user's shell; they do not exist
 /// on Linux and cost nothing there.
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// Exec's `PATH`: the host's own, then whatever of `PATH` it lacks. A host
+/// the Mac app or the login item started has only the system's folders, and
+/// its programs would not find Homebrew's tools.
+fn exec_path(host: Option<OsString>) -> OsString {
+    let host: Vec<PathBuf> = host.iter().flat_map(std::env::split_paths).collect();
+    let missing = std::env::split_paths(PATH).filter(|folder| !host.contains(folder));
+    let folders: Vec<PathBuf> = host.iter().cloned().chain(missing).collect();
+    std::env::join_paths(folders).expect("split folders hold no separator")
+}
 
 /// A started worker: its stdout (for the first line and any file bytes)
 /// and the process itself.
@@ -363,10 +374,7 @@ impl WorkerSetup {
         }
         command.arg("--").args(&args.argv);
         command
-            .env(
-                "PATH",
-                std::env::var_os("PATH").unwrap_or_else(|| PATH.into()),
-            )
+            .env("PATH", exec_path(std::env::var_os("PATH")))
             .env("TMPDIR", tmpdir)
             .process_group(0)
             .stdin(Stdio::piped())
