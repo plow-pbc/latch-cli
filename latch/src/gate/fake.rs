@@ -88,6 +88,10 @@ impl World {
             );
         }
         if method == "POST" && path == "/v1/connectors/gmail/access-token" {
+            // Plow's answer with no Google account connected.
+            if self.google_accounts.is_empty() {
+                return (412, json!({"detail": "No Gmail account connected."}));
+            }
             let accounts: Vec<Value> = self
                 .google_accounts
                 .iter()
@@ -103,6 +107,9 @@ impl World {
             .and_then(|key| self.callers.get(key))
         {
             return (200, identity.clone());
+        }
+        if method == "GET" && path == "/v1/connectors" {
+            return (200, json!({"web_base_url": "https://app.example.com/"}));
         }
         if path == "/v1/agents" {
             return (

@@ -383,9 +383,21 @@ mod pinned {
         assert_eq!(refusal(&answer).1, "gog_not_executable");
         std::fs::set_permissions(&gog, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        // gog, but no Google account connected in Plow.
+        // gog, but no Google account connected in Plow: where to connect one.
         let answer = plugins(&t, "enable", "google").await;
-        assert_eq!(refusal(&answer).1, "google_not_connected");
+        let (_, code, details) = refusal(&answer);
+        assert_eq!(code, "google_not_connected");
+        assert_eq!(
+            details["connect_url"],
+            "https://app.example.com/connections"
+        );
+        let Response::Error { message, .. } = &answer else {
+            unreachable!()
+        };
+        assert!(
+            message.contains("https://app.example.com/connections"),
+            "{message}"
+        );
         assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
 
         t.plow.world.lock().unwrap().google_accounts = vec!["me@example.com".into()];
