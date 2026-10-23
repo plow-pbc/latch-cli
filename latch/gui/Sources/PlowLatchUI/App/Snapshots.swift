@@ -198,6 +198,7 @@ package enum SnapshotRunner {
                 ("10-home-this-mac-stopped-update", Fixtures.stopped, Fixtures.studioHosts, nil, .home),
                 ("10-home-this-mac-other-version", Fixtures.otherVersion, Fixtures.studioHosts, nil, .home),
                 ("10-home-this-mac-plow-unreachable", Fixtures.serving, nil, nil, .home),
+                ("10-home-this-mac-stopped-plow-unreachable", Fixtures.stopped, nil, nil, .home),
                 ("11-home-viewer-only", Fixtures.laptop, Fixtures.laptopHosts, nil, .home),
                 ("11-home-viewer-only-no-hosts", Fixtures.laptop, Fixtures.noHosts, nil, .home),
                 ("12-home-remote-online", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .home),

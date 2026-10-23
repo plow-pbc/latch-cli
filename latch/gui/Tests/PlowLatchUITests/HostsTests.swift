@@ -25,6 +25,21 @@ struct HostsTests {
         #expect(app.section == .rules)
     }
 
+    // Without Plow's list, a stopped Mac is still this Mac's host: its
+    // own state, rules and vault are read locally, and it can be started.
+    @Test func aStoppedMacStaysInThePickerWhilePlowIsDown() async throws {
+        let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped),
+                           store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.stopped))
+        app.stage(account: nil, error: "Plow couldn't be reached")
+        #expect(app.hosts.map(\.name) == ["studio"])
+        #expect(app.host?.isThisMac == true)
+        #expect(!app.viewerOnly)
+        await app.refreshSummary()
+        #expect(app.summaries["studio"]?.rules != nil)
+        #expect(app.summaries["studio"]?.vault != nil)
+    }
+
     @Test func aMacThatNeverServedOnlyViews() throws {
         let app = try app(status: Fixtures.laptop, account: Fixtures.laptopHosts)
         #expect(app.viewerOnly)

@@ -44,13 +44,14 @@ struct HostEntry: Equatable, Identifiable {
     var id: String { name }
 
     /// The account's hosts, this Mac first, then by name. This Mac is a
-    /// host once it has served (Plow lists it), or while it serves before
-    /// Plow has answered.
+    /// host once it has served (Plow lists it), while it serves, and,
+    /// logged in, whenever Plow hasn't answered: only Plow's list can say
+    /// it never served, so until then it keeps its place, running or not.
     static func list(local: LocalStatus?, account: AccountStatus?) -> [HostEntry] {
         var hosts = (account?.hosts ?? []).map {
             HostEntry(name: $0.name, isThisMac: $0.isThisMac, online: $0.online, lastSeen: $0.lastSeenAt)
         }
-        if let local, let peer = local.peer, local.serve.running, !hosts.contains(where: \.isThisMac) {
+        if let local, let peer = local.peer, local.serve.running || account == nil, !hosts.contains(where: \.isThisMac) {
             hosts.removeAll { $0.name == peer.name }
             hosts.append(HostEntry(name: peer.name, isThisMac: true))
         }
