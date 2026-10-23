@@ -141,5 +141,5 @@ signed, to check it is valid; with the window's Swift tests), which
 signed, to test the Keychain). Every pull request also builds the macOS
 archives on macOS 26 and runs them on the oldest macOS images GitHub offers
 (macOS 15, Apple silicon and Intel): `scripts/macos-smoke.sh` runs latch's
-offline commands, the Messages reader up to the database it may not read,
+offline commands, the Messages reader up to a database it may not read,
 and opens the app, which must show its needs-macOS-26 alert.

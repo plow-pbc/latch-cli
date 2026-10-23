@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs a macOS archive built on macOS 26 on an older Mac, where nothing else
 # tests it: latch's commands that need no network or Plow, on a fresh state
-# folder; the Messages reader, up to the database it is not allowed to read;
+# folder; the Messages reader, up to a database it is not allowed to read;
 # and the app, opened as Finder opens it, which on macOS before 26 shows the
 # alert that its window needs macOS 26 instead of crashing. Mac CI runs it on
 # the oldest macOS images GitHub offers.
@@ -44,11 +44,12 @@ expect 0 '"name":"messages"' "$dir/latch" --state-dir "$state" plugins list
 expect 0 '"records":0' "$dir/latch" --state-dir "$state" audit verify
 expect 0 '"exit_codes"' "$dir/latch" help --json
 
-# The Messages reader: a runner has no Messages database, or one it may not
-# read without Full Disk Access; either is an answer, not a crash.
+# The Messages reader, on a database it may not read, as on a Mac without
+# Full Disk Access (never this Mac's own: a runner may grant it).
 expect 0 'USAGE' "$dir/latch-messages" --help
-expect 1 '"code":"messages_' "$dir/latch-messages" chats
-grep -qE '"code":"messages_(missing|not_granted)"' "$work/out" || fail "latch-messages chats failed otherwise"
+: >"$work/chat.db"
+chmod 000 "$work/chat.db"
+expect 1 '"code":"messages_not_granted"' "$dir/latch-messages" --store "$work/chat.db" chats
 
 # The app, opened by LaunchServices. Below macOS 26 latch shows its "needs
 # macOS 26" alert and waits there for OK; it never loads the window's
