@@ -5,11 +5,12 @@ description: Reach the files, programs, Google accounts, browser and messages on
 
 # latch
 
-latch runs a command on one of your owner's machines (a *host*) and prints
-one JSON object: on stdout when it worked, as `{"error": {"code",
-"message"}}` on stderr when it did not, with an exit code you can branch on.
-At a terminal an error prints as a sentence instead. `browser text --raw`,
-`help`, `logs`, `events` and `audit show -f` print text or lines.
+latch reaches one of your owner's machines (a *host*). Most commands
+print one JSON object on stdout on success and `{"error": …}` on stderr
+on failure, with an exit code you can branch on. At a terminal an error
+prints its message and any details. Some commands produce text or JSON
+lines instead, including `help`, `skill`, `browser text --raw`, `logs`,
+`events` and `audit show -f`.
 
 ## Start
 

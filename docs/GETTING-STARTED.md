@@ -8,11 +8,13 @@ agents *call* it.
 This guide takes you from nothing to a Mac serving calls and a second
 machine calling it, in about 10 minutes.
 
-Commands print one JSON object: on stdout when they work, and
-`{"error": …}` on stderr when they don't. At a terminal an error prints as
-a sentence instead, and `login` and `status --pretty` print for a person.
-A few commands print something else: `logs`, `events`, `audit show -f`,
-`serve` (except with `-d`), `dashboard`, `setup` and `browser text --raw`.
+Most commands print one JSON object on stdout on success and
+`{"error": …}` on stderr on failure. At a terminal an error prints its
+message and any details; `login` prints for a person when stdout is a
+terminal. `status --pretty` prints a card even to a pipe. Other output
+includes `help` and `skill` (text), `login --events`, `events` and
+`audit show -f` (JSON lines), `logs`, `serve` without `-d`, `dashboard`,
+interactive `setup`, and `browser text --raw`.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 host unreachable, 4 denied,
 5 connection lost after sending.
@@ -41,7 +43,7 @@ it. Options after the tag (or alone) go to the installer: `--bin-dir DIR`,
 | Your machine's state: its key, Plow login, config, audit log | `~/.latch` (made by the installer, filled in by `latch login`) |
 | gog, the Google CLI a host runs for `latch google` | `~/.latch/plugins/gog/<version>/` |
 | Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64; about 200 MB), unless `--no-browser` | `~/.latch/plugins/cft/<version>/` |
-| Camoufox, with `--browser camoufox` (macOS, Linux arm64 and x86_64; about 1 GB) | `~/.latch/plugins/camoufox/<version>/` |
+| Camoufox, with `--browser camoufox` (macOS, Linux arm64 and x86_64; about 1 GB on macOS, 1.5 GB on Linux) | `~/.latch/plugins/camoufox/<version>/` |
 
 `latch browser setup --engine chrome|camoufox` installs an engine later, on
 the host.

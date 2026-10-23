@@ -17,8 +17,9 @@ owner trusts, over Plow's peer directory. The same binary plays every role:
   login; it is the owner acting, judged only against the host's rules
   (allowed unless they forbid it);
 - an **agent** logs in with its own Plow credential and reaches hosts with
-  `latch exec|file|browser|google|messages|contacts … --host NAME`; every
-  agent request passes the host's gatekeeper.
+  `latch exec|file|browser|google|messages|contacts … --host NAME`; exec,
+  file copies, Google, Messages, Contacts and selected browser operations
+  pass the host's gatekeeper.
 
 Plow (`plow-pbc/plow`, `api/plow/latch.py`) only answers who a key is and
 where an account's peers listen; bytes never pass through it. Later this repo
@@ -74,10 +75,13 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
   sandbox on), so a compromised engine could read `vault.json`, and its
   custody key where that is a file. A signed macOS latch keeps the custody
   key in the Keychain under latch's keychain group, out of the engine's reach.
-- **File and `exec` workers read home and the system's files** (programs,
-  libraries, developer tools, certificates), except `~/.latch`, the host's
-  state folder and, on macOS, `~/Library` (its `Caches` excepted); only
-  writes are confined to the shared areas.
+- **File reads and `exec` can read home and the system's runtime files**
+  (programs, libraries, developer tools, certificates), except `~/.latch`,
+  the host's state folder and, on macOS, `~/Library` (its `Caches` excepted).
+  Exec writes only to its per-call `--write` paths, private temp folder and
+  permitted existing tool caches. `file put` uses private staging; the host
+  places the result at its judged destination inside home, outside hidden
+  state, and refuses to overwrite the running latch.
 - **Outside a signed macOS latch, secrets are plaintext 0600 files**: the
   peer's key, the Plow token, the vault's custody key and the audit keys. A
   signed macOS latch keeps them in the Keychain.
