@@ -494,3 +494,128 @@ async fn every_verdict_has_one_answer_shape() {
 
     assert_eq!(traces(&t), untouched());
 }
+
+/// Allowed by rules that say builds are fine, forbidden by rules that
+/// forbid them, and not covered by anything else.
+fn by_the_rules(state: &Value) -> Option<[f64; 3]> {
+    let rules = state["owner_rules"].to_string();
+    Some(if rules.contains("Never run builds") {
+        [0.05, 0.05, 0.9]
+    } else if rules.contains("Builds are fine") {
+        [0.9, 0.05, 0.05]
+    } else {
+        [0.1, 0.8, 0.1]
+    })
+}
+
+/// A preview as a new agent, against `draft` if given.
+fn as_new_agent(op: &str, args: Value, draft: Option<&str>) -> Value {
+    let mut tried = try_args(op, args, None, None);
+    tried["new_agent"] = json!(true);
+    tried["draft"] = json!(draft);
+    tried
+}
+
+#[tokio::test]
+async fn a_draft_is_judged_in_place_of_the_saved_rules_and_never_saved() {
+    let t = start(chat_with(by_the_rules)).await;
+    let device = t.caller("device").await;
+    let saved = json!({"command": "set", "text": "Builds are fine."});
+    answer(t.call(&device, "rules", saved).await.0);
+    let build = || json!({"argv": ["npm", "run", "build"]});
+
+    // The saved rules: allowed, judged by the rules alone, with no chat.
+    let tried = answer(
+        t.call(&device, "rules_try", as_new_agent("exec", build(), None))
+            .await
+            .0,
+    );
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["as"], "new_agent");
+    assert_eq!(tried["gate"]["caller"], "new_agent");
+    assert_eq!(tried["gate"]["source"], "rules");
+    assert_eq!(tried["gate"]["chat"], Value::Null);
+    let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
+    assert!(asked["conversation"].is_string(), "{asked}");
+
+    // A draft that forbids it flips the verdict.
+    let draft = "Never run builds.";
+    let tried = answer(
+        t.call(
+            &device,
+            "rules_try",
+            as_new_agent("exec", build(), Some(draft)),
+        )
+        .await
+        .0,
+    );
+    assert_eq!(tried["verdict"], "owner_said_no");
+    let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
+    assert!(asked["owner_rules"].to_string().contains(draft), "{asked}");
+    assert!(!asked["owner_rules"].to_string().contains("Builds are fine"));
+
+    // A blank draft is no rules, and a new agent has nothing else.
+    let tried = answer(
+        t.call(
+            &device,
+            "rules_try",
+            as_new_agent("exec", build(), Some(" \n")),
+        )
+        .await
+        .0,
+    );
+    assert_eq!(tried["verdict"], "no_intent");
+
+    // The owner previews a draft too, as themselves.
+    let mut mine = try_args("exec", build(), None, None);
+    mine["draft"] = json!(draft);
+    let tried = answer(t.call(&device, "rules_try", mine).await.0);
+    assert_eq!(tried["verdict"], "owner_said_no");
+    assert_eq!(tried["as"], "owner");
+
+    // Nothing was saved, and only the one rules command left a trace.
+    let shown = answer(t.call(&device, "rules", json!({"command": "show"})).await.0);
+    assert_eq!(shown["every_agent"]["text"], "Builds are fine.");
+    let rules = vec!["rules".to_string(); 2];
+    assert_eq!(traces(&t), (rules.clone(), rules));
+}
+
+#[tokio::test]
+async fn a_new_agent_is_judged_whatever_connectors_and_deny_exec_say() {
+    let deny = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);
+    let t = start_denying(chat_with(by_the_rules), deny).await;
+    let device = t.caller("device").await;
+    let off = t
+        .local_call("plugins", json!({"command": "disable", "name": "google"}))
+        .await;
+    assert!(matches!(off, Response::Ok(_)), "{off:?}");
+    let draft = Some("Builds are fine.");
+    let exec = json!({"argv": ["/bin/sh", "-c", "touch ran"]});
+    let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": [],
+                        "confirm_conflict": false, "inputs": []});
+    for (op, args) in [("exec", exec), ("google", google)] {
+        let tried = answer(
+            t.call(&device, "rules_try", as_new_agent(op, args, draft))
+                .await
+                .0,
+        );
+        // Judged by the draft, not refused by the host.
+        assert_eq!(tried["verdict"], "allow", "{op}: {tried}");
+        assert_eq!(tried["refused"], Value::Null);
+    }
+    assert_eq!(t.judged(), 2);
+    assert!(!t.host.workers.home.join("ran").exists());
+
+    // A new agent has no chat, and is not also some agent.
+    let mut chat = as_new_agent("exec", json!({"argv": ["true"]}), draft);
+    chat["request"]["chat"] = json!("chat_a");
+    let (response, _) = t.call(&device, "rules_try", chat).await;
+    let (exit, code, _) = refusal(&response);
+    assert_eq!((exit, code), (Exit::Usage, "plow_chat_not_supported"));
+    let mut both = as_new_agent("exec", json!({"argv": ["true"]}), draft);
+    both["from"] = json!("Juno");
+    let (response, _) = t.call(&device, "rules_try", both).await;
+    let (exit, code, _) = refusal(&response);
+    assert_eq!((exit, code), (Exit::Usage, "bad_request"));
+    assert_eq!(t.judged(), 2);
+}
