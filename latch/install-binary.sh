@@ -41,14 +41,14 @@
 #
 # It also installs a browser engine for `latch browser`, with
 # browser-engines.sh next to this script: Chrome for Testing by default (on
-# macOS and Linux arm64, the Pi), or the engines `--browser` names (chrome,
+# macOS and Linux arm64/x86_64), or the engines `--browser` names (chrome,
 # camoufox; repeat it for both). `--no-browser` installs none;
 # `latch browser setup --engine ENGINE` installs one later.
 #
 # On Linux it also installs bubblewrap, which `latch serve` uses to sandbox
 # its workers, and on Ubuntu 24.04 and later the AppArmor profile that lets
 # bubblewrap create user namespaces there (browser-engines.sh adds Xvfb and
-# unzip for Chrome on arm64). Those need root, so it asks for sudo
+# unzip and runtime libraries for Chrome). Those need root, so it asks for sudo
 # once, and only when something is missing. On macOS none of that is
 # needed. It downloads no latch binary. Running it again changes
 # nothing that is already in place.

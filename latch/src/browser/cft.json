@@ -25,6 +25,13 @@
       "folder": "chrome-linux-arm64",
       "tree_sha256": "1ab4fcc49f33697e9f74c13bfb73143fdb52253a4afff6f447c9976fee8d4e9c",
       "executable": "chrome"
+    },
+    "linux_x64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/155.0.8059.84/linux64/chrome-linux64.zip",
+      "zip_sha256": "cf0f049892dea22e6a6db26d47ed0d7776b7158edcbec4634086633df8bafcbc",
+      "folder": "chrome-linux64",
+      "tree_sha256": "6c31c71ca03f3e5990d8e607254fa03b06e039e231b169dbab28b1b79fb27632",
+      "executable": "chrome"
     }
   },
   "recipe": [
