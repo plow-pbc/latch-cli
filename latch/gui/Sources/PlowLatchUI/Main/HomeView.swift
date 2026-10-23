@@ -179,7 +179,7 @@ private struct ActivitySections: View {
                 // Home reaches back only a few pages on its own; the rest is
                 // a click away.
                 if calls.count < 5, feed.hasOlder, !feed.loadingOlder {
-                    Button("Show Earlier") { Task { await feed.loadOlder() } }
+                    Button("Load Earlier") { Task { await feed.loadOlder() } }
                 }
                 Button("Show All Activity") { app.section = .activity }
             }

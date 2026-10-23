@@ -237,3 +237,21 @@ struct FeedGraceTests {
         #expect(feed.hasOlder)
     }
 }
+
+/// Back in front, the app reads again the screen showing, whichever it is.
+@MainActor
+struct ActivationTests {
+    @Test(arguments: [SidebarItem.rules, .vault, .home])
+    func comingToTheFrontReadsTheVisibleScreenAgain(_ section: SidebarItem) async throws {
+        let client = CountingClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.section = section
+        await app.enter(section, host: app.host)
+        let first = client.calls
+        await app.activated()
+        let again = Array(client.calls.dropFirst(first.count))
+        #expect(again.contains(section == .vault ? "vault list" : "rules show"), "\(section): \(again)")
+    }
+}

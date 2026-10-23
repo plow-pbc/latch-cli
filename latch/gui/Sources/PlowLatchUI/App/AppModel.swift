@@ -193,11 +193,12 @@ final class AppModel {
     }
 
     /// The app came to the front: what can change while it's elsewhere
-    /// (Plow's hosts, a Google account connected in the browser) is read
-    /// again, once, here.
+    /// (Plow's hosts, rules or a vault changed from another device, a
+    /// Google account connected in the browser) is read again, once, here:
+    /// Plow's hosts and the screen showing.
     func activated() async {
         await refreshAccount()
-        if section == .home || section == .connections { await enter(section, host: host, refresh: true) }
+        await enter(section, host: host, refresh: true)
     }
 
     /// A read's answer, or nil when the task asking was cancelled: a
