@@ -109,13 +109,11 @@ nonisolated enum Fixtures {
             + "," + host + "]}"
     }
 
-    /// `setup --status`'s Google step: none connected in Plow, these
-    /// accounts connected (the plugin off here), and Plow out of reach.
-    static let googleNone = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow: connect it at http://localhost:3000/connections, then run `latch plugins enable google`.","args":null,"enabled":false,"ready":false,"accounts":[],"connect_url":"http://localhost:3000/connections"}"#
+    /// `setup --status`'s Google step with these accounts connected in Plow
+    /// (the plugin off here).
     static func googleConnected(_ accounts: [String]) -> String {
         #"{"step":"google","state":"needed","reason":"Google is connected in Plow (\#(accounts.joined(separator: ", "))); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":[\#(accounts.map { "\"\($0)\"" }.joined(separator: ","))]}"#
     }
-    static let googleUnknown = #"{"step":"google","state":"blocked","reason":"Plow could not say whether Google is connected: could not reach Plow at http://127.0.0.1:18934","args":null,"enabled":false,"ready":false}"#
 
     static let serving = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null},"last_error":null,"update":{"available":false,"build":null,"checked_at":null}}"#
     static let stopped = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null},"last_error":null,"update":{"available":true,"build":1342,"checked_at":"2026-10-22T22:07:54.186472Z"}}"#
@@ -566,7 +564,7 @@ package enum SnapshotRunner {
                 ("19-settings-viewer-only", Fixtures.laptop, Fixtures.laptopHosts, nil, false),
             ]
             func settingsApp(status: String, account: String, chosen: String?, checked: Bool, plugins: String = Fixtures.studioPlugins,
-                             google: String = Fixtures.googleNone) throws -> AppModel {
+                             google: String = Fixtures.googleNotConnected) throws -> AppModel {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(status))
                 app.stage(account: try Fixtures.decode(account))
@@ -596,10 +594,10 @@ package enum SnapshotRunner {
             // Your account › Connections: no Google account, one, two, Plow
             // out of reach; and where a plugin's Manage Accounts… lands.
             let connections: [(String, String)] = [
-                ("21-connections-none", Fixtures.googleNone),
+                ("21-connections-none", Fixtures.googleNotConnected),
                 ("21-connections-one", Fixtures.googleConnected(["ada@example.com"])),
                 ("21-connections-two", Fixtures.googleConnected(["ada@example.com", "ada.work@example.com"])),
-                ("21-connections-unknown", Fixtures.googleUnknown),
+                ("21-connections-unknown", Fixtures.googleUnreachable),
             ]
             for (name, google) in connections {
                 let app = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false, google: google)
