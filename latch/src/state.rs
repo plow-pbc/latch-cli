@@ -20,8 +20,8 @@
 //!   `managed.rs`).
 //! - `vault.json` and `vault.key`*, on a host: the vault and its custody key
 //!   (see `vault/store.rs`).
-//! - `browser/`, on a host: profiles, the model's settings and each
-//!   session's journal.
+//! - `browser/`, on a host: open sessions' profiles, the model's settings
+//!   and each session's journal.
 //! - `plugins/`, on a host: the pinned engines and the Google CLI.
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.

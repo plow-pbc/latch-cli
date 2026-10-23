@@ -513,3 +513,132 @@ fn a_failure_on_a_later_check_is_reported_not_waited_out() {
     );
     assert!(!shown.contains("Not granted yet"), "{shown}");
 }
+
+/// `latch setup --status` on `state`, without a terminal: its JSON steps,
+/// by name.
+fn status(state: &Path) -> serde_json::Map<String, serde_json::Value> {
+    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
+        .arg("--state-dir")
+        .arg(state)
+        .args(["setup", "--status"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    answer["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| (step["step"].as_str().unwrap().to_string(), step.clone()))
+        .collect()
+}
+
+/// A state folder logged in as `kind`, with `files` written into it.
+fn logged_in(stub: &Stub, kind: &str, files: &[(&str, &str)]) -> PathBuf {
+    let state = stub.root.join("state");
+    fs::create_dir_all(&state).unwrap();
+    let peer = serde_json::json!({"name": "mac", "key": "k", "kind": kind,
+        "relay_url": null, "last_seen_at": null});
+    let config = serde_json::json!({"api_url": "http://127.0.0.1:9", "peer": peer});
+    fs::write(
+        state.join("latch.json"),
+        r#"{"format":2,"written_by":"test"}"#,
+    )
+    .unwrap();
+    fs::write(state.join("config.json"), config.to_string()).unwrap();
+    for (name, body) in files {
+        fs::write(state.join(name), body).unwrap();
+    }
+    state
+}
+
+/// Every file in `dir` and what it holds.
+fn contents(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut found: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let body = fs::read(&path).unwrap();
+            (path, body)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+#[test]
+fn status_on_a_fresh_state_asks_for_a_login_first_and_creates_nothing() {
+    let stub = Stub::new();
+    let state = stub.root.join("state");
+    let steps = status(&state);
+    assert_eq!(steps["login"]["state"], "needed");
+    assert_eq!(
+        steps["login"]["args"],
+        serde_json::json!(["login", "--events"])
+    );
+    assert_eq!(steps["google"]["state"], "blocked");
+    assert_eq!(steps["google"]["args"], serde_json::Value::Null);
+    assert_eq!(steps["host"]["state"], "blocked");
+    assert!(!state.exists());
+}
+
+#[test]
+fn status_reads_the_saved_connectors_and_serve_flags_and_changes_nothing() {
+    let stub = Stub::new();
+    // Messages is a connector only macOS builds have.
+    let plugins = if cfg!(target_os = "macos") {
+        r#"{"google":{"state":"enabled"},"messages":{"state":"needs_setup","reason":"this host has no Full Disk Access"}}"#
+    } else {
+        r#"{"google":{"state":"enabled"}}"#
+    };
+    let state = logged_in(
+        &stub,
+        "device",
+        &[
+            ("plugins.json", plugins),
+            ("serve-args.json", r#"["--deny-exec"]"#),
+        ],
+    );
+    let before = contents(&state);
+    let steps = status(&state);
+    assert_eq!(steps["login"]["state"], "done");
+    assert_eq!(steps["login"]["reason"], "Logged in as mac.");
+    // Enabled, but no host serves it yet.
+    assert_eq!(steps["google"]["state"], "done");
+    assert_eq!(steps["google"]["enabled"], true);
+    assert_eq!(steps["google"]["ready"], false);
+    assert_eq!(
+        steps["host"]["args"],
+        serde_json::json!(["serve", "-d", "--again"])
+    );
+    if cfg!(target_os = "macos") {
+        let messages = &steps["messages"];
+        assert_eq!(messages["state"], "blocked");
+        assert!(
+            messages["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Full Disk Access")
+        );
+        assert_eq!(
+            messages["args"],
+            serde_json::json!(["plugins", "enable", "messages"])
+        );
+        assert_eq!(steps["contacts"]["state"], "needed");
+    } else {
+        assert!(!steps.contains_key("messages"));
+    }
+    assert_eq!(contents(&state), before);
+}
+
+#[test]
+fn status_on_an_agent_login_leaves_the_connectors_to_the_owner() {
+    let stub = Stub::new();
+    let state = logged_in(&stub, "agent", &[]);
+    let steps = status(&state);
+    assert_eq!(steps["google"]["state"], "blocked");
+    assert_eq!(steps["google"]["args"], serde_json::Value::Null);
+    assert_eq!(steps["host"]["state"], "needed");
+    assert_eq!(steps["host"]["args"], serde_json::json!(["serve", "-d"]));
+}

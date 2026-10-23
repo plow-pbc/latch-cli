@@ -112,7 +112,11 @@ fn test_dir() -> tempfile::TempDir {
 /// nothing on stderr.
 fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
     let output = latch_command(state, args, env).output().unwrap();
-    let human = ["setup", "dashboard"].contains(&args.first().copied().unwrap_or_default());
+    let human = match args {
+        ["setup", rest @ ..] => !rest.contains(&"--status"),
+        [first, ..] => *first == "dashboard",
+        [] => false,
+    };
     if output.status.success() && !human {
         assert!(output.stderr.is_empty(), "{args:?}: {output:?}");
     }
@@ -136,6 +140,38 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         command.env(name, value);
     }
     command
+}
+
+#[test]
+fn local_commands_refuse_a_host_before_touching_local_state() {
+    for args in [
+        &["browser", "handoff", "done"][..],
+        &["browser", "do", "click e1", "--dry-run"],
+        &["browser", "setup", "--engine", "camoufox"],
+        &["google", "--", "help"],
+        &["google", "--", "--help"],
+        &["google", "--", "-h"],
+    ] {
+        for from_env in [false, true] {
+            let dir = test_dir();
+            let state = dir.path().join("state");
+            let mut argv = args.to_vec();
+            if !from_env {
+                argv.splice(1..1, ["--host", "rpi5ld"]);
+            }
+            let mut command = latch_command(&state, &argv, &[]);
+            if from_env {
+                command.env("LATCH_HOST", "rpi5ld");
+            }
+            let output = command.output().unwrap();
+            println!("{args:?}, host from env={from_env}: {output:?}");
+            assert_eq!(output.status.code(), Some(2), "{output:?}");
+            assert!(output.stdout.is_empty(), "{output:?}");
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "host_not_supported");
+            assert!(!state.exists(), "{args:?} touched local state");
+        }
+    }
 }
 
 /// Runs latch with its stdin and stderr on a terminal (a pty) with `typed`
@@ -2717,7 +2753,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let before = local(&never);
     assert!(!never.exists(), "status --local made the state folder");
     assert_eq!(before["peer"], Value::Null);
-    assert_eq!(before["protocol"], 2);
+    assert_eq!(before["protocol"], 3);
     assert_eq!(
         before["serve"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
@@ -3366,7 +3402,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve-v2.sock").exists() {
+    while !host.join("serve-v3.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -3559,7 +3595,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v2.sock")).unwrap();
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v3.sock")).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -3587,7 +3623,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     google_enabled(&host);
     let _serve = serving(&host, &relay);
     assert_eq!(
-        fs::metadata(host.join("serve-v2.sock"))
+        fs::metadata(host.join("serve-v3.sock"))
             .unwrap()
             .permissions()
             .mode()
@@ -4932,7 +4968,7 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v2.sock")).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v3.sock")).unwrap();
     thread::spawn(move || {
         let mut held = Vec::new();
         for connection in listener.incoming() {
@@ -5987,7 +6023,7 @@ mod lifecycle {
     fn a_stale_socket_of_this_version_is_never_taken_for_its_host() {
         let (_dir, state, _) = owner_host();
         let (_old, _socket, said) = old_host(&state);
-        let current = state.join("serve-v2.sock");
+        let current = state.join("serve-v3.sock");
         // A socket no one listens on any more, then a plain file.
         drop(std::os::unix::net::UnixListener::bind(&current).unwrap());
         let serve = local_serve(&state);
@@ -7004,13 +7040,6 @@ fn shown_working() -> Vec<(&'static str, Prepare)> {
         (
             "browser.close",
             in_new_session("counter.html", |_, _, _| strings(&["close"])),
-        ),
-        (
-            "browser.profile.create",
-            Box::new(|kitchen, n| Run {
-                state: kitchen.host.clone(),
-                args: strings(&["browser", "profile", "create", &format!("profile-{n}")]),
-            }),
         ),
         ("browser.setup", on_host(&["browser", "setup"])),
         (

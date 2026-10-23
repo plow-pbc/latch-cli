@@ -998,7 +998,7 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
     t.call(&device, "google", google).await;
     assert_eq!(t.judged(), 4, "exec, file get, file put and google");
     // A browser open is judged too, before any engine starts.
-    let open = json!({"command": "open", "profile": "default", "url": "https://example.com/"});
+    let open = json!({"command": "open", "url": "https://example.com/"});
     t.call(&device, "browser", open).await;
     assert_eq!(t.judged(), 5, "and the browser's open");
     let browsed = t.audit().pop().unwrap();

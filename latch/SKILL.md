@@ -121,8 +121,8 @@ fixes it.
 
 ## Browsing
 
-- A profile keeps the owner's logins: `observe` whether the site is
-  already signed in before signing in again.
+- Each `open` starts signed in nowhere, and its logins last until it
+  closes: do the whole task in one session.
 - A site that blocks you outright ("Access denied", nothing to click or
   type) will not let a retry or a wait through: stop and tell the owner.
   A challenge you can't do yourself is `handoff`'s.

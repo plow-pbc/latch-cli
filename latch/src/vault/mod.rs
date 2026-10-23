@@ -1,5 +1,5 @@
 //! The vault: one per latch install, on the host, shared by every engine
-//! and profile.
+//! and session.
 //!
 //! - `item.rs`: items, in Bitwarden's shape, with latch's sites and
 //!   revisions.

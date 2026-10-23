@@ -58,8 +58,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::Parser;
 use clap::error::ErrorKind;
+use clap::{CommandFactory, FromArgMatches};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -81,20 +81,26 @@ fn main() -> ExitCode {
         logo::show(color);
         return ExitCode::SUCCESS;
     }
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
         Err(err) => return usage_error(err),
     };
+    if let Err(failure) = help::check_host(&matches) {
+        report(&failure);
+        return failure.exit.into();
+    }
+    let cli = Cli::from_arg_matches(&matches).expect("the command line was validated");
     // Workers confine the initial thread before any runtime threads exist.
     let command = match cli.command {
         Command::Worker(args) => return worker::run(args),
         // At a terminal, running other latch commands; no runtime of its own.
-        Command::Setup => return setup::run(cli.state_dir),
+        Command::Setup(args) if !args.status => return setup::run(cli.state_dir),
         // A browser worker drives its engine on plain threads, no runtime.
         Command::BrowserWorker(args) => {
             return match StateDir::new(cli.state_dir) {
                 Ok(state) => browser::worker::run(
                     &state.path,
+                    &args.engine,
                     &args.profile,
                     &args.scratch,
                     Duration::from_secs(args.idle_timeout),
@@ -208,6 +214,7 @@ async fn run(
         },
         Command::Status(args) if args.local => json(pretty, status::local(&state)?),
         Command::Status(_) => json(pretty, status::run(&state).await?),
+        Command::Setup(_) => json(pretty, setup::status(&state)?),
         Command::File(FileCommand::Get {
             remote_path,
             local_dest,
@@ -337,11 +344,7 @@ async fn run(
                 messages::access::check_here(&state, connector).await?,
             )
         }
-        Command::Worker(_)
-        | Command::BrowserWorker(_)
-        | Command::Help(_)
-        | Command::Skill
-        | Command::Setup => {
+        Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
             unreachable!("handled in main")
         }
     }

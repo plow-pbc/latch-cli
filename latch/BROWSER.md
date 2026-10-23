@@ -26,12 +26,23 @@ crash handler from writing to the user's Library; the Linux arm64 build
 leaves it out, because with it the network service crashes at once on the
 Pi ("FD ownership violation") and no page loads.
 
-Before every launch latch hashes the whole unpacked build (every file's
-bytes and execute bit, every link and folder) and refuses one that differs
-from the pin's `tree_sha256` (`engine_unverified`), so a changed framework
-or helper is caught, not only a changed main binary. To pin a new release,
-run `python3 scripts/cft-pin.py VERSION` on a Mac and put its output in
-`builds`.
+latch hashes the whole unpacked build (every file's bytes and execute bit,
+every link and folder) and refuses one that differs from the pin's
+`tree_sha256` (`engine_unverified`), so a changed framework or helper is
+caught, not only a changed main binary. A hash that matches leaves
+`receipt.json` beside the build: the hashes it matched and every entry's
+metadata (path, type, size, mode, inode, change times) then. Before each
+launch latch compares that metadata alone, tens of milliseconds instead
+of seconds, and hashes the whole build again only when anything in it was
+written, replaced, renamed or chmodded since, or the pin changed. The
+host does this check before it starts the worker, so the receipt is
+written where the sandboxed worker could not; `latch browser setup` leaves
+one at once, and an install by install.sh gets one at the first `open`.
+Anyone who can write the plugins folder can write a receipt too: the host's
+own user, whom latch trusts with its state directory anyway.
+
+To pin a new release, run `python3 scripts/cft-pin.py VERSION` on a Mac
+and put its output in `builds`.
 
 ## Camoufox, the second engine
 
@@ -49,7 +60,8 @@ camoufox` later, installs Camoufox, pinned in
   replaced by a few lines over Node's own (`camoufox/sqlite/`), so no
   package downloads anything unchecked.
 
-Before every launch latch checks each part's tree hash against the pin.
+latch checks each part's tree hash against the pin, with a receipt as for
+CfT (above).
 `python3 scripts/camoufox-pin.py` prints them for both architectures of
 the host's OS.
 
@@ -59,16 +71,15 @@ scratch folder), on that Node. The helper speaks the driver operations as
 JSON lines over its stdio and drives Camoufox through Playwright, which
 reaches it over its own pipe (`-juggler-pipe`), never a port. latch's page
 reader runs in Camoufox's isolated world; the agent's `eval` in the page's
-own world (Camoufox's `mw:`). Each profile gets one fingerprint, made on its
-first launch (the pin currently claims macOS on every host) and kept in the
-profile (`camoufox.json`, 0600), so a site sees the same device every time. Camoufox ships with
-password saving and form autofill off; its uBlock add-on is left out.
+own world (Camoufox's `mw:`). Each session gets a fingerprint of its own,
+made at launch (the pin currently claims macOS on every host): a site sees
+the same device for the whole task, and a new one the next.
+Camoufox ships with password saving and form autofill off; its uBlock
+add-on is left out.
 
-A profile is bound to its engine when it is made. `open` makes a missing
-profile for CfT; for Camoufox, make it first, on the host:
+`open` runs on Chrome for Testing unless it names Camoufox:
 
-    latch browser profile create shop --engine camoufox
-    latch browser open --profile shop https://example.com   # from a client
+    latch browser open --engine camoufox https://example.com
 
 ## Calling from the host itself
 
@@ -81,46 +92,56 @@ latch browser --session SESSION close
 ```
 
 A saved local host resolves without Plow and connects through the private
-`serve-v2.sock` in its state folder; `--host` naming this machine does the same.
-These calls use the same browser sessions, profiles, vault, gatekeeper and
+`serve-v3.sock` in its state folder; `--host` naming this machine does the same.
+These calls use the same browser sessions, vault, gatekeeper and
 audit as remote calls, with caller kind `owner_on_host`. A stopped receiver
 returns `serve_required`, with instructions to start `latch serve`.
 
-## Sessions and profiles
+## Sessions
 
-Each profile in use has one running browser, its **runtime**, driven by
-one long-lived browser worker (`latch browser-worker`, hidden), which the
-host talks to over stdio. The worker drives CfT over
-`--remote-debugging-pipe` only: CDP on Chrome's fds 3 and 4, never a port;
-Camoufox through its helper (above).
+Each `open` makes a new **session** in a browser of its own, its
+**runtime**: a fresh profile, the engine `open` names (`--engine chrome`,
+the default, or `--engine camoufox`), and one long-lived browser worker
+(`latch browser-worker`, hidden) driving it, which the host talks to over
+stdio. The worker drives CfT over `--remote-debugging-pipe` only: CDP on
+Chrome's fds 3 and 4, never a port; Camoufox through its helper (above).
+An engine the host does not have, or that its platform has no build of,
+is refused with the engine's own error (`engine_not_installed`, naming
+the owner's `latch browser setup`, or `unsupported_platform`): latch never
+downloads one for a session or runs another in its place. The engine
+can't change during a session; `open` and `sessions` say which it is.
 
-Each `open` makes a new **session** in its profile's runtime, starting the
-runtime if none is running: a window of its own, and every tab or popup
-opened from it, with its own snapshots, downloads and dialogs. Sessions on
-one profile share its logins (cookies and site storage), never each
-other's tabs. The worker makes one call at a time; sessions take turns call
-by call, so one session's plan or wait never holds the browser for
-the others (a wait checks its condition a few times a second, with the
-browser free in between). A download belongs to the session whose page
-started it, found from its frame; its file is staged under the download's
-guid, so two sessions can download the same file name at once. One that no
-session's page started is never listed.
+The session's tabs and popups share its profile: its cookies, site
+storage and logins last for the whole task (sign-ins, a handoff, an MFA
+code entered later), and no other session sees any of them, the same
+caller's included. A download belongs to the session whose page started
+it; one that no page of the session started is never listed.
 
 A call has 60 seconds, every wait for the browser in it together (typing
 adds 200 ms a character, a wait its own time): a page too busy to answer
 gets `timeout`, never a call that hangs. A browser that leaves three
-calls in a row unanswered is closed (`browser_gone` on the third; the next
-`open` starts a new one), and a worker that has not answered 30 seconds
+calls in a row unanswered is closed, and its session with it
+(`browser_gone` on the third), and a worker that has not answered 30 seconds
 past a call's time is stopped (`browser_gone`).
 
-Profiles live in `<state-dir>/browser/profiles/<name>/`: `profile.json`
-binds the profile to its engine for life, `lock` is held by its runtime,
-and `data/` is the engine's data folder (Chrome's, created with password
-saving and autofill off, or Firefox's). A session closes after 30 minutes
-without a call (counted from the end of its last one), and
-closing one never touches the others; the runtime closes with its last
-session, and the profile stays. `exec` and file workers are denied the
-whole state directory, profiles included.
+A session's profile is `<state-dir>/browser/sessions/<random>/`, its
+name unguessable and never derived from the session's id: `data/` is the
+engine's data folder (Chrome's, created with password saving and autofill
+off, or Firefox's). A session closes on `close`, after 30 minutes without
+a call (counted from the end of its last one), when its browser fails to
+launch, or when the host stops; its browser closes and its profile is
+deleted then. `close` answers at once: the session is gone for every later
+call, and its browser closes behind the answer, after any call still under
+way in it; a host that stops waits for those. A host that did not stop cleanly (it was killed) leaves its
+sessions' profiles, and the next host on the state directory deletes them
+as it starts. Downloads an agent saved with `download get` are its own
+files, and the audit keeps its records as ever. `exec` and file workers
+are denied the whole state directory, profiles included.
+
+Earlier versions kept named, persistent profiles in
+`<state-dir>/browser/profiles/`. latch no longer opens them and leaves
+them on disk as they are; the owner removes that folder when they no
+longer want its logins.
 
 ## Commands
 
@@ -156,7 +177,7 @@ latch browser --host my-mac fill --item v2 --field number=e4 --field expiry=e5 -
 latch browser --host my-mac handoff --reason captcha      # the owner takes over; waits until handed back
 latch browser handoff done [HASH]                          # on the host: hand the session back
 latch browser --host my-mac sessions | close
-latch browser --host my-mac open --profile shop --task basket --reserve-site https://shop.example/
+latch browser --host my-mac open --engine camoufox --task basket https://shop.example/
 ```
 
 `text` answers the page's main-frame text in its JSON, at most 20,000
@@ -173,8 +194,8 @@ field without it, as a paste would, and the audit names the field under
 `dropped_line_breaks` so the owner can fix it in the vault. A value split
 across boxes must land whole.
 
-`open` answers the new session's id, once: 128 random bits, never derived
-from the profile (`--profile` defaults to `default`). Every other session
+`open` answers the new session's id, once (128 random bits), and its
+engine. Every other session
 command needs it, as `--session S` or `LATCH_BROWSER_SESSION`; there is no
 default session, and a command without one gets `no_session` (exit 2),
 which says so. Keep the id when `open` answers: latch never shows it again,
@@ -185,29 +206,20 @@ caller's session `not_owner` (exit 4), and nothing reaches the session
 either way. So two tasks under one client key each `open` their own
 session, and neither can reach the other's without its id. `sessions` lists
 the caller's sessions without their ids: task label (`open --task`),
-profile, the site it was last on, its state and how long since its last
+engine, the site it was last on, its state and how long since its last
 call. The audit records a short hash of an id, never the id, with the
 task label, and the host's dashboard shows that hash on each row. An owner
 device (a `device`-kind client of the host's account) ends any session by
 it: `latch browser close --session <hash>`; for anyone else a hash is no
 id.
 
-Sessions on one profile share each site's account state (one cart, one
-login). While another session on the profile acted on the same site
-(registrable domain) in the last 15 minutes, an answer on that site
-carries `shared_site`: that session's id hash and how many seconds ago.
-`open --reserve-site URL` holds URL's site for the session until it
-closes: another session's action there (a click, typing, `eval`, a fill,
-a dialog) gets `site_busy` (exit 1) before anything is sent, and so does
-one that would load a page of the site from elsewhere: opening it, `goto`
-or `tab new` on it, Back to it, or a click, Enter or Space on a link or form that
-leads there. Reading its page goes on. A page's own script can still
-navigate where latch can't tell beforehand, and the reservation is this
-host's only.
+Separate profiles keep sessions from sharing cookies by accident. They do
+not separate callers that act as the same trusted owner, nor two sessions
+signed in to the same remote account: the site sees one account.
 
-A vault fill holds the whole runtime: every session on the profile gets
+A vault fill holds its session's browser: the session's calls get
 `session_paused` until the fill's cleanup is confirmed, and while a value
-a fill could not clear may be on a page, until that session is closed.
+a fill could not clear may be on a page, until the session is closed.
 
 Each element in a snapshot has its ref, role and accessible name, its
 value (never for a password or secret-looking field, which is marked
@@ -249,7 +261,7 @@ An engine without a command's optional feature (`eval`, `upload`,
 `downloads`; CfT has all three) refuses it with `unsupported_capability`
 before anything is dispatched.
 
-The host audits each call: command, session, profile, engine, tab, origin
+The host audits each call: command, session, engine, tab, origin
 and path (never the query), snapshot, target ref and role, the outcome,
 and the client's parent process id (or `--turn`, `LATCH_TURN`). A plan
 (`do`, or `act`) records its request id, its
@@ -547,8 +559,9 @@ the owner: `handoff --reason 2fa`.
 
 ## For agents
 
-- **Already signed in?** Sessions on a profile share its logins: look
-  before signing in again.
+- **One session per task.** A session starts signed in nowhere and keeps
+  its logins until it closes: sign in with `fill` (or `handoff` what only
+  the owner can do) once, and do the whole task in that session.
 - **A hard block is not a challenge.** A challenge has something to click
   or type (a CAPTCHA, "confirm you are human", a code prompt); a hard
   block ("You have been blocked", "Access denied", a check that never
@@ -560,7 +573,7 @@ the owner: `handoff --reason 2fa`.
   banner's or dialog's own button, as a person would.
 - **A filled value stays in the page.** Never copy one out, repeat it or
   write it anywhere.
-- **A purchase, in order:** `open --reserve-site` the shop; sign in with
+- **A purchase, in order:** `open` the shop; sign in with
   `fill` if it isn't; choose the items; at checkout `fill` the card and
   click the order button, carrying out each confirmation they stop for
   (the card always does) with `do --confirm C`; `screenshot` the confirmation page; `close`.
@@ -573,7 +586,7 @@ the owner: `handoff --reason 2fa`.
 session to the owner, for what only a person can do there. The call waits
 until the owner hands it back (at most `--within`, 600 s by default).
 Meanwhile that session alone is paused (`session_paused`; `close` still
-works), the runtime's other sessions go on, and its window is the one
+works), other sessions go on, and its window is the one
 thing latch ever brings to the front. The host's dashboard shows the
 pending handoff with the session's id hash, the reason and the start of
 the caller's key (without a dashboard, the log says so). The owner hands
@@ -586,7 +599,7 @@ session is the agent's again (`timeout`), its old refs refused the same.
 
 A host with no screen a person could use (any Linux host, or any host
 started with `--headless-browsers`) answers `handoff` with `needs_owner`
-and `"reason": "no_screen"` at once. On Linux, each headed profile
+and `"reason": "no_screen"` at once. On Linux, each headed session
 runtime's worker starts a private Xvfb display (`-displayfd`)
 for its engine, up for as long as the runtime. It listens only on its
 socket file in the runtime's private `/tmp`: no TCP port and no abstract
@@ -653,7 +666,7 @@ Camoufox runs the same way: outside latch's Seatbelt, with Firefox's own
 sandbox on for every web content process; the helper and the browser each
 in a process group of their own, both killed and waited for on close; an
 environment of `PATH`, `HOME` and `TMPDIR` (the scratch folder), plus the
-profile's fingerprint and `MOZ_CRASHREPORTER_DISABLE` for the browser and
+session's fingerprint and `MOZ_CRASHREPORTER_DISABLE` for the browser and
 the plugin's location for the helper.
 A separate macOS user for engines is the later hardening.
 
