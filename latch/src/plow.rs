@@ -133,6 +133,34 @@ pub struct ListedLine {
     pub display_name: Option<String>,
 }
 
+/// A kind of agent Plow can run, from its catalog.
+#[derive(Deserialize, Debug)]
+pub struct AgentKind {
+    /// `exe:SLUG`, or `self_hosted`.
+    pub id: String,
+    pub name: String,
+}
+
+/// One of Plow's phone lines.
+#[derive(Deserialize, Debug)]
+pub struct PlowLine {
+    pub uid: String,
+    pub provider_type: String,
+    pub provider_key: String,
+    pub display_name: Option<String>,
+    /// No agent of the account's holds it.
+    pub available: bool,
+    pub agent_uid: Option<String>,
+}
+
+/// Plow's answer to creating an agent.
+#[derive(Deserialize)]
+pub struct CreatedAgent {
+    pub agent: ListedAgent,
+    /// An own agent's credential, which Plow shows only now.
+    pub token: Option<String>,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct ListedCredential {
     /// When the agent's credential was last used, as Plow recorded it.
@@ -364,6 +392,43 @@ impl Plow {
         self.agent_list().await
     }
 
+    /// The kinds of agent Plow can run, its own `self_hosted` among them.
+    pub async fn agent_kinds(&self) -> Result<Vec<AgentKind>, Failure> {
+        let url = format!("{}/v1/agents/providers", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// Every phone line of Plow's, and whether each is free for an agent.
+    pub async fn lines(&self) -> Result<Vec<PlowLine>, Failure> {
+        let url = format!("{}/v1/lines", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let list: List<PlowLine> = response.json().await.map_err(|_| bad_answer())?;
+        Ok(list.data)
+    }
+
+    /// Creates an agent on `line_uid`, run by `provider` (`self_hosted`:
+    /// its owner). Plow answers with it, and with its credential for an own
+    /// agent.
+    pub async fn create_agent(
+        &self,
+        line_uid: &str,
+        name: &str,
+        provider: &str,
+    ) -> Result<CreatedAgent, Failure> {
+        let url = format!("{}/v1/agents", self.api_url);
+        let body = serde_json::json!({"line_uid": line_uid, "name": name, "provider": provider});
+        let response = self.send(self.http.post(url).json(&body)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// Removes an agent; Plow answers with what it was.
+    pub async fn delete_agent(&self, agent_uid: &str) -> Result<ListedAgent, Failure> {
+        let url = format!("{}/v1/agents/{agent_uid}", self.api_url);
+        let response = self.send(self.http.delete(url)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
     /// Every live agent in the account, in Plow's (creation) order, as
     /// `T` reads them. Owner logins only.
     pub async fn agent_list<T: serde::de::DeserializeOwned>(&self) -> Result<Vec<T>, Failure> {
@@ -478,6 +543,11 @@ impl Plow {
             .get("retry-after")
             .and_then(|value| value.to_str().ok())
             .and_then(retry_after);
+        failure.plow_code = response
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|body| body["detail"]["code"].as_str().map(Box::from));
         Err(failure)
     }
 }

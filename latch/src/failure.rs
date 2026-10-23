@@ -85,6 +85,9 @@ pub struct Failure {
     /// How long Plow asked us to wait (its `Retry-After` header), if it did.
     /// Only the host's heartbeat uses it; it is not printed.
     pub retry_after: Option<Duration>,
+    /// The code Plow put in a refusal's `detail` (`AGENT_EXISTS`), if it
+    /// did: a fixed word, never Plow's text. Not printed.
+    pub plow_code: Option<Box<str>>,
     pub details: Value,
 }
 
@@ -95,6 +98,7 @@ impl Failure {
             code: code.to_string(),
             message,
             retry_after: None,
+            plow_code: None,
             details: Value::Null,
         }
     }
