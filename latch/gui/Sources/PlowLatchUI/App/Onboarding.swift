@@ -10,7 +10,7 @@ final class Onboarding {
         case starting
         case waiting(LoginCode)
         case expired(LoginCode)
-        case failed(String)
+        case failed(LatchError)
         /// Another of the owner's machines has this Mac's name, and when
         /// Plow last saw it. The text was received, so another name, or
         /// replacing that machine, logs in with no second text.
@@ -23,7 +23,7 @@ final class Onboarding {
         case checking
         case done
         case needed(String)
-        case failed(String)
+        case failed(LatchError)
 
         var isNeeded: Bool { if case .needed = self { true } else { false } }
     }
@@ -48,7 +48,7 @@ final class Onboarding {
         case notChecked
         case checking
         case verdict(RulesTry)
-        case failed(String)
+        case failed(LatchError)
     }
 
     /// An example request on the rules screen: what a person reads, its
@@ -115,7 +115,7 @@ final class Onboarding {
     // Set your rules.
     var savedRules: String?
     var draftRules = ""
-    var rulesError: String?
+    var rulesError: LatchError?
     var savingRules = false
     /// The requests the rules are tried on: the first default's until the
     /// person picks one.
@@ -151,7 +151,7 @@ final class Onboarding {
     var fullDiskAccess: String?
     var restarting = false
     /// Why Restart Latch failed, while it shows.
-    var restartError: String?
+    var restartError: LatchError?
     // Start Latch.
     /// Starting at login runs `serve -d --again`, which needs a host this
     /// Mac started in the background before; so it's only on with it.
@@ -160,7 +160,7 @@ final class Onboarding {
     }
     var startAtLogin = true
     var starting = false
-    var startError: String?
+    var startError: LatchError?
     var started = false
 
     let app: AppModel
@@ -352,17 +352,17 @@ final class Onboarding {
                         login = .verified(name: name)
                         await app.refreshStatus()
                     case .expired:
-                        if case let .waiting(code) = login { login = .expired(code) } else { login = .failed("This code expired.") }
+                        if case let .waiting(code) = login { login = .expired(code) } else { login = .failed(.unreachable("This code expired.")) }
                     case let .error(failure) where failure.code == "conflict":
                         login = .nameTaken(existing: failure.existingName, lastSeen: failure.lastSeenAt)
-                    case let .error(failure): login = .failed(failure.message)
+                    case let .error(failure): login = .failed(.failed(failure))
                     }
                 }
             } catch is CancellationError {
             } catch {
                 switch login {
                 case .verified, .expired, .nameTaken: return
-                default: login = .failed((error as? LatchError)?.message ?? error.localizedDescription)
+                default: login = .failed(.from(error))
                 }
             }
         }
@@ -400,7 +400,7 @@ final class Onboarding {
             if draftRules.isEmpty { draftRules = saved ?? "" }
             rulesError = nil
         } catch {
-            rulesError = (error as? LatchError)?.message ?? error.localizedDescription
+            rulesError = .from(error)
         }
         startReview()
     }
@@ -443,7 +443,7 @@ final class Onboarding {
                         do {
                             return (example.id, .verdict(try await client.rulesTry(example.request, host: nil, agent: nil, newAgent: true, draft: draft)))
                         } catch {
-                            return (example.id, .failed((error as? LatchError)?.message ?? error.localizedDescription))
+                            return (example.id, .failed(.from(error)))
                         }
                     }
                 }
@@ -477,7 +477,7 @@ final class Onboarding {
             rulesError = nil
             next()
         } catch {
-            rulesError = (error as? LatchError)?.message ?? error.localizedDescription
+            rulesError = .from(error)
         }
     }
 
@@ -686,7 +686,7 @@ final class Onboarding {
             await app.refreshStatus()
             checkAccess()
         } catch {
-            restartError = (error as? LatchError)?.message ?? error.localizedDescription
+            restartError = .from(error)
             await app.refreshStatus()
         }
     }
@@ -698,7 +698,7 @@ final class Onboarding {
         } catch let LatchError.failed(failure) where failure.code == "needs_setup" && failure.settings != nil {
             return (.needed("Waiting for access"), failure)
         } catch {
-            return (.failed((error as? LatchError)?.message ?? error.localizedDescription), nil)
+            return (.failed(.from(error)), nil)
         }
     }
 
@@ -723,7 +723,7 @@ final class Onboarding {
             await app.refreshStatus()
             next()
         } catch {
-            startError = (error as? LatchError)?.message ?? error.localizedDescription
+            startError = .from(error)
             await app.refreshStatus()
         }
     }
@@ -732,12 +732,6 @@ final class Onboarding {
     func stage(_ step: Step) {
         self.step = step
     }
-}
-
-/// `setup --status` says the host can't start now, and why.
-struct HostBlocked: LocalizedError {
-    var reason: String
-    var errorDescription: String? { reason }
 }
 
 /// "Start when you log in": the agent in the app's bundle that runs its

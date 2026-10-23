@@ -203,7 +203,7 @@ struct GatekeeperTests {
 
     @Test func aFailedStatusReadSaysSo() {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        app.stage(status: nil, error: "Latch returned an unreadable response.")
+        app.stage(status: nil, error: .unreachable("Latch returned an unreadable response."))
         app.stage(rulesSaved: nil, setup: nil)
         let states = Summary.rows(app: app, flow: nil).map(\.state)
         #expect(states == ["Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check"])
@@ -211,7 +211,7 @@ struct GatekeeperTests {
 
     @Test func onlyMissingAccessIsAccessNeeded() {
         #expect(Onboarding.Check.needed("Waiting for access").isNeeded)
-        #expect(!Onboarding.Check.failed("the Messages reader is missing").isNeeded)
+        #expect(!Onboarding.Check.failed(.unreachable("the Messages reader is missing")).isNeeded)
     }
 }
 
@@ -665,7 +665,8 @@ struct ClosingTests {
         #expect(flow.step == .start)
         #expect(loginItem.isEmpty)
         #expect(client.performed.isEmpty)
-        #expect(flow.startError?.hasPrefix("a host from another latch version (pid 4242)") == true)
+        #expect(flow.startError?.message == "Latch can't start on this Mac right now.")
+        #expect(flow.startError?.details?.hasPrefix("a host from another latch version (pid 4242)") == true)
     }
 
     @Test func aTakenNameAsksForAnotherOrReplacesThatMachine() async throws {
@@ -710,7 +711,7 @@ struct ClosingTests {
         let (client, app, flow) = await accessFlow(attached: false)
         client.serveFailure = LatchFailure(code: "serve_failed", message: "the host did not answer within 30 s; see serve.log")
         await flow.restartLatch()
-        #expect(flow.restartError == "the host did not answer within 30 s; see serve.log")
+        #expect(flow.restartError?.details == "the host did not answer within 30 s; see serve.log")
         #expect(app.status?.serve.state == "stopped")
         // Try again: the host is stopped already, so it is only started.
         client.serveFailure = nil

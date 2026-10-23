@@ -12,7 +12,7 @@ struct HostRulesView: View {
                     ContentUnavailableView {
                         Label("\(host.name) is offline", systemImage: "wifi.slash")
                     } description: {
-                        Text("Its rules are kept on \(host.name). Start `latch serve` there to see and change them.")
+                        Text("Its rules are kept on \(host.name). Start Latch there to see and change them.")
                     }
                 } else {
                     HostRules(host: host).id(host.id)
@@ -42,7 +42,7 @@ private struct HostRules: View {
                 case let .failure(error)?:
                     Section {
                         Label("Couldn't read the rules on \(host.name)", systemImage: "exclamationmark.triangle")
-                        Text(error.message).foregroundStyle(.secondary)
+                        ErrorText(error: error, host: host.name, titled: true).foregroundStyle(.secondary)
                     }
                 case let .success(show)?:
                     RulesEditor(title: "Rules for every agent on \(host.name)",
@@ -51,7 +51,7 @@ private struct HostRules: View {
                     ForEach(app.agents ?? []) { agent in
                         RulesEditor(title: "\(agent.name)'s rules on \(host.name)",
                                     note: show.execBlocked(agent.uid)
-                                        ? "\(host.name) refuses \(agent.name) exec (latch serve --deny-exec), whatever these say."
+                                        ? "\(agent.name) can't run programs on \(host.name), regardless of these rules."
                                         : "Only \(agent.name) is judged by these, with the rules for every agent.",
                                     saved: show.agent(agent.uid).map { RulesShow.Text(text: $0.text ?? "", revision: $0.revision) },
                                     host: host, agent: agent)
@@ -103,7 +103,7 @@ private struct RulesEditor: View {
     @State private var base: String?
     @State private var editing = false
     @State private var saving = false
-    @State private var error: String?
+    @State private var error: LatchError?
 
     var body: some View {
         Section {
@@ -125,7 +125,8 @@ private struct RulesEditor: View {
                 .frame(minHeight: 70)
                 .accessibilityLabel(title)
                 if let error {
-                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+                    Label { ErrorText(error: error, host: host.name) } icon: { Image(systemName: "exclamationmark.triangle") }
+                        .foregroundStyle(.red)
                 }
                 if editing {
                     HStack {
@@ -173,7 +174,7 @@ private struct RulesEditor: View {
             editing = false
             error = nil
         } catch {
-            self.error = (error as? LatchError)?.message ?? error.localizedDescription
+            self.error = .from(error)
         }
     }
 }
@@ -212,13 +213,15 @@ private struct TryPanel: View {
             }
             switch trial.results[host.name] {
             case let .success(verdict)?: VerdictView(verdict: verdict)
-            case let .failure(error)?: Label(error.message, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+            case let .failure(error)?:
+                Label { ErrorText(error: error, host: host.name) } icon: { Image(systemName: "exclamationmark.triangle") }
+                    .foregroundStyle(.red)
             case nil: EmptyView()
             }
         } header: {
             Text("Try a request")
         } footer: {
-            Text("Type it as an agent would send it after `latch`: exec, file, google, messages or contacts.")
+            Text("Type the request as an agent would send it, starting with exec, file, google, messages or contacts.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -250,7 +253,7 @@ final class Trial {
             results[host.name] = .success(try await app.tryRequest(words, on: host, agent: agent, newAgent: caller == .newAgent,
                                                                    draft: useDraft ? draft : nil))
         } catch {
-            results[host.name] = .failure(error as? LatchError ?? .unreachable(error.localizedDescription))
+            results[host.name] = .failure(.from(error))
         }
     }
 
@@ -274,7 +277,8 @@ struct VerdictView: View {
                 Image(systemName: symbol).foregroundStyle(tint)
             }
             if let refused = verdict.refused {
-                Text(refused.message).foregroundStyle(.secondary)
+                // The title says the host refuses it; why, in latch's words, under Details.
+                ErrorText(error: .failed(refused), titled: true).foregroundStyle(.secondary)
             }
             if let gate = verdict.gate {
                 if let source = gate.source {

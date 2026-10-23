@@ -125,7 +125,7 @@ final class ActivityFeed {
             records.insert(contentsOf: page.records.filter { !held.contains($0.id) }, at: 0)
             hasOlder = page.hasOlder
         } catch {
-            self.error = error as? LatchError ?? .unreachable(error.localizedDescription)
+            self.error = .from(error)
         }
     }
 

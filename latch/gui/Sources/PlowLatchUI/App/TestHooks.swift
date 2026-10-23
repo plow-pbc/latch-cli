@@ -112,7 +112,7 @@ enum TestHooks {
                     try await app.saveRules(String(argument[argument.index(after: bar)...]), on: host, agent: uid, revision: revision)
                     print("save-rules: saved")
                 } catch {
-                    print("save-rules: refused: \((error as? LatchError)?.message ?? error.localizedDescription)")
+                    print("save-rules: refused: \(LatchError.from(error).message)")
                 }
             }
         }
@@ -260,7 +260,7 @@ enum TestHooks {
                 "previews": (flow?.deck.examples ?? []).map { example in
                     switch flow?.previews[example.id] {
                     case let .verdict(answer)?: "\(example.title): \(answer.verdict)"
-                    case let .failed(message)?: "\(example.title): failed \(message)"
+                    case let .failed(error)?: "\(example.title): failed \(error.message)"
                     case .checking?: "\(example.title): checking"
                     default: "\(example.title): not checked"
                     }
@@ -269,7 +269,7 @@ enum TestHooks {
                 "google": flow.map { "\($0.google)" } ?? "",
                 "messages": flow.map { "\($0.messages)" } ?? "",
                 "contacts": flow.map { "\($0.contacts)" } ?? "",
-                "start_error": flow?.startError ?? "",
+                "start_error": flow?.startError?.message ?? "",
                 "passed": app.progress.passed.mapValues(\.rawValue).reduce(into: [String: String]()) { $0[$1.key.rawValue] = $1.value },
                 "finished": app.progress.finished,
                 "status": app.status.map { ["peer": $0.peer?.name ?? "", "serve": $0.serve.state] } ?? [:],

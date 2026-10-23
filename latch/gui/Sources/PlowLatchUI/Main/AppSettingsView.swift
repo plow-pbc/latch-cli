@@ -6,7 +6,7 @@ struct AppSettingsView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     @State private var loggingOut = false
-    @State private var logOutError: String?
+    @State private var logOutError: LatchError?
 
     var body: some View {
         Form {
@@ -30,7 +30,7 @@ struct AppSettingsView: View {
                         LabeledContent("Logged in as", value: me.name)
                         Button("Log Out…") { loggingOut = true }
                     }
-                    if let logOutError { Text(logOutError).foregroundStyle(.red) }
+                    if let logOutError { ErrorText(error: logOutError).foregroundStyle(.red) }
                 } else {
                     LabeledContent("Logged in as", value: "Not logged in")
                 }
@@ -49,7 +49,7 @@ struct AppSettingsView: View {
                     do {
                         try await app.logOut()
                     } catch {
-                        logOutError = error.localizedDescription
+                        logOutError = .from(error)
                     }
                 }
             }

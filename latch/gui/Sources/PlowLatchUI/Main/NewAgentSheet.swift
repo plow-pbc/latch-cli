@@ -18,7 +18,7 @@ final class NewAgent {
     private(set) var catalog: Result<AgentCatalog, LatchError>?
     private(set) var lines: Result<AgentLines, LatchError>?
     private(set) var creating = false
-    var error: String?
+    var error: LatchError?
     private(set) var created: AgentCreated?
 
     var freeLines: [AgentLines.Line] {
@@ -53,7 +53,7 @@ final class NewAgent {
                                                 tokenFile: kind == .own ? tokenFile : nil, line: line)
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            self.error = .from(error)
         }
     }
 
@@ -105,7 +105,8 @@ struct NewAgentSheet: View {
             Divider()
             HStack {
                 if let error = flow.error {
-                    Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.red)
+                    Label { ErrorText(error: error) } icon: { Image(systemName: "exclamationmark.triangle") }
+                        .font(.callout).foregroundStyle(.red)
                 }
                 Spacer()
                 if flow.created == nil {
@@ -145,7 +146,7 @@ struct NewAgentSheet: View {
                 if flow.kind == .cloud {
                     switch flow.catalog {
                     case nil: LabeledContent("Agent") { ProgressView().controlSize(.small) }
-                    case let .failure(error)?: LabeledContent("Agent") { Text(error.message).foregroundStyle(.red) }
+                    case let .failure(error)?: LabeledContent("Agent") { ErrorText(error: error).foregroundStyle(.red) }
                     case let .success(catalog)?:
                         Picker("Agent", selection: $flow.cloudKind) {
                             Text("Choose…").tag(String?.none)
@@ -164,7 +165,7 @@ struct NewAgentSheet: View {
                 }
                 switch flow.lines {
                 case nil: LabeledContent("Phone line") { ProgressView().controlSize(.small) }
-                case let .failure(error)?: LabeledContent("Phone line") { Text(error.message).foregroundStyle(.red) }
+                case let .failure(error)?: LabeledContent("Phone line") { ErrorText(error: error).foregroundStyle(.red) }
                 case .success?:
                     if flow.freeLines.isEmpty {
                         LabeledContent("Phone line") { Text("No free lines").foregroundStyle(.secondary) }

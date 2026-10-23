@@ -2,16 +2,26 @@ import Foundation
 import Synchronization
 
 /// Why a call to latch produced no answer.
-nonisolated enum LatchError: Error, Equatable {
+nonisolated enum LatchError: Error, Hashable {
     /// latch ran and refused, with its own error.
     case failed(LatchFailure)
-    /// latch could not be run, or printed something that isn't its JSON.
-    case unreachable(String)
+    /// latch could not be run, or printed something that isn't its JSON:
+    /// the app's sentence, and what latch or the system said, if anything.
+    case unreachable(String, detail: String? = nil)
 
     var message: String {
         switch self {
         case let .failed(failure): failure.message
-        case let .unreachable(message): message
+        case let .unreachable(message, _): message
+        }
+    }
+
+    /// What goes under Details: latch's own words, never shown as the
+    /// sentence.
+    var details: String? {
+        switch self {
+        case let .failed(failure): failure.message
+        case let .unreachable(_, detail): detail
         }
     }
 
@@ -27,7 +37,7 @@ extension LatchError: LocalizedError {
 
 /// latch's error JSON: `{"error": {"code", "message", …}}`, with the
 /// fields the app acts on.
-nonisolated struct LatchFailure: Decodable, Equatable {
+nonisolated struct LatchFailure: Decodable, Hashable {
     var code: String
     var message: String
     /// Full Disk Access not granted: what to grant it to, and where.
@@ -155,8 +165,7 @@ nonisolated final class LatchProcess: @unchecked Sendable {
                 running[ObjectIdentifier(process)] = process
             }
         } catch {
-            let reason = error.localizedDescription.trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            throw LatchError.unreachable("Latch couldn't start: \(reason).")
+            throw LatchError.unreachable("Latch couldn't start.", detail: error.localizedDescription)
         }
     }
 
@@ -182,7 +191,7 @@ nonisolated final class LatchProcess: @unchecked Sendable {
         // Not latch's error JSON: the exit status and the end of what it
         // printed go along as detail.
         let text = String(decoding: stderr.suffix(300), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return .unreachable("Latch couldn't complete this step. (exit \(status)\(text.isEmpty ? "" : ": \(text)"))")
+        return .unreachable("Latch couldn't complete this step.", detail: "exit \(status)\(text.isEmpty ? "" : ": \(text)")")
     }
 }
 

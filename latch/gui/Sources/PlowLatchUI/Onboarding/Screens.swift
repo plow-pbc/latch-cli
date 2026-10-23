@@ -236,9 +236,9 @@ struct LoginView: View {
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: 360)
-        case let .failed(message):
+        case let .failed(error):
             VStack(spacing: 8) {
-                Text(message).foregroundStyle(Brand.clay).multilineTextAlignment(.center)
+                ErrorText(error: error, titled: true).foregroundStyle(Brand.clay).multilineTextAlignment(.center)
                 Button("Try again") { flow.startLogin() }.buttonStyle(.link).foregroundStyle(Brand.volt)
             }
         case let .nameTaken(existing, lastSeen):
@@ -427,8 +427,8 @@ struct AccessView: View {
                 Rectangle().fill(Brand.line).frame(height: 1)
                 PanelRow(symbol: "person.crop.circle", title: "Contacts", state: state(flow.contacts), stateColor: color(flow.contacts))
             }
-            ForEach([flow.messages, flow.contacts].compactMap { if case let .failed(m) = $0 { m } else { nil } }, id: \.self) {
-                Text($0).foregroundStyle(Brand.clay).font(.callout)
+            ForEach([flow.messages, flow.contacts].compactMap { if case let .failed(error) = $0 { error } else { nil } }, id: \.self) {
+                ErrorText(error: $0).foregroundStyle(Brand.clay).font(.callout)
             }
             if flow.primarySkips {
                 Button("Check again") { flow.requestAccess() }.disabled(flow.waitingForAccess)
@@ -436,7 +436,7 @@ struct AccessView: View {
             if let error = flow.restartError {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(flow.app.status?.serve.running == true ? "Latch couldn't restart." : "Latch is stopped. It couldn't start again.")
-                    Text(error).font(.callout).foregroundStyle(Brand.clay)
+                    ErrorText(error: error, titled: true).font(.callout).foregroundStyle(Brand.clay)
                     Button(flow.restarting ? "Restarting…" : "Try again") { Task { await flow.restartLatch() } }
                         .disabled(flow.restarting)
                 }
@@ -514,12 +514,12 @@ struct StartView: View {
                 Text("Latch can start when you log in only if it runs now.").foregroundStyle(Brand.muted)
             }
             if let blocked = app.status?.serve.blocked {
-                Text(blocked.message).foregroundStyle(Brand.clay).font(.callout)
+                ErrorText(error: .failed(blocked)).foregroundStyle(Brand.clay).font(.callout)
             } else if app.status?.serve.ready == true {
                 Text("Latch is already running on this Mac.").foregroundStyle(Brand.muted)
             }
             if let error = flow.startError {
-                Text(error).foregroundStyle(Brand.clay).font(.callout)
+                ErrorText(error: error).foregroundStyle(Brand.clay).font(.callout)
             }
             Text("Your Mac stays reachable while it's awake and Latch is running.").foregroundStyle(Brand.muted)
             // Starting the host can raise macOS's Local Network prompt: say so

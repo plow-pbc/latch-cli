@@ -37,7 +37,7 @@ struct RulesView: View {
             .font(.system(size: 12.5))
             .padding(.top, 10)
             if let error = flow.rulesError {
-                Text(error).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
+                ErrorText(error: error).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
             } else if flow.draftRules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !(flow.savedRules ?? "").isEmpty {
                 Text("An empty box keeps your saved rules; the examples show them.").foregroundStyle(Brand.muted).font(.callout).padding(.top, 8)
             }
@@ -240,12 +240,11 @@ private struct Lane: View {
         }
     }
 
+    /// Why it couldn't be checked, in the app's words. A refusal's own
+    /// reason is latch's: the decision says it, and the box has no room
+    /// for Details.
     private var reason: String? {
-        switch preview {
-        case let .failed(message): message
-        case let .verdict(answer): answer.refused?.message
-        default: nil
-        }
+        if case let .failed(error) = preview { ErrorCopy.said(error) } else { nil }
     }
 
     private var detail: some View {
