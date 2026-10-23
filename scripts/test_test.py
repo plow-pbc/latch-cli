@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -88,9 +89,11 @@ class Suites(unittest.TestCase):
         cls.directory.cleanup()
 
     def selected(self, suite, where):
+        # The fixture has no nextest config, so no `just test --ci` profile.
+        env = {k: v for k, v in os.environ.items() if k != "NEXTEST_PROFILE"}
         listed = subprocess.run(["cargo", "nextest", "list", "--message-format", "json", "-E",
                                  runner.filterset(suite, where)], cwd=self.crate, check=True,
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, env=env)
         return {f"{binary['binary-name']}:{name}"
                 for binary in json.loads(listed.stdout)["rust-suites"].values()
                 for name, case in binary["testcases"].items()
