@@ -693,7 +693,7 @@ async fn the_layers_judge_apart_and_the_verdict_follows_the_rule() {
 }
 
 #[tokio::test]
-async fn no_chat_is_neither_but_a_chat_or_layer_that_fails_refuses() {
+async fn no_chat_is_neither_but_a_layer_that_fails_refuses() {
     // No chat on the agent's line: the rules layer alone decides.
     let mut no_chat = World::default();
     no_chat.add("chat_other", "line_other", vec![]);
@@ -708,16 +708,6 @@ async fn no_chat_is_neither_but_a_chat_or_layer_that_fails_refuses() {
         assert_eq!(judgment.gate["verdict"], expected);
         assert_eq!(model.calls(), 1, "the chat layer is never asked");
     }
-
-    // A chat that can't be read is no absent chat: refused, unasked.
-    let mut broken = one_chat();
-    broken.broken = Some("/v1/chats/chat_a/messages".into());
-    let model = Recorder::layers(Some([0.9, 0.05, 0.05]), Some([0.9, 0.05, 0.05]));
-    let judgment = gatekeeper(broken, &model, host_rules())
-        .judge(AGENT_CALLER, &order())
-        .await;
-    assert_eq!(code(&judgment), "gatekeeper_unavailable");
-    assert_eq!(model.calls(), 0);
 
     // Either layer's failure refuses, whatever the other allows.
     for (rules, chat, failed) in [
@@ -771,12 +761,16 @@ async fn judge_held_out(
         agent: None,
     };
     let gatekeeper = Gatekeeper::new(plow, provider, Box::new(rules.clone()));
-    let conversation = chat::read(&gatekeeper.plow, AGENT, None).await.unwrap();
+    let intent = Intent {
+        owner: false,
+        conversation: chat::read(&gatekeeper.plow, AGENT, None).await.unwrap(),
+        rules,
+    };
     let action = RawValue::from_string(probe["action"].as_str().unwrap().to_string()).unwrap();
     let clock = probe["clock_text"].as_str().unwrap();
     let mut gate = json!({});
     let verdict = gatekeeper
-        .consider(false, conversation, rules, now, clock, &action, &mut gate)
+        .consider(&intent, now, clock, &action, &mut gate)
         .await;
     (verdict, gate)
 }

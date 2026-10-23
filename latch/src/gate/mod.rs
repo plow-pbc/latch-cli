@@ -270,52 +270,41 @@ impl Gatekeeper {
             .rules
             .rules(caller.key())
             .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")))?;
-        let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);
-        let now = jiff::Zoned::now();
-        let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
-        self.consider(
-            owner,
+        let intent = Intent {
+            owner: matches!(caller, Caller::Owner | Caller::OwnerOnHost),
             conversation,
             rules,
-            now.timestamp(),
-            &clock,
-            action,
-            gate,
-        )
-        .await
+        };
+        let now = jiff::Zoned::now();
+        let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
+        self.consider(&intent, now.timestamp(), &clock, action, gate)
+            .await
     }
 
-    /// The verdict on `action` from what the owner said, read at `now`: an
-    /// owner's call is asked once; an agent's in its layers, the rules
-    /// layer always and the chat layer when there is a chat.
-    #[allow(clippy::too_many_arguments)]
+    /// The verdict on `action` from `intent`, read at `now`: an owner's call
+    /// is asked once; an agent's in its layers, the rules layer always and
+    /// the chat layer when there is a chat.
     async fn consider(
         &self,
-        owner: bool,
-        conversation: Option<Conversation>,
-        rules: Rules,
+        intent: &Intent,
         now: Timestamp,
         clock: &str,
         action: &RawValue,
         gate: &mut Value,
     ) -> Result<(), Failure> {
+        let rules = &intent.rules;
         if !rules.is_empty() {
             gate["rules"] = json!({
                 "host": rules.host.as_deref().map(sha256),
                 "agent": rules.agent.as_deref().map(sha256),
             });
         }
-        if owner {
+        if intent.owner {
             gate["source"] = json!("owner_request");
-            let intent = Intent {
-                owner,
-                conversation: None,
-                rules,
-            };
-            let p = self.ask(&intent, &ASKED, now, clock, action, gate).await?;
+            let p = self.ask(intent, &ASKED, now, clock, action, gate).await?;
             return owner_verdict(p);
         }
-        gate["source"] = json!(match (&conversation, rules.is_empty()) {
+        gate["source"] = json!(match (&intent.conversation, rules.is_empty()) {
             (Some(_), true) => "chat",
             (Some(_), false) => "chat_and_rules",
             (None, false) => "rules",
@@ -323,26 +312,21 @@ impl Gatekeeper {
             (None, true) => "defaults",
         });
         let alone = Intent {
-            owner,
+            owner: false,
             conversation: None,
             rules: rules.clone(),
         };
         let mut rules_call = json!({});
         let mut chat_call = json!({});
-        let (by_rules, by_chat) = match conversation {
+        let (by_rules, by_chat) = match &intent.conversation {
             None => {
                 let by_rules = self.ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call);
                 (by_rules.await, None)
             }
-            Some(conversation) => {
-                let with_chat = Intent {
-                    owner,
-                    conversation: Some(conversation),
-                    rules,
-                };
+            Some(_) => {
                 let (by_rules, by_chat) = tokio::join!(
                     self.ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call),
-                    self.ask(&with_chat, &ASKED, now, clock, action, &mut chat_call),
+                    self.ask(intent, &ASKED, now, clock, action, &mut chat_call),
                 );
                 (by_rules, Some(by_chat))
             }

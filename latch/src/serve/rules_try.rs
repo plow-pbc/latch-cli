@@ -136,43 +136,31 @@ async fn preview(
     let chat = request.chat.clone();
     let none_denied = DenyExec::default();
     let rules_alone;
-    let (host, gate) = match (new_agent, args["from"].is_string()) {
-        (false, false) => (host, host.gate(judged_as, judged_local, chat.as_deref())),
-        // An agent is previewed by its rules layer alone: what it may do
-        // whatever its chat says.
-        (false, true) => {
-            let gate = match chat {
-                Some(_) => Err(Failure::usage(
-                    "plow_chat_not_supported",
-                    "A preview judges an agent by its rules alone, with no Plow chat; omit --plow-chat and LATCH_PLOW_CHAT".into(),
-                )),
-                None => Ok(Gate {
-                    keeper: host.gatekeeper,
-                    caller: Caller::RulesLayer {
-                        agent: judged_as.agent_uid.as_deref(),
-                    },
-                }),
-            };
-            (host, gate)
-        }
-        (true, _) => {
+    let host = match new_agent {
+        false => host,
+        true => {
             rules_alone = Checks {
                 deny_exec: &none_denied,
                 plugins: None,
                 ..*host
             };
-            let gate = match chat {
-                Some(_) => Err(Failure::usage(
-                    "plow_chat_not_supported",
-                    "A new agent has no Plow chat yet; omit --plow-chat and LATCH_PLOW_CHAT".into(),
-                )),
-                None => Ok(Gate {
-                    keeper: host.gatekeeper,
-                    caller: Caller::RulesLayer { agent: None },
-                }),
-            };
-            (&rules_alone, gate)
+            &rules_alone
         }
+    };
+    // An agent, named or new, is previewed by its rules layer alone: what
+    // it may do whatever its chat says.
+    let gate = match (new_agent || args["from"].is_string(), &chat) {
+        (false, _) => host.gate(judged_as, judged_local, chat.as_deref()),
+        (true, Some(_)) => Err(Failure::usage(
+            "plow_chat_not_supported",
+            "A preview judges an agent by its rules alone, with no Plow chat; omit --plow-chat and LATCH_PLOW_CHAT".into(),
+        )),
+        (true, None) => Ok(Gate {
+            keeper: host.gatekeeper,
+            caller: Caller::RulesLayer {
+                agent: judged_as.agent_uid.as_deref(),
+            },
+        }),
     };
     let drafted;
     let gate = match (gate, draft) {

@@ -8,8 +8,8 @@ Contacts. That machine runs `latch serve` and is called a **host**; your
 other machines and your agents call it over an encrypted connection between
 the two machines, with Plow as the directory that says who each caller is.
 The host's gatekeeper checks the work that matters (programs, file copies,
-Google, Messages and browser plans) against what you asked for, and the
-host keeps a sealed audit log of the calls it handles.
+Google, Messages and browser plans) against your rules and what you've said,
+and the host keeps a sealed audit log of the calls it handles.
 
 **Where it runs.** `latch serve` runs in a place you trust: a Plow cloud
 host, a machine in the cloud dedicated to you, or your own Mac. A Linux
@@ -121,9 +121,8 @@ open sessions with `--engine camoufox`.
 
 ## 5. The gatekeeper
 
-**What it judges.** Before judged work runs, the host asks one question of
-a decision model, through Plow on the host's own Plow login: did the owner
-ask for this?
+**What it judges.** Before judged work runs, the host asks a decision
+model, through Plow on the host's own Plow login, whether it may run.
 
 | Call | Judged? |
 |---|---|
@@ -135,26 +134,37 @@ ask for this?
 
 | | Owner (any machine of yours, or on the host) | Agent |
 |---|---|---|
-| What the judge reads | Your request itself, plus the host's rules. | Your messages in the agent's Plow chat, plus the host's rules for every agent and that agent's own rules. |
-| Allowed when | The rules don't forbid it. It's refused only when the judge finds "forbidden" at least as likely as "covered". | The judge is at least 50% sure your messages or rules cover it. |
+| What the judge reads | Your request itself, plus the host's rules. | Two judgments of the same request. The rules: a built-in policy plus the host's rules for every agent and that agent's own rules, without the chat. The chat, if the agent has one: your messages there, plus the same rules. |
+| Allowed when | The rules don't forbid it. It's refused only when the judge finds "forbidden" at least as likely as "covered". | One of the two judgments is at least 50% sure it's allowed, and neither finds "forbidden" at least as likely as "not covered". |
 | When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4): change the rules to go ahead. | `gatekeeper_denied` (exit 4). Reason `not_covered`: ask the owner in chat, naming exactly what you'll do, then retry. Reason `owner_said_no`: don't retry unless the owner changes their mind. |
 
-- Only your rules and the messages Plow marks as yours count. Messages
+- Only your rules, the built-in policy and the messages Plow marks as
+  yours count. Messages
   from the agent, other people, web pages or the action itself are
   context, never permission.
-- An agent with no chat and no rules is refused every judged call
-  (`no_intent`, exit 4); the model isn't asked.
-- **Which chat:** the agent's chat if its line has one. If it has several,
-  the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`; otherwise
-  the call stops with `which_chat` (exit 2), which lists the choices. Owner
-  calls refuse the selector (`plow_chat_not_supported`, exit 2), and so do
-  the local modes listed in section 6.
+- **What an agent may do.** Your agents can look things up in your
+  calendar, email, messages and files, and create or edit ordinary files,
+  without waiting for another request; what they read goes back to the
+  agent. Riskier actions (sending, buying, deleting, changing calendars or
+  shared systems, giving a program internet access, accessing secrets or
+  sending data elsewhere) need permission in your rules or Plow chat. The
+  gatekeeper checks your rules on their own, and separately what you've
+  told the agent in chat. Your rules remain in force when you ask in chat,
+  and they can restrict everyday work too. An agent with no chat and no
+  rules is judged by the built-in policy alone.
+- **Which chat:** the agent's chat if its line has one; with none, only the
+  rules are judged. If it has several, the agent names one with
+  `--plow-chat ID` or `LATCH_PLOW_CHAT`; otherwise the call stops with
+  `which_chat` (exit 2), which lists the choices. Owner calls refuse the
+  selector (`plow_chat_not_supported`, exit 2), and so do the local modes
+  listed in section 6.
 - The chat and the rules are read fresh at every judgment, so a "stop" or
-  a rules change counts from the next call. The judge doesn't remember
+  a rules change is judged from the next call. The judge doesn't remember
   earlier calls: a repeat is judged again on its own.
 - **It fails closed.** If the host can't judge (Plow or the model can't be
   reached, the rules can't be read, the request is too large, or the
-  host's Plow account is out of credits), that action doesn't run:
+  host's Plow account is out of credits), that action doesn't run, even
+  when one of an agent's two judgments allowed it:
   `gatekeeper_unavailable`, exit 3, for you and for agents. Earlier steps
   of a browser plan may already have run, so read its `steps` before
   retrying. With only the model down, rules and vault commands still work;
