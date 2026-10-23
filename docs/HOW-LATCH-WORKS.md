@@ -135,7 +135,7 @@ model, through Plow on the host's own Plow login, whether it may run.
 | | Owner (any machine of yours, or on the host) | Agent |
 |---|---|---|
 | What the judge reads | Your request itself, plus the host's rules. | Two judgments of the same request. The rules: a built-in policy plus the host's rules for every agent and that agent's own rules, without the chat. The chat, if the agent has one: your messages there, plus the same rules. |
-| Allowed when | The rules don't forbid it. It's refused only when the judge finds "forbidden" at least as likely as "covered". | One of the two judgments is at least 50% sure it's allowed, and neither finds "forbidden" at least as likely as "not covered". |
+| Allowed when | The rules don't forbid it. It's refused only when the judge finds "forbidden" at least as likely as "covered". | Neither judgment says no (under 50% sure it's allowed, and finding "forbidden" at least as likely as "not covered"), and at least one is 50% or more sure it's allowed. |
 | When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4): change the rules to go ahead. | `gatekeeper_denied` (exit 4). Reason `not_covered`: ask the owner in chat, naming exactly what you'll do, then retry. Reason `owner_said_no`: don't retry unless the owner changes their mind. |
 
 - Only your rules, the built-in policy and the messages Plow marks as
