@@ -606,6 +606,23 @@ struct ClosingTests {
         #expect(client.enabled == ["messages", "contacts", "messages", "contacts"])
     }
 
+    /// Granted in System Settings, then both readers on: the Full Disk
+    /// Access row reads latch's answer again, whether System Settings was
+    /// opened or the readers were only checked.
+    @Test(arguments: [true, false])
+    func grantingAccessShowsOnItsRow(opened: Bool) async {
+        let client = ScriptedClient { _ in nil }
+        client.access = "not_granted"
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.access)
+        await flow.accessAppeared()
+        #expect(flow.fullDiskAccess == "not_granted")
+        client.access = "granted"
+        if opened { flow.requestAccess() } else { flow.checkAccess() }
+        await waitUntil { flow.accessDone && flow.fullDiskAccess == "granted" }
+        #expect(flow.fullDiskAccess == "granted")
+    }
+
     @Test func aTerminalHostIsLeftToLatchsWords() async {
         let (client, _, flow) = await accessFlow(attached: true)
         #expect(flow.terminalHostNeedsRestart)

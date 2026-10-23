@@ -670,34 +670,39 @@ final class Onboarding {
         grantGuide?.stop()
         grantGuide = nil
         accessTask = Task {
-            var opened = false
-            var guide: (any GrantGuide)?
-            waitingForAccess = true
-            defer {
-                waitingForAccess = false
-                if accessDone { guide?.granted() } else { guide?.stop() }
-            }
-            let deadline = ContinuousClock.now + .seconds(180)
-            while !Task.isCancelled {
-                for plugin in ["messages", "contacts"] where check(plugin) != .done {
-                    let result = await enableAccess(plugin)
-                    // Left the screen meanwhile: a late answer changes nothing.
-                    guard !Task.isCancelled else { return }
-                    set(plugin, result.check)
-                    if let failure = result.failure, !opened, let settings = failure.settings.flatMap(URL.init(string:)) {
-                        opened = true
-                        app.open(settings)
-                        if let grant = failure.grant {
-                            guide = app.guideGrant(URL(filePath: grant))
-                            grantGuide = guide
-                        }
+            await waitForAccess()
+            await readFullDiskAccess()
+        }
+    }
+
+    private func waitForAccess() async {
+        var opened = false
+        var guide: (any GrantGuide)?
+        waitingForAccess = true
+        defer {
+            waitingForAccess = false
+            if accessDone { guide?.granted() } else { guide?.stop() }
+        }
+        let deadline = ContinuousClock.now + .seconds(180)
+        while !Task.isCancelled {
+            for plugin in ["messages", "contacts"] where check(plugin) != .done {
+                let result = await enableAccess(plugin)
+                // Left the screen meanwhile: a late answer changes nothing.
+                guard !Task.isCancelled else { return }
+                set(plugin, result.check)
+                if let failure = result.failure, !opened, let settings = failure.settings.flatMap(URL.init(string:)) {
+                    opened = true
+                    app.open(settings)
+                    if let grant = failure.grant {
+                        guide = app.guideGrant(URL(filePath: grant))
+                        grantGuide = guide
                     }
                 }
-                if messages == .done && contacts == .done { return }
-                if [messages, contacts].contains(where: { if case .failed = $0 { true } else { false } }) { return }
-                guard ContinuousClock.now < deadline else { return }
-                try? await Task.sleep(for: accessRecheck)
             }
+            if messages == .done && contacts == .done { return }
+            if [messages, contacts].contains(where: { if case .failed = $0 { true } else { false } }) { return }
+            guard ContinuousClock.now < deadline else { return }
+            try? await Task.sleep(for: accessRecheck)
         }
     }
 
@@ -724,7 +729,15 @@ final class Onboarding {
                 guard !Task.isCancelled else { return }
                 set(plugin, result.check)
             }
+            await readFullDiskAccess()
         }
+    }
+
+    /// Full Disk Access as latch says it now, for its row: read again after
+    /// each round of turning the connectors on, which granting it changes.
+    private func readFullDiskAccess() async {
+        guard !Task.isCancelled, let setup = try? await client.setupStatusCheckingAccess(), !Task.isCancelled else { return }
+        fullDiskAccess = setup.step("messages")?.access
     }
 
     /// Whether access is missing while a host latch started in the
