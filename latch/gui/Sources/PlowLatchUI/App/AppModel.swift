@@ -626,10 +626,17 @@ final class AppModel {
     }
 
     /// Rules being edited and not yet saved: the text, and the revision the
-    /// edit started from (nil when there were none).
-    struct RulesDraft: Equatable {
+    /// edit started from (nil when there were none). Each is observed on
+    /// its own, so typing redraws only its editor.
+    @Observable
+    final class RulesDraft {
         var text: String
-        var base: String?
+        let base: String?
+
+        init(text: String, base: String?) {
+            self.text = text
+            self.base = base
+        }
     }
 
     /// Unsaved rules, kept while the person goes to another screen or host
@@ -638,8 +645,18 @@ final class AppModel {
     /// Why a draft's last save failed.
     var rulesErrors: [RulesKey: LatchError] = [:]
     private(set) var savingRules: Set<RulesKey> = []
-    /// The rules editor with the keyboard focus: the one Save (⌘S) saves.
-    var focusedRules: RulesKey?
+
+    /// A keystroke in a rules editor: into its draft, begun from `saved` if
+    /// there's none. The draft object changes, not the map of drafts, so
+    /// only that editor redraws.
+    func typeRules(_ text: String, at key: RulesKey, from saved: RulesShow.Text?) {
+        if let draft = rulesDrafts[key] {
+            draft.text = text
+        } else {
+            rulesDrafts[key] = .init(text: text, base: saved?.revision)
+            rulesErrors[key] = nil
+        }
+    }
 
     /// The rules saved at a draft's place, as the host last said.
     func savedRules(_ key: RulesKey) -> RulesShow.Text? {
@@ -670,13 +687,6 @@ final class AppModel {
         } catch {
             rulesErrors[key] = .from(error)
         }
-    }
-
-    /// Save (⌘S): the focused editor's draft, and only that one.
-    var canSaveFocusedRules: Bool { focusedRules.map(canSaveRules) ?? false }
-
-    func saveFocusedRules() async {
-        if let key = focusedRules { await saveRulesDraft(key) }
     }
 
     /// Revert: the draft goes, and the saved rules are read again.

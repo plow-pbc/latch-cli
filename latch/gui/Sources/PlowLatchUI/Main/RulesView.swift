@@ -84,9 +84,34 @@ private struct HostRules: View {
     }
 }
 
+/// Save (⌘S) for the rules editor with the keyboard focus. The editor
+/// publishes it while it's focused in the front window and has a change to
+/// save; the menu's Save runs it.
+struct RulesSave {
+    let key: AppModel.RulesKey
+    let run: () -> Void
+}
+
+extension FocusedValues {
+    @Entry var rulesSave: RulesSave?
+}
+
+/// The menu's one Save: the focused rules editor's, when there is one.
+struct RulesCommands: Commands {
+    @FocusedValue(\.rulesSave) private var save
+
+    var body: some Commands {
+        CommandGroup(replacing: .saveItem) {
+            Button("Save") { save?.run() }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(save == nil)
+        }
+    }
+}
+
 /// One set of rules: the saved text, edited in place, saved only when
 /// changed and only over what was there when editing began.
-private struct RulesEditor: View {
+struct RulesEditor: View {
     var title: String
     var note: String
     var saved: RulesShow.Text?
@@ -98,8 +123,9 @@ private struct RulesEditor: View {
     private var key: AppModel.RulesKey { .init(host: host.name, agent: agent?.uid) }
 
     var body: some View {
+        // The draft object, not its text: typing redraws only the editor
+        // that holds it (`DraftEditor`).
         let draft = app.rulesDrafts[key]
-        let saving = app.savingRules.contains(key)
         Section {
             if saved == nil, draft == nil {
                 HStack {
@@ -112,43 +138,12 @@ private struct RulesEditor: View {
                     }
                 }
             } else {
-                TextEditor(text: Binding { app.rulesDrafts[key]?.text ?? saved?.text ?? "" } set: { new in
-                    if app.rulesDrafts[key] == nil { begin() }
-                    app.rulesDrafts[key]?.text = new
-                })
-                .font(.body)
-                // What's typed during a save couldn't be saved by it.
-                .disabled(saving)
-                .frame(minHeight: 70)
-                .accessibilityLabel(title)
-                .focused($focused)
-                if let error = app.rulesErrors[key] {
-                    Label { ErrorText(error: error, host: host.spoken) } icon: { Image(systemName: "exclamationmark.triangle") }
-                        .foregroundStyle(.red)
-                }
-                if draft != nil {
-                    HStack {
-                        Spacer()
-                        Button("Revert") { Task { await app.revertRules(key) } }
-                            .disabled(saving)
-                        // ⌘S is the menu's Save, for the focused editor.
-                        Button(saving ? "Saving…" : "Save") { Task { await app.saveRulesDraft(key) } }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!app.canSaveRules(key))
-                    }
-                }
+                DraftEditor(key: key, saved: saved, draft: draft, title: title, host: host, focused: $focused, begin: begin)
             }
         } header: {
             Text(title)
         } footer: {
             Text(note).foregroundStyle(.secondary)
-        }
-        .onChange(of: focused) { _, now in
-            if now {
-                app.focusedRules = key
-            } else if app.focusedRules == key {
-                app.focusedRules = nil
-            }
         }
     }
 
@@ -156,6 +151,48 @@ private struct RulesEditor: View {
     private func begin() {
         app.rulesDrafts[key] = .init(text: saved?.text ?? "", base: saved?.revision)
         app.rulesErrors[key] = nil
+    }
+}
+
+/// The text of one set of rules, the draft's while there is one, with its
+/// Revert and Save; it publishes Save (⌘S) while it has the focus.
+private struct DraftEditor: View {
+    var key: AppModel.RulesKey
+    var saved: RulesShow.Text?
+    var draft: AppModel.RulesDraft?
+    var title: String
+    var host: HostEntry
+    var focused: FocusState<Bool>.Binding
+    var begin: () -> Void
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let saving = app.savingRules.contains(key)
+        let save = app.canSaveRules(key) ? RulesSave(key: key) { Task { await app.saveRulesDraft(key) } } : nil
+        TextEditor(text: Binding { draft?.text ?? saved?.text ?? "" } set: { new in
+            app.typeRules(new, at: key, from: saved)
+        })
+        .font(.body)
+        // What's typed during a save couldn't be saved by it.
+        .disabled(saving)
+        .frame(minHeight: 70)
+        .accessibilityLabel(title)
+        .focused(focused)
+        .focusedValue(\.rulesSave, save)
+        if let error = app.rulesErrors[key] {
+            Label { ErrorText(error: error, host: host.spoken) } icon: { Image(systemName: "exclamationmark.triangle") }
+                .foregroundStyle(.red)
+        }
+        if draft != nil {
+            HStack {
+                Spacer()
+                Button("Revert") { Task { await app.revertRules(key) } }
+                    .disabled(saving)
+                Button(saving ? "Saving…" : "Save") { save?.run() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(save == nil)
+            }
+        }
     }
 }
 

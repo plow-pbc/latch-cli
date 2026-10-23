@@ -1,4 +1,7 @@
+import AppKit
 import Foundation
+import SwiftUI
+import Synchronization
 import Testing
 @testable import PlowLatchUI
 
@@ -194,23 +197,52 @@ struct RulesDraftTests {
         #expect(client.sets.isEmpty)
     }
 
-    @Test func saveSavesTheFocusedEditorOnly() async throws {
-        let client = RulesClient()
-        let app = try await app(client)
+    // Typing changes the draft being typed in, not the map of drafts nor
+    // another draft: only that editor redraws, and not the menu.
+    @Test func aKeystrokeTouchesOnlyItsOwnDraft() async throws {
+        let app = try await app(RulesClient())
         let every = AppModel.RulesKey(host: "studio", agent: nil)
         let scout = AppModel.RulesKey(host: "studio", agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd")
-        let everySaved = app.savedRules(every), scoutSaved = app.savedRules(scout)
-        app.rulesDrafts[every] = .init(text: "Agents may read ~/Projects.", base: everySaved?.revision)
-        app.rulesDrafts[scout] = .init(text: "scout may run make test.", base: scoutSaved?.revision)
-        #expect(!app.canSaveFocusedRules)
-        await app.saveFocusedRules()
-        #expect(client.sets.isEmpty)
-        app.focusedRules = scout
-        #expect(app.canSaveFocusedRules)
-        await app.saveFocusedRules()
+        app.typeRules("Agents may read ~/Projects.", at: every, from: app.savedRules(every))
+        app.typeRules("scout may run make test.", at: scout, from: app.savedRules(scout))
+        let other = try #require(app.rulesDrafts[scout])
+        let touched = Mutex<[String]>([])
+        withObservationTracking { _ = app.rulesDrafts; _ = app.summaries } onChange: { touched.withLock { $0.append("model") } }
+        withObservationTracking { _ = other.text } onChange: { touched.withLock { $0.append("scout's draft") } }
+        app.typeRules("Agents may read ~/Projects and ~/Docs.", at: every, from: app.savedRules(every))
+        #expect(touched.withLock { $0 }.isEmpty)
+        #expect(app.rulesDrafts[every]?.text == "Agents may read ~/Projects and ~/Docs.")
+    }
+
+    // The menu's Save runs what the focused editor publishes: in a real
+    // window, focusing the second of two edited editors makes Save its.
+    @Test func saveIsTheFocusedEditorsOnly() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let host = try #require(app.host)
+        let every = AppModel.RulesKey(host: "studio", agent: nil)
+        let scout = AppModel.RulesKey(host: "studio", agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd")
+        let scoutAgent = try #require(app.agents?.first { $0.uid == scout.agent })
+        app.typeRules("Agents may read ~/Projects.", at: every, from: app.savedRules(every))
+        app.typeRules("scout may run make test.", at: scout, from: app.savedRules(scout))
+        let seen = SavePublished()
+        let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 500), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: Form {
+            RulesEditor(title: "every", note: "", saved: app.savedRules(every), host: host, agent: nil)
+            RulesEditor(title: "scout", note: "", saved: app.savedRules(scout), host: host, agent: scoutAgent)
+            SaveProbe(seen: seen)
+        }.environment(app))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        await waitUntil { textViews(in: window.contentView!).count == 2 }
+        #expect(seen.key == nil)
+        window.makeFirstResponder(textViews(in: window.contentView!)[1])
+        await waitUntil { seen.key == scout }
+        seen.save?.run()
+        await waitUntil { !client.sets.isEmpty }
         #expect(client.sets.map(\.agent) == [scout.agent])
-        #expect(app.rulesDrafts[scout] == nil)
-        #expect(app.rulesDrafts[every]?.text == "Agents may read ~/Projects.")
+        #expect(app.rulesDrafts[every] != nil)
     }
 
     @Test func aDraftOverRulesChangedElsewhereStaysWithWhy() async throws {
@@ -225,4 +257,28 @@ struct RulesDraftTests {
         await app.revertRules(key)
         #expect(app.rulesDrafts[key] == nil && app.rulesErrors[key] == nil)
     }
+}
+
+/// What the menu's Save would run, as a window's focus publishes it.
+@MainActor
+final class SavePublished {
+    var key: AppModel.RulesKey?
+    var save: RulesSave?
+}
+
+private struct SaveProbe: View {
+    let seen: SavePublished
+    @FocusedValue(\.rulesSave) private var save
+
+    var body: some View {
+        Color.clear.frame(height: 1).onChange(of: save?.key, initial: true) {
+            seen.key = save?.key
+            seen.save = save
+        }
+    }
+}
+
+@MainActor
+private func textViews(in view: NSView) -> [NSTextView] {
+    (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap(textViews)
 }
