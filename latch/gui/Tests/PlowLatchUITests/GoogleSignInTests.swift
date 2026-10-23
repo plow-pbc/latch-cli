@@ -18,7 +18,6 @@ final class SignInClient: LatchClient, @unchecked Sendable {
     private let stops = Mutex(0)
     var stopped: Int { stops.withLock { $0 } }
     private(set) var enabled: [String] = []
-    private(set) var pluginLists = 0
 
     func signInGoogle(addAccount: Bool) -> AsyncThrowingStream<GoogleSignInEvent, Error> {
         signIns.append(addAccount)
@@ -35,10 +34,7 @@ final class SignInClient: LatchClient, @unchecked Sendable {
         enabled.append(plugin)
         return GoogleEnabled(accounts: ["testuser@plow.test"])
     }
-    func pluginsList(host: String?) async throws -> PluginsList {
-        pluginLists += 1
-        return try Fixtures.decode(#"{"plugins":[]}"#)
-    }
+    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(Fixtures.studioPluginsSetUp) }
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
@@ -191,20 +187,22 @@ struct GoogleSignInTests {
         #expect(!"\(flow.google) \(flow.primaryTitle) \(flow.googleAccounts)".contains("secretCODE"))
     }
 
-    /// Add Another Account asks latch for `--add-account`; the sheet shows
-    /// while latch waits and goes once Google is on, and Connections and
-    /// this Mac's plugins are read again.
-    @Test func addAnotherAccountWaitsInItsSheet() async throws {
+    /// Connect Google Account… (no account yet) is a plain sign-in, Add
+    /// Another Account… is `--add-account`; the sheet shows while latch
+    /// waits and goes once Google is on, and Connections and this Mac's
+    /// plugins are read again.
+    @Test(arguments: [([String](), false), (["ada@example.com"], true)])
+    func connectingWaitsInItsSheet(accounts: [String], adding: Bool) async throws {
         let client = SignInClient()
-        client.google = Fixtures.googleConnected(["ada@example.com"])
+        client.google = Fixtures.googleConnected(accounts)
         let (app, _, opened) = app(client)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         await app.refreshAccount()
         await app.refreshConnections()
-        app.connectGoogle()
-        #expect(app.googleSignIn == GoogleSignIn(adding: true))
+        app.connectGoogle(adding: adding)
+        #expect(app.googleSignIn == GoogleSignIn(adding: adding))
         await until { client.events != nil }
-        #expect(client.signIns == [true])
+        #expect(client.signIns == [adding])
         client.events?.yield(.link(first))
         await until { app.canOpenGoogleSignInAgain }
         #expect(opened() == [first])
@@ -212,28 +210,21 @@ struct GoogleSignInTests {
         let drawn = AppModel(client: SignInClient(), still: true)
         drawn.stage(googleSignIn: app.googleSignIn, link: first)
         let sheet = try await shown(GoogleSignInSheet(), drawn, size: CGSize(width: 420, height: 200))
-        #expect(sheet.contains("Add a Google Account") && sheet.contains("Finish signing in with Google in your browser"))
+        #expect(sheet.contains(adding ? "Add a Google Account" : "Connect a Google Account"))
+        #expect(sheet.contains("Finish signing in with Google in your browser"))
         #expect(!sheet.contains("secretCODE") && !sheet.contains("http"))
-        client.google = Fixtures.googleConnected(["ada@example.com", "ada.work@example.com"])
-        client.events?.yield(.enabled(GoogleEnabled(accounts: ["ada@example.com", "ada.work@example.com"])))
+        let after = accounts + ["ada.work@example.com"]
+        client.google = Fixtures.googleConnected(after)
+        client.events?.yield(.enabled(GoogleEnabled(accounts: after)))
         client.events?.finish()
-        await until { app.googleSignIn == nil && app.connections == .google(accounts: ["ada@example.com", "ada.work@example.com"]) }
+        func googleOn() -> Bool {
+            (try? app.summaries["studio"]?.plugins?.get())?.plugins.first { $0.name == "google" }?.state == "enabled"
+        }
+        await until { app.googleSignIn == nil && app.connections == .google(accounts: after) && googleOn() }
         #expect(app.googleSignIn == nil)
-        #expect(app.connections == .google(accounts: ["ada@example.com", "ada.work@example.com"]))
-        await until { client.pluginLists == 1 }
-        #expect(client.pluginLists == 1)
+        #expect(app.connections == .google(accounts: after))
+        #expect(googleOn())
         #expect(!app.canOpenGoogleSignInAgain)
-    }
-
-    @Test func connectingAFirstAccountIsAPlainSignIn() async {
-        let client = SignInClient()
-        let (app, _, _) = app(client)
-        await app.refreshConnections()
-        app.connectGoogle()
-        #expect(app.googleSignIn == GoogleSignIn(adding: false))
-        await until { client.events != nil }
-        #expect(client.signIns == [false])
-        app.endGoogleSignIn()
     }
 
     /// Cancel stops latch's wait; a refusal stays in the sheet, in the
@@ -243,7 +234,7 @@ struct GoogleSignInTests {
         client.google = Fixtures.googleConnected(["ada@example.com"])
         let (app, _, _) = app(client)
         await app.refreshConnections()
-        app.connectGoogle()
+        app.connectGoogle(adding: true)
         await until { client.events != nil }
         client.events?.yield(.link(first))
         await until { app.canOpenGoogleSignInAgain }
@@ -252,7 +243,7 @@ struct GoogleSignInTests {
         #expect(client.stopped == 1)
         #expect(app.googleSignIn == nil && !app.canOpenGoogleSignInAgain)
 
-        app.connectGoogle()
+        app.connectGoogle(adding: true)
         await until { client.signIns.count == 2 }
         client.events?.finish(throwing: timeout)
         await until { app.googleSignIn?.failure != nil }
@@ -262,6 +253,27 @@ struct GoogleSignInTests {
                         GoogleSignIn.problem(unreachable, adding: false)] {
             #expect(!problem.contains("latch ") && !problem.contains("http") && !problem.contains("`"))
         }
+    }
+
+    /// Back from the browser with Plow out of reach, Connections can't list
+    /// the accounts; the sheet's Try Again still starts another sign-in.
+    @Test func tryAgainWorksWhenConnectionsCouldntBeRead() async {
+        let client = SignInClient()
+        client.google = Fixtures.googleConnected(["ada@example.com"])
+        let (app, _, _) = app(client)
+        await app.refreshConnections()
+        app.connectGoogle(adding: true)
+        await until { client.events != nil }
+        client.events?.finish(throwing: timeout)
+        await until { app.googleSignIn?.failure != nil }
+        client.google = Fixtures.googleUnreachable
+        await app.refreshConnections()
+        #expect(app.connections == .unknown)
+        // Try Again, as the sheet presses it.
+        app.connectGoogle(adding: app.googleSignIn?.adding ?? false)
+        await until { client.signIns.count == 2 }
+        #expect(client.signIns == [true, true])
+        #expect(app.googleSignIn == GoogleSignIn(adding: true))
     }
 
     /// The lines latch prints with `--events`, as `plugins/connect.rs` and

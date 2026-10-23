@@ -91,7 +91,7 @@ struct ConnectionsView: View {
                 }
                 HStack {
                     Spacer()
-                    Button(accounts.isEmpty ? "Connect Google Account…" : "Add Another Account…") { app.connectGoogle() }
+                    Button(accounts.isEmpty ? "Connect Google Account…" : "Add Another Account…") { app.connectGoogle(adding: !accounts.isEmpty) }
                 }
             }
         } header: {
@@ -182,7 +182,7 @@ struct GoogleSignInSheet: View {
                 Spacer()
                 if sheet.failure != nil {
                     Button("Close") { app.endGoogleSignIn() }.keyboardShortcut(.cancelAction)
-                    Button("Try Again") { app.connectGoogle() }.keyboardShortcut(.defaultAction)
+                    Button("Try Again") { app.connectGoogle(adding: sheet.adding) }.keyboardShortcut(.defaultAction)
                 } else {
                     Button("Cancel") { app.endGoogleSignIn() }.keyboardShortcut(.cancelAction)
                 }

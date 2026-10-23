@@ -255,13 +255,12 @@ final class AppModel {
     private var googleSignInTask: Task<Void, Never>?
     private var googleSignInLink: URL?
 
-    /// "Connect Google Account…" or "Add Another Account…": latch gets a
-    /// sign-in link from Plow and waits for the new account, then turns
-    /// Google on here; the sheet shows while it waits and goes once Google
-    /// is on. Only ever on a click.
-    func connectGoogle() {
-        guard case let .google(accounts)? = connections else { return }
-        let sheet = GoogleSignIn(adding: !accounts.isEmpty)
+    /// "Connect Google Account…" or "Add Another Account…" (`adding`), and
+    /// the sheet's Try Again: latch gets a sign-in link from Plow and waits
+    /// for the new account, then turns Google on here; the sheet shows while
+    /// it waits and goes once Google is on. Only ever on a click.
+    func connectGoogle(adding: Bool) {
+        let sheet = GoogleSignIn(adding: adding)
         endGoogleSignIn()
         googleSignIn = sheet
         googleSignInTask = Task {
