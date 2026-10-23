@@ -21,10 +21,11 @@
 //! before the newest, as a crash between the two writes leaves it. A record
 //! is appended only to a log that still reaches its head, so a log cut
 //! short can't be given a new, valid head by writing on. A log with
-//! records and no head is refused too: a folder of state format 2 (whose
-//! latch kept none) gets one as it is upgraded (`upgrade`), and every later
-//! latch keeps it. A head copied from earlier and put back with the log cut
-//! to match is not caught.
+//! records and no head is refused too, but in a folder of state format 2,
+//! whose latch kept none: there it is read as it is, and gets its head as
+//! the folder is upgraded, before anything writes it (`upgrade`). A head
+//! copied from earlier and put back with the log cut to match is not
+//! caught.
 //!
 //! The keys are the state folder's secret (see `secrets.rs`), and rotate:
 //! `latch audit rotate-key` starts a new key and keeps the old ones, so every
@@ -407,11 +408,17 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
         AuditAction::Verify => {
             let (text, head) = read_locked(&path)?;
             let keys = Keys::existing(&state.path)?;
-            let (records, last) = verify(&text, head.as_deref(), keys.as_ref())
-                .map_err(|problem| broken(&path, &problem))?;
+            let unheaded = head.is_none() && StateDir::is_upgradable(&state.path);
+            let checked = match unheaded {
+                true => {
+                    chain(&text).map(|hashes| (hashes.len() - 1, hashes[hashes.len() - 1].clone()))
+                }
+                false => verify(&text, head.as_deref(), keys.as_ref()),
+            };
+            let (records, last) = checked.map_err(|problem| broken(&path, &problem))?;
             Ok(
                 json!({"records": records, "last": last, "checked_without_the_key": true,
-                      "head_seal_checked": keys.is_some()}),
+                      "head_seal_checked": keys.is_some() && !unheaded}),
             )
         }
         AuditAction::RotateKey => {
@@ -604,7 +611,8 @@ fn read_head(dir: &Path) -> Result<Option<String>, Failure> {
 /// Upgrades the log in `dir` from state format 2, whose latch kept no head,
 /// or kept one only some of the time: once its records are checked, and
 /// the head it has, if any, is found reached, its head names its last
-/// record. A log this folder has no key for is left as it is.
+/// record. A log this folder has no key for is left as it is. Only with
+/// `serve.lock` held (see `StateDir::upgrade`).
 pub fn upgrade(dir: &Path) -> Result<(), Failure> {
     let path = dir.join(FILE);
     let _lock = lock(dir)?;
@@ -640,6 +648,10 @@ pub fn read_all(path: &Path) -> Result<Vec<Record>, Failure> {
     }
     let dir = path.parent().unwrap_or(Path::new("."));
     let keys = Keys::existing(dir)?.ok_or_else(|| no_key(path))?;
+    if head.is_none() && StateDir::is_upgradable(dir) {
+        // A format-2 folder's log, which has no head until it is upgraded.
+        return open_chain(&keys, &text, path);
+    }
     open_all(&keys, &text, head.as_deref(), path)
 }
 

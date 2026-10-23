@@ -18,6 +18,7 @@ fn audited(
 ) -> Result<Value, Failure> {
     let config = state.require_login()?;
     // Refuse a broken or unwritable audit before changing the vault.
+    state.upgrade()?;
     let mut log = AuditLog::open(state.path.join(audit::FILE))?;
     let vault = host::Vault::new(state.path.clone());
     let mut args = Map::new();

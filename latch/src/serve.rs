@@ -186,6 +186,7 @@ pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), F
     };
     // Held until this process ends, however it ends.
     let _lock = lock_state(&state_dir)?;
+    state.upgrade_held()?;
     // Only the host holding the folder saves its flags, so they are the
     // running host's, or the last one's (`managed::saved_deny_exec`).
     crate::managed::save_given(&state.path, &crate::managed::given_now(args))?;

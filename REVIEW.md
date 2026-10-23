@@ -48,7 +48,7 @@ hosts (Macs and Linux VMs), agents run by Plow. Pre-PMF.
   0600 files, versioned by `latch.json`'s format. A latch reads only its own
   format; there is no migration code, by design, but for one deliberate
   in-place upgrade: a format-2 folder becomes format 3 by giving its audit
-  log a sealed head (`audit::upgrade`, `state.rs` `check_format`).
+  log a sealed head (`StateDir::upgrade`, only while it holds `serve.lock`).
 - Workers are confined by the OS (Seatbelt on macOS, bubblewrap and seccomp
   on Linux) before they start anything, and never see the state folder.
 - The browser engines (Chrome for Testing, Camoufox) are pinned by hash and

@@ -184,6 +184,7 @@ impl Target<'_> {
         let config = self.state.require_login()?;
         let plow = Plow::from_state(self.state)?;
         // A log that can't be written to stops the command before it changes anything.
+        self.state.upgrade()?;
         let mut log = AuditLog::open(self.state.path.join(crate::audit::FILE))?;
         let done = owner::run(
             &self.state.path,

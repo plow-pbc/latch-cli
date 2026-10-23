@@ -51,9 +51,14 @@ pub struct Config {
 /// silently drop what it does not know when it saves). Raise it with a change
 /// an older latch would misread. The one older folder a latch converts is
 /// format 2, the same as 3 but for the audit log's head, which a format-2
-/// latch does not move on as it writes: the log gets one (`audit::upgrade`)
-/// and the folder is marked 3, so that latch refuses it from then on.
+/// latch does not move on as it writes. It is read as it is, and upgraded
+/// (`upgrade`) only by what holds `serve.lock`, so no older host is writing
+/// it: the log gets its head and the folder is marked 3, which that latch
+/// then refuses.
 const FORMAT: u32 = 3;
+/// The older format a latch reads, and upgrades before it writes the audit
+/// log.
+const UPGRADES: u32 = 2;
 
 /// `latch.json`: the folder's format, and which latch first marked it.
 #[derive(Serialize, Deserialize)]
@@ -136,6 +141,7 @@ impl StateDir {
             Failure::failed("bad_state", message)
         })?;
         let fix = match marker.format.cmp(&FORMAT) {
+            _ if marker.format == UPGRADES => return Ok(()),
             std::cmp::Ordering::Equal => {
                 if let Some(notice) = crate::audit::plaintext_notice(&self.path) {
                     eprintln!("{notice}");
@@ -143,17 +149,6 @@ impl StateDir {
                 return Ok(());
             }
             std::cmp::Ordering::Greater => "update this latch",
-            std::cmp::Ordering::Less if marker.format == 2 => {
-                crate::audit::upgrade(&self.path)?;
-                self.save_json(
-                    "latch.json",
-                    &Marker {
-                        format: FORMAT,
-                        written_by: marker.written_by,
-                    },
-                )?;
-                return self.check_format();
-            }
             std::cmp::Ordering::Less => "use the latch that wrote it",
         };
         let message = format!(
@@ -165,6 +160,63 @@ impl StateDir {
             crate::cli::version(),
         );
         Err(Failure::failed("state_format", message))
+    }
+
+    /// The folder's marker, when it is of the format this latch upgrades.
+    fn upgradable(&self) -> Result<Option<Marker>, Failure> {
+        let path = self.path.join("latch.json");
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(self.io_failure(&path, err)),
+        };
+        Ok(serde_json::from_str::<Marker>(&text)
+            .ok()
+            .filter(|marker| marker.format == UPGRADES))
+    }
+
+    /// Whether the folder is of the format this latch upgrades: its audit
+    /// log may have no head yet.
+    pub fn is_upgradable(dir: &Path) -> bool {
+        let state = StateDir {
+            path: dir.to_path_buf(),
+        };
+        state.upgradable().is_ok_and(|marker| marker.is_some())
+    }
+
+    /// Upgrades a format-2 folder (see `FORMAT`) before the audit log is
+    /// written, holding `serve.lock` meanwhile. While a host holds it, that
+    /// is an older latch's (this one's would have upgraded it): refused.
+    pub fn upgrade(&self) -> Result<(), Failure> {
+        if self.upgradable()?.is_none() {
+            return Ok(());
+        }
+        let within = std::time::Duration::from_secs(1);
+        let _held = crate::serve::hold_state(&self.path, "latch upgrade", within, |_| false)?
+            .map_err(|holder| {
+                let message = format!(
+                    "{} is in state format {UPGRADES} and in use by {holder}: restart the host \
+                     on this latch, then try again",
+                    self.path.display()
+                );
+                Failure::failed("state_busy", message)
+            })?;
+        self.upgrade_held()
+    }
+
+    /// `upgrade`, by what already holds `serve.lock`.
+    pub fn upgrade_held(&self) -> Result<(), Failure> {
+        let Some(marker) = self.upgradable()? else {
+            return Ok(());
+        };
+        crate::audit::upgrade(&self.path)?;
+        self.save_json(
+            "latch.json",
+            &Marker {
+                format: FORMAT,
+                written_by: marker.written_by,
+            },
+        )
     }
 
     /// Where this folder keeps its secrets (see `secrets.rs`).
@@ -393,7 +445,34 @@ mod tests {
         let marker = state.path.join("latch.json");
         fs::write(&marker, r#"{"format": 2, "written_by": "0.1.136"}"#).unwrap();
 
+        // Read as it is: its log has no head yet.
         state.check_format().unwrap();
+        assert_eq!(crate::audit::read_all(&log).unwrap().len(), 1);
+        let verified = crate::audit::run(&state, crate::cli::AuditAction::Verify).unwrap();
+        assert_eq!(verified["records"], 1);
+        assert_eq!(verified["head_seal_checked"], false);
+        assert!(!head.exists());
+
+        // Not while a host holds the folder.
+        let host = crate::serve::hold_state(
+            &state.path,
+            "latch serve",
+            std::time::Duration::ZERO,
+            |_| false,
+        )
+        .unwrap()
+        .unwrap();
+        let refused = state.upgrade().unwrap_err();
+        assert_eq!(refused.code, "state_busy");
+        assert!(
+            refused.message.contains("restart the host on this latch"),
+            "{}",
+            refused.message
+        );
+        assert!(!head.exists());
+        drop(host);
+
+        state.upgrade().unwrap();
         let upgraded: Marker = serde_json::from_str(&fs::read_to_string(&marker).unwrap()).unwrap();
         assert_eq!(
             (upgraded.format, upgraded.written_by.as_str()),
