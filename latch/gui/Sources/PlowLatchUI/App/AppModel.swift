@@ -129,6 +129,13 @@ final class AppModel {
         summaries[host.name, default: HostSummary()].plugins = plugins
     }
 
+    /// Another host's own status (Host Settings' version), asked only of a
+    /// host Plow doesn't count offline.
+    func refreshHostStatus() async {
+        guard let host, !host.isThisMac, host.online != false else { return }
+        summaries[host.name, default: HostSummary()].status = await Self.result { try await self.client.hostStatus(host.name) }
+    }
+
     static func result<T>(_ read: () async throws -> T) async -> Result<T, LatchError> {
         do {
             return .success(try await read())

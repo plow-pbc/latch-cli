@@ -12,6 +12,7 @@ nonisolated struct FakeLatchClient: LatchClient {
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(account) }
+    func hostStatus(_ host: String) async throws -> LocalStatus { try Fixtures.decode(Fixtures.piStatus) }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func rulesShow(host: String?) async throws -> RulesShow {
         try Fixtures.decode(rules.map { #"{"agents":[],"every_agent":{"revision":"r1","text":"\#($0)"},"host":"studio"}"# }
@@ -125,6 +126,8 @@ nonisolated enum Fixtures {
     static let studioPlugins = #"{"audit_id":"4bb10df4087e3d779901b77fecce312db061776f1f5fffa1716f6d193bb298cd","plugins":[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
     /// studio's after turning Google on, with Messages lacking Full Disk Access.
     static let studioPluginsSetUp = #"{"audit_id":"5cc20df4087e3d779901b77fecce312db061776f1f5fffa1716f6d193bb298cd","plugins":[{"enable":null,"name":"google","reason":"enabled; agents can use it once latch is running","state":"enabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"this host has no Full Disk Access; turn it on for /Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), then run `latch plugins enable messages` again","state":"needs_setup"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
+    /// pi-kitchen's own `status --local`, as `status --host pi-kitchen` gives it.
+    static let piStatus = #"{"state_dir":"/home/pi/.latch","version":"0.1.0 (138): commit 4c1e0a2b9, built 2026-10-22 18:04 UTC, standalone, protocol plow/latch/4","protocol":4,"peer":{"name":"pi-kitchen","key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","kind":"device"},"serve":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":811,"blocked":null},"last_error":null,"update":{"available":false,"build":138,"checked_at":"2026-10-23T08:00:00Z"}}"#
     static let piRules = #"{"agents":[],"audit_id":"c57f1209db34c3767c262960f596b34ec61e8b932a2b3011b3677db297f74bea","every_agent":{"revision":"8419fd077d6e4e3adc59789beedadb9864635746da5e22ae63b727c9b42c8715","text":"This Pi runs the kitchen display. Agents may read ~/recipes and write only to ~/recipes/drafts."},"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
     static let piPlugins = #"{"audit_id":"9727a671710eb349e52bc36fc65f7958273c76056619f26705bee57f164b7a5e","plugins":[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
     static let piVault = #"{"audit_id":"1e059a4e60011ac425fc08b23c8c43e6de7a4db7a571fe8fcce7881388c9f00e","items":[]}"#
@@ -563,7 +566,8 @@ package enum SnapshotRunner {
                 app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [:])
                 app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio)),
                                                plugins: .success(try Fixtures.decode(plugins))), for: "studio")
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesKitchen)),
+                app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.piStatus)),
+                                               rules: .success(try Fixtures.decode(Fixtures.rulesKitchen)),
                                                plugins: .success(try Fixtures.decode(Fixtures.piPlugins))), for: "pi-kitchen")
                 app.stage(devices: try Fixtures.decode(Fixtures.devices), update: checked ? try Fixtures.decode(Fixtures.updateCheck) : nil)
                 app.stage(connections: Connections(try Fixtures.decode(Fixtures.setup(on: [], google: google)) as SetupStatus))

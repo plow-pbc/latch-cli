@@ -119,6 +119,26 @@ struct HostSettingsTests {
         #expect(Connections(nil) == .unknown)
     }
 
+    /// Another host's version is its own `status --local`, asked with
+    /// `--host`; one Plow counts offline isn't asked.
+    @Test func anotherHostsVersionIsWhatItSays() async throws {
+        let app = AppModel(client: FakeLatchClient(account: Fixtures.studioHosts.replacingOccurrences(
+            of: #""name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:33.384336Z","online":true"#,
+            with: #""name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":null,"online":false"#)),
+                           store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        await app.refreshStatus()
+        await app.refreshAccount()
+        app.chosenHost = "pi-kitchen"
+        await app.refreshHostStatus()
+        #expect(try app.summaries["pi-kitchen"]?.status?.get().version?.hasPrefix("0.1.0 (138)") == true)
+        app.chosenHost = "sidecar"
+        await app.refreshHostStatus()
+        #expect(app.summaries["sidecar"]?.status == nil)
+        app.chosenHost = "studio"
+        await app.refreshHostStatus()
+        #expect(app.summaries["studio"]?.status == nil)
+    }
+
     @Test func manageAccountsOpensConnections() throws {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.section = .settings

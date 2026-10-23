@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The selected host's settings, and only that host's: its state (and, for
-/// this Mac, restart and stop), its version, what it refuses agents, and its
+/// this Mac, restart and stop), its version (another host's as it says), what it refuses agents, and its
 /// plugins (on and off only here, for this Mac).
 struct HostSettingsView: View {
     @Environment(AppModel.self) private var app
@@ -28,6 +28,7 @@ struct HostSettingsView: View {
         .task(id: app.host?.id) {
             guard !app.still else { return }
             await app.refreshSummary()
+            await app.refreshHostStatus()
         }
         .confirmationDialog("Stop Latch on this Mac?", isPresented: $stopping) {
             Button("Stop", role: .destructive) { Task { await app.stopHost() } }
@@ -83,6 +84,16 @@ private struct HostSection: View {
                     }
                 }
             } else {
+                if host.online != false {
+                    LabeledContent("Version") {
+                        switch app.summaries[host.name]?.status {
+                        case let .success(status)?:
+                            Text(status.version ?? "—").textSelection(.enabled).multilineTextAlignment(.trailing)
+                        case .failure?: Text("\(host.name) didn't say")
+                        case nil: ProgressView().controlSize(.small)
+                        }
+                    }
+                }
                 Text("Start, stop and update \(host.name) on \(host.name) itself.").foregroundStyle(.secondary)
             }
         }
