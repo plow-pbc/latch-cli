@@ -111,8 +111,7 @@ enum TestHooks {
         }
         // Vault, as a person clicks and types: select an item, open New
         // Item ("KIND") or an item's Edit, type "LABEL=VALUE" (title, sites
-        // and other-sites too), save, remove an item, pick an export (a
-        // path, as the file chooser gives it), and import its picked rows.
+        // and other-sites too), save, and remove an item.
         func vaultItem(_ id: String?) -> VaultList.Item? {
             guard let host = app.host, case let .success(vault)? = app.summaries[host.name]?.vault else { return nil }
             return vault.items.first { $0.item == id }
@@ -120,14 +119,14 @@ enum TestHooks {
         on("vault-select") { id in app.selectedVaultItem = id }
         on("vault-new") { kind in
             guard let host = app.host else { return }
-            app.vaultSheet = .editor(VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login, on: host))
+            app.vaultSheet = VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login, on: host)
         }
         on("vault-edit") { id in
             guard let item = vaultItem(id), let host = app.host else { return }
             Task { await app.beginVaultEdit(item, on: host) }
         }
         on("vault-type") { argument in
-            guard case let .editor(editor)? = app.vaultSheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
+            guard let editor = app.vaultSheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
             let label = String(argument[..<equals]), value = String(argument[argument.index(after: equals)...])
             switch label {
             case "title": editor.title = value
@@ -137,22 +136,12 @@ enum TestHooks {
             }
         }
         on("vault-save") { _ in
-            guard case let .editor(editor)? = app.vaultSheet else { return }
+            guard let editor = app.vaultSheet else { return }
             Task { if await editor.save(app: app) { app.vaultSheet = nil } }
         }
         on("vault-remove") { id in
             guard let item = vaultItem(id), let host = app.host else { return }
             Task { await app.removeVaultItem(item, on: host) }
-        }
-        on("vault-import") { path in
-            guard let path, let host = app.host else { return }
-            let importer = VaultImport(file: URL(filePath: path), on: host)
-            app.vaultSheet = .importer(importer)
-            Task { await importer.load(app: app) }
-        }
-        on("vault-import-run") { _ in
-            guard case let .importer(importer)? = app.vaultSheet else { return }
-            Task { await importer.run(app: app) }
         }
         on("sheet-close") { _ in
             app.vaultSheet = nil

@@ -25,7 +25,6 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry { try Fixtures.decode(Fixtures.allow) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> {
         AsyncThrowingStream { continuation in
@@ -60,10 +59,6 @@ nonisolated struct FakeLatchClient: LatchClient {
         throw LatchError.unreachable("a still")
     }
     func vaultRemove(_ item: String, revision: Int, host: String?) async throws {}
-    func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview {
-        (try Fixtures.decode(Fixtures.importPreview) as ImportPreviewFixture).preview
-    }
-    func vaultImport(_ file: URL, picks: [Int], host: String?) async throws -> ImportResult { try Fixtures.decode(Fixtures.importResult) }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
     func disable(_ plugin: String) async throws {}
@@ -78,9 +73,6 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func agentShow(_ uid: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("a still") }
 }
-
-/// `vault import --preview`'s answer, around the preview.
-nonisolated struct ImportPreviewFixture: Decodable { var preview: ImportPreview }
 
 nonisolated enum Fixtures {
     /// `latch setup --status` on a logged-in Mac whose host is stopped,
@@ -119,8 +111,7 @@ nonisolated enum Fixtures {
     static let piRules = #"{"agents":[],"audit_id":"c57f1209db34c3767c262960f596b34ec61e8b932a2b3011b3677db297f74bea","every_agent":{"revision":"8419fd077d6e4e3adc59789beedadb9864635746da5e22ae63b727c9b42c8715","text":"This Pi runs the kitchen display. Agents may read ~/recipes and write only to ~/recipes/drafts."},"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
     static let piPlugins = #"{"audit_id":"9727a671710eb349e52bc36fc65f7958273c76056619f26705bee57f164b7a5e","plugins":[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
     static let piVault = #"{"audit_id":"1e059a4e60011ac425fc08b23c8c43e6de7a4db7a571fe8fcce7881388c9f00e","items":[]}"#
-    // `vault list`, `vault show` and `vault import --preview` on vstudio, and
-    // the import of a Chrome export's first row: real runs.
+    // `vault list` and `vault show` on vstudio: real runs.
     static let vaultItems = #"{"audit_id":"f9283602fbe14976983de000e647f02d9fc24b58c0cede0c0929370005928e51","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"},{"alias":false,"custom":false,"hidden":true,"label":"totp"}],"item":"v1","kind":"login","revision":2,"sites":["shop.example"],"title":"Shop","totp":true,"username":"ada"},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"notes"}],"item":"v2","kind":"note","revision":2,"sites":[],"title":"Building notes","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"expiry month"},{"alias":false,"custom":false,"hidden":false,"label":"expiry year"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"},{"alias":false,"custom":false,"hidden":false,"label":"brand"},{"alias":false,"custom":false,"hidden":false,"label":"expiry"}],"item":"v3","kind":"card","revision":1,"sites":[],"title":"Visa (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"title"},{"alias":false,"custom":false,"hidden":false,"label":"first name"},{"alias":false,"custom":false,"hidden":false,"label":"middle name"},{"alias":false,"custom":false,"hidden":false,"label":"last name"},{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":false,"label":"company"},{"alias":false,"custom":false,"hidden":true,"label":"ssn"},{"alias":false,"custom":false,"hidden":true,"label":"passport number"},{"alias":false,"custom":false,"hidden":false,"label":"license number"},{"alias":false,"custom":false,"hidden":false,"label":"email"},{"alias":false,"custom":false,"hidden":false,"label":"phone"},{"alias":false,"custom":false,"hidden":false,"label":"address1"},{"alias":false,"custom":false,"hidden":false,"label":"city"},{"alias":false,"custom":false,"hidden":false,"label":"state"},{"alias":false,"custom":false,"hidden":false,"label":"postal code"},{"alias":false,"custom":false,"hidden":false,"label":"country"},{"alias":false,"custom":false,"hidden":false,"label":"date of birth"}],"item":"v4","kind":"identity","revision":2,"sites":[],"title":"Me (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v6","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer","totp":false,"username":"ada@example.com"}]}"#
     static let vaultShows: [String: String] = ["v1": #"{"audit_id":"4717b21309079ff522a8e928d3a3568bce6153501a8c88a113bf7f5f22c964a4","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"},{"alias":false,"custom":false,"hidden":true,"label":"totp"}],"item":"v1","kind":"login","revision":2,"sites":["shop.example"],"title":"Shop","totp":true,"username":"ada"},"values":{"username":"ada"}}"#, "v2": #"{"audit_id":"6b10d127b072ef1aa4029d6fcf3f3d9e4a12ad9ff1ad255208e11e48fbb4dccd","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"notes"}],"item":"v2","kind":"note","revision":2,"sites":[],"title":"Building notes","totp":false},"values":{"notes":"Gate code is in the binder."}}"#, "v3": #"{"audit_id":"413bffa87e6bbae0a5168ddbaa4175a861b2783f8fa0c4a93d26e9fd4d66ee0b","item":{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"expiry month"},{"alias":false,"custom":false,"hidden":false,"label":"expiry year"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"},{"alias":false,"custom":false,"hidden":false,"label":"brand"},{"alias":false,"custom":false,"hidden":false,"label":"expiry"}],"item":"v3","kind":"card","revision":1,"sites":[],"title":"Visa (test)","totp":false},"values":{"brand":"Visa","cardholder name":"Ada L","expiry":"2031-04","expiry month":"04","expiry year":"2031"}}"#, "v4": #"{"audit_id":"7d4a4fff30229a51f4efc6cfe33f086b4c2b22906f611c91e06e24e4b9b41739","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"title"},{"alias":false,"custom":false,"hidden":false,"label":"first name"},{"alias":false,"custom":false,"hidden":false,"label":"middle name"},{"alias":false,"custom":false,"hidden":false,"label":"last name"},{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":false,"label":"company"},{"alias":false,"custom":false,"hidden":true,"label":"ssn"},{"alias":false,"custom":false,"hidden":true,"label":"passport number"},{"alias":false,"custom":false,"hidden":false,"label":"license number"},{"alias":false,"custom":false,"hidden":false,"label":"email"},{"alias":false,"custom":false,"hidden":false,"label":"phone"},{"alias":false,"custom":false,"hidden":false,"label":"address1"},{"alias":false,"custom":false,"hidden":false,"label":"city"},{"alias":false,"custom":false,"hidden":false,"label":"state"},{"alias":false,"custom":false,"hidden":false,"label":"postal code"},{"alias":false,"custom":false,"hidden":false,"label":"country"},{"alias":false,"custom":false,"hidden":false,"label":"date of birth"}],"item":"v4","kind":"identity","revision":2,"sites":[],"title":"Me (test)","totp":false},"values":{"address1":"1 St","city":"London","company":"Co","country":"UK","date of birth":"1815-12-10","email":"ada@example.com","first name":"Ada","last name":"Lovelace","license number":"L1","middle name":"K","phone":"555","postal code":"N1","state":"LDN","title":"Dr","username":"ada2"}}"#, "v6": #"{"audit_id":"e20c23c3a649234daae8e584c7b9621856cf6d253b4871e7bc2ab8c6c7ef2125","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v6","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer","totp":false,"username":"ada@example.com"},"values":{"username":"ada@example.com"}}"#]
     // Another host's, read with `--host`.
@@ -132,8 +123,6 @@ nonisolated enum Fixtures {
     static let updateCheck = #"{"available":false,"current":null,"latest":{"build":138,"tag":"v0.1.0-138"}}"#
     static let catalog = #"{"kinds":[{"id":"exe:checkpoint","name":"Checkpoint"},{"id":"exe:clip-warden","name":"Clip Warden"},{"id":"exe:dailies","name":"Video Cuts"},{"id":"exe:danedelattre-x-manager","name":"X Manager"},{"id":"exe:fandom","name":"Fandom"},{"id":"exe:fipe","name":"Fipe"},{"id":"exe:founder-agent","name":"Founder Agent"},{"id":"exe:galahad-hackathon","name":"Joust"},{"id":"exe:hermes","name":"Hermes"},{"id":"exe:hermes-cat-paw","name":"Hermes Cat Paw"},{"id":"exe:instagram-social-selling","name":"Instagram Social Selling"},{"id":"exe:life","name":"Life Assistant"},{"id":"exe:mako","name":"Mako"},{"id":"exe:meals-planner","name":"Meals Planner"},{"id":"exe:memory-vault","name":"Memory Vault"},{"id":"exe:metabolix","name":"Metabolix"},{"id":"exe:nutrilatch","name":"NutriLatch"},{"id":"exe:parley","name":"Parley"},{"id":"exe:phoneflow-agent","name":"PhoneFlow"},{"id":"exe:pm-second-brain","name":"PM Agent"},{"id":"exe:pruce","name":"Prucê"},{"id":"exe:radar","name":"RadaR"},{"id":"exe:receiptsnap","name":"ReceiptSnap"},{"id":"exe:repro-relay","name":"Repro Relay"},{"id":"exe:saved","name":"Saved"},{"id":"exe:text-me","name":"text-me"},{"id":"exe:the-commish","name":"The Commish"},{"id":"exe:theplowtimes","name":"The Plow Times"},{"id":"exe:vela","name":"Vela"},{"id":"exe:vigia","name":"Vigia"},{"id":"exe:your-mother","name":"Your Mother"},{"id":"exe:zoen","name":"Zoen"}]}"#
     static let lines = #"{"lines":[{"agent_uid":null,"available":true,"name":null,"number":"+15550000002","uid":"ln_p1"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000003","uid":"ln_p2"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000004","uid":"ln_p3"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000005","uid":"ln_p4"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000006","uid":"ln_p5"}]}"#
-    static let importPreview = #"{"preview":{"items":[{"changed":[],"duplicate":false,"has_password":true,"has_totp":false,"kind":"login","pick":1,"title":"shop.example","url":"https://shop.example/login","username":"ada","warnings":[]},{"changed":[],"duplicate":false,"has_password":true,"has_totp":false,"kind":"login","pick":2,"title":"grocer.example","url":"https://grocer.example","username":"ada@example.com","warnings":[]}],"skipped":[{"reason":"has no website address; add it by hand as a new item if you still use it","title":"nosite"}],"source":"Chrome","vaults":[]}}"#
-    static let importResult = #"{"audit_id":"4e253dfc8c33887f696ca5c6fd51a95788774fbe3896c8bc1668ae284aacaed0","duplicates":0,"failed":[],"picked":[1],"saved":1,"source":"Chrome","updated":0}"#
     // `latch audit` on studio and, from laptop, `latch audit --host pi-kitchen`:
     // real runs, with names and home folders shortened.
     static let studioAudit = #"""
@@ -499,22 +488,14 @@ package enum SnapshotRunner {
             let editCard = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v3"]!), on: studio)
             let stale = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!), on: studio)
             stale.values["username"] = "ada2"; stale.error = AppModel.itemChangedElsewhere
-            let preview = (try Fixtures.decode(Fixtures.importPreview) as ImportPreviewFixture).preview
-            let previewing = VaultImport(file: URL(filePath: "/Users/me/Downloads/Chrome Passwords.csv"), on: studio)
-            previewing.stage(preview: preview)
-            let imported = VaultImport(file: URL(filePath: "/Users/me/Downloads/Chrome Passwords.csv"), on: studio)
-            imported.stage(preview: preview, result: try Fixtures.decode(Fixtures.importResult))
             let sheets: [(String, AnyView)] = [
                 ("18-vault-new-login", AnyView(VaultItemSheet(editor: newLogin))),
                 ("18-vault-new-identity", AnyView(VaultItemSheet(editor: VaultEditor(kind: .identity, on: studio)))),
                 ("18-vault-edit-card", AnyView(VaultItemSheet(editor: editCard))),
                 ("18-vault-edit-changed-elsewhere", AnyView(VaultItemSheet(editor: stale))),
-                ("18-vault-import-preview", AnyView(ImportSheet(importer: previewing))),
-                ("18-vault-import-done", AnyView(ImportSheet(importer: imported))),
             ]
             for (name, sheet) in sheets {
-                let size = name.contains("import") ? CGSize(width: 560, height: 460)
-                    : name.contains("identity") ? CGSize(width: 480, height: 640) : CGSize(width: 480, height: 520)
+                let size = name.contains("identity") ? CGSize(width: 480, height: 640) : CGSize(width: 480, height: 520)
                 try await render(sheet.environment(app), size: size, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }

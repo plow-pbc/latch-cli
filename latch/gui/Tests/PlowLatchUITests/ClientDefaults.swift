@@ -8,15 +8,12 @@ extension LatchClient {
     func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         throw LatchError.unreachable("not scripted")
     }
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry { throw LatchError.unreachable("not scripted") }
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow { throw LatchError.unreachable("not scripted") }
     func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item { throw LatchError.unreachable("not scripted") }
     func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
         throw LatchError.unreachable("not scripted")
     }
     func vaultRemove(_ item: String, revision: Int, host: String?) async throws { throw LatchError.unreachable("not scripted") }
-    func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview { throw LatchError.unreachable("not scripted") }
-    func vaultImport(_ file: URL, picks: [Int], host: String?) async throws -> ImportResult { throw LatchError.unreachable("not scripted") }
     func disable(_ plugin: String) async throws { throw LatchError.unreachable("not scripted") }
     func devices() async throws -> DeviceList { throw LatchError.unreachable("not scripted") }
     func removeDevice(_ name: String) async throws { throw LatchError.unreachable("not scripted") }

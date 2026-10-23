@@ -48,8 +48,6 @@ struct VaultTests {
         #expect(grocer.otherTopSites == ["grocer-login.example"])
         let card: VaultShow = try Fixtures.decode(Fixtures.vaultShows["v3"]!)
         #expect(card.values["cardholder name"] == "Ada L" && card.values["number"] == nil)
-        let preview = (try Fixtures.decode(Fixtures.importPreview) as ImportPreviewFixture).preview
-        #expect(preview.source == "Chrome" && preview.items.map(\.pick) == [1, 2] && preview.skipped?.count == 1)
     }
 
     private func app(_ client: VaultClient) throws -> (AppModel, HostEntry) {
@@ -74,6 +72,15 @@ struct VaultTests {
         #expect(editor.draft.sites == ["shop.example"])
         editor.sites = ""
         #expect(editor.problem != nil)
+    }
+
+    @Test func aLoginTurnedNoteSendsNoSites() throws {
+        let (_, studio) = try app(VaultClient())
+        let editor = VaultEditor(on: studio)
+        editor.title = "Gate code"
+        editor.sites = "shop.example"
+        editor.kind = .note
+        #expect(editor.draft.sites.isEmpty)
     }
 
     @Test func aStaleEditIsRefusedInTheAppsWordsAndTheVaultIsReadAgain() async throws {
