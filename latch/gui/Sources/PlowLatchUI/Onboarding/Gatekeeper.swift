@@ -13,7 +13,7 @@ struct RulesView: View {
                 Text("Meet the Gatekeeper")
                     .font(.system(size: 34, weight: .semibold))
                     .accessibilityAddTraits(.isHeader)
-                Text("Your agents can look things up and create or edit ordinary files on their own. Anything riskier, like sending, buying, deleting or giving a program internet access, needs your OK in your rules or your Plow chat.")
+                Text("Your agents can look things up and create or edit ordinary files on their own, and they see what they find. Anything riskier, like sending, buying, deleting or giving a program internet access, needs your OK in your rules or your Plow chat.")
                     .font(.system(size: 15))
                     .lineSpacing(4)
                     .foregroundStyle(Brand.muted)
@@ -42,7 +42,7 @@ struct RulesView: View {
                 Text("An empty box keeps your saved rules; the examples show them.").foregroundStyle(Brand.muted).font(.callout).padding(.top, 8)
             }
             Deck(flow: flow, reduceMotion: reduceMotion)
-                .padding(.top, 30)
+                .padding(.top, 14)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 56)
