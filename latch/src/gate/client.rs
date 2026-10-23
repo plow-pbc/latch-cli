@@ -154,7 +154,7 @@ async fn preview(
         return Err(failure);
     }
     if draft.as_deref() == Some(Path::new("-"))
-        && matches!(&parsed.command, Latch::Exec(exec) if exec.stdin)
+        && matches!(&parsed.command, Some(Latch::Exec(exec)) if exec.stdin)
     {
         let message = "--draft - and exec --stdin both read stdin";
         let mut failure = Failure::new(code::usage, message.to_string());
@@ -163,31 +163,31 @@ async fn preview(
     }
     args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
     let (op, request, asked): (&str, Value, HostArg) = match parsed.command {
-        Latch::Exec(args) => ("exec", crate::exec::request(&args)?, args.host),
-        Latch::File(FileCommand::Get {
+        Some(Latch::Exec(args)) => ("exec", crate::exec::request(&args)?, args.host),
+        Some(Latch::File(FileCommand::Get {
             remote_path, host, ..
-        }) => ("file_get", transfer::get_args(&remote_path), host),
-        Latch::File(FileCommand::Put {
+        })) => ("file_get", transfer::get_args(&remote_path), host),
+        Some(Latch::File(FileCommand::Put {
             local_path,
             remote_path,
             host,
-        }) => {
+        })) => {
             let (_, args) = transfer::put_args(&local_path, &remote_path).await?;
             ("file_put", args, host)
         }
-        Latch::Google(args) if !args.local_help() => {
+        Some(Latch::Google(args)) if !args.local_help() => {
             let prepared = google::client::prepare(&args).await?;
             let request = serde_json::to_value(&prepared.request).expect("request serializes");
             ("google", request, args.host)
         }
         #[cfg(target_os = "macos")]
-        Latch::Messages(command) => (
+        Some(Latch::Messages(command)) => (
             "messages",
             crate::messages::messages_request(&command),
             command.host(),
         ),
         #[cfg(target_os = "macos")]
-        Latch::Contacts(command) => (
+        Some(Latch::Contacts(command)) => (
             "contacts",
             crate::messages::contacts_request(&command),
             command.host(),

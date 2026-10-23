@@ -285,7 +285,7 @@ impl Setup {
 
 /// What starts this state folder's host in the background: with `--again`
 /// once a host ran here, so it keeps the flags its owner gave it.
-fn start_args(state: &StateDir) -> Vec<&'static str> {
+pub fn start_args(state: &StateDir) -> Vec<&'static str> {
     if state.path.join(crate::managed::ARGS_FILE).exists() {
         vec!["serve", "-d", "--again"]
     } else {
@@ -617,7 +617,7 @@ fn show_grant(error: &Value) {
     let _ = Command::new("open").arg("-R").arg(grant).status();
 }
 
-fn title(name: &str) -> String {
+pub fn title(name: &str) -> String {
     let mut chars = name.chars();
     chars
         .next()

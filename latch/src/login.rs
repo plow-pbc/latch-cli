@@ -458,7 +458,7 @@ fn hostname() -> Option<String> {
 /// credential), then `$PLOW_API_URL`, then this build's baked-in URL; on a
 /// repeat login, the Plow the first one saved (with its config, or with its
 /// token if it went no further); last, a release build's default.
-fn api_url(
+pub(crate) fn api_url(
     flag: Option<String>,
     env: impl Fn(&str) -> Option<String>,
     saved: Option<String>,

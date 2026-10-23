@@ -159,6 +159,11 @@ pub struct DenyExec {
 }
 
 impl DenyExec {
+    /// Every agent is refused `exec`, not only some.
+    pub fn every_agent(&self) -> bool {
+        self.every_agent
+    }
+
     pub fn from_flags(values: &[String]) -> DenyExec {
         DenyExec {
             every_agent: values.iter().any(|value| value == crate::cli::EVERY_AGENT),

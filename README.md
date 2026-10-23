@@ -93,6 +93,12 @@ No Homebrew tap is included.
 
 ## For hosts
 
+- `latch` alone, at a terminal, shows this machine at a glance beside the
+  Plow logo: the account it is signed in to, whether it hosts, the
+  account's hosts as Plow lists them, where commands go, its connectors,
+  its update and one next step. What this machine knows shows at once;
+  Plow's rows fill in as it answers, within two seconds. Without a
+  terminal it says to use `latch status`.
 - `latch setup`, at a terminal, walks a machine through logging in,
   connecting Google, and on a Mac turning on Messages and Contacts, none
   of which needs latch running, then offers to start it. Each step runs a latch command and says which, and is skipped once
