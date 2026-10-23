@@ -19,7 +19,7 @@ struct LiveTests {
     @Test func aNewRecordArrivesWhileWatchedAndLatchStopsAfter() async throws {
         let latch = URL(filePath: try Self.input("LATCH_LIVE_LATCH"))
         let state = try Self.input("LATCH_LIVE_STATE")
-        let host = try await LiveLatchClient(executable: latch, stateDir: state).localStatus().peer?.name
+        let host = try await LiveLatchClient(executable: latch, stateDir: state).localStatus().loggedInAs
         try await recordArrives(latch: latch, state: state, feedHost: nil, host: try #require(host))
     }
 

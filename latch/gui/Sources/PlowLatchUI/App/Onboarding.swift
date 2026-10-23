@@ -263,7 +263,7 @@ final class Onboarding {
         case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
         case .google: "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
-        case .start: starting ? "Starting…" : runInBackground && app.status?.serve.ready != true ? "Start Latch" : "Continue"
+        case .start: starting ? "Starting…" : runInBackground && app.status?.thisMachine.hosting.ready != true ? "Start Latch" : "Continue"
         case .done: "Open Latch"
         }
     }
@@ -700,14 +700,14 @@ final class Onboarding {
     /// background runs: macOS gives a running process no access granted
     /// after it started, so latch must restart to see it.
     var backgroundHostNeedsRestart: Bool {
-        guard messages.isNeeded || contacts.isNeeded, let serve = app.status?.serve else { return false }
+        guard messages.isNeeded || contacts.isNeeded, let serve = app.status?.thisMachine.hosting else { return false }
         return serve.ready && serve.managed && serve.attached != true
     }
 
     /// The same, for a host held by a terminal: the person restarts it
     /// there; the app never does.
     var terminalHostNeedsRestart: Bool {
-        guard messages.isNeeded || contacts.isNeeded, let serve = app.status?.serve else { return false }
+        guard messages.isNeeded || contacts.isNeeded, let serve = app.status?.thisMachine.hosting else { return false }
         return serve.ready && !backgroundHostNeedsRestart
     }
 
@@ -720,7 +720,7 @@ final class Onboarding {
         defer { restarting = false }
         restartError = nil
         do {
-            if app.status?.serve.running == true { try await client.stop() }
+            if app.status?.thisMachine.hosting.running == true { try await client.stop() }
             try await app.startHost()
             await app.refreshStatus()
             checkAccess()
@@ -756,7 +756,7 @@ final class Onboarding {
         defer { starting = false }
         startError = nil
         do {
-            if runInBackground, app.status?.serve.ready != true { try await app.startHost() }
+            if runInBackground, app.status?.thisMachine.hosting.ready != true { try await app.startHost() }
             if app.loginItemOffered { try app.setLoginItem(runInBackground && startAtLogin) }
             started = runInBackground
             await app.refreshStatus()

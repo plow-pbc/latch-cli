@@ -56,7 +56,7 @@ private struct HostSection: View {
                         Text(action == .restarting ? "Restarting…" : "Stopping…").foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if app.status?.serve.running == true {
+                    if app.status?.thisMachine.hosting.running == true {
                         Button("Restart") { Task { await app.restartHost() } }
                             .help("Stop Latch and start it again as it last ran")
                         Button("Stop…") { stopping = true }
@@ -74,7 +74,7 @@ private struct HostSection: View {
                         LabeledContent("Version") { Text(version).textSelection(.enabled).multilineTextAlignment(.trailing) }
                     }
                     DisclosureGroup("Details") {
-                        LabeledContent("Key") { Text(status.peer?.key ?? "—").font(.body.monospaced()).textSelection(.enabled) }
+                        LabeledContent("Key") { Text(status.thisMachine.key ?? "—").font(.body.monospaced()).textSelection(.enabled) }
                         LabeledContent("State folder") { Text(app.client.stateDir).font(.body.monospaced()).textSelection(.enabled) }
                     }
                 }
@@ -96,7 +96,7 @@ private struct HostSection: View {
 
     private func stateText(_ state: HostState) -> String {
         if host.isThisMac {
-            if let serve = app.status?.serve, serve.running {
+            if let serve = app.status?.thisMachine.hosting, serve.running {
                 let how = serve.managed ? " · in the background" : serve.attached == true ? " · in a terminal" : ""
                 return "\(state.title)\(how)"
             }

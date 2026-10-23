@@ -10,7 +10,7 @@
 use crate::failure::{Failure, code};
 use crate::login;
 use crate::plow::{Peer, Plow};
-use crate::state::StateDir;
+use crate::state::{Config, StateDir};
 
 /// Owner configuration without a target, or naming this peer, stays local.
 pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failure> {
@@ -26,11 +26,7 @@ pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failu
 /// registers again first: a host refuses a caller Plow does not know.
 pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Failure> {
     let config = state.require_config()?;
-    if asked.as_deref() == Some(config.peer.name.as_str())
-        || (asked.is_none()
-            && (config.peer.relay_url.is_some()
-                || crate::transport::local_socket_path(&state.path).exists()))
-    {
+    if this_machine_chosen(state, &config, asked.as_deref()) {
         return Ok(Peer {
             this_machine: true,
             ..config.peer
@@ -42,6 +38,18 @@ pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Fa
         login::register_again(state).await?;
     }
     pick(asked.as_deref(), &only_hosts(peers, &own_key))
+}
+
+/// Whether `asked` (or, naming none, the default) is this machine itself:
+/// it names it, or names nothing and this machine has served or serves now.
+pub fn this_machine_chosen(state: &StateDir, config: &Config, asked: Option<&str>) -> bool {
+    match asked {
+        Some(name) => name == config.peer.name,
+        None => {
+            config.peer.relay_url.is_some()
+                || crate::transport::local_socket_path(&state.path).exists()
+        }
+    }
 }
 
 /// The peers that accept connections (those with a relay URL), with this

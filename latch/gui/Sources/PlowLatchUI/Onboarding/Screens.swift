@@ -435,7 +435,7 @@ struct AccessView: View {
             }
             if let error = flow.restartError {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(flow.app.status?.serve.running == true ? "Latch couldn't restart." : "Latch is stopped. It couldn't start again.")
+                    Text(flow.app.status?.thisMachine.hosting.running == true ? "Latch couldn't restart." : "Latch is stopped. It couldn't start again.")
                     ErrorText(error: error, titled: true).font(.callout).foregroundStyle(Brand.clay)
                     Button(flow.restarting ? "Restarting…" : "Try again") { Task { await flow.restartLatch() } }
                         .disabled(flow.restarting)
@@ -513,9 +513,9 @@ struct StartView: View {
             if app.loginItemOffered, !flow.runInBackground {
                 Text("Latch can start when you log in only if it runs now.").foregroundStyle(Brand.muted)
             }
-            if let blocked = app.status?.serve.blocked {
+            if let blocked = app.status?.thisMachine.hosting.blocked {
                 ErrorText(error: .failed(blocked)).foregroundStyle(Brand.clay).font(.callout)
-            } else if app.status?.serve.ready == true {
+            } else if app.status?.thisMachine.hosting.ready == true {
                 Text("Latch is already running on this Mac.").foregroundStyle(Brand.muted)
             }
             if let error = flow.startError {
@@ -524,7 +524,7 @@ struct StartView: View {
             Text("Your Mac stays reachable while it's awake and Latch is running.").foregroundStyle(Brand.muted)
             // Starting the host can raise macOS's Local Network prompt: say so
             // before it appears, and what each answer means. It never gates.
-            if flow.runInBackground, app.status?.serve.ready != true {
+            if flow.runInBackground, app.status?.thisMachine.hosting.ready != true {
                 Text("macOS may ask to let \(Text(AppName.shown).bold()) find devices on local networks. Allow it so your agents can connect directly and, when your rules let them, reach those devices. Without it, Latch still runs, but connections may be slower and tasks that need local devices may fail.")
                     .foregroundStyle(Brand.muted)
             }
@@ -568,7 +568,7 @@ struct DoneView: View {
                     PanelRow(symbol: row.symbol, title: row.title, state: row.state, stateColor: row.set ? Brand.volt : Brand.muted)
                 }
             }
-            Text(app.status?.serve.ready == true ? "Your agents can now use this Mac." : "You can review or change your setup in Latch.")
+            Text(app.status?.thisMachine.hosting.ready == true ? "Your agents can now use this Mac." : "You can review or change your setup in Latch.")
                 .foregroundStyle(Brand.muted)
                 .multilineTextAlignment(.center)
             Spacer(minLength: 0)
@@ -595,8 +595,8 @@ enum Summary {
 
     static func rows(app: AppModel, flow: Onboarding?) -> [Row] {
         let failed = app.status == nil && app.statusError != nil
-        let loggedIn = app.status?.peer != nil
-        let serving = app.status?.serve.ready == true
+        let loggedIn = app.status?.login != nil
+        let serving = app.status?.thisMachine.hosting.ready == true
         // A skip says nothing about what latch has: "Not set up" is only
         // ever latch's answer.
         func connector(_ names: [String]) -> (String, Bool) {

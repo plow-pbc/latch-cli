@@ -313,7 +313,7 @@ def fake_latch(version, log, managed=True, stop_ok=True, start_ok=True, running=
     or not, another version's or not) on `status --local`, and writes each
     stop and start it does to `log`. `stop`, if given, is its whole stop."""
     blocked = '{"code":"other_version","message":"a host from another latch version"}'
-    serve = '{"serve":{"running":%s,"ready":%s,"managed":%s,"attached":%s,"blocked":%s}}' % (
+    serve = '{"this_machine":{"hosting":{"running":%s,"ready":%s,"managed":%s,"attached":%s,"blocked":%s}}}' % (
         str(running).lower(), str(running and not other_version).lower(), str(managed).lower(),
         str(attached).lower(), blocked if other_version else "null")
     if stop is None:

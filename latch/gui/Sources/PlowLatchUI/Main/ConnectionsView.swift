@@ -111,7 +111,7 @@ struct ConnectionsView: View {
                     Text("None").foregroundStyle(.secondary)
                 }
                 ForEach(devices) { device in
-                    let thisMac = device.key == app.status?.peer?.key
+                    let thisMac = device.key == app.status?.thisMachine.key
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(thisMac ? "\(device.name) (this Mac)" : device.name)

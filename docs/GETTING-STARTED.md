@@ -113,9 +113,9 @@ latch checks every 3 seconds and then prints `Logged in as <name>.`
 Check it:
 
 ```sh
-latch status            # JSON: this peer, your Plow URL, and the hosts it can reach
-latch status --pretty   # the same, indented; its key art is to compare between machines
-latch status --local    # only this machine: state folder, login and serve. Works offline
+latch status            # JSON: your account, this machine, and the account's hosts
+latch status --pretty   # the same, indented
+latch status --local    # only this machine: login, whether it hosts, state folder. Works offline
 ```
 
 ## 3. Serve this machine
@@ -152,7 +152,7 @@ host is `my-mac`; use the name your host logged in with.
 
 ```sh
 latch login --name my-laptop
-latch status    # "hosts":[{"name":"my-mac","online":true,…}]
+latch status    # "hosts":[{"name":"my-mac",…,"online":true,…}]
 ```
 
 To try it on the serving machine, use the same state folder as `latch serve`;

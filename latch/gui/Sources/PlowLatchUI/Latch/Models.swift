@@ -2,13 +2,20 @@ import Foundation
 
 /// `latch status --local`: what this Mac knows about its own latch.
 nonisolated struct LocalStatus: Decodable, Equatable {
-    struct Peer: Decodable, Equatable {
-        var name: String
-        /// This machine's key: the `caller` on records of its own requests.
-        var key: String?
+    /// This machine's login, as Plow calls it: `device` or `agent`.
+    struct Login: Decodable, Equatable {
+        var kind: String
     }
 
-    struct Serve: Decodable, Equatable {
+    /// The machine whose status this is: its name and key once logged in
+    /// (the key is the `caller` on records of its own requests).
+    struct ThisMachine: Decodable, Equatable {
+        var name: String?
+        var key: String?
+        var hosting: Hosting
+    }
+
+    struct Hosting: Decodable, Equatable {
         /// `starting`, `serving`, `stopped` or `error`.
         var state: String
         /// A `latch serve` holds this state folder.
@@ -30,15 +37,20 @@ nonisolated struct LocalStatus: Decodable, Equatable {
         var build: Int?
     }
 
-    var peer: Peer?
-    var serve: Serve
+    /// nil before login: logged in is this, never whether a name is known.
+    var login: Login?
+    var thisMachine: ThisMachine
     /// The bundle's latch, in words: version, commit and build.
     var version: String?
     var lastError: LatchFailure?
     var update: Update?
+
+    /// This machine's name once logged in; nil before login.
+    var loggedInAs: String? { login == nil ? nil : thisMachine.name }
 }
 
-/// `latch status`: the account's hosts, as Plow's directory lists them.
+/// `latch status`: the account's hosts, as Plow's directory lists them;
+/// nil before login.
 nonisolated struct AccountStatus: Decodable, Equatable {
     struct Host: Decodable, Equatable {
         var key: String
@@ -53,18 +65,9 @@ nonisolated struct AccountStatus: Decodable, Equatable {
             case key, name, lastSeenAt, online
             case isThisMac = "self"
         }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            key = try c.decode(String.self, forKey: .key)
-            name = try c.decode(String.self, forKey: .name)
-            lastSeenAt = try c.decodeIfPresent(Date.self, forKey: .lastSeenAt)
-            online = try c.decodeIfPresent(Bool.self, forKey: .online)
-            isThisMac = try c.decodeIfPresent(Bool.self, forKey: .isThisMac) ?? false
-        }
     }
 
-    var hosts: [Host]
+    var hosts: [Host]?
 }
 
 /// What to text, from `latch login --events`. The code is a credential:
@@ -94,13 +97,14 @@ nonisolated struct LoginLine: Decodable {
     var event: LoginEvent?
 
     private enum Keys: String, CodingKey { case type, peer, error }
+    private struct Peer: Decodable { var name: String }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .type) {
         case "code": event = .code(try LoginCode(from: decoder))
         case "waiting": event = .waiting
-        case "verified": event = .verified(name: try c.decode(LocalStatus.Peer.self, forKey: .peer).name)
+        case "verified": event = .verified(name: try c.decode(Peer.self, forKey: .peer).name)
         case "expired": event = .expired
         case "error": event = .error(try c.decode(LatchFailure.self, forKey: .error))
         default: event = nil

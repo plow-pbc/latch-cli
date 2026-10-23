@@ -245,12 +245,12 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "status",
         runs_on: |_| RunsOn::Either,
-        output: "This peer, its Plow and the hosts it can reach; each key's art (`art`) to compare between machines; with --local, only this machine's own latch, asking no one, its `serve.deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable; with --host, that host's own `status --local` (owner devices only); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
+        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked` and `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required or not_logged_in), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
         examples: &[
-            ex("Which hosts can I reach?", &["status"]),
+            ex("Who am I, and which hosts can I reach?", &["status"]),
             ex("This machine's own latch, offline", &["status", "--local"]),
             ex("Another host's own latch", &["status", "--host", "studio"]),
             ex(

@@ -23,8 +23,8 @@ echo "${LATCH_HOST:+LATCH_HOST=$LATCH_HOST }$*" >> "$STUB/calls"
 state() { if [ -f "$STUB/$1" ]; then echo true; else echo false; fi; }
 case "$*" in
   "status --local")
-    if [ -f "$STUB/peer" ]; then peer='{"name":"mac","key":"k","kind":"device"}'; else peer=null; fi
-    echo "{\"peer\":$peer,\"serve\":{\"running\":$(state ready),\"ready\":$(state ready)}}" ;;
+    if [ -f "$STUB/peer" ]; then login='{"kind":"device"}' name='"mac"'; else login=null name=null; fi
+    echo "{\"login\":$login,\"this_machine\":{\"name\":$name,\"hosting\":{\"running\":$(state ready),\"ready\":$(state ready)}}}" ;;
   login)
     if [ -f "$STUB/taken" ]; then
       printf 'A machine named "mac" already exists. Replace it? [y/N] ' >&2

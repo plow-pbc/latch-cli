@@ -30,6 +30,22 @@ struct ResumeTests {
         #expect(loggedOut.destination(loggedIn: false) == .onboarding(.login))
     }
 
+    /// Logged in is what latch's `login` says: a Mac latch reports signed
+    /// out opens onboarding at Log in, though its setup was finished.
+    @MainActor @Test func aSignedOutMacOpensOnboardingAtLogIn() async {
+        let client = ScriptedClient { _ in nil }
+        client.status = Fixtures.loggedOut
+        let store = ProgressStore(memory: .init(), stateDir: client.stateDir)
+        store.save(Progress(passed: [.welcome: .continued, .login: .continued], finished: true))
+        let signedOut = AppModel(client: client, store: store, still: true)
+        await signedOut.resumeOnboarding()
+        #expect(signedOut.onboarding?.step == .login)
+        client.status = Fixtures.serving
+        let signedIn = AppModel(client: client, store: store, still: true)
+        await signedIn.resumeOnboarding()
+        #expect(signedIn.onboarding == nil)
+    }
+
     @Test func setUpAgainWalksEveryScreen() {
         let all = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .continued,
                                     .google: .skipped, .access: .skipped, .start: .continued, .done: .continued], finished: true)
@@ -87,12 +103,12 @@ struct DecodingTests {
 
     @Test func localStatusDecodes() throws {
         let serving: LocalStatus = try Fixtures.decode(Fixtures.serving)
-        #expect(serving.peer?.name == "studio")
-        #expect(serving.serve.state == "serving")
+        #expect(serving.loggedInAs == "studio")
+        #expect(serving.thisMachine.hosting.state == "serving")
         let blocked: LocalStatus = try Fixtures.decode(Fixtures.otherVersion)
-        #expect(blocked.serve.blocked?.code == "other_version")
+        #expect(blocked.thisMachine.hosting.blocked?.code == "other_version")
         let loggedOut: LocalStatus = try Fixtures.decode(Fixtures.loggedOut)
-        #expect(loggedOut.peer == nil)
+        #expect(loggedOut.login == nil && loggedOut.loggedInAs == nil)
     }
 
     @Test func rulesTryVerdictsDecode() throws {
@@ -782,7 +798,7 @@ struct ClosingTests {
         client.serveFailure = LatchFailure(code: "serve_failed", message: "the host did not answer within 30 s; see serve.log")
         await flow.restartLatch()
         #expect(flow.restartError?.details == "the host did not answer within 30 s; see serve.log")
-        #expect(app.status?.serve.state == "stopped")
+        #expect(app.status?.thisMachine.hosting.state == "stopped")
         // Try again: the host is stopped already, so it is only started.
         client.serveFailure = nil
         await flow.restartLatch()
