@@ -769,10 +769,53 @@ final class AppModel {
 
     /// The record Activity's inspector shows; Home's recent rows set it.
     var selectedRecord: AuditRecord.ID?
-    /// Activity's filters, kept as hosts change; `showConnections` also
-    /// shows the owner's reads.
+    /// Activity's filters, kept as hosts change: its outcome, connections
+    /// and the owner's reads shown too, text to search for, and the one
+    /// agent asked for on one host.
     var activityFilter = ActivityView.Filter.all
     var showConnections = false
+    var activitySearch = ""
+    var activityAgent: AgentTarget?
+
+    /// An agent's requests of a host: that host's Activity, narrowed to
+    /// that agent, every outcome and no search.
+    func openActivity(_ host: HostEntry, agent uid: String) {
+        chosenHost = host.name
+        place = .host(.activity)
+        activityAgent = AgentTarget(host: host.name, agent: uid)
+        activityFilter = .all
+        activitySearch = ""
+    }
+
+    /// The selected record, while Activity lists it.
+    func selectedRecord(in rows: [AuditRecord]) -> AuditRecord? {
+        rows.first { $0.id == selectedRecord }
+    }
+
+    /// The agent Activity narrows to on a host: only the one asked for
+    /// there.
+    func activityAgent(on host: HostEntry) -> String? {
+        activityAgent?.host == host.name ? activityAgent?.agent : nil
+    }
+
+    /// What Activity lists of a host's loaded records, newest first: those
+    /// its filters all match. The agent is matched by uid, never by name.
+    func activityRows(_ records: [AuditRecord], on host: HostEntry) -> [AuditRecord] {
+        let agent = activityAgent(on: host), hostKey = key(of: host)
+        let query = activitySearch.trimmingCharacters(in: .whitespaces).lowercased()
+        return records.reversed().filter { record in
+            guard showConnections || !record.isBackground else { return false }
+            if let agent, record.agent != agent { return false }
+            switch activityFilter {
+            case .all: break
+            case .allowed: guard record.decision == "allow" else { return false }
+            case .refused: guard record.isRefused else { return false }
+            }
+            guard !query.isEmpty else { return true }
+            let caller = record.callerLabel(hostKey: hostKey, hostName: host.name, isThisMac: host.isThisMac)
+            return [record.command ?? "", caller.who, caller.kind, record.status.title].contains { $0.lowercased().contains(query) }
+        }
+    }
 
     /// Follows `status --local --follow` until the main window closes, so
     /// this Mac's state is always latch's latest without asking again.

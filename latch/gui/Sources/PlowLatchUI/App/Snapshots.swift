@@ -487,6 +487,37 @@ package enum SnapshotRunner {
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 1180, height: 640), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
+            // Activity's scope bar at the default and narrow sizes: an
+            // agent's link (its chip), no match in what's loaded, reading,
+            // a host out of reach, and a read that failed.
+            let scout = "a74f38668570a45ddc4b762ba0465d74"
+            let scopes: [(String, (AppModel, HostEntry) -> Void)] = [
+                ("24-activity-agent-chip", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.openActivity(studio, agent: scout)
+                }),
+                ("24-activity-no-match", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.openActivity(studio, agent: scout)
+                    app.activitySearch = "Taxes"
+                }),
+                ("24-activity-reading", { _, _ in }),
+                ("24-activity-unreachable", { app, studio in app.feed(for: studio).stage("", error: unreachable) }),
+                ("24-activity-read-failure", { app, studio in app.feed(for: studio).stage("", error: busy) }),
+            ]
+            for (name, stage) in scopes {
+                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", CGSize(width: 900, height: 600))] {
+                    let app = AppModel(client: FakeLatchClient(), still: true)
+                    app.stage(status: try Fixtures.decode(Fixtures.serving))
+                    app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                    app.place = .host(.activity)
+                    guard let studio = app.host else { continue }
+                    stage(app, studio)
+                    _ = app.stage(.done, progress: full)
+                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
+            }
         }
         // The Full Disk Access helper, as wide as it floats under a
         // 715-point System Settings window: waiting, mid-drag, granted.

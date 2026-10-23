@@ -123,6 +123,8 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
     var hosting = false
     var refusal = LatchFailure(code: "no_host_here", message: "this machine has never served")
     private(set) var follows = 0
+    /// Where each follow picked up.
+    private(set) var afters: [String?] = []
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(hosting ? Fixtures.serving : Fixtures.stopped) }
     func accountStatus() async throws -> AccountStatus { throw LatchError.unreachable("no Plow") }
@@ -259,6 +261,8 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     private(set) var pages = 0
     private(set) var follows = 0
+    /// Where each follow picked up.
+    private(set) var afters: [String?] = []
     /// What `audit --follow` streams, given how many follows came before;
     /// nothing by default.
     var following: (Int) -> AsyncThrowingStream<AuditLine, Error> = { _ in AsyncThrowingStream { _ in } }
@@ -296,6 +300,7 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
         follows += 1
+        afters.append(after)
         return following(follows - 1)
     }
     func perform(_ args: [String]) async throws {}
