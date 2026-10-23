@@ -25,7 +25,6 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry { try Fixtures.decode(Fixtures.allow) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> {
         AsyncThrowingStream { continuation in
@@ -42,6 +41,17 @@ nonisolated struct FakeLatchClient: LatchClient {
                 if let line = try? LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)) { continuation.yield(line) }
             }
         }
+    }
+    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {}
+    func agents(host: String?) async throws -> AgentsList {
+        switch host {
+        case nil: try Fixtures.decode(Fixtures.agents)
+        case "pi-kitchen"?: try Fixtures.decode(Fixtures.agentsKitchen)
+        default: try Fixtures.decode(Fixtures.agentsStudio)
+        }
+    }
+    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+        try Fixtures.decode(Fixtures.tries["not-covered"]!)
     }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
@@ -128,6 +138,25 @@ nonisolated enum Fixtures {
 {"cursor":"3f939488fb20e4e23cc4865e9bf21b646e7425c09724a5e1585930a71e64af37","record":{"agent":null,"caller":"beded256c96e63e4c9af3aef238e3c4aad0c6bfa88312f8b77f107f2449788d9","caller_name":"laptop","decision":"allow","details":{"args":null,"gate":null,"started":null},"id":"3f939488fb20e4e23cc4865e9bf21b646e7425c09724a5e1585930a71e64af37","op":"connect","outcome":"connected","time":"2026-10-23T05:00:35.861887Z"},"type":"record"}
 {"cursor":"3f939488fb20e4e23cc4865e9bf21b646e7425c09724a5e1585930a71e64af37","has_older":false,"type":"caught_up"}
 """#
+    // `latch agents [--host]`, `rules show --host` and `rules try` from laptop,
+    // real runs on two hosts (pi-kitchen refusing helper exec), names and
+    // home folders shortened.
+    static let agents = #"{"agents":[{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.523892","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":null,"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.569323","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.604826","line":{"name":null,"number":"+15550000003"},"name":"helper","standing":null,"status":null,"uid":"3971582e59baad83250141c8dcc95855"}],"host":null}"#
+    static let agentsStudio = #"{"agents":[{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.523892","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":{"exec_blocked":false,"own_rules":true},"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.569323","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.604826","line":{"name":null,"number":"+15550000003"},"name":"helper","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"3971582e59baad83250141c8dcc95855"}],"host":{"name":"studio","online":true}}"#
+    static let agentsKitchen = #"{"agents":[{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.523892","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.569323","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.604826","line":{"name":null,"number":"+15550000003"},"name":"helper","standing":{"exec_blocked":true,"own_rules":false},"status":null,"uid":"3971582e59baad83250141c8dcc95855"}],"host":{"name":"pi-kitchen","online":true}}"#
+    static let agentsKitchenOffline = #"{"error":{"code":"host_offline","message":"host \"pi-kitchen\" is offline; nothing was sent. Start `latch serve` there"}}"#
+    static let rulesStudio = #"{"agents":[{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd","revision":"a33189e9c51bcecdd839cfc226d392a7ce6c00eb700b08ce25fa325e2c29f780","text":"scout may run builds and tests in ~/Projects/latch-demo."}],"audit_id":"94b02a5438b53063f41edeb8a2babaaefb3ffaefee225dbfe5e94a2ddff078bf","deny_exec":{"agent_uids":[],"every_agent":false},"every_agent":{"revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c","text":"Agents may list and read files in ~/Projects. Never delete anything, and never touch ~/Finance.\n"},"host":"studio","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
+    static let rulesKitchen = #"{"agents":[],"audit_id":"d5776f75782524ce226a62a46607b95c3382c957b8b44a342456171d2345fd49","deny_exec":{"agent_uids":["3971582e59baad83250141c8dcc95855"],"every_agent":false},"every_agent":null,"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
+    static let tries: [String: String] = [
+        "allow-owner": #"{"as":"owner","gate":{"caller":"owner_device","cost":0.000011,"latency_ms":268,"model":"typesafe/jev-1.14-20261014","model_request":"req_nzfeeqvhlqnslxsf","p":{"COVERED":0.9,"FORBIDDEN":0.08,"NOT_COVERED":0.02},"rule":"refused when forbidden >= within instructions","rules":{"agent":null,"host":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"},"source":"owner_request","verdict":"allow"},"host":"studio","request":{"action":{"argv":["ls","Projects"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me","writes":[]},"op":"exec"},"verdict":"allow"}"#,
+        "allow-scout": #"{"as":{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},"gate":{"caller":"agent","cost":0.00001,"latency_ms":230,"model":"typesafe/jev-1.14-20261014","model_request":"req_xcxovwucwqgsvcis","p":{"COVERED":0.56,"FORBIDDEN":0.01,"NOT_COVERED":0.43},"rule":"allowed when within instructions >= 0.50","rules":{"agent":"a33189e9c51bcecdd839cfc226d392a7ce6c00eb700b08ce25fa325e2c29f780","host":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"},"source":"rules","verdict":"allow"},"host":"studio","request":{"action":{"argv":["make","test"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me/Projects/latch-demo","writes":[]},"op":"exec"},"verdict":"allow"}"#,
+        "not-covered": #"{"as":{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},"gate":{"caller":"agent","cost":0.00001,"latency_ms":251,"model":"typesafe/jev-1.14-20261014","model_request":"req_ikrytewoewrfscag","p":{"COVERED":0.0,"FORBIDDEN":0.0,"NOT_COVERED":1.0},"rule":"allowed when within instructions >= 0.50","rules":{"agent":"a33189e9c51bcecdd839cfc226d392a7ce6c00eb700b08ce25fa325e2c29f780","host":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"},"source":"rules","verdict":"not_covered"},"host":"studio","request":{"action":{"argv":["curl","--version"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me","writes":[]},"op":"exec"},"verdict":"not_covered"}"#,
+        "said-no": #"{"as":{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},"gate":{"caller":"agent","cost":0.00001,"latency_ms":213,"model":"typesafe/jev-1.14-20261014","model_request":"req_dvpscpwflpqagaja","p":{"COVERED":0.0,"FORBIDDEN":0.99,"NOT_COVERED":0.01},"rule":"allowed when within instructions >= 0.50","rules":{"agent":"a33189e9c51bcecdd839cfc226d392a7ce6c00eb700b08ce25fa325e2c29f780","host":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"},"source":"rules","verdict":"owner_said_no"},"host":"studio","request":{"action":{"argv":["cat","Finance/2026.csv"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me","writes":[]},"op":"exec"},"verdict":"owner_said_no"}"#,
+        "no-intent": #"{"as":{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},"gate":{"caller":"agent","latency_ms":11,"rule":"allowed when within instructions >= 0.50","rules":null,"verdict":"no_intent"},"host":"pi-kitchen","request":{"action":{"argv":["ls"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me","writes":[]},"op":"exec"},"verdict":"no_intent"}"#,
+        "host-refused": #"{"as":{"agent_name":"helper","agent_uid":"3971582e59baad83250141c8dcc95855"},"gate":null,"host":"pi-kitchen","refused":{"code":"exec_denied","message":"You turned exec off for this agent on this host when you started it with `latch serve --deny-exec=3971582e59baad83250141c8dcc95855`. Start it again without that flag to turn exec back on."},"request":{"action":{"argv":["ls"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me","writes":[]},"op":"exec"},"verdict":"host_refused"}"#,
+        "new-agent": #"{"as":"new_agent","gate":{"caller":"new_agent","cost":0.00001,"latency_ms":212,"model":"typesafe/jev-1.14-20261014","model_request":"req_nnlzesajgklnyqbg","p":{"COVERED":0.58,"FORBIDDEN":0.01,"NOT_COVERED":0.41},"rule":"allowed when within instructions >= 0.50","rules":{"agent":null,"host":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"},"source":"rules","verdict":"allow"},"host":"studio","request":{"action":{"argv":["ls","Projects"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me","writes":[]},"op":"exec"},"verdict":"allow"}"#,
+        "draft": #"{"as":{"agent_name":"helper","agent_uid":"3971582e59baad83250141c8dcc95855"},"gate":{"caller":"agent","cost":0.00001,"latency_ms":242,"model":"typesafe/jev-1.14-20261014","model_request":"req_hplzksgpinmlheze","p":{"COVERED":0.21,"FORBIDDEN":0.0,"NOT_COVERED":0.79},"rule":"allowed when within instructions >= 0.50","rules":{"agent":null,"host":"7d8f456802c7a988d09fc874e41d23543e9b8e2d810ab5c7d110757f193a90ff"},"source":"rules","verdict":"not_covered"},"host":"studio","request":{"action":{"argv":["touch","Projects/x"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me","writes":[]},"op":"exec"},"verdict":"not_covered"}"#,
+    ]
     static let code = #"{"type":"code","code":"JFO3S","send_to":"+15550000001","send_to_display":"+1 555-000-0001","smsto":"SMSTO:+15550000001:JFO3S","sms_link":"sms:+15550000001?&body=JFO3S","expires_at":null}"#
     static let allow = #"{"verdict":"allow","host":"studio","as":"owner","request":{"op":"exec","action":{}},"gate":null}"#
     static let notCovered = #"{"verdict":"not_covered","host":"studio","as":"owner","request":{"op":"google","action":{}},"gate":null}"#
@@ -346,6 +375,50 @@ package enum SnapshotRunner {
                     .sizeThatFits(in: CGSize(width: width, height: 400)).height.rounded(.up)
                 try await render(GrantPanelView(helper: helper).opacity(dragging ? 0.72 : 1), size: CGSize(width: width, height: height),
                                  dark: dark, background: false, file: output.appending(path: "10-fda-helper-\(name)-\(dark ? "dark" : "light").png"))
+            }
+        }
+        // Agents and Rules: real agents and standings (sidecar offline), an
+        // agent's page, a host's rules, and Try a request's verdicts.
+        for dark in [false, true] {
+            let sidecarOffline = Fixtures.studioHosts.replacingOccurrences(
+                of: #""name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:33.384336Z","online":true"#,
+                with: #""name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":null,"online":false"#)
+            let scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", helper = "3971582e59baad83250141c8dcc95855"
+            let screens: [(String, SidebarItem, String?, [String], (AppModel) throws -> Void)] = [
+                ("15-agents-pills", .agents, nil, [], { _ in }),
+                ("15-agent-page-helper", .agents, nil, [helper], { _ in }),
+                ("16-rules-studio-scout-try-allowed", .rules, nil, [], { app in
+                    app.rulesFocus = scout
+                    app.trial.stage(try Fixtures.decode(Fixtures.tries["allow-scout"]!), request: "exec --workdir ~/Projects/latch-demo -- make test",
+                                    caller: .agent(scout), on: "studio")
+                }),
+                ("16-rules-studio-try-you-said-no", .rules, nil, [], { app in
+                    app.trial.stage(try Fixtures.decode(Fixtures.tries["said-no"]!), request: "exec -- cat Finance/2026.csv",
+                                    caller: .agent(scout), on: "studio")
+                }),
+                ("16-rules-pi-kitchen-helper-exec-refused", .rules, "pi-kitchen", [], { app in
+                    app.rulesFocus = helper
+                    app.trial.stage(try Fixtures.decode(Fixtures.tries["host-refused"]!), request: "exec -- ls",
+                                    caller: .agent(helper), on: "pi-kitchen")
+                }),
+            ]
+            for (name, section, chosen, path, stage) in screens {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(sidecarOffline))
+                app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [
+                    "studio": .success(try Fixtures.decode(Fixtures.agentsStudio)),
+                    "pi-kitchen": .success(try Fixtures.decode(Fixtures.agentsKitchen)),
+                ])
+                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio))), for: "studio")
+                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesKitchen))), for: "pi-kitchen")
+                app.chosenHost = chosen
+                app.section = section
+                app.agentsPath = path
+                try stage(app)
+                _ = app.stage(.done, progress: full)
+                try await renderWindow(MainView().environment(app), size: CGSize(width: 1120, height: 700), dark: dark,
+                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
         // The welcome entrance, mid-way.

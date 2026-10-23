@@ -19,14 +19,21 @@ nonisolated protocol LatchClient: Sendable {
     /// The same, with `--check-access`: whether Plow Latch has Full Disk
     /// Access, which takes a moment.
     func setupStatusCheckingAccess() async throws -> SetupStatus
+    /// `latch rules set --file -` (or `rules clear` for no text) on a host,
+    /// for every agent or, with `agent` (a uid), that agent's own, only if
+    /// they are still at `revision` (nil: there were none); otherwise latch
+    /// refuses with `stale_revision` and nothing changes.
+    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws
+    /// `latch agents [--host NAME]`.
+    func agents(host: String?) async throws -> AgentsList
+    /// `latch rules try`: the verdict `request` (as an agent would send it)
+    /// would get on a host now, as `agent` (a uid), a new agent, or you;
+    /// `draft` judges against unsaved rules for every agent.
+    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry
     /// `latch plugins list`, on this Mac's host or, with `host`, another.
     func pluginsList(host: String?) async throws -> PluginsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
     func vaultList(host: String?) async throws -> VaultList
-    /// `latch rules try --new-agent --draft - -- REQUEST`: the verdict a new
-    /// agent's request would get under these rules, sent on stdin and never
-    /// saved. Needs no running host.
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
     /// `latch status --local --follow`: this Mac's state, again whenever it
@@ -129,16 +136,35 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(SetupStatus.self, try await run(["setup", "--status", "--check-access"]))
     }
 
+    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {
+        let whose = on(host) + (agent.map { ["--agent", $0] } ?? [])
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // No rules to clear when there were none.
+            guard let revision else { return }
+            _ = try await run(["rules", "clear", "--revision", revision] + whose)
+        } else {
+            _ = try await run(["rules", "set", "--revision", revision ?? "none", "--file", "-"] + whose, input: Data(text.utf8))
+        }
+    }
+
+    func agents(host: String?) async throws -> AgentsList {
+        try decode(AgentsList.self, try await run(["agents"] + on(host)))
+    }
+
+    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+        var arguments = ["rules", "try"] + on(host)
+        if let agent { arguments += ["--agent", agent] }
+        if newAgent { arguments.append("--new-agent") }
+        if draft != nil { arguments += ["--draft", "-"] }
+        return try decode(RulesTry.self, try await run(arguments + ["--"] + request, input: draft.map { Data($0.utf8) }))
+    }
+
     func pluginsList(host: String?) async throws -> PluginsList {
         try decode(PluginsList.self, try await run(["plugins", "list"] + on(host)))
     }
 
     func vaultList(host: String?) async throws -> VaultList {
         try decode(VaultList.self, try await run(["vault", "list"] + on(host)))
-    }
-
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry {
-        try decode(RulesTry.self, try await run(["rules", "try", "--new-agent", "--draft", "-", "--"] + request, input: Data(draft.utf8)))
     }
 
     func enable(_ plugin: String) async throws -> GoogleEnabled? {

@@ -295,7 +295,8 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     /// `rules try` runs several at once.
     private let asked = Mutex<[(draft: String, request: [String])]>([])
     var tries: [(draft: String, request: [String])] { asked.withLock { $0 } }
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry {
+    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+        let draft = draft ?? ""
         asked.withLock { $0.append((draft, request)) }
         try await Task.sleep(for: pause)
         return try Fixtures.decode(#"{"verdict":"\#(verdict(draft, request))","host":"studio","as":"new agent","gate":null}"#)
