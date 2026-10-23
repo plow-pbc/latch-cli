@@ -124,6 +124,7 @@ where
         Connecting::Appeared => tokio::select! {
             enabled = enable() => enabled,
             () = crate::remote::stop_requested() => Err(unknown()),
+            () = reader_gone(events) => Err(unknown()),
         },
         // No one here to wait with: the link is the answer.
         Connecting::HandedOver(link) => match enabled {
@@ -251,6 +252,17 @@ fn accounts(connectors: &plow::Connectors) -> Vec<String> {
         .iter()
         .map(|account| account.account.clone())
         .collect()
+}
+
+/// Finishes once `--events`' stdout reader has gone; never without
+/// `--events`. The kernel has no wake-up for it, so it is looked at often.
+async fn reader_gone(events: bool) {
+    if !events {
+        return std::future::pending().await;
+    }
+    while !stdout_gone() {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// Whether stdout is a pipe or socket whose reader has gone: the kernel
