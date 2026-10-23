@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::plow::{self, ConnectLink, Plow};
 use crate::state::StateDir;
 use crate::term;
@@ -119,14 +119,15 @@ where
                 Ok(Some(result))
             }
             None => {
-                let mut failure = Failure::failed(
-                    "google_not_connected",
+                let mut failure = Failure::new(
+                    code::google_not_connected,
                     "No Google account is connected in Plow.".into(),
                 );
+                failure.next =
+                    Some(format!("open sign_in_url, finish Google sign-in, then {ENABLE}").into());
                 failure.details = json!({
                     "sign_in_url": link.url,
                     "expires_at": link.expires_at,
-                    "next": format!("Open sign_in_url, finish Google sign-in, then run {ENABLE}."),
                     "connect_url": page,
                 });
                 Err(failure)
@@ -146,11 +147,11 @@ enum Connecting {
 }
 
 fn timed_out() -> Failure {
-    let mut timeout = Failure::failed(
-        "sign_in_timeout",
+    let mut timeout = Failure::new(
+        code::sign_in_timeout,
         "No new Google account was observed before the wait ended.".into(),
     );
-    timeout.details = json!({"next": "latch setup --status"});
+    timeout.next = Some("latch setup --status".into());
     timeout
 }
 

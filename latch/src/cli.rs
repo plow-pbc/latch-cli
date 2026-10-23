@@ -28,7 +28,7 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
     (first == Some("standalone")).then_some("https://api.plow.co")
 }
 
-/// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
+/// The version `--version` prints (as `{"version": …}`), e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
 /// 03:45 UTC, local build, protocol plow/latch/4)`, or for a release build
 /// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
 /// came from (see `build.rs`), the protocol it speaks to peers and, for a
@@ -138,6 +138,11 @@ pub struct Cli {
     /// Directory of this latch instance: its key, Plow credential and config (~/.latch unless this build has another default)
     #[arg(long, global = true, value_name = "DIR", default_value = BUILD_STATE_DIR)]
     pub state_dir: Option<PathBuf>,
+
+    /// Indent the JSON a command prints, for a person to read; the same
+    /// content either way. Streams stay one line per object
+    #[arg(long, global = true)]
+    pub pretty: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -309,12 +314,7 @@ pub enum BrowserCommand {
         all: bool,
     },
     /// The page's text
-    Text {
-        /// Print only the text, as it is in the answer (the same cut and
-        /// the same fields left out), not JSON
-        #[arg(long)]
-        raw: bool,
-    },
+    Text,
     /// A PNG of the page, written to a file on this machine
     Screenshot {
         /// Where the PNG goes on this machine
@@ -1055,17 +1055,14 @@ pub struct FollowArgs {
 #[derive(Args, Debug)]
 #[command(group = clap::ArgGroup::new("target").args(["local", "host"]).multiple(true))]
 pub struct StatusArgs {
-    /// Show a card for a person, with key art to compare between machines, instead of JSON
-    #[arg(long)]
-    pub pretty: bool,
     /// Only this machine's own latch, asking no one: state folder, login,
     /// whether a host serves it and version. Works offline and before login
-    #[arg(long, conflicts_with = "pretty")]
+    #[arg(long)]
     pub local: bool,
     /// Another serving machine of the owner's to ask for its own `status
     /// --local`, the same JSON as there, with or without --local (owner
     /// devices only)
-    #[arg(long, conflicts_with = "pretty")]
+    #[arg(long)]
     pub host: Option<String>,
     /// With --local or --host: as JSON lines, then again each time it changes, until stopped (or, when stdin is a pipe, until it closes)
     #[arg(long, requires = "target")]
@@ -1383,7 +1380,9 @@ const EXEC_HELP: &str = "\
 Exit code and output:
   latch's own exit code says whether latch worked (0 ok, 1 failed, 2 usage,
   3 host unreachable, 4 denied, 5 connection lost). The command's own result
-  is `exit_code` (or `signal`, or `timed_out`) in the JSON printed on stdout.
+  is `exit_code` (or `signal`) in the JSON printed on stdout. A program that
+  runs past --timeout is stopped: latch exits 1 with a `timed_out` error
+  whose details hold what it printed until then.
   stdout and stderr are each kept up to 256 KiB (then `truncated` is true).
   For big or binary output, write it to a file and fetch it with `latch file get`.
 

@@ -26,7 +26,7 @@ use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::state::to_hex;
 
 /// One engine release: what install.sh fetches and latch launches.
@@ -129,8 +129,8 @@ impl CamoufoxPin {
     /// part against the pin. Run right before each launch.
     pub fn verified(&self, state_dir: &Path) -> Result<CamoufoxEngine, Failure> {
         let Some(build) = platform().and_then(|key| self.builds.get(key)) else {
-            return Err(Failure::failed(
-                "unsupported_platform",
+            return Err(Failure::new(
+                code::unsupported_platform,
                 format!(
                     "no {} build for {}/{}",
                     self.engine,
@@ -156,8 +156,7 @@ impl CamoufoxPin {
         ];
         checked(&root.join(RECEIPT), &parts).map_err(|detail| {
             Failure::new(
-                Exit::Denied,
-                "engine_unverified",
+                code::engine_unverified,
                 format!("{}: {detail}", self.engine),
             )
         })?;
@@ -212,8 +211,8 @@ impl Pin {
     /// against the pin. Run right before each launch.
     pub fn verified(&self, state_dir: &Path) -> Result<Engine, Failure> {
         let Some(build) = platform().and_then(|key| self.builds.get(key)) else {
-            return Err(Failure::failed(
-                "unsupported_platform",
+            return Err(Failure::new(
+                code::unsupported_platform,
                 format!(
                     "no {} build for {}/{}",
                     self.engine,
@@ -225,8 +224,7 @@ impl Pin {
         let recipe: Vec<String> = self.recipe.iter().chain(&build.args).cloned().collect();
         if let Some(arg) = recipe.iter().find(|arg| forbidden(arg)) {
             return Err(Failure::new(
-                Exit::Denied,
-                "engine_unverified",
+                code::engine_unverified,
                 format!("the {} launch recipe has {arg}", self.engine),
             ));
         }
@@ -238,8 +236,7 @@ impl Pin {
         let receipt = self.folder(state_dir).join(RECEIPT);
         checked(&receipt, &[(root, build.tree_sha256.as_str())]).map_err(|detail| {
             Failure::new(
-                Exit::Denied,
-                "engine_unverified",
+                code::engine_unverified,
                 format!("{}: {detail}", self.engine),
             )
         })?;
@@ -275,8 +272,8 @@ pub fn unnamed(name: &str) -> Option<&'static str> {
 fn not_installed(engine: &str, version: &str, at: &Path) -> Failure {
     let named = named(engine);
     let setup = format!("latch browser setup --engine {named}");
-    let mut failure = Failure::failed(
-        "engine_not_installed",
+    let mut failure = Failure::new(
+        code::engine_not_installed,
         format!(
             "{engine} {version} is not installed at {}; the host's owner installs it with \
              `{setup}` on the host",
@@ -442,6 +439,7 @@ fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
 
     #[test]
     fn the_pinned_recipe_keeps_the_sandbox_the_pipe_and_a_window() {

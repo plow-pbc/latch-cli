@@ -23,6 +23,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Notify;
 
 use super::{Host, Stopping, answer, failed};
+use crate::failure::code;
 use crate::lifecycle::{self, Phase};
 use crate::log::log;
 use crate::wire::{self, Request, Response};
@@ -94,7 +95,7 @@ pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, rec
         // took over the folder since it was sent.
         "host_stop" if request.args["pid"].as_u64() != Some(std::process::id().into()) => {
             let message = "this stop was for another host on this state folder".to_string();
-            answer(&mut send, &failed("not_this_host", message)).await;
+            answer(&mut send, &failed(code::not_this_host, message)).await;
         }
         "host_stop" => {
             answer(&mut send, &hello).await;
@@ -107,11 +108,11 @@ pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, rec
             let message = "this host was started detached, so no `latch serve` holds it; \
                            `latch dashboard` views it"
                 .to_string();
-            answer(&mut send, &failed("not_attached", message)).await;
+            answer(&mut send, &failed(code::not_attached, message)).await;
         }
         _ if host.lifetime.held.swap(true, Ordering::SeqCst) => {
             let message = "another `latch serve` already holds this host".to_string();
-            answer(&mut send, &failed("already_attached", message)).await;
+            answer(&mut send, &failed(code::already_attached, message)).await;
         }
         _ => match watch(host, hello, send, recv).await {
             Watched::Detached => {

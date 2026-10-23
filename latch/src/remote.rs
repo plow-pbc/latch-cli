@@ -13,7 +13,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::dial::{self, ANSWER_WITHIN};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::plow::Peer;
 use crate::state::StateDir;
@@ -145,11 +145,10 @@ fn printer(mut out: impl Write + Send + 'static) -> (mpsc::Sender<Value>, onesho
 
 /// A read lost midway changed nothing on the host: it can simply run again.
 fn dropped(host: &Peer) -> Failure {
-    let message = format!(
-        "the connection to host {:?} dropped; run this again",
-        host.name
-    );
-    Failure::new(Exit::Unreachable, "host_unreachable", message)
+    let message = format!("the connection to host {:?} dropped", host.name);
+    let mut failure = Failure::new(code::host_unreachable, message);
+    failure.next = Some("run this again".into());
+    failure
 }
 
 /// SIGTERM, Ctrl-C, or (when it is a pipe) stdin closing: whoever started

@@ -24,7 +24,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::exec::{check_path, is_hidden, resolve};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::sandbox::{open_at, open_folder};
 use crate::worker::WorkerSetup;
 
@@ -36,7 +36,7 @@ pub fn source(remote: &str, workers: &WorkerSetup) -> Result<PathBuf, Failure> {
         check_path(workers, &path, false)?;
     } else if is_hidden(workers, &path) {
         let message = format!("{remote} is latch state or a hidden path");
-        return Err(Failure::new(Exit::Denied, "bad_path", message));
+        return Err(Failure::new(code::bad_path, message));
     }
     Ok(path)
 }
@@ -52,8 +52,8 @@ pub fn destination(
     if path.is_dir() {
         let plain = name.filter(|name| Path::new(name).file_name() == Some(name.as_ref()));
         let Some(name) = plain else {
-            return Err(Failure::failed(
-                "is_a_directory",
+            return Err(Failure::new(
+                code::is_a_directory,
                 format!("{remote} is a folder, and the file has no plain name to go under"),
             ));
         };
@@ -61,19 +61,19 @@ pub fn destination(
         path = resolve(&workers.home, &path.join(name))?;
         if path.is_dir() {
             let message = format!("{} is a folder", path.display());
-            return Err(Failure::failed("is_a_directory", message));
+            return Err(Failure::new(code::is_a_directory, message));
         }
     }
     if !path.parent().is_some_and(Path::is_dir) {
         let message = format!("{remote}: no folder to put it in");
-        return Err(Failure::failed("not_found", message));
+        return Err(Failure::new(code::not_found, message));
     }
     check_path(workers, &path, true)?;
     // The latch this host runs stays as it is.
     let program = workers.program.canonicalize();
     if program.as_ref().is_ok_and(|program| *program == path) {
         let message = format!("{remote} is the latch this host runs");
-        return Err(Failure::new(Exit::Denied, "bad_path", message));
+        return Err(Failure::new(code::bad_path, message));
     }
     Ok(path)
 }
@@ -82,9 +82,10 @@ pub fn destination(
 pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Failure> {
     let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
         let message = format!("{} names no file", path.display());
-        return Err(Failure::failed("bad_path", message));
+        return Err(Failure::new(code::bad_path, message));
     };
-    let failed = |err: io::Error| Failure::failed("io_error", format!("{}: {err}", path.display()));
+    let failed =
+        |err: io::Error| Failure::new(code::io_error, format!("{}: {err}", path.display()));
     // The folder that was judged, or nothing: not one swapped for a symlink,
     // nor one under a folder swapped for one. It must pass again.
     let dir = open_folder(folder).map_err(|_| changed(folder))?;
@@ -147,8 +148,7 @@ fn mode_of(dir: &File, name: &[u8]) -> Option<u32> {
 
 fn changed(folder: &Path) -> Failure {
     Failure::new(
-        Exit::Denied,
-        "destination_changed",
+        code::destination_changed,
         format!(
             "{} changed after the put was checked; nothing was written",
             folder.display()
@@ -182,6 +182,7 @@ fn unlink(dir: &File, name: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
     use std::fs;
 
     /// A home folder of its own, symlinks resolved, with latch's state

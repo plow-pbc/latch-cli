@@ -4,6 +4,12 @@ Four commands let an app (the Mac app) drive latch without a terminal.
 Each prints JSON. Each reads only this machine's state folder, except for
 `login`, which talks to Plow. None of them prints a token.
 
+The streams among them (`login --events`, `status --local --follow`,
+`audit`, and also `logs`) print one JSON object per line, each with a `type`. The first
+line is always `{"type":"hello","schema":1}`: the schema the lines follow.
+Ignore fields and line types you do not know. `--pretty` never changes a
+stream's lines.
+
 ## `latch login --events`
 
 This logs in by text and reports each step as one JSON line on stdout.
@@ -12,6 +18,7 @@ Without `--events`, a login by text needs a person at a terminal; with
 already holds a login, the command goes straight to `verified`.
 
 ```
+{"type":"hello","schema":1}
 {"type":"code","code":"JFO3S","send_to":"+15550000001","send_to_display":"+1 555-000-0001","smsto":"SMSTO:+15550000001:JFO3S","sms_link":"sms:+15550000001?&body=JFO3S","expires_at":null}
 {"type":"waiting"}
 {"type":"verified","peer":{"name":"studio","key":"d9438ef1…","kind":"device"}}

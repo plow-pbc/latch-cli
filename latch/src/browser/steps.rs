@@ -43,7 +43,7 @@ use super::judged;
 use super::model::{self, CHECKABLE_P, RISKY_P};
 use super::plan::{Check, CheckKind, Literal, Op, Plan, Step};
 use super::session::Session;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Code, Exit, Failure, code};
 use crate::gate::Gate;
 use crate::model::Model;
 use crate::state::to_hex;
@@ -168,7 +168,7 @@ async fn send(
 }
 
 fn usage(message: String) -> Failure {
-    Failure::usage("bad_arguments", message)
+    Failure::new(code::bad_arguments, message)
 }
 
 /// A request id the client made: short, plain characters.
@@ -186,8 +186,8 @@ fn request_id(args: &Value) -> Result<String, Failure> {
 }
 
 fn model_unavailable(model: &Model, what: &str) -> Failure {
-    Failure::failed(
-        "model_unavailable",
+    Failure::new(
+        code::model_unavailable,
         format!(
             "{what} needs the decision model, and {}; nothing was sent",
             model.why_off()
@@ -197,8 +197,8 @@ fn model_unavailable(model: &Model, what: &str) -> Failure {
 
 /// The model failed while judging step `n`'s check, after its action went out.
 fn check_unavailable(model: &Model, n: usize) -> Failure {
-    Failure::failed(
-        "model_unavailable",
+    Failure::new(
+        code::model_unavailable,
         format!(
             "step {n}'s check needs the decision model, and {}; step {n}'s action was already sent, so look at the page before running it again",
             model.why_off()
@@ -219,8 +219,8 @@ async fn check_sentences(sentences: &[(usize, String)], model: &mut Model) -> Re
         .map_err(|_| model_unavailable(model, "a sentence check"))?;
     for ((n, sentence), p) in sentences.iter().zip(checkable) {
         if p < CHECKABLE_P {
-            let mut failure = Failure::usage(
-                "vague_condition",
+            let mut failure = Failure::new(
+                code::vague_condition,
                 format!(
                     "step {n}: {sentence:?} names a task, not something a page shows; say what the page will show, or use a typed check"
                 ),
@@ -334,9 +334,9 @@ pub async fn run(
             work.push(Work::Goal(step.clone()));
             continue;
         };
-        let at = |failure: Failure| Failure {
-            message: format!("step {}: {}", n + first, failure.message),
-            ..failure
+        let at = |mut failure: Failure| {
+            failure.message = format!("step {}: {}", n + first, failure.message);
+            failure
         };
         let mut refs: Vec<String> = literal.target.iter().cloned().collect();
         refs.extend(literal.fields.values().flatten().cloned());
@@ -698,8 +698,8 @@ struct Run<'a> {
     judgment: Option<Value>,
 }
 
-fn stopped(code: &str, message: String) -> Failure {
-    Failure::failed(code, message)
+fn stopped(code: Code, message: String) -> Failure {
+    Failure::new(code, message)
 }
 
 impl<'a> Run<'a> {
@@ -750,7 +750,7 @@ impl Run<'_> {
     ) -> Result<Done, Failure> {
         if self.left().is_zero() {
             return Err(stopped(
-                "deadline",
+                code::deadline,
                 format!("the plan's time ran out before step {n}"),
             ));
         }
@@ -761,7 +761,7 @@ impl Run<'_> {
                 .await?
         {
             return Err(stopped(
-                "check_not_met",
+                code::check_not_met,
                 format!(
                     "step {n}'s check already holds before the step, and it must change; nothing was sent"
                 ),
@@ -810,7 +810,7 @@ impl Run<'_> {
                 .await
             {
                 Err(failure) if failure.code == "context_changed" => Err(stopped(
-                    "stale_snapshot",
+                    code::stale_snapshot,
                     format!(
                         "{what} was judged on a page that changed while latch judged it; nothing was sent. Look at the page again"
                     ),
@@ -830,8 +830,7 @@ impl Run<'_> {
         }
         self.records.push(record);
         let mut failure = Failure::new(
-            Exit::Denied,
-            "confirm_needed",
+            code::confirm_needed,
             format!(
                 "{what} looks like it can't be undone; nothing was sent. If it is what the task needs, confirm it with `latch browser do --confirm {id}`"
             ),
@@ -906,8 +905,7 @@ impl Run<'_> {
         };
         let stale = |why: &str| {
             let mut failure = Failure::new(
-                Exit::Denied,
-                "confirm_stale",
+                code::confirm_stale,
                 format!("confirmation {id} {why}; nothing was sent. Look at the page again"),
             );
             failure.details = json!({"confirmation": id});
@@ -1170,7 +1168,7 @@ impl Run<'_> {
             && let Err(failure) = &mut outcome
             && matches!(failure.code.as_str(), "stale_snapshot" | "fill_refused")
         {
-            failure.code = "context_changed".into();
+            failure.recode(code::context_changed);
         }
         let result = match &outcome {
             Ok(_) => "dispatched",
@@ -1283,7 +1281,7 @@ impl Run<'_> {
             }
             if waited["stale"] == true {
                 let mut failure = stopped(
-                    "stale_snapshot",
+                    code::stale_snapshot,
                     format!("step {n}'s field check names a ref from a page that has changed"),
                 );
                 failure.details = json!({"evidence": evidence});
@@ -1291,7 +1289,7 @@ impl Run<'_> {
             }
             if waited["met"] != true {
                 let mut failure = stopped(
-                    "check_not_met",
+                    code::check_not_met,
                     format!("step {n}'s check did not hold within {}s", within.as_secs()),
                 );
                 failure.details = json!({"evidence": evidence});
@@ -1324,7 +1322,7 @@ impl Run<'_> {
         evidence["check"] = json!("sentence");
         if verdict.result != "met" {
             let mut failure = stopped(
-                "check_not_met",
+                code::check_not_met,
                 format!(
                     "step {n}'s check {:?} was judged {}",
                     check.value,
@@ -1593,8 +1591,7 @@ pub async fn confirm_fill(
         shown["suggestion"] = json!(id);
     }
     let mut failure = Failure::new(
-        Exit::Denied,
-        "confirm_needed",
+        code::confirm_needed,
         format!(
             "this fill releases a secret field into {}, and presses {:?}; nothing was released. If that mapping is what the task needs, confirm it with `latch browser do --confirm {id}`",
             frames.join(", "),
@@ -1689,8 +1686,8 @@ pub async fn wait(
         waited["page"] = glance;
     }
     if !met {
-        let mut failure = Failure::failed(
-            "timeout",
+        let mut failure = Failure::new(
+            code::timeout,
             format!("the condition did not hold within {within}s"),
         );
         failure.details = waited;

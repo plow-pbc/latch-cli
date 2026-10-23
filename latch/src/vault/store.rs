@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use super::classify;
 use super::item::{Item, Meta};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::seal::{Sealed, from_hex, seal};
 use crate::secrets::{Secret, Secrets};
 use crate::state::{to_hex, write_private};
@@ -70,7 +70,7 @@ pub struct OwnStore {
 }
 
 fn failed(message: String) -> Failure {
-    Failure::failed("vault_failed", message)
+    Failure::new(code::vault_failed, message)
 }
 
 fn open(key: &[u8; 32], sealed: &Sealed, aad: &[u8]) -> Result<Vec<u8>, Failure> {
@@ -130,7 +130,7 @@ impl OwnStore {
                 path.display(),
                 version
             );
-            return Err(Failure::failed("vault_version", message));
+            return Err(Failure::new(code::vault_version, message));
         }
         let file: File = serde_json::from_slice(&bytes)
             .map_err(|_| failed("the vault file is damaged".into()))?;
@@ -165,14 +165,13 @@ impl OwnStore {
         self.items
             .iter()
             .position(|item| item.id == id)
-            .ok_or_else(|| Failure::usage("no_such_item", format!("there is no item {id}")))
+            .ok_or_else(|| Failure::new(code::no_such_item, format!("there is no item {id}")))
     }
 
     fn at_revision(&self, at: usize, revision: u64) -> Result<(), Failure> {
         if self.items[at].revision != revision {
             return Err(Failure::new(
-                Exit::Denied,
-                "stale_revision",
+                code::stale_revision,
                 format!(
                     "item {} is at revision {}, not {revision}; list it again",
                     self.items[at].id, self.items[at].revision
@@ -244,8 +243,8 @@ impl Backend for OwnStore {
             classify::read(&item.raw, label)
         };
         value.ok_or_else(|| {
-            Failure::usage(
-                "no_such_field",
+            Failure::new(
+                code::no_such_field,
                 format!("item {id} has no field {label:?}; list it to see its fields"),
             )
         })
@@ -266,6 +265,7 @@ impl Backend for OwnStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
     use crate::vault::item::{LOGIN, Login, Raw};
 
     fn login(password: &str) -> Item {

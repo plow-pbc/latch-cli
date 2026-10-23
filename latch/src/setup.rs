@@ -18,9 +18,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
-use crate::term;
 
 /// How often, and how long, the Full Disk Access step checks again.
 #[cfg(target_os = "macos")]
@@ -29,10 +28,6 @@ const RECHECK_EVERY: Duration = Duration::from_secs(2);
 const RECHECK_FOR: Duration = Duration::from_secs(180);
 
 pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
-    if !term::interactive() {
-        eprintln!("latch setup asks questions: run it at a terminal");
-        return ExitCode::from(2);
-    }
     let mut setup = Setup {
         latch: latch_program(),
         state_dir,
@@ -129,8 +124,21 @@ impl Setup {
             return true;
         }
         step("Log in", "latch login");
-        let status = self.command(&["login"]).status();
-        if status.is_ok_and(|status| status.success()) {
+        // Its questions, a login by text's screen and what went wrong are
+        // the person's, at this terminal; setup goes by its exit status. A
+        // login that asked no one answers JSON, read for the name.
+        let login = self
+            .command(&["login"])
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .output();
+        if let Ok(output) = login
+            && output.status.success()
+        {
+            let answer: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+            if let Some(name) = answer["peer"]["name"].as_str() {
+                done(&format!("Logged in as {name}."));
+            }
             return true;
         }
         say(
@@ -283,6 +291,24 @@ fn start_args(state: &StateDir) -> Vec<&'static str> {
     }
 }
 
+/// Without a terminal nobody answers setup's questions: `no_terminal`,
+/// whose `next` is the first step `setup --status` says is not done (its
+/// command, or where to connect an account first), or `latch status` once
+/// every step is.
+pub fn no_terminal(status: &Status) -> Failure {
+    let next = status
+        .steps
+        .iter()
+        .filter(|step| step.state != StepState::Done)
+        .find_map(|step| step.args.as_ref())
+        .map(|args| format!("latch {}", args.join(" ")))
+        .unwrap_or_else(|| "latch status".to_string());
+    let message = "latch setup asks questions, so it needs a terminal".to_string();
+    let mut failure = Failure::new(code::no_terminal, message);
+    failure.next = Some(next.into());
+    failure
+}
+
 /// `latch setup --status`: each step of setup, read from the state folder
 /// and, for Google, from Plow (read only), so it changes nothing and needs no
 /// host or terminal.
@@ -321,8 +347,7 @@ pub struct Step {
 #[serde(rename_all = "snake_case")]
 pub enum StepState {
     Done,
-    /// Running `args` does it; for Google with no account in Plow,
-    /// connecting one at `connect_url` comes first.
+    /// Running `args` does it.
     Needed,
     /// Something else comes first: an earlier step, or what `reason` says.
     Blocked,

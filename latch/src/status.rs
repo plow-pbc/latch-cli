@@ -9,8 +9,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::credential;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::hosts;
+use crate::keyart;
 use crate::lifecycle::{self, Phase, Problem};
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
@@ -21,6 +22,18 @@ pub struct StatusOutput {
     pub peer: Peer,
     pub api_url: String,
     pub hosts: Vec<Peer>,
+    /// The key art (see `keyart.rs`) of this peer, then of each host: a
+    /// person compares it with the art the other machine shows for the
+    /// same key.
+    pub art: Vec<KeyArt>,
+}
+
+#[derive(Serialize)]
+pub struct KeyArt {
+    pub name: String,
+    pub key: String,
+    /// The picture, a line each.
+    pub lines: Vec<String>,
 }
 
 pub async fn run(state: &StateDir) -> Result<StatusOutput, Failure> {
@@ -36,6 +49,16 @@ pub async fn run(state: &StateDir) -> Result<StatusOutput, Failure> {
         .find(|host| host.this_machine)
         .cloned()
         .unwrap_or(config.peer);
+    let art = std::iter::once(&peer)
+        .chain(&hosts)
+        .filter_map(|peer| {
+            Some(KeyArt {
+                name: peer.name.clone(),
+                key: peer.key.clone(),
+                lines: keyart::art(&peer.key, &peer.name)?,
+            })
+        })
+        .collect();
     Ok(StatusOutput {
         peer: Peer {
             this_machine: false,
@@ -43,6 +66,7 @@ pub async fn run(state: &StateDir) -> Result<StatusOutput, Failure> {
         },
         api_url: config.api_url,
         hosts,
+        art,
     })
 }
 
@@ -58,6 +82,10 @@ pub struct LocalStatus {
     pub last_error: Option<Problem>,
     /// Whether a newer build is available, as the host last looked.
     pub update: crate::update::Status,
+    /// An older latch's plaintext audit log in the state folder, which this
+    /// latch never reads: it can be deleted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_audit_log: Option<PathBuf>,
     /// Said only where Chrome runs without its own sandbox
     /// (`sandbox::page_isolation_off`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -129,6 +157,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         },
         last_error: host.error,
         update: crate::update::status(&dir),
+        old_audit_log: crate::audit::plaintext(&dir),
         page_isolation: crate::sandbox::page_isolation_off()
             .then_some(crate::sandbox::PAGE_ISOLATION_OFF),
     })
@@ -145,13 +174,13 @@ pub fn follow(
     mut send: impl FnMut(&Value) -> bool,
 ) -> Result<(), Failure> {
     let watching =
-        |err: std::io::Error| Failure::failed("watch_failed", format!("{}: {err}", dir.display()));
+        |err: std::io::Error| Failure::new(code::watch_failed, format!("{}: {err}", dir.display()));
     let state = StateDir {
         path: dir.to_path_buf(),
     };
     let lock = dir.join("serve.lock");
     let mut watch = Watch::new(dir, &[lock], hangup).map_err(watching)?;
-    if !send(&json!({"type": "hello", "schema": 1})) {
+    if !send(&crate::stream::hello()) {
         return Ok(());
     }
     let mut sent = None;

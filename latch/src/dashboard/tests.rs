@@ -28,6 +28,7 @@ fn denied(code: &str, message: &str, details: Value) -> Response {
         code: code.into(),
         message: message.into(),
         details,
+        next: None,
     }
 }
 
@@ -112,6 +113,7 @@ fn busy() -> Dashboard {
             code: "ambiguous_target".into(),
             message: "step 3: more than one element matches".into(),
             details: Value::Null,
+            next: None,
         },
         None,
     );
@@ -217,6 +219,7 @@ fn results_say_what_happened_in_words() {
         code: "gatekeeper_unavailable".into(),
         message: "the decision model did not answer".into(),
         details: Value::Null,
+        next: None,
     };
     run(
         &dashboard,
@@ -928,6 +931,7 @@ fn a_browser_call_shows_the_judgment_its_own_record_holds() {
         code: "check_not_met".into(),
         message: "step 1's check did not hold within 10s".into(),
         details: json!({"page": {"url": "http://127.0.0.1:5/cart.html?id=7"}}),
+        next: None,
     };
     run(&dashboard, owner(), "browser", plan, audit, stopped, None);
     let call = board(&dashboard).tasks[0].calls[0].clone();
@@ -1071,6 +1075,7 @@ fn each_call_shows_its_kind_and_its_command_as_typed() {
         code: "account_required".into(),
         message: "connect an account first".into(),
         details: Value::Null,
+        next: None,
     };
     run(
         &dashboard,
@@ -1287,6 +1292,7 @@ fn nothing_typed_queried_or_sent_as_a_terminal_command_reaches_the_screen() {
         code: "not_built_yet".into(),
         message: "this host does not run `\u{1b}[2J\u{1b}]0;owned\u{7}` yet".into(),
         details: Value::Null,
+        next: None,
     };
     run(
         &dashboard,

@@ -112,8 +112,8 @@ No Homebrew tap is included.
   starts it detached and prints it as JSON once it answers; `latch stop`
   stops it, and nothing starts it again until the next `latch serve`.
   `latch dashboard` views a running host (`q` or Ctrl-C closes only the
-  view), `latch logs [-f]` shows its log (`serve.log`) and `latch audit
-  [-f]` its audit.
+  view), `latch logs [-f]` shows its log (`serve.log`, a JSON line per
+  record) and `latch audit [-f]` its audit.
 - The dashboard lists what callers asked for and how it went: Done,
   Running, Refused (the gatekeeper or your settings), Stopped (a browser
   safety check) or Failed. A browser session's calls, and a plan's steps,
@@ -169,8 +169,9 @@ No Homebrew tap is included.
   --local` report it (`deny_exec`) as the host runs, or last ran.
 - A connection problem (`host_unreachable`, a slow call): set
   `LATCH_TRACE=iroh=debug,latch=info` on the client, the host or both, to
-  see iroh's connection events (the filter syntax is `RUST_LOG`'s). They go
-  to the host's log (`latch logs`), never to stdout. On a
+  see iroh's connection events (the filter syntax is `RUST_LOG`'s). A
+  command's go to `trace.log` in its state folder, the host's to its log
+  (`latch logs`); never to stdout. On a
   host, each event names the connection's caller key and the operation.
 - Connectors are off until you turn them on, per host: on the host, with
   or without its `latch serve` running, `latch plugins enable google` (on

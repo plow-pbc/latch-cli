@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 
 /// The owner's settings file in the state directory.
 const SETTINGS: &str = "host.json";
@@ -42,20 +42,23 @@ pub fn local_allowed(state_dir: &Path) -> Result<bool, Failure> {
         Ok(text) => text,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(err) => {
-            return Err(Failure::failed(
-                "bad_host_settings",
+            return Err(Failure::new(
+                code::bad_host_settings,
                 format!("{}: {err}", path.display()),
             ));
         }
     };
     let settings: Value = serde_json::from_str(&text).map_err(|err| {
-        Failure::failed("bad_host_settings", format!("{}: {err}", path.display()))
+        Failure::new(
+            code::bad_host_settings,
+            format!("{}: {err}", path.display()),
+        )
     })?;
     match &settings["allow_local_browsing"] {
         Value::Null => Ok(false),
         Value::Bool(allowed) => Ok(*allowed),
-        _ => Err(Failure::failed(
-            "bad_host_settings",
+        _ => Err(Failure::new(
+            code::bad_host_settings,
             format!("{}: allow_local_browsing is true or false", path.display()),
         )),
     }
@@ -121,7 +124,7 @@ pub fn not_shown(url: &str) -> Failure {
 }
 
 fn refused(message: String) -> Failure {
-    Failure::new(Exit::Denied, "url_refused", message)
+    Failure::new(code::url_refused, message)
 }
 
 fn local_address(host: &str, ip: IpAddr) -> String {
@@ -398,6 +401,7 @@ fn splice(client: TcpStream, site: TcpStream) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
 
     /// A site on 127.0.0.1 that answers every request with what it was
     /// sent, as its body; returns its port.

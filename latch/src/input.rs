@@ -10,7 +10,7 @@ use std::io::{IsTerminal, Read};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 
 /// Reads at most `limit + 1` bytes; the caller rejects input over its limit.
 pub fn read_all(within: Duration, limit: usize) -> Result<Vec<u8>, Failure> {
@@ -18,7 +18,7 @@ pub fn read_all(within: Duration, limit: usize) -> Result<Vec<u8>, Failure> {
         let message = "--stdin reads piped input, e.g. `latch exec -i -- sh < script.sh`; \
                        here stdin is a terminal"
             .to_string();
-        return Err(Failure::usage("stdin_is_terminal", message));
+        return Err(Failure::new(code::stdin_is_terminal, message));
     }
     // A thread of its own does the read, so the wait can be cut off; if it
     // is, latch exits and the blocked read goes with it.
@@ -32,8 +32,8 @@ pub fn read_all(within: Duration, limit: usize) -> Result<Vec<u8>, Failure> {
     });
     match receiver.recv_timeout(within) {
         Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(err)) => Err(Failure::usage(
-            "stdin_unreadable",
+        Ok(Err(err)) => Err(Failure::new(
+            code::stdin_unreadable,
             format!("cannot read stdin: {err}"),
         )),
         Err(_) => {
@@ -41,7 +41,7 @@ pub fn read_all(within: Duration, limit: usize) -> Result<Vec<u8>, Failure> {
                 "stdin did not end within {}s (--timeout); nothing was run",
                 within.as_secs()
             );
-            Err(Failure::usage("stdin_timeout", message))
+            Err(Failure::new(code::stdin_timeout, message))
         }
     }
 }

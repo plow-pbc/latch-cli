@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::credential;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 
 /// A peer as Plow describes it. Fields Plow adds that latch does not use
@@ -398,7 +398,7 @@ impl Plow {
         // Trust the answer only if it is about the key we asked about.
         if identity.key != key {
             let message = "Plow answered about a different key".to_string();
-            return Err(Failure::failed("plow_error", message));
+            return Err(Failure::new(code::plow_error, message));
         }
         Ok(identity)
     }
@@ -545,54 +545,45 @@ impl Plow {
             Ok(response) => response,
             Err(err) => {
                 let message = format!("could not reach Plow at {}: {err}", self.api_url);
-                return Err(Failure::failed("plow_unreachable", message));
+                return Err(Failure::new(code::plow_unreachable, message));
             }
         };
         let status = response.status();
         if status.is_success() {
             return Ok(response);
         }
-        let (exit, code, meaning) = match status.as_u16() {
-            401 | 403 => (
-                Exit::Denied,
-                "plow_denied",
-                "this credential may not do that",
-            ),
+        let (code, meaning) = match status.as_u16() {
+            401 | 403 => (code::plow_denied, "this credential may not do that"),
             409 => (
-                Exit::Usage,
-                "conflict",
+                code::conflict,
                 "that name, key or agent is taken by another peer",
             ),
-            404 => (Exit::Failed, "not_found", "Plow knows no such peer"),
-            410 => (Exit::Failed, "expired", "that has expired"),
-            422 => (
-                Exit::Usage,
-                "invalid_request",
-                "Plow rejected the request's fields",
-            ),
+            404 => (code::not_found, "Plow knows no such peer"),
+            410 => (code::expired, "that has expired"),
+            422 => (code::invalid_request, "Plow rejected the request's fields"),
             // Plow's answer when the account lacks what the request needs,
             // such as a connected Google account.
             412 => (
-                Exit::Failed,
-                "precondition_failed",
+                code::precondition_failed,
                 "Plow needs something set up first",
             ),
-            429 => (Exit::Failed, "rate_limited", "Plow asked us to slow down"),
-            400..=499 => (Exit::Failed, "plow_rejected", "Plow refused the request"),
-            _ => (Exit::Failed, "plow_error", "Plow could not answer"),
+            429 => (code::rate_limited, "Plow asked us to slow down"),
+            400..=499 => (code::plow_rejected, "Plow refused the request"),
+            _ => (code::plow_error, "Plow could not answer"),
         };
         let message = format!("Plow answered HTTP {}: {meaning}", status.as_u16());
-        let mut failure = Failure::new(exit, code, message);
-        failure.retry_after = response
+        let mut failure = Failure::new(code, message);
+        let retry_after = response
             .headers()
             .get("retry-after")
             .and_then(|value| value.to_str().ok())
             .and_then(retry_after);
-        failure.plow_code = response
+        let code = response
             .json::<serde_json::Value>()
             .await
             .ok()
             .and_then(|body| body["detail"]["code"].as_str().map(Box::from));
+        failure.plow = Some(Box::new(crate::failure::PlowSaid { retry_after, code }));
         Err(failure)
     }
 }
@@ -628,8 +619,8 @@ fn retry_after(value: &str) -> Option<Duration> {
 }
 
 fn bad_answer() -> Failure {
-    Failure::failed(
-        "plow_error",
+    Failure::new(
+        code::plow_error,
         "Plow's answer was not what latch expected".to_string(),
     )
 }

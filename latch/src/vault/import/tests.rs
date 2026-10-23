@@ -619,7 +619,7 @@ fn a_pick_expecting_the_preview_refuses_a_vault_changed_since() {
     let refused = commit_expecting(&mut vault, &mut parsed, &[1, 2, 3], &previewed).unwrap_err();
     assert_eq!(
         (refused.exit, refused.code.as_str()),
-        (Exit::Denied, "stale_revision")
+        (crate::failure::Exit::Denied, "stale_revision")
     );
     assert_ne!(refused.details["expect"], json!(previewed));
     assert!(!format!("{refused:?}").contains("drop-rotated"));

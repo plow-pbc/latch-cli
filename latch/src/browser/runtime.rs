@@ -18,7 +18,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 use super::core::{self, Call};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::wire::Response;
 
 /// The worker's environment: nothing from the host's but a plain `PATH`.
@@ -81,7 +81,7 @@ impl Runtime {
     /// engine has no window.
     pub async fn start(state_dir: &Path, engine: &str, headless: bool) -> Result<Self, Failure> {
         let latch = std::env::current_exe()
-            .map_err(|err| Failure::failed("engine_failed", err.to_string()))?;
+            .map_err(|err| Failure::new(code::engine_failed, err.to_string()))?;
         Self::start_with(&latch, state_dir, engine, IDLE, headless).await
     }
 
@@ -93,7 +93,7 @@ impl Runtime {
         idle: Duration,
         headless: bool,
     ) -> Result<Self, Failure> {
-        let failed = |err: std::io::Error| Failure::failed("engine_failed", err.to_string());
+        let failed = |err: std::io::Error| Failure::new(code::engine_failed, err.to_string());
         let scratch = tempfile::Builder::new()
             .prefix("latch-browser-")
             .tempdir()
@@ -227,8 +227,7 @@ impl Runtime {
                 worker.stop();
                 let _ = worker.child.wait().await;
                 Err(Failure::new(
-                    Exit::Failed,
-                    "browser_gone",
+                    code::browser_gone,
                     format!(
                         "the browser did not finish a call within {} s, and was stopped",
                         within.as_secs()
@@ -284,19 +283,9 @@ impl Worker {
         if read == 0 {
             return Err(lost());
         }
-        match serde_json::from_str(&line).map_err(|_| lost())? {
-            Response::Ok(value) => Ok(value),
-            Response::Error {
-                exit,
-                code,
-                message,
-                details,
-            } => {
-                let mut failure = Failure::new(exit, &code, message);
-                failure.details = details;
-                Err(failure)
-            }
-        }
+        serde_json::from_str::<Response>(&line)
+            .map_err(|_| lost())?
+            .into_result()
     }
 }
 
@@ -307,11 +296,7 @@ impl Drop for Worker {
 }
 
 fn lost() -> Failure {
-    Failure::new(
-        Exit::Failed,
-        "browser_gone",
-        "the browser worker stopped".into(),
-    )
+    Failure::new(code::browser_gone, "the browser worker stopped".into())
 }
 
 #[cfg(test)]
