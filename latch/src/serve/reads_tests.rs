@@ -226,16 +226,21 @@ async fn a_stopping_host_ends_a_stream_whose_caller_stopped_reading() {
     }
     let device = t.caller("device").await;
     let mut stalled = Stream::open(&t, &device, "audit", json!({"follow": true})).await;
+    // Its first line comes once the host has read the log, so the stop
+    // below lands while it sends the records, not while it reads them.
+    assert_eq!(stalled.line().await["type"], "hello");
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     t.host.stopping.send_replace(Stopping::Draining);
+    // Generous, for a busy CI runner: a stuck send never ends at all, and
+    // each look reads, opens and checks every record of the log.
     let started = Instant::now();
     while !t.audit().iter().any(|record| record["op"] == "audit") {
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(60),
             "the stream is stuck in a send"
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let ended = t.audit().into_iter().find(|record| record["op"] == "audit");
     assert_eq!(ended.unwrap()["outcome"], "host_stopped");
@@ -244,7 +249,7 @@ async fn a_stopping_host_ends_a_stream_whose_caller_stopped_reading() {
     let mut answered = false;
     loop {
         let frame =
-            tokio::time::timeout(Duration::from_secs(10), wire::read_frame(&mut stalled.recv))
+            tokio::time::timeout(Duration::from_secs(60), wire::read_frame(&mut stalled.recv))
                 .await
                 .expect("the stream ends");
         match frame {
