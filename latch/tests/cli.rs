@@ -1225,9 +1225,13 @@ fn owner_host() -> (tempfile::TempDir, PathBuf, String) {
 
 /// Every audit record of the host on `state`, as `latch audit --all`
 /// shows them, each with its `details` (args, gate, started) beside the
-/// rest, as the tests read them.
+/// rest, as the tests read them. A folder that keeps no audit yet
+/// (`no_host_here`) has none.
 fn audit_records(state: &Path) -> Vec<Value> {
     let shown = latch(state, &["audit", "--all"], &[]);
+    if String::from_utf8_lossy(&shown.stderr).contains("no_host_here") {
+        return Vec::new();
+    }
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
     records_in(&event_lines(&shown))
 }
