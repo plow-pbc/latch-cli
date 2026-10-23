@@ -10,6 +10,9 @@
 //! - `file_put`: request with `"size": N`, then `Ok({})` ("go ahead"), N bytes
 //!   client → host, and the final answer.
 //!
+//! An operation that streams lines (`audit`, `status` with `follow`) sends
+//! each as `Ok({"line": LINE})`, then the final answer, which has no `line`.
+//!
 //! Any error answer instead of the first `Ok` ends the operation there. A frame is a 4-byte big-endian length, then that many
 //! bytes of JSON. Nothing here knows about iroh: any byte stream works, so
 //! another transport could carry the same frames later.
@@ -47,7 +50,7 @@ pub const CLOSE_DENIED: u32 = 4;
 /// The largest frame either side accepts. Big enough for any result the
 /// spec allows (gog JSON is capped at 1 MiB), small enough that a broken
 /// peer cannot make us allocate without limit.
-const MAX_FRAME: usize = 16 * 1024 * 1024;
+pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// One operation, e.g. `{"op": "exec", "args": {"argv": ["uname", "-a"]}}`.
 #[derive(Serialize, Deserialize, Debug)]
