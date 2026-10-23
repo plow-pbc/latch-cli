@@ -1478,6 +1478,148 @@ fn status_names_the_account_this_machine_and_each_host_once() {
 }
 
 #[test]
+fn bare_latch_piped_says_it_needs_a_terminal_and_where_to_look() {
+    let dir = test_dir();
+    let output = latch(&dir.path().join("state"), &[], &[]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+    assert_eq!(error["error"]["next"], "latch status", "{error}");
+}
+
+/// The end of each frame a bare `latch` draws.
+const FRAME_END: &str = "\x1b[?2026l";
+
+/// What a bare `latch` showed on a terminal `size` (columns, rows), and how
+/// long it took to give the prompt back.
+fn overview(
+    state: &Path,
+    env: &[(&str, &Path)],
+    size: (u16, u16),
+) -> (String, std::time::Duration) {
+    let started = std::time::Instant::now();
+    let (mut child, _terminal, shown) = at_a_terminal(state, &[], env, size, false);
+    let status = exits_within(&mut child, 10);
+    let took = started.elapsed();
+    let mut all = String::new();
+    while let Ok(more) = shown.recv_timeout(std::time::Duration::from_secs(1)) {
+        all.push_str(&more);
+    }
+    assert!(status.success(), "{status:?}: {all}");
+    (all, took)
+}
+
+#[test]
+fn bare_latch_draws_what_it_knows_at_once_and_plow_as_it_answers() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+
+    // Colored, whatever this test's own environment says.
+    let color = [("NO_COLOR", Path::new(""))];
+    let (shown, took) = overview(&host, &color, (100, 30));
+    let first = &shown[..shown.find(FRAME_END).expect(&shown)];
+    // This machine's rows are there from the first frame; Plow's, and the
+    // host's state, wait.
+    assert!(shown.contains("stopped"), "{shown}");
+    for row in ["this ", "host", "Account", "…", "Folder"] {
+        assert!(
+            first.contains(row),
+            "{row:?} not in the first frame: {first}"
+        );
+    }
+    // Plow's answer is drawn while the mark still moves.
+    let filled = shown.find("Ada Example").expect(&shown);
+    assert!(shown[filled..].matches(FRAME_END).count() > 5, "{shown}");
+    assert!(shown.contains("not listed as a host"), "{shown}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    println!("Plow answering: prompt back after {took:?}");
+
+    // A Plow that takes the connection and never answers: the rest still
+    // shows, and the prompt comes back at the deadline.
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", silent.local_addr().unwrap());
+    thread::spawn(move || {
+        let held: Vec<_> = silent.incoming().collect();
+        drop(held);
+    });
+    use_plow(&host, &url);
+    let (shown, took) = overview(&host, &color, (100, 30));
+    let last = &shown[shown.rfind("\x1b[?2026h").unwrap()..];
+    assert_eq!(last.matches("Plow didn't answer").count(), 3, "{last}");
+    assert!(!last.contains("not logged in"), "{last}");
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    println!("Plow silent: prompt back after {took:?}");
+}
+
+#[test]
+fn bare_latch_waits_on_a_stalled_service_manager_only_until_its_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _serve = serving(&host, &relay);
+    // A service manager that never answers: asked whether the running host
+    // is its service, it hangs.
+    let bin = dir.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let hung = dir.path().join("hung.pid");
+    for manager in ["launchctl", "systemctl"] {
+        // It outlives the terminal closing, as one would under a shell
+        // that is not the terminal's session leader.
+        let script = format!(
+            "#!/bin/sh\ntrap '' HUP\necho $$ > '{}'\nexec sleep 8\n",
+            hung.display()
+        );
+        fs::write(bin.join(manager), script).unwrap();
+        fs::set_permissions(bin.join(manager), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let (shown, took) = overview(&host, &[("PATH", Path::new(&path))], (100, 30));
+    let first = &shown[..shown.find(FRAME_END).expect(&shown)];
+    assert!(first.contains("Folder") && first.contains("…"), "{first}");
+    assert!(!first.contains("serving"), "{first}");
+    let last = &shown[shown.rfind("\x1b[?2026h").unwrap()..];
+    assert!(
+        last.contains("state unknown: the check timed out"),
+        "{last}"
+    );
+    assert!(last.contains("Ada Example"), "{last}");
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    // The hung command was killed and reaped before latch exited.
+    let pid: i32 = fs::read_to_string(&hung).unwrap().trim().parse().unwrap();
+    // SAFETY: signal 0 only asks whether the process exists.
+    assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "pid {pid} outlived latch");
+    println!("service manager stalled: prompt back after {took:?}");
+}
+
+#[test]
+fn bare_latch_narrow_puts_the_mark_above_and_no_color_keeps_it_still() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let no_color = [("NO_COLOR", Path::new("1"))];
+    let (shown, _) = overview(&state, &no_color, (60, 24));
+    assert!(!shown.contains("\x1b[0;"), "colored: {shown:?}");
+    // The still mark first, on lines of its own, then the facts.
+    let mark = shown.find("███▄").expect(&shown);
+    let header = shown.find("latch 0.1.0").expect(&shown);
+    assert!(mark < header, "{shown}");
+    assert!(!shown[mark..header].contains("Account"), "{shown}");
+    assert!(
+        shown.contains("isn't logged in to Plow. Run: latch"),
+        "{shown}"
+    );
+    assert!(!state.exists(), "the overview made the state folder");
+}
+
+#[test]
 fn exec_stdin_that_is_not_judgeable_or_never_ends_runs_nothing() {
     use std::process::Stdio;
     let dir = test_dir();
@@ -5942,8 +6084,13 @@ fn a_reader_that_leaves_cancels_the_sign_in_wait() {
 
     // At a terminal with stdout piped: its reader leaves, then the account
     // appears; nothing is enabled for no one.
-    let (mut child, _typing, shown) =
-        at_a_terminal(&host, &["plugins", "enable", "google"], &[], true);
+    let (mut child, _typing, shown) = at_a_terminal(
+        &host,
+        &["plugins", "enable", "google"],
+        &[],
+        (120, 30),
+        true,
+    );
     shows(&shown, "Waiting for the account");
     drop(child.stdout.take());
     plow.state.lock().unwrap().google = Some("google-token".into());
@@ -6281,7 +6428,6 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
 /// way a shell starts it: Ctrl-C typed there interrupts it, and closing
 /// the terminal hangs it up. Returns the process and the terminal's side
 /// we type into and read.
-#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn at_its_own_terminal(
     state: &Path,
     args: &[&str],
@@ -6291,17 +6437,18 @@ fn at_its_own_terminal(
     fs::File,
     std::sync::mpsc::Receiver<String>,
 ) {
-    at_a_terminal(state, args, env, false)
+    at_a_terminal(state, args, env, (120, 30), false)
 }
 
-/// As `at_its_own_terminal`, with stdout a pipe when `pipe_stdout` (the
-/// child's `stdout` is the test's to read): a person at the terminal
-/// whose command's output goes elsewhere.
-#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
+/// As `at_its_own_terminal`, on a terminal `columns` wide and `rows` high,
+/// and with stdout a pipe when `pipe_stdout` (the child's `stdout` is the
+/// test's to read): a person at the terminal whose command's output goes
+/// elsewhere.
 fn at_a_terminal(
     state: &Path,
     args: &[&str],
     env: &[(&str, &Path)],
+    (columns, rows): (u16, u16),
     pipe_stdout: bool,
 ) -> (
     std::process::Child,
@@ -6312,8 +6459,8 @@ fn at_a_terminal(
     use std::os::unix::process::CommandExt;
     let (mut main, mut side) = (0, 0);
     let size = libc::winsize {
-        ws_row: 30,
-        ws_col: 120,
+        ws_row: rows,
+        ws_col: columns,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
@@ -6380,7 +6527,6 @@ fn at_a_terminal(
 /// Reads what the terminal shows until it has shown `text`, within a
 /// minute in all: a screen that keeps redrawing without it fails rather
 /// than waits forever.
-#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut all = String::new();
@@ -6399,7 +6545,6 @@ fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     all
 }
 
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::ExitStatus {
     let mut status = None;
     assert!(

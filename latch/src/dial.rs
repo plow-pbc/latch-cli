@@ -62,6 +62,10 @@ pub struct Link {
 /// Dials this state folder over its private socket, or another host over iroh.
 /// Failure here means nothing was sent: exit 3.
 pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
+    connect_within(state, host, CONNECT_TIMEOUT).await
+}
+
+async fn connect_within(state: &StateDir, host: &Peer, within: Duration) -> Result<Link, Failure> {
     // Plow already knows the host is offline: say so now, rather than spend
     // the connect timeout finding out.
     if !host.this_machine && host.online == Some(false) {
@@ -96,7 +100,7 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
         .await
         .map_err(|err| Failure::new(code::iroh, format!("could not start iroh: {err}")))?;
     let address = EndpointAddr::new(id).with_relay_url(relay);
-    match tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(address, wire::ALPN)).await {
+    match tokio::time::timeout(within, endpoint.connect(address, wire::ALPN)).await {
         Ok(Ok(connection)) => Ok(Link {
             endpoint: Some(endpoint),
             connection: Connection::Remote(connection),
@@ -114,15 +118,42 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
             );
             Err(Failure::new(code::protocol_mismatch, message))
         }
-        _ => {
+        Ok(Err(err)) => {
             endpoint.close().await;
+            tracing::info!(host = %host.name, error = ?err, "could not connect");
             let message = format!(
-                "could not connect to host {:?}; nothing was sent",
-                host.name
+                "could not connect to host {:?}: {}; nothing was sent",
+                host.name,
+                reasons(&err)
+            );
+            Err(Failure::new(code::host_unreachable, message))
+        }
+        Err(_) => {
+            endpoint.close().await;
+            tracing::info!(host = %host.name, "no connection within {}s", within.as_secs_f32());
+            let message = format!(
+                "could not connect to host {:?} within {}s; nothing was sent",
+                host.name,
+                within.as_secs_f32()
             );
             Err(Failure::new(code::host_unreachable, message))
         }
     }
+}
+
+/// An error and each error under it, outermost first: iroh's outer errors
+/// alone ("Unable to connect to remote") don't say what went wrong.
+fn reasons(err: &dyn std::error::Error) -> String {
+    let mut reasons = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(err) = source {
+        let reason = err.to_string();
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+        source = err.source();
+    }
+    reasons.join(": ")
 }
 
 /// The host refused the handshake because it speaks no protocol version we
@@ -335,6 +366,83 @@ mod tests {
             failure.message
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A state folder with a key, and a host at `key` behind `relay`.
+    fn dialing(key: Option<String>, relay: &str) -> (tempfile::TempDir, StateDir, Peer) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let (own, _) = state.load_or_create_key().unwrap();
+        let host = Peer {
+            key: key.unwrap_or_else(|| own.public().to_string()),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: Some(relay.into()),
+            last_seen_at: None,
+            online: Some(true),
+            this_machine: false,
+        };
+        (dir, state, host)
+    }
+
+    /// The `latch` events logged while `run` runs, as `LATCH_TRACE` would write them.
+    async fn traced<T>(run: impl Future<Output = T>) -> (T, String) {
+        #[derive(Clone, Default)]
+        struct Events(std::sync::Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Events {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let events = Events::default();
+        let writer = events.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter("latch=info")
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _default = tracing::subscriber::set_default(subscriber);
+        let result = run.await;
+        let logged = String::from_utf8(events.0.lock().unwrap().clone()).unwrap();
+        (result, logged)
+    }
+
+    #[tokio::test]
+    async fn a_failed_connection_says_why() {
+        // Dialing our own key fails at once, with iroh's reason.
+        let (_dir, state, host) = dialing(None, "http://127.0.0.1:9/");
+        let (dialed, logged) = traced(connect(&state, &host)).await;
+        let failure = dialed.err().unwrap();
+        assert_eq!(failure.code, "host_unreachable");
+        assert_eq!(
+            failure.message,
+            "could not connect to host \"mac\": Connecting to ourself is not supported; \
+             nothing was sent"
+        );
+        assert!(logged.contains("could not connect"), "{logged}");
+        assert!(logged.contains("error=Connecting to ourself"), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_never_comes_says_it_timed_out() {
+        // Nothing answers at the host's relay, so the dial runs out of time.
+        let other = iroh::SecretKey::generate().public().to_string();
+        let (_dir, state, host) = dialing(Some(other), "http://127.0.0.1:9/");
+        let within = Duration::from_millis(300);
+        let (dialed, logged) = traced(connect_within(&state, &host, within)).await;
+        let failure = dialed.err().unwrap();
+        assert_eq!(failure.code, "host_unreachable");
+        assert_eq!(
+            failure.message,
+            "could not connect to host \"mac\" within 0.3s; nothing was sent"
+        );
+        assert!(logged.contains("no connection within 0.3s"), "{logged}");
     }
 
     #[tokio::test]

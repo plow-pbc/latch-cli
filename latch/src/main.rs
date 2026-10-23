@@ -36,6 +36,7 @@ mod logs;
 mod managed;
 mod messages;
 mod model;
+mod overview;
 mod paint;
 mod plow;
 mod plugins;
@@ -85,14 +86,6 @@ fn main() -> ExitCode {
     if let Some(exit) = gui::launch() {
         return exit;
     }
-    // A bare `latch` at a terminal shows the Plow logo. Anywhere else (a
-    // pipe, an agent) it stays a usage error, as before.
-    if std::env::args_os().len() == 1 && term::stdout_is_terminal() {
-        let color = !term::no_color();
-        paint::set_color(color);
-        logo::show(color);
-        return ExitCode::SUCCESS;
-    }
     let matches = match Cli::command().try_get_matches() {
         Ok(matches) => matches,
         Err(err) => return usage_error(err),
@@ -103,7 +96,22 @@ fn main() -> ExitCode {
     }
     let cli = Cli::from_arg_matches(&matches).expect("the command line was validated");
     // Workers confine the initial thread before any runtime threads exist.
-    let command = match cli.command {
+    // A bare `latch`: the overview, for a person at a terminal.
+    let Some(command) = cli.command else {
+        let shown = if term::stdout_is_terminal() {
+            StateDir::new(cli.state_dir).and_then(|state| overview::run(&state))
+        } else {
+            Err(overview::no_terminal())
+        };
+        return match shown {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(failure) => {
+                report(&failure);
+                failure.exit.into()
+            }
+        };
+    };
+    let command = match command {
         Command::Worker(args) => return worker::run(args),
         // At a terminal, running other latch commands; no runtime of its own.
         Command::Setup(args) if !args.status && term::interactive() => {

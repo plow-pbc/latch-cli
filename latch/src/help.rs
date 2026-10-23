@@ -1975,7 +1975,8 @@ mod tests {
             for example in &action.examples {
                 let words: Vec<_> = example.command.split(' ').skip(1).collect();
                 let argv = std::iter::once("latch").chain(words.iter().copied());
-                let crate::cli::Command::Google(args) = Cli::try_parse_from(argv).unwrap().command
+                let Some(crate::cli::Command::Google(args)) =
+                    Cli::try_parse_from(argv).unwrap().command
                 else {
                     panic!("{}", example.command);
                 };

@@ -56,6 +56,9 @@ url = "2.5.8"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # `latch vault link`'s QR code, drawn in the terminal (no image backends).
 qrcode = { version = "0.14.1", default-features = false }
+# How many columns text takes in a terminal (CJK and emoji take two), so the
+# overview cuts its rows to fit.
+unicode-width = "0.2.2"
 # `latch update`: a release's minisign signature, checked with the key latch
 # carries (src/update.rs).
 minisign-verify = "0.3.0"

@@ -308,7 +308,7 @@ fn saved(dir: &Path) -> Result<Option<(Vec<String>, ServeArgs)>, Failure> {
     )
     .map_err(|_| invalid())?;
     match parsed.command {
-        crate::cli::Command::Serve(args) => Ok(Some((given, args))),
+        Some(crate::cli::Command::Serve(args)) => Ok(Some((given, args))),
         _ => Err(invalid()),
     }
 }
@@ -587,7 +587,14 @@ impl Service {
 
     /// Whether the service manager has this service.
     pub fn registered(&self) -> bool {
-        platform::registered(&self.label)
+        self.registered_by(None)
+            .expect("with no deadline the service manager is waited for")
+    }
+
+    /// `registered`, or `None` if the service manager has not answered by
+    /// `until`: then its command is killed and reaped.
+    pub fn registered_by(&self, until: Option<Instant>) -> Option<bool> {
+        platform::registered(&self.label, until)
     }
 
     /// Runs `argv` as this service, with this process's environment, its
@@ -653,6 +660,39 @@ pub async fn run_as_app(
     printed
 }
 
+/// A command still running at its deadline.
+struct TimedOut;
+
+/// `command`'s output, `None` if it could not run. With `until`, a command
+/// still running then is killed and reaped, so none is left behind.
+fn output_by(
+    command: &mut Command,
+    until: Option<Instant>,
+) -> Result<Option<std::process::Output>, TimedOut> {
+    let Some(until) = until else {
+        return Ok(command.output().ok());
+    };
+    let spawned = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = spawned else {
+        return Ok(None);
+    };
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(child.wait_with_output().ok()),
+            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(TimedOut);
+            }
+        }
+    }
+}
+
 /// Runs a service manager command; its own words on failure.
 fn manager(command: &mut Command) -> Result<(), Failure> {
     let output = command
@@ -673,7 +713,9 @@ mod platform {
     use std::path::Path;
     use std::process::Command;
 
-    use super::{STOP_WITHIN, manager};
+    use std::time::Instant;
+
+    use super::{STOP_WITHIN, manager, output_by};
     use crate::failure::{Failure, code};
 
     /// The logged-in user's session, where an agent may show windows.
@@ -682,11 +724,11 @@ mod platform {
         format!("gui/{}", unsafe { libc::getuid() })
     }
 
-    pub fn registered(label: &str) -> bool {
-        Command::new("launchctl")
-            .args(["print", &format!("{}/{label}", domain())])
-            .output()
-            .is_ok_and(|output| output.status.success())
+    pub fn registered(label: &str, until: Option<Instant>) -> Option<bool> {
+        let mut command = Command::new("launchctl");
+        command.args(["print", &format!("{}/{label}", domain())]);
+        let output = output_by(&mut command, until).ok()?;
+        Some(output.is_some_and(|output| output.status.success()))
     }
 
     /// The job is in the state folder, not `~/Library/LaunchAgents`: it is
@@ -782,24 +824,26 @@ mod platform {
     use std::path::Path;
     use std::process::Command;
 
-    use super::{STOP_WITHIN, manager};
+    use std::time::Instant;
+
+    use super::{STOP_WITHIN, manager, output_by};
     use crate::failure::Failure;
 
     fn unit(label: &str) -> String {
         format!("{label}.service")
     }
 
-    pub fn registered(label: &str) -> bool {
-        Command::new("systemctl")
-            .args([
-                "--user",
-                "show",
-                "--property=LoadState",
-                "--value",
-                &unit(label),
-            ])
-            .output()
-            .is_ok_and(|output| output.stdout.starts_with(b"loaded"))
+    pub fn registered(label: &str, until: Option<Instant>) -> Option<bool> {
+        let mut command = Command::new("systemctl");
+        command.args([
+            "--user",
+            "show",
+            "--property=LoadState",
+            "--value",
+            &unit(label),
+        ]);
+        let output = output_by(&mut command, until).ok()?;
+        Some(output.is_some_and(|output| output.stdout.starts_with(b"loaded")))
     }
 
     /// A transient unit: there is no unit file, and once its process ends

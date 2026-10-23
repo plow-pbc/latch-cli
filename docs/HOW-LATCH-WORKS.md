@@ -236,7 +236,7 @@ host. With no hosts you get `no_host`, and with several and none named
 | Error | Exit | Meaning |
 |---|---|---|
 | `host_offline` | 3 | Plow lists the host as offline. Nothing was sent. |
-| `host_unreachable` | 3 | No connection within 15 seconds. Nothing was sent. |
+| `host_unreachable` | 3 | No connection: none within 15 seconds, or it failed (the message gives iroh's reason). Nothing was sent. |
 | `serve_required` | 3 | This machine's host isn't running. Start `latch serve`. |
 | `outcome_unknown`, `no_answer` | 5 | The request went out, but no answer came back. Check before resending. |
 | `protocol_mismatch` | 1 | The two machines run latch builds that speak different protocols. Nothing was sent; update the older one. |

@@ -18,6 +18,8 @@ pub const SHINE: Rgb = Rgb(255, 255, 255);
 pub const DIM: Rgb = Rgb(120, 126, 138);
 pub const FAINT: Rgb = Rgb(64, 70, 80);
 pub const RED: Rgb = Rgb(238, 96, 96);
+/// What still waits, or wants a look.
+pub const AMBER: Rgb = Rgb(254, 188, 46);
 
 static COLOR: AtomicBool = AtomicBool::new(false);
 
