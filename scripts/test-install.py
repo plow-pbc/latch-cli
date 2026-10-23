@@ -28,11 +28,11 @@ def seed_gog(setup, state):
         "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest()}, indent=2))
 
 
-def fixture(root, state, binary_script, system="FixtureOS", machine="x86_64"):
+def fixture(root, state, binary_script, system="FixtureOS", machine="x86_64", macos="26.0"):
     """install-binary.sh, with the scripts it runs, beside a fake latch, with
-    a local gog pinned in `state` and a `uname` that names `system` and
-    `machine`. Returns the setup folder, the binary and the folder to put
-    first on PATH."""
+    a local gog pinned in `state`, a `uname` that names `system` and
+    `machine`, and a `sw_vers` that names `macos`. Returns the setup folder,
+    the binary and the folder to put first on PATH."""
     setup = root / "setup"
     setup.mkdir()
     for name in ["install-binary.sh", "install-packages.sh", "browser-engines.sh"]:
@@ -46,6 +46,9 @@ def fixture(root, state, binary_script, system="FixtureOS", machine="x86_64"):
     uname = tools / "uname"
     uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system};; -m) echo {machine};; esac\n')
     uname.chmod(0o755)
+    sw_vers = tools / "sw_vers"
+    sw_vers.write_text(f'#!/bin/sh\necho {macos}\n')
+    sw_vers.chmod(0o755)
     return setup, binary, tools
 
 
@@ -56,6 +59,22 @@ def drain(terminal):
             pass
     except OSError:
         pass
+
+
+def at_terminal(args, cwd, env):
+    """Runs `args` at a terminal of its own, as a person's: what /dev/tty opens."""
+    main, side = os.openpty()
+    # Read what it shows, so it never waits on a full terminal.
+    shown = threading.Thread(target=drain, args=(main,))
+    shown.start()
+    result = subprocess.run(
+        args, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=side,
+        stderr=side, start_new_session=True, timeout=60,
+        preexec_fn=lambda: fcntl.ioctl(1, termios.TIOCSCTTY, 0))
+    os.close(side)
+    shown.join()
+    os.close(main)
+    return result
 
 
 class BinaryInstall(unittest.TestCase):
@@ -115,7 +134,7 @@ class BinaryInstall(unittest.TestCase):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
         # An upgrade (a login there already) never runs it, even at a terminal.
-        for at_terminal, extra, upgrade, runs in [
+        for terminal, extra, upgrade, runs in [
                 (False, [], False, False), (True, [], False, True),
                 (True, ["--non-interactive"], False, False), (True, [], True, False)]:
             with tempfile.TemporaryDirectory(dir=parent) as directory:
@@ -130,26 +149,71 @@ class BinaryInstall(unittest.TestCase):
                        "PATH": f"{tools}:{os.environ['PATH']}"}
                 args = ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
                         "--no-browser", *extra, str(binary)]
-                if at_terminal:
-                    # A terminal of its own, as a person's: what /dev/tty opens.
-                    main, side = os.openpty()
-                    # Read what it shows, so it never waits on a full terminal.
-                    shown = threading.Thread(target=drain, args=(main,))
-                    shown.start()
-                    result = subprocess.run(
-                        args, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=side,
-                        stderr=side, start_new_session=True, timeout=60,
-                        preexec_fn=lambda: fcntl.ioctl(1, termios.TIOCSCTTY, 0))
-                    os.close(side)
-                    shown.join()
-                    os.close(main)
+                if terminal:
+                    result = at_terminal(args, root, env)
                 else:
                     result = subprocess.run(args, cwd=root, env=env, capture_output=True,
                                             stdin=subprocess.DEVNULL)
                 self.assertEqual(result.returncode, 0)
                 ran = called.read_text() if called.exists() else ""
                 self.assertEqual(ran, f"--state-dir {state} setup\n" if runs else "",
-                                 (at_terminal, extra, upgrade))
+                                 (terminal, extra, upgrade))
+
+    def test_a_first_mac_install_at_a_terminal_opens_the_app_from_macos_26(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        # What a first install ends with: the app opened (its arguments), or
+        # `latch setup` run (latch's), or neither. An explicit --state-dir,
+        # here a relative one, reaches the app as an absolute path.
+        for macos, given, extra, upgrade, opens, runs in [
+                ("26.0", True, [], False, "--args --state-dir {state}", ""),
+                ("27.1", False, [], False, "", ""),
+                ("26.0", True, ["--non-interactive"], False, None, ""),
+                ("26.0", True, [], True, None, ""),
+                ("15.7.1", True, [], False, None, "--state-dir state setup\n")]:
+            case = (macos, given, extra, upgrade)
+            with tempfile.TemporaryDirectory(dir=parent) as directory:
+                root = Path(directory)
+                home = root / "home"
+                state = root / "state" if given else home / ".latch"
+                called, opened = root / "called", root / "opened"
+                setup, _, tools = fixture(root, state, "", system="Darwin", machine="arm64",
+                                          macos=macos)
+                (setup / "latch").unlink()
+                inner = setup / "Plow Latch.app/Contents/MacOS/latch"
+                inner.parent.mkdir(parents=True)
+                inner.write_text(f'#!/bin/sh\necho "$@" >> "{called}"\n')
+                inner.chmod(0o755)
+                (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
+                tool(tools, "open", f'echo "$@" >> "{opened}"\n')
+                if upgrade:
+                    (state / "config.json").write_text("{}")
+                env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
+                options = ["--state-dir", "state"] if given else []
+                result = at_terminal(["sh", str(setup / "install-binary.sh"), *options,
+                                      "--no-browser", *extra, str(setup / "latch")], root, env)
+                self.assertEqual(result.returncode, 0, case)
+                app = home / "Applications/Plow Latch.app"
+                expected = None if opens is None else f"{app} {opens.format(state=state)}".strip() + "\n"
+                self.assertEqual(opened.read_text() if opened.exists() else None, expected, case)
+                self.assertEqual(called.read_text() if called.exists() else "", runs, case)
+
+    def test_a_mac_before_13_is_refused_and_nothing_installed(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            home = root / "home"
+            state = root / "state"
+            setup, binary, tools = fixture(root, state, "", system="Darwin", machine="x86_64",
+                                           macos="12.7.6")
+            env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
+            result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                                     "--no-browser", str(binary)],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("latch needs macOS 13 or later, and this Mac runs macOS 12.7.6", result.stderr)
+            self.assertFalse(home.exists())
 
     def test_macos_release_installs_the_app_and_updates_it_in_place(self):
         parent = ROOT / ".dev/tests"
@@ -181,6 +245,7 @@ class BinaryInstall(unittest.TestCase):
             uname = tools / "uname"
             uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo arm64;; esac\n')
             uname.chmod(0o755)
+            tool(tools, "sw_vers", "echo 26.0\n")
             env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
             args = ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state), str(setup / "latch")]
             installed = home / "Applications/Plow Latch.app"

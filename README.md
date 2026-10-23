@@ -89,7 +89,9 @@ No Homebrew tap is included.
   connecting Google, and on a Mac turning on Messages and Contacts, none
   of which needs latch running, then offers to start it. Each step runs a latch command and says which, and is skipped once
   done; run it again any time. The installer runs it at the
-  end when it has a terminal (`--non-interactive` skips it).
+  end when it has a terminal (`--non-interactive` skips it); on macOS 26
+  or later it opens Plow Latch.app instead, whose window takes the same
+  steps.
 - `latch serve` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing

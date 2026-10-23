@@ -80,6 +80,13 @@ is a new app), and makes `~/.local/bin/latch` (or `--bin-dir`'s) a symlink to
 `~/Applications/Plow Latch.app/Contents/MacOS/latch`. The link's target
 never changes, so later installs leave it alone.
 
+A first install at a terminal (no login in the state folder yet, no
+`--non-interactive`) ends by opening the installed app on macOS 26 or
+later, with `open APP --args --state-dir PATH` when `--state-dir` was
+given (as an absolute path), so its window takes the owner through setup;
+before macOS 26 it runs `latch setup` in the terminal, as on Linux. Before
+macOS 13 the installer refuses and installs nothing.
+
 `latch update` (`src/update.rs`) downloads the release archive, checks it
 against the signed `SHA256SUMS`, and refuses the app unless it is
 `co.plow.latch.cli` signed by team 3559PD337Z, intact, and accepted by
