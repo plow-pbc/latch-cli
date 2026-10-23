@@ -86,6 +86,8 @@ struct PlowLatchApp: App {
         .defaultSize(width: 1120, height: 700)
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(windowed && finished ? .presented : .suppressed)
+        // One Save: the rules editor with the keyboard focus.
+        .commands { RulesCommands() }
 
         Settings {
             AppSettingsView()
