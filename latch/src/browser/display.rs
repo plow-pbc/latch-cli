@@ -1,4 +1,4 @@
-//! A Linux host's private display: one Xvfb server per headed profile
+//! A Linux host's private display: one Xvfb server per headed session
 //! runtime, started by its worker before the engine and stopped with it.
 //! The runtime's sessions are windows on it; closing one session leaves it
 //! up while another still uses the runtime, and each runtime has its own.

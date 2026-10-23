@@ -37,7 +37,7 @@ works offline and before login. Not being logged in, or not serving, is a
 normal answer, not an error.
 
 ```
-{"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/2)","protocol":2,
+{"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/3)","protocol":3,
  "peer":{"name":"studio","key":"d9438ef1…","kind":"device"},
  "serve":{"running":true,"ready":true,"configuring":false,"managed":true,"state":"serving","pid":63632},
  "last_error":null}
@@ -121,7 +121,7 @@ log was replaced by a sound one, and otherwise stops with `audit_broken`.
 Run ordinary `latch exec`, `latch file`, `latch browser` and `latch google` commands on the
 host's state folder. A saved host resolves locally, even while Plow is
 unreachable; explicitly naming this machine with `--host` also resolves
-locally. The CLI connects to `<state-dir>/serve-v2.sock`, inside the private
+locally. The CLI connects to `<state-dir>/serve-v3.sock`, inside the private
 state folder, mode 0600. It never dials its own iroh key.
 
 The socket accepts the same length-prefixed `Request` and `Response`

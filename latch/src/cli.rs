@@ -29,7 +29,7 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
 }
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
-/// 03:45 UTC, local build, protocol plow/latch/2)`, or for a release build
+/// 03:45 UTC, local build, protocol plow/latch/3)`, or for a release build
 /// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
 /// came from (see `build.rs`), the protocol it speaks to peers and, for a
 /// build with baked-in defaults, those, so it is obvious which build this is.
@@ -269,19 +269,16 @@ pub struct BrowserArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum BrowserCommand {
-    /// Start a new session on a profile, load URL, and list the elements on screen;
-    /// answers the session's id, which every later command needs
+    /// Start a new session, in a fresh browser of its own, load URL, and list
+    /// the elements on screen; answers the session's id, which every later
+    /// command needs. Its cookies and logins last until it closes
     Open {
-        /// The profile, whose logins the session shares (default: default)
-        #[arg(long)]
-        profile: Option<String>,
+        /// The browser engine the session runs on
+        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
+        engine: EngineArg,
         /// A label for the session, shown in listings and the audit
         #[arg(long)]
         task: Option<String>,
-        /// Hold URL's site until the session closes: another session's action
-        /// there gets site_busy
-        #[arg(long)]
-        reserve_site: bool,
         url: Option<String>,
     },
     /// A fresh element list (snapshot), the page's first text, and the tabs
@@ -480,29 +477,13 @@ pub enum BrowserCommand {
     },
     /// Your open sessions, without their ids
     Sessions,
-    /// End the session (its profile, and other sessions on it, stay); an
-    /// owner device may name any session by the hash the host's dashboard shows
+    /// End the session, deleting its cookies and logins; an owner device
+    /// may name any session by the hash the host's dashboard shows
     Close,
-    /// Owner only, on the host itself: the host's browser profiles
-    Profile {
-        #[command(subcommand)]
-        command: ProfileCommand,
-    },
     /// Owner only, on the host itself: download and verify a browser
     /// engine into this machine's state directory (after `install.sh
     /// --no-browser`, say). An agent's browser call never downloads one
     Setup {
-        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
-        engine: EngineArg,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ProfileCommand {
-    /// Make profile NAME, bound to ENGINE for life, in this machine's state
-    /// directory (the host's, when run as the host)
-    Create {
-        name: String,
         #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
         engine: EngineArg,
     },
@@ -513,7 +494,7 @@ pub enum EngineArg {
     /// Chrome for Testing
     #[value(name = "chrome")]
     Cft,
-    /// Camoufox (macOS)
+    /// Camoufox
     Camoufox,
 }
 
@@ -740,9 +721,12 @@ pub enum RulesCommand {
 
 #[derive(Args, Debug)]
 pub struct BrowserWorkerArgs {
-    /// The profile the session uses
+    /// The engine to launch: cft or camoufox
     #[arg(long)]
-    pub profile: String,
+    pub engine: String,
+    /// The session's profile folder
+    #[arg(long)]
+    pub profile: PathBuf,
     /// The session's own folder: the engine's home, temp and crash folders
     #[arg(long)]
     pub scratch: PathBuf,

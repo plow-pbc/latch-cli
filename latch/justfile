@@ -1,24 +1,12 @@
+# The CLI's own recipes; the root justfile's (`just test`, `just test-list`,
+# `just test-plan`) run from here too.
+set fallback := true
+
 # The repo's .env.local (see .env.local.example) says which local Plow stack
 # the dev recipes use; scripts/dev_plow.py reads it. Its published ports, not
 # *.orb.local: macOS keeps an unapproved latch off OrbStack's network ("No
 # route to host"), and loopback needs no approval.
 set dotenv-filename := ".env.local"
-
-# The Rust CLI's checks; live Google evidence uses the documented test identities.
-test: cft
-    cargo fmt --check
-    cargo clippy --locked --all-targets --features fake-gog -- -D warnings
-    cargo test --locked --features fake-gog
-
-# The Linux gate uses the same nested sandbox as a container host.
-test-linux:
-    docker build --platform linux/arm64 -t latch-linux-gates:local -f docker/Dockerfile.gates docker
-    docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL --security-opt=no-new-privileges=true --security-opt=systempaths=unconfined --security-opt seccomp=$PWD/docker/seccomp.json -v "$PWD/..:/repo" -w /repo/latch -e HOME=/tmp -e RUSTUP_HOME=/usr/local/rustup -e CARGO_HOME=/repo/latch/target/cargo-home -e CARGO_TARGET_DIR=/repo/latch/target/linux-check latch-linux-gates:local sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
-
-# The Messages reader (macOS): its tests, with a longer fuzz run of the body
-# parser than the default, against synthetic databases only.
-messages-reader-test iterations="200000":
-    cd messages-reader && LATCH_FUZZ_ITERATIONS={{iterations}} swift test
 
 # The Messages reader, built and signed into messages-reader/dist/; prints its sha256.
 messages-reader:
@@ -28,38 +16,23 @@ messages-reader:
 # behind the owner's. Their focus checks (the engine never becomes the
 # front app) mean something only here. Not part of the gate: windows appear.
 [macos]
-test-headed: cft
+test-headed: engines
     cargo test --locked --features headed-tests browser::tests
 
-# The driver conformance checks on one engine (cft or camoufox), each a
-# test that passes or fails by name against that engine's driver.
-[macos]
-conformance engine: cft
-    cargo test --locked -- --test-threads=1 "::{{engine}}::"
-
-# On Linux, the engine is the one install-binary.sh put in LATCH_CFT_STATE.
-[linux]
-conformance engine:
-    cargo test --locked --features linux-browser-tests -- --test-threads=1 "::{{engine}}::"
-
 # The pinned engines, Chrome for Testing and Camoufox, where the browser
-# tests look for them. HOME keeps install-binary.sh's copy of latch out of the real
-# ~/.local/bin.
+# tests look for them (`just test browser` installs them itself). HOME keeps
+# install-binary.sh's copy of latch out of the real ~/.local/bin.
 [macos]
-cft:
+engines:
     cargo build --locked
     HOME="$PWD/../.dev/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome --browser camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
-
-# On Linux, install-binary.sh puts a host's engine in place; the real-engine tests
-# (`just conformance camoufox`, for example) find it through LATCH_CFT_STATE.
-[linux]
-cft:
 
 # The return scenario, headless, with its transcript: an order found in a
 # made-up mailbox, returned item by item on the test shop, its judge a
 # stand-in (`just gatekeeper scenario` runs it on the real one).
-scenario-return: cft
-    cargo test --locked --features fake-gog --test cli the_owner_returns_items_from_an_emailed_order -- --exact --nocapture
+[macos]
+scenario-return: engines
+    cargo test --locked --features fake-gog --test cli scenario::the_owner_returns_items_from_an_emailed_order -- --exact --nocapture
 
 # Logs this checkout's ../.dev/state in to the local Plow stack, by text to
 # its Linq twin from a made-up phone (the same local account each time).
@@ -87,8 +60,8 @@ gatekeeper what="checks" out="":
         [ -n "{{out}}" ] || { echo "usage: just gatekeeper replay OUT" >&2; exit 2; }
         LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live_held_out_replay -- --nocapture ;;
     scenario)
-        just cft
-        cargo test --locked --features fake-gog,live-model --test cli the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture ;;
+        just engines
+        cargo test --locked --features fake-gog,live-model --test cli scenario::the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture ;;
     *)
         echo "usage: just gatekeeper [checks | replay OUT | scenario]" >&2
         exit 2 ;;
@@ -138,7 +111,7 @@ build api="":
     root="$(cd .. && pwd)"
     state="$root/.dev/state"
     # The host's socket lives in the state folder; macOS caps its path at 104 bytes.
-    if [ "$(printf '%s' "$state/serve-v2.sock" | wc -c)" -ge 104 ]; then
+    if [ "$(printf '%s' "$state/serve-v3.sock" | wc -c)" -ge 104 ]; then
         echo "$state is too deep for the host's socket; use a worktree with a shorter path" >&2
         exit 1
     fi

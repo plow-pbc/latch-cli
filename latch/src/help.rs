@@ -362,8 +362,10 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "browser.open",
         runs_on: |_| RunsOn::Host,
-        output: "The new session's id (shown only now: keep it) and the elements on screen.",
-        effect: Once("starts a browser session on the host and loads the page"),
+        output: "The new session's id (shown only now: keep it), its engine, and the elements on screen.",
+        effect: Once(
+            "starts a browser session, in a fresh browser of its own, on the host and loads the page",
+        ),
         owner_only: false,
         connector: None,
         examples: &[
@@ -372,17 +374,16 @@ const ENTRIES: &[Entry] = &[
                 &["browser", "--host", "mac", "open", "https://shop.example/"],
             ),
             ex(
-                "On the shop profile, holding the site for this session",
+                "On Camoufox, labelled for listings",
                 &[
                     "browser",
                     "--host",
                     "mac",
                     "open",
-                    "--profile",
-                    "shop",
+                    "--engine",
+                    "camoufox",
                     "--task",
                     "basket",
-                    "--reserve-site",
                     "https://shop.example/",
                 ],
             ),
@@ -747,26 +748,12 @@ const ENTRIES: &[Entry] = &[
         id: "browser.close",
         runs_on: |_| RunsOn::Host,
         output: "The session closed.",
-        effect: Repeatable("ends the session; its profile stays"),
+        effect: Repeatable("ends the session and deletes its cookies and logins"),
         owner_only: false,
         connector: None,
         examples: &[ex(
             "End this session",
             &["browser", "--host", "mac", "close"],
-        )],
-    },
-    Entry {
-        id: "browser.profile.create",
-        runs_on: |_| RunsOn::Local,
-        output: "The profile made, and its engine.",
-        effect: Once("makes a browser profile in this machine's state folder"),
-        owner_only: true,
-        connector: None,
-        examples: &[ex(
-            "A profile on Camoufox",
-            &[
-                "browser", "profile", "create", "shop", "--engine", "camoufox",
-            ],
         )],
     },
     Entry {
@@ -783,10 +770,7 @@ const ENTRIES: &[Entry] = &[
                 "Chrome for Testing, after install.sh --no-browser",
                 &["browser", "setup"],
             ),
-            ex(
-                "Camoufox (macOS)",
-                &["browser", "setup", "--engine", "camoufox"],
-            ),
+            ex("Camoufox", &["browser", "setup", "--engine", "camoufox"]),
         ],
     },
     Entry {
@@ -1163,7 +1147,7 @@ pub fn run(args: HelpArgs) -> ExitCode {
     }
     let mut runnable = Vec::new();
     if gog_words.is_empty() {
-        actions(command, path, &mut runnable);
+        actions(command, path, false, &mut runnable);
     }
     let mut listed: Vec<Action> = runnable.iter().map(|(id, cmd)| describe(id, cmd)).collect();
     let google = find(&mut root, &["google".to_string()]).expect("latch google");
@@ -1234,16 +1218,20 @@ fn find<'a>(root: &'a mut clap::Command, path: &[String]) -> Option<&'a mut clap
 fn actions<'a>(
     command: &'a clap::Command,
     path: &[String],
+    include_hidden: bool,
     out: &mut Vec<(String, &'a clap::Command)>,
 ) {
     let runs = !command.has_subcommands() || !command.is_subcommand_required_set();
     if !path.is_empty() && runs {
         out.push((path.join("."), command));
     }
-    for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+    for sub in command
+        .get_subcommands()
+        .filter(|sub| include_hidden || !sub.is_hide_set())
+    {
         let mut path = path.to_vec();
         path.push(sub.get_name().to_string());
-        actions(sub, &path, out);
+        actions(sub, &path, include_hidden, out);
     }
 }
 
@@ -1514,7 +1502,7 @@ mod tests {
         let mut root = Cli::command();
         root.build();
         let mut out = Vec::new();
-        actions(&root, &[], &mut out);
+        actions(&root, &[], false, &mut out);
         out.into_iter().map(|(id, _)| id).collect()
     }
 
@@ -1567,30 +1555,10 @@ mod tests {
 
     #[test]
     fn every_host_selector_is_routed_or_refused_by_the_registry() {
-        fn walk<'a>(
-            command: &'a clap::Command,
-            path: &str,
-            out: &mut Vec<(String, &'a clap::Command)>,
-        ) {
-            if !path.is_empty()
-                && (!command.has_subcommands() || !command.is_subcommand_required_set())
-            {
-                out.push((path.to_string(), command));
-            }
-            for child in command.get_subcommands() {
-                let name = child.get_name();
-                let path = if path.is_empty() {
-                    name.to_string()
-                } else {
-                    format!("{path}.{name}")
-                };
-                walk(child, &path, out);
-            }
-        }
         let mut root = Cli::command();
         root.build();
         let mut runnable = Vec::new();
-        walk(&root, "", &mut runnable);
+        actions(&root, &[], true, &mut runnable);
         for (id, command) in runnable {
             let accepts_host = command
                 .get_arguments()
@@ -1657,15 +1625,7 @@ mod tests {
             .iter()
             .map(|input| input.name.as_str())
             .collect();
-        for name in [
-            "profile",
-            "task",
-            "reserve_site",
-            "url",
-            "host",
-            "session",
-            "state_dir",
-        ] {
+        for name in ["engine", "task", "url", "host", "session", "state_dir"] {
             assert!(names.contains(&name), "{name} missing from {names:?}");
         }
         let url = action
