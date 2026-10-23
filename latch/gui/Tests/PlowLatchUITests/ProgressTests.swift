@@ -350,4 +350,28 @@ struct ClosingTests {
         #expect(client.served == [true, true])
         #expect(flow.restartError == nil)
     }
+
+    @Test func checkAgainAfterATerminalRestartTurnsBothOn() async {
+        nonisolated final class Grant: @unchecked Sendable { var on = false }
+        let grant = Grant()
+        let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access; restart the host",
+                                      grant: "/Applications/Plow Latch.app", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        let client = ScriptedClient { _ in
+            if grant.on { return nil }
+            throw LatchError.failed(notGranted)
+        }
+        client.status = #"{"peer":{"name":"studio"},"serve":{"state":"serving","ready":true,"managed":true,"attached":true,"blocked":null},"last_error":null}"#
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        await app.refreshStatus()
+        let flow = app.stage(.access)
+        flow.checkAccess()
+        await until { flow.messages.isNeeded && flow.contacts.isNeeded }
+        #expect(flow.terminalHostNeedsRestart)
+        // The person restarts latch in their terminal, then Check again.
+        grant.on = true
+        flow.checkAccess()
+        await until { flow.accessDone }
+        #expect(flow.accessDone)
+        #expect(client.stopped == 0 && client.served.isEmpty)
+    }
 }

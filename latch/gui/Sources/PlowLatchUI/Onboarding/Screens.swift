@@ -270,14 +270,12 @@ struct GoogleView: View {
             if flow.googleConnectURL != nil, flow.google != .done {
                 Button("Connect Google in Plow") { flow.connectGoogleInPlow() }
                     .buttonStyle(.link).foregroundStyle(Brand.volt)
-            } else if case let .needed(message) = flow.google {
-                Text(message).foregroundStyle(Brand.muted).font(.callout)
             }
             if case let .failed(message) = flow.google {
                 Text(message).foregroundStyle(Brand.clay).font(.callout)
             }
             if flow.google == .done, !flow.googleAccounts.isEmpty {
-                Text("Connected as \(flow.googleAccounts.joined(separator: ", ")).").foregroundStyle(Brand.muted)
+                Text("Connected accounts: \(ListFormatter.localizedString(byJoining: flow.googleAccounts)).").foregroundStyle(Brand.muted)
             }
             Spacer(minLength: 0)
         }
@@ -346,13 +344,33 @@ struct AccessView: View {
                 }
             } else if flow.backgroundHostNeedsRestart {
                 HStack(spacing: 12) {
-                    Text("After you turn on access, restart Latch so it can use it.").foregroundStyle(Brand.muted)
+                    Text("After turning on Full Disk Access, restart Latch to use Messages and Contacts.").foregroundStyle(Brand.muted)
                     Spacer()
                     Button(flow.restarting ? "Restarting…" : "Restart Latch") { Task { await flow.restartLatch() } }
                         .disabled(flow.restarting)
                 }
-            } else if flow.terminalHostNeedsRestart, let message = flow.accessMessage {
-                Text(message).foregroundStyle(Brand.muted)
+            } else if flow.terminalHostNeedsRestart {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        Text("Latch is running in a terminal. After turning on Full Disk Access, restart it there.")
+                            .foregroundStyle(Brand.muted)
+                        Spacer()
+                        Button("Check again") { flow.checkAccess() }
+                    }
+                    // latch's own recovery steps, unchanged: the path, the
+                    // settings link and the command.
+                    if let message = flow.accessMessage {
+                        DisclosureGroup("Details") {
+                            Text(message)
+                                .font(.callout)
+                                .foregroundStyle(Brand.muted)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(.callout)
+                    }
+                }
             } else if flow.waitingForAccess {
                 Text("This screen updates when access is granted.").foregroundStyle(Brand.muted)
             } else if flow.messages.isNeeded || flow.contacts.isNeeded {
