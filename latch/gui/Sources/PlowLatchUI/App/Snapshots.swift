@@ -10,21 +10,35 @@ nonisolated struct FakeLatchClient: LatchClient {
     var rules: String? = nil
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
-    func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func rulesShow() async throws -> RulesShow {
         try Fixtures.decode(rules.map { #"{"agents":[],"every_agent":{"revision":"r1","text":"\#($0)"},"host":"studio"}"# }
             ?? #"{"agents":[],"every_agent":null,"host":"studio"}"#)
     }
     func rulesSet(_ text: String) async throws {}
-    func pluginsList() async throws -> PluginsList {
-        throw LatchError.failed(LatchFailure(code: "serve_required", message: "this machine needs a live receiver; start `latch serve` on this state folder, then retry"))
-    }
+    var connectorsOn: [String] = []
+    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn)) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
-    func serve(again: Bool) async throws {}
+    func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }
 
 nonisolated enum Fixtures {
+    /// `latch setup --status` on a logged-in Mac whose host is stopped,
+    /// with these connectors on.
+    static func setup(on: [String], google: String? = nil,
+                      host: String = #"{"step":"host","state":"needed","reason":"latch is not running.","args":["serve","-d","--again"]}"#) -> String {
+        let connectors = ["google", "messages", "contacts"].map { name in
+            if name == "google", let google { return google }
+            return on.contains(name)
+                ? #"{"step":"\#(name)","state":"done","reason":"The \#(name.capitalized) connector is on; agents can use it once latch is running.","args":null,"enabled":true,"ready":false}"#
+                : #"{"step":"\#(name)","state":"needed","reason":"The \#(name.capitalized) connector is off.","args":["plugins","enable","\#(name)"],"enabled":false,"ready":false}"#
+        }
+        return #"{"steps":[{"step":"login","state":"done","reason":"Logged in as studio.","args":null},"#
+            + connectors.joined(separator: ",")
+            + "," + host + "]}"
+    }
+
     static let serving = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null},"last_error":null,"update":{"available":false,"build":null,"checked_at":null}}"#
     static let stopped = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null},"last_error":null,"update":{"available":true,"build":"1342","checked_at":"2026-10-22T22:07:54.186472Z"}}"#
     static let loggedOut = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":null,"serve":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null},"last_error":null,"update":{"available":false,"build":null,"checked_at":null}}"#
@@ -63,6 +77,7 @@ package enum SnapshotRunner {
             ("02-login-error", .login, Fixtures.loggedOut, Progress(), {
                 $0.login = .failed("Plow couldn't be reached at http://127.0.0.1:18934; check your connection, then try again")
             }),
+            ("02-login-name-taken", .login, Fixtures.loggedOut, Progress(), { $0.login = .nameTaken; $0.loginName = "studio-2" }),
             ("02-login-verified", .login, Fixtures.serving, Progress(), { $0.login = .verified(name: "studio") }),
             ("03-privacy", .privacy, Fixtures.stopped, Progress(), { _ in }),
             ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), {
@@ -98,6 +113,9 @@ package enum SnapshotRunner {
             }),
             ("05-google-not-connected-with-link", .google, Fixtures.stopped, Progress(), {
                 $0.google = .needed("connect a Google account in Plow"); $0.googleConnectURL = URL(string: "https://plow.co/connect/google")
+            }),
+            ("05-google-off-connected-in-plow", .google, Fixtures.stopped, Progress(), {
+                $0.google = .unknown; $0.googleAccounts = ["owner@example.com"]
             }),
             ("05-google-connected", .google, Fixtures.stopped, Progress(), {
                 $0.google = .done; $0.googleAccounts = ["owner@example.com"]
@@ -137,13 +155,13 @@ package enum SnapshotRunner {
                 $0.startError = "the host did not answer within 30 s; see /Users/me/.latch/serve.log"
             }),
             ("08-done-all-set", .done, Fixtures.serving, full, {
-                $0.app.stage(rulesSaved: true, plugins: ["google": "enabled", "messages": "enabled", "contacts": "enabled"])
+                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
             }),
             ("08-done-with-skips", .done, Fixtures.serving, skipped, {
-                $0.app.stage(rulesSaved: false, plugins: ["google": "disabled", "messages": "disabled", "contacts": "disabled"])
+                $0.app.stage(rulesSaved: false, setup: try! Fixtures.decode(Fixtures.setup(on: [])))
             }),
             ("08-done-not-running", .done, Fixtures.stopped, full, {
-                $0.app.stage(rulesSaved: true, plugins: nil); $0.google = .done
+                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google"])))
             }),
         ]
 
@@ -156,17 +174,17 @@ package enum SnapshotRunner {
                 try await render(OnboardingView(entranceTime: step == .welcome ? 10 : nil).environment(app),
                                  size: Brand.windowSize, dark: dark, file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
-            let mains: [(String, String?, Progress, Bool?, [String: String]?)] = [
-                ("09-main-running", Fixtures.serving, full, true, ["google": "enabled", "messages": "enabled", "contacts": "enabled"]),
+            let mains: [(String, String?, Progress, Bool?, [String]?)] = [
+                ("09-main-running", Fixtures.serving, full, true, ["google", "messages", "contacts"]),
                 ("09-main-stopped-skipped-update", Fixtures.stopped, skipped, false, nil),
                 ("09-main-logged-out", Fixtures.loggedOut, full, nil, nil),
                 ("09-main-status-failed", nil, full, nil, nil),
             ]
-            for (name, status, progress, rulesSaved, plugins) in mains {
+            for (name, status, progress, rulesSaved, on) in mains {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try status.map { try Fixtures.decode($0) },
                           error: status == nil ? "Latch couldn't start: The file “latch” doesn't exist." : nil)
-                app.stage(rulesSaved: rulesSaved, plugins: plugins)
+                app.stage(rulesSaved: rulesSaved, setup: try on.map { try Fixtures.decode(Fixtures.setup(on: $0)) })
                 _ = app.stage(.done, progress: progress)
                 try await render(MainView().environment(app), size: CGSize(width: 520, height: 420), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))

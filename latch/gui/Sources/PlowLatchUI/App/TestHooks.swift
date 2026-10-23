@@ -2,12 +2,13 @@
 import AppKit
 
 /// A test build's remote control (`gui/build.sh --test-hooks`): distributed
-/// notifications `co.plow.latch.test.COMMAND`, with an argument as the
-/// object, press the same buttons a person does, write the window to a PNG
-/// and the flow's state to JSON, so an end-to-end run needs no
+/// notifications `co.plow.latch.test.BUNDLE_ID.COMMAND`, with an argument
+/// as the object, press the same buttons a person does, write the window to
+/// a PNG and the flow's state to JSON, so an end-to-end run needs no
 /// Accessibility or screen-recording permission. Nothing it does reaches
 /// the rest of the Mac: links, Finder reveals and the login item are
-/// recorded, never made.
+/// recorded, never made. Each test app hears only its own bundle id, so
+/// test apps running side by side never drive each other.
 enum TestHooks {
     /// What the app would have opened, for `state`.
     static var opened: [String] = []
@@ -25,7 +26,7 @@ enum TestHooks {
         app.loginItemIsOn = { loginItem }
         let center = DistributedNotificationCenter.default()
         func on(_ command: String, _ act: @escaping @MainActor (String?) -> Void) {
-            center.addObserver(forName: .init("co.plow.latch.test.\(command)"), object: nil, queue: .main) { note in
+            center.addObserver(forName: .init("co.plow.latch.test.\(Bundle.main.bundleIdentifier ?? "").\(command)"), object: nil, queue: .main) { note in
                 let argument = note.object as? String
                 MainActor.assumeIsolated { act(argument) }
             }
@@ -34,6 +35,10 @@ enum TestHooks {
         on("skip") { _ in app.onboarding?.skip() }
         on("back") { _ in app.onboarding?.back() }
         on("type") { text in app.onboarding?.draftRules = text ?? "" }
+        on("use-name") { name in
+            app.onboarding?.loginName = name ?? ""
+            app.onboarding?.useAnotherName()
+        }
         on("start-at-login") { value in app.onboarding?.startAtLogin = value == "1" }
         on("set-up-again") { _ in app.setUpAgain() }
         on("quit") { _ in NSApp.terminate(nil) }
