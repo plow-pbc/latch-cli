@@ -46,7 +46,7 @@ nonisolated struct LiveLatchClient: LatchClient {
     }
 
     func login() -> AsyncThrowingStream<LoginEvent, Error> {
-        let process = LatchProcess(executable: executable, arguments: withState(["login", "--events"]))
+        let process = LatchProcess(executable: executable, arguments: withState(["login", "--events"]), environment: Self.environment)
         return AsyncThrowingStream { continuation in
             let reader = Task.detached {
                 do {
@@ -96,7 +96,17 @@ nonisolated struct LiveLatchClient: LatchClient {
     }
 
     private func run(_ arguments: [String], input: Data? = nil) async throws -> Data {
-        try await LatchProcess(executable: executable, arguments: withState(arguments), input: input).output()
+        try await LatchProcess(executable: executable, arguments: withState(arguments), input: input, environment: Self.environment).output()
+    }
+
+    /// The app's environment, less what would pick a target for latch: the
+    /// host and chat are always given as arguments, so an inherited
+    /// `LATCH_HOST` (a terminal launch, `launchctl setenv`) can't redirect
+    /// a read meant for this Mac.
+    private static let environment = childEnvironment(ProcessInfo.processInfo.environment)
+
+    static func childEnvironment(_ inherited: [String: String]) -> [String: String] {
+        inherited.filter { !["LATCH_HOST", "LATCH_PLOW_CHAT"].contains($0.key) }
     }
 
     private func on(_ host: String?) -> [String] {

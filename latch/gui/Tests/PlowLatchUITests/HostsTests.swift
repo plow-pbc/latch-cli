@@ -28,16 +28,19 @@ struct HostsTests {
         #expect(app.section == .rules)
     }
 
-    // Without Plow's list, a stopped Mac is still this Mac's host: its
-    // own state, rules and vault are read locally, and it can be started.
-    @Test func aStoppedMacStaysInThePickerWhilePlowIsDown() async throws {
+    // A stopped Mac is this Mac's host whether Plow is unreachable (only
+    // its list could say the Mac never served) or counts it offline: its
+    // rules and vault are read locally, and it can be started.
+    @Test(arguments: [false, true])
+    func aStoppedMacRemainsLocallyReadable(plowAnswered: Bool) async throws {
         let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped),
                            store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.stopped))
-        app.stage(account: nil, error: unreachable)
-        #expect(app.hosts.map(\.name) == ["studio"])
-        #expect(app.host?.isThisMac == true)
-        #expect(!app.viewerOnly)
+        let offline: AccountStatus = try Fixtures.decode(Fixtures.studioHosts.replacingOccurrences(
+            of: #""online":true,"self":true"#, with: #""online":false,"self":true"#))
+        app.stage(account: plowAnswered ? offline : nil, error: plowAnswered ? nil : unreachable)
+        #expect(app.hosts.map(\.name) == (plowAnswered ? ["studio", "pi-kitchen", "sidecar"] : ["studio"]))
+        #expect(app.host?.isThisMac == true && !app.viewerOnly)
         await app.refreshSummary()
         #expect(app.summaries["studio"]?.rules != nil)
         #expect(app.summaries["studio"]?.vault != nil)
@@ -70,18 +73,12 @@ struct HostsTests {
     }
 }
 
-@MainActor
-struct HostSummaryTests {
-    // A stopped Mac is offline to Plow, but its rules and vault are still
-    // read from its own state folder.
-    @Test func thisMacIsReadWhilePlowCountsItOffline() async throws {
-        let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped),
-                           store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.stopped))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts.replacingOccurrences(
-            of: #""online":true,"self":true"#, with: #""online":false,"self":true"#)))
-        #expect(app.host?.isThisMac == true && app.host?.online == false)
-        await app.refreshSummary()
-        #expect(app.summaries["studio"]?.rules != nil)
+/// The app's latch is told its target in arguments; a `LATCH_HOST` or
+/// `LATCH_PLOW_CHAT` the app inherited (a terminal launch, `launchctl
+/// setenv`) must not send its reads elsewhere.
+struct ChildEnvironmentTests {
+    @Test func targetSelectingVariablesAreNotPassedOn() {
+        let child = LiveLatchClient.childEnvironment(["LATCH_HOST": "pi-kitchen", "LATCH_PLOW_CHAT": "c1", "HOME": "/Users/me", "PATH": "/bin"])
+        #expect(child == ["HOME": "/Users/me", "PATH": "/bin"])
     }
 }
