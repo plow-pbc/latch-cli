@@ -136,9 +136,9 @@ struct RulesTests {
             titles[name] = VerdictView(verdict: try Fixtures.decode(json)).title
         }
         #expect(titles["allow-owner"] == "Would be allowed")
-        #expect(titles["not-covered"] == "Not covered: would be refused")
+        #expect(titles["not-covered"] == "Needs your OK: would be refused")
         #expect(titles["said-no"] == "You said no: would be refused")
-        #expect(titles["no-intent"] == "No instructions from you: would be refused")
+        #expect(titles["defaults"] == "Needs your OK: would be refused")
         #expect(titles["host-refused"] == "The host refuses it: would be refused")
         let refused: RulesTry = try Fixtures.decode(Fixtures.tries["host-refused"]!)
         #expect(refused.refused?.code == "exec_denied")

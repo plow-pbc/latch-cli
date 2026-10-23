@@ -71,9 +71,9 @@ final class Onboarding {
 
     static let decks = [
         Deck(name: "Personal assistant",
-             rules: "Allow agents to check our calendar, find messages about dinner, order groceries online and save shopping lists in ~/Documents. Do not send email or write files outside ~/Documents.",
+             rules: "Allow agents to read our calendar, find messages about dinner, order groceries online and save shopping lists in ~/Documents. Do not send email or write files outside ~/Documents.",
              examples: [
-                 Example(title: "Check our calendar", symbol: "calendar",
+                 Example(title: "Read our calendar", symbol: "calendar",
                          shown: "latch google -- calendar events primary --from 2026-10-26 --to 2026-11-02",
                          request: ["google", "--", "calendar", "events", "primary", "--from", "2026-10-26", "--to", "2026-11-02"]),
                  Example(title: "Find messages about dinner", symbol: "message",
@@ -89,7 +89,7 @@ final class Onboarding {
                          request: ["google", "--", "gmail", "send", "--to", "jordan@example.com", "--subject", "Update", "--body", "Ready for review."]),
              ]),
         Deck(name: "Executive assistant",
-             rules: "Allow agents to read and send work email, check my calendar and install dependencies in ~/work with network access. Do not read my personal messages.",
+             rules: "Allow agents to read and send email, read my calendar and install dependencies in ~/work with network access. Do not read or search this Mac's Messages.",
              examples: [
                  Example(title: "Find unread email", symbol: "envelope",
                          shown: "latch google -- gmail search is:unread", request: ["google", "--", "gmail", "search", "is:unread"]),
@@ -100,9 +100,9 @@ final class Onboarding {
                          shown: "latch google -- calendar freebusy primary --from 2026-10-26 --to 2026-11-02",
                          request: ["google", "--", "calendar", "freebusy", "primary", "--from", "2026-10-26", "--to", "2026-11-02"]),
                  Example(title: "Install project dependencies", symbol: "shippingbox",
-                         shown: "latch exec --write ~/Documents --network -- npm install",
-                         request: ["exec", "--write", "~/Documents", "--network", "--", "npm", "install"]),
-                 Example(title: "Search personal messages", symbol: "message",
+                         shown: "latch exec --write ~/work --network -- npm install",
+                         request: ["exec", "--write", "~/work", "--network", "--", "npm", "install"]),
+                 Example(title: "Search this Mac's Messages", symbol: "message",
                          shown: "latch messages search dinner", request: ["messages", "search", "dinner"]),
              ]),
     ]

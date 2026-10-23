@@ -79,9 +79,9 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
 
     /// The gatekeeper's judgment, when it was asked.
     struct Gate: Decodable, Equatable {
-        /// `allow`, `not_covered`, `owner_said_no`, `no_intent`.
+        /// `allow`, `not_covered`, `owner_said_no`.
         var verdict: String?
-        /// What it read: `owner_request`, `rules`, `chat`, `chat_and_rules`.
+        /// What it read: `owner_request`, `defaults`, `rules`, `chat`, `chat_and_rules`.
         var source: String?
         /// `COVERED`, `NOT_COVERED`, `FORBIDDEN`, each 0…1.
         var p: [String: Double]?

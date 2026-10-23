@@ -315,7 +315,7 @@ nonisolated struct ImportResult: Decodable, Equatable {
 
 /// `latch rules try`: the verdict a request would get now, without running it.
 nonisolated struct RulesTry: Decodable, Equatable {
-    /// `allow`, `not_covered`, `owner_said_no`, `no_intent` or `host_refused`.
+    /// `allow`, `not_covered`, `owner_said_no` or `host_refused`.
     var verdict: String
     /// Why the host refused it before asking the judge, for `host_refused`.
     var refused: LatchFailure?
