@@ -319,7 +319,7 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
         AuditAction::Verify => {
-            let text = read_locked(&path, 0)?;
+            let text = read_locked(&path)?;
             let (records, last) = verify(&text).map_err(|problem| broken(&path, &problem))?;
             Ok(json!({"records": records, "last": last, "checked_without_the_key": true}))
         }
@@ -480,7 +480,7 @@ pub fn read(
     if let Some(watch) = &mut watch {
         watch.arm().map_err(watching)?;
     }
-    let text = read_locked(&path, 0)?;
+    let text = read_locked(&path)?;
     let records = open_text(&text, &path)?;
     let index = |id: &str| -> Result<usize, Failure> {
         if id == GENESIS {
@@ -530,23 +530,22 @@ pub fn read(
     let Some(mut watch) = watch else {
         return Ok(());
     };
-    // What was sent ends with the line `last_line`, at byte `at` of the
-    // log. Each later look reads only from there: that line must still be
-    // there, and only the lines after it are new.
+    // What was sent is `shown`, the log's text so far. Each later look must
+    // still begin with exactly that text, compared byte for byte rather
+    // than opened again; only the lines after it are opened.
     let mut count = records.len();
     let mut prev = records
         .last()
         .map_or(GENESIS.to_string(), |record| record.hash.clone());
-    let mut last_line = last_line_of(&text).to_string();
-    let mut at = (text.len() - last_line.len()) as u64;
+    let mut shown = text;
     loop {
         match watch.wait().map_err(watching)? {
             crate::watch::Woke::HungUp => return Ok(()),
             crate::watch::Woke::Changed => {}
         }
         watch.arm().map_err(watching)?;
-        let text = read_locked(&path, at)?;
-        let Some(new) = text.strip_prefix(last_line.as_str()) else {
+        let text = read_locked(&path)?;
+        let Some(new) = text.strip_prefix(shown.as_str()) else {
             return Err(broken(&path, "it no longer begins with what was shown"));
         };
         if new.is_empty() {
@@ -563,15 +562,8 @@ pub fn read(
         if let Some(record) = records.last() {
             prev = record.hash.clone();
         }
-        last_line = last_line_of(new).to_string();
-        at += (text.len() - last_line.len()) as u64;
+        shown.push_str(new);
     }
-}
-
-/// The last line of `text`, its newline kept; empty for no text.
-fn last_line_of(text: &str) -> &str {
-    let body = text.strip_suffix('\n').unwrap_or(text);
-    &text[body.rfind('\n').map_or(0, |at| at + 1)..]
 }
 
 /// One record as `latch audit` shows it, its arguments with
@@ -588,11 +580,10 @@ fn record_line(record: &Record) -> Value {
     json!({"type": "record", "cursor": record.hash, "record": shown})
 }
 
-/// The log's text from byte `from` on, read under the audit lock, so a
-/// record being appended is read whole or not at all and what is read is
-/// the log as written: a last line cut short fails its checks. A log not
-/// started yet is empty.
-fn read_locked(path: &Path, from: u64) -> Result<String, Failure> {
+/// The log's text, read under the audit lock, so a record being appended
+/// is read whole or not at all and what is read is the log as written: a
+/// last line cut short fails its checks. A log not started yet is empty.
+fn read_locked(path: &Path) -> Result<String, Failure> {
     if !path.exists() {
         return Ok(String::new());
     }
@@ -602,12 +593,7 @@ fn read_locked(path: &Path, from: u64) -> Result<String, Failure> {
     let _lock = File::open(&lock)
         .and_then(|file| file.lock_shared().map(|()| file))
         .map_err(|err| io_failure(&lock, err))?;
-    let read = File::open(path).and_then(|mut file| {
-        file.seek(SeekFrom::Start(from))?;
-        let mut text = String::new();
-        file.read_to_string(&mut text).map(|_| text)
-    });
-    match read {
+    match fs::read_to_string(path) {
         Ok(text) => Ok(text),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(String::new()),
         Err(err) => Err(io_failure(path, err)),
@@ -617,7 +603,7 @@ fn read_locked(path: &Path, from: u64) -> Result<String, Failure> {
 /// Every record of the log at `path`: the chain checked, each record opened.
 #[cfg(test)]
 pub fn read_all(path: &Path) -> Result<Vec<Record>, Failure> {
-    open_text(&read_locked(path, 0)?, path)
+    open_text(&read_locked(path)?, path)
 }
 
 /// Every record of the log's whole `text`, read from `path`, opened with
@@ -1125,11 +1111,23 @@ mod tests {
             );
         }
 
-        // A log cut back past what was shown stops the follower.
-        fs::write(&path, &text).unwrap();
-        let stopped = follower.join().unwrap().unwrap_err();
-        assert_eq!(stopped.code, "audit_broken", "{}", stopped.message);
+        // A record already shown, changed in place to the same length with
+        // every later line kept, stops the follower: the log no longer
+        // begins with what was shown.
+        let log = fs::read_to_string(&path).unwrap();
+        let at = log.find("\"nonce\":\"").unwrap() + "\"nonce\":\"".len();
+        let flipped = if &log[at..at + 1] == "0" { "1" } else { "0" };
+        fs::write(&path, format!("{}{flipped}{}", &log[..at], &log[at + 1..])).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !follower.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         drop(closed);
+        let stopped = follower
+            .join()
+            .unwrap()
+            .expect_err("it followed a changed log");
+        assert_eq!(stopped.code, "audit_broken", "{}", stopped.message);
     }
 
     #[test]
