@@ -257,7 +257,7 @@ fn an_agents_login_and_its_host() {
     assert!(text.contains("Login      agent\n"), "{text}");
     // Plow lists no host for it, and none should run: it calls hosts.
     assert!(
-        text.contains(": research-bot\n           Plow says: agent login, not a host\n"),
+        text.contains(": research-bot\n           Plow says: not listed as a host\n"),
         "{text}"
     );
     assert!(!text.contains("stopped"), "{text}");

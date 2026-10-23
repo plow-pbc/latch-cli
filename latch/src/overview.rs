@@ -375,10 +375,6 @@ impl Facts {
                         line.extend(self.seen(host));
                         line
                     }
-                    None if self.agent() => vec![
-                        toned("Plow says: ", Tone::Dim),
-                        plain("agent login, not a host"),
-                    ],
                     None => vec![
                         toned("Plow says: ", Tone::Dim),
                         plain("not listed as a host"),
