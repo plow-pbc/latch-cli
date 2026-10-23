@@ -179,10 +179,13 @@ fn timed_out() -> Failure {
 /// Google on for this host. A sign-in already started in a browser is left
 /// to finish or not.
 fn cancelled(adding: bool) -> Failure {
-    let mut cancelled = Failure::new(
-        code::google_connect_cancelled,
-        "Stopped waiting for Google sign-in.".into(),
-    );
+    let message = if adding {
+        "Stopped waiting for Google sign-in. Google may already be on for this host, from the \
+         enable before the wait."
+    } else {
+        "Stopped waiting for Google sign-in."
+    };
+    let mut cancelled = Failure::new(code::google_connect_cancelled, message.into());
     let again = if adding { " --add-account" } else { "" };
     cancelled.next = Some(format!("{ENABLE}{again}").into());
     cancelled

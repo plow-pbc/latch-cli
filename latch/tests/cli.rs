@@ -5615,6 +5615,12 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
         "{stopped}"
     );
     assert_eq!(stopped["error"]["exit"], 1, "{stopped}");
+    // The enable before an --add-account wait may already have turned it on.
+    let message = stopped["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("Google may already be on for this host"),
+        "{stopped}"
+    );
     assert_eq!(child.wait().unwrap().code(), Some(1));
     assert!(out.next().is_none(), "nothing after the error");
     // A reader that goes away stops the wait even with stdin /dev/null:
@@ -5729,6 +5735,8 @@ fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
         .unwrap();
     assert_eq!(child.wait().unwrap().code(), Some(1), "{shown}");
     assert!(shown.contains("google_connect_cancelled"), "{shown}");
+    // A plain enable's wait turned nothing on, and says no more.
+    assert!(!shown.contains("may already be on"), "{shown}");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(10),
         "{shown}"
