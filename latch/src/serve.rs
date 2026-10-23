@@ -1127,6 +1127,8 @@ async fn serve_request(
                         crate::google::host::run(
                             &host.workers,
                             &host.plow,
+                            &host.name,
+                            local,
                             request.args,
                             &mut send,
                             &mut recv,

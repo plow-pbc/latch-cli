@@ -125,8 +125,7 @@ async fn google(workers: &WorkerSetup, plow: &Plow) -> Result<Value, Failure> {
         return Err(Failure::new(code::gog_not_executable, message));
     }
     let tokens = match plow.google_tokens().await {
-        // Plow's answer when the owner has no Google account connected.
-        Err(failure) if failure.code == "precondition_failed" => {
+        Err(failure) if failure.code == code::google_not_connected.name => {
             return Err(google_not_connected(plow).await);
         }
         tokens => tokens?,

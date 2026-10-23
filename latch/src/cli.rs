@@ -746,10 +746,14 @@ pub enum PluginsCommand {
     },
     /// Run NAME's setup for this machine's host, running or not; NAME is
     /// enabled only if it succeeds (owner only). When no Google account is
-    /// connected in Plow, `enable google` gets a single-use sign-in link
-    /// from Plow: at a terminal it shows the link and a QR code and waits
-    /// up to 5 minutes for the account; otherwise the error carries it as
-    /// `sign_in_url`
+    /// connected in Plow, or none works until the owner signs in again,
+    /// `enable google` gets a single-use sign-in link from Plow: at a
+    /// terminal it shows the link and a QR code and waits up to 5 minutes
+    /// for the account (sign_in_timeout when it ends); otherwise the error
+    /// carries it as `sign_in_url`. Accounts that still need signing in
+    /// again while another works are named in `needs_sign_in`. Ctrl-C,
+    /// SIGTERM or closing stdin stops the wait: google_connect_cancelled,
+    /// or outcome_unknown once the enable was sent
     Enable {
         name: String,
         /// For an app: report as JSON lines on stdout (hello, link, then

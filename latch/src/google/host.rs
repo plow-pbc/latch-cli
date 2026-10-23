@@ -17,10 +17,13 @@ use crate::worker::{Running, WorkerSetup};
 
 /// The host's `google` operation. Every outcome, refusals included, ends as
 /// one answer for the client and an audit record of the command, flag names,
-/// accounts and recipients (never bodies, queries or tokens).
+/// accounts and recipients (never bodies, queries or tokens). `name` is
+/// this host's, and `local` a caller on this machine.
 pub async fn run(
     workers: &WorkerSetup,
     plow: &Plow,
+    name: &str,
+    local: bool,
     args: Value,
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -30,7 +33,16 @@ pub async fn run(
     let limit = crate::dial::ANSWER_WITHIN - crate::dial::ANSWER_MARGIN;
     let result = tokio::time::timeout(
         limit,
-        operation(workers, plow, args.clone(), send, recv, &mut audit),
+        operation(
+            workers,
+            plow,
+            name,
+            local,
+            args.clone(),
+            send,
+            recv,
+            &mut audit,
+        ),
     )
     .await
     .unwrap_or_else(|_| Err(timeout_failure(&args, limit)));
@@ -65,6 +77,19 @@ pub async fn run(
         }
     }
 }
+/// No Google account, or none working: only `latch plugins enable google`,
+/// run by the owner on this host, signs one in. A caller elsewhere is
+/// refused it, so it is told to ask the owner.
+fn signed_in_by_the_owner(mut failure: Failure, name: &str, local: bool) -> Failure {
+    let signs_in = failure.code == code::google_not_connected.name
+        || failure.code == code::google_needs_sign_in.name;
+    if signs_in && !local {
+        failure.next =
+            Some(format!("ask the owner to run `latch plugins enable google` on {name}").into());
+    }
+    failure
+}
+
 fn timeout_failure(args: &Value, limit: Duration) -> Failure {
     let write = serde_json::from_value::<Request>(args.clone())
         .ok()
@@ -85,9 +110,12 @@ fn timeout_failure(args: &Value, limit: Duration) -> Failure {
 /// Checks the request, gets the Google tokens, and runs gog: once per account
 /// for a fan-out read (results merged), else once. Fills in `audit` as it
 /// learns more, so a refusal at any step is still recorded.
+#[allow(clippy::too_many_arguments)]
 async fn operation(
     workers: &WorkerSetup,
     plow: &Plow,
+    name: &str,
+    local: bool,
     args: Value,
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -115,7 +143,10 @@ async fn operation(
         }
         None => None,
     };
-    let tokens = plow.google_tokens().await?;
+    let tokens = plow
+        .google_tokens()
+        .await
+        .map_err(|failure| signed_in_by_the_owner(failure, name, local))?;
     let connected: Vec<_> = tokens.accounts.iter().map(|a| a.account.clone()).collect();
     audit["accounts"] = json!(connected);
     if accounts_only {
