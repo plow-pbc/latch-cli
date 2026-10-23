@@ -156,13 +156,19 @@ pub fn audit(op: &str, action: &str, words: &Value, plan: &Value) -> Value {
         .collect();
     let mut audit = json!({"action": format!("{op}.{action}"), "args": words});
     if !plan.is_null() {
-        let mut plan = plan.clone();
-        if op == "contacts" && plan["after"].is_object() {
-            plan["after"]["key"] = json!("[name]");
-        }
-        audit["plan"] = plan;
+        audit["plan"] = kept_plan(op, plan);
     }
     audit
+}
+
+/// A plan as the audit and the log keep it: a contacts page's position,
+/// the name the page before ended on, is not kept.
+pub fn kept_plan(op: &str, plan: &Value) -> Value {
+    let mut plan = plan.clone();
+    if op == "contacts" && plan["after"].is_object() {
+        plan["after"]["key"] = json!("[name]");
+    }
+    plan
 }
 
 fn refused(failure: Failure, audit: Value) -> Done {

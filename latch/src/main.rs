@@ -306,13 +306,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             )
         }
         Command::Exec(args) => {
-            let secret_env = exec::parse_secret_env(&args.secret_env)?;
-            let mut request = json!({ "argv": args.argv, "workdir": args.workdir, "timeout": args.timeout,
-                        "writes": args.writes, "network": args.network, "secret_env": secret_env });
-            if args.stdin {
-                let bytes = input::read_all(Duration::from_secs(args.timeout))?;
-                request["stdin"] = json!(bytes);
-            }
+            let request = exec::request(&args)?;
             // The host may let the program run for its whole timeout.
             let answer_within = Duration::from_secs(args.timeout) + dial::ANSWER_MARGIN;
             let result = call_host(&state, args.host, "exec", request, answer_within).await?;
