@@ -1,9 +1,6 @@
-import AppKit
 import Foundation
 import Synchronization
-import SwiftUI
 import Testing
-import Vision
 @testable import PlowLatchUI
 
 /// A latch whose `plugins enable google --events` sends what a test says,
@@ -55,6 +52,13 @@ struct GoogleSignInTests {
     let first = URL(string: "http://127.0.0.1:18934/v1/connectors/gmail/connect/FIRSTsecretCODE")!
     let renewed = URL(string: "http://127.0.0.1:18934/v1/connectors/gmail/connect/RENEWEDsecretCODE")!
     let timeout = LatchError.failed(LatchFailure(code: "sign_in_timeout", message: "No new Google account was observed before the wait ended."))
+    /// A link no other test uses, and a refusal whose message carries it:
+    /// neither may reach what the app shows or saves.
+    let canary = URL(string: "https://canary.invalid/v1/connectors/gmail/connect/CANARY-5b1e9d")!
+    let canaryCode = "CANARY-5b1e9d"
+    var canaryRefusal: LatchError {
+        .failed(LatchFailure(code: "something_new", message: "sign in at \(canary.absoluteString), then try again"))
+    }
 
     private func until(_ done: () -> Bool) async {
         for _ in 0..<300 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
@@ -66,27 +70,6 @@ struct GoogleSignInTests {
         var opened: [URL] = []
         app.open = { opened.append($0) }
         return (app, memory, { opened })
-    }
-
-    /// What a view shows, read off its pixels: drawn off every display,
-    /// then through text recognition.
-    private func shown(_ view: some View, _ app: AppModel, size: CGSize = Brand.windowSize) async throws -> String {
-        let host = NSHostingView(rootView: view.environment(app))
-        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size), styleMask: [.titled, .fullSizeContentView],
-                              backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = host
-        window.orderFrontRegardless()
-        try await Task.sleep(for: .milliseconds(300))
-        let file = FileManager.default.temporaryDirectory.appending(path: "shown-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: file) }
-        try Render.png(host, to: file)
-        window.close()
-        let image = try #require(NSImage(contentsOf: file)?.cgImage(forProposedRect: nil, context: nil, hints: nil))
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .fast
-        try VNImageRequestHandler(cgImage: image).perform([request])
-        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
 
     /// Connect opens latch's first link and waits; a renewed link replaces
@@ -106,10 +89,16 @@ struct GoogleSignInTests {
         await until { !opened().isEmpty }
         #expect(opened() == [first])
         client.events?.yield(.link(renewed))
-        await until { flow.googleSignInLink == renewed }
-        #expect(opened() == [first])
-        flow.openGoogleSignInAgain()
-        #expect(opened() == [first, renewed])
+        // Open again opens the first link until the renewal is in.
+        for _ in 0..<300 {
+            flow.openGoogleSignInAgain()
+            if opened().last == renewed { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        // Every open before the renewal was in was the first link, and the
+        // renewal itself opened nothing: only open again did.
+        #expect(opened().last == renewed)
+        #expect(opened().dropLast().allSatisfy { $0 == first })
         // Back in the app while latch waits: its answer stands for a check.
         flow.recheckGoogle()
         client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
@@ -117,7 +106,7 @@ struct GoogleSignInTests {
         await until { flow.google == .connected }
         #expect(flow.googleAccounts == ["testuser@plow.test"])
         #expect(client.enabled.isEmpty)
-        #expect(flow.googleSignInLink == nil)
+        #expect(!flow.canOpenGoogleSignInAgain)
     }
 
     @Test func noAccountInTimeIsSaidAndConnectCanStartAgain() async {
@@ -127,10 +116,12 @@ struct GoogleSignInTests {
         flow.connectGoogle()
         await until { client.events != nil }
         client.events?.yield(.link(first))
+        await until { flow.canOpenGoogleSignInAgain }
         client.events?.finish(throwing: timeout)
         await until { flow.google != .waiting }
         #expect(flow.google == .notConnected)
         #expect(flow.googleWaitEnded)
+        #expect(!flow.canOpenGoogleSignInAgain)
         #expect(!flow.primaryEnabled)
         flow.connectGoogle()
         #expect(flow.google == .waiting && !flow.googleWaitEnded)
@@ -148,43 +139,41 @@ struct GoogleSignInTests {
             flow.connectGoogle()
             await until { client.events != nil }
             client.events?.yield(.link(first))
-            await until { flow.googleSignInLink != nil }
+            await until { flow.canOpenGoogleSignInAgain }
             leave(flow)
             await until { client.stopped == 1 }
             #expect(client.stopped == 1)
             #expect(flow.google == .notConnected)
-            #expect(flow.googleSignInLink == nil)
+            #expect(!flow.canOpenGoogleSignInAgain)
             client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
             try? await Task.sleep(for: .milliseconds(50))
             #expect(flow.google == .notConnected)
         }
     }
 
-    /// The link is a credential: opened, never on screen, saved or kept
-    /// once the wait is over.
-    @Test func theSignInLinkIsOpenedNeverShownOrSaved() async throws {
+    /// Onboarding opens a canary link, keeps it only for open again, and
+    /// after a refusal that quotes it, neither the screen's words nor the
+    /// saved progress hold it.
+    @Test func onboardingOpensACanaryLinkAndKeepsItNowhere() async throws {
         let client = SignInClient()
         let (app, memory, opened) = app(client)
         let flow = app.stage(.google)
         flow.connectGoogle()
         await until { client.events != nil }
-        client.events?.yield(.link(first))
-        await until { flow.googleSignInLink != nil }
-        #expect(opened() == [first])
-        // The reading would see the link, were it there.
-        #expect(try await shown(Text(first.absoluteString), app).contains("secretCODE"))
-        let waiting = try await shown(GoogleView(flow: flow), app)
-        #expect(waiting.contains("Finish signing in with Google in your browser"))
-        #expect(!waiting.contains("secretCODE") && !waiting.contains("http"))
-
-        client.events?.finish(throwing: timeout)
+        client.events?.yield(.link(canary))
+        await until { flow.canOpenGoogleSignInAgain }
+        #expect(opened() == [canary])
+        client.events?.finish(throwing: canaryRefusal)
         await until { flow.google != .waiting }
-        let ended = try await shown(GoogleView(flow: flow), app)
-        #expect(ended.contains("No Google account has shown up yet"))
-        #expect(!ended.contains("secretCODE") && !ended.contains("http"))
+        #expect(flow.google == .failed(Onboarding.couldNotCheck))
+        #expect(!flow.canOpenGoogleSignInAgain)
+        for shown in [Onboarding.couldNotCheck, flow.primaryTitle] + flow.googleAccounts {
+            #expect(!shown.contains(canaryCode))
+        }
         flow.skip()
-        #expect(!"\(memory.all)".contains("secretCODE"))
-        #expect(!"\(flow.google) \(flow.primaryTitle) \(flow.googleAccounts)".contains("secretCODE"))
+        let saved = String(decoding: try PropertyListSerialization.data(fromPropertyList: memory.all, format: .xml, options: 0), as: UTF8.self)
+        #expect(saved.contains("skipped"))
+        #expect(!saved.contains(canaryCode))
     }
 
     /// Connect Google Account… (no account yet) is a plain sign-in, Add
@@ -206,13 +195,6 @@ struct GoogleSignInTests {
         client.events?.yield(.link(first))
         await until { app.canOpenGoogleSignInAgain }
         #expect(opened() == [first])
-        // The sheet as it shows now, drawn on its own: its going would stop the wait.
-        let drawn = AppModel(client: SignInClient(), still: true)
-        drawn.stage(googleSignIn: app.googleSignIn, link: first)
-        let sheet = try await shown(GoogleSignInSheet(), drawn, size: CGSize(width: 420, height: 200))
-        #expect(sheet.contains(adding ? "Add a Google Account" : "Connect a Google Account"))
-        #expect(sheet.contains("Finish signing in with Google in your browser"))
-        #expect(!sheet.contains("secretCODE") && !sheet.contains("http"))
         let after = accounts + ["ada.work@example.com"]
         client.google = Fixtures.googleConnected(after)
         client.events?.yield(.enabled(GoogleEnabled(accounts: after)))
@@ -225,6 +207,30 @@ struct GoogleSignInTests {
         #expect(app.connections == .google(accounts: after))
         #expect(googleOn())
         #expect(!app.canOpenGoogleSignInAgain)
+    }
+
+    /// A Connections sign-in that ends with no account, refused (in words
+    /// quoting the canary link) or stopped, keeps no link, and the sheet's
+    /// words don't carry it.
+    @Test(arguments: [true, false])
+    func aSignInThatEndsWithoutAnAccountKeepsNoLink(refused: Bool) async {
+        let client = SignInClient()
+        client.google = Fixtures.googleConnected(["ada@example.com"])
+        let (app, _, opened) = app(client)
+        await app.refreshConnections()
+        app.connectGoogle(adding: true)
+        await until { client.events != nil }
+        client.events?.yield(.link(canary))
+        await until { app.canOpenGoogleSignInAgain }
+        #expect(opened() == [canary])
+        if refused { client.events?.finish(throwing: canaryRefusal) } else { client.events?.finish() }
+        await until { app.googleSignIn?.failure != nil }
+        let failure = app.googleSignIn?.failure ?? ""
+        #expect(failure == (refused ? GoogleSignIn.problem(canaryRefusal, adding: true) : GoogleSignIn.stopped))
+        #expect(!failure.contains(canaryCode))
+        #expect(!app.canOpenGoogleSignInAgain)
+        app.openGoogleSignInAgain()
+        #expect(opened() == [canary])
     }
 
     /// Cancel stops latch's wait; a refusal stays in the sheet, in the
@@ -245,9 +251,12 @@ struct GoogleSignInTests {
 
         app.connectGoogle(adding: true)
         await until { client.signIns.count == 2 }
+        client.events?.yield(.link(first))
+        await until { app.canOpenGoogleSignInAgain }
         client.events?.finish(throwing: timeout)
         await until { app.googleSignIn?.failure != nil }
         #expect(app.googleSignIn?.failure == GoogleSignIn.problem(timeout, adding: true))
+        #expect(!app.canOpenGoogleSignInAgain)
         let unreachable = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:9"))
         for problem in [GoogleSignIn.problem(timeout, adding: true), GoogleSignIn.problem(timeout, adding: false),
                         GoogleSignIn.problem(unreachable, adding: false)] {

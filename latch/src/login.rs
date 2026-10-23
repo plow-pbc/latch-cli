@@ -90,7 +90,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         .or(saved.as_ref().map(|config| config.peer.name.clone()));
     // A machine is named after its hostname, without asking.
     if owner && name.is_none() {
-        name = hostname();
+        name = default_name();
     }
 
     let texted = matches!(source, Source::ByText) && !args.events;
@@ -426,6 +426,12 @@ fn escape(text: &str) -> String {
             _ => format!("%{byte:02X}"),
         })
         .collect()
+}
+
+/// The name a login gives this machine when none is given: its hostname,
+/// plus the suffix a local build may bake in.
+pub fn default_name() -> Option<String> {
+    hostname().map(|host| host + cli::BUILD_NAME_SUFFIX.unwrap_or_default())
 }
 
 /// This machine's hostname, up to its first dot (`mac-studio`, not

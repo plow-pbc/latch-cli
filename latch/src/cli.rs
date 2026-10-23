@@ -13,6 +13,9 @@ use clap::{Args, Parser, Subcommand};
 /// a default Plow (`default_api_url`).
 pub const BUILD_STATE_DIR: Option<&str> = option_env!("LATCH_BUILD_STATE_DIR");
 pub const BUILD_API_URL: Option<&str> = option_env!("LATCH_BUILD_API_URL");
+/// What a login with no name adds to the hostname, for a local build that
+/// must not take the name of the installed latch's machine (e.g. `-dev`).
+pub const BUILD_NAME_SUFFIX: Option<&str> = option_env!("LATCH_BUILD_NAME_SUFFIX");
 /// How this build is distributed (e.g. `standalone`), set by a release
 /// build. Unset, it is a local build: made by hand from a checkout.
 pub const BUILD_CHANNEL: Option<&str> = option_env!("LATCH_BUILD_CHANNEL");
@@ -47,6 +50,12 @@ pub fn version() -> &'static str {
             let dir = BUILD_STATE_DIR.unwrap_or("~/.latch");
             let url = BUILD_API_URL.unwrap_or("none");
             about.push_str(&format!("; state {dir}, Plow {url}"));
+            if let Some(name) = BUILD_NAME_SUFFIX
+                .filter(|suffix| !suffix.is_empty())
+                .and(crate::login::default_name())
+            {
+                about.push_str(&format!(", logs in as {name}"));
+            }
         }
         version_line(env!("CARGO_PKG_VERSION"), BUILD_NUMBER, &about)
     })

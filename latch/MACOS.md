@@ -130,7 +130,9 @@ bundle, into the state folder (`~/.latch`, or `--state-dir`):
 build` and the tests. `just app` wraps that latch, with the window, in
 `.dev/app/Plow Latch Dev.app`, under its own bundle id
 (`co.plow.latch.dev`), so it never shares the installed app's grants,
-preferences or windows; `open` it to see the window. Such a latch keeps its secrets as files, and Full Disk
+preferences or windows, and installs gog, the Messages reader and Chrome
+for Testing into its state folder (`.dev/state`, or `.dev/state-prod` for a build on another
+Plow than the local stack); `open` it to see the window. Such a latch keeps its secrets as files, and Full Disk
 Access is granted to the binary itself. `install-binary.sh` given a bare
 binary on macOS copies it into the bin folder as it does on Linux; the
 macOS gate's browser tests install that way. The bundle, with the window
