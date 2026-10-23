@@ -97,9 +97,10 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     }
 
     var args: Args? { details?.args }
-    /// The gatekeeper's judgment: in the details, or a browser step's in
-    /// its args.
-    var gate: Gate? { details?.gate ?? details?.args?.gate }
+    /// The gatekeeper's judgment: a browser step's is in its args (its
+    /// details' `gate` may be only the host's `owner_on_host` mark), any
+    /// other's in the details.
+    var gate: Gate? { details?.args?.gate ?? details?.gate }
     var isRefused: Bool { decision != "allow" }
 
     /// The owner looking, not acting: `rules show`, `vault list`/`show`,

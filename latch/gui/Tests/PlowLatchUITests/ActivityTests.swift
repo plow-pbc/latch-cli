@@ -264,6 +264,14 @@ struct RecordShapeTests {
         #expect(!RecordInspector.otherFields(of: refused).map(\.key).contains("gate"))
     }
 
+    // A browser step on the host's own Mac: `serve.rs` marks the details'
+    // gate `{"caller":"owner_on_host"}`; the judgment is still the args'.
+    @Test func aLocalBrowserJudgmentIsReadPastTheHostMarker() throws {
+        let refused = try record(#"{"agent":null,"caller":"k","caller_name":"studio","decision":"deny","details":{"args":{"command":"open","judged":{"kind":"open"},"gate":{"verdict":"owner_said_no","source":"owner_request"}},"gate":{"caller":"owner_on_host"},"started":null},"id":"b2","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
+        #expect(refused.status == .refused("you said no"))
+        #expect(refused.gate?.source == "owner_request")
+    }
+
     // `serve.rs` records a refused connection with decision deny.
     @Test func aRefusedConnectionIsARefusal() throws {
         let refused = try record(#"{"agent":null,"caller":"k","caller_name":null,"decision":"deny","details":null,"id":"c1","op":"connect","outcome":"caller_denied","time":"2026-10-23T05:27:23Z"}"#)
