@@ -31,6 +31,7 @@ fn audited(
         crate::serve::decision(&done.response),
         &done.outcome,
     );
+    record.caller_name = Some(config.peer.name.clone());
     record.args = done.audit_args;
     let id = log.append(record)?;
     crate::serve::with_audit_id(done.response, id).into_result()

@@ -359,7 +359,7 @@ fn host(host: &Host) -> Value {
 /// the record's hash, the `audit_id` the caller got back.
 fn entry(record: &Record) -> Value {
     json!({"id": record.hash, "time": record.time, "caller": record.caller,
-           "caller_name": null, "agent": record.agent, "op": record.op,
+           "caller_name": record.caller_name, "agent": record.agent, "op": record.op,
            "decision": record.decision, "outcome": record.outcome})
 }
 
@@ -463,6 +463,7 @@ mod tests {
         let secret = "synthetic-events-credential-2b9c";
         let mut log = AuditLog::open(dir.path().join(audit::FILE)).unwrap();
         let mut exec = audit::record("k1", Some("agent-uid".into()), "exec", "allow", "ok");
+        exec.caller_name = Some("Juno".into());
         exec.args = json!({"argv": ["curl", "-H", format!("Authorization: Bearer {secret}")]});
         let id = log.append(exec).unwrap();
 
@@ -472,7 +473,7 @@ mod tests {
         let entry = &line["activity"][0];
         assert_eq!(
             entry,
-            &json!({"id": id, "time": entry["time"], "caller": "k1", "caller_name": null,
+            &json!({"id": id, "time": entry["time"], "caller": "k1", "caller_name": "Juno",
                     "agent": "agent-uid", "op": "exec", "decision": "allow", "outcome": "ok"})
         );
         assert!(!line.to_string().contains(secret), "{line}");

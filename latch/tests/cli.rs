@@ -1718,9 +1718,18 @@ impl LivePlow {
                     .collect();
                 (200, json!({"data": listed}))
             }
-            ("GET", "/v1/agents") if kind == "device" => {
-                (200, json!([{"uid": AGENT_UID, "name": "Research bot"}]))
-            }
+            // As Plow lists them: one agent its owner runs.
+            ("GET", "/v1/agents") if kind == "device" => (
+                200,
+                json!([{"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                        "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
+                                 "provider_key": "+14155550123", "display_name": "Research line"},
+                        "mailbox": null, "created_at": "2026-10-20T10:00:00Z", "url": null,
+                        "image": null, "status": null, "failure_code": null, "settings": {},
+                        "credential": {"id": 7, "name": null, "scopes": [], "connected": false,
+                                       "created_at": "2026-10-20T10:00:00Z",
+                                       "last_seen_at": "2026-10-22T09:00:00Z"}}]),
+            ),
             ("GET", "/v1/agents/me") if kind == "agent" => (
                 200,
                 json!({"agent": {"uid": AGENT_UID, "name": "Research bot"}}),
@@ -2335,6 +2344,57 @@ fn a_latch_trace_that_is_not_a_filter_is_a_usage_error() {
     assert!(out.stdout.is_empty());
 }
 
+/// `latch agents` lists the account's agents as Plow does, for the owner
+/// only; with --host naming this machine, each one's standing here, from
+/// its rules and the flags its host last ran with.
+#[test]
+fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let listed = latch(&host, &["agents"], &[]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(
+        listed,
+        json!({"host": null, "agents": [{"uid": AGENT_UID, "name": "Research bot", "kind": "own",
+               "cloud_kind": null, "line": {"number": "+14155550123", "name": "Research line"},
+               "created_at": "2026-10-20T10:00:00Z", "status": null, "failure_code": null,
+               "last_seen_at": "2026-10-22T09:00:00Z", "standing": null}]})
+    );
+
+    // The host last ran refusing this agent exec; no rules of its own.
+    fs::write(
+        host.join("serve-args.json"),
+        format!(r#"["--deny-exec={AGENT_UID}"]"#),
+    )
+    .unwrap();
+    let before = audit_records(&host).len();
+    let here = latch(&host, &["agents", "--host", "host"], &[]);
+    assert_eq!(here.status.code(), Some(0), "{here:?}");
+    let here: Value = serde_json::from_slice(&here.stdout).unwrap();
+    assert_eq!(here["host"], json!({"name": "host", "online": false}));
+    assert_eq!(
+        here["agents"][0]["standing"],
+        json!({"own_rules": false, "exec_blocked": true})
+    );
+    assert_eq!(audit_records(&host).len(), before, "a list is not audited");
+
+    // An agent's login gets owner_only before anything is asked of Plow.
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let seen = plow.seen().len();
+    let refused = latch(&agent, &["agents"], &agent_env);
+    assert_eq!(refused.status.code(), Some(4), "{refused:?}");
+    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "owner_only");
+    assert_eq!(plow.seen().len(), seen);
+}
+
 #[test]
 fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let plow = LivePlow::start();
@@ -2392,6 +2452,8 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         ),
         run(&owner, &["rules", "show", "--host", "host"], &[]),
     ];
+    // The agent has rules of its own there; the host refuses no one exec.
+    let listed = run(&owner, &["agents", "--host", "host"], &[]);
     let agent_runs: Vec<_> = [
         &["rules", "show", "--host", "host"][..],
         &["rules", "set", "--host", "host", "Anything goes."],
@@ -2425,6 +2487,12 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     assert_eq!(shown["every_agent"]["text"], "Never send email.");
     assert_eq!(shown["agents"][0]["text"], edited_text);
     assert_eq!(shown["agents"][0]["agent_name"], "Research bot");
+    assert_eq!(listed.0, Some(0), "{}", listed.1);
+    assert_eq!(listed.1["host"], json!({"name": "host", "online": true}));
+    assert_eq!(
+        listed.1["agents"][0]["standing"],
+        json!({"own_rules": true, "exec_blocked": false})
+    );
     for (code, json) in &agent_runs {
         assert_eq!(*code, Some(4), "{json}");
         assert_eq!(json["error"]["code"], "owner_only", "{json}");
@@ -2440,11 +2508,33 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     // Nothing was written on the machines the commands came from.
     assert!(!owner.join("rules").exists() && !agent.join("rules").exists());
 
-    // The host audited every command by revision, never by text.
+    // The host audited every command by revision, never by text, and
+    // named each caller: a machine by its name, the agent by its name in
+    // Plow once the host has looked it up (never waiting to, so not on its
+    // first call).
     let records: Vec<Value> = audit_records(&host)
         .into_iter()
         .filter(|record| record["op"] == "rules")
         .collect();
+    let names: Vec<&Value> = records
+        .iter()
+        .map(|record| &record["caller_name"])
+        .collect();
+    assert_eq!(names[0], "owner-mac");
+    let agents: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["decision"] == "deny")
+        .map(|record| &record["caller_name"])
+        .collect();
+    assert_eq!(
+        agents,
+        [
+            &Value::Null,
+            &json!("Research bot"),
+            &json!("Research bot"),
+            &json!("Research bot")
+        ]
+    );
     let log = Value::from(records.clone()).to_string();
     let decisions: Vec<(&str, &str)> = records
         .iter()
@@ -2462,6 +2552,8 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
             ("set", "allow"),
             ("show", "allow"),
             ("edit", "allow"),
+            ("show", "allow"),
+            // `agents --host`, reading the rules there.
             ("show", "allow"),
             ("show", "deny"),
             ("set", "deny"),
