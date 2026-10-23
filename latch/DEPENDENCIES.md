@@ -3,7 +3,7 @@
 Every crate `latch` depends on directly, and why. The usage numbers are from
 the library audit (crates.io and GitHub APIs, pulled 2026-10-14). `rand` is not in
 the audit; its row was pulled from the same APIs on 2026-10-15, and the vault's six
-(`aes-gcm` to `zip`, named in the browser spec) on 2026-10-19, `qrcode` on 2026-10-19, and the two `tracing` crates on 2026-10-21, `minisign-verify` and `minisign` on 2026-10-22. Downloads
+(`aes-gcm` to `zip`, named in the browser spec) on 2026-10-19, `qrcode` on 2026-10-19, and the two `tracing` crates on 2026-10-21, `minisign-verify` and `minisign` on 2026-10-22, `unicode-width` on 2026-10-23. Downloads
 are all-time / last 90 days. The bar for a new crate: widely used, actively
 maintained, from a known owner. Add a row here in the same change that adds a
 crate to `Cargo.toml`. `cargo deny --locked check` holds the whole locked graph
@@ -33,6 +33,7 @@ only. CI runs it on every dependency change and daily.
 | `url` | The vault: reading sites and origins | 969M / 219M | 1.6k | servo org | 2.5.8 (2026-01-05) | MIT/Apache-2.0 |
 | `zip` (deflate) | The vault: reading 1Password's 1PUX exports | 307M / 87M | 360 | zip-rs org | 9.0.5 (2026-10-17) | MIT |
 | `qrcode` (no default features) | `latch vault link`'s QR code in the terminal | 23M / 6.0M | 563 | kennytm | 0.14.1 (2024-07-05); the last release, small and finished rather than abandoned (repository active 2025-08) | MIT/Apache-2.0 |
+| `unicode-width` | The bare `latch` overview: how many terminal columns a row takes, to cut it to fit | 900M / 199M | 321 | unicode-rs org | 0.2.2 (2025-10-06) | MIT/Apache-2.0 |
 | `minisign-verify` | `latch update`: checks a release's minisign signature (Ed25519) with the key latch carries; no dependencies of its own | 17.8M / 7.8M | 43 | jedisct1 (minisign's author) | 0.3.0 (2026-09-25) | MIT |
 
 TLS comes with reqwest and iroh: `rustls` (1,003M / 232M downloads, 7.7k

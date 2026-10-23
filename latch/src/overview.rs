@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use jiff::Zoned;
 use serde_json::Value;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::failure::{Failure, code};
 use crate::lifecycle::Phase;
@@ -52,6 +53,7 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
     paint::set_color(color);
     // Each is asked on a thread of its own, so nothing here waits for it;
     // one that never answers is left behind.
+    state.check_format()?;
     let deadline = Instant::now() + WITHIN;
     let config = state.load_config()?;
     let (arrived, arrivals) = mpsc::channel();
@@ -85,13 +87,23 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
         update: crate::update::status(&state.path),
         state_dir: state.path.canonicalize().unwrap_or(state.path.clone()),
         suggested: crate::login::default_name(),
-        api: config
-            .as_ref()
-            .map(|config| config.api_url.clone())
-            .or_else(|| {
-                crate::cli::BUILD_API_URL
-                    .or(crate::cli::default_api_url(crate::cli::BUILD_CHANNEL))
-                    .map(str::to_string)
+        api: match &config {
+            Some(config) => Some(config.api_url.clone()),
+            // The Plow a login would use.
+            None => crate::login::api_url(
+                None,
+                crate::credential::env,
+                state.load_plow_url()?,
+                crate::cli::BUILD_CHANNEL,
+            ),
+        },
+        state_flag: (state.path
+            != StateDir::new(crate::cli::BUILD_STATE_DIR.map(PathBuf::from))?.path)
+            .then(|| {
+                format!(
+                    " --state-dir {}",
+                    crate::login::shell_quoted(&state.path.display().to_string())
+                )
             }),
         serve: crate::setup::start_args(state),
         host: Pending::Waiting,
@@ -163,6 +175,9 @@ struct Facts {
     here_default: Option<String>,
     /// How `latch serve` starts the host again here.
     serve: Vec<&'static str>,
+    /// ` --state-dir DIR` when this is not the folder latch uses without
+    /// one, for the commands it suggests.
+    state_flag: Option<String>,
     host: Pending<Hosted>,
     /// `None` before login: nothing to ask.
     plow: Option<Pending<Directory>>,
@@ -248,12 +263,17 @@ impl Facts {
         let logged_in = self.login.as_ref();
         let account = match (&self.plow, logged_in) {
             (_, None) | (None, _) => plain("not logged in"),
-            (Some(Pending::Got(directory)), _) => {
-                plain(directory.account.display_name.clone().unwrap_or_else(|| {
-                    let id: String = directory.account.owner_uid.chars().take(8).collect();
-                    format!("no name set in Plow (ID {id}…)")
-                }))
-            }
+            (Some(Pending::Got(directory)), _) => plain(
+                directory
+                    .account
+                    .display_name
+                    .as_deref()
+                    .map(term::one_line)
+                    .unwrap_or_else(|| {
+                        let id: String = directory.account.owner_uid.chars().take(8).collect();
+                        format!("no name set in Plow (ID {}…)", term::one_line(&id))
+                    }),
+            ),
             (Some(pending), _) => not_answered(pending, "Plow didn't answer", None),
         };
         rows.push(labeled("Account", vec![account]));
@@ -394,7 +414,7 @@ impl Facts {
                 .map(|pid| format!(" (pid {pid})"))
                 .unwrap_or_default();
             return vec![vec![toned(
-                format!("blocked by another latch version{pid}"),
+                format!("blocked: other latch{pid}"),
                 Tone::Warn,
             )]];
         }
@@ -547,18 +567,18 @@ impl Facts {
             vec![plain(format!("{what} Run: ")), toned(command, Tone::Good)]
         };
         if let Some(hosting) = hosting.filter(|hosting| hosting.blocked.is_some()) {
-            let kill = hosting
-                .pid
-                .map(|pid| format!(", or kill {pid}"))
-                .unwrap_or_default();
-            return Some(vec![plain(format!(
-                "Another latch version is running on this {}. Stop it: Ctrl-C in its terminal{kill}.",
-                here()
-            ))]);
+            let mut step = vec![plain(
+                "Another latch version is running. Ctrl-C in its terminal",
+            )];
+            if let Some(pid) = hosting.pid {
+                step.extend([plain(", or "), toned(format!("kill {pid}"), Tone::Good)]);
+            }
+            step.push(plain("."));
+            return Some(step);
         }
         let Some(login) = &self.login else {
             let what = format!("This {} isn't logged in to Plow.", here());
-            return Some(run(what, "latch setup".into()));
+            return Some(run(what, self.latch("setup")));
         };
         let owner = login.kind == "device";
         let needs_setup = self
@@ -569,7 +589,8 @@ impl Facts {
             .find(|plugin| plugin["state"] == "needs_setup");
         if let (true, Some(plugin)) = (owner, needs_setup) {
             let name = crate::setup::title(plugin["name"].as_str().unwrap_or_default());
-            let command = plugin["enable"].as_str().unwrap_or_default().to_string();
+            let enable = plugin["enable"].as_str().unwrap_or_default();
+            let command = self.latch(enable.strip_prefix("latch ").unwrap_or(enable));
             return Some(run(format!("The {name} connector needs setup."), command));
         }
         let stopped = hosting.is_some_and(|hosting| {
@@ -577,16 +598,24 @@ impl Facts {
         });
         if owner && stopped {
             let what = format!("Latch isn't running on this {}.", here());
-            return Some(run(what, format!("latch {}", self.serve.join(" "))));
+            return Some(run(what, self.latch(&self.serve.join(" "))));
         }
         let update = &self.update;
         if let (true, Some(build)) = (update.available, update.build) {
             return Some(run(
                 format!("Build {build} is available."),
-                "latch update".into(),
+                self.latch("update"),
             ));
         }
         None
+    }
+
+    /// `latch WORDS` for this state folder.
+    fn latch(&self, words: &str) -> String {
+        format!(
+            "latch{} {words}",
+            self.state_flag.as_deref().unwrap_or_default()
+        )
     }
 
     /// What goes under the facts: the next step, and where to look further.
@@ -631,8 +660,9 @@ fn indented(rest: Line) -> Line {
     line
 }
 
+/// The columns `line` takes on a terminal.
 fn visible(line: &Line) -> usize {
-    line.iter().map(|(text, _)| text.chars().count()).sum()
+    line.iter().map(|(text, _)| text.width()).sum()
 }
 
 /// `line` cut to `width` columns, never wrapped, in its colors; a cut
@@ -645,8 +675,16 @@ fn painted(line: &Line, width: usize) -> String {
         if left == 0 {
             break;
         }
-        let cut: String = text.chars().take(left).collect();
-        left -= cut.chars().count();
+        let mut cut = String::new();
+        for ch in text.chars() {
+            let columns = ch.width().unwrap_or(0);
+            if columns > left {
+                left = 0;
+                break;
+            }
+            left -= columns;
+            cut.push(ch);
+        }
         out.push_str(&match tone {
             Tone::Plain => cut,
             Tone::Bold => paint::bold(&cut, WHITE),
@@ -773,8 +811,10 @@ impl Screen {
         }
         let lines = self.lines(pixels, facts);
         for line in &lines {
-            text.push_str(line);
+            // Cleared first: after a full-width row the cursor still sits
+            // on its last character, which clearing after would erase.
             text.push_str(term::CLEAR_LINE_END);
+            text.push_str(line);
             text.push('\n');
         }
         text.push_str(term::CLEAR_BELOW);

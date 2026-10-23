@@ -1516,7 +1516,9 @@ fn bare_latch_draws_what_it_knows_at_once_and_plow_as_it_answers() {
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
 
-    let (shown, took) = overview(&host, &[], (100, 30));
+    // Colored, whatever this test's own environment says.
+    let color = [("NO_COLOR", Path::new(""))];
+    let (shown, took) = overview(&host, &color, (100, 30));
     let first = &shown[..shown.find(FRAME_END).expect(&shown)];
     // This machine's rows are there from the first frame; Plow's, and the
     // host's state, wait.
@@ -1543,7 +1545,7 @@ fn bare_latch_draws_what_it_knows_at_once_and_plow_as_it_answers() {
         drop(held);
     });
     use_plow(&host, &url);
-    let (shown, took) = overview(&host, &[], (100, 30));
+    let (shown, took) = overview(&host, &color, (100, 30));
     let last = &shown[shown.rfind("\x1b[?2026h").unwrap()..];
     assert_eq!(last.matches("Plow didn't answer").count(), 3, "{last}");
     assert!(!last.contains("not logged in"), "{last}");
@@ -1600,7 +1602,7 @@ fn bare_latch_narrow_puts_the_mark_above_and_no_color_keeps_it_still() {
     assert!(mark < header, "{shown}");
     assert!(!shown[mark..header].contains("Account"), "{shown}");
     assert!(
-        shown.contains("isn't logged in to Plow. Run: latch setup"),
+        shown.contains("isn't logged in to Plow. Run: latch"),
         "{shown}"
     );
     assert!(!state.exists(), "the overview made the state folder");

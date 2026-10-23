@@ -2,6 +2,7 @@ use super::*;
 use crate::lifecycle::Problem;
 use crate::status::{Account, Host, Hosting};
 use serde_json::json;
+use unicode_width::UnicodeWidthStr;
 
 /// A Mac logged in as the account owner, serving in the background, Google and
 /// Messages on, Contacts off, checked for updates this morning.
@@ -25,6 +26,7 @@ fn facts() -> Facts {
         api: Some("https://api.plow.co".into()),
         here_default: Some("studio".into()),
         serve: vec!["serve", "-d", "--again"],
+        state_flag: None,
         host: Pending::Got(Hosted {
             hosting: Hosting {
                 running: true,
@@ -280,10 +282,7 @@ fn the_next_step_is_the_first_thing_to_do() {
         message: "a host from another latch version is running (pid 4242); stop it".into(),
     });
     let text = shown(&facts);
-    assert!(
-        text.contains("blocked by another latch version (…"),
-        "{text}"
-    );
+    assert!(text.contains("blocked: other latch (pid 4242)\n"), "{text}");
     let step: String = facts
         .next_step()
         .unwrap()
@@ -292,10 +291,7 @@ fn the_next_step_is_the_first_thing_to_do() {
         .collect();
     assert_eq!(
         step,
-        format!(
-            "Another latch version is running on this {}. Stop it: Ctrl-C in its terminal, or kill 4242.",
-            here()
-        )
+        "Another latch version is running. Ctrl-C in its terminal, or kill 4242."
     );
 }
 
@@ -331,6 +327,45 @@ fn names_from_plow_cannot_drive_the_terminal() {
     let text = shown(&facts);
     assert!(!text.contains('\x1b'), "{text:?}");
     assert!(text.contains("evil [2J⏎name: online"), "{text}");
+}
+
+#[test]
+fn an_account_name_from_plow_cannot_drive_the_terminal() {
+    let mut facts = facts();
+    let Some(Pending::Got(directory)) = &mut facts.plow else {
+        panic!("Plow answered");
+    };
+    directory.account.display_name = Some("A\x1b[2J".into());
+    let text = shown(&facts);
+    assert!(!text.contains('\x1b'), "{text:?}");
+    assert!(text.contains("Account    A [2J"), "{text}");
+}
+
+#[test]
+fn a_command_it_suggests_names_the_state_folder_it_showed() {
+    let mut facts = facts();
+    facts.login = None;
+    facts.plow = None;
+    facts.state_flag = Some(" --state-dir '/tmp/a b'".into());
+    assert!(
+        shown(&facts).contains("Run: latch --state-dir '/tmp/a b' setup"),
+        "{}",
+        shown(&facts)
+    );
+}
+
+#[test]
+fn wide_characters_are_cut_by_the_columns_they_take() {
+    let mut facts = facts();
+    facts.name = Some("名".repeat(40));
+    let row = facts
+        .rows(BESIDE)
+        .iter()
+        .map(|row| painted(row, BESIDE))
+        .find(|row| row.contains('名'))
+        .unwrap();
+    assert!(row.width() <= BESIDE, "{row}: {} columns", row.width());
+    assert!(row.ends_with('…'), "{row}");
 }
 
 #[test]
