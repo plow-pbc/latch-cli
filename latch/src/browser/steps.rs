@@ -195,6 +195,17 @@ fn model_unavailable(model: &Model, what: &str) -> Failure {
     )
 }
 
+/// The model failed while judging step `n`'s check, after its action went out.
+fn check_unavailable(model: &Model, n: usize) -> Failure {
+    Failure::failed(
+        "model_unavailable",
+        format!(
+            "step {n}'s check needs the decision model, and {}; step {n}'s action was already sent, so look at the page before running it again",
+            model.why_off()
+        ),
+    )
+}
+
 /// Refuses sentence checks before anything runs: all of them when there is
 /// no model, and any that names a task rather than something a page shows.
 async fn check_sentences(sentences: &[(usize, String)], model: &mut Model) -> Result<(), Failure> {
@@ -1303,7 +1314,7 @@ impl Run<'_> {
                 .judge(seen["page"].clone(), &check.value, &lines)
                 .await;
             record_model(&self.model, self.audit);
-            let verdict = judged.map_err(|_| model_unavailable(&self.model, "a sentence check"))?;
+            let verdict = judged.map_err(|_| check_unavailable(&self.model, n))?;
             if verdict.result == "met" || Instant::now() + JUDGE_EVERY > deadline {
                 break verdict;
             }

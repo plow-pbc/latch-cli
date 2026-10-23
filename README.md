@@ -3,6 +3,8 @@
 A command-line peer that lets an agent reach the files, programs and browser
 on a machine its owner trusts, over Plow's directory.
 
+How it fits together, and what it does and doesn't support: [docs/HOW-LATCH-WORKS.md](docs/HOW-LATCH-WORKS.md).
+
 ## Install
 
 This installs the newest release from `releases.plow.co`:
@@ -122,6 +124,11 @@ No Homebrew tap is included.
   also deletes the vault and audit keys and the state folder itself. If Plow
   can't be reached, logout still deletes locally and says the machine is
   still listed: `latch devices remove` from another machine takes it out.
+- `latch agents` lists your account's agents (line, Plow status, when each
+  last used its credential), from one of your own machines. `latch agents
+  --host NAME` adds each one's standing on that host: whether it has rules
+  of its own there and whether the host refuses it `exec`. Audit records
+  name each caller as it was then (`caller_name`).
 - Exec and file calls need no shared-folder setup. They read home and the
   system's files (programs, libraries, developer tools and certificates),
   except `~/.latch`, this host's state directory, and on macOS `~/Library`

@@ -61,6 +61,11 @@ pub struct Record {
     pub caller: String,
     /// The caller's agent uid, when Plow says the key is an agent's.
     pub agent: Option<String>,
+    /// The caller's name as it was when it called: an agent's name in
+    /// Plow, else its machine's. A label only; `caller` and `agent` are
+    /// who it was.
+    #[serde(default)]
+    pub caller_name: Option<String>,
     pub op: String,
     pub args: Value,
     /// `"allow"` or `"deny"`.
@@ -511,6 +516,7 @@ pub fn record(
         started: None,
         caller: caller.to_string(),
         agent,
+        caller_name: None,
         op: op.to_string(),
         args: Value::Null,
         decision: decision.to_string(),

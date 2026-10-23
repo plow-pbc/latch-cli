@@ -29,7 +29,7 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
 }
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
-/// 03:45 UTC, local build, protocol plow/latch/3)`, or for a release build
+/// 03:45 UTC, local build, protocol plow/latch/4)`, or for a release build
 /// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
 /// came from (see `build.rs`), the protocol it speaks to peers and, for a
 /// build with baked-in defaults, those, so it is obvious which build this is.
@@ -153,6 +153,9 @@ pub enum Command {
     Logout(LogoutArgs),
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
+    /// The account's agents, with their lines and Plow status; with --host,
+    /// each one's standing on that host (owner only)
+    Agents(AgentsArgs),
     /// Print this peer's identity and the hosts it can reach
     Status(StatusArgs),
     /// Copy a file between this machine and a host
@@ -688,7 +691,7 @@ pub struct RulesScope {
     /// Whose rules: an agent's name, the peer name of the latch it calls
     /// from, or its agent uid, resolved once to the uid [default: every agent's]
     #[arg(long, value_name = "NAME")]
-    pub from: Option<String>,
+    pub agent: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -741,7 +744,7 @@ pub enum RulesCommand {
         scope: RulesScope,
     },
     /// Preview the verdict the gatekeeper would give a request right now,
-    /// without running it: as the agent --from names, or as you. The verdict
+    /// without running it: as the agent --agent names, or as you. The verdict
     /// is the gatekeeper's judgment at this moment, so a close call can come
     /// out differently next time; the answer's `gate.p` shows how sure it
     /// was. Each preview is billed to your Plow balance like a real
@@ -753,7 +756,17 @@ pub enum RulesCommand {
         /// Judge the request as this agent: its name, the peer name of the
         /// latch it calls from, or its agent uid [default: you]
         #[arg(long, value_name = "NAME")]
-        from: Option<String>,
+        agent: Option<String>,
+        /// Judge by the rules alone, as a new agent would be judged: no Plow
+        /// chat and no rules of its own, whatever connectors and
+        /// --deny-exec the host has
+        #[arg(long, conflicts_with = "agent")]
+        new_agent: bool,
+        /// Judge against draft rules for every agent instead of the saved
+        /// ones, without saving them: the text of F (- reads stdin). An
+        /// empty draft is no such rules
+        #[arg(long, value_name = "F")]
+        draft: Option<PathBuf>,
         /// The latch command to preview, after `--`, as an agent would send
         /// it: exec, file, google, messages or contacts. Example: `-- exec
         /// --write ~/site -- npm run build`
@@ -866,6 +879,14 @@ pub enum WorkerAction {
         #[arg(last = true, required = true)]
         argv: Vec<String>,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct AgentsArgs {
+    /// Also show each agent's standing on this host: its own rules there,
+    /// and whether the host refuses it exec. Never taken from $LATCH_HOST
+    #[arg(long)]
+    pub host: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1219,8 +1240,9 @@ Exit code and output:
 Input:
   Without -i the command's stdin is empty (so `echo hi | latch exec -- cat`
   prints nothing). With -i (--stdin) latch reads its own stdin to the end
-  first, at most 256 KiB, within --timeout, and sends it; a terminal, more
-  than 256 KiB or a pipe that never ends is a usage error and nothing runs:
+  first, at most 16 KiB of UTF-8 text, within --timeout, and sends it; a terminal,
+  oversized or non-UTF-8 input, or a pipe that never ends is a usage error
+  and nothing runs:
     latch exec --host pi -i -- sh < script.sh
     cat <<'EOF' | latch exec --host pi -i -- sh
     uname -a
@@ -1272,7 +1294,7 @@ pub struct ExecArgs {
           value_parser = clap::value_parser!(u64).range(1..=600))]
     pub timeout: u64,
 
-    /// Send this machine's stdin to the program (read to the end first, at most 256 KiB); without it the program's stdin is empty
+    /// Send this machine's stdin to the program (read to the end first, at most 16 KiB of UTF-8 text); without it the program's stdin is empty
     #[arg(short = 'i', long)]
     pub stdin: bool,
 

@@ -179,6 +179,42 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-nextest@0.9.148
+      - name: Worker userns confinement under Docker AppArmor
+        run: |
+          sudo apt-get install -y -q apparmor
+          sudo apparmor_parser -r latch/docker/latch-bwrap.apparmor
+          sudo python3 - <<'PYTHON'
+          def check(path, expected):
+              # Label query, AA_CLASS_FILE (2), then the complete path.
+              request = b"label\0latch-bwrap\0\x02" + path.encode()
+              with open("/sys/kernel/security/apparmor/.access", "r+b", buffering=0) as access:
+                  assert access.write(request) == len(request)
+                  permissions = dict(line.split() for line in access.read(4096).decode().splitlines())
+              allowed = int(permissions["allow"], 16) & ~int(permissions["deny"], 16) & 2
+              assert bool(allowed) == expected, (path, permissions, expected)
+          target = "/proc/sys/user/max_user_namespaces"
+          check(target, True)
+          for n in range(len("/proc/sys/u"), len(target)):
+              check(target[:n], False)
+          for n in range(len("/proc/sys/u"), len(target)):
+              for replacement in "aZ0_/":
+                  if replacement != target[n]:
+                      check(target[:n] + replacement + target[n + 1:], False)
+          for suffix in ("_extra", "/", "/child"):
+              check(target + suffix, False)
+          for path in ("user/max_mnt_namespaces", "user/max_pid_namespaces", "kernel/hostname", "net/ipv4/ip_forward"):
+              check("/proc/sys/" + path, False)
+          check("/proc/sys/kernel/shmmax", True)
+          print("AppArmor: only the userns limit is writable; prefixes, neighbours and other sysctls remain denied")
+          PYTHON
+          docker build -q -t latch-linux-test:ci -f latch/docker/Dockerfile.test latch/docker
+          docker run --rm --init --user "$(id -u):$(id -g)" --cap-drop=ALL \
+            --security-opt=no-new-privileges=true --security-opt=systempaths=unconfined \
+            --security-opt=apparmor=latch-bwrap --security-opt="seccomp=$PWD/latch/docker/seccomp.json" \
+            -v "$PWD:$PWD" -w "$PWD/latch" -e HOME=/tmp latch-linux-test:ci \
+            sh -ec 'test "$(cat /proc/self/attr/current)" = "latch-bwrap (enforce)"
+              cargo nextest run --archive-file ../linux-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
+                --success-output immediate -E "binary(worker) & test(an_exec_worker_cannot_create_nested_user_namespaces)"'
       - run: test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
       - name: Browser sandboxes under the shipped Docker seccomp profile
         run: |

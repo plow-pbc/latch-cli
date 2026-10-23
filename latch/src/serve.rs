@@ -12,6 +12,7 @@
 //! "yes" (unknown key, another account's key, a revoked credential, Plow
 //! unreachable) denies. Every allow and every deny goes into the audit log.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -79,6 +80,63 @@ struct Host {
     home: PathBuf,
     /// How far the host is into stopping.
     stopping: watch::Sender<Stopping>,
+    /// Each agent's name in Plow as last looked up, by agent uid: what
+    /// its audit records are named by, since an audit never waits on Plow.
+    agent_names: Mutex<HashMap<String, String>>,
+}
+
+/// What a request's checks read of a host: a serving host's own, or this
+/// machine's, for a preview judged in the previewing process
+/// (`rules_try::preview_here`).
+struct Checks<'a> {
+    name: &'a str,
+    plow: &'a Plow,
+    workers: &'a WorkerSetup,
+    gatekeeper: &'a Gatekeeper,
+    deny_exec: &'a DenyExec,
+    binary: &'a Binary,
+    /// `None` for a preview by the rules alone, whatever connectors are on.
+    plugins: Option<&'a crate::plugins::Plugins>,
+}
+
+impl<'a> Checks<'a> {
+    /// The gate a caller's operations pass: the owner's own devices as
+    /// the owner, an agent in the chat it named. An agent Plow gives no uid
+    /// can't be judged, so nothing of it runs.
+    fn gate(
+        &self,
+        identity: &'a Identity,
+        local: bool,
+        chat: Option<&'a str>,
+    ) -> Result<Gate<'a>, Failure> {
+        if local || identity.kind == "device" {
+            if chat.is_some() {
+                return Err(Failure::usage(
+                    "plow_chat_not_supported",
+                    "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat; omit them on owner calls".into(),
+                ));
+            }
+            return Ok(Gate {
+                keeper: self.gatekeeper,
+                caller: if local {
+                    Caller::OwnerOnHost
+                } else {
+                    Caller::Owner
+                },
+            });
+        }
+        match identity.agent_uid.as_deref() {
+            Some(uid) => Ok(Gate {
+                keeper: self.gatekeeper,
+                caller: Caller::Agent { uid, chat },
+            }),
+            None => Err(Failure::new(
+                crate::failure::Exit::Unreachable,
+                "gatekeeper_unavailable",
+                "The gatekeeper could not judge this, so it did not run: Plow names no agent for this caller".to_string(),
+            )),
+        }
+    }
 }
 
 /// How far a host is into stopping.
@@ -356,6 +414,7 @@ async fn run_host(
         plugins,
         home,
         stopping: watch::Sender::new(Stopping::No),
+        agent_names: Mutex::default(),
     });
     watch_binary(&host, BINARY_CHECK_EVERY);
     sweep_browsers(&host);
@@ -771,7 +830,14 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     let refusal = match host.check(caller).await {
         Ok(identity) => {
             let who = format!("{} ({})", identity.name, identity.kind);
-            let record = audit::record(caller, identity.agent_uid, "connect", "allow", "connected");
+            let mut record = audit::record(
+                caller,
+                identity.agent_uid.clone(),
+                "connect",
+                "allow",
+                "connected",
+            );
+            record.caller_name = host.known_name(&identity);
             match host.append(record).await {
                 Ok(_) => {
                     log(&format!("connect: {who} {caller}: allowed"));
@@ -911,7 +977,7 @@ async fn serve_request(
         }
         // A preview runs nothing, so it is neither audited nor on the board.
         Ok(identity) if op == "rules_try" => {
-            let response = rules_try::run(host, &identity, local, &request.args).await;
+            let response = rules_try::run(&host.checks(), &identity, local, &request.args).await;
             let outcome = match &response {
                 Response::Ok(answer) => answer["verdict"].as_str().unwrap_or_default(),
                 Response::Error { code, .. } => code,
@@ -930,6 +996,8 @@ async fn serve_request(
                 begun,
             );
             let chat = request.chat.clone();
+            let checks = host.checks();
+            let gate = checks.gate(&identity, local, chat.as_deref());
             let Checked {
                 gate,
                 prepared_exec,
@@ -937,7 +1005,7 @@ async fn serve_request(
                 names,
                 judgment,
                 stop,
-            } = check(host, &identity, local, chat.as_deref(), &mut request).await;
+            } = check(&checks, &identity, gate, chat.as_deref(), &mut request).await;
             let done = if let Some(stop) = stop {
                 stop.done()
             } else {
@@ -1050,6 +1118,7 @@ async fn serve_request(
                 decision,
                 &done.outcome,
             );
+            record.caller_name = host.known_name(&identity);
             record.args = done.audit_args.clone();
             record.started = Some(begun_at.to_string());
             record.gate = judged
@@ -1128,26 +1197,23 @@ impl Stop {
 }
 
 async fn check<'a>(
-    host: &'a Host,
-    identity: &'a Identity,
-    local: bool,
-    chat: Option<&'a str>,
+    host: &Checks<'a>,
+    identity: &Identity,
+    gate: Result<Gate<'a>, Failure>,
+    chat: Option<&str>,
     request: &mut Request,
 ) -> Checked<'a> {
     // A file's host path is resolved before anything is judged.
-    let unplaced = files::resolve(&request.op, &mut request.args, &host.workers);
+    let unplaced = files::resolve(&request.op, &mut request.args, host.workers);
     let op = request.op.clone();
     let op = op.as_str();
-    // Any caller's exec, file or Google operation runs only if the
-    // gatekeeper allows it.
-    let gate = host.gate(identity, local, chat);
     // An exec this host's owner denies is refused without asking.
     let denied_exec = op == "exec" && host.deny_exec.refuses(identity);
     // A worker started now would run the new latch under this old
     // host: nothing runs, and nothing is judged.
     let upgraded = host.binary.replaced();
     let (prepared_exec, exec_failure) = if op == "exec" && !denied_exec && !upgraded {
-        match exec::normalize(&host.workers, &request.args) {
+        match exec::normalize(host.workers, &request.args) {
             Ok(args) => {
                 request.args = serde_json::to_value(&args).expect("prepared exec serializes");
                 (Some(args), None)
@@ -1160,25 +1226,28 @@ async fn check<'a>(
     // Nor for a connector its owner has not enabled. One that is
     // counts as running until its answer is audited, so `disable`
     // waits for it.
-    let (running, not_enabled) =
-        match crate::plugins::Connector::of_op(op).map(|connector| host.plugins.start(connector)) {
-            Some(Ok(running)) => (Some(running), None),
-            Some(Err(failure)) => (None, Some(failure)),
-            None => (None, None),
-        };
+    let (running, not_enabled) = match crate::plugins::Connector::of_op(op)
+        .zip(host.plugins)
+        .map(|(connector, plugins)| plugins.start(connector))
+    {
+        Some(Ok(running)) => (Some(running), None),
+        Some(Err(failure)) => (None, Some(failure)),
+        None => (None, None),
+    };
     // A messages call reads the address book for names only while
     // Contacts is enabled too, held the same way.
     let names = (op == "messages")
         .then(|| crate::plugins::Connector::of_op("contacts"))
         .flatten()
-        .and_then(|contacts| host.plugins.start(contacts).ok());
+        .zip(host.plugins)
+        .and_then(|(contacts, plugins)| plugins.start(contacts).ok());
     // A messages or contacts call is judged, and then run, as one
     // effective request: the reader's reading of the caller's words
     // and any cursor's filters. One the reader refuses is not judged.
     let mut unplanned = None;
     if (op == "messages" || op == "contacts") && !upgraded && not_enabled.is_none() && gate.is_ok()
     {
-        match crate::messages::host::plan(&host.workers, op, &request.args).await {
+        match crate::messages::host::plan(host.workers, op, &request.args).await {
             Ok(planned) => request.args = planned,
             Err(done) => unplanned = Some(*done),
         }
@@ -1422,6 +1491,18 @@ impl Host {
             .await;
     }
 
+    fn checks(&self) -> Checks<'_> {
+        Checks {
+            name: &self.name,
+            plow: &self.plow,
+            workers: &self.workers,
+            gatekeeper: &self.gatekeeper,
+            deny_exec: &self.deny_exec,
+            binary: &self.binary,
+            plugins: Some(&self.plugins),
+        }
+    }
+
     /// Where a phone link points: our key, name and current relay.
     fn here(&self) -> link::Here {
         link::Here {
@@ -1434,44 +1515,6 @@ impl Host {
     /// Asks Plow who `caller` is. Returns the caller's identity if it may
     /// call, or why not. Nothing is cached: every check asks Plow again, so
     /// a revoked key stops working at once.
-    /// The gate a caller's operations pass: the owner's own devices as
-    /// the owner, an agent in the chat it named. An agent Plow gives no uid
-    /// can't be judged, so nothing of it runs.
-    fn gate<'a>(
-        &'a self,
-        identity: &'a Identity,
-        local: bool,
-        chat: Option<&'a str>,
-    ) -> Result<Gate<'a>, Failure> {
-        if local || identity.kind == "device" {
-            if chat.is_some() {
-                return Err(Failure::usage(
-                    "plow_chat_not_supported",
-                    "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat; omit them on owner calls".into(),
-                ));
-            }
-            return Ok(Gate {
-                keeper: &self.gatekeeper,
-                caller: if local {
-                    Caller::OwnerOnHost
-                } else {
-                    Caller::Owner
-                },
-            });
-        }
-        match identity.agent_uid.as_deref() {
-            Some(uid) => Ok(Gate {
-                keeper: &self.gatekeeper,
-                caller: Caller::Agent { uid, chat },
-            }),
-            None => Err(Failure::new(
-                crate::failure::Exit::Unreachable,
-                "gatekeeper_unavailable",
-                "The gatekeeper could not judge this, so it did not run: Plow names no agent for this caller".to_string(),
-            )),
-        }
-    }
-
     async fn check(&self, caller: &str) -> Result<Identity, Denial> {
         match self.plow.lookup(caller).await {
             Ok(identity) if identity.permissions.call => Ok(identity),
@@ -1493,9 +1536,25 @@ impl Host {
         if let Some(uid) = &identity.agent_uid
             && let Ok(agent) = self.plow.agent(uid).await
         {
+            let mut names = self.agent_names.lock().expect("names lock");
+            names.insert(uid.clone(), agent.name.clone());
             return agent.name;
         }
         identity.name.clone()
+    }
+
+    /// The caller's name without asking Plow: an agent's as last looked
+    /// up (none before the first lookup), else its machine's.
+    fn known_name(&self, identity: &Identity) -> Option<String> {
+        match &identity.agent_uid {
+            Some(uid) => self
+                .agent_names
+                .lock()
+                .expect("names lock")
+                .get(uid)
+                .cloned(),
+            None => Some(identity.name.clone()),
+        }
     }
 
     /// A caller refused at the door, on the board by its key.
@@ -1589,7 +1648,7 @@ mod gated_tests;
 #[cfg(test)]
 mod plugins_tests;
 mod rules_try;
-pub(crate) use rules_try::not_previewable;
+pub(crate) use rules_try::{not_previewable, preview_here};
 #[cfg(test)]
 mod rules_try_tests;
 
