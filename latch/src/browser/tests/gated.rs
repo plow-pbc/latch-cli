@@ -131,8 +131,14 @@ impl Judge {
         *self.answers.lock().unwrap() = Box::new(answers);
     }
 
-    fn calls(&self) -> usize {
-        self.shown.lock().unwrap().len()
+    /// How many judgments it made: an agent's chat layer is asked beside
+    /// its rules layer, and counted with it.
+    fn judged(&self) -> usize {
+        let shown = self.shown.lock().unwrap();
+        let chat_layer = |state: &&Value| {
+            state["conversation"] != "(no chat)" && state["conversation"][0]["id"] != "request"
+        };
+        shown.iter().filter(|state| !chat_layer(state)).count()
     }
 
     fn last_action(&self) -> Value {
@@ -529,7 +535,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
 
     // A tab on a site the session was judged for asks nothing more; a
     // refused fill there leaves its fields empty.
-    let asked = judge.calls();
+    let asked = judge.judged();
     let (tab, audit) = host
         .agent(
             "tab",
@@ -540,7 +546,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         .await;
     tab.unwrap();
     assert!(!audit.contains_key("gate"));
-    assert_eq!(judge.calls(), asked);
+    assert_eq!(judge.judged(), asked);
     let login = host.agent("observe", &id, json!({}), None).await.0.unwrap();
     let added = host
         .browsers
@@ -732,13 +738,13 @@ async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
     );
 
     // `act click eN` is left to the risk decision.
-    let asked = judge.calls();
+    let asked = judge.judged();
     let (clicked, audit) = host
         .agent("do", &id, act(&format!("click {link}")), None)
         .await;
     clicked.unwrap();
     assert!(!audit.contains_key("gate"));
-    assert_eq!(judge.calls(), asked);
+    assert_eq!(judge.judged(), asked);
     host.look("close", &id, json!({})).await;
 }
 
@@ -763,7 +769,7 @@ async fn clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing(engine: &s
         .await;
     let page = page.unwrap();
     let id = page["session"].as_str().unwrap().to_string();
-    assert_eq!(judge.calls(), 1, "the site was judged as it opened");
+    assert_eq!(judge.judged(), 1, "the site was judged as it opened");
 
     let link = find(&page, "link", "Download the report");
     for (command, args) in [
@@ -787,7 +793,7 @@ async fn clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing(engine: &s
         result.unwrap_or_else(|f| panic!("{command}: {f:?}"));
         assert!(!audit.contains_key("gate"), "{command} was judged");
     }
-    assert_eq!(judge.calls(), 1, "no click or read was judged");
+    assert_eq!(judge.judged(), 1, "no click or read was judged");
     host.browsers.close_all().await;
 }
 
@@ -1405,7 +1411,7 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
         )
         .await;
     let id = page.unwrap()["session"].as_str().unwrap().to_string();
-    assert_eq!(judge.calls(), 1);
+    assert_eq!(judge.judged(), 1);
 
     let (went, audit) = host
         .agent(
@@ -1420,7 +1426,7 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
     assert!(went["url"].as_str().unwrap().ends_with("/login.html"));
     assert!(went["elements"].is_array() && went["snapshot"].is_string());
     assert!(!audit.contains_key("gate"), "the site was judged at open");
-    assert_eq!(judge.calls(), 1);
+    assert_eq!(judge.judged(), 1);
 
     let elsewhere = format!("{other}/files.html");
     let refusal = host
@@ -1446,7 +1452,7 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
         .await;
     assert_eq!(went.unwrap()["url"], json!(elsewhere));
     assert_eq!(audit["gate"]["verdict"], "allow");
-    let asked = judge.calls();
+    let asked = judge.judged();
     let (went, audit) = host
         .agent(
             "goto",
@@ -1457,7 +1463,7 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
         .await;
     went.unwrap();
     assert!(!audit.contains_key("gate"));
-    assert_eq!(judge.calls(), asked);
+    assert_eq!(judge.judged(), asked);
 
     // An address off the web is refused before the gatekeeper is asked.
     for (command, name, url) in [
@@ -1470,7 +1476,7 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
         assert_eq!(refusal.unwrap_err().code, "url_refused", "{command} {url}");
         assert!(!audit.contains_key("gate"), "{command}");
     }
-    assert_eq!(judge.calls(), asked);
+    assert_eq!(judge.judged(), asked);
     host.look("close", &id, json!({})).await;
 }
 
@@ -1491,7 +1497,7 @@ async fn the_owners_devices_are_judged_as_the_owner(engine: &str) {
         .device("open", named(engine), json!({"url": files}))
         .await;
     let page = page.unwrap();
-    assert_eq!(judge.calls(), 1, "the owner's open is judged");
+    assert_eq!(judge.judged(), 1, "the owner's open is judged");
     assert_eq!(audit["gate"]["caller"], "owner_device");
     assert_eq!(audit["gate"]["verdict"], "allow");
     let id = page["session"].as_str().unwrap().to_string();
@@ -1499,14 +1505,14 @@ async fn the_owners_devices_are_judged_as_the_owner(engine: &str) {
 
     let (planned, audit) = host.device("do", &id, two_clicks(&link)).await;
     planned.unwrap();
-    assert_eq!(judge.calls(), 2, "the owner's plan is judged");
+    assert_eq!(judge.judged(), 2, "the owner's plan is judged");
     assert_eq!(judge.last_action()["kind"], "browser_plan");
     assert_eq!(audit["gate"]["caller"], "owner_device");
 
     let script = json!({"script": "document.title"});
     let (ran, audit) = host.device("eval", &id, script).await;
     ran.unwrap();
-    assert_eq!(judge.calls(), 3, "the owner's script is judged");
+    assert_eq!(judge.judged(), 3, "the owner's script is judged");
     assert_eq!(audit["gate"]["caller"], "owner_device");
     host.look("close", &id, json!({})).await;
 
@@ -1548,6 +1554,6 @@ async fn a_local_address_is_refused_before_the_judge_or_an_engine(engine: &str) 
     );
     assert_eq!(refusal.code, "url_refused");
     assert!(!audit.contains_key("gate"));
-    assert_eq!(judge.calls(), 0);
+    assert_eq!(judge.judged(), 0);
     assert!(hits.lock().unwrap().is_empty());
 }
