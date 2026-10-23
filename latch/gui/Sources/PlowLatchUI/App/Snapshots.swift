@@ -334,6 +334,20 @@ package enum SnapshotRunner {
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
+        // The Full Disk Access helper, as wide as it floats under a
+        // 715-point System Settings window: waiting, mid-drag, granted.
+        let icon = NSImage(contentsOf: URL(filePath: #filePath).appending(path: "../../../../../macos/AppIcon.icns").standardized)
+        for dark in [false, true] {
+            for (name, granted, dragging) in [("waiting", false, false), ("dragging", false, true), ("granted", true, false)] {
+                let helper = GrantHelper(bundle: URL(filePath: "/Applications/Plow Latch.app"), icon: icon)
+                helper.stage(granted: granted, dragging: dragging)
+                let width = 715 - SettingsTracker.sidebarWidth
+                let height = NSHostingController(rootView: GrantPanelView(helper: helper))
+                    .sizeThatFits(in: CGSize(width: width, height: 400)).height.rounded(.up)
+                try await render(GrantPanelView(helper: helper).opacity(dragging ? 0.72 : 1), size: CGSize(width: width, height: height),
+                                 dark: dark, background: false, file: output.appending(path: "10-fda-helper-\(name)-\(dark ? "dark" : "light").png"))
+            }
+        }
         // The welcome entrance, mid-way.
         let app = AppModel(client: FakeLatchClient(), still: true)
         _ = app.stage(.welcome)
@@ -366,16 +380,19 @@ package enum SnapshotRunner {
         print(file.path)
     }
 
-    private static func render(_ view: some View, size: CGSize, dark: Bool, file: URL) async throws {
+    private static func render(_ view: some View, size: CGSize, dark: Bool, background: Bool = true, file: URL) async throws {
         let host = NSHostingView(rootView: view)
-        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.titled, .fullSizeContentView],
+        // The panel is sized as the helper sizes it, not to its content.
+        if !background { host.sizingOptions = [] }
+        // A floating panel has no title bar, nor its minimum height.
+        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: background ? [.titled, .fullSizeContentView] : [.borderless],
                               backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
         window.alphaValue = 0.01
         window.orderFrontRegardless()
         try await Task.sleep(for: .milliseconds(400))
-        try Render.png(host, to: file)
+        try Render.png(host, to: file, background: background)
         window.orderOut(nil)
         print(file.path)
     }

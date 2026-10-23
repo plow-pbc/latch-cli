@@ -6,19 +6,29 @@ import AppKit
 /// as the object, press the same buttons a person does, write the window to
 /// a PNG and the flow's state to JSON, so an end-to-end run needs no
 /// Accessibility or screen-recording permission. Nothing it does reaches
-/// the rest of the Mac: links, Finder reveals and the login item are
-/// recorded, never made. Each test app hears only its own bundle id, so
-/// test apps running side by side never drive each other.
+/// the rest of the Mac: links and the login item are recorded, never made,
+/// and the Full Disk Access helper follows only a stand-in window this run
+/// names, never System Settings. Each test app hears only its own bundle
+/// id, so test apps running side by side never drive each other.
 enum TestHooks {
     /// What the app would have opened, for `state`.
     static var opened: [String] = []
     /// The login item as this run left it.
     static var loginItem = false
+    /// The window the helper follows in place of System Settings'.
+    static var standIn: pid_t?
+    /// A helper floated by `grant-helper`.
+    static var helper: GrantHelper?
 
     static func install(_ app: AppModel) {
-        // Nothing leaves the app: links and Finder reveals are recorded.
+        // Nothing leaves the app: links are recorded.
         app.open = { opened.append("open \($0.absoluteString)") }
-        app.reveal = { opened.append("reveal \($0.path)") }
+        GrantHelper.settingsApp = { standIn }
+        let guide = app.guideGrant
+        app.guideGrant = { bundle in
+            opened.append("guide \(bundle.path)")
+            return guide(bundle)
+        }
         app.setLoginItem = { on in
             loginItem = on
             opened.append("login item \(on ? "on" : "off")")
@@ -60,6 +70,27 @@ enum TestHooks {
         on("filter") { name in if let filter = name.flatMap(ActivityView.Filter.init(rawValue:)) { app.activityFilter = filter } }
         on("connections") { value in app.showConnections = value == "1" }
         on("quit") { _ in NSApp.terminate(nil) }
+        on("settings-stand-in") { pid in standIn = pid.flatMap { pid_t($0) } }
+        on("grant-helper") { path in
+            helper?.stop()
+            helper = path.map { GrantHelper.show(dragging: URL(filePath: $0)) }
+        }
+        on("grant-helper-granted") { _ in helper?.granted() }
+        on("grant-helper-snapshot") { path in
+            guard let path, let view = helper?.contentView else { return }
+            try? Render.png(view, to: URL(filePath: path), background: false)
+        }
+        on("grant-helper-state") { path in
+            guard let path else { return }
+            func rect(_ r: CGRect?) -> [Double] { r.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? [] }
+            let state: [String: Any] = [
+                "showing": helper?.isShowing ?? false,
+                "frame": rect(helper?.isShowing == true ? helper?.frame : nil),
+                "settings": rect(helper?.settingsFrame),
+                "granted": helper?.isGranted ?? false,
+            ]
+            try? JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]).write(to: URL(filePath: path))
+        }
         on("snapshot") { path in
             guard let path, let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }
             try? Render.window(window, to: URL(filePath: path))

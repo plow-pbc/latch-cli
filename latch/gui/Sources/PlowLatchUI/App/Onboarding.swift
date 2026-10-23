@@ -146,6 +146,8 @@ final class Onboarding {
     private var loginTask: Task<Void, Never>?
     private var reviewTask: Task<Void, Never>?
     private var accessTask: Task<Void, Never>?
+    /// The Full Disk Access helper, while it floats.
+    private var grantGuide: (any GrantGuide)?
 
     init(app: AppModel, step: Step, progress: Progress) {
         self.app = app
@@ -211,6 +213,8 @@ final class Onboarding {
         reviewing = false
         accessTask?.cancel()
         accessTask = nil
+        grantGuide?.stop()
+        grantGuide = nil
         waitingForAccess = false
     }
 
@@ -503,15 +507,22 @@ final class Onboarding {
 
     // MARK: Contacts & Messages
 
-    /// Opens System Settings at Full Disk Access with the app shown in the
-    /// Finder, then checks every 2 s for up to 3 minutes while this screen
-    /// shows, as `latch setup` does.
+    /// Opens System Settings at Full Disk Access with the helper floating
+    /// under it, then checks every 2 s for up to 3 minutes while this screen
+    /// shows, as `latch setup` does. The helper says when access lands, and
+    /// goes when the checks stop.
     func requestAccess() {
         accessTask?.cancel()
+        grantGuide?.stop()
+        grantGuide = nil
         accessTask = Task {
             var opened = false
+            var guide: (any GrantGuide)?
             waitingForAccess = true
-            defer { waitingForAccess = false }
+            defer {
+                waitingForAccess = false
+                if accessDone { guide?.granted() } else { guide?.stop() }
+            }
             let deadline = ContinuousClock.now + .seconds(180)
             while !Task.isCancelled {
                 for plugin in ["messages", "contacts"] where check(plugin) != .done {
@@ -522,7 +533,10 @@ final class Onboarding {
                     if let failure = result.failure, !opened, let settings = failure.settings.flatMap(URL.init(string:)) {
                         opened = true
                         app.open(settings)
-                        if let grant = failure.grant { app.reveal(URL(filePath: grant)) }
+                        if let grant = failure.grant {
+                            guide = app.guideGrant(URL(filePath: grant))
+                            grantGuide = guide
+                        }
                     }
                 }
                 if messages == .done && contacts == .done { return }
