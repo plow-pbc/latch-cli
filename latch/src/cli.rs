@@ -786,11 +786,13 @@ pub enum RulesCommand {
         scope: RulesScope,
     },
     /// Preview the verdict the gatekeeper would give a request right now,
-    /// without running it: as the agent --agent names, or as you. The verdict
-    /// is the gatekeeper's judgment at this moment, so a close call can come
-    /// out differently next time; the answer's `gate.p` shows how sure it
-    /// was. Each preview is billed to your Plow balance like a real
-    /// judgment, about $0.0001
+    /// without running it: as the agent --agent names, or as you. An agent
+    /// is judged by the built-in policy and the rules alone, with no chat:
+    /// what it may do whatever its chat says, though a real call's chat may
+    /// add an OK or a no. The verdict is the gatekeeper's judgment at this
+    /// moment, so a close call can come out differently next time; the
+    /// answer's `gate.p` shows how sure it was. Each preview is billed to
+    /// your Plow balance like a real judgment, about $0.0001
     Try {
         /// The host to preview on [default: this machine's own host]
         #[arg(long)]
@@ -799,9 +801,8 @@ pub enum RulesCommand {
         /// latch it calls from, or its agent uid [default: you]
         #[arg(long, value_name = "NAME")]
         agent: Option<String>,
-        /// Judge by the rules alone, as a new agent would be judged: no Plow
-        /// chat and no rules of its own, whatever connectors and
-        /// --deny-exec the host has
+        /// Judge as a new agent: no rules of its own, whatever connectors
+        /// and --deny-exec the host has
         #[arg(long, conflicts_with = "agent")]
         new_agent: bool,
         /// Judge against draft rules for every agent instead of the saved

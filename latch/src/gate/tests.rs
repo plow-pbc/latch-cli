@@ -34,9 +34,11 @@ fn plow_with_headers(world: World) -> (crate::plow::Plow, Arc<Mutex<Vec<String>>
 }
 
 /// The decision model, recording what it was asked and answering with
-/// fixed probabilities, or failing.
+/// fixed probabilities, or failing: the rules layer's own, or as for any
+/// other question.
 struct Recorder {
     p: Option<[f64; 3]>,
+    rules_layer: Option<Option<[f64; 3]>>,
     /// Each call's state as sent, and its questions.
     asked: Mutex<Vec<(String, Value)>>,
 }
@@ -45,6 +47,16 @@ impl Recorder {
     fn answering(covered: f64, not_covered: f64, forbidden: f64) -> Arc<Recorder> {
         Arc::new(Recorder {
             p: Some([covered, not_covered, forbidden]),
+            rules_layer: None,
+            asked: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// An agent's layers answering apart: `None` fails.
+    fn layers(rules: Option<[f64; 3]>, chat: Option<[f64; 3]>) -> Arc<Recorder> {
+        Arc::new(Recorder {
+            p: chat,
+            rules_layer: Some(rules),
             asked: Mutex::new(Vec::new()),
         })
     }
@@ -53,9 +65,34 @@ impl Recorder {
         self.asked.lock().unwrap().len()
     }
 
+    /// The state of the last call.
     fn state(&self) -> Value {
         serde_json::from_str(&self.asked.lock().unwrap().last().unwrap().0).unwrap()
     }
+
+    /// The state of the last call the rules layer's question asked, or the
+    /// last of any other's.
+    fn asked_by(&self, rules_layer: bool) -> Value {
+        let asked = self.asked.lock().unwrap();
+        let (state, _) = asked
+            .iter()
+            .rev()
+            .find(|(_, questions)| is_rules_layer(questions) == rules_layer)
+            .expect("asked");
+        serde_json::from_str(state).unwrap()
+    }
+
+    fn rules_state(&self) -> Value {
+        self.asked_by(true)
+    }
+
+    fn chat_state(&self) -> Value {
+        self.asked_by(false)
+    }
+}
+
+fn is_rules_layer(questions: &Value) -> bool {
+    questions["decision"]["instructions"] == RULES_LAYER.question
 }
 
 impl Provider for Recorder {
@@ -64,11 +101,15 @@ impl Provider for Recorder {
     }
 
     fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
+        let questions = system_one(questions);
+        let p = match self.rules_layer {
+            Some(rules_layer) if is_rules_layer(&questions) => rules_layer,
+            _ => self.p,
+        };
         self.asked
             .lock()
             .unwrap()
-            .push((state.get().to_string(), system_one(questions)));
-        let p = self.p;
+            .push((state.get().to_string(), questions));
         Box::pin(async move {
             let [c, n, f] = p.ok_or(CallFailed::new("http_503", "the model is down"))?;
             let top = if c >= n && c >= f {
@@ -175,7 +216,7 @@ async fn only_the_member_plow_calls_the_owner_counts_as_the_owner() {
         .judge(AGENT_CALLER, &order())
         .await;
     assert!(judgment.verdict.is_ok());
-    let from: Vec<Value> = model.state()["conversation"]
+    let from: Vec<Value> = model.chat_state()["conversation"]
         .as_array()
         .unwrap()
         .iter()
@@ -242,7 +283,7 @@ async fn a_long_chat_is_read_page_by_page_back_to_its_start() {
     assert_eq!(pages.len(), 3, "{pages:?}");
     assert!(pages[1].contains("starting_after=m150"), "{pages:?}");
     assert!(pages[2].contains("starting_after=m050"), "{pages:?}");
-    let ids: Vec<Value> = model.state()["conversation"]
+    let ids: Vec<Value> = model.chat_state()["conversation"]
         .as_array()
         .unwrap()
         .iter()
@@ -254,7 +295,7 @@ async fn a_long_chat_is_read_page_by_page_back_to_its_start() {
         judgment.gate["window"],
         json!({"first": "m000", "last": "m249", "count": 250, "truncated": false})
     );
-    assert!(model.state().get("conversation_truncated").is_none());
+    assert!(model.chat_state().get("conversation_truncated").is_none());
 }
 
 #[tokio::test]
@@ -276,34 +317,38 @@ async fn a_chat_too_long_to_fit_keeps_its_newest_messages_and_says_so() {
         .filter(|t| t.contains("/messages"))
         .count();
     assert_eq!(pages, 1, "paging stops once the messages cannot fit");
-    let state = model.state();
+    let state = model.chat_state();
     assert_eq!(state["conversation_truncated"], json!(TRUNCATED));
     let window = &judgment.gate["window"];
     assert_eq!(window["last"], "m399", "the newest message is kept");
     assert_eq!(window["truncated"], true);
     assert!(window["count"].as_u64().unwrap() < 100);
-    assert!(request_size(&state, &questions()) <= REQUEST_BUDGET);
+    assert!(request_size(&state, &questions(&ASKED)) <= REQUEST_BUDGET);
 }
 
 #[tokio::test]
-async fn the_four_sources_of_intent() {
-    // Chat and rules: both, the rules labelled, their hashes audited.
+async fn the_four_sources_and_the_layers_that_read_them() {
+    // Chat and rules: the rules layer reads the rules alone, the chat
+    // layer the chat with them; the rules labelled, their hashes audited.
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(one_chat(), &model, host_rules())
         .judge(AGENT_CALLER, &order())
         .await;
     assert!(judgment.verdict.is_ok());
     assert_eq!(judgment.gate["source"], "chat_and_rules");
-    let state = model.state();
+    assert_eq!(model.calls(), 2);
+    let both = json!({"rules for every agent on this host": "Run tests and git in ~/work. Never send email.",
+                      "rules for this agent": "Nothing outside ~/work."});
+    let chat = model.chat_state();
     assert_eq!(
-        state["conversation"][0]["text"],
+        chat["conversation"][0]["text"],
         "run the tests in ~/work whenever you like"
     );
-    assert_eq!(
-        state["owner_rules"],
-        json!({"rules for every agent on this host": "Run tests and git in ~/work. Never send email.",
-               "rules for this agent": "Nothing outside ~/work."})
-    );
+    assert_eq!(chat["owner_rules"], both);
+    let alone = model.rules_state();
+    assert_eq!(alone["conversation"], "(no chat)");
+    assert_eq!(alone["owner_rules"], both);
+    assert_eq!(alone["proposed_action"], chat["proposed_action"]);
     assert_eq!(
         judgment.gate["rules"]["host"],
         sha256("Run tests and git in ~/work. Never send email.")
@@ -315,16 +360,17 @@ async fn the_four_sources_of_intent() {
     let audited = judgment.gate.to_string();
     assert!(!audited.contains("Never send email") && !audited.contains("whenever you like"));
 
-    // Chat only.
+    // Chat only: the rules layer still judges, by the built-in policy.
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(one_chat(), &model, Rules::default())
         .judge(AGENT_CALLER, &order())
         .await;
     assert_eq!(judgment.gate["source"], "chat");
-    assert_eq!(model.state()["owner_rules"], "(none)");
+    assert_eq!(model.chat_state()["owner_rules"], "(none)");
+    assert_eq!(model.rules_state()["owner_rules"], "(none)");
     assert!(judgment.gate.get("rules").is_none());
 
-    // Rules only: the agent's line has no chat.
+    // Rules only: the agent's line has no chat, so only the rules layer.
     let mut world = World::default();
     world.add(
         "chat_other",
@@ -341,22 +387,28 @@ async fn the_four_sources_of_intent() {
         .await;
     assert!(judgment.verdict.is_ok());
     assert_eq!(judgment.gate["source"], "rules");
-    assert_eq!(model.state()["conversation"], "(no chat)");
+    assert_eq!(model.calls(), 1);
+    assert_eq!(model.rules_state()["conversation"], "(no chat)");
     assert_eq!(
-        model.state()["owner_rules"],
+        model.rules_state()["owner_rules"],
         json!({"rules for this agent": "Run pytest in ~/work."})
     );
     assert!(judgment.gate["rules"]["host"].is_null());
+    assert!(judgment.gate["layers"].get("chat").is_none());
 
-    // Neither: refused without asking the model.
+    // Neither: judged all the same, by the built-in policy alone.
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(world, &model, Rules::default())
         .judge(AGENT_CALLER, &order())
         .await;
-    assert_eq!(code(&judgment), "no_intent");
-    assert_eq!(judgment.verdict.as_ref().unwrap_err().exit, Exit::Denied);
-    assert_eq!(judgment.gate["verdict"], "no_intent");
-    assert_eq!(model.calls(), 0);
+    assert!(judgment.verdict.is_ok());
+    assert_eq!(judgment.gate["source"], "defaults");
+    assert_eq!(model.calls(), 1);
+    let state = model.rules_state();
+    assert_eq!(
+        (&state["conversation"], &state["owner_rules"]),
+        (&json!("(no chat)"), &json!("(none)"))
+    );
 }
 
 #[tokio::test]
@@ -410,7 +462,7 @@ async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
         .await;
     assert!(judgment.verdict.is_ok());
     assert_eq!(judgment.gate["chat"], "chat_b");
-    assert_eq!(model.state()["conversation"][0]["id"], "b1");
+    assert_eq!(model.chat_state()["conversation"][0]["id"], "b1");
 
     // A chat on another line, or one that does not exist, is refused.
     for wrong in ["chat_elsewhere", "chat_made_up"] {
@@ -465,12 +517,20 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
     assert!(judgment.verdict.is_ok(), "allowed at exactly 0.5");
     assert_eq!(judgment.gate["verdict"], "allow");
     assert_eq!(judgment.gate["model"], MODEL);
-    assert_eq!(judgment.gate["model_request"], "req_made_up");
-    assert_eq!(judgment.gate["cost"], 0.0003);
-    assert_eq!(
-        judgment.gate["p"],
-        json!({"COVERED": 0.5, "NOT_COVERED": 0.3, "FORBIDDEN": 0.2})
-    );
+    assert_eq!(judgment.gate["cost"], 0.0006, "both layers' calls");
+    assert_eq!(judgment.gate["decided_by"], "rules");
+    let p = json!({"COVERED": 0.5, "NOT_COVERED": 0.3, "FORBIDDEN": 0.2});
+    assert_eq!(judgment.gate["p"], p);
+    for (layer, prompt) in [("rules", &RULES_LAYER), ("chat", &ASKED)] {
+        let call = &judgment.gate["layers"][layer];
+        assert_eq!(call["p"], p, "{layer}");
+        assert_eq!(call["says"], "allow", "{layer}");
+        assert_eq!(call["model"], MODEL, "{layer}");
+        assert_eq!(call["model_request"], "req_made_up", "{layer}");
+        assert_eq!(call["cost"], 0.0003, "{layer}");
+        assert_eq!(call["prompt"], prompt.id(), "{layer}");
+    }
+    assert_ne!(RULES_LAYER.id(), ASKED.id());
 
     for (p, reason) in [
         ([0.45, 0.4, 0.15], "not_covered"),
@@ -496,7 +556,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         .await;
     assert_eq!(
         judgment.gate["rule"],
-        "allowed when within instructions >= 0.50"
+        "refused when a layer forbids; else allowed when a layer is within instructions >= 0.50"
     );
     assert!(
         judgment
@@ -550,10 +610,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         }
     }
 
-    let down = Arc::new(Recorder {
-        p: None,
-        asked: Mutex::new(Vec::new()),
-    });
+    let down = Recorder::layers(None, None);
     let judgment = gatekeeper(one_chat(), &down, Rules::default())
         .judge(AGENT_CALLER, &order())
         .await;
@@ -562,6 +619,123 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         judgment.gate["model_failed"], "http_503",
         "the audit keeps why"
     );
+}
+
+#[test]
+fn a_layer_allows_at_one_half_and_vetoes_where_forbidden_outweighs_the_rest() {
+    let says = |covered, not_covered, forbidden| {
+        P {
+            covered,
+            not_covered,
+            forbidden,
+        }
+        .says()
+    };
+    assert_eq!(
+        says(0.5, 0.0, 0.5),
+        Says::Allow,
+        "0.50 allows, whatever else"
+    );
+    assert_eq!(says(0.49, 0.26, 0.25), Says::Neither);
+    assert_eq!(says(0.49, 0.25, 0.26), Says::Veto);
+    assert_eq!(says(0.3, 0.35, 0.35), Says::Veto, "a tie vetoes");
+    assert_eq!(says(0.0, 1.0, 0.0), Says::Neither);
+}
+
+#[test]
+fn either_layers_veto_refuses_before_either_layers_allow() {
+    use Says::{Allow, Neither, Veto};
+    let reason = |rules, chat| match agent_verdict(rules, chat) {
+        Ok(()) => "allow".to_string(),
+        Err(failure) => failure.details["reason"].as_str().unwrap().to_string(),
+    };
+    for (rules, chat, expected) in [
+        (Allow, None, "allow"),
+        (Neither, None, "not_covered"),
+        (Veto, None, "owner_said_no"),
+        (Allow, Some(Allow), "allow"),
+        (Allow, Some(Neither), "allow"),
+        (Neither, Some(Allow), "allow"),
+        (Neither, Some(Neither), "not_covered"),
+        (Veto, Some(Allow), "owner_said_no"),
+        (Allow, Some(Veto), "owner_said_no"),
+        (Veto, Some(Neither), "owner_said_no"),
+        (Neither, Some(Veto), "owner_said_no"),
+    ] {
+        assert_eq!(reason(rules, chat), expected, "{rules:?} {chat:?}");
+    }
+}
+
+/// The two layers through a judgment, each answering for itself.
+#[tokio::test]
+async fn the_layers_judge_apart_and_the_verdict_follows_the_rule() {
+    let allow = [0.9, 0.05, 0.05];
+    let neither = [0.2, 0.7, 0.1];
+    let veto = [0.1, 0.2, 0.7];
+    for (rules, chat, expected, decided_by) in [
+        (allow, neither, "allow", "rules"),
+        (neither, allow, "allow", "chat"),
+        (neither, neither, "not_covered", "rules"),
+        (veto, allow, "owner_said_no", "rules"),
+        (allow, veto, "owner_said_no", "chat"),
+    ] {
+        let model = Recorder::layers(Some(rules), Some(chat));
+        let judgment = gatekeeper(one_chat(), &model, host_rules())
+            .judge(AGENT_CALLER, &order())
+            .await;
+        let case = format!("{rules:?} {chat:?}");
+        assert_eq!(judgment.gate["verdict"], expected, "{case}");
+        assert_eq!(judgment.gate["decided_by"], decided_by, "{case}");
+        let decided = &judgment.gate["layers"][decided_by]["p"];
+        assert_eq!(judgment.gate["p"], *decided, "{case}");
+        assert_eq!(judgment.verdict.is_ok(), expected == "allow", "{case}");
+    }
+}
+
+#[tokio::test]
+async fn no_chat_is_neither_but_a_chat_or_layer_that_fails_refuses() {
+    // No chat on the agent's line: the rules layer alone decides.
+    let mut no_chat = World::default();
+    no_chat.add("chat_other", "line_other", vec![]);
+    for (rules, expected) in [
+        ([0.9, 0.05, 0.05], "allow"),
+        ([0.2, 0.7, 0.1], "not_covered"),
+    ] {
+        let model = Recorder::layers(Some(rules), None);
+        let judgment = gatekeeper(no_chat.clone(), &model, host_rules())
+            .judge(AGENT_CALLER, &order())
+            .await;
+        assert_eq!(judgment.gate["verdict"], expected);
+        assert_eq!(model.calls(), 1, "the chat layer is never asked");
+    }
+
+    // A chat that can't be read is no absent chat: refused, unasked.
+    let mut broken = one_chat();
+    broken.broken = Some("/v1/chats/chat_a/messages".into());
+    let model = Recorder::layers(Some([0.9, 0.05, 0.05]), Some([0.9, 0.05, 0.05]));
+    let judgment = gatekeeper(broken, &model, host_rules())
+        .judge(AGENT_CALLER, &order())
+        .await;
+    assert_eq!(code(&judgment), "gatekeeper_unavailable");
+    assert_eq!(model.calls(), 0);
+
+    // Either layer's failure refuses, whatever the other allows.
+    for (rules, chat, failed) in [
+        (None, Some([0.9, 0.05, 0.05]), "rules"),
+        (Some([0.9, 0.05, 0.05]), None, "chat"),
+    ] {
+        let model = Recorder::layers(rules, chat);
+        let judgment = gatekeeper(one_chat(), &model, host_rules())
+            .judge(AGENT_CALLER, &order())
+            .await;
+        assert_eq!(code(&judgment), "gatekeeper_unavailable", "{failed}");
+        assert_eq!(judgment.verdict.unwrap_err().exit, Exit::Unreachable);
+        assert_eq!(judgment.gate["model_failed"], "http_503", "{failed}");
+        assert_eq!(
+            judgment.gate["layers"][failed]["model_failed"], "http_503",
+            "{failed}"
+        );
+    }
 }
 
 fn held_out() -> Value {
@@ -597,22 +771,18 @@ async fn judge_held_out(
         agent: None,
     };
     let gatekeeper = Gatekeeper::new(plow, provider, Box::new(rules.clone()));
-    let intent = Intent {
-        owner: false,
-        conversation: chat::read(&gatekeeper.plow, AGENT, None).await.unwrap(),
-        rules,
-    };
+    let conversation = chat::read(&gatekeeper.plow, AGENT, None).await.unwrap();
     let action = RawValue::from_string(probe["action"].as_str().unwrap().to_string()).unwrap();
     let clock = probe["clock_text"].as_str().unwrap();
     let mut gate = json!({});
     let verdict = gatekeeper
-        .ask(&intent, now, clock, &action, &mut gate)
+        .consider(false, conversation, rules, now, clock, &action, &mut gate)
         .await;
     (verdict, gate)
 }
 
-/// For every probe of the gatekeeper v0 held-out corpus, the request the
-/// judge builds from Plow's answers is v0's, byte for byte (see
+/// For every probe of the gatekeeper v0 held-out corpus, the chat layer's
+/// request built from Plow's answers is v0's, byte for byte (see
 /// `tests/fixtures/gatekeeper/make_heldout.py` for the host's changes).
 #[tokio::test]
 async fn every_held_out_probe_asks_what_v0_asks() {
@@ -623,7 +793,14 @@ async fn every_held_out_probe_asks_what_v0_asks() {
         let model = Recorder::answering(0.9, 0.05, 0.05);
         let (verdict, _) = judge_held_out(&fixture, probe, model.clone()).await;
         assert!(verdict.is_ok());
-        let (state, questions) = model.asked.lock().unwrap()[0].clone();
+        let (state, questions) = model
+            .asked
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, questions)| !is_rules_layer(questions))
+            .unwrap()
+            .clone();
         let expected = &probe["expected"];
         let id = &probe["id"];
         assert_eq!(state, expected["state"].as_str().unwrap(), "{id}: state");
@@ -731,7 +908,7 @@ async fn rules_files_are_read_at_each_judgment() {
     std::os::unix::fs::symlink(&outside, &host).unwrap();
     let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
-    assert_eq!(model.calls(), 2);
+    assert_eq!(model.calls(), 2, "one call each before, none now");
 }
 
 #[tokio::test]
@@ -744,7 +921,11 @@ async fn an_owner_command_applies_to_the_next_judgment() {
         RuleFiles::new(dir.path()).unwrap(),
     );
     gatekeeper.judge(AGENT_CALLER, &order()).await;
-    assert_eq!(model.calls(), 0, "no rules and no chat: no_intent");
+    assert_eq!(
+        model.state()["owner_rules"],
+        "(none)",
+        "the built-in policy alone"
+    );
 
     let set = json!({"command": "set", "text": "Run tests in ~/work."});
     let done = owner::run(
@@ -785,7 +966,9 @@ async fn live_held_out_replay() {
             };
             rows.push(
                 json!({"model": MODEL, "repeat": repeat, "probe": probe["id"],
-                             "reason": reason, "p": gate["p"],
+                             "reason": reason, "p": gate["p"], "decided_by": gate["decided_by"],
+                             "p_rules": gate["layers"]["rules"]["p"],
+                             "p_chat": gate["layers"]["chat"]["p"],
                              "latency_ms": started.elapsed().as_millis() as u64}),
             );
         }
