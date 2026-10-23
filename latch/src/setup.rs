@@ -377,7 +377,7 @@ pub async fn status(state: &StateDir) -> Result<Status, Failure> {
         if connector == Connector::Google
             && let Some(plow) = &plow
         {
-            google_in_plow(&mut step, plow, saved.get(&connector), serving);
+            google_in_plow(&mut step, plow);
         }
         steps.push(step);
     }
@@ -407,14 +407,8 @@ pub async fn status(state: &StateDir) -> Result<Status, Failure> {
 /// The Google step for the owner, by what Plow says: none connected
 /// (connect one first), connected (then the connector), or Plow could not
 /// say, which is never taken for either.
-fn google_in_plow(
-    step: &mut Step,
-    plow: &Result<crate::plow::Connectors, Failure>,
-    saved: Option<&crate::plugins::Setting>,
-    serving: bool,
-) {
-    use crate::plugins::Setting;
-    use StepState::{Blocked, Done, Needed};
+fn google_in_plow(step: &mut Step, plow: &Result<crate::plow::Connectors, Failure>) {
+    use StepState::{Blocked, Needed};
     let connectors = match plow {
         Ok(connectors) => connectors,
         Err(failure) => {
@@ -443,24 +437,18 @@ fn google_in_plow(
         step.args = None;
         step.connect_url = Some(page);
     } else {
-        let listed = accounts.join(", ");
-        (step.state, step.reason) = match saved {
-            Some(Setting::Enabled) if serving => (Done, format!("Google is on, for {listed}.")),
-            Some(Setting::Enabled) => (
-                Done,
-                format!("Google is on, for {listed}; agents can use it once latch is running."),
-            ),
-            Some(Setting::NeedsSetup { reason }) => (
-                Needed,
-                format!("Google is connected in Plow ({listed}); its setup here failed: {reason}"),
-            ),
-            None => (
-                Needed,
-                format!("Google is connected in Plow ({listed}); the connector is off."),
-            ),
-        };
-        if step.state == Needed {
-            step.args = Some(vec!["plugins", "enable", "google"]);
+        // The connector's own state stands; Plow adds who is connected, and
+        // a setup that failed is worth trying again now.
+        let mut reason = step.reason.chars();
+        let first = reason.next().map(|c| c.to_lowercase().collect::<String>());
+        step.reason = format!(
+            "Google is connected in Plow ({}); {}{}",
+            accounts.join(", "),
+            first.unwrap_or_default(),
+            reason.as_str()
+        );
+        if step.state == Blocked {
+            step.state = Needed;
         }
     }
     step.accounts = Some(accounts);
