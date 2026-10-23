@@ -5,7 +5,7 @@
 //! log as the host would.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::parser::ValueSource;
@@ -32,9 +32,8 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
             draft,
             request,
         } => {
-            let draft = draft.map(|file| read_file(&file)).transpose()?;
-            let args = json!({"from": from, "new_agent": new_agent, "draft": draft});
-            return preview(state, host, args, request).await;
+            let args = json!({"from": from, "new_agent": new_agent});
+            return preview(state, host, args, draft, request).await;
         }
         RulesCommand::Set { ref scope, .. }
         | RulesCommand::Edit { ref scope }
@@ -90,11 +89,14 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
 /// host is the one `--host` names, where it runs; or this machine's own,
 /// judged here, running or not. Never `LATCH_HOST`, as for every rules
 /// command, and a `--host` inside REQUEST is refused. Its `--plow-chat`
-/// (or `LATCH_PLOW_CHAT`) means what it would on the real call.
+/// (or `LATCH_PLOW_CHAT`) means what it would on the real call. A
+/// `--draft` is read before REQUEST is built, and only one of them may
+/// read stdin.
 async fn preview(
     state: &StateDir,
     host: Option<String>,
     mut args: Value,
+    draft: Option<PathBuf>,
     words: Vec<String>,
 ) -> Result<Value, Failure> {
     // The parser's message, its usage line written as the request goes
@@ -119,6 +121,14 @@ async fn preview(
                        latch rules try --host NAME -- <request>";
         return Err(Failure::usage("usage", message.to_string()));
     }
+    if draft.as_deref() == Some(Path::new("-"))
+        && matches!(&parsed.command, Latch::Exec(exec) if exec.stdin)
+    {
+        let message = "--draft - and exec --stdin both read stdin: give the draft as a file, \
+                       --draft F";
+        return Err(Failure::usage("usage", message.to_string()));
+    }
+    args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
     let (op, request, asked): (&str, Value, HostArg) = match parsed.command {
         Latch::Exec(args) => ("exec", crate::exec::request(&args)?, args.host),
         Latch::File(FileCommand::Get {

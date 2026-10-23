@@ -6148,6 +6148,14 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
         let message = error["error"]["message"].as_str().unwrap();
         assert!(message.contains("latch rules try --host NAME"), "{message}");
     }
+    // A draft on stdin, and a request that reads stdin too.
+    let both = [
+        "rules", "try", "--draft", "-", "--", "exec", "--stdin", "--", "cat",
+    ];
+    let (code, error) = answered(&latch(&fresh, &both, &[]));
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("--draft F"), "{message}");
     let settings = ["rules", "try", "--", "vault", "list"];
     let (code, error) = answered(&latch(&fresh, &settings, &[]));
     assert_eq!(
