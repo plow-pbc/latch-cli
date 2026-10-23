@@ -1,5 +1,5 @@
 //! What the host on a state folder is doing, for other latch processes on
-//! this machine (`status --local`, `events`): `latch serve` writes each step
+//! this machine (`status --local [--follow]`): `latch serve` writes each step
 //! of its life to `serve.json`, and whether it still runs is whether it
 //! still holds `serve.lock`. A serve that was killed or crashed never wrote
 //! its last step; its released lock says so. With no host running, an

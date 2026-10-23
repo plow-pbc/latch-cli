@@ -15,7 +15,6 @@ mod credential;
 mod dashboard;
 mod devices;
 mod dial;
-mod events;
 mod exec;
 mod failure;
 mod files;
@@ -31,6 +30,7 @@ mod log;
 mod login;
 mod logo;
 mod logout;
+mod logs;
 mod managed;
 mod messages;
 mod model;
@@ -38,6 +38,7 @@ mod paint;
 mod plow;
 mod plugins;
 mod redact;
+mod remote;
 mod sandbox;
 mod seal;
 mod secrets;
@@ -45,6 +46,7 @@ mod serve;
 mod setup;
 mod state;
 mod status;
+mod stream;
 mod term;
 mod trace;
 mod transfer;
@@ -56,6 +58,7 @@ mod wire;
 mod worker;
 
 use crate::failure::code;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -179,7 +182,7 @@ async fn run(
     trace::init(&state, foreground)?;
     match command {
         Command::Login(args) if args.events => {
-            login::event(events::hello());
+            login::event(stream::hello());
             // Every ending is a line too; the failure still goes to stderr.
             match login::run(&state, args).await {
                 Ok(output) => {
@@ -217,6 +220,26 @@ async fn run(
                 json(pretty, devices::remove(&state, &name, yes).await?)
             }
         },
+        Command::Status(args) if args.host.is_some() || args.follow => {
+            let follow = args.follow;
+            match remote::other_host(&state, args.host).await? {
+                Some(host) if follow => {
+                    let request = json!({"follow": true});
+                    streamed(remote::stream(&state, &host, "status", request, true).await)
+                }
+                Some(host) => json(
+                    pretty,
+                    remote::call(&state, &host, "status", json!({})).await?,
+                ),
+                None if follow => {
+                    // Before the first login, too.
+                    state.create()?;
+                    let dir = state.path.clone();
+                    print_local(true, move |send| status::follow(&dir, None, send))
+                }
+                None => json(pretty, status::local(&state)?),
+            }
+        }
         Command::Status(args) if args.local => json(pretty, status::local(&state)?),
         Command::Status(_) => json(pretty, status::run(&state).await?),
         Command::Setup(args) if !args.status => {
@@ -259,18 +282,43 @@ async fn run(
         Command::Rules(args) => json(pretty, gate::client::run(&state, args).await?),
         Command::Plugins(args) => json(pretty, plugins::client::run(&state, args).await?),
         Command::Update(args) => json(pretty, update::run(&state, args).await?),
-        // Its lines, printed as they come, are its whole output.
         Command::Audit(cli::AuditArgs {
-            action: cli::AuditAction::Show { follow: true },
-        }) => {
-            audit::follow(&state)?;
-            Ok(Printed(String::new()))
-        }
-        Command::Audit(args) => json(pretty, audit::run(&state, args.action)?),
-        // Its lines, printed as they come, are its whole output.
-        Command::Events(args) => {
-            events::run(&state, args)?;
-            Ok(Printed(String::new()))
+            action: Some(action),
+            ..
+        }) => json(pretty, audit::run(&state, action)?),
+        Command::Audit(args) => {
+            let range = audit::Range {
+                last: args.last,
+                all: args.all,
+                before: args.before,
+                after: args.after,
+                follow: args.follow,
+            };
+            range.check()?;
+            match remote::other_host(&state, args.host).await? {
+                Some(host) => {
+                    let request = serde_json::to_value(&range).expect("a range serializes");
+                    let follow = range.follow;
+                    streamed(remote::stream(&state, &host, "audit", request, follow).await)
+                }
+                None => {
+                    // A host's log begins when it first serves, or keeps an
+                    // owner command here.
+                    if !state.path.join(audit::FILE).exists() {
+                        let message = "this machine has never served, so it keeps no audit; \
+                                       read a host's with `latch audit --host NAME`";
+                        return Err(Failure::new(code::no_host_here, message.into()));
+                    }
+                    let whose = match state.load_config()? {
+                        Some(config) => format!("{}'s", config.peer.name),
+                        None => "this machine's".to_string(),
+                    };
+                    let dir = state.path.clone();
+                    print_local(range.follow, move |send| {
+                        audit::read(&dir, &whose, &range, None, send)
+                    })
+                }
+            }
         }
         #[cfg(target_os = "macos")]
         Command::Messages(command) => {
@@ -340,7 +388,7 @@ async fn run(
         }
         // Its lines, printed as they come, are its whole output.
         Command::Logs(args) => {
-            events::logs(&state, args.follow)?;
+            logs::run(&state, args.follow)?;
             Ok(Printed(String::new()))
         }
         #[cfg(target_os = "macos")]
@@ -372,6 +420,42 @@ async fn call_host(
         chat: host.plow_chat,
     };
     dial::call(state, &peer, &request, answer_within).await
+}
+
+/// Prints a stream of this machine's lines on stdout as they come, until
+/// they end or nobody reads them. They are its whole output. A followed
+/// stream (`follow`) also ends once stdin, when it is a pipe, closes, even
+/// while a write to a reader that stopped reading is stuck: the lines come
+/// from a thread of their own. A stream that ends by itself never looks
+/// at stdin.
+fn print_local(
+    follow: bool,
+    lines: impl FnOnce(&mut dyn FnMut(&Value) -> bool) -> Result<(), Failure> + Send + 'static,
+) -> Result<Printed, Failure> {
+    let print = |line: &Value| {
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "{line}").and_then(|()| out.flush()).is_ok()
+    };
+    if !follow {
+        return streamed(lines(&mut |line| print(line)));
+    }
+    let (ended, end) = std::sync::mpsc::channel();
+    let stdin_closed = ended.clone();
+    std::thread::spawn(move || {
+        let _ = ended.send(lines(&mut |line| print(line)));
+    });
+    if watch::stdin_is_a_pipe() {
+        std::thread::spawn(move || {
+            watch::wait_for_stdin_to_close();
+            let _ = stdin_closed.send(Ok(()));
+        });
+    }
+    streamed(end.recv().expect("the stream says how it ended"))
+}
+
+/// A stream's lines, printed as they came, are its whole output.
+fn streamed(result: Result<(), Failure>) -> Result<Printed, Failure> {
+    result.map(|()| Printed(String::new()))
 }
 
 /// A command's result as its JSON: one line, or indented with `--pretty`.

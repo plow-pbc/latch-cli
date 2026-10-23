@@ -147,7 +147,7 @@ pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
     if !term::stdout_is_terminal() {
         let message = "the dashboard needs a terminal".to_string();
         let mut failure = Failure::new(code::no_terminal, message);
-        failure.next = Some("latch events --follow".into());
+        failure.next = Some("latch audit --follow".into());
         return Err(failure);
     }
     // The write side stays open while the view does: the host takes its

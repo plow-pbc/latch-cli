@@ -9,7 +9,9 @@ latch runs a command on one of your owner's machines (a *host*) and prints
 one JSON object: on stdout when it worked, as one `{"error": {"code",
 "message", "next", "exit"}}` line on stderr when it did not (`next` only
 when there is a next step), with an exit code you can branch on. Branch on
-`code`; `latch help --json` lists every code with its exit.
+`code`; `latch help --json` lists every code with its exit. `logs`,
+`audit` and `status --local --follow` print JSON lines instead, the first
+`hello`; `help` and `skill` print text.
 
 ## Start
 
