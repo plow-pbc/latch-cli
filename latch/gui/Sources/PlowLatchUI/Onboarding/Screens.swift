@@ -328,8 +328,7 @@ struct GoogleView: View {
         .task { if !flow.app.still { await flow.checkGoogle() } }
         // Back from the browser, or from anywhere: check again.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            guard flow.google != .connected, flow.google != .checking else { return }
-            Task { await flow.checkGoogle() }
+            flow.recheckGoogle()
         }
     }
 
@@ -370,7 +369,7 @@ struct GoogleView: View {
     private func problem(_ why: String) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(why).foregroundStyle(Brand.clay)
-            Button("Try again") { Task { await flow.checkGoogle() } }
+            Button("Try again") { flow.recheckGoogle() }
                 .controlSize(.large)
         }
     }

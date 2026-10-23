@@ -139,6 +139,8 @@ final class Onboarding {
     /// The last wait for a sign-in ended with no account in Plow.
     var googleWaitEnded = false
     private var googleTask: Task<Void, Never>?
+    /// Try again's or a return's check, which leaving the screen stops.
+    private var googleCheck: Task<Void, Never>?
     /// One look at a time: a return to the app during a check adds none.
     private var lookingAtGoogle = false
     // Contacts & Messages.
@@ -232,6 +234,8 @@ final class Onboarding {
         reviewing = false
         googleTask?.cancel()
         googleTask = nil
+        googleCheck?.cancel()
+        googleCheck = nil
         if google == .waiting { google = .notConnected }
         accessTask?.cancel()
         accessTask = nil
@@ -490,8 +494,16 @@ final class Onboarding {
         guard !lookingAtGoogle else { return }
         lookingAtGoogle = true
         defer { lookingAtGoogle = false }
-        if google != .waiting { google = .checking }
+        // Waiting, or already on, the screen keeps saying so until latch answers.
+        if google != .waiting, google != .connected { google = .checking }
         if let seen = await lookAtGoogle() { google = seen }
+    }
+
+    /// Try again, or the app back in front: a check that leaving the
+    /// screen stops. One already under way stands for it.
+    func recheckGoogle() {
+        guard step == .google, !lookingAtGoogle else { return }
+        googleCheck = Task { await checkGoogle() }
     }
 
     /// "Connect Google": the page latch names opens in the browser, and the
@@ -540,6 +552,8 @@ final class Onboarding {
             if google == .waiting { return .waiting }
             return step.connectUrl == nil ? .failed(Self.couldNotCheck) : .notConnected
         }
+        // Turning Google on is this screen's alone: not once it was left.
+        guard !Task.isCancelled, self.step == .google else { return nil }
         do {
             googleAccounts = try await client.enable("google")?.accounts ?? accounts
             googleTask?.cancel()

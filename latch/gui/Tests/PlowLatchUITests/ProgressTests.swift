@@ -268,8 +268,11 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     var host: String?
     /// How many times `setup --status` was read.
     private(set) var looked = 0
+    /// How long `setup --status` takes to answer.
+    var lookPause: Duration = .zero
     func setupStatus() async throws -> SetupStatus {
         looked += 1
+        try await Task.sleep(for: lookPause)
         return try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
     }
     /// What `--check-access` says of Full Disk Access.
@@ -591,6 +594,55 @@ struct ClosingTests {
         let after = client.looked
         try? await Task.sleep(for: .milliseconds(150))
         #expect(client.looked == after)
+        #expect(flow.google == .notConnected)
+    }
+
+    @Test func aCheckStillAnsweringWhenGoogleIsSkippedTurnsNothingOn() async {
+        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["testuser@plow.test"]) }
+        client.google = Fixtures.googleConnectedOff
+        client.lookPause = .milliseconds(100)
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.google)
+        flow.google = .unreachable
+        // Try again, then Skip for now before latch answers.
+        let check = Task { await flow.checkGoogle() }
+        await until { client.looked == 1 }
+        flow.skip()
+        await check.value
+        #expect(flow.step == .access)
+        #expect(client.enabled.isEmpty)
+    }
+
+    @Test func leavingGoogleStopsTryAgain() async {
+        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["testuser@plow.test"]) }
+        client.google = Fixtures.googleConnectedOff
+        client.lookPause = .milliseconds(100)
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.google)
+        flow.google = .unreachable
+        flow.recheckGoogle()
+        await until { client.looked == 1 }
+        flow.back()
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(flow.step == .rules)
+        #expect(client.enabled.isEmpty)
+        // Elsewhere, a return to the app checks nothing.
+        flow.recheckGoogle()
+        #expect(client.looked == 1)
+    }
+
+    @Test func comingBackChecksAGoogleAlreadyOn() async {
+        let client = ScriptedClient { _ in nil }
+        client.google = Fixtures.googleOn
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.google)
+        await flow.checkGoogle()
+        #expect(flow.google == .connected)
+        // Disconnected in Plow meanwhile; the app comes back to the front.
+        client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow.","args":null,"enabled":true,"ready":false,"accounts":[],"connect_url":"http://localhost:3000/connections"}"#
+        flow.recheckGoogle()
+        #expect(flow.google == .connected)
+        await until { flow.google == .notConnected }
         #expect(flow.google == .notConnected)
     }
 
