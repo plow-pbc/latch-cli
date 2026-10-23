@@ -175,6 +175,42 @@ struct GatekeeperTests {
         #expect(client.tries.count == asked)
     }
 
+    @Test func leavingMidReviewLeavesNoRowCheckingAndTheSameTextAsksAgain() async {
+        let client = ScriptedClient { _ in nil }
+        let deck = Onboarding.decks[1]
+        let held = Gate()
+        client.holds["try \(deck.rules)"] = held
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.reviewDelay = .zero
+        flow.choose(deck)
+        await waitUntil { client.tries.count == deck.examples.count }
+        let stopped = flow.reviewTask
+        flow.stopWork()
+        #expect(!deck.examples.contains { flow.previews[$0.id] == .checking })
+        // Back on the screen with the same text: it is judged again.
+        flow.draftChanged()
+        await waitUntil { client.tries.count == 2 * deck.examples.count }
+        held.open()
+        await waitUntil { deck.examples.allSatisfy { if case .verdict? = flow.previews[$0.id] { true } else { false } } }
+        await stopped?.value
+    }
+
+    @Test func aCheckThatNeverAnswersSaysSo() async {
+        let client = ScriptedClient { _ in nil }
+        let deck = Onboarding.decks[1]
+        let never = Gate()
+        client.holds["try \(deck.rules)"] = never
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.checkDeadline = .milliseconds(50)
+        flow.choose(deck)
+        await flow.reviewTask?.value
+        #expect(!flow.reviewing)
+        #expect(deck.examples.allSatisfy { flow.previews[$0.id] == .noAnswer })
+        never.open()
+    }
+
     @Test func startAtLoginOnlyWithRunInTheBackground() async {
         let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var loginItem: [Bool] = []

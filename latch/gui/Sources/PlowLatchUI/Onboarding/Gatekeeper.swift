@@ -59,6 +59,7 @@ struct RulesView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 8)
             .frame(height: 76)
+            .writingToolsBehavior(.disabled)
             .background(Brand.surface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Brand.fieldBorder))
             .overlay(alignment: .topLeading) {
@@ -133,7 +134,7 @@ private struct Lane: View {
         switch preview {
         case .notChecked: .idle
         case .checking: .checking
-        case .failed: .unavailable
+        case .failed, .noAnswer: .unavailable
         case let .verdict(answer): answer.verdict == "allow" ? .allowed : .refused
         }
     }
@@ -230,6 +231,7 @@ private struct Lane: View {
         case .notChecked: "Not checked"
         case .checking: "Checking…"
         case .failed: "Couldn't check"
+        case .noAnswer: "Didn't answer"
         case let .verdict(answer):
             switch answer.verdict {
             case "allow": "Allowed"
@@ -249,6 +251,7 @@ private struct Lane: View {
             answer.refused.flatMap {
                 ErrorCopy.sentence(.failed($0), host: ErrorCopy.thisMac, place: .tryRequest(connector: answer.connector))
             }.map(ErrorCopy.first)
+        case .noAnswer: "The gatekeeper took longer than 15 seconds."
         default: nil
         }
     }

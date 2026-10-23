@@ -307,6 +307,13 @@ package enum SnapshotRunner {
                 for (example, answer) in zip(deck.examples, Fixtures.personalTries) { $0.previews[example.id] = .verdict(try! Fixtures.decode(answer)) }
                 $0.openExamples = [deck.examples[3].id]
             }),
+            ("04-rules-no-answer-open", .rules, Fixtures.serving, Progress(), {
+                let deck = Onboarding.decks[1]
+                $0.deck = deck; $0.draftRules = deck.rules
+                for (example, answer) in zip(deck.examples, Fixtures.executiveTries).prefix(2) { $0.previews[example.id] = .verdict(try! Fixtures.decode(answer)) }
+                for example in deck.examples.dropFirst(2) { $0.previews[example.id] = .noAnswer }
+                $0.openExamples = [deck.examples[3].id]
+            }),
             ("04-rules-save-failed", .rules, Fixtures.stopped, Progress(), {
                 $0.draftRules = rules
                 $0.rulesError = LatchError.failed(LatchFailure(code: "rules_too_long", message: "rules are at most 8 KB together; shorten them, then save again"))
