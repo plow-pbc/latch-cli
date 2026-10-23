@@ -158,6 +158,12 @@ impl Failure {
     /// line. The details go in first, so none of them can stand in for the
     /// code, message, next step or exit.
     pub fn to_json(&self) -> String {
+        serde_json::json!({ "error": self.error() }).to_string()
+    }
+
+    /// The error line's object: `{"code", "message", "next", "exit",
+    /// ...details}`, also a `login --events` error line's `error`.
+    pub fn error(&self) -> Value {
         let mut error = match &self.details {
             Value::Object(details) => details.clone(),
             _ => serde_json::Map::new(),
@@ -168,7 +174,7 @@ impl Failure {
             error.insert("next".into(), next.to_string().into());
         }
         error.insert("exit".into(), u8::from(self.exit).into());
-        serde_json::json!({ "error": error }).to_string()
+        Value::Object(error)
     }
 }
 
@@ -207,6 +213,7 @@ codes! {
     ambiguous_agent: Usage,
     ambiguous_chat: Usage,
     ambiguous_target: Failed,
+    app_broken: Failed,
     audit_broken: Failed,
     audit_failed: Failed,
     audit_io: Failed,
@@ -237,7 +244,6 @@ codes! {
     bad_state: Failed,
     bad_tag: Usage,
     bad_target: Usage,
-    bad_test_access: Usage,
     bad_trace: Usage,
     bad_values: Usage,
     blocked: Failed,

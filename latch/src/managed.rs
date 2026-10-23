@@ -613,26 +613,29 @@ impl Service {
 
 /// Runs `argv` once as a launchd job of its own, as the host runs, so that
 /// macOS treats it as the app's and not as the terminal's; returns the line
-/// it printed. Its job and output are `NAME.plist` and `NAME.log` in `dir`.
+/// it printed. Its `NAME.plist` and `NAME.log` are in `files`, a new empty
+/// folder of the caller's, never in the state folder. The job is named
+/// after state folder `dir` and after `files`, so runs at the same time on
+/// one state folder never stop each other's.
 #[cfg(target_os = "macos")]
 pub async fn run_as_app(
     dir: &Path,
+    files: &Path,
     name: &str,
     argv: &[OsString],
     within: Duration,
 ) -> Result<String, Failure> {
     let hash = to_hex(&Sha256::digest(dir.as_os_str().as_encoded_bytes()));
-    let label = format!("co.plow.latch.{name}.{}", &hash[..16]);
-    let output = dir.join(format!("{name}.log"));
-    if platform::registered(&label) {
-        platform::remove(&label)?;
-    }
-    match std::fs::remove_file(&output) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(io_failure(&output, err)),
-    }
-    platform::bootstrap(&label, dir, name, argv)?;
+    let run: String = files
+        .file_name()
+        .map(|run| run.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect();
+    let label = format!("co.plow.latch.{name}.{}.{run}", &hash[..16]);
+    let output = files.join(format!("{name}.log"));
+    platform::bootstrap(&label, files, name, argv)?;
     let deadline = Instant::now() + within;
     let printed = loop {
         // One line, written whole, as it ends.

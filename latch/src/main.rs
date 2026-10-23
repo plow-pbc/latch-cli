@@ -20,6 +20,8 @@ mod failure;
 mod files;
 mod gate;
 mod google;
+#[cfg(target_os = "macos")]
+mod gui;
 mod heartbeat;
 mod help;
 mod hosts;
@@ -76,6 +78,11 @@ use wire::Request;
 fn main() -> ExitCode {
     #[cfg(feature = "fake-gog")]
     if let Some(exit) = google::fake::run_if_gog() {
+        return exit;
+    }
+    // Opened as the Mac app, latch runs its window instead (gui.rs).
+    #[cfg(target_os = "macos")]
+    if let Some(exit) = gui::launch() {
         return exit;
     }
     // A bare `latch` at a terminal shows the Plow logo. Anywhere else (a
@@ -196,8 +203,7 @@ async fn run(
                     Err(failure)
                 }
                 Err(failure) => {
-                    login::event(json!({"type": "error", "error":
-                        {"code": failure.code, "message": failure.message}}));
+                    login::event(json!({"type": "error", "error": failure.error()}));
                     Err(failure)
                 }
             }
@@ -243,9 +249,9 @@ async fn run(
         Command::Status(args) if args.local => json(pretty, status::local(&state)?),
         Command::Status(_) => json(pretty, status::run(&state).await?),
         Command::Setup(args) if !args.status => {
-            Err(setup::no_terminal(&setup::status(&state).await?))
+            Err(setup::no_terminal(&setup::status(&state, false).await?))
         }
-        Command::Setup(_) => json(pretty, setup::status(&state).await?),
+        Command::Setup(args) => json(pretty, setup::status(&state, args.check_access).await?),
         Command::File(FileCommand::Get {
             remote_path,
             local_dest,

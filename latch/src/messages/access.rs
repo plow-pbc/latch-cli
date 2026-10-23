@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::failure::{Failure, code};
+use crate::failure::Failure;
 use crate::plugins::Connector;
 use crate::state::StateDir;
 use crate::worker::WorkerSetup;
@@ -50,6 +50,9 @@ fn folder(connector: Connector, home: &Path) -> PathBuf {
 
 /// Asks a worker whether it can open `connector`'s stores under `home`.
 pub async fn check(workers: &WorkerSetup, connector: Connector, home: &Path) -> Access {
+    if let Some(access) = test_answer() {
+        return access;
+    }
     let folder = folder(connector, home);
     // The worker's sandbox is built around the folder, so it must exist.
     if !folder.exists() {
@@ -67,7 +70,7 @@ pub async fn check(workers: &WorkerSetup, connector: Connector, home: &Path) -> 
         })
 }
 
-/// The check, with no host running, as the host would make it: in a
+/// The check as the host would make it, without asking a host: in a
 /// one-shot job of this latch (the app's, when it is in one), started by
 /// launchd rather than by this terminal.
 pub async fn check_as_app(state_dir: &Path, connector: Connector) -> Access {
@@ -86,7 +89,13 @@ pub async fn check_as_app(state_dir: &Path, connector: Connector) -> Access {
         "access-check".into(),
         connector.name().into(),
     ];
-    let printed = match crate::managed::run_as_app(state_dir, "access", &argv, CHECK_WITHIN).await {
+    // The job's own files go in a folder of their own, gone when it ends.
+    let files = match tempfile::tempdir() {
+        Ok(files) => files,
+        Err(err) => return unavailable(err.to_string()),
+    };
+    let ran = crate::managed::run_as_app(state_dir, files.path(), "access", &argv, CHECK_WITHIN);
+    let printed = match ran.await {
         Ok(printed) => printed,
         Err(failure) => return unavailable(failure.message),
     };
@@ -110,19 +119,30 @@ pub async fn check_as_app(state_dir: &Path, connector: Connector) -> Access {
 
 /// The one-shot job's side: the host's check, from a worker of its own.
 pub async fn check_here(state: &StateDir, connector: Connector) -> Result<Access, Failure> {
-    // Tests stand in for macOS's answer here, as this job: a test build
-    // has no Full Disk Access to grant.
-    #[cfg(debug_assertions)]
-    if let Some(answer) = std::env::var_os("LATCH_TEST_ACCESS") {
-        let status = serde_json::from_value(serde_json::json!(answer.to_string_lossy()))
-            .map_err(|err| Failure::new(code::bad_test_access, err.to_string()))?;
-        let reason = "LATCH_TEST_ACCESS".to_string();
-        return Ok(Access { status, reason });
+    if let Some(access) = test_answer() {
+        return Ok(access);
     }
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
     let workers = crate::serve::workers(dir)?;
     let home = workers.home.clone();
     Ok(check(&workers, connector, &home).await)
+}
+
+/// Tests stand in for macOS's answer (`LATCH_TEST_ACCESS`: `granted`,
+/// `not_granted` or `unavailable`), in a debug build only, wherever the
+/// check runs: a running host or the one-shot job. A test build has no Full
+/// Disk Access to grant, and a test must never send its owner to System
+/// Settings for one.
+fn test_answer() -> Option<Access> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let answer = std::env::var("LATCH_TEST_ACCESS").ok()?;
+    let status = serde_json::from_value(serde_json::json!(answer)).unwrap_or(Status::Unavailable);
+    Some(Access {
+        status,
+        reason: format!("LATCH_TEST_ACCESS={answer}"),
+    })
 }
 
 /// The worker's side, once confined: finds `connector`'s stores in

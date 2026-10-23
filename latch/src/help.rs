@@ -100,6 +100,10 @@ const ENTRIES: &[Entry] = &[
                 "An owner's machine, with a token file",
                 &["login", "--token-file", "plow.token", "--name", "mac"],
             ),
+            ex(
+                "Take the name of your machine it replaces, signing that one out",
+                &["login", "--events", "--name", "mac", "--replace"],
+            ),
         ],
     },
     Entry {
@@ -1265,7 +1269,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "setup",
         runs_on: |_| RunsOn::Local,
-        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked.",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
         effect: Repeatable(
             "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
         ),
@@ -1274,6 +1278,10 @@ const ENTRIES: &[Entry] = &[
         examples: &[
             ex("Set up this machine, or finish setting it up", &["setup"]),
             ex("See which setup steps are done", &["setup", "--status"]),
+            ex(
+                "And whether Full Disk Access is granted",
+                &["setup", "--status", "--check-access"],
+            ),
         ],
     },
     Entry {

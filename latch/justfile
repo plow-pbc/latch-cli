@@ -122,3 +122,21 @@ build api="":
     cp "$target/release/latch" "$root/.dev/bin/.latch.new"
     mv -f "$root/.dev/bin/.latch.new" "$root/.dev/bin/latch"
     "$root/.dev/bin/latch" --version
+
+# This checkout as a dev Mac app, ../.dev/app/Plow Latch Dev.app: `just
+# build`'s latch (../.dev/state, the local Plow) with the app's window
+# (gui/), under its own bundle id, co.plow.latch.dev, so it never shares the
+# installed app's Full Disk Access, preferences or windows. `open` it to see
+# the window; its latch is the CLI as well.
+[macos]
+app api="": (build api)
+    #!/bin/sh
+    set -eu
+    gui/build.sh >/dev/null
+    root="$(cd .. && pwd)"
+    app="$root/.dev/app/Plow Latch Dev.app"
+    version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+    mkdir -p "$root/.dev/app"
+    sh ../scripts/macos-app-bundle.sh --id co.plow.latch.dev --name "Plow Latch Dev" "$version" "$root/.dev/bin/latch" "$app"
+    sh ../scripts/macos-sign-app.sh "$app"
+    echo "$app"

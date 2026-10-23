@@ -4,9 +4,11 @@
 #   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive] [path/to/latch]
 #
 # A first install (no login in the state directory yet) at a terminal ends
-# by running `latch setup` (log in, connect Google, and so on);
-# --non-interactive, or no terminal, leaves that for later. An upgrade
-# never runs it: setup could start a host the upgrade did not mean to.
+# by running `latch setup` (log in, connect Google, and so on), or, when it
+# installs Plow Latch.app on macOS 26 or later, by opening the app, whose
+# window does the same; --non-interactive, or no terminal, leaves that for
+# later. An upgrade never runs either: setup could start a host the upgrade
+# did not mean to. On macOS it refuses anything before macOS 13.
 #
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
@@ -125,6 +127,9 @@ dest="$bin_dir/latch"
 # On macOS, the app bundle the binary (or the link to it) sits in, if any.
 app=""
 if [ "$(uname -s)" = Darwin ]; then
+  macos_version=$(sw_vers -productVersion)
+  macos=${macos_version%%.*}
+  [ "$macos" -ge 13 ] || die "latch needs macOS 13 or later, and this Mac runs macOS $macos_version; nothing was installed"
   inner=$src
   if [ -L "$src" ]; then
     case "$(readlink "$src")" in
@@ -145,6 +150,18 @@ fi
 # A first install: no login in the state directory yet.
 first_install=""
 [ -f "$state_dir/config.json" ] || first_install=1
+# Whether the install replaces the latch there. On macOS the whole app
+# counts: a new window with the same latch is a new app. cksum, unlike cmp,
+# is on every system.
+replace=1
+if [ -n "$app" ]; then
+  installed="$HOME/Applications/$(basename "$app")"
+  if [ -d "$installed" ] && diff -rq "$app" "$installed" >/dev/null 2>&1; then
+    replace=""
+  fi
+elif [ -f "$dest" ] && [ ! -L "$dest" ] && [ "$(cksum < "$src")" = "$(cksum < "$dest")" ]; then
+  replace=""
+fi
 
 # 0. A host running the latch being replaced is stopped first; only a stop
 # it confirms counts, and a failed one changes nothing. If anything fails
@@ -164,7 +181,7 @@ trap on_exit EXIT
 # The new latch asks and stops: the latch there may be too old to know
 # `stop`, or to reach a host of a latch older still.
 host=""
-if [ -x "$old" ]; then
+if [ -x "$old" ] && [ -n "$replace" ]; then
   host=$("$src" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
   case "$host" in
     # A host this latch cannot reach: its owner is told how to stop it,
@@ -174,8 +191,6 @@ if [ -x "$old" ]; then
       host=""
       ;;
   esac
-  # Only a host of the latch being replaced is stopped.
-  [ "$("$old" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ] || host=""
 fi
 case "$host" in
   *'"running":true'*)
@@ -198,10 +213,9 @@ case "$host" in
 esac
 
 # 1. The binary. Copy next to the target, then rename, so a running latch is
-# never overwritten in place. cksum, unlike cmp, is on every system.
+# never overwritten in place.
 if [ -n "$app" ]; then
-  installed="$HOME/Applications/$(basename "$app")"
-  if [ -d "$installed" ] && [ "$(cksum < "$inner")" = "$(cksum < "$installed/Contents/MacOS/$(basename "$inner")")" ]; then
+  if [ -z "$replace" ]; then
     say "$(basename "$app") already installed at $installed"
   else
     # Copied beside the old one first. The old one then moves aside, not
@@ -237,7 +251,7 @@ if [ -n "$app" ]; then
     mv -f "$dest.tmp" "$dest"
     say "linked $dest to $link"
   fi
-elif [ -f "$dest" ] && [ ! -L "$dest" ] && [ "$(cksum < "$src")" = "$(cksum < "$dest")" ]; then
+elif [ -z "$replace" ]; then
   say "latch already installed at $dest"
 else
   mkdir -p "$bin_dir"
@@ -367,9 +381,21 @@ fi
 
 # On a first install at a terminal, `latch setup` takes it from here,
 # reading the terminal itself (this script's own stdin may be the download
-# it came from). Whatever happens in setup, the install is done.
+# it came from), or, on macOS 26 or later, the installed app's window. A
+# state directory given here goes to the app as an absolute path, since it
+# runs from another folder. Whatever happens in setup, the install is done.
 if [ -n "$first_install" ]; then
-  if [ -z "$non_interactive" ] && [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
+  if [ -n "$non_interactive" ] || [ ! -t 1 ] || ! (: </dev/tty) 2>/dev/null; then
+    say "next: run \`latch setup\` to log in and set up the rest"
+  elif [ -n "$app" ] && [ "$macos" -ge 26 ]; then
+    say "opening $installed to set up the rest"
+    if [ -n "$state_given" ]; then
+      set -- "$installed" --args --state-dir "$(cd "$state_dir" && pwd)"
+    else
+      set -- "$installed"
+    fi
+    open "$@" || say "could not open $installed; run \`latch setup\` instead"
+  else
     say "running latch setup"
     if [ -n "$state_given" ]; then
       set -- --state-dir "$state_dir" setup
@@ -377,8 +403,6 @@ if [ -n "$first_install" ]; then
       set -- setup
     fi
     "$dest" "$@" </dev/tty || say "setup did not finish; run \`latch setup\` any time"
-  else
-    say "next: run \`latch setup\` to log in and set up the rest"
   fi
 fi
 say "done"

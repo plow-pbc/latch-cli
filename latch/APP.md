@@ -37,6 +37,21 @@ A login can also end two other ways:
 
 In both cases, the usual error JSON also goes to stderr.
 
+When another of your machines already has the name, the error is
+`conflict` (exit 2), and it says which machine has it, for the app to ask
+"Use another name" or "Replace studio":
+
+```
+{"type":"error","error":{"code":"conflict","message":"a machine named \"studio\" already exists…","existing_name":"studio","last_seen_at":"2026-10-21T04:44:15Z"}}
+```
+
+`last_seen_at` is null for a machine that was never seen. To replace it,
+run the login again with `--replace` (and the same `--name`): the other
+machine is removed from your account, which signs it out of Plow, and this
+one takes its name. The token already saved is reused, so no second text
+is needed. Pass `--replace` only when the person chose it. An agent's name
+is never taken over.
+
 ## `latch status --local`
 
 This reports what this machine knows about its own latch, asking no one. It
