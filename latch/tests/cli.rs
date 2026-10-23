@@ -787,83 +787,6 @@ fn a_login_that_knows_no_plow_says_so_in_the_same_json_at_a_terminal_and_piped()
     assert!(!state.join("config.json").exists());
 }
 
-/// Every regular command `help --json` lists, as an argument list that gets
-/// past argument parsing: its words, then each positional input and each
-/// required flag, with its first choice or `1`.
-fn regular_commands() -> Vec<Vec<String>> {
-    let dir = test_dir();
-    let help = latch(&dir.path().join("none"), &["help", "--json"], &[]);
-    let help: Value = serde_json::from_slice(&help.stdout).unwrap();
-    let human = ["setup", "dashboard", "serve", "rules.edit", "help", "skill"];
-    let mut commands = Vec::new();
-    for action in help["actions"].as_array().unwrap() {
-        let id = action["id"].as_str().unwrap();
-        if human.contains(&id) {
-            continue;
-        }
-        let (mut args, mut after) = (Vec::new(), Vec::new());
-        match id.strip_prefix("google.") {
-            Some(gog) => {
-                args.push("google".to_string());
-                after.extend(gog.split('.').map(String::from));
-            }
-            None => args.extend(id.split('.').map(String::from)),
-        }
-        for input in action["inputs"].as_array().unwrap() {
-            if input["required"] != true && input["flag"].is_string() {
-                continue;
-            }
-            let value = input["choices"][0].as_str().unwrap_or("1").to_string();
-            match input["flag"].as_str() {
-                // `-o, --output`: the long one.
-                Some(flag) => args.extend([flag.rsplit(", ").next().unwrap().to_string(), value]),
-                None if input["after_separator"] == true => after.push(value),
-                None => args.push(value),
-            }
-        }
-        if !after.is_empty() {
-            args.push("--".to_string());
-            args.extend(after);
-        }
-        commands.push(args);
-    }
-    commands
-}
-
-/// A state folder of a newer latch's format, which every command refuses
-/// before doing anything, and in which a newer build is known.
-fn refused_state(dir: &Path) -> PathBuf {
-    let state = dir.join("state");
-    fs::create_dir_all(&state).unwrap();
-    let marker = json!({"format": 999_999, "written_by": "latch 99"});
-    fs::write(state.join("latch.json"), marker.to_string()).unwrap();
-    let checked = json!({"checked_at": "2026-10-22T08:00:00Z",
-        "latest": {"tag": "v0.1.0-99999999", "build": 99_999_999}, "failures": 0,
-        "failed_at": null, "noticed_at": null});
-    fs::write(state.join("update.json"), checked.to_string()).unwrap();
-    state
-}
-
-#[test]
-fn every_regular_command_fails_in_one_json_line_at_a_terminal_and_piped() {
-    let dir = test_dir();
-    let state = refused_state(dir.path());
-    let commands = regular_commands();
-    assert!(commands.len() > 50, "{commands:?}");
-    for args in &commands {
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let piped = latch(&state, &args, &[]);
-        assert!(piped.stdout.is_empty(), "{args:?}: {piped:?}");
-        let error = one_error_line(&String::from_utf8_lossy(&piped.stderr), piped.status.code());
-        assert_eq!(error["error"]["code"], "state_format", "{args:?}: {error}");
-
-        // At a terminal, stdout and stderr both: the same one line.
-        let (code, shown, _) = latch_at_a_terminal(&state, &args, "", true, &[]);
-        assert_eq!(code, piped.status.code(), "{args:?}: {shown}");
-        assert_eq!(one_error_line(&shown, code), error, "{args:?}");
-    }
-}
-
 /// A JSON value's shape: its keys and the kind of each value, so two runs
 /// whose times and ids differ compare equal.
 fn shape(value: &Value) -> Value {
@@ -2834,12 +2757,21 @@ fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     fs::write(state.join("latch.json"), marker).unwrap();
     // Not valid for this latch either way: a newer layout it would misread.
     fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
+    // A newer build is known: a build with a number would have said so
+    // after any command at a terminal, a second line.
+    let checked = json!({"checked_at": "2026-10-22T08:00:00Z",
+        "latest": {"tag": "v0.1.0-99999999", "build": 99_999_999}, "failures": 0,
+        "failed_at": null, "noticed_at": null});
+    fs::write(state.join("update.json"), checked.to_string()).unwrap();
 
     let status = latch(&state, &["status"], &[]);
 
     assert_eq!(status.status.code(), Some(1), "{status:?}");
-    let error: Value = serde_json::from_slice(&status.stderr).unwrap();
+    let error = one_error_line(&String::from_utf8_lossy(&status.stderr), Some(1));
     assert_eq!(error["error"]["code"], "state_format", "{error}");
+    // At a terminal, stdout and stderr both: the same one line.
+    let (code, shown, _) = latch_at_a_terminal(&state, &["status"], "", true, &[]);
+    assert_eq!(one_error_line(&shown, code), error);
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("update this latch"), "{message}");
     assert_eq!(

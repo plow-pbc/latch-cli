@@ -244,8 +244,32 @@ async fn update(
     if tag.is_none() && release.build <= current {
         return Ok(json!({"updated": false, "current": current, "latest": release}));
     }
+    let before = crate::status::local(state)?.serve;
     install(state, source, &release, bin).await?;
-    Ok(json!({"updated": true, "from": current, "to": release}))
+    let mut answer = json!({"updated": true, "from": current, "to": release});
+    let after = crate::status::local(state)?.serve.running;
+    if let Some(host) = host_after(before.running, before.attached, after) {
+        answer["host"] = host;
+    }
+    Ok(answer)
+}
+
+/// What an update did to the host on this state folder, when one ran. The
+/// installer stops it, and starts again only one `serve -d` started; one
+/// that ran in a terminal stays stopped, with the command that starts it.
+fn host_after(was_running: bool, attached: bool, running: bool) -> Option<Value> {
+    if !was_running {
+        return None;
+    }
+    if running {
+        return Some(json!({"running": true}));
+    }
+    let start = if attached {
+        "latch serve"
+    } else {
+        "latch serve --foreground"
+    };
+    Some(json!({"running": false, "next": start}))
 }
 
 /// Downloads `release`'s archive for this platform, checks it, and runs its

@@ -402,155 +402,150 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// The codes this crate's production source gives a failure, with their
-    /// exits: `Failure::usage("code"`, `Failure::failed("code"`,
-    /// `Done::failed("code"` and `Exit::Name, "code"`. Everything under
-    /// `#[cfg(test)]` is left out: the items it marks, and the files of the
-    /// modules it declares.
+    /// The codes the production source gives a failure, with their exits,
+    /// read as syntax from `main.rs` down: `Failure::usage("code", …)`,
+    /// `Failure::failed`, `Done::failed`, and `Exit::Name, "code"` side by
+    /// side in a call or tuple. What `#[cfg(test)]` marks is left out.
     fn named_in_source() -> Vec<(String, String)> {
-        let src = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
-        let mut files = Vec::new();
-        let mut folders = vec![src.to_path_buf()];
-        while let Some(folder) = folders.pop() {
-            for entry in std::fs::read_dir(&folder).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    folders.push(path);
-                } else if path.extension().is_some_and(|ext| ext == "rs") {
-                    files.push(path);
-                }
-            }
-        }
-        let mut production = Vec::new();
-        let mut test_only = Vec::new();
-        for path in &files {
-            let (text, declared) = without_tests(&std::fs::read_to_string(path).unwrap());
-            // `mod name;` in a.rs is a/name.rs; in main.rs or mod.rs, name.rs beside it.
-            let stem = path.file_stem().unwrap();
-            let folder = match stem.to_str() {
+        let mut scan = Scan::default();
+        scan.file(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"));
+        scan.named
+    }
+
+    #[derive(Default)]
+    struct Scan {
+        named: Vec<(String, String)>,
+        /// Where a `mod name;` in the file being read finds name.rs.
+        folder: std::path::PathBuf,
+    }
+
+    impl Scan {
+        fn file(&mut self, path: &Path) {
+            let text = std::fs::read_to_string(path).unwrap();
+            let parsed = syn::parse_file(&text).unwrap_or_else(|err| panic!("{path:?}: {err}"));
+            // `mod name;` in a.rs is a/name.rs; in main.rs or mod.rs, beside it.
+            let folder = match path.file_stem().and_then(|stem| stem.to_str()) {
                 Some("main" | "mod") => path.parent().unwrap().to_path_buf(),
                 _ => path.with_extension(""),
             };
-            test_only.extend(declared.iter().map(|name| folder.join(name)));
-            production.push((path, text));
+            let outer = std::mem::replace(&mut self.folder, folder);
+            syn::visit::visit_file(self, &parsed);
+            self.folder = outer;
         }
-        let mut named = Vec::new();
-        for (path, text) in production {
-            let tested = test_only
-                .iter()
-                .any(|module| path.with_extension("") == *module || path.starts_with(module));
-            if tested || path.ends_with("failure.rs") {
-                continue;
-            }
-            for (call, exit) in [
-                ("Failure::usage(", "Usage"),
-                ("Failure::failed(", "Failed"),
-                ("Done::failed(", "Failed"),
-            ] {
-                for (at, _) in text.match_indices(call) {
-                    if let Some(code) = code_literal(&text[at + call.len()..]) {
-                        named.push((code, exit.to_string()));
+
+        /// A macro's tokens, read as expressions where they are some
+        /// (`eprintln!`'s), else each group in them (`select!`'s arms).
+        fn tokens(&mut self, tokens: proc_macro2::TokenStream) {
+            use syn::parse::Parser;
+            let exprs = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+            match exprs.parse2(tokens.clone()) {
+                Ok(exprs) => exprs
+                    .iter()
+                    .for_each(|expr| syn::visit::Visit::visit_expr(self, expr)),
+                Err(_) => tokens.into_iter().for_each(|tree| {
+                    if let proc_macro2::TokenTree::Group(group) = tree {
+                        self.tokens(group.stream())
                     }
-                }
-            }
-            for (at, _) in text.match_indices("Exit::") {
-                let rest = &text[at + "Exit::".len()..];
-                let exit: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphabetic())
-                    .collect();
-                let Some(rest) = rest[exit.len()..].trim_start().strip_prefix(',') else {
-                    continue;
-                };
-                if let Some(code) = code_literal(rest) {
-                    named.push((code, exit));
-                }
+                }),
             }
         }
-        named
     }
 
-    /// `text` without the items `#[cfg(test)]` marks, and the names of the
-    /// modules among them that live in files of their own (`mod name;`).
-    fn without_tests(text: &str) -> (String, Vec<String>) {
-        const MARK: &str = "#[cfg(test)]";
-        let (mut kept, mut declared) = (String::new(), Vec::new());
-        let mut rest = text;
-        while let Some(at) = rest.find(MARK) {
-            kept.push_str(&rest[..at]);
-            let item = &rest[at + MARK.len()..];
-            let end = item_end(item);
-            let words: Vec<&str> = item[..end].split_whitespace().collect();
-            if let [.., "mod", name] = words.as_slice() {
-                declared.push(name.trim_end_matches(';').to_string());
+    impl<'ast> syn::visit::Visit<'ast> for Scan {
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            let attrs: &[syn::Attribute] = match item {
+                syn::Item::Fn(item) => &item.attrs,
+                syn::Item::Impl(item) => &item.attrs,
+                syn::Item::Mod(item) => &item.attrs,
+                _ => &[],
+            };
+            let test = |list: syn::Result<&syn::MetaList>| {
+                list.is_ok_and(|list| {
+                    list.path.is_ident("cfg") && list.tokens.to_string() == "test"
+                })
+            };
+            match item {
+                _ if attrs.iter().any(|attr| test(attr.meta.require_list())) => {}
+                syn::Item::Mod(module) if module.content.is_none() => {
+                    let path = attrs.iter().find_map(|attr| match &attr.meta {
+                        syn::Meta::NameValue(pair) if pair.path.is_ident("path") => {
+                            text_of(&pair.value)
+                        }
+                        _ => None,
+                    });
+                    let name = module.ident.to_string();
+                    let file = match path {
+                        Some(path) => self.folder.parent().unwrap().join(path),
+                        None if self.folder.join(format!("{name}.rs")).exists() => {
+                            self.folder.join(format!("{name}.rs"))
+                        }
+                        None => self.folder.join(name).join("mod.rs"),
+                    };
+                    self.file(&file);
+                }
+                _ => syn::visit::visit_item(self, item),
             }
-            rest = &item[end..];
         }
-        kept.push_str(rest);
-        (kept, declared)
-    }
 
-    /// Where the item `text` starts with ends: after its first `;` outside
-    /// any braces, or after the brace that closes its first block. String
-    /// and character literals and comments are stepped over, so the braces
-    /// in them don't count.
-    fn item_end(text: &str) -> usize {
-        let bytes = text.as_bytes();
-        let (mut at, mut depth) = (0, 0);
-        while at < bytes.len() {
-            match bytes[at] {
-                b'/' if bytes.get(at + 1) == Some(&b'/') => {
-                    at += text[at..].find('\n').unwrap_or(text.len() - at);
-                }
-                b'/' if bytes.get(at + 1) == Some(&b'*') => {
-                    at += text[at..].find("*/").map_or(text.len() - at, |end| end + 2);
-                    continue;
-                }
-                b'r' if matches!(bytes.get(at + 1), Some(b'"' | b'#'))
-                    && !bytes[at.saturating_sub(1)].is_ascii_alphanumeric() =>
+        fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+            let (made, args): (Vec<String>, Vec<&syn::Expr>) = match expr {
+                syn::Expr::Call(call) => (path_of(&call.func), call.args.iter().collect()),
+                syn::Expr::Tuple(tuple) => (Vec::new(), tuple.elems.iter().collect()),
+                _ => (Vec::new(), Vec::new()),
+            };
+            let exit = match made.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+                [.., "Failure", "usage"] => Some("Usage"),
+                [.., "Failure" | "Done", "failed"] => Some("Failed"),
+                _ => None,
+            };
+            if let (Some(exit), Some(code)) = (exit, args.first().and_then(|arg| code_of(arg))) {
+                self.named.push((code, exit.into()));
+            }
+            for pair in args.windows(2) {
+                let path = path_of(pair[0]);
+                if let ([.., exits, exit], Some(code)) = (path.as_slice(), code_of(pair[1]))
+                    && exits == "Exit"
                 {
-                    let hashes = text[at + 1..].bytes().take_while(|&b| b == b'#').count();
-                    let close = format!("\"{}", "#".repeat(hashes));
-                    let body = at + 2 + hashes;
-                    at = body + text[body..].find(&close).unwrap() + close.len();
-                    continue;
+                    self.named.push((code, exit.clone()));
                 }
-                b'"' => {
-                    at += 1;
-                    while bytes[at] != b'"' {
-                        at += if bytes[at] == b'\\' { 2 } else { 1 };
-                    }
-                }
-                // A character literal ('x', '\n', '\u{7b}'), not a lifetime ('a).
-                b'\'' if bytes.get(at + 1) == Some(&b'\\') => {
-                    at += 2 + text[at + 2..].find('\'').unwrap();
-                }
-                b'\'' if bytes.get(at + 2) == Some(&b'\'') => at += 2,
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return at + 1;
-                    }
-                }
-                b';' if depth == 0 => return at + 1,
-                _ => {}
             }
-            at += 1;
+            syn::visit::visit_expr(self, expr);
         }
-        text.len()
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            self.tokens(mac.tokens.clone());
+        }
     }
 
-    /// The string literal `text` starts with (after whitespace), if it reads
-    /// as a code: lower-case letters, digits and underscores.
-    fn code_literal(text: &str) -> Option<String> {
-        let rest = text.trim_start().strip_prefix('"')?;
-        let code = &rest[..rest.find('"')?];
-        let is_code = !code.is_empty()
-            && code
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-        is_code.then(|| code.to_string())
+    /// The words of a path expression (`crate::failure::Exit::Usage`).
+    fn path_of(expr: &syn::Expr) -> Vec<String> {
+        let syn::Expr::Path(path) = expr else {
+            return Vec::new();
+        };
+        path.path
+            .segments
+            .iter()
+            .map(|word| word.ident.to_string())
+            .collect()
+    }
+
+    /// A string literal's text.
+    fn text_of(expr: &syn::Expr) -> Option<String> {
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(text),
+            ..
+        }) = expr
+        else {
+            return None;
+        };
+        Some(text.value())
+    }
+
+    /// A string literal that reads as a code: lower-case letters, digits
+    /// and underscores.
+    fn code_of(expr: &syn::Expr) -> Option<String> {
+        let code = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_';
+        text_of(expr).filter(|text| !text.is_empty() && text.chars().all(code))
     }
 
     #[test]

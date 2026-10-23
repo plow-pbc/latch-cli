@@ -236,6 +236,25 @@ async fn a_newer_build_is_installed_by_its_own_installer_where_latch_runs() {
 
 /// On Linux, latch is installed where this one runs from; on macOS the
 /// installer replaces the app every link leads into.
+/// The installer stops the host: one `serve -d` started runs again, and
+/// one that ran in a terminal is said to be stopped, with what starts it.
+#[test]
+fn an_update_says_what_became_of_the_host() {
+    assert_eq!(host_after(false, false, false), None);
+    assert_eq!(
+        host_after(true, false, true),
+        Some(json!({"running": true}))
+    );
+    assert_eq!(
+        host_after(true, true, false),
+        Some(json!({"running": false, "next": "latch serve"}))
+    );
+    assert_eq!(
+        host_after(true, false, false),
+        Some(json!({"running": false, "next": "latch serve --foreground"}))
+    );
+}
+
 #[test]
 fn an_update_installs_where_this_latch_runs() {
     let here = std::env::current_exe().unwrap();

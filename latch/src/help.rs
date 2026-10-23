@@ -1015,7 +1015,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "update",
         runs_on: |_| RunsOn::Local,
-        output: "`updated` and the build installed (`to`), or with --check `current`, `latest` and `available`.",
+        output: "`updated` and the build installed (`to`), and when a host ran here, `host`: `running` again, or stopped with the `next` command that starts it; with --check, `current`, `latest` and `available`.",
         effect: Repeatable(
             "installs another latch build on this machine and restarts a `serve -d` host on it",
         ),
