@@ -3397,6 +3397,194 @@ fn vault_management_and_self_rules_are_local_without_serve() {
 }
 
 #[test]
+fn vault_takes_secrets_as_json_on_stdin_and_shows_only_what_is_not_secret() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let secrets = [
+        "made-up-pass-7c1a",
+        "JBSWY3DPEHPK3PXP",
+        "made-up-pass-new-2b9e",
+    ];
+    // `latch ARGS`, given `input` on stdin: its exit and its JSON.
+    let run = |args: &[&str], input: &str| {
+        assert!(secrets.iter().all(|s| !args.join(" ").contains(s)));
+        let mut child = latch_command(&host, args, &[])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for secret in secrets {
+            assert!(!printed.contains(secret), "{secret} shown: {printed}");
+        }
+        answered(&output)
+    };
+
+    let (code, added) = run(
+        &[
+            "vault",
+            "add",
+            "--kind",
+            "login",
+            "--title",
+            "Shop",
+            "--site",
+            "shop.example",
+            "--field",
+            "username=ada",
+            "--stdin",
+        ],
+        r#"{"password": "made-up-pass-7c1a", "totp": "JBSWY3DPEHPK3PXP"}"#,
+    );
+    assert_eq!(code, Some(0), "{added}");
+    assert_eq!(added["item"]["totp"], true);
+
+    // Its non-secret values, and its secret fields by label only.
+    let (code, shown) = run(&["vault", "show", "v1"], "");
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(shown["values"], json!({"username": "ada"}));
+    let hidden: Vec<&Value> = shown["item"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|field| field["hidden"] == true)
+        .map(|field| &field["label"])
+        .collect();
+    assert_eq!(hidden, [&json!("password"), &json!("totp")]);
+
+    let (code, edited) = run(
+        &["vault", "edit", "v1", "--revision", "1", "--stdin"],
+        r#"{"password": "made-up-pass-new-2b9e", "totp": ""}"#,
+    );
+    assert_eq!(code, Some(0), "{edited}");
+    assert_eq!(edited["changed"], json!(["password", "totp"]));
+    assert_eq!(edited["item"]["totp"], false);
+
+    // A field given twice, or a value that is not a string, is refused
+    // without echoing anything read.
+    let (code, error) = run(
+        &[
+            "vault",
+            "edit",
+            "v1",
+            "--revision",
+            "2",
+            "--field",
+            "username=bo",
+            "--stdin",
+        ],
+        r#"{"username": "made-up-pass-7c1a"}"#,
+    );
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("bad_arguments"))
+    );
+    let (code, error) = run(
+        &["vault", "edit", "v1", "--revision", "2", "--stdin"],
+        r#"{"password": ["made-up-pass-7c1a"]}"#,
+    );
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("bad_values"))
+    );
+
+    // An import's preview, then the rows picked: no prompt, no secret.
+    let export = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/import/chrome.csv"
+    );
+    let (code, previewed) = run(&["vault", "import", export, "--preview"], "");
+    assert_eq!(code, Some(0), "{previewed}");
+    let rows = previewed["preview"]["items"].as_array().unwrap();
+    assert!(rows.len() >= 2, "{previewed}");
+    assert!(!previewed.to_string().contains("made-up-pass-chrome"));
+    assert_eq!(rows[0]["pick"], 1);
+    assert_eq!(rows[0]["has_password"], true);
+    let listed = |host: &Path| {
+        let (_, listed) = answered(&latch(host, &["vault", "list"], &[]));
+        listed["items"].as_array().unwrap().len()
+    };
+    assert_eq!(listed(&host), 1, "a preview imports nothing");
+    let (code, imported) = run(&["vault", "import", export, "--pick", "1"], "");
+    assert_eq!(code, Some(0), "{imported}");
+    assert_eq!(imported["saved"], 1);
+    assert_eq!(imported["picked"], json!([1]));
+    assert!(!imported.to_string().contains("made-up-pass-chrome"));
+    assert_eq!(listed(&host), 2);
+
+    // A preview is not audited; the import is. The audit names fields,
+    // never a value.
+    let audited = audit_records(&host);
+    let imports = audited
+        .iter()
+        .filter(|r| r["args"]["command"] == "import")
+        .count();
+    assert_eq!(imports, 1);
+    let records = serde_json::to_string(&audited).unwrap();
+    for secret in secrets.iter().chain(&["made-up-pass-chrome"]) {
+        assert!(!records.contains(secret), "{secret} audited");
+    }
+}
+
+#[test]
+fn vault_stdin_left_open_is_cut_off_and_saves_nothing() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let args = [
+        "vault",
+        "add",
+        "--kind",
+        "login",
+        "--title",
+        "Shop",
+        "--site",
+        "shop.example",
+        "--stdin",
+    ];
+    let mut child = latch_command(&host, &args, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The JSON is all there, but the pipe is never closed, as some tool
+    // runners leave it.
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(br#"{"password": "made-up-pass-open-1"}"#)
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "latch waited forever");
+        thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let output = child.wait_with_output().unwrap();
+    drop(input);
+    let (code, error) = answered(&output);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("stdin_timeout"))
+    );
+    assert!(!error.to_string().contains("made-up-pass-open-1"));
+    let (_, listed) = answered(&latch(&host, &["vault", "list"], &[]));
+    assert_eq!(listed["items"], json!([]));
+}
+
+#[test]
 fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     let plow = LivePlow::start();
     let (runtime, relay) = local_relay();
@@ -3544,6 +3732,28 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
         7,
         "local and remote writes must share one verified audit chain"
     );
+
+    // Another machine previews an export on the host, then imports a row
+    // of it: only the import is audited.
+    let export = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/import/chrome.csv"
+    );
+    let previewed = remote(&["vault", "import", "--host", "host", export, "--preview"]);
+    assert_eq!(previewed["preview"]["items"][0]["pick"], 1, "{previewed}");
+    assert!(!previewed.to_string().contains("made-up-pass-chrome"));
+    let imported = remote(&["vault", "import", "--host", "host", export, "--pick", "1"]);
+    assert_eq!(imported["saved"], 1, "{imported}");
+    let imports = audit_records(&host)
+        .iter()
+        .filter(|r| {
+            r["op"] == "vault"
+                && ["import", "preview"]
+                    .contains(&r["args"]["command"].as_str().unwrap_or_default())
+        })
+        .map(|r| r["args"]["command"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(imports, [json!("import")]);
 }
 
 #[test]

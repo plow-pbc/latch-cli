@@ -582,8 +582,11 @@ pub struct VaultArgs {
 pub enum VaultCommand {
     /// Every item's metadata (never a value)
     List,
-    /// Add an item; its secrets are asked for at a prompt, never taken from
-    /// the command line or the environment
+    /// One item's metadata and its non-secret values (never a secret one)
+    Show { item: String },
+    /// Add an item; its secrets are asked for at a prompt, or read from
+    /// stdin with --stdin, never taken from the command line or the
+    /// environment
     Add {
         /// login, card, identity or note
         #[arg(long)]
@@ -606,10 +609,16 @@ pub enum VaultCommand {
         /// Also ask for a login's authenticator key
         #[arg(long)]
         totp: bool,
+        /// Read field values from stdin instead of asking for them: one JSON
+        /// object of strings by label, secrets included, e.g.
+        /// {"password": "…", "totp": "…"}
+        #[arg(long, conflicts_with_all = ["ask", "totp"])]
+        stdin: bool,
     },
     /// Change an item at its current revision: its title, sites and fields.
-    /// Its secrets are asked for at a prompt, never taken from the command
-    /// line or the environment; its kind never changes
+    /// Its secrets are asked for at a prompt, or read from stdin with
+    /// --stdin, never taken from the command line or the environment; its
+    /// kind never changes
     Edit {
         item: String,
         /// The revision `vault list` shows; an older one is refused
@@ -637,6 +646,11 @@ pub enum VaultCommand {
         /// authenticator key), a card's number or code, …
         #[arg(long)]
         ask: Vec<String>,
+        /// Read changed field values from stdin instead of asking for them:
+        /// one JSON object of strings by label, secrets included; an empty
+        /// string clears a field
+        #[arg(long, conflicts_with = "ask")]
+        stdin: bool,
     },
     /// A one-time link through a running serve that adds an item from your phone: the phone page
     /// connects to the host itself, and the value goes straight there.
@@ -673,7 +687,17 @@ pub enum VaultCommand {
     },
     /// Import another password manager's export (1PUX, CSV, JSON): shows
     /// what it holds and imports only the rows you pick
-    Import { file: std::path::PathBuf },
+    Import {
+        file: std::path::PathBuf,
+        /// Return the preview as JSON and import nothing: each row's
+        /// number, kind, title, username and site, never a secret
+        #[arg(long, conflicts_with = "pick")]
+        preview: bool,
+        /// Import these rows of the preview without asking: numbers or
+        /// ranges (1,3-5), or all
+        #[arg(long, value_name = "ROWS")]
+        pick: Option<String>,
+    },
 }
 
 /// Arguments the host gives a browser worker (see `browser/worker.rs`).
