@@ -254,4 +254,18 @@ struct ActivationTests {
         let again = Array(client.calls.dropFirst(first.count))
         #expect(again.contains(section == .vault ? "vault list" : "rules show"), "\(section): \(again)")
     }
+
+    // Rules names the agents but doesn't show their standing on each host:
+    // neither showing it nor coming back to the front asks each host.
+    @Test func rulesReadsTheAgentListAndNoHostsStanding() async throws {
+        let client = CountingClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.section = .rules
+        await app.enter(.rules, host: app.host)
+        await app.activated()
+        #expect(client.calls == ["agents", "rules show", "agents", "rules show"])
+        #expect(!client.calls.contains("agents --host"))
+    }
 }

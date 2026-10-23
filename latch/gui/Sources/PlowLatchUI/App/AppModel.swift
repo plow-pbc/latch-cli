@@ -176,7 +176,9 @@ final class AppModel {
             await readHostStatus(of: host, refresh: refresh)
         case .rules:
             guard let host, host.isThisMac || host.online != false else { return }
-            if refresh || agents == nil { await refreshAgents() }
+            // Its editors name the agents; their standing on each host isn't
+            // shown here.
+            if refresh || agents == nil { await refreshAgentList() }
             if refresh || !Self.held(summaries[host.name]?.rules) { await refreshRules(on: host) }
         case .vault:
             guard let host, host.isThisMac || host.online != false else { return }
@@ -550,15 +552,23 @@ final class AppModel {
     private(set) var agentsError: LatchError?
     private(set) var standings: [String: Result<[String: AgentsList.Agent.Standing], LatchError>] = [:]
 
-    func refreshAgents() async {
+    /// Reads the account's agents, without their standing on each host;
+    /// false when cancelled.
+    @discardableResult
+    func refreshAgentList() async -> Bool {
         switch await Self.result({ try await self.client.agents(host: nil).agents }) {
-        case nil: return
+        case nil: return false
         case let .success(listed)?:
             agents = listed
             agentsError = nil
         case let .failure(error)?:
             agentsError = error
         }
+        return true
+    }
+
+    func refreshAgents() async {
+        guard await refreshAgentList() else { return }
         // One host at a time: each is a read over latch's connection.
         for host in hosts where host.isThisMac || host.online != false {
             guard !Task.isCancelled else { return }
