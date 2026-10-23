@@ -18,7 +18,7 @@ case "$target" in
   *-apple-darwin)
     . latch/macos/identity.sh
     sh scripts/macos-app-bundle.sh "$version" "$binary" "$out/$LATCH_APP_NAME.app"
-    codesign --force --sign - "$out/$LATCH_APP_NAME.app"
+    sh scripts/macos-sign-app.sh "$out/$LATCH_APP_NAME.app"
     ln -sf "$LATCH_APP_NAME.app/Contents/MacOS/latch" "$out/latch"
     ;;
   *) cp "$binary" "$out/latch" ;;

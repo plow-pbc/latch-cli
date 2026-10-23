@@ -42,7 +42,8 @@ SUITES = {
     "scenario": ("the return scenario on the test shop, with the fake gog",
                  "the pinned engines", {"macos", "linux", "container"}),
     "installer": ("install.sh, install-binary.sh and dev-login.py against local fixtures, and "
-                  "on macOS the app bundle", "Python 3", {"macos", "linux", "container"}),
+                  "on macOS the app: its window's Swift tests and the bundle", "Python 3; on macOS "
+                  "Xcode 26 or later", {"macos", "linux", "container"}),
 }
 GATE = {
     "macos": ["core", "sandbox", "messages", "browser", "lifecycle", "installer"],
@@ -304,6 +305,7 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
             if not rust:
                 out.append(("latch", ["installer"], ["cargo", "build", "--locked", "--features", features],
                             LATCH))
+            out.append(("swift app", ["installer"], ["swift", "test"], LATCH / "gui"))
             out.append(("app bundle", ["installer"], ["sh", str(ROOT / "scripts/test-app-bundle.sh")], LATCH))
     return out
 

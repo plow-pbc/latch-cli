@@ -593,10 +593,13 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     assert!(
         message.contains("`latch login --token-file FILE --name OTHER`")
             && message.contains(&format!(
-                "`latch login --token-file FILE --name {hostname}` again at a terminal to replace it"
+                "`latch login --token-file FILE --name {hostname} --replace` to replace it"
             )),
         "{message}"
     );
+    // And, for an app to ask which, the machine that has the name.
+    assert_eq!(error["error"]["existing_name"], hostname.as_str());
+    assert_eq!(error["error"]["last_seen_at"], "2026-10-15T01:30:12Z");
     assert!(!state.join("config.json").exists());
 
     // One registration, never retried to take the name over.
@@ -605,6 +608,60 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     assert!(body(&requests[0]).get("take_over").is_none());
     assert_eq!(requests.len(), 2);
     assert!(requests[1].starts_with("GET /v1/latch/peers "));
+}
+
+#[test]
+fn replace_takes_another_machines_name_with_no_terminal_and_an_events_login_says_whose_it_is() {
+    let old_key = "c".repeat(64);
+    let holder = peer(json!(old_key), "mac", "device", Value::Null);
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    // Without --replace: the error line says which machine has the name.
+    let (api_url, server) = fake_plow(vec![
+        (200, activation.clone()),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (409, json!({})),
+        (200, json!({"data": [holder.clone()]})),
+    ]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let args = ["login", "--events", "--api-url", &api_url, "--name", "mac"];
+    let login = latch(&state, &args, &[]);
+    assert_eq!(login.status.code(), Some(2), "{login:?}");
+    let error = event_lines(&login).pop().unwrap();
+    assert_eq!(error["type"], "error", "{error}");
+    assert_eq!(error["error"]["code"], "conflict");
+    assert_eq!(error["error"]["existing_name"], "mac");
+    assert_eq!(error["error"]["last_seen_at"], "2026-10-15T01:30:12Z");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--name mac --replace")
+    );
+    assert_eq!(server.join().unwrap().len(), 4, "nothing was removed");
+
+    // With it: the old machine is removed, then this one takes its name,
+    // on the login already in hand.
+    let (api_url, server) = fake_plow(vec![
+        (409, json!({})),
+        (200, json!({"data": [holder.clone()]})),
+        (200, holder),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ]);
+    // The login by text saved its token; point it at this Plow.
+    fs::write(state.join("plow-url"), format!("{api_url}\n")).unwrap();
+    let args = ["login", "--events", "--replace", "--name", "mac"];
+    let login = latch(&state, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    assert_eq!(event_lines(&login).pop().unwrap()["type"], "verified");
+    let requests = server.join().unwrap();
+    assert!(
+        requests[2].starts_with(&format!("DELETE /v1/latch/peers/{old_key} ")),
+        "{}",
+        requests[2]
+    );
+    assert_eq!(body(&requests[3])["name"], "mac");
 }
 
 #[test]
@@ -720,8 +777,9 @@ fn a_name_clash_at_a_terminal_asks_for_another_name_until_one_is_free_or_none_is
         "{shown}"
     );
     assert!(
-        shown
-            .contains(r"`latch login --token-file FILE --name 'Ada'\''s Mac'` again at a terminal"),
+        shown.contains(
+            r"`latch login --token-file FILE --name 'Ada'\''s Mac' --replace` to replace it"
+        ),
         "{shown}"
     );
     assert!(!state.join("config.json").exists());
@@ -4906,21 +4964,17 @@ fn offline_plugin_commands_on_one_state_folder_take_turns() {
     assert_eq!(local_serve(&host)["configuring"], false);
 }
 
-/// Whether launchd still has the one-shot Full Disk Access check's job.
+/// Whether launchd still has a one-shot Full Disk Access check's job for
+/// this state folder.
 #[cfg(target_os = "macos")]
 fn access_job_registered(state: &Path) -> bool {
     use sha2::Digest;
     let real = state.canonicalize().unwrap();
     let hash = sha2::Sha256::digest(real.as_os_str().as_encoded_bytes());
     let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
-    // SAFETY: getuid cannot fail.
-    let job = format!(
-        "gui/{}/co.plow.latch.access.{}",
-        unsafe { libc::getuid() },
-        &hex[..16]
-    );
-    let print = Command::new("launchctl").args(["print", &job]).output();
-    print.unwrap().status.success()
+    let jobs = Command::new("launchctl").arg("list").output().unwrap();
+    let prefix = format!("co.plow.latch.access.{}.", &hex[..16]);
+    String::from_utf8_lossy(&jobs.stdout).contains(&prefix)
 }
 
 /// A managed host's state folder: `latch stop` when the test ends, passing
@@ -6515,6 +6569,113 @@ mod messages {
     /// launchd job of latch's own, not from the terminal: refused there, it
     /// names this latch to grant and needs no restart; answered, it saves the
     /// setting the next host reads.
+    /// `setup --status --check-access` asks, as the app, whether it has Full
+    /// Disk Access, for Messages and Contacts both, without turning either
+    /// on or writing anything in the state folder; plain `--status` never
+    /// asks.
+    #[test]
+    fn setup_status_checks_full_disk_access_only_when_asked_and_changes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let plow = LivePlow::start();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let home = dir.path().join("home");
+        messages_home(&home);
+        let messages = home.join("Library/Messages");
+        let steps = |args: &[&str], env: &[(&str, &Path)]| {
+            let output = latch(&host, args, env);
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let by_name: std::collections::HashMap<String, Value> = status["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|step| (step["step"].as_str().unwrap().to_string(), step.clone()))
+                .collect();
+            by_name
+        };
+        // Every file in the state folder, and what it holds.
+        let contents = || {
+            let mut found = Vec::new();
+            let mut folders = vec![host.clone()];
+            while let Some(folder) = folders.pop() {
+                for entry in fs::read_dir(&folder).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        folders.push(path);
+                    } else {
+                        found.push((path.clone(), fs::read(&path).unwrap()));
+                    }
+                }
+            }
+            found.sort();
+            found
+        };
+        let before = contents();
+
+        let plain = steps(&["setup", "--status"], &[]);
+        assert!(
+            plain["messages"].get("access").is_none(),
+            "{}",
+            plain["messages"]
+        );
+
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = steps(
+            &["setup", "--status", "--check-access"],
+            &[("HOME", home.as_path())],
+        );
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            refused["messages"]["access"], "not_granted",
+            "{}",
+            refused["messages"]
+        );
+        assert_eq!(refused["contacts"]["access"], "not_granted");
+        assert_eq!(refused["messages"]["state"], "needed", "still off");
+
+        let granted = steps(
+            &["setup", "--status", "--check-access"],
+            &[("LATCH_TEST_ACCESS", Path::new("granted"))],
+        );
+        assert_eq!(granted["messages"]["access"], "granted");
+        assert_eq!(granted["contacts"]["access"], "granted");
+        assert_eq!(granted["messages"]["enabled"], false, "nothing turned on");
+        assert!(granted["google"].get("access").is_none());
+
+        // Checks at the same time on one state folder (a status beside a
+        // `plugins enable`, say) never stop each other's.
+        let granted = [("LATCH_TEST_ACCESS", Path::new("granted"))];
+        let together: Vec<_> = (0..3)
+            .map(|_| {
+                let host = host.clone();
+                thread::spawn(move || {
+                    latch(&host, &["setup", "--status", "--check-access"], &granted)
+                })
+            })
+            .collect();
+        for check in together {
+            let output = check.join().unwrap();
+            let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(status["steps"][2]["access"], "granted", "{status}");
+        }
+
+        assert_eq!(contents(), before, "nothing written in the state folder");
+        assert!(!access_job_registered(&host), "the check's job outlived it");
+
+        // Before any login, the check still answers, and makes no folder.
+        let fresh = dir.path().join("fresh");
+        let output = latch(
+            &fresh,
+            &["setup", "--status", "--check-access"],
+            &[("LATCH_TEST_ACCESS", Path::new("not_granted"))],
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(status["steps"][2]["access"], "not_granted", "{status}");
+        assert!(!fresh.exists());
+    }
+
     #[test]
     fn messages_setup_with_no_host_running_checks_from_a_job_of_its_own() {
         use std::os::unix::fs::PermissionsExt;
@@ -6560,6 +6721,41 @@ mod messages {
             serde_json::from_str(&fs::read_to_string(host.join("plugins.json")).unwrap()).unwrap();
         assert_eq!(saved["messages"]["state"], "enabled", "{saved}");
         assert_eq!(local_serve(&host)["running"], false);
+    }
+
+    /// A test's stand-in answer for Full Disk Access (`LATCH_TEST_ACCESS`, debug
+    /// builds only) holds for a running host's check too, so a test never asks
+    /// macOS for a grant it has no way to give: here the host's own home has a
+    /// Messages folder no one may read, and the answer still decides.
+    #[test]
+    fn a_running_hosts_full_disk_access_check_takes_the_tests_answer() {
+        use std::os::unix::fs::PermissionsExt;
+        let plow = LivePlow::start();
+        let (_relay, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let home = dir.path().join("host-home");
+        let messages = home.join("Library/Messages");
+        fs::create_dir_all(&messages).unwrap();
+        fs::write(messages.join("chat.db"), "a synthetic store").unwrap();
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o000)).unwrap();
+        let mut command = serve_command(&host, &relay);
+        command
+            .env("HOME", &home)
+            .env("LATCH_TEST_ACCESS", "granted");
+        let (_serve, _log, _) = serving_with(command);
+
+        let output = latch(&host, &["plugins", "enable", "messages"], &[]);
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o700)).unwrap();
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap();
+        assert_eq!(output.status.code(), Some(0), "{json}");
+        assert_eq!(json["access"], "granted", "{json}");
+        assert_eq!(json["state"], "enabled", "{json}");
     }
 
     /// The Messages setup asks the running host, whose Full Disk Access is what

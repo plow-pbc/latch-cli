@@ -9,9 +9,11 @@ target/
 /latch/phone/dist/
 /latch/phone/e2e/node_modules/
 
-# The Messages reader's Swift build output
+# The Messages reader's and the Mac app window's Swift build output
 /latch/messages-reader/.build/
 /latch/messages-reader/dist/
+/latch/gui/.build/
+/latch/gui/dist/
 
 # Local agent tooling
 .claude/
