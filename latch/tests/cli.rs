@@ -1475,6 +1475,21 @@ fn status_names_the_account_this_machine_and_each_host_once() {
     let error: Value = serde_json::from_slice(&down.stderr).unwrap();
     assert_eq!(error["error"]["code"], "plow_unreachable", "{error}");
     assert_eq!(error["error"]["next"], "latch status --local");
+
+    // Plow takes the connection and never answers: it says so, in seconds.
+    let stalled = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    use_plow(&host, &format!("http://{}", stalled.local_addr().unwrap()));
+    let started = std::time::Instant::now();
+    let late = latch(&host, &["status"], &[]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "{late:?}"
+    );
+    assert_eq!(late.status.code(), Some(1), "{late:?}");
+    let error: Value = serde_json::from_slice(&late.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "plow_unreachable", "{error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.ends_with("didn't answer within 10 s"), "{message}");
 }
 
 #[test]
@@ -1612,10 +1627,10 @@ fn bare_latch_narrow_puts_the_mark_above_and_no_color_keeps_it_still() {
     let header = shown.find("latch 0.1.0").expect(&shown);
     assert!(mark < header, "{shown}");
     assert!(!shown[mark..header].contains("Account"), "{shown}");
-    assert!(
-        shown.contains("isn't logged in to Plow. Run: latch"),
-        "{shown}"
-    );
+    // Too long for the line, the command goes on one of its own, whole.
+    assert!(shown.contains("isn't logged in to Plow. Run:"), "{shown}");
+    let command = format!("latch --state-dir {} setup", state.display());
+    assert!(shown.contains(&command), "{shown}");
     assert!(!state.exists(), "the overview made the state folder");
 }
 
@@ -2887,6 +2902,11 @@ fn a_host_runs_exec_and_files_under_home() {
     let local = latch(&host, &["status", "--local"], &[]);
     let local: Value = serde_json::from_slice(&local.stdout).unwrap();
     assert_eq!(local["this_machine"]["hosting"]["state"], "serving");
+    // The owner reads its status as it prints it there.
+    let remote = latch(&owner, &["status", "--host", "host"], &[]);
+    assert_eq!(remote.status.code(), Some(0), "{remote:?}");
+    let remote: Value = serde_json::from_slice(&remote.stdout).unwrap();
+    assert_eq!(remote, local);
 
     let into = dir.path().join("hosts");
     let into = into.to_str().unwrap();

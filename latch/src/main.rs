@@ -243,10 +243,7 @@ async fn run(
                     let request = json!({"follow": true});
                     streamed(remote::stream(&state, &host, "status", request, true).await)
                 }
-                Some(host) => json(
-                    pretty,
-                    remote::call(&state, &host, "status", json!({})).await?,
-                ),
+                Some(host) => json(pretty, remote::status(&state, &host).await?),
                 None if follow => {
                     // Before the first login, too.
                     state.create()?;

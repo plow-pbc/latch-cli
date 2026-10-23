@@ -280,10 +280,22 @@ pub struct Plow {
     token: String,
 }
 
+/// How long a request to Plow may take.
+const ANSWER_WITHIN: Duration = Duration::from_secs(30);
+
+/// Plow at `api_url` took longer than `within` to answer.
+pub fn no_answer(api_url: &str, within: Duration) -> Failure {
+    let message = format!(
+        "Plow at {api_url} didn't answer within {} s",
+        within.as_secs()
+    );
+    Failure::new(code::plow_unreachable, message)
+}
+
 impl Plow {
     pub fn new(api_url: &str, token: &str) -> Plow {
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(ANSWER_WITHIN)
             // A redirect must not carry the credential to another server.
             .redirect(reqwest::redirect::Policy::none())
             // One attempt per command: latch never calls Plow in a loop.
@@ -581,6 +593,7 @@ impl Plow {
         };
         let response = match request.send().await {
             Ok(response) => response,
+            Err(err) if err.is_timeout() => return Err(no_answer(&self.api_url, ANSWER_WITHIN)),
             Err(err) => {
                 let message = format!("could not reach Plow at {}: {err}", self.api_url);
                 return Err(Failure::new(code::plow_unreachable, message));

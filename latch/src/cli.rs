@@ -149,7 +149,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Create this peer's key if missing and register it with Plow
+    /// Log this machine or agent in to Plow: create its key if missing and register it
     Login(LoginArgs),
     /// Log this state folder out: stop its host, then delete its key and
     /// Plow token from the Keychain or its files; the vault and audit stay
@@ -1222,7 +1222,7 @@ pub struct LoginArgs {
     #[arg(long, value_name = "URL")]
     pub api_url: Option<String>,
 
-    /// Name of this peer, unique in the account [default: a machine's hostname; an agent's own name in Plow]
+    /// Name of this machine or agent, unique in the account [default: a machine's hostname; an agent's own name in Plow]
     #[arg(long)]
     pub name: Option<String>,
 

@@ -74,7 +74,7 @@ async fn connect_within(state: &StateDir, host: &Peer, within: Duration) -> Resu
             None => String::new(),
         };
         let message = format!(
-            "host {:?} is offline{seen}; nothing was sent. Start `latch serve` there",
+            "host {:?} is not online{seen}; nothing was sent. Start `latch serve` there",
             host.name
         );
         return Err(Failure::new(code::host_offline, message));
@@ -361,7 +361,9 @@ mod tests {
         let failure = connect(&state, &host).await.err().unwrap();
         assert_eq!(failure.code, "host_offline");
         assert!(
-            failure.message.contains("2026-10-22T01:00:00Z"),
+            failure
+                .message
+                .contains("is not online, last seen 2026-10-22T01:00:00Z"),
             "{}",
             failure.message
         );
