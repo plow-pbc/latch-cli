@@ -32,38 +32,47 @@ struct Progress: Equatable {
     /// Where a launch lands: not logged in → Welcome until it was passed,
     /// then Log in, finished or not (a logout means setting up again);
     /// logged in and finished → the main window; logged in → the first
-    /// screen after Log in not passed yet (Done once all are).
+    /// screen not passed yet (Done once all are).
     func destination(loggedIn: Bool) -> Destination {
         if !loggedIn { return .onboarding(passed[.welcome] == nil ? .welcome : .login) }
         if finished { return .main }
-        let next = [Step.privacy, .rules, .google, .access, .start].first { passed[$0] == nil }
-        return .onboarding(next ?? .done)
+        // Set up again walks Welcome and Log in too; a first run that is
+        // logged in already is past them.
+        let steps: [Step] = rerun ? [.welcome, .login, .privacy, .rules, .google, .access, .start] : [.privacy, .rules, .google, .access, .start]
+        return .onboarding(steps.first { passed[$0] == nil } ?? .done)
     }
 
-    /// "Set up again…": every screen after Log in is walked again, each
+    /// "Set up again…": every screen is walked again, from Welcome, each
     /// showing what's set up now; a relaunch midway resumes there.
     func settingUpAgain() -> Progress {
-        Progress(passed: passed.filter { $0.key == .welcome || $0.key == .login }, finished: false, rerun: true)
+        Progress(passed: [:], finished: false, rerun: true)
     }
 }
 
-extension Progress {
-    private static let passedKey = "OnboardingPassed"
-    private static let finishedKey = "OnboardingFinished"
-    private static let rerunKey = "OnboardingRerun"
+/// Where the app keeps onboarding progress: its own preferences, one entry
+/// per state folder, so each latch it runs for has its own.
+struct ProgressStore {
+    let defaults: UserDefaults
+    let stateDir: String
+    private static let key = "Onboarding"
 
-    static func load(_ defaults: UserDefaults = .standard) -> Progress {
-        let raw = defaults.dictionary(forKey: passedKey) as? [String: String] ?? [:]
+    func load() -> Progress {
+        let all = defaults.dictionary(forKey: Self.key) as? [String: [String: Any]] ?? [:]
+        let saved = all[stateDir] ?? [:]
         var passed: [Step: Passed] = [:]
-        for (step, how) in raw {
+        for (step, how) in saved["passed"] as? [String: String] ?? [:] {
             if let step = Step(rawValue: step), let how = Passed(rawValue: how) { passed[step] = how }
         }
-        return Progress(passed: passed, finished: defaults.bool(forKey: finishedKey), rerun: defaults.bool(forKey: rerunKey))
+        return Progress(passed: passed, finished: saved["finished"] as? Bool ?? false, rerun: saved["rerun"] as? Bool ?? false)
     }
 
-    func save(_ defaults: UserDefaults = .standard) {
-        defaults.set(Dictionary(uniqueKeysWithValues: passed.map { ($0.key.rawValue, $0.value.rawValue) }), forKey: Self.passedKey)
-        defaults.set(finished, forKey: Self.finishedKey)
-        defaults.set(rerun, forKey: Self.rerunKey)
+    func save(_ progress: Progress) {
+        var all = defaults.dictionary(forKey: Self.key) as? [String: [String: Any]] ?? [:]
+        all[stateDir] = [
+            "passed": Dictionary(uniqueKeysWithValues: progress.passed.map { ($0.key.rawValue, $0.value.rawValue) }),
+            "finished": progress.finished,
+            "rerun": progress.rerun,
+        ]
+        defaults.set(all, forKey: Self.key)
     }
 }

@@ -119,6 +119,9 @@ final class Onboarding {
     var messages: Check = .unknown
     var contacts: Check = .unknown
     var waitingForAccess = false
+    /// latch's own words about access, for a host a terminal holds.
+    var accessMessage: String?
+    var restarting = false
     // Start Latch.
     /// Starting at login runs `serve -d --again`, which needs a host this
     /// Mac started in the background before; so it's only on with it.
@@ -162,7 +165,7 @@ final class Onboarding {
 
     private func leave(_ how: Passed) {
         progress.passed[step] = how
-        progress.save()
+        app.store.save(progress)
         guard let index = Step.allCases.firstIndex(of: step), index + 1 < Step.allCases.count else { return }
         show(Step.allCases[index + 1])
     }
@@ -176,7 +179,7 @@ final class Onboarding {
     func finish() {
         progress.passed[.done] = .continued
         progress.finished = true
-        progress.save()
+        app.store.save(progress)
         stopWork()
         app.finishOnboarding()
     }
@@ -235,6 +238,16 @@ final class Onboarding {
     }
 
     var accessDone: Bool { messages == .done && contacts == .done }
+
+    /// A step already set up shows Continue alone, not Skip for now.
+    var stepDone: Bool {
+        switch step {
+        case .rules: !(savedRules ?? "").isEmpty && !rulesChanged
+        case .google: google == .done
+        case .access: accessDone
+        default: false
+        }
+    }
     /// A connector failed for a reason other than access: System Settings
     /// won't help.
     var accessFailed: Bool {
@@ -427,6 +440,12 @@ final class Onboarding {
         if let url = googleConnectURL { app.open(url) }
     }
 
+    /// Arriving at Google: on Set up again, what's connected now.
+    func googleAppeared() async {
+        guard progress.rerun, google == .unknown else { return }
+        await checkGoogle()
+    }
+
     /// Back in the app (from Plow, say): checks again unless Google is
     /// connected or a check is under way.
     func returnedToApp() async {
@@ -466,11 +485,57 @@ final class Onboarding {
         }
     }
 
+    /// One check of both, opening nothing: what Set up again shows on
+    /// arrival.
+    func checkAccess() {
+        accessTask?.cancel()
+        accessTask = Task {
+            for plugin in ["messages", "contacts"] where check(plugin) != .done {
+                set(plugin, .checking)
+                let result = await enableAccess(plugin)
+                guard !Task.isCancelled else { return }
+                set(plugin, result.check)
+            }
+        }
+    }
+
+    /// Whether access is missing while a host latch started in the
+    /// background runs: macOS gives a running process no access granted
+    /// after it started, so latch must restart to see it.
+    var backgroundHostNeedsRestart: Bool {
+        guard messages.isNeeded || contacts.isNeeded, let serve = app.status?.serve else { return false }
+        return serve.state == "serving" && serve.managed && serve.attached != true
+    }
+
+    /// The same, for a host held by a terminal: latch's own words say what
+    /// to do there; the app never restarts it.
+    var terminalHostNeedsRestart: Bool {
+        guard messages.isNeeded || contacts.isNeeded, let serve = app.status?.serve else { return false }
+        return serve.state == "serving" && !backgroundHostNeedsRestart
+    }
+
+    /// The person's "Restart Latch": stops the background host and starts
+    /// it again with its last flags, then checks access again.
+    func restartLatch() async {
+        restarting = true
+        defer { restarting = false }
+        do {
+            try await client.stop()
+            try await client.serve(again: true)
+            await app.refreshStatus()
+            checkAccess()
+        } catch {
+            accessMessage = (error as? LatchError)?.message ?? error.localizedDescription
+            await app.refreshStatus()
+        }
+    }
+
     private func enableAccess(_ plugin: String) async -> (check: Check, failure: LatchFailure?) {
         do {
             _ = try await client.enable(plugin)
             return (.done, nil)
         } catch let LatchError.failed(failure) where failure.code == "needs_setup" && failure.settings != nil {
+            accessMessage = failure.message
             return (.needed("Waiting for access"), failure)
         } catch {
             return (.failed((error as? LatchError)?.message ?? error.localizedDescription), nil)

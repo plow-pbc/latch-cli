@@ -2,6 +2,8 @@ import Foundation
 
 /// Everything the app asks of latch: the only type that knows a CLI exists.
 nonisolated protocol LatchClient: Sendable {
+    /// The state folder every run is given.
+    var stateDir: String { get }
     func localStatus() async throws -> LocalStatus
     /// `latch login --events`: the code to text, then how it ends. Stopping
     /// the iteration cancels the login.
@@ -17,6 +19,8 @@ nonisolated protocol LatchClient: Sendable {
     func enable(_ plugin: String) async throws -> GoogleEnabled?
     /// `latch serve -d`, `--again` to start with the last serve's flags.
     func serve(again: Bool) async throws
+    /// `latch stop`: stops the host on this state folder.
+    func stop() async throws
 }
 
 /// The bundle's own latch, by absolute path, always with `--state-dir`.
@@ -72,6 +76,10 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func serve(again: Bool) async throws {
         _ = try await run(["serve", "-d"] + (again ? ["--again"] : []))
+    }
+
+    func stop() async throws {
+        _ = try await run(["stop"])
     }
 
     private func run(_ arguments: [String], input: Data? = nil) async throws -> Data {

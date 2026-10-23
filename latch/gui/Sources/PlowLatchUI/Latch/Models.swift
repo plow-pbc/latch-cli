@@ -10,6 +10,10 @@ nonisolated struct LocalStatus: Decodable, Equatable {
         /// `starting`, `serving`, `stopped` or `error`.
         var state: String
         var ready: Bool
+        /// Run as this user's service: `serve -d` (in the background), or a
+        /// `latch serve` held by a terminal (`attached`).
+        var managed: Bool
+        var attached: Bool?
         /// Set when a running host can't be used, e.g. another latch version's.
         var blocked: LatchFailure?
     }

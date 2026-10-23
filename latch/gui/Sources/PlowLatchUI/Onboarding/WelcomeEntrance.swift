@@ -163,18 +163,28 @@ struct EntranceMark: View {
 }
 
 /// The settled bloom's slow breath: 0.7 ↔ 0.82 opacity, 1 ↔ 1.05 scale, 6 s
-/// a cycle. Driven by a task, so it stops when the view leaves the screen.
+/// a cycle, three times, then at rest. Driven by a task, so it stops when
+/// the view leaves the screen.
 private struct Breathing: ViewModifier {
     @State private var deep = false
+    /// Breathes only while the window is the one in front, and only for a
+    /// few breaths, so the app goes idle.
+    @Environment(\.controlActiveState) private var active
+    static let breaths = 3
 
     func body(content: Content) -> some View {
         content
             .opacity(deep ? 0.82 : 0.7)
             .scaleEffect(deep ? 1.05 : 1)
-            .task {
-                while !Task.isCancelled {
+            .task(id: active) {
+                guard active == .key else {
+                    withAnimation(.easeInOut(duration: 0.6)) { deep = false }
+                    return
+                }
+                for _ in 0..<Self.breaths * 2 {
                     withAnimation(.easeInOut(duration: 3)) { deep.toggle() }
                     try? await Task.sleep(for: .seconds(3))
+                    if Task.isCancelled { return }
                 }
             }
     }

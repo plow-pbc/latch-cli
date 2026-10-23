@@ -118,14 +118,18 @@ struct OnboardingFooter: View {
     }
 
     @ViewBuilder private var leading: some View {
-        if flow.step.skippable {
-            Button("Skip for now") { flow.skip() }
-                .buttonStyle(.plain)
-                .foregroundStyle(Brand.muted)
-        } else if [.login, .privacy, .start].contains(flow.step) {
-            Button("Back") { flow.back() }
-                .buttonStyle(.plain)
-                .foregroundStyle(Brand.muted)
+        HStack(spacing: 18) {
+            if [.login, .privacy, .rules, .google, .access, .start].contains(flow.step) {
+                Button("Back") { flow.back() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Brand.muted)
+            }
+            // Once the step is set up, Continue is the way on.
+            if flow.step.skippable, !flow.stepDone {
+                Button("Skip for now") { flow.skip() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Brand.muted)
+            }
         }
     }
 

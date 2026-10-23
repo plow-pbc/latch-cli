@@ -28,12 +28,16 @@ final class AppModel {
     /// A still, for snapshots: screens start nothing of their own.
     let still: Bool
 
-    init(client: any LatchClient, still: Bool = false) {
+    /// Onboarding progress for this state folder, in the app's preferences.
+    let store: ProgressStore
+
+    init(client: any LatchClient, defaults: UserDefaults = .standard, still: Bool = false) {
         self.client = client
         self.still = still
+        store = ProgressStore(defaults: defaults, stateDir: client.stateDir)
     }
 
-    var progress: Progress { onboarding?.progress ?? Progress.load() }
+    var progress: Progress { onboarding?.progress ?? store.load() }
 
     /// What's set up, as latch says: whether shared rules are saved, and
     /// each connector's state; nil where latch couldn't say (a connector's
@@ -66,7 +70,7 @@ final class AppModel {
     func resumeOnboarding() async {
         guard onboarding == nil else { return }
         await refreshStatus()
-        let progress = Progress.load()
+        let progress = store.load()
         switch progress.destination(loggedIn: status?.peer != nil) {
         case .main: finishOnboarding()
         case let .onboarding(step): onboarding = Onboarding(app: self, step: step, progress: progress)
@@ -79,11 +83,10 @@ final class AppModel {
         dismissWindow?(Self.mainWindow)
     }
 
-    /// "Set up again…" from the main window: every screen, from the first
-    /// after Log in (Log in itself when this Mac is logged out).
+    /// "Set up again…" from the main window: every screen, from Welcome.
     func setUpAgain() {
-        let progress = Progress.load().settingUpAgain()
-        progress.save()
+        let progress = store.load().settingUpAgain()
+        store.save(progress)
         guard case let .onboarding(step) = progress.destination(loggedIn: status?.peer != nil) else { return }
         beginOnboarding(at: step, progress: progress)
     }
@@ -92,7 +95,7 @@ final class AppModel {
     /// onboarding takes over, at Log in.
     func leaveMainIfLoggedOut() {
         guard let status, status.peer == nil, onboarding == nil else { return }
-        let progress = Progress.load()
+        let progress = store.load()
         guard case let .onboarding(step) = progress.destination(loggedIn: false) else { return }
         beginOnboarding(at: step, progress: progress)
     }

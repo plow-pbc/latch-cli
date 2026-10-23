@@ -24,7 +24,7 @@ struct PlowLatchApp: App {
         let model = Self.model!
         // Which window opens follows what the app remembers, so neither
         // waits for latch; onboarding then asks latch where to resume.
-        let finished = Progress.load().finished
+        let finished = model.store.load().finished
         Window("Welcome to Latch", id: AppModel.onboardingWindow) {
             OnboardingView()
                 .environment(model)

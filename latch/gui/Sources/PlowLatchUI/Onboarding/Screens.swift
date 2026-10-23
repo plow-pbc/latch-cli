@@ -82,7 +82,7 @@ struct LoginView: View {
                 .font(Brand.headline)
                 .accessibilityAddTraits(.isHeader)
                 .padding(.top, 48)
-            Text(verified ? "This Mac is logged in." : "Scan with your phone's camera, or text the code below.")
+            Text(subhead)
                 .font(Brand.lead)
                 .foregroundStyle(Brand.muted)
             hero
@@ -106,6 +106,11 @@ struct LoginView: View {
 
     private var expired: Bool {
         if case .expired = flow.login { true } else { false }
+    }
+
+    private var subhead: String {
+        if case let .verified(name) = flow.login { return "This Mac is named \(name) in Plow." }
+        return "Scan with your phone's camera, or text the code below."
     }
 
     private var qrLabel: String {
@@ -190,8 +195,8 @@ struct LoginView: View {
                 Text(message).foregroundStyle(Brand.clay).multilineTextAlignment(.center)
                 Button("Try again") { flow.startLogin() }.buttonStyle(.link).foregroundStyle(Brand.volt)
             }
-        case let .verified(name):
-            Text("This Mac is named \(name) in Plow.").foregroundStyle(Brand.muted)
+        case .verified:
+            EmptyView()
         }
     }
 
@@ -272,12 +277,13 @@ struct GoogleView: View {
                 Text(message).foregroundStyle(Brand.clay).font(.callout)
             }
             if flow.google == .done, !flow.googleAccounts.isEmpty {
-                Text(flow.googleAccounts.joined(separator: ", ")).foregroundStyle(Brand.muted)
+                Text("Connected as \(flow.googleAccounts.joined(separator: ", ")).").foregroundStyle(Brand.muted)
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 56)
         .padding(.top, 52)
+        .task { if !flow.app.still { await flow.googleAppeared() } }
         // Coming back from Plow: check again.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await flow.returnedToApp() }
@@ -315,7 +321,7 @@ struct AccessView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "lock.shield").frame(width: 20).foregroundStyle(Brand.muted).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Turn on \(Text("Plow Latch").bold()) in Full Disk Access")
+                        Text("Turn on \(Text(AppName.shown).bold()) in Full Disk Access")
                         Text("System Settings ▸ Privacy & Security ▸ Full Disk Access").font(.callout).foregroundStyle(Brand.muted)
                     }
                     Spacer()
@@ -331,16 +337,30 @@ struct AccessView: View {
             ForEach([flow.messages, flow.contacts].compactMap { if case let .failed(m) = $0 { m } else { nil } }, id: \.self) {
                 Text($0).foregroundStyle(Brand.clay).font(.callout)
             }
-            if flow.waitingForAccess {
+            if flow.backgroundHostNeedsRestart {
+                HStack(spacing: 12) {
+                    Text("After you turn on access, restart Latch so it can use it.").foregroundStyle(Brand.muted)
+                    Spacer()
+                    Button(flow.restarting ? "Restarting…" : "Restart Latch") { Task { await flow.restartLatch() } }
+                        .disabled(flow.restarting)
+                }
+            } else if flow.terminalHostNeedsRestart, let message = flow.accessMessage {
+                Text(message).foregroundStyle(Brand.muted)
+            } else if flow.waitingForAccess {
                 Text("This screen updates when access is granted.").foregroundStyle(Brand.muted)
             } else if flow.messages.isNeeded || flow.contacts.isNeeded {
-                Text("Drag Plow Latch from the Finder window into the Full Disk Access list, then switch it on.")
+                Text("Drag \(AppName.shown) from the Finder window into the Full Disk Access list, then switch it on.")
                     .foregroundStyle(Brand.muted)
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 56)
         .padding(.top, 52)
+        .task {
+            guard !flow.app.still else { return }
+            await flow.app.refreshStatus()
+            if flow.progress.rerun, flow.messages == .unknown { flow.checkAccess() }
+        }
         .onDisappear { flow.stopWork() }
     }
 
@@ -488,5 +508,15 @@ enum Summary {
             Row(symbol: "message", title: "Contacts & Messages", state: access.0, set: access.1),
             Row(symbol: "arrow.clockwise", title: "Latch", state: failed ? "Couldn't check" : serving ? "Running" : "Not running", set: serving),
         ]
+    }
+}
+
+/// The app's name as macOS shows it (the Full Disk Access list, the
+/// Finder): the bundle's display name.
+enum AppName {
+    static var shown: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? "Plow Latch"
     }
 }

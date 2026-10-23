@@ -5,6 +5,7 @@ import SwiftUI
 /// A latch that answers from JSON latch really prints (`latch/APP.md` and
 /// captured runs), for snapshots and tests. It never runs anything.
 nonisolated struct FakeLatchClient: LatchClient {
+    var stateDir = "/Users/me/.latch"
     var status = Fixtures.serving
     var rules: String? = nil
 
@@ -25,12 +26,14 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func serve(again: Bool) async throws {}
+    func stop() async throws {}
 }
 
 nonisolated enum Fixtures {
     static let serving = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null},"last_error":null,"update":{"available":false,"build":null,"checked_at":null}}"#
     static let stopped = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null},"last_error":null,"update":{"available":true,"build":"1342","checked_at":"2026-10-22T22:07:54.186472Z"}}"#
     static let loggedOut = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":null,"serve":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null},"last_error":null,"update":{"available":false,"build":null,"checked_at":null}}"#
+    static let servingAttached = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":true,"state":"serving","pid":32250,"blocked":null},"last_error":null,"update":{"available":false,"build":null,"checked_at":null}}"#
     static let otherVersion = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":true,"ready":false,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":4242,"blocked":{"code":"other_version","message":"a host from another latch version (pid 4242) holds this state folder; stop it with `kill 4242`, then start latch again"}},"last_error":null,"update":{"available":false,"build":null,"checked_at":null}}"#
     static let code = #"{"type":"code","code":"JFO3S","send_to":"+15550000001","send_to_display":"+1 555-000-0001","smsto":"SMSTO:+15550000001:JFO3S","sms_link":"sms:+15550000001?&body=JFO3S","expires_at":null}"#
     static let allow = #"{"verdict":"allow","host":"studio","as":"owner","request":{"op":"exec","action":{}},"gate":null}"#
@@ -104,6 +107,9 @@ package enum SnapshotRunner {
             ("05-google-connected", .google, Fixtures.stopped, Progress(), {
                 $0.google = .done; $0.googleAccounts = ["owner@example.com"]
             }),
+            ("05-google-rerun-connected", .google, Fixtures.serving, Progress(rerun: true), {
+                $0.google = .done; $0.googleAccounts = ["owner@example.com", "work@example.com"]
+            }),
             ("05-google-error", .google, Fixtures.stopped, Progress(), {
                 $0.google = .failed("Plow couldn't be reached at http://127.0.0.1:18934; check your connection, then try again")
             }),
@@ -113,6 +119,13 @@ package enum SnapshotRunner {
             }),
             ("06-access-allowed", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .done; $0.contacts = .done
+            }),
+            ("06-access-restart-latch", .access, Fixtures.serving, Progress(), {
+                $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
+            }),
+            ("06-access-terminal-host", .access, Fixtures.servingAttached, Progress(), {
+                $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
+                $0.accessMessage = "this host has no Full Disk Access; turn it on for /Users/me/Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), restart the host, then run `latch plugins enable messages` again"
             }),
             ("06-access-unavailable", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .failed("messages cannot be checked on this host: the Messages reader is missing; run install.sh again")
