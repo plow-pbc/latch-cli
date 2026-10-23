@@ -299,11 +299,72 @@ class BinaryInstall(unittest.TestCase):
             leftovers = sorted(path.name for path in (home / "Applications").iterdir())
             self.assertEqual(leftovers, ["Plow Latch.app"])
 
+    def test_client_only_installs_latch_alone_and_asks_nothing(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        # A fresh Linux machine and a fresh macOS 26 one, each at a terminal:
+        # no gog pin, Messages reader, bubblewrap or engine script is there to
+        # find, root is never asked for, no setup runs and no app opens.
+        for system in ["Linux", "Darwin"]:
+            with tempfile.TemporaryDirectory(dir=parent) as directory:
+                root = Path(directory)
+                home = root / "home"
+                state = home / ".latch"
+                called, asked = root / "called", root / "asked"
+                setup = root / "setup"
+                setup.mkdir()
+                shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+                tools = root / "tools"
+                tools.mkdir()
+                link_basic_tools(tools)
+                for name in ["readlink", "basename", "ln", "diff"]:
+                    (tools / name).symlink_to(shutil.which(name))
+                tool(tools, "uname", f'case "$1" in -s) echo {system};; -m) echo arm64;; esac\n')
+                tool(tools, "sw_vers", "echo 26.0\n")
+                for name in ["sudo", "apt-get", "open", "curl"]:
+                    tool(tools, name, f'echo "{name} $*" >> "{asked}"\n')
+                latch = f'#!/bin/sh\necho "$@" >> "{called}"\n'
+                if system == "Darwin":
+                    inner = setup / "Plow Latch.app/Contents/MacOS/latch"
+                    inner.parent.mkdir(parents=True)
+                    inner.write_text(latch)
+                    inner.chmod(0o755)
+                    (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
+                    (setup / "Plow Latch.app/Contents/MacOS/latch-messages").write_text("reader")
+                    installed = home / "Applications/Plow Latch.app/Contents/MacOS/latch"
+                else:
+                    tool(setup, "latch", latch.removeprefix("#!/bin/sh\n"))
+                    installed = home / ".local/bin/latch"
+                env = {**os.environ, "HOME": str(home), "PATH": str(tools)}
+                result = at_terminal(["sh", str(setup / "install-binary.sh"), "--client-only"],
+                                     root, env)
+                self.assertEqual(result.returncode, 0, system)
+                self.assertEqual(installed.read_text(), latch, system)
+                self.assertTrue((home / ".local/bin/latch").exists(), system)
+                self.assertFalse(state.exists(), system)
+                self.assertFalse(asked.exists(), asked.read_text() if asked.exists() else system)
+                self.assertFalse(called.exists(), system)
+
+                # What it says last is to log in, with nothing else to set up.
+                said = subprocess.run(["sh", str(setup / "install-binary.sh"), "--client-only",
+                                       "--state-dir", str(root / "other")],
+                                      cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(said.returncode, 0, said.stderr)
+                self.assertIn("next: run `latch login` to log in", said.stdout)
+                self.assertNotIn("setup", said.stdout)
+
+    def test_client_only_installs_no_browser_so_one_named_is_refused(self):
+        result = subprocess.run(["sh", str(ROOT / "latch/install-binary.sh"), "--client-only",
+                                 "--browser", "chrome", "/nonexistent/latch"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--client-only installs no browser", result.stderr)
+
     def test_help_needs_no_binary_or_setup(self):
         result = subprocess.run([str(ROOT / "latch/install-binary.sh"), "--help"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for option in ["--bin-dir", "--state-dir", "--browser", "--no-browser"]:
+        for option in ["--bin-dir", "--state-dir", "--browser", "--no-browser", "--client-only"]:
             self.assertIn(option, result.stdout)
 
 

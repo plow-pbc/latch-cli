@@ -38,6 +38,9 @@ Setup requires curl, tar and SHA-256 tools.
 Linux hosting needs bubblewrap and usable user namespaces; setup explains missing
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
+A machine that only asks hosts, such as an agent's image, installs with
+`sh install.sh --client-only`: latch alone, with no gog, browser engine,
+Messages reader or bubblewrap, no sudo, and no setup at the end.
 
 Update with `latch update`: it installs the newest build, or `latch update TAG`
 that build (also how to go back to an older one); `latch update --check` only
@@ -64,7 +67,9 @@ No Homebrew tap is included.
 - **On the host itself, just run latch.** An agent on a machine that runs
   `latch serve` uses latch there with no `--host` and no login of its own,
   as the owner (see [On the host itself](#on-the-host-itself)).
-- **From another machine, log in with your own credential.** `latch login`
+- **From another machine, install latch alone and log in with your own
+  credential.** `sh install.sh --client-only` installs just latch, for an
+  agent's image. `latch login`
   with no flags finds a Plow agent's own credential (`$PLOW_AGENT_TOKEN`,
   the token file, or `$PLOW_API_BASE`'s proxy) and registers under the
   agent's name in Plow. Never copy a device login (a machine's state
