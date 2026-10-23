@@ -119,6 +119,10 @@ struct OnboardingFooter: View {
 
     @ViewBuilder private var leading: some View {
         HStack(spacing: 18) {
+            // Texting an agent is Done's main button; opening Latch goes here.
+            if flow.step == .done, flow.textAgent != nil {
+                Button("Open Latch") { flow.finish() }
+            }
             if [.login, .privacy, .rules, .google, .access, .start].contains(flow.step) {
                 Button("Back") { flow.back() }
                     .buttonStyle(.plain)

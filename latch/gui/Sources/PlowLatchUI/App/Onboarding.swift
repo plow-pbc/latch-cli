@@ -264,7 +264,7 @@ final class Onboarding {
         case .google: "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.thisMachine.hosting.ready != true ? "Start Latch" : "Continue"
-        case .done: "Open Latch"
+        case .done: textAgent.map { "Text \($0.name)" } ?? "Open Latch"
         }
     }
 
@@ -289,8 +289,31 @@ final class Onboarding {
         case .access:
             if accessDone { next() } else if accessFailed { skip() } else if accessGranted { checkAccess() } else { requestAccess() }
         case .start: Task { await startLatch() }
-        case .done: finish()
+        case .done: if let textAgent { text(textAgent) } else { finish() }
         }
+    }
+
+    /// The agent Done offers to text: the newest with a phone line that is
+    /// past provisioning.
+    var textAgent: AgentsList.Agent? {
+        (app.agents ?? []).filter { $0.line?.number != nil && $0.status != "provisioning" }
+            .max { ($0.createdAt ?? "") < ($1.createdAt ?? "") }
+    }
+
+    /// The first thing to ask an agent: Messages opens with it filled in,
+    /// to the agent's line.
+    static let demoRequest = #"Use Latch to say "hello world" out loud on my Mac."#
+
+    /// "Text ‹agent›": Messages, to its line, with the demo request.
+    func text(_ agent: AgentsList.Agent) {
+        guard let number = agent.line?.number else { return }
+        app.open(Self.smsLink(to: number))
+    }
+
+    static func smsLink(to number: String) -> URL {
+        // Only URL-unreserved characters stay as they are.
+        let body = demoRequest.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? ""
+        return URL(string: "sms:\(number)?&body=\(body)")!
     }
 
     private var verified: Bool {

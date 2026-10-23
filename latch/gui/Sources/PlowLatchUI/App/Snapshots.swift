@@ -362,6 +362,10 @@ package enum SnapshotRunner {
             ("08-done-all-set", .done, Fixtures.serving, full, {
                 $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
             }),
+            ("08-done-text-agent", .done, Fixtures.serving, full, {
+                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
+                $0.app.stage(agents: try! Fixtures.decode(Fixtures.agents), standings: [:])
+            }),
             ("08-done-google-skipped", .done, Fixtures.serving,
              Progress(passed: full.passed.merging([.google: .skipped]) { $1 }), {
                 $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["messages", "contacts"], google: Fixtures.googleNotConnected)))
