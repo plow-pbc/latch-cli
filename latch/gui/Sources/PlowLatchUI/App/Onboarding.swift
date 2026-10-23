@@ -123,6 +123,8 @@ final class Onboarding {
     var messages: Check = .unknown
     var contacts: Check = .unknown
     var waitingForAccess = false
+    /// Whether Plow Latch has Full Disk Access, as latch last said.
+    var fullDiskAccess: String?
     var restarting = false
     /// Why Restart Latch failed, while it shows.
     var restartError: String?
@@ -213,7 +215,7 @@ final class Onboarding {
         case .login, .privacy: "Continue"
         case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
         case .google: google != .unknown ? "Continue" : googleAccounts.isEmpty ? "Check connection" : "Turn on"
-        case .access: accessDone || accessFailed ? "Continue" : "Open System Settings"
+        case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.serve.ready != true ? "Start Latch" : "Continue"
         case .done: "Open Latch"
         }
@@ -237,7 +239,8 @@ final class Onboarding {
         case .rules: Task { await saveRules() }
         case .google:
             if google == .done { next() } else if google == .unknown { Task { await checkGoogle() } } else { skip() }
-        case .access: if accessDone { next() } else if accessFailed { skip() } else { requestAccess() }
+        case .access:
+            if accessDone { next() } else if accessFailed { skip() } else if accessGranted { checkAccess() } else { requestAccess() }
         case .start: Task { await startLatch() }
         case .done: finish()
         }
@@ -248,6 +251,9 @@ final class Onboarding {
     }
 
     var accessDone: Bool { messages == .done && contacts == .done }
+    /// latch found Full Disk Access already granted: turning the connectors
+    /// on needs no trip to System Settings.
+    var accessGranted: Bool { fullDiskAccess == "granted" }
 
     /// A step already set up shows Continue alone, not Skip for now.
     var stepDone: Bool {
@@ -461,11 +467,12 @@ final class Onboarding {
         }
     }
 
-    /// Arriving at Contacts & Messages: what latch says is on shows as on.
-    /// Looking never runs `plugins enable`; turning one on is the person's
-    /// click.
+    /// Arriving at Contacts & Messages: what latch says is on shows as on,
+    /// and whether Full Disk Access is granted already. Looking never runs
+    /// `plugins enable`; turning one on is the person's click.
     func accessAppeared() async {
-        guard let setup = try? await client.setupStatus() else { return }
+        guard let setup = try? await client.setupStatusCheckingAccess() else { return }
+        fullDiskAccess = setup.step("messages")?.access
         for plugin in ["messages", "contacts"] where setup.step(plugin)?.state == "done" {
             set(plugin, .done)
         }

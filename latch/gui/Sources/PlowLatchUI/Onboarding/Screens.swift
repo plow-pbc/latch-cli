@@ -351,10 +351,16 @@ struct AccessView: View {
                          lead: "Let your agents search your messages and contacts on this Mac. macOS requires Full Disk Access for this.")
             Panel {
                 HStack(spacing: 12) {
-                    Image(systemName: "lock.shield").frame(width: 20).foregroundStyle(Brand.muted).accessibilityHidden(true)
+                    Image(systemName: flow.accessGranted ? "checkmark.shield" : "lock.shield").frame(width: 20)
+                        .foregroundStyle(flow.accessGranted ? Brand.volt : Brand.muted).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Turn on \(Text(AppName.shown).bold()) in Full Disk Access")
-                        Text("System Settings ▸ Privacy & Security ▸ Full Disk Access").font(.callout).foregroundStyle(Brand.muted)
+                        if flow.accessGranted {
+                            Text("\(Text(AppName.shown).bold()) has Full Disk Access")
+                            Text("Turn on lets your agents use Messages and Contacts.").font(.callout).foregroundStyle(Brand.muted)
+                        } else {
+                            Text("Turn on \(Text(AppName.shown).bold()) in Full Disk Access")
+                            Text("System Settings ▸ Privacy & Security ▸ Full Disk Access").font(.callout).foregroundStyle(Brand.muted)
+                        }
                     }
                     Spacer()
                 }
@@ -413,7 +419,7 @@ struct AccessView: View {
 
     private func state(_ check: Onboarding.Check) -> String {
         switch check {
-        case .unknown: "Not checked"
+        case .unknown: flow.accessGranted ? "Off" : "Not checked"
         case .checking: "Checking…"
         case .done: "On"
         case .needed: "Access needed"

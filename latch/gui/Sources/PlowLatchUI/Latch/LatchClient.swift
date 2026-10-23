@@ -13,6 +13,9 @@ nonisolated protocol LatchClient: Sendable {
     func rulesSet(_ text: String) async throws
     /// `latch setup --status`: what's set up, read from the state folder.
     func setupStatus() async throws -> SetupStatus
+    /// The same, with `--check-access`: whether Plow Latch has Full Disk
+    /// Access, which takes a moment.
+    func setupStatusCheckingAccess() async throws -> SetupStatus
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
     /// A setup step, as `setup --status` gives its words after `latch`.
@@ -62,6 +65,10 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func setupStatus() async throws -> SetupStatus {
         try decode(SetupStatus.self, try await run(["setup", "--status"]))
+    }
+
+    func setupStatusCheckingAccess() async throws -> SetupStatus {
+        try decode(SetupStatus.self, try await run(["setup", "--status", "--check-access"]))
     }
 
     func enable(_ plugin: String) async throws -> GoogleEnabled? {

@@ -18,6 +18,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     func rulesSet(_ text: String) async throws {}
     var connectorsOn: [String] = []
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn)) }
+    func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
@@ -26,13 +27,14 @@ nonisolated struct FakeLatchClient: LatchClient {
 nonisolated enum Fixtures {
     /// `latch setup --status` on a logged-in Mac whose host is stopped,
     /// with these connectors on.
-    static func setup(on: [String], google: String? = nil,
+    static func setup(on: [String], google: String? = nil, access: String? = nil,
                       host: String = #"{"step":"host","state":"needed","reason":"latch is not running.","args":["serve","-d","--again"]}"#) -> String {
         let connectors = ["google", "messages", "contacts"].map { name in
             if name == "google", let google { return google }
+            let checked = name != "google" ? access.map { #","access":"\#($0)""# } ?? "" : ""
             return on.contains(name)
-                ? #"{"step":"\#(name)","state":"done","reason":"The \#(name.capitalized) connector is on; agents can use it once latch is running.","args":null,"enabled":true,"ready":false}"#
-                : #"{"step":"\#(name)","state":"needed","reason":"The \#(name.capitalized) connector is off.","args":["plugins","enable","\#(name)"],"enabled":false,"ready":false}"#
+                ? #"{"step":"\#(name)","state":"done","reason":"The \#(name.capitalized) connector is on; agents can use it once latch is running.","args":null,"enabled":true,"ready":false\#(checked)}"#
+                : #"{"step":"\#(name)","state":"needed","reason":"The \#(name.capitalized) connector is off.","args":["plugins","enable","\#(name)"],"enabled":false,"ready":false\#(checked)}"#
         }
         return #"{"steps":[{"step":"login","state":"done","reason":"Logged in as studio.","args":null},"#
             + connectors.joined(separator: ",")

@@ -220,6 +220,11 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func setupStatus() async throws -> SetupStatus {
         try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
     }
+    /// What `--check-access` says of Full Disk Access.
+    var access: String?
+    func setupStatusCheckingAccess() async throws -> SetupStatus {
+        try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google, access: access))
+    }
     func rulesShow() async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
     /// How a setup step (`serve -d`) fails, if it does.
@@ -442,6 +447,26 @@ struct ClosingTests {
         #expect(disconnected.google.isNeeded)
         app.stage(rulesSaved: true, setup: try? await client.setupStatus())
         #expect(Summary.rows(app: app, flow: nil).first { $0.title == "Google" }?.state == "Not set up")
+    }
+
+    @Test func accessAlreadyGrantedTurnsOnWithoutSystemSettings() async {
+        let client = ScriptedClient { _ in nil }
+        client.access = "granted"
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        app.open = { Issue.record("opened \($0)") }
+        let flow = app.stage(.access)
+        await flow.accessAppeared()
+        #expect(flow.primaryTitle == "Turn on")
+        #expect(client.enabled.isEmpty)
+        flow.primary()
+        await until { flow.accessDone }
+        #expect(client.enabled == ["messages", "contacts"])
+        #expect(flow.primaryTitle == "Continue")
+
+        client.access = "not_granted"
+        let notYet = app.stage(.access)
+        await notYet.accessAppeared()
+        #expect(notYet.primaryTitle == "Open System Settings")
     }
 
     @Test func arrivingAtAccessOnlyReadsWhatsOn() async throws {
