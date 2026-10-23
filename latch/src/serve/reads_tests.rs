@@ -213,13 +213,14 @@ async fn a_stopping_host_ends_a_followed_stream_and_says_so() {
 async fn a_stopping_host_ends_a_stream_whose_caller_stopped_reading() {
     let t = start(World::default()).await;
     // Far more than the connection lets through to a caller not reading.
+    // A path is shown as it is; an exec's long word would be hidden.
     for _ in 0..15 {
-        let mut record = crate::audit::record("k1", None, "exec", "allow", "ok");
-        record.args = json!({"argv": ["echo", "x".repeat(200_000)]});
+        let mut record = crate::audit::record("k1", None, "file_get", "allow", "ok");
+        record.args = json!({"path": "x".repeat(200_000)});
         t.host.append(record).await.unwrap();
     }
     let device = t.caller("device").await;
-    let _stalled = Stream::open(&t, &device, "audit", json!({"follow": true})).await;
+    let mut stalled = Stream::open(&t, &device, "audit", json!({"follow": true})).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     t.host.stopping.send_replace(Stopping::Draining);
@@ -233,6 +234,30 @@ async fn a_stopping_host_ends_a_stream_whose_caller_stopped_reading() {
     }
     let ended = t.audit().into_iter().find(|record| record["op"] == "audit");
     assert_eq!(ended.unwrap()["outcome"], "host_stopped");
+    // What the caller reads now is whole frames, then the stream's end:
+    // never a frame the host cut off, with its answer inside it.
+    let mut answered = false;
+    loop {
+        let frame =
+            tokio::time::timeout(Duration::from_secs(10), wire::read_frame(&mut stalled.recv))
+                .await
+                .expect("the stream ends");
+        match frame {
+            Ok(frame) => {
+                let read = serde_json::from_slice::<Response>(&frame);
+                assert!(read.is_ok(), "a broken frame: {} bytes", frame.len());
+                answered |= matches!(read, Ok(Response::Error { .. }));
+            }
+            // Ended by its answer, or reset: never cut off within a frame.
+            Err(err) => {
+                assert!(
+                    answered || err.kind() != std::io::ErrorKind::UnexpectedEof,
+                    "{err}"
+                );
+                break;
+            }
+        }
+    }
 }
 
 #[tokio::test]

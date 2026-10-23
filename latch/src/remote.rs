@@ -75,14 +75,22 @@ async fn print_stream<S: Future<Output = ()>>(
     out: impl Write + Send + 'static,
     stop: Option<impl FnOnce() -> S>,
 ) -> Result<(), Failure> {
-    let (printer, printed) = printer(out);
+    let (printer, mut printed) = printer(out);
     let reading = async {
         let (mut send, mut recv) = dial::start(connection, request).await?;
         send.finish().map_err(|_| dial::lost(connection, true))?;
         // The opening comes at once; after it, a followed host may say
         // nothing for hours.
         let mut within = ANSWER_WITHIN;
-        while let Some(line) = line(dial::answer(connection, &mut recv, within).await, host)? {
+        loop {
+            let answer = tokio::select! {
+                answer = dial::answer(connection, &mut recv, within) => answer,
+                // The printer ended early: nobody reads our stdout.
+                _ = &mut printed => return Ok(()),
+            };
+            let Some(line) = line(answer, host)? else {
+                break;
+            };
             if matches!(line["type"].as_str(), Some("caught_up" | "status")) {
                 within = Duration::MAX;
             }
@@ -267,5 +275,30 @@ mod tests {
         });
         let stopped = end.recv_timeout(Duration::from_secs(5));
         assert_eq!(stopped, Ok(true), "the stop did not end the stream");
+    }
+
+    /// A stdout whose reader went away.
+    struct Gone;
+
+    impl Write for Gone {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_follow_ends_once_nobody_reads_it_though_its_host_stays_quiet() {
+        let connection = host_answering(vec![json!({"line": {"type": "hello", "schema": 1}})]);
+        let request = request("status", json!({"follow": true}));
+        let never = || std::future::pending::<()>();
+        let ended = tokio::time::timeout(
+            Duration::from_secs(5),
+            print_stream(&connection, &host(), &request, Gone, Some(never)),
+        )
+        .await;
+        assert!(matches!(ended, Ok(Ok(()))), "it waited on the host");
     }
 }

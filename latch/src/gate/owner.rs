@@ -28,7 +28,7 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
     let command = args["command"].as_str().unwrap_or_default();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
-    let result = match owner_only(kind) {
+    let result = match owner_only(kind, "the rules") {
         Ok(()) => {
             let dir = RulesDir::new(state_dir);
             let from = args["from"].as_str();
@@ -47,15 +47,16 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
     crate::vault::host::done(result, audit)
 }
 
-/// Only the owner's own devices may read or change the rules.
-pub(crate) fn owner_only(kind: &str) -> Result<(), Failure> {
+/// Only the owner's own devices may use `what` (the rules, a host's
+/// audit): an agent's key gets exit 4.
+pub(crate) fn owner_only(kind: &str, what: &str) -> Result<(), Failure> {
     if kind == "device" {
         return Ok(());
     }
     Err(Failure::new(
         Exit::Denied,
         "owner_only",
-        "the rules take commands from the owner's own devices only".into(),
+        format!("only the owner's own devices may use {what}"),
     ))
 }
 

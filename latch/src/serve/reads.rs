@@ -12,6 +12,7 @@
 use std::future::Future;
 use std::os::fd::{AsRawFd, RawFd};
 
+use iroh::endpoint::VarInt;
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
@@ -33,7 +34,7 @@ pub(super) async fn run(
     send: &mut SendStream,
     cut_off: impl Future<Output = &'static str>,
 ) -> Done {
-    let result = match owner_only(kind, op) {
+    let result = match crate::gate::owner::owner_only(kind, &format!("this host's {op}")) {
         Ok(()) => read(host, op, args, send, cut_off).await,
         Err(failure) => Err(failure),
     };
@@ -78,18 +79,6 @@ async fn read(
     }
 }
 
-/// Only the owner's own devices may read this host's state from elsewhere.
-fn owner_only(kind: &str, op: &str) -> Result<(), Failure> {
-    if kind == "device" {
-        return Ok(());
-    }
-    Err(Failure::new(
-        Exit::Denied,
-        "owner_only",
-        format!("only the owner's own devices may read `{op}` from this host"),
-    ))
-}
-
 /// Runs `read` off the runtime: it reads files and may ask the service
 /// manager, which blocks.
 async fn blocking(
@@ -122,24 +111,34 @@ async fn stream(
             .await;
     };
     tokio::pin!(stopping);
-    let forward = async {
-        // Until the reader is done, and every line it gave was sent.
-        while let Some(line) = queued.recv().await {
-            let frame = Response::Ok(json!({"line": line}));
-            let json = serde_json::to_vec(&frame).expect("a line serializes");
-            if json.len() > wire::MAX_FRAME {
-                return Err(too_large(&line, json.len()));
-            }
-            if wire::write_frame(send, &json).await.is_err() {
-                break;
-            }
+    let ended = loop {
+        let line = tokio::select! {
+            line = queued.recv() => line,
+            _ = &mut cut_off => break Ok(()),
+            () = &mut stopping => break Err(stopped(&host.name)),
+        };
+        // The reader is done, and every line it gave was sent.
+        let Some(line) = line else {
+            break Ok(());
+        };
+        let frame = Response::Ok(json!({"line": line}));
+        let json = serde_json::to_vec(&frame).expect("a line serializes");
+        if json.len() > wire::MAX_FRAME {
+            break Err(too_large(&line, json.len()));
         }
-        Ok(())
-    };
-    let ended = tokio::select! {
-        sent = forward => sent,
-        _ = &mut cut_off => Ok(()),
-        () = &mut stopping => Err(stopped(&host.name)),
+        // A frame cut off midway can't be followed by an answer: the
+        // stream is reset instead, so the caller never reads half of one.
+        let cut = tokio::select! {
+            sent = wire::write_frame(send, &json) => match sent {
+                Ok(()) => continue,
+                // The caller is gone.
+                Err(_) => break Ok(()),
+            },
+            _ = &mut cut_off => Ok(()),
+            () = &mut stopping => Err(stopped(&host.name)),
+        };
+        let _ = send.reset(VarInt::from_u32(0));
+        break cut;
     };
     // Closing the hang-up wakes a reader waiting on the folder; dropping
     // the queue frees one waiting to hand over a line.
