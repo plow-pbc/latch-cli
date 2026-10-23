@@ -54,6 +54,7 @@ case "$*" in
       not_granted)
         echo "{\"error\":{\"code\":\"needs_setup\",\"message\":\"no Full Disk Access\",\"access\":\"not_granted\",\"grant\":\"/Applications/Plow Latch.app\",\"settings\":\"x-apple.systempreferences:test\"}}" >&2
         exit 1 ;;
+      stopped) exit 0 ;;
       unavailable) echo "{\"error\":{\"code\":\"unavailable\",\"message\":\"$name is unavailable on this host\"}}" >&2; exit 1 ;;
       *) echo "{\"error\":{\"code\":\"google_not_connected\",\"message\":\"Plow has no Google account\"}}" >&2; exit 1 ;;
     esac ;;
@@ -282,6 +283,19 @@ fn every_no_leaves_its_step_for_later() {
     );
 }
 
+/// A Google sign-in whose wait was stopped exits 0 with nothing on stdout:
+/// that is not Google turned on.
+#[test]
+fn a_stopped_google_sign_in_is_not_called_connected() {
+    let stub = Stub::new();
+    stub.file("peer", "");
+    stub.file("enable-google", "stopped\n");
+    let (code, shown) = stub.setup("y\nn\nn\n");
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(!shown.contains("✓ Google is connected."), "{shown}");
+    assert!(shown.contains("✗ Google is not on yet."), "{shown}");
+}
+
 #[test]
 fn a_failed_step_says_why_and_the_next_one_still_runs() {
     let stub = Stub::new();
@@ -289,7 +303,9 @@ fn a_failed_step_says_why_and_the_next_one_still_runs() {
     stub.file("enable-google", "fail\n");
     let (code, shown) = stub.setup("y\nn\nn\n");
     assert_eq!(code, Some(0), "{shown}");
-    assert!(shown.contains("✗ Plow has no Google account"), "{shown}");
+    // The enable says why itself, at the same terminal.
+    assert!(shown.contains("Plow has no Google account"), "{shown}");
+    assert!(shown.contains("✗ Google is not on yet."), "{shown}");
     assert!(
         shown.contains("Try again later: latch plugins enable google"),
         "{shown}"

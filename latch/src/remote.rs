@@ -152,7 +152,9 @@ fn dropped(host: &Peer) -> Failure {
     Failure::new(Exit::Unreachable, "host_unreachable", message)
 }
 
-async fn stop_requested() {
+/// SIGTERM, Ctrl-C, or (when it is a pipe) stdin closing: whoever started
+/// this wants it to stop.
+pub(crate) async fn stop_requested() {
     let mut terminate = signal(SignalKind::terminate()).expect("SIGTERM can be handled");
     tokio::select! {
         () = stdin_closed() => {}

@@ -283,7 +283,36 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         }
         Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
-        Command::Plugins(args) => to_json(plugins::client::run(&state, args).await?),
+        Command::Plugins(args)
+            if matches!(
+                args.command,
+                cli::PluginsCommand::Enable { events: true, .. }
+            ) =>
+        {
+            // As `login --events`: `hello`, any `link` lines, then one
+            // `result` or `error`, unless the caller stopped the wait.
+            login::event(json!({"type": "hello", "schema": 1}));
+            match plugins::client::run(&state, args).await {
+                Ok(Value::Null) => {}
+                Ok(result) => login::event(json!({"type": "result", "result": result})),
+                Err(failure) => {
+                    login::event(json!({"type": "error", "error": failure.error()}));
+                    return Err(failure);
+                }
+            }
+            Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        Command::Plugins(args) => match plugins::client::run(&state, args).await? {
+            // A wait stopped at the caller's request: nothing to say.
+            Value::Null => Ok(Printed {
+                text: String::new(),
+                exit: ExitCode::SUCCESS,
+            }),
+            result => to_json(result),
+        },
         Command::Update(args) => to_json(update::run(&state, args).await?),
         Command::Audit(cli::AuditArgs {
             action: Some(action),
