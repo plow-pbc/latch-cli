@@ -351,3 +351,47 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }
+
+/// A host whose activity stops at a record too large to send: asking again
+/// from the same place always stops there too.
+final class TooLargeRecordClient: LatchClient, @unchecked Sendable {
+    let stateDir = "/s"
+    private(set) var follows = 0
+
+    func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
+    func accountStatus() async throws -> AccountStatus { throw LatchError.unreachable("no Plow") }
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
+    func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
+    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+    func rulesSet(_ text: String) async throws {}
+    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
+    func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
+    func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
+    func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
+    func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
+    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+        follows += 1
+        return AsyncThrowingStream {
+            $0.finish(throwing: LatchError.failed(LatchFailure(code: "record_too_large", message: "the record is too large")))
+        }
+    }
+    func perform(_ args: [String]) async throws {}
+    func stop() async throws {}
+}
+
+@MainActor
+struct TooLargeRecordTests {
+    @Test func activityStopsAtARecordTooLargeToSendInsteadOfAskingForeverAgain() async throws {
+        let client = TooLargeRecordClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        let feed = app.feed(for: try #require(app.host))
+        feed.start()
+        for _ in 0..<200 where feed.running { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!feed.running)
+        #expect(feed.error?.code == "record_too_large")
+        #expect(client.follows == 1)
+        feed.stop()
+    }
+}

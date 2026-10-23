@@ -26,7 +26,7 @@ final class ActivityFeed {
     private var watchers = 0
     /// The stream is running (it ends on its own after an error that
     /// waiting won't fix).
-    private var running = false
+    private(set) var running = false
 
     init(client: any LatchClient, host: String?) {
         self.client = client
@@ -92,8 +92,10 @@ final class ActivityFeed {
     }
 
     /// Errors that waiting won't fix; `no_host_here` until this Mac starts
-    /// hosting (`retry`).
-    private static let final: Set<String> = ["no_host_here", "owner_only", "usage", "audit_broken", "unknown_host", "not_logged_in"]
+    /// hosting (`retry`). A record too large to send stops the stream at
+    /// the same record every time.
+    private static let final: Set<String> = ["no_host_here", "owner_only", "usage", "audit_broken", "unknown_host", "not_logged_in",
+                                             "record_too_large"]
 
     func apply(_ line: AuditLine) {
         switch line {
