@@ -244,6 +244,11 @@ pub struct SetupArgs {
     /// command that does it. Changes nothing and needs no terminal or host
     #[arg(long)]
     pub status: bool,
+    /// With --status, on a Mac: also check whether Plow Latch has Full Disk
+    /// Access, as the host would, for the Messages and Contacts steps'
+    /// `access`. Turns nothing on and saves nothing; takes a second or two
+    #[arg(long, requires = "status")]
+    pub check_access: bool,
 }
 
 #[derive(Args, Debug)]

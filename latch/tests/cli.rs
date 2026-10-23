@@ -6471,6 +6471,96 @@ mod messages {
     /// launchd job of latch's own, not from the terminal: refused there, it
     /// names this latch to grant and needs no restart; answered, it saves the
     /// setting the next host reads.
+    /// `setup --status --check-access` asks, as the app, whether it has Full
+    /// Disk Access, for Messages and Contacts both, without turning either
+    /// on or writing anything in the state folder; plain `--status` never
+    /// asks.
+    #[test]
+    fn setup_status_checks_full_disk_access_only_when_asked_and_changes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let plow = LivePlow::start();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let home = dir.path().join("home");
+        messages_home(&home);
+        let messages = home.join("Library/Messages");
+        let steps = |args: &[&str], env: &[(&str, &Path)]| {
+            let output = latch(&host, args, env);
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let by_name: std::collections::HashMap<String, Value> = status["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|step| (step["step"].as_str().unwrap().to_string(), step.clone()))
+                .collect();
+            by_name
+        };
+        // Every file in the state folder, and what it holds.
+        let contents = || {
+            let mut found = Vec::new();
+            let mut folders = vec![host.clone()];
+            while let Some(folder) = folders.pop() {
+                for entry in fs::read_dir(&folder).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        folders.push(path);
+                    } else {
+                        found.push((path.clone(), fs::read(&path).unwrap()));
+                    }
+                }
+            }
+            found.sort();
+            found
+        };
+        let before = contents();
+
+        let plain = steps(&["setup", "--status"], &[]);
+        assert!(
+            plain["messages"].get("access").is_none(),
+            "{}",
+            plain["messages"]
+        );
+
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = steps(
+            &["setup", "--status", "--check-access"],
+            &[("HOME", home.as_path())],
+        );
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            refused["messages"]["access"], "not_granted",
+            "{}",
+            refused["messages"]
+        );
+        assert_eq!(refused["contacts"]["access"], "not_granted");
+        assert_eq!(refused["messages"]["state"], "needed", "still off");
+
+        let granted = steps(
+            &["setup", "--status", "--check-access"],
+            &[("LATCH_TEST_ACCESS", Path::new("granted"))],
+        );
+        assert_eq!(granted["messages"]["access"], "granted");
+        assert_eq!(granted["contacts"]["access"], "granted");
+        assert_eq!(granted["messages"]["enabled"], false, "nothing turned on");
+        assert!(granted["google"].get("access").is_none());
+
+        assert_eq!(contents(), before, "nothing written in the state folder");
+        assert!(!access_job_registered(&host), "the check's job outlived it");
+
+        // Before any login, the check still answers, and makes no folder.
+        let fresh = dir.path().join("fresh");
+        let output = latch(
+            &fresh,
+            &["setup", "--status", "--check-access"],
+            &[("LATCH_TEST_ACCESS", Path::new("not_granted"))],
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(status["steps"][2]["access"], "not_granted", "{status}");
+        assert!(!fresh.exists());
+    }
+
     #[test]
     fn messages_setup_with_no_host_running_checks_from_a_job_of_its_own() {
         use std::os::unix::fs::PermissionsExt;

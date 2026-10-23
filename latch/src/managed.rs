@@ -613,17 +613,19 @@ impl Service {
 
 /// Runs `argv` once as a launchd job of its own, as the host runs, so that
 /// macOS treats it as the app's and not as the terminal's; returns the line
-/// it printed. Its job and output are `NAME.plist` and `NAME.log` in `dir`.
+/// it printed. The job is named after state folder `dir`; its `NAME.plist`
+/// and `NAME.log` are in `files`, never in the state folder.
 #[cfg(target_os = "macos")]
 pub async fn run_as_app(
     dir: &Path,
+    files: &Path,
     name: &str,
     argv: &[OsString],
     within: Duration,
 ) -> Result<String, Failure> {
     let hash = to_hex(&Sha256::digest(dir.as_os_str().as_encoded_bytes()));
     let label = format!("co.plow.latch.{name}.{}", &hash[..16]);
-    let output = dir.join(format!("{name}.log"));
+    let output = files.join(format!("{name}.log"));
     if platform::registered(&label) {
         platform::remove(&label)?;
     }
@@ -632,7 +634,7 @@ pub async fn run_as_app(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => return Err(io_failure(&output, err)),
     }
-    platform::bootstrap(&label, dir, name, argv)?;
+    platform::bootstrap(&label, files, name, argv)?;
     let deadline = Instant::now() + within;
     let printed = loop {
         // One line, written whole, as it ends.

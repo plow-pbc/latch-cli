@@ -67,7 +67,7 @@ pub async fn check(workers: &WorkerSetup, connector: Connector, home: &Path) -> 
         })
 }
 
-/// The check, with no host running, as the host would make it: in a
+/// The check as the host would make it, without asking a host: in a
 /// one-shot job of this latch (the app's, when it is in one), started by
 /// launchd rather than by this terminal.
 pub async fn check_as_app(state_dir: &Path, connector: Connector) -> Access {
@@ -86,7 +86,13 @@ pub async fn check_as_app(state_dir: &Path, connector: Connector) -> Access {
         "access-check".into(),
         connector.name().into(),
     ];
-    let printed = match crate::managed::run_as_app(state_dir, "access", &argv, CHECK_WITHIN).await {
+    // The job's own files go in a folder of their own, gone when it ends.
+    let files = match tempfile::tempdir() {
+        Ok(files) => files,
+        Err(err) => return unavailable(err.to_string()),
+    };
+    let ran = crate::managed::run_as_app(state_dir, files.path(), "access", &argv, CHECK_WITHIN);
+    let printed = match ran.await {
         Ok(printed) => printed,
         Err(failure) => return unavailable(failure.message),
     };

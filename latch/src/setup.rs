@@ -303,6 +303,10 @@ pub struct Step {
     /// Google's, when none is connected: where the owner connects one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect_url: Option<String>,
+    /// Messages' and Contacts', with `--check-access`: whether Plow Latch
+    /// has Full Disk Access (`granted`, `not_granted` or `unknown`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<&'static str>,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Debug)]
@@ -316,10 +320,15 @@ pub enum StepState {
     Blocked,
 }
 
-pub async fn status(state: &StateDir) -> Result<Status, Failure> {
+pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Failure> {
     use crate::plugins::{Connector, Setting};
     use StepState::{Blocked, Done, Needed};
     let local = crate::status::local(state)?;
+    let access = if check_access {
+        full_disk_access(state).await
+    } else {
+        None
+    };
     let saved = crate::plugins::saved(state)?;
     let serving = local.serve.ready;
     // Whether Google is connected in Plow, asked only for the owner's login.
@@ -379,6 +388,9 @@ pub async fn status(state: &StateDir) -> Result<Status, Failure> {
         {
             google_in_plow(&mut step, plow);
         }
+        if connector != Connector::Google {
+            step.access = access;
+        }
         steps.push(step);
     }
     steps.push(match (&local.peer, &local.serve) {
@@ -402,6 +414,31 @@ pub async fn status(state: &StateDir) -> Result<Status, Failure> {
         ),
     });
     Ok(Status { steps })
+}
+
+/// Whether Plow Latch has Full Disk Access, as the host would see it: one
+/// check, on the Messages folder, for Messages and Contacts alike. Nothing
+/// is turned on or saved, and nothing is written in the state folder.
+#[cfg(target_os = "macos")]
+async fn full_disk_access(state: &StateDir) -> Option<&'static str> {
+    use crate::messages::access::{self, Status};
+    let dir = state.path.canonicalize().unwrap_or(state.path.clone());
+    Some(
+        match access::check_as_app(&dir, crate::plugins::Connector::Messages)
+            .await
+            .status
+        {
+            Status::Granted => "granted",
+            Status::NotGranted => "not_granted",
+            Status::Unavailable => "unknown",
+        },
+    )
+}
+
+/// No Full Disk Access to check off a Mac, and no step that needs it.
+#[cfg(not(target_os = "macos"))]
+async fn full_disk_access(_state: &StateDir) -> Option<&'static str> {
+    None
 }
 
 /// The Google step for the owner, by what Plow says: none connected
@@ -470,6 +507,7 @@ impl Step {
             ready: None,
             accounts: None,
             connect_url: None,
+            access: None,
         }
     }
 }

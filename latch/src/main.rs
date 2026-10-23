@@ -212,7 +212,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             }
         },
         Command::Status(args) if args.local => to_json(status::local(&state)?),
-        Command::Setup(_) => to_json(setup::status(&state).await?),
+        Command::Setup(args) => to_json(setup::status(&state, args.check_access).await?),
         Command::Status(args) => {
             let output = status::run(&state).await?;
             if !args.pretty {
