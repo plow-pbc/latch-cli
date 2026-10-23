@@ -106,7 +106,7 @@ private struct HostVault: View {
                 ContentUnavailableView {
                     Label("Couldn't read the vault on \(host.name)", systemImage: "exclamationmark.triangle")
                 } description: {
-                    ErrorText(error: error, host: host.name, titled: true)
+                    ErrorText(error: error, host: host.spoken, titled: true)
                 } actions: {
                     Button("Try Again") { Task { await app.refreshVault(on: host) } }
                 }
@@ -156,7 +156,7 @@ private struct HostVault: View {
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Couldn't remove the item")
-                            ErrorText(error: error, host: host.name, titled: true).foregroundStyle(.secondary)
+                            ErrorText(error: error, host: host.spoken, titled: true).foregroundStyle(.secondary)
                         }
                     } icon: {
                         Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
@@ -527,7 +527,7 @@ struct VaultItemSheet: View {
                 if let unreadable = editor.unreadable {
                     Section {
                         Label("Couldn't read “\(unreadable.item.title)”", systemImage: "exclamationmark.triangle")
-                        ErrorText(error: unreadable.error, host: host.name, titled: true).foregroundStyle(.secondary)
+                        ErrorText(error: unreadable.error, host: host.spoken, titled: true).foregroundStyle(.secondary)
                     }
                 } else {
                     Section {
@@ -569,7 +569,7 @@ struct VaultItemSheet: View {
             HStack {
                 // A refused save is said here, beside Save, never below the fold.
                 if let error = editor.error {
-                    Label { ErrorText(error: error, host: host.name) } icon: { Image(systemName: "exclamationmark.triangle") }
+                    Label { ErrorText(error: error, host: host.spoken) } icon: { Image(systemName: "exclamationmark.triangle") }
                         .font(.callout).foregroundStyle(.red)
                 } else {
                     Text("Secrets go straight to \(host.name)'s vault and are never shown again.")
@@ -724,7 +724,7 @@ struct ImportSheet: View {
             ContentUnavailableView {
                 Label("Couldn't read this export", systemImage: "exclamationmark.triangle")
             } description: {
-                ErrorText(error: error, host: host.name, titled: true)
+                ErrorText(error: error, host: host.spoken, titled: true)
             }
         case let (_, .success(result)?):
             ContentUnavailableView {
@@ -736,7 +736,7 @@ struct ImportSheet: View {
             ContentUnavailableView {
                 Label("Couldn't confirm the import", systemImage: "exclamationmark.triangle")
             } description: {
-                ErrorText(error: error, host: host.name, titled: true)
+                ErrorText(error: error, host: host.spoken, titled: true)
             }
         case let (.success(preview)?, nil):
             List {

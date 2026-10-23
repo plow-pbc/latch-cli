@@ -122,7 +122,7 @@ private struct Records: View {
             }
             Spacer()
             if let error = feed.error {
-                Label(ErrorCopy.short(error, host: host.name), systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).lineLimit(1)
+                Label(ErrorCopy.short(error, host: host.spoken), systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).lineLimit(1)
             } else {
                 Text("\(feed.records.count) records\(feed.caughtUp ? "" : " · reading…")").foregroundStyle(.secondary)
             }
@@ -168,7 +168,7 @@ private struct Unavailable: View {
             ContentUnavailableView {
                 Label("Can't reach \(host.name)", systemImage: "wifi.slash")
             } description: {
-                ErrorText(error: error, said: [ErrorCopy.fact(error, host: host.name).flatMap { error.code == "host_unreachable" ? nil : $0 },
+                ErrorText(error: error, said: [ErrorCopy.fact(error, host: host.spoken).flatMap { error.code == "host_unreachable" ? nil : $0 },
                                                "Latch tries again on its own while this screen is open."]
                     .compactMap { $0 }.joined(separator: "\n"))
             }
@@ -176,7 +176,7 @@ private struct Unavailable: View {
             ContentUnavailableView {
                 Label("Couldn't read the activity", systemImage: "exclamationmark.triangle")
             } description: {
-                ErrorText(error: error, host: host.name, titled: true)
+                ErrorText(error: error, host: host.spoken, titled: true)
             }
         }
     }

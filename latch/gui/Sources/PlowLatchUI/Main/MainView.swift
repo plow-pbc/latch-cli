@@ -111,7 +111,7 @@ struct HostPicker: View {
                 Text(notice.title)
             }
             Divider()
-            Text("To add a host, install Latch there and run latch serve.")
+            Text("To add a host, install and start Latch on another computer.")
         } label: {
             HStack(spacing: 8) {
                 StateDot(state: app.host.map { HostState($0, local: app.status) })

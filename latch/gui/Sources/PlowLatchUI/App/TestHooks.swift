@@ -31,6 +31,7 @@ enum TestHooks {
         // Nothing leaves the app: links and Finder reveals are recorded.
         app.open = { opened.append("open \(recorded($0))") }
         app.reveal = { opened.append("reveal \($0.path)") }
+        app.copy = { opened.append("copy \($0)") }
         GrantHelper.settingsApp = { standIn }
         let guide = app.guideGrant
         app.guideGrant = { bundle in

@@ -129,7 +129,7 @@ struct ConnectionsView: View {
                     }
                 }
             }
-            if let error = app.deviceRemoveError { ErrorText(error: error).foregroundStyle(.red) }
+            if let error = app.deviceRemoveError { ErrorText(error: error, place: .devices).foregroundStyle(.red) }
         } header: {
             Text("Logged-in devices")
         } footer: {

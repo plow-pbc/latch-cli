@@ -40,7 +40,7 @@ struct HomeView: View {
                     ContentUnavailableView {
                         Label("No hosts yet", systemImage: "server.rack")
                     } description: {
-                        Text("To add a host, install Latch there and run `latch serve`, or start hosting on this Mac.")
+                        Text("To add a host, install and start Latch on another computer, or start hosting on this Mac.")
                     }
                 }
             } else if app.plowNotice == nil {
@@ -104,7 +104,7 @@ private struct NeedsSection: View {
                 case let .stopped(lastError): StartNeed(lastError: lastError)
                 case let .update(build):
                     Need(symbol: "arrow.down.circle", text: "A new version of Latch is available\(build.map { " (build \($0))" } ?? "").",
-                         detail: "Run `latch update` to install it.")
+                         detail: "Install the update from Terminal.")
                 }
             }
         }
@@ -146,7 +146,7 @@ private struct ActivitySections: View {
                     Text("This Mac keeps no activity yet.")
                 } else {
                     Text("Couldn't read the activity.")
-                    ErrorText(error: error, host: host.name, titled: true).foregroundStyle(.secondary)
+                    ErrorText(error: error, host: host.spoken, titled: true).foregroundStyle(.secondary)
                 }
             }
         } else if calls.isEmpty, !feed.caughtUp {
@@ -220,9 +220,9 @@ private struct OnHostSection: View {
     var body: some View {
         let summary = app.summaries[host.name]
         Section("On \(host.name)") {
-            SummaryRow(host: host.name, title: "Rules", value: summary?.rules?.map(Self.rules), open: "Open") { app.section = .rules }
-            SummaryRow(host: host.name, title: "Vault", value: summary?.vault?.map(Self.vault), open: "Open") { app.section = .vault }
-            SummaryRow(host: host.name, title: "Plugins", value: summary?.plugins?.map(Self.plugins), open: "Host Settings") {
+            SummaryRow(host: host.spoken, title: "Rules", value: summary?.rules?.map(Self.rules), open: "Open") { app.section = .rules }
+            SummaryRow(host: host.spoken, title: "Vault", value: summary?.vault?.map(Self.vault), open: "Open") { app.section = .vault }
+            SummaryRow(host: host.spoken, title: "Plugins", value: summary?.plugins?.map(Self.plugins), open: "Host Settings") {
                 app.section = .settings
             }
             if host.isThisMac {

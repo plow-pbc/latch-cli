@@ -165,7 +165,7 @@ struct AgentPage: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(host.isThisMac ? "\(host.name) (this Mac)" : host.name)
                             if case let .failure(error)? = app.standings[host.name], host.isThisMac || host.online != false {
-                                ErrorText(error: error, host: host.name).font(.callout).foregroundStyle(.secondary)
+                                ErrorText(error: error, host: host.spoken).font(.callout).foregroundStyle(.secondary)
                             } else {
                                 Text(standingText(on: host)).font(.callout).foregroundStyle(.secondary)
                             }
@@ -195,7 +195,7 @@ struct AgentPage: View {
         if !host.isThisMac, host.online == false { return "Offline: its standing there can't be read" }
         switch app.standings[host.name] {
         case nil: return "Checking…"
-        case let .failure(error)?: return ErrorCopy.said(error, host: host.name)
+        case let .failure(error)?: return ErrorCopy.said(error, host: host.spoken)
         case let .success(byAgent)?:
             let standing = byAgent[agent.uid]
             var words = [standing?.ownRules == true ? "Its own rules, and the rules for every agent" : "The rules for every agent"]

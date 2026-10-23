@@ -43,6 +43,8 @@ nonisolated struct LatchFailure: Decodable, Hashable {
     /// Full Disk Access not granted: what to grant it to, and where.
     var grant: String?
     var settings: String?
+    /// `not_enabled`: the connector that is off.
+    var plugin: String?
     /// `google_not_connected`: where to connect Google in Plow.
     var connectUrl: URL?
     /// `conflict` at login: the machine that has the name, and when Plow

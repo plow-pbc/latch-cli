@@ -37,7 +37,7 @@ struct RulesView: View {
             .font(.system(size: 12.5))
             .padding(.top, 10)
             if let error = flow.rulesError {
-                ErrorText(error: error).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
+                ErrorText(error: error, host: ErrorCopy.thisMac).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
             } else if flow.draftRules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !(flow.savedRules ?? "").isEmpty {
                 Text("An empty box keeps your saved rules; the examples show them.").foregroundStyle(Brand.muted).font(.callout).padding(.top, 8)
             }
@@ -114,7 +114,7 @@ private struct Deck: View {
     }
 
     private var lanesHeight: CGFloat { CGFloat(flow.deck.examples.count) * 46 }
-    private var extraHeight: CGFloat { CGFloat(flow.openExamples.count) * 96 }
+    private var extraHeight: CGFloat { CGFloat(flow.openExamples.count) * 102 }
 }
 
 private struct Lane: View {
@@ -240,10 +240,17 @@ private struct Lane: View {
         }
     }
 
-    /// Why it couldn't be checked, in the app's words. A refusal's own
-    /// reason is latch's, so it goes only under Details.
+    /// Why it couldn't be checked, or why this Mac refuses it, in the
+    /// app's words: one sentence, with no step to take from here.
     private var reason: String? {
-        if case let .failed(error) = preview { ErrorCopy.said(error) } else { nil }
+        switch preview {
+        case let .failed(error): ErrorCopy.said(error, host: ErrorCopy.thisMac, place: .tryRequest(connector: example.request.first))
+        case let .verdict(answer):
+            answer.refused.flatMap {
+                ErrorCopy.sentence(.failed($0), host: ErrorCopy.thisMac, place: .tryRequest(connector: answer.connector))
+            }.map(ErrorCopy.first)
+        default: nil
+        }
     }
 
     /// latch's words for a failed check or a refusal, for Details.
@@ -256,7 +263,7 @@ private struct Lane: View {
     }
 
     private var detail: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(example.shown)
                 .font(.system(size: 11.5, design: .monospaced))
                 .foregroundStyle(Brand.text)
@@ -265,6 +272,7 @@ private struct Lane: View {
                 + Text(verdictWord + (reason.map { ". \($0)" } ?? "")))
                 .font(.system(size: 12))
                 .foregroundStyle(Brand.muted)
+                .fixedSize(horizontal: false, vertical: true)
             if let latchSaid {
                 ErrorDetails(error: latchSaid).foregroundStyle(Brand.muted)
             }

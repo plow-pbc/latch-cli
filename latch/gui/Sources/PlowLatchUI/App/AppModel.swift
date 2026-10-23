@@ -24,6 +24,12 @@ final class AppModel {
     /// Shows a file in the Finder (the New Agent sheet's key file); only on
     /// a click. A test build records it.
     var reveal: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+    /// Puts text on the clipboard (the New Agent sheet's login
+    /// instructions); only on a click. A test build records it.
+    var copy: (String) -> Void = { text in
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
     /// Floats the Full Disk Access helper under System Settings, with this
     /// app to drag into the list.
     var guideGrant: (URL) -> any GrantGuide = { GrantHelper.show(dragging: $0) }

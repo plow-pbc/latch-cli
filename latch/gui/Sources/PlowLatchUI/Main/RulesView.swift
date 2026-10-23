@@ -42,7 +42,7 @@ private struct HostRules: View {
                 case let .failure(error)?:
                     Section {
                         Label("Couldn't read the rules on \(host.name)", systemImage: "exclamationmark.triangle")
-                        ErrorText(error: error, host: host.name, titled: true).foregroundStyle(.secondary)
+                        ErrorText(error: error, host: host.spoken, titled: true).foregroundStyle(.secondary)
                     }
                 case let .success(show)?:
                     RulesEditor(title: "Rules for every agent on \(host.name)",
@@ -125,7 +125,7 @@ private struct RulesEditor: View {
                 .frame(minHeight: 70)
                 .accessibilityLabel(title)
                 if let error {
-                    Label { ErrorText(error: error, host: host.name) } icon: { Image(systemName: "exclamationmark.triangle") }
+                    Label { ErrorText(error: error, host: host.spoken) } icon: { Image(systemName: "exclamationmark.triangle") }
                         .foregroundStyle(.red)
                 }
                 if editing {
@@ -212,10 +212,14 @@ private struct TryPanel: View {
                     .disabled(trial.trying || trial.words == nil || trial.words?.isEmpty == true)
             }
             switch trial.results[host.name] {
-            case let .success(verdict)?: VerdictView(verdict: verdict)
+            case let .success(verdict)?: VerdictView(verdict: verdict, host: host.spoken)
             case let .failure(error)?:
-                Label { ErrorText(error: error, host: host.name) } icon: { Image(systemName: "exclamationmark.triangle") }
-                    .foregroundStyle(.red)
+                Label {
+                    ErrorText(error: error, host: host.spoken, place: .tryRequest(connector: trial.words?.first))
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
+                }
+                .foregroundStyle(.red)
             case nil: EmptyView()
             }
         } header: {
@@ -268,6 +272,8 @@ final class Trial {
 /// A preview's verdict, in words, with the gatekeeper's reading.
 struct VerdictView: View {
     var verdict: RulesTry
+    /// The host it was tried on, as its sentences name it.
+    var host: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -277,8 +283,9 @@ struct VerdictView: View {
                 Image(systemName: symbol).foregroundStyle(tint)
             }
             if let refused = verdict.refused {
-                // The title says the host refuses it; why, in latch's words, under Details.
-                ErrorText(error: .failed(refused), titled: true).foregroundStyle(.secondary)
+                // The title says the host refuses it; why, in the app's words.
+                ErrorText(error: .failed(refused), host: host, titled: true, place: .tryRequest(connector: verdict.connector))
+                    .foregroundStyle(.secondary)
             }
             if let gate = verdict.gate {
                 if let source = gate.source {

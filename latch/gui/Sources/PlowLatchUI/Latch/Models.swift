@@ -321,6 +321,17 @@ nonisolated struct RulesTry: Decodable, Equatable {
     var refused: LatchFailure?
     /// The gatekeeper's judgment, when it was asked.
     var gate: AuditRecord.Gate?
+    /// What was tried: its kind (`exec`, `google`, …).
+    var request: Request?
+
+    struct Request: Decodable, Equatable {
+        var op: String
+    }
+
+    /// The connector the request is for, when it is one's.
+    var connector: String? {
+        request.map(\.op).flatMap { ["google", "messages", "contacts"].contains($0) ? $0 : nil }
+    }
 }
 
 /// `latch setup --status`: each setup step as the state folder says, with
