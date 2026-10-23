@@ -5861,19 +5861,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
-    let host = owner_host_on(&plow, dir.path());
-    let owner = dir.path().join("owner");
-    let owner_token = dir.path().join("owner.token");
-    let login = [
-        "login",
-        "--api-url",
-        &plow.url,
-        "--token-file",
-        owner_token.to_str().unwrap(),
-        "--name",
-        "owner-mac",
-    ];
-    assert_eq!(latch(&owner, &login, &[]).status.code(), Some(0));
+    let (host, owner) = host_and_owner(&plow, dir.path());
     let home = dir.path().join("home");
     fs::create_dir(&home).unwrap();
     let (serve, _) = serving_with_env(&host, &relay, &[("HOME", &home)]);

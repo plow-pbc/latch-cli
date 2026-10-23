@@ -409,7 +409,10 @@ fn title(op: &str, request: &Value, audit: &Value) -> String {
         "file_get" => format!("Read: {}", pick_path(request, audit)),
         "file_put" => format!("Write: {}", pick_path(request, audit)),
         "messages" | "contacts" => {
-            let action = request["action"].as_str().unwrap_or_default();
+            let action = request["action"].as_str().or(audit["action"].as_str());
+            let action = action
+                .unwrap_or_default()
+                .trim_start_matches(&format!("{op}."));
             match (op, action) {
                 ("messages", "search") => "Search Messages".to_string(),
                 ("messages", "thread") => "Read a Messages thread".to_string(),
@@ -440,19 +443,21 @@ fn title(op: &str, request: &Value, audit: &Value) -> String {
     }
 }
 
-/// A preview's request as a call is read: its operation, and what the
-/// record kept of it (its paths resolved) or, before there is a record,
-/// the request as the owner sent it.
+/// A preview's request as a call is read: its operation, the request as
+/// the owner sent it with what the record kept of it laid over (its paths
+/// resolved), and what the record kept.
 fn previewed(request: &Value, audit: &Value) -> (String, Value, Value) {
     let op = request["request"]["op"]
         .as_str()
         .or(audit["op"].as_str())
         .unwrap_or_default();
     let kept = audit["action"].clone();
-    let asked = match kept.is_null() {
-        true => request["request"]["args"].clone(),
-        false => Value::Null,
-    };
+    let mut asked = request["request"]["args"].clone();
+    match (&mut asked, &kept) {
+        (Value::Object(asked), Value::Object(kept)) => asked.extend(kept.clone()),
+        (asked, kept) if asked.is_null() => *asked = kept.clone(),
+        _ => {}
+    }
     (op.to_string(), asked, kept)
 }
 

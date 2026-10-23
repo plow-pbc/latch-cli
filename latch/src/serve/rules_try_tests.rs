@@ -3,24 +3,10 @@
 
 use serde_json::{Value, json};
 
-use super::gated_tests::{always_covered, refusal, start, start_denying};
+use super::gated_tests::{always_covered, covered_after_a_yes, refusal, start, start_denying};
 use super::*;
 use crate::failure::Exit;
 use crate::gate::fake::{AGENT, LINE, World, agent_self, message, owner};
-
-/// The judge allows only what the owner said yes to in the chat.
-fn covered_after_a_yes(state: &Value) -> Option<[f64; 3]> {
-    let said_yes = state["conversation"].as_array().is_some_and(|messages| {
-        messages
-            .iter()
-            .any(|m| m["from"] == "OWNER" && m["text"].as_str().unwrap().contains("yes"))
-    });
-    Some(if said_yes {
-        [0.9, 0.08, 0.02]
-    } else {
-        [0.1, 0.85, 0.05]
-    })
-}
 
 fn chat_with(decide: crate::gate::fake::Decide) -> World {
     let mut world = World::with_chat(
@@ -453,24 +439,15 @@ async fn a_previewed_contacts_page_does_not_show_where_the_last_page_ended() {
     let record = t.audit().into_iter().last().unwrap();
     assert_eq!(record["op"], "rules_try");
     assert_eq!(record["args"]["action"]["plan"]["after"]["key"], "[name]");
-}
-
-/// Every call on the host's board, newest first.
-fn board_calls(t: &super::gated_tests::TestHost) -> Vec<Value> {
-    let board = serde_json::to_value(&*t.host.dashboard.watch().borrow()).unwrap();
-    let mut calls = Vec::new();
-    fn walk(value: &Value, calls: &mut Vec<Value>) {
-        match value {
-            Value::Object(map) if map.contains_key("outcome") && map.contains_key("command") => {
-                calls.push(value.clone())
-            }
-            Value::Object(map) => map.values().for_each(|v| walk(v, calls)),
-            Value::Array(values) => values.iter().for_each(|v| walk(v, calls)),
-            _ => {}
-        }
-    }
-    walk(&board["tasks"], &mut calls);
-    calls
+    let watching = t.host.dashboard.watch();
+    let board = watching.borrow();
+    let titles: Vec<&str> = board
+        .tasks
+        .iter()
+        .flat_map(|task| &task.calls)
+        .map(|call| call.title.as_str())
+        .collect();
+    assert!(titles.contains(&"Preview: Search Contacts"), "{titles:?}");
 }
 
 #[tokio::test]
@@ -478,7 +455,7 @@ async fn a_preview_is_recorded_and_shown_with_what_it_found() {
     let deny = DenyExec::from_flags(&[AGENT.to_string()]);
     let t = start_denying(chat_with(covered_after_a_yes), deny).await;
     let device = t.caller("device").await;
-    let build = json!({"argv": ["npm", "run", "build"], "writes": ["~/site"]});
+    let build = json!({"argv": ["npm", "run", "build"], "writes": ["~/site"], "timeout": 30});
 
     // Refused by the judge: the record says so, and so does the board.
     let (response, _) = t
@@ -492,7 +469,7 @@ async fn a_preview_is_recorded_and_shown_with_what_it_found() {
     // The owner's own preview: shared rules only, none set, so allowed.
     assert_eq!(refused["verdict"], "allow");
     assert_eq!(refused["gate"]["rules"], Value::Null, "{refused}");
-    let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": [],
+    let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": ["owner@example.com"],
                         "confirm_conflict": false, "inputs": []});
     let (response, _) = t
         .call(
@@ -550,19 +527,22 @@ async fn a_preview_is_recorded_and_shown_with_what_it_found() {
     );
     assert_eq!(records[2]["args"]["refused"], "exec_denied");
 
-    let calls = board_calls(&t);
-    let shown: Vec<(&str, &str, &str)> = calls
+    let watching = t.host.dashboard.watch();
+    let board = watching.borrow();
+    let shown: Vec<_> = board
+        .tasks
         .iter()
+        .flat_map(|task| &task.calls)
         .map(|call| {
             (
-                call["title"].as_str().unwrap(),
-                call["command"].as_str().unwrap(),
-                call["outcome"]["text"].as_str().unwrap(),
+                call.title.as_str(),
+                call.command.as_str(),
+                call.outcome.text.as_deref().unwrap(),
             )
         })
         .collect();
     let line = format!(
-        "try --from Juno -- exec --write {} npm run build",
+        "try --from Juno -- exec --write {} --timeout 30 npm run build",
         site.display()
     );
     assert_eq!(
@@ -575,15 +555,19 @@ async fn a_preview_is_recorded_and_shown_with_what_it_found() {
             ),
             (
                 "Preview: Google: gmail.search",
-                "try --from Juno -- google gmail search",
+                "try --from Juno -- google --account owner@example.com gmail search",
                 "would be refused: outside your instructions"
             ),
             (
                 "Preview: Run: npm run build",
-                format!("try -- exec --write {} npm run build", site.display()).as_str(),
+                format!(
+                    "try -- exec --write {} --timeout 30 npm run build",
+                    site.display()
+                )
+                .as_str(),
                 "would be allowed"
             ),
         ],
-        "{calls:#?}"
+        "{shown:#?}"
     );
 }

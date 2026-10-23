@@ -905,53 +905,22 @@ async fn serve_request(
             let chat = request.chat.clone();
             let Checked {
                 gate,
-                denied_exec,
-                upgraded,
                 prepared_exec,
-                exec_failure,
                 running,
                 names,
-                unplanned,
-                unplaced,
                 judgment,
-                refused,
+                stop,
             } = check(host, &identity, local, chat.as_deref(), &mut request).await;
             // A preview's own judgment, which its record keeps.
             let mut tried = None;
-            let done = if upgraded {
-                let failure = host_upgraded();
-                Done::failed(&failure.code, failure.message, Value::Null)
-            } else if let Some(failure) = exec_failure {
-                Done {
-                    response: Response::error(&failure),
-                    audit_args: Value::Null,
-                    outcome: failure.code,
-                }
-            } else if let Some(Err(failure)) = &running {
-                Done {
-                    response: Response::error(failure),
-                    audit_args: Value::Null,
-                    outcome: failure.code.clone(),
-                }
-            } else if let Some(unplanned) = unplanned {
-                unplanned
-            } else if let Some(refused) = refused {
-                refused
-            } else if let Some(unplaced) = unplaced {
-                unplaced
+            let done = if let Some(stop) = stop {
+                stop.done()
             } else {
                 match op {
                     "file_get" => files::get(&host.workers, &request.args, &mut send).await,
                     "file_put" => {
                         files::put(&host.workers, &request.args, &mut send, &mut recv).await
                     }
-                    "exec" if denied_exec => Done {
-                        response: Response::error(&exec_denied()),
-                        // As a refused judgment keeps it: no stdin.
-                        audit_args: gate::gated(op, &request.args)
-                            .map_or(Value::Null, |gated| gated.audit),
-                        outcome: "exec_denied".to_string(),
-                    },
                     "exec" => {
                         exec::run(
                             &host.workers,
@@ -1117,16 +1086,30 @@ async fn serve_request(
 /// request asks for runs here; `rules_try` stops after it.
 struct Checked<'a> {
     gate: Result<Gate<'a>, Failure>,
-    denied_exec: bool,
-    upgraded: bool,
     prepared_exec: Option<exec::PreparedExec>,
-    exec_failure: Option<Failure>,
-    running: Option<Result<crate::plugins::Running<'a>, Failure>>,
+    /// The connectors it uses, counted as running until it is audited.
+    running: Option<crate::plugins::Running<'a>>,
     names: Option<crate::plugins::Running<'a>>,
-    unplanned: Option<Done>,
-    unplaced: Option<Done>,
     judgment: Option<gate::Judgment>,
-    refused: Option<Done>,
+    /// Why it does not run, if it does not: the first refusal it met.
+    stop: Option<Stop>,
+}
+
+/// Why a checked request does not run, as its caller is answered.
+enum Stop {
+    /// The host's own refusal, made without asking the judge: an exec its
+    /// owner turned off (`--deny-exec`), a connector that is off.
+    Host(Done),
+    /// Any other: a replaced binary, a bad request, the gatekeeper's no.
+    Refused(Done),
+}
+
+impl Stop {
+    fn done(self) -> Done {
+        match self {
+            Stop::Host(done) | Stop::Refused(done) => done,
+        }
+    }
 }
 
 async fn check<'a>(
@@ -1169,9 +1152,12 @@ async fn check<'a>(
     // Nor for a connector its owner has not enabled. One that is
     // counts as running until its answer is audited, so `disable`
     // waits for it.
-    let running =
-        crate::plugins::Connector::of_op(op).map(|connector| host.plugins.start(connector));
-    let not_enabled = matches!(running, Some(Err(_)));
+    let (running, not_enabled) =
+        match crate::plugins::Connector::of_op(op).map(|connector| host.plugins.start(connector)) {
+            Some(Ok(running)) => (Some(running), None),
+            Some(Err(failure)) => (None, Some(failure)),
+            None => (None, None),
+        };
     // A messages call reads the address book for names only while
     // Contacts is enabled too, held the same way.
     let names = (op == "messages")
@@ -1182,7 +1168,8 @@ async fn check<'a>(
     // effective request: the reader's reading of the caller's words
     // and any cursor's filters. One the reader refuses is not judged.
     let mut unplanned = None;
-    if (op == "messages" || op == "contacts") && !upgraded && !not_enabled && gate.is_ok() {
+    if (op == "messages" || op == "contacts") && !upgraded && not_enabled.is_none() && gate.is_ok()
+    {
         match crate::messages::host::plan(&host.workers, op, &request.args).await {
             Ok(planned) => request.args = planned,
             Err(done) => unplanned = Some(*done),
@@ -1191,7 +1178,7 @@ async fn check<'a>(
     let gated = gate::gated(op, &request.args).filter(|_| {
         !denied_exec
             && !upgraded
-            && !not_enabled
+            && not_enabled.is_none()
             && exec_failure.is_none()
             && unplanned.is_none()
             && unplaced.is_none()
@@ -1215,18 +1202,37 @@ async fn check<'a>(
         audit_args: gated.audit.clone(),
         outcome: failure.code.clone(),
     });
+    let refused_now = |failure: Failure, audit_args: Value| Done {
+        response: Response::error(&failure),
+        audit_args,
+        outcome: failure.code,
+    };
+    let stop = if upgraded {
+        Some(Stop::Refused(refused_now(host_upgraded(), Value::Null)))
+    } else if let Some(failure) = exec_failure {
+        Some(Stop::Refused(refused_now(failure, Value::Null)))
+    } else if let Some(failure) = not_enabled {
+        Some(Stop::Host(refused_now(failure, Value::Null)))
+    } else if let Some(unplanned) = unplanned {
+        Some(Stop::Refused(unplanned))
+    } else if let Some(refused) = refused {
+        Some(Stop::Refused(refused))
+    } else if let Some(unplaced) = unplaced {
+        Some(Stop::Refused(unplaced))
+    } else if denied_exec {
+        // As a refused judgment keeps it: no stdin.
+        let audit = gate::gated(op, &request.args).map_or(Value::Null, |gated| gated.audit);
+        Some(Stop::Host(refused_now(exec_denied(), audit)))
+    } else {
+        None
+    };
     Checked {
         gate,
-        denied_exec,
-        upgraded,
         prepared_exec,
-        exec_failure,
         running,
         names,
-        unplanned,
-        unplaced,
         judgment,
-        refused,
+        stop,
     }
 }
 

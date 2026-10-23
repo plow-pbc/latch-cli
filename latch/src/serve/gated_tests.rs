@@ -13,7 +13,7 @@ use crate::gate::fake::{self, AGENT, FakePlow, World, agent_self, message, owner
 use crate::model;
 
 /// The owner's yes covers an operation; anything else does not.
-fn covered_after_a_yes(state: &Value) -> Option<[f64; 3]> {
+pub(super) fn covered_after_a_yes(state: &Value) -> Option<[f64; 3]> {
     let said_yes = state["conversation"].as_array().is_some_and(|messages| {
         messages
             .iter()

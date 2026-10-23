@@ -11,7 +11,7 @@
 
 use serde_json::{Map, Value, json};
 
-use super::{Checked, Done, Host, check, exec_denied, host_upgraded};
+use super::{Done, Host, Stop, check, exec_denied};
 use crate::failure::{Exit, Failure};
 use crate::gate;
 use crate::plow::{Identity, Permissions};
@@ -102,9 +102,8 @@ async fn preview(
     // An exec the host refuses outright is refused before its paths are
     // checked; they are resolved here so its answer shows them as a judged
     // one's does.
-    if checked.denied_exec
-        && let Ok(prepared) = crate::exec::normalize(&host.workers, &request.args)
-    {
+    let exec_off = matches!(&checked.stop, Some(Stop::Host(done)) if done.outcome == "exec_denied");
+    if exec_off && let Ok(prepared) = crate::exec::normalize(&host.workers, &request.args) {
         request.args = serde_json::to_value(&prepared).expect("prepared exec serializes");
     }
     // The answer shows the action as the judge was shown it; the record
@@ -131,35 +130,16 @@ async fn preview(
             "gate": gate,
         })
     };
-    let host_refused = |failure: &Failure| {
+    let host_refused = |code: &str, message: &str| {
         let mut answer = answer("host_refused");
-        answer["refused"] = json!({"code": failure.code, "message": failure.message});
+        answer["refused"] = json!({"code": code, "message": message});
         answer
     };
 
-    // In the order a real request meets them (`serve_request`).
-    let Checked {
-        gate,
-        denied_exec,
-        upgraded,
-        exec_failure,
-        running,
-        unplanned,
-        unplaced,
-        judgment,
-        refused: refusal,
-        ..
-    } = checked;
-    let result = if upgraded {
-        Err(Response::error(&host_upgraded()))
-    } else if let Some(failure) = exec_failure {
-        Err(Response::error(&failure))
-    } else if let Some(Err(failure)) = &running {
-        Ok(host_refused(failure))
-    } else if let Some(done) = unplanned {
-        Err(done.response)
-    } else if let Some(judgment) = judgment {
-        match judgment.verdict {
+    // A judgment is there only if nothing stopped the request before the
+    // judge; the judge's own no is its verdict.
+    let result = match (checked.judgment, checked.stop) {
+        (Some(judgment), _) => match judgment.verdict {
             Ok(()) => Ok(answer("allow")),
             // A refusal the judge makes is the preview's verdict; one it
             // cannot make (no chat chosen, an outage) is an error.
@@ -168,21 +148,18 @@ async fn preview(
                 Ok(answer(verdict))
             }
             Err(failure) => Err(Response::error(&failure)),
+        },
+        (None, Some(Stop::Host(_))) if exec_off => {
+            let uid = judged_as.agent_uid.as_deref().unwrap_or_default();
+            let off = exec_turned_off(host.deny_exec.every_agent, uid);
+            Ok(host_refused(&off.code, &off.message))
         }
-    } else if let Err(failure) = gate {
-        Err(Response::error(&failure))
-    } else if let Some(done) = refusal {
-        Err(done.response)
-    } else if let Some(done) = unplaced {
-        Err(done.response)
-    } else if denied_exec {
-        let uid = judged_as.agent_uid.as_deref().unwrap_or_default();
-        Ok(host_refused(&exec_turned_off(
-            host.deny_exec.every_agent,
-            uid,
-        )))
-    } else {
-        Err(Response::error(&not_previewable(&request.op)))
+        (None, Some(Stop::Host(done))) => match done.response {
+            Response::Error { code, message, .. } => Ok(host_refused(&code, &message)),
+            ok => Err(ok),
+        },
+        (None, Some(Stop::Refused(done))) => Err(done.response),
+        (None, None) => Err(Response::error(&not_previewable(&request.op))),
     };
     (result, judged)
 }
