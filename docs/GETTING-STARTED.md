@@ -289,7 +289,7 @@ run on the host itself or from one of your machines with `--host`:
 ```sh
 latch rules edit                          # opens $EDITOR; on the host itself
 latch rules edit --host my-mac            # from another of your machines
-latch rules edit --from my-agent          # rules for one agent only
+latch rules edit --agent my-agent         # rules for one agent only
 latch rules show
 ```
 

@@ -27,9 +27,9 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
     let scope = match args.command {
         RulesCommand::Try {
             host,
-            from,
+            agent,
             request,
-        } => return preview(state, host, from, request).await,
+        } => return preview(state, host, agent, request).await,
         RulesCommand::Set { ref scope, .. }
         | RulesCommand::Edit { ref scope }
         | RulesCommand::Clear { ref scope }
@@ -39,7 +39,9 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         state,
         host: scope.host.clone(),
     };
-    let from = scope.from.clone();
+    // The operation still calls the agent `from`, as hosts of every
+    // version read it.
+    let from = scope.agent.clone();
     match args.command {
         RulesCommand::Set { text, file, .. } => {
             let text = match (text, file) {

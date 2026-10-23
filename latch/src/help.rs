@@ -901,7 +901,7 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[ex(
             "Edit one agent's rules",
-            &["rules", "edit", "--from", "ada"],
+            &["rules", "edit", "--agent", "ada"],
         )],
     },
     Entry {
@@ -935,7 +935,7 @@ const ENTRIES: &[Entry] = &[
             ex(
                 "Would Penny be allowed to build the site?",
                 &[
-                    "rules", "try", "--from", "Penny", "--", "exec", "--write", "~/site", "--",
+                    "rules", "try", "--agent", "Penny", "--", "exec", "--write", "~/site", "--",
                     "npm", "run", "build",
                 ],
             ),
