@@ -4,6 +4,13 @@
 //! one meets (`super::check`: the host's own refusals, then the
 //! gatekeeper) and stops there. Owner devices only, like `rules`.
 //!
+//! A `draft` stands in for the saved rules for every agent, and is never
+//! saved. With `new_agent`, the request is judged by the rules alone: as
+//! a new agent, with no chat and no rules of its own, whatever the host's
+//! connectors and `--deny-exec` would refuse. On this machine the preview
+//! is judged in the previewing process (`preview_here`), so it needs no
+//! running host.
+//!
 //! A refusal is a verdict, not an error: `not_covered`, `owner_said_no`,
 //! `no_intent`, or `host_refused` for a refusal the host makes without
 //! asking the judge (`--deny-exec`, a connector that is off). A preview
@@ -11,14 +18,63 @@
 
 use serde_json::{Value, json};
 
-use super::{Host, Stop, check, exec_denied};
+use super::{Binary, Checks, DenyExec, Stop, check, exec_denied};
 use crate::failure::{Exit, Failure};
-use crate::gate;
-use crate::plow::{Identity, Permissions};
+use crate::gate::rules::RuleFiles;
+use crate::gate::{self, Caller, Gate, Gatekeeper};
+use crate::plow::{Identity, Permissions, Plow};
+use crate::state::StateDir;
 use crate::wire::{Request, Response};
 
+/// A preview on this machine, judged here as its host would judge it: with
+/// its login, its rules, its connectors and the `--deny-exec` its host runs
+/// or last ran with. The same whether or not its host is running.
+pub(crate) async fn preview_here(state: &StateDir, args: &Value) -> Result<Value, Failure> {
+    let config = state.require_login()?;
+    let plow = Plow::from_state(state)?;
+    let provider = Gatekeeper::provider_for_host(&state.path)
+        .map_err(|why| Failure::failed("not_logged_in", why))?;
+    let gatekeeper = Gatekeeper::new(
+        plow.clone(),
+        provider,
+        Box::new(RuleFiles::new(&state.path)?),
+    );
+    let state_dir = state
+        .path
+        .canonicalize()
+        .map_err(|err| Failure::failed("state_dir", format!("{}: {err}", state.path.display())))?;
+    let workers = super::workers(state_dir)?;
+    let binary = Binary::at(&workers.program)?;
+    let home = std::env::home_dir().unwrap_or_default();
+    let plugins = crate::plugins::Plugins::load(state, &home)?;
+    let deny_exec = crate::managed::saved_deny_exec(&state.path).unwrap_or_default();
+    let checks = Checks {
+        name: &config.peer.name,
+        plow: &plow,
+        workers: &workers,
+        gatekeeper: &gatekeeper,
+        deny_exec: &deny_exec,
+        binary: &binary,
+        plugins: Some(&plugins),
+    };
+    // Who asks, as a host's own socket takes its caller: this login.
+    let identity = Identity {
+        key: config.peer.key.clone(),
+        kind: config.peer.kind.clone(),
+        name: config.peer.name.clone(),
+        agent_uid: None,
+        permissions: Permissions { call: true },
+    };
+    run(&checks, &identity, true, args).await.into_result()
+}
+
 /// The preview's answer: what it found, or why it could not preview.
-pub(super) async fn run(host: &Host, identity: &Identity, local: bool, args: &Value) -> Response {
+pub(super) async fn run(
+    host: &Checks<'_>,
+    identity: &Identity,
+    local: bool,
+    args: &Value,
+) -> Response {
     match preview(host, identity, local, args).await {
         Ok(answer) => Response::Ok(answer),
         Err(response) => response,
@@ -26,7 +82,7 @@ pub(super) async fn run(host: &Host, identity: &Identity, local: bool, args: &Va
 }
 
 async fn preview(
-    host: &Host,
+    host: &Checks<'_>,
     identity: &Identity,
     local: bool,
     args: &Value,
@@ -43,10 +99,21 @@ async fn preview(
         return refused(not_previewable(&request.op));
     }
 
-    // Judged as the agent `from` names, or as the owner who asks.
+    // A blank draft is no rules for every agent, as `rules clear` leaves.
+    let draft = args["draft"]
+        .as_str()
+        .map(|text| Some(text.to_string()).filter(|text| !text.trim().is_empty()));
+    let new_agent = args["new_agent"] == true;
+
+    // Judged as the agent `from` names, as a new agent, or as the owner
+    // who asks.
     let agent;
-    let (judged_as, judged_local, shown_as) = match args["from"].as_str() {
-        Some(from) => match gate::owner::agent(&host.plow, from).await {
+    let (judged_as, judged_local, shown_as) = match (args["from"].as_str(), new_agent) {
+        (Some(_), true) => {
+            let message = "Judge as one agent (from) or as a new agent, not both.".to_string();
+            return refused(Failure::usage("bad_request", message));
+        }
+        (Some(from), false) => match gate::owner::agent(host.plow, from).await {
             Ok((uid, name)) => {
                 let shown = json!({"agent_uid": uid, "agent_name": name});
                 agent = Identity {
@@ -60,11 +127,49 @@ async fn preview(
             }
             Err(failure) => return refused(failure),
         },
-        None => (identity, local, json!("owner")),
+        (None, true) => (identity, local, json!("new_agent")),
+        (None, false) => (identity, local, json!("owner")),
     };
 
     let chat = request.chat.clone();
-    let checked = check(host, judged_as, judged_local, chat.as_deref(), &mut request).await;
+    let none_denied = DenyExec::default();
+    let rules_alone;
+    let (host, gate) = match new_agent {
+        false => (host, host.gate(judged_as, judged_local, chat.as_deref())),
+        true => {
+            rules_alone = Checks {
+                deny_exec: &none_denied,
+                plugins: None,
+                ..*host
+            };
+            let gate = match chat {
+                Some(_) => Err(Failure::usage(
+                    "plow_chat_not_supported",
+                    "A new agent has no Plow chat yet; omit --plow-chat and LATCH_PLOW_CHAT".into(),
+                )),
+                None => Ok(Gate {
+                    keeper: host.gatekeeper,
+                    caller: Caller::NewAgent,
+                }),
+            };
+            (&rules_alone, gate)
+        }
+    };
+    let drafted;
+    let gate = match (gate, draft) {
+        (Ok(gate), Some(draft)) => match gate.keeper.drafted(gate.caller, draft) {
+            Ok(keeper) => {
+                drafted = keeper;
+                Ok(Gate {
+                    keeper: &drafted,
+                    caller: gate.caller,
+                })
+            }
+            Err(failure) => return refused(failure),
+        },
+        (gate, _) => gate,
+    };
+    let checked = check(host, judged_as, gate, chat.as_deref(), &mut request).await;
     let judged = checked
         .judgment
         .as_ref()
@@ -73,7 +178,7 @@ async fn preview(
     // checked; they are resolved here so its answer shows them as a judged
     // one's does.
     let exec_off = matches!(&checked.stop, Some(Stop::Host(done)) if done.outcome == "exec_denied");
-    if exec_off && let Ok(prepared) = crate::exec::normalize(&host.workers, &request.args) {
+    if exec_off && let Ok(prepared) = crate::exec::normalize(host.workers, &request.args) {
         request.args = serde_json::to_value(&prepared).expect("prepared exec serializes");
     }
     // The action as the judge was shown it.
