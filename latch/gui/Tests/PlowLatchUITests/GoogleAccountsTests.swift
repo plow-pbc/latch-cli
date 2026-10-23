@@ -61,6 +61,30 @@ struct GoogleAccountsTests {
         #expect(flow.googleWaitEnded == "No new Google account showed up in time. An account that's already connected isn't added again.")
     }
 
+    /// A wait that timed out, then a sign-in finished in the browser
+    /// anyway: back in the app, the check finds the new account and the
+    /// timeout goes. A check that finds nothing new keeps it.
+    @Test(arguments: [false, true])
+    func aSignInFinishedAfterTheTimeoutRetiresIt(adding: Bool) async {
+        let had = adding ? [three[0]] : []
+        let client = SignInClient()
+        client.google = adding ? Fixtures.googleConnected(had) : Fixtures.googleNotConnected
+        let flow = app(client).stage(.google)
+        await flow.checkGoogle()
+        flow.connectGoogle()
+        await waitUntil { client.events != nil }
+        client.events?.finish(throwing: timeout)
+        await waitUntil { flow.google != .waiting }
+        #expect(flow.googleWaitEnded == GoogleSignIn.problem(timeout, adding: adding))
+        await flow.checkGoogle()
+        #expect(flow.googleWaitEnded == GoogleSignIn.problem(timeout, adding: adding))
+        client.google = Fixtures.googleConnected(had + [three[1]])
+        await flow.checkGoogle()
+        #expect(flow.google == .connected)
+        #expect(flow.googleAccounts.accounts == had + [three[1]])
+        #expect(flow.googleWaitEnded == nil)
+    }
+
     /// The account Google wants signed in again is marked, with no button:
     /// latch doesn't wait for it while others work, so it says to reconnect
     /// it in Plow. The others work, so the section still adds an account.
