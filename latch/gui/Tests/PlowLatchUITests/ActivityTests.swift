@@ -181,7 +181,7 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
     var hosting = false
     private(set) var follows = 0
 
-    func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.stopped) }
+    func localStatus() async throws -> LocalStatus { try Fixtures.decode(hosting ? Fixtures.serving : Fixtures.stopped) }
     func accountStatus() async throws -> AccountStatus { throw LatchError.unreachable("no Plow") }
     func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
@@ -201,7 +201,7 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
             continuation.yield(.caughtUp(cursor: String(repeating: "0", count: 64), hasOlder: false))
         }
     }
-    func serve(again: Bool) async throws {}
+    func serve(again: Bool) async throws { hosting = true }
     func stop() async throws {}
 }
 
@@ -228,5 +228,46 @@ struct NeverServedTests {
         #expect(feed.caughtUp)
         #expect(feed.error == nil)
         feed.stop()
+    }
+
+    // "Start Latch" reads the new status itself, so the status stream may
+    // never show the change: whichever path learns this Mac serves, the
+    // activity follows.
+    @Test func activityFollowsWhenStartingHostingReadsTheStatusFirst() async throws {
+        let client = NeverServedClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.stopped))
+        let feed = app.feed(for: try #require(app.host))
+        feed.start()
+        await until { feed.error != nil }
+        #expect(feed.error?.code == "no_host_here")
+        await app.startHosting()
+        // The stream's copy of the change arrives after: nothing more to do.
+        app.statusChanged(try Fixtures.decode(Fixtures.serving))
+        await until { feed.caughtUp }
+        #expect(feed.caughtUp)
+        #expect(client.follows == 2)
+        feed.stop()
+    }
+}
+
+/// The owner's reads, as latch records them (real records' shapes).
+struct OwnerReadTests {
+    private func record(op: String, args: String, agent: String? = nil) throws -> AuditRecord {
+        try LatchJSON.decoder.decode(AuditRecord.self, from: Data(
+            #"{"agent":\#(agent.map { "\"\($0)\"" } ?? "null"),"caller":"k","caller_name":"studio","decision":"allow","details":{"args":\#(args),"gate":null,"started":null},"id":"\#(op)","op":"\#(op)","outcome":"ok","time":"2026-10-23T05:27:23Z"}"#.utf8))
+    }
+
+    @Test func readsAreBackgroundAndActionsAreNot() throws {
+        for (op, args) in [("rules", #"{"command":"show"}"#), ("vault", #"{"command":"list"}"#), ("vault", #"{"command":"show","item":"v1"}"#),
+                           ("plugins", #"{"command":"list"}"#), ("status", "{}"), ("audit", "{}")] {
+            #expect(try record(op: op, args: args).isBackground, "\(op) \(args)")
+        }
+        for (op, args) in [("rules", #"{"command":"set","scope":"every agent"}"#), ("vault", #"{"command":"add"}"#),
+                           ("plugins", #"{"command":"enable","name":"google"}"#), ("exec", #"{"argv":["ls"]}"#)] {
+            #expect(try !record(op: op, args: args).isBackground, "\(op) \(args)")
+        }
+        // An agent asking is never the owner looking.
+        #expect(try !record(op: "vault", args: #"{"command":"list"}"#, agent: "a1").isBackground)
     }
 }

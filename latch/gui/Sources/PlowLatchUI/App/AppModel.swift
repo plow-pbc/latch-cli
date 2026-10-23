@@ -6,7 +6,14 @@ import SwiftUI
 @Observable
 final class AppModel {
     let client: any LatchClient
-    private(set) var status: LocalStatus?
+    /// Whichever read sets it (the status stream, a one-off read, Start
+    /// Latch's own), a serving status lets this Mac's activity follow if it
+    /// stopped because nothing was hosted here.
+    private(set) var status: LocalStatus? {
+        didSet {
+            if status?.serve.state == "serving", let name = status?.peer?.name { feeds[name]?.retry() }
+        }
+    }
     private(set) var statusError: String?
     /// The onboarding flow, while the onboarding window is open.
     private(set) var onboarding: Onboarding?
@@ -143,7 +150,8 @@ final class AppModel {
 
     /// The record Activity's inspector shows; Home's recent rows set it.
     var selectedRecord: AuditRecord.ID?
-    /// Activity's filters, kept as hosts change.
+    /// Activity's filters, kept as hosts change; `showConnections` also
+    /// shows the owner's reads.
     var activityFilter = ActivityView.Filter.all
     var showConnections = false
 
@@ -160,17 +168,11 @@ final class AppModel {
         }
     }
 
-    /// A new `status --local` from the stream. When this Mac starts
-    /// serving, its activity, which had nothing to read before, follows
-    /// again.
+    /// A new `status --local` from the stream.
     func statusChanged(_ status: LocalStatus) {
-        let wasServing = self.status?.serve.state == "serving"
         self.status = status
         statusError = nil
         leaveMainIfLoggedOut()
-        if status.serve.state == "serving", !wasServing, let name = status.peer?.name {
-            feeds[name]?.retry()
-        }
     }
 
     /// "Start hosting on this Mac…" asked, awaiting the person's yes; and a

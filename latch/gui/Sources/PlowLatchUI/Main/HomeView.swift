@@ -136,7 +136,9 @@ private struct ActivitySections: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        let calls = feed.records.filter { $0.op != "connect" }
+        // What callers asked of the host: not connections, nor the owner's
+        // own reads (Home's own summary is one).
+        let calls = feed.records.filter { !$0.isBackground }
         if calls.isEmpty, let error = feed.error {
             Section("Activity") {
                 Text(error.code == "no_host_here" ? "This Mac keeps no activity yet." : "Couldn't read the activity.")

@@ -45,8 +45,8 @@ struct ActivityView: View {
                 .labelsHidden()
             }
             ToolbarItem {
-                Toggle("Show Connections", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
-                    .help("Show when callers connected, as well as their requests")
+                Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
+                    .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
             }
             ToolbarItem {
                 Button("Inspector", systemImage: "sidebar.trailing") { inspecting.toggle() }
@@ -137,7 +137,7 @@ private struct Records: View {
     private var rows: [AuditRecord] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
         return feed.records.reversed().filter { record in
-            guard showConnections || record.op != "connect" else { return false }
+            guard showConnections || !record.isBackground else { return false }
             switch filter {
             case .all: break
             case .allowed: guard record.decision == "allow" else { return false }

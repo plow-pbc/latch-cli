@@ -44,10 +44,11 @@ final class ActivityFeed {
         task = Task { await run() }
     }
 
-    /// Something changed that may fix the error that stopped the stream
-    /// (this Mac started hosting): while watched, follow again.
+    /// This Mac serves: if the stream stopped because it had never hosted,
+    /// and the feed is still watched, follow again. Safe to call on every
+    /// status; it does nothing otherwise.
     func retry() {
-        guard watchers > 0, !running else { return }
+        guard watchers > 0, !running, error?.code == "no_host_here" else { return }
         running = true
         task = Task { await run() }
     }
