@@ -154,7 +154,8 @@ pub enum Command {
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
     /// The account's agents, with their lines and Plow status; with --host,
-    /// each one's standing on that host (owner only)
+    /// each one's standing on that host. Also shows, creates and removes
+    /// them (owner only)
     Agents(AgentsArgs),
     /// Print this peer's identity and the hosts it can reach
     Status(StatusArgs),
@@ -882,11 +883,57 @@ pub enum WorkerAction {
 }
 
 #[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct AgentsArgs {
     /// Also show each agent's standing on this host: its own rules there,
     /// and whether the host refuses it exec. Never taken from $LATCH_HOST
     #[arg(long)]
     pub host: Option<String>,
+    #[command(subcommand)]
+    pub action: Option<AgentsAction>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentsAction {
+    /// One agent, by its uid or its exact name: its line and Plow status
+    /// (a cloud agent's starts as provisioning)
+    Show { agent: String },
+    /// The kinds of cloud agent Plow can run, for `agents new --cloud`
+    Catalog,
+    /// Plow's phone lines, and which are free for a new agent
+    Lines,
+    /// Create an agent on a free phone line: a cloud agent Plow runs, or
+    /// your own, whose credential is written to a new private file. It
+    /// returns at once; `agents show` follows a cloud agent's start
+    New {
+        /// A cloud agent of this kind, from `latch agents catalog`
+        #[arg(long, value_name = "KIND", required_unless_present = "own")]
+        cloud: Option<String>,
+        /// An agent you run yourself, with --token-file
+        #[arg(long, conflicts_with = "cloud", requires = "token_file")]
+        own: bool,
+        /// Where to write your own agent's credential: a new file, made
+        /// private (mode 600) before the agent is created, never
+        /// overwritten. Its program logs in with
+        /// `PLOW_TOKEN_FILE=FILE latch login`
+        #[arg(long, value_name = "FILE", requires = "own")]
+        token_file: Option<PathBuf>,
+        /// The agent's name; names need not be unique
+        #[arg(long)]
+        name: String,
+        /// The phone line it answers on: a line's uid or number, from
+        /// `latch agents lines`
+        #[arg(long)]
+        line: String,
+    },
+    /// Remove an agent, by its uid or its exact name: its credential stops
+    /// working and its line is freed
+    Remove {
+        agent: String,
+        /// Remove without asking (required when no one is at a terminal)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Args, Debug)]
