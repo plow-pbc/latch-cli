@@ -251,7 +251,7 @@ private struct Lane: View {
             answer.refused.flatMap {
                 ErrorCopy.sentence(.failed($0), host: ErrorCopy.thisMac, place: .tryRequest(connector: answer.connector))
             }.map(ErrorCopy.first)
-        case .noAnswer: "Edit the text to try again."
+        case .noAnswer: "The gatekeeper took longer than 15 seconds."
         default: nil
         }
     }
