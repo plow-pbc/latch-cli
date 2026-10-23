@@ -195,6 +195,25 @@ pub(super) fn fill(
     }
 }
 
+/// A login fill as `rules try --fill-login` previews it: the item's kind
+/// and title as given, never looked up in the vault, on the site of `url`.
+pub(crate) fn previewed_fill(
+    url: &str,
+    kind: &str,
+    title: &str,
+    fields: Vec<String>,
+) -> impl Serialize + use<> {
+    Action::VaultFill {
+        site: sites::site_of(url),
+        item: ItemShown {
+            kind: kind.to_string(),
+            title: title.to_string(),
+        },
+        fields,
+        confirmed: false,
+    }
+}
+
 /// A plan on `page`, its steps written out as the agent wrote them, and
 /// a card or identity fill it carries out first.
 pub(super) fn plan(

@@ -8438,6 +8438,43 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(tried["as"], "owner");
     assert_eq!(tried["gate"]["source"], "owner_request");
 
+    // A login fill is only judged, here and on another host: no browser,
+    // and no vault or vault key made.
+    let fill = [
+        "rules",
+        "try",
+        "--fill-login",
+        "Instacart",
+        "--url",
+        "https://www.instacart.com/login",
+    ];
+    let (code, tried) = answered(&latch(&host, &fill, &[]));
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(
+        tried["request"],
+        json!({"op": "browser", "action": {"kind": "vault_fill", "site": "instacart.com",
+               "item": {"kind": "login", "title": "Instacart"},
+               "fields": ["username", "password"]}})
+    );
+    let fields = [
+        "--host",
+        "host",
+        "--agent",
+        "Research bot",
+        "--field",
+        "password",
+    ];
+    let words: Vec<&str> = [&fill[..], &fields].concat();
+    let (code, tried) = answered(&latch(&owner, &words, &[]));
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["as"]["agent_uid"], AGENT_UID);
+    assert_eq!(tried["request"]["action"]["fields"], json!(["password"]));
+    for state in [&host, &owner] {
+        assert!(!state.join("vault.json").exists());
+        assert!(!state.join("vault.key").exists());
+    }
+
     // Without --host, the owner's other machine previews on itself, never
     // on the account's one host: judged here, though it does not serve.
     let (code, tried) = previewed(&owner, &[]);
@@ -8488,6 +8525,11 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(
         (code, &error["error"]["code"]),
         (Some(2), &json!("not_previewable"))
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("Preview a login fill with --fill-login TITLE --url URL, or an exec,"),
+        "{message}"
     );
 
     // With its host stopped, the host's machine still previews on itself:
@@ -8594,6 +8636,29 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
         error["error"]["next"],
         "give the draft as a file: --draft F"
     );
+    // A login fill goes in place of REQUEST, with its --url, and --field
+    // only with it.
+    let fill = [
+        "--fill-login",
+        "Instacart",
+        "--url",
+        "https://www.instacart.com/",
+    ];
+    for words in [
+        &["rules", "try", "--fill-login", "Instacart"][..],
+        &["rules", "try", "--url", "https://www.instacart.com/"],
+        &[&["rules", "try"][..], &fill, &["--", "exec", "--", "true"]].concat(),
+        &[
+            "rules", "try", "--field", "password", "--", "exec", "--", "true",
+        ],
+    ] {
+        let (code, error) = answered(&latch(&fresh, words, &[]));
+        assert_eq!(
+            (code, &error["error"]["code"]),
+            (Some(2), &json!("usage")),
+            "{words:?}"
+        );
+    }
     let settings = ["rules", "try", "--", "vault", "list"];
     let (code, error) = answered(&latch(&fresh, &settings, &[]));
     assert_eq!(

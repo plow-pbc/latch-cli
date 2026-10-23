@@ -835,10 +835,28 @@ pub enum RulesCommand {
         /// empty draft is no such rules
         #[arg(long, value_name = "F")]
         draft: Option<PathBuf>,
+        /// Preview a browser fill of the saved login TITLE on --url instead
+        /// of REQUEST. It previews the fill's judgment only, not the whole
+        /// sign-in (opening the site is judged on its own) nor whether the
+        /// vault has that login
+        #[arg(long, value_name = "TITLE", requires = "url")]
+        fill_login: Option<String>,
+        /// The page --fill-login fills the login on
+        #[arg(long, value_name = "URL", requires = "fill_login")]
+        url: Option<String>,
+        /// A field --fill-login fills, by its label; repeat for each
+        /// [default: username and password]
+        #[arg(long = "field", value_name = "LABEL", requires = "fill_login")]
+        fields: Vec<String>,
         /// The latch command to preview, after `--`, as an agent would send
         /// it: exec, file, google, messages or contacts. Example: `-- exec
         /// --write ~/site -- npm run build`
-        #[arg(last = true, required = true, value_name = "REQUEST")]
+        #[arg(
+            last = true,
+            required_unless_present = "fill_login",
+            conflicts_with = "fill_login",
+            value_name = "REQUEST"
+        )]
         request: Vec<String>,
     },
 }
