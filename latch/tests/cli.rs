@@ -5894,6 +5894,65 @@ fn signing_in_again_is_offered_and_waited_for() {
     assert_eq!(step["needs_sign_in"], json!(["second@example.com"]));
 }
 
+/// A caller whose stdout reader leaves cancels a Google sign-in wait at
+/// once, even while Plow is still answering: with `--events` while a link
+/// is slow to come (google_connect_cancelled, not a later sign_in_timeout),
+/// and at a terminal whose output was piped, before any enable runs.
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "systemd-tests")
+))]
+#[test]
+fn a_reader_that_leaves_cancels_the_sign_in_wait() {
+    use std::io::{BufRead, Read};
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    install_fake_gog(&host);
+
+    // `--events`, Plow slow to give the link: the reader leaves after hello.
+    plow.state.lock().unwrap().sign_in_slow = std::time::Duration::from_secs(20);
+    let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("8"))];
+    let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &within)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut hello = String::new();
+    out.read_line(&mut hello).unwrap();
+    assert!(hello.contains("hello"), "{hello}");
+    let started = std::time::Instant::now();
+    drop(out);
+    let mut said = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut said)
+        .unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(1), "{said}");
+    assert!(said.contains("google_connect_cancelled"), "{said}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(6),
+        "{said}"
+    );
+    plow.state.lock().unwrap().sign_in_slow = std::time::Duration::ZERO;
+
+    // At a terminal with stdout piped: its reader leaves, then the account
+    // appears; nothing is enabled for no one.
+    let (mut child, _typing, shown) =
+        at_a_terminal(&host, &["plugins", "enable", "google"], &[], true);
+    shows(&shown, "Waiting for the account");
+    drop(child.stdout.take());
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    let all = shows(&shown, "Stopped waiting for Google sign-in");
+    assert_eq!(child.wait().unwrap().code(), Some(1), "{all}");
+    let saved = fs::read_to_string(host.join("plugins.json")).unwrap_or_default();
+    assert!(!saved.contains("\"enabled\""), "{saved}");
+}
+
 /// The end of a Google sign-in wait: an account that appears in its last
 /// second is still enabled (one last look at the deadline), and a stop
 /// after the final enable was sent can no longer say what it did
@@ -6232,6 +6291,23 @@ fn at_its_own_terminal(
     fs::File,
     std::sync::mpsc::Receiver<String>,
 ) {
+    at_a_terminal(state, args, env, false)
+}
+
+/// As `at_its_own_terminal`, with stdout a pipe when `pipe_stdout` (the
+/// child's `stdout` is the test's to read): a person at the terminal
+/// whose command's output goes elsewhere.
+#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
+fn at_a_terminal(
+    state: &Path,
+    args: &[&str],
+    env: &[(&str, &Path)],
+    pipe_stdout: bool,
+) -> (
+    std::process::Child,
+    fs::File,
+    std::sync::mpsc::Receiver<String>,
+) {
     use std::os::fd::FromRawFd;
     use std::os::unix::process::CommandExt;
     let (mut main, mut side) = (0, 0);
@@ -6265,8 +6341,12 @@ fn at_its_own_terminal(
     let mut command = latch_command(state, args, env);
     command
         .stdin(side.try_clone().unwrap())
-        .stdout(side.try_clone().unwrap())
         .stderr(side.try_clone().unwrap());
+    if pipe_stdout {
+        command.stdout(std::process::Stdio::piped());
+    } else {
+        command.stdout(side.try_clone().unwrap());
+    }
     // SAFETY: setsid and the ioctl only change this child's session and
     // terminal, between fork and exec.
     unsafe {
