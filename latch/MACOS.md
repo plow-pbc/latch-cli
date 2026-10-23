@@ -138,4 +138,8 @@ built for Apple silicon and Intel (Xcode 26 or later), is built by `just
 test`'s installer suite on macOS (`scripts/test-app-bundle.sh`: ad hoc
 signed, to check it is valid; with the window's Swift tests), which
 `mac-tests.yml` runs on macOS 26, and by `keychain.yml` (Developer ID
-signed, to test the Keychain).
+signed, to test the Keychain). Every pull request also builds the macOS
+archives on macOS 26 and runs them on the oldest macOS images GitHub offers
+(macOS 15, Apple silicon and Intel): `scripts/macos-smoke.sh` runs latch's
+offline commands, the Messages reader up to the database it may not read,
+and opens the app, which must show its needs-macOS-26 alert.
