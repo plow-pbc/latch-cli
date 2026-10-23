@@ -95,7 +95,9 @@ No Homebrew tap is included.
   done; run it again any time. The installer runs it at the
   end when it has a terminal (`--non-interactive` skips it).
   `latch setup --status` lists the same steps as JSON, each done, needed
-  or blocked with the command that does it, changing nothing.
+  or blocked with the command that does it, changing nothing. Its Google
+  step asks Plow whether Google is connected there, and if not, where to
+  connect it.
 - `latch serve` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing
