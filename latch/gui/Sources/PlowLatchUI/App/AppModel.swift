@@ -145,8 +145,8 @@ final class AppModel {
     /// The Vault screen's selected item, and what `vault show` said of
     /// items, by host name then item.
     var selectedVaultItem: VaultList.Item.ID?
-    /// The New Item or Edit sheet over the Vault screen.
-    var vaultSheet: VaultEditor?
+    /// The sheet over the Vault screen: New Item, Edit, or Import.
+    var vaultSheet: VaultSheet?
     private(set) var vaultShows: [String: [String: Result<VaultShow, LatchError>]] = [:]
 
     /// Reads a host's vault again (the Vault screen, after a change).
@@ -165,8 +165,8 @@ final class AppModel {
     func beginVaultEdit(_ item: VaultList.Item, on host: HostEntry) async {
         await showVaultItem(item.item, on: host)
         switch vaultShows[host.name]?[item.item] {
-        case let .success(show)?: vaultSheet = VaultEditor(editing: show, on: host)
-        case let .failure(error)?: vaultSheet = VaultEditor(failed: item, error.message, on: host)
+        case let .success(show)?: vaultSheet = .editor(VaultEditor(editing: show, on: host))
+        case let .failure(error)?: vaultSheet = .editor(VaultEditor(failed: item, error.message, on: host))
         case nil: break
         }
     }
@@ -200,16 +200,29 @@ final class AppModel {
         }
     }
 
+    /// `latch vault import FILE --preview` on a host.
+    func previewImport(_ file: URL, on host: HostEntry) async throws -> ImportPreview {
+        try await client.vaultImportPreview(file, host: host.isThisMac ? nil : host.name)
+    }
+
+    /// Imports the rows picked from a preview, only if the vault and the
+    /// export still mean what it showed (`stale_revision` otherwise).
+    func importRows(_ picks: [Int], expect: String, from file: URL, on host: HostEntry) async throws -> ImportResult {
+        try await vaultChange(on: host, stale: nil) { try await self.client.vaultImport(file, picks: picks, expect: expect, host: $0) }
+    }
+
     /// A change to a host's vault, then the vault read again, whether it
-    /// worked or not. An item changed elsewhere is said in the app's words.
-    private func vaultChange<T>(on host: HostEntry, _ change: (String?) async throws -> T) async throws -> T {
+    /// worked or not. An item changed elsewhere is said in the app's words
+    /// (`stale`), or left as latch's error when nil.
+    private func vaultChange<T>(on host: HostEntry, stale: String? = itemChangedElsewhere,
+                                _ change: (String?) async throws -> T) async throws -> T {
         do {
             let result = try await change(host.isThisMac ? nil : host.name)
             await refreshVault(on: host)
             return result
         } catch {
             await refreshVault(on: host)
-            if (error as? LatchError)?.code == "stale_revision" { throw LatchError.unreachable(Self.itemChangedElsewhere) }
+            if let stale, (error as? LatchError)?.code == "stale_revision" { throw LatchError.unreachable(stale) }
             throw error
         }
     }

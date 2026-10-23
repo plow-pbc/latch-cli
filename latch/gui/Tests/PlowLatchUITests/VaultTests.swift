@@ -9,6 +9,11 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     private(set) var lists = 0
     /// The host each edit was sent to (nil: this Mac's).
     private(set) var editedOn: [String?] = []
+    /// Imports refused as stale before one goes through, and the tokens
+    /// each import was checked against.
+    var staleImports = 0
+    private(set) var expected: [String] = []
+    private(set) var previews = 0
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -29,6 +34,18 @@ final class VaultClient: LatchClient, @unchecked Sendable {
             throw LatchError.failed(LatchFailure(code: "stale_revision", message: "item v1 is at revision 3, not 2; list it again"))
         }
         return (try Fixtures.decode(Fixtures.vaultShows[item]!) as VaultShow).item
+    }
+    func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview {
+        previews += 1
+        return (try Fixtures.decode(Fixtures.importPreview) as ImportPreviewFixture).preview
+    }
+    func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult {
+        expected.append(expect)
+        if staleImports > 0 {
+            staleImports -= 1
+            throw LatchError.failed(LatchFailure(code: "stale_revision", message: "the vault or the export changed since the preview; nothing was saved; preview it again"))
+        }
+        return try Fixtures.decode(Fixtures.importResult)
     }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
@@ -72,6 +89,23 @@ struct VaultTests {
         #expect(editor.draft.sites == ["shop.example"])
         editor.sites = ""
         #expect(editor.problem != nil)
+    }
+
+    @Test func anImportIsCheckedAgainstItsPreviewAndAStaleOneIsPreviewedAgain() async throws {
+        let client = VaultClient()
+        client.staleImports = 1
+        let (app, studio) = try app(client)
+        let importer = VaultImport(file: URL(filePath: "/tmp/chrome.csv"), on: studio)
+        await importer.load(app: app)
+        let expect = try #require(try importer.preview?.get().expect)
+        importer.picked = [2]
+        await importer.run(app: app)
+        #expect(importer.result == nil && importer.notice == VaultImport.changedSincePreview)
+        #expect(client.previews == 2 && importer.picked == [2])
+        await importer.run(app: app)
+        #expect(client.expected == [expect, expect])
+        guard case let .success(result)? = importer.result else { Issue.record("not imported"); return }
+        #expect(result.saved == 1 && result.updated == 1)
     }
 
     @Test func aLoginTurnedNoteSendsNoSites() throws {

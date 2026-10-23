@@ -1,11 +1,13 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A host's vault: its items, never their secrets; an item opens in the
-/// inspector, and items are added and changed in a sheet, and removed.
+/// inspector, and items are added, changed, removed and imported in sheets.
 struct VaultView: View {
     @Environment(AppModel.self) private var app
     @State private var search = ""
     @State private var inspecting = true
+    @State private var choosingExport = false
 
     var body: some View {
         @Bindable var app = app
@@ -31,9 +33,12 @@ struct VaultView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button("New Item", systemImage: "plus") {
-                    if let host = app.host { app.vaultSheet = VaultEditor(on: host) }
+                    if let host = app.host { app.vaultSheet = .editor(VaultEditor(on: host)) }
                 }
                     .help("Add a login, card, identity or note")
+                    .disabled(!canChange)
+                Button("Import…", systemImage: "square.and.arrow.down") { choosingExport = true }
+                    .help("Import another password manager's export")
                     .disabled(!canChange)
             }
             ToolbarItem {
@@ -41,9 +46,20 @@ struct VaultView: View {
                     .help(inspecting ? "Hide the inspector" : "Show the inspector")
             }
         }
+        .fileImporter(isPresented: $choosingExport, allowedContentTypes: [.commaSeparatedText, .json, .data]) { result in
+            guard case let .success(file) = result, let host = app.host else { return }
+            let importer = VaultImport(file: file, on: host)
+            app.vaultSheet = .importer(importer)
+            Task { await importer.load(app: app) }
+        }
         // A sheet works on the host it was opened for, whatever the picker
         // shows meanwhile.
-        .sheet(item: $app.vaultSheet) { VaultItemSheet(editor: $0) }
+        .sheet(item: $app.vaultSheet) { sheet in
+            switch sheet {
+            case let .editor(editor): VaultItemSheet(editor: editor)
+            case let .importer(importer): ImportSheet(importer: importer)
+            }
+        }
     }
 
     /// Items can be added only once the host's vault has been read.
@@ -56,6 +72,19 @@ struct VaultView: View {
         guard let host = app.host else { return "" }
         guard case let .success(vault)? = app.summaries[host.name]?.vault else { return host.name }
         return "\(host.name) · \(vault.items.count) item\(vault.items.count == 1 ? "" : "s")"
+    }
+}
+
+/// The sheet open over the Vault screen.
+enum VaultSheet: Identifiable {
+    case editor(VaultEditor)
+    case importer(VaultImport)
+
+    var id: ObjectIdentifier {
+        switch self {
+        case let .editor(editor): ObjectIdentifier(editor)
+        case let .importer(importer): ObjectIdentifier(importer)
+        }
     }
 }
 
@@ -85,9 +114,9 @@ private struct HostVault: View {
                 ContentUnavailableView {
                     Label("No items on \(host.name)", systemImage: "lock.rectangle.stack")
                 } description: {
-                    Text("Agents fill logins and cards from here without ever seeing them.")
+                    Text("Agents fill logins and cards from here without ever seeing them. Add an item, or import another password manager's export.")
                 } actions: {
-                    Button("New Item…") { app.vaultSheet = VaultEditor(on: host) }
+                    Button("New Item…") { app.vaultSheet = .editor(VaultEditor(on: host)) }
                 }
             case let .success(vault)?:
                 List(rows(vault), selection: $app.selectedVaultItem) { item in
@@ -358,7 +387,7 @@ enum VaultKind: String, CaseIterable, Identifiable {
 /// The New Item and Edit sheet's state: what's typed, and saving it. A
 /// secret is typed fresh, never read back: left empty, the saved one stays.
 @Observable
-final class VaultEditor: Identifiable {
+final class VaultEditor {
     /// The host whose vault this changes: the one it was opened on.
     let host: HostEntry
     /// The item being changed, as `vault show` said; nil for a new one.
@@ -571,5 +600,188 @@ struct VaultItemSheet: View {
 
     private func value(_ label: String) -> Binding<String> {
         Binding { editor.values[label] ?? "" } set: { editor.values[label] = $0 }
+    }
+}
+
+/// Importing an export: what it holds (`vault import --preview`, no secret
+/// shown), the rows picked, and what the import saved.
+@Observable
+final class VaultImport {
+    let file: URL
+    /// The host it imports into: the one it was opened on.
+    let host: HostEntry
+    private(set) var preview: Result<ImportPreview, LatchError>?
+    /// Rows to import, by preview number; duplicates start unpicked.
+    var picked: Set<Int> = []
+    private(set) var importing = false
+    private(set) var result: Result<ImportResult, LatchError>?
+    /// Said over a preview read again because the last one went stale.
+    private(set) var notice: String?
+
+    init(file: URL, on host: HostEntry) {
+        self.file = file
+        self.host = host
+    }
+
+    func load(app: AppModel) async {
+        preview = await AppModel.result { try await app.previewImport(self.file, on: host) }
+        if case let .success(preview)? = preview { picked = Set(preview.items.filter { !$0.duplicate }.map(\.pick)) }
+    }
+
+    /// Imports the picked rows. If the vault or the export changed since the
+    /// preview, nothing is saved: the preview is read again, the picks that
+    /// still exist kept, for the person to check and import again.
+    func run(app: AppModel) async {
+        guard case let .success(shown)? = preview, let expect = shown.expect, !picked.isEmpty, !importing else { return }
+        importing = true
+        defer { importing = false }
+        do {
+            result = .success(try await app.importRows(picked.sorted(), expect: expect, from: file, on: host))
+        } catch let error as LatchError where error.code == "stale_revision" {
+            let kept = picked
+            await load(app: app)
+            if case let .success(fresh)? = preview { picked = kept.intersection(fresh.items.map(\.pick)) }
+            notice = Self.changedSincePreview
+        } catch {
+            result = .failure(error as? LatchError ?? .unreachable(error.localizedDescription))
+        }
+    }
+
+    /// The preview carries what an import is checked against.
+    var checkable: Bool {
+        if case let .success(preview)? = preview { return preview.expect != nil }
+        return false
+    }
+
+    static let changedSincePreview = "The vault or the export changed since this preview, so nothing was imported. Here it is again: check the rows, then import."
+
+    /// For snapshots: as latch said.
+    func stage(preview: ImportPreview, result: ImportResult? = nil, notice: String? = nil) {
+        self.preview = .success(preview)
+        picked = Set(preview.items.filter { !$0.duplicate }.map(\.pick))
+        self.result = result.map { .success($0) }
+        self.notice = notice
+    }
+}
+
+struct ImportSheet: View {
+    var importer: VaultImport
+    private var host: HostEntry { importer.host }
+    @Environment(AppModel.self) private var app
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Import into \(host.name)'s vault").font(.headline)
+                Text(importer.file.lastPathComponent).font(.callout).foregroundStyle(.secondary)
+            }
+            .padding()
+            Divider()
+            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            HStack {
+                if case let .success(preview)? = importer.preview, importer.result == nil {
+                    Text("\(importer.picked.count) of \(preview.items.count) picked · from \(preview.source)")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if importer.result == nil {
+                    Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                    Button(importer.importing ? "Importing…" : "Import") { Task { await importer.run(app: app) } }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(importer.importing || importer.picked.isEmpty || !importer.checkable)
+                } else {
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding()
+        }
+        .frame(width: 560, height: 460)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch (importer.preview, importer.result) {
+        case (nil, _):
+            ProgressView("Reading the export…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        case let (.failure(error)?, _):
+            ContentUnavailableView {
+                Label("Couldn't read this export", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(error.message)
+            }
+        case let (_, .success(result)?):
+            ContentUnavailableView {
+                Label(Self.saved(result), systemImage: result.failed.isEmpty ? "checkmark.circle" : "exclamationmark.triangle")
+            } description: {
+                Text(result.failed.map { "\($0.title): \($0.reason)" }.joined(separator: "\n"))
+            }
+        case let (_, .failure(error)?):
+            ContentUnavailableView {
+                Label("Couldn't confirm the import", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(error.message)
+            }
+        case let (.success(preview)?, nil):
+            List {
+                if let notice = importer.notice {
+                    Label(notice, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+                if preview.expect == nil {
+                    Label("\(host.name)'s Latch can't check an import against its preview. Update Latch there, then import.",
+                          systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+                Section {
+                    ForEach(preview.items) { row in
+                        Toggle(isOn: pick(row.pick)) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.title)
+                                Text(Self.detail(row)).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Only the rows you pick are saved. Their secrets go straight to \(host.name) and are never shown.")
+                        .foregroundStyle(.secondary)
+                }
+                if let skipped = preview.skipped, !skipped.isEmpty {
+                    Section("Not imported") {
+                        ForEach(skipped, id: \.title) { row in
+                            LabeledContent(row.title) { Text(row.reason).foregroundStyle(.secondary).multilineTextAlignment(.trailing) }
+                        }
+                    }
+                }
+            }
+            // The rows sent are the ones picked when Import was pressed.
+            .disabled(importer.importing)
+        }
+    }
+
+    private func pick(_ number: Int) -> Binding<Bool> {
+        Binding { importer.picked.contains(number) } set: { on in
+            if on { importer.picked.insert(number) } else { importer.picked.remove(number) }
+        }
+    }
+
+    /// "Login · ada · shop.example/login · already in the vault".
+    static func detail(_ row: ImportPreview.Row) -> String {
+        var words = [VaultKind(rawValue: row.kind)?.title ?? row.kind]
+        if let username = row.username, !username.isEmpty { words.append(username) }
+        if let url = row.url, !url.isEmpty { words.append(url) }
+        if row.duplicate { words.append("already in the vault") }
+        if let changed = row.changed, !changed.isEmpty { words.append("updates \(changed.joined(separator: ", "))") }
+        words += row.warnings ?? []
+        return words.joined(separator: " · ")
+    }
+
+    static func saved(_ result: ImportResult) -> String {
+        var parts = ["\(result.saved) saved"]
+        if result.updated > 0 { parts.append("\(result.updated) updated") }
+        if result.duplicates > 0 { parts.append("\(result.duplicates) already there") }
+        if !result.failed.isEmpty { parts.append("\(result.failed.count) failed") }
+        return parts.joined(separator: " · ")
     }
 }
