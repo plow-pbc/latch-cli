@@ -17,11 +17,13 @@ final class AppModel {
     private(set) var statusError: String?
     /// The onboarding flow, while the onboarding window is open.
     private(set) var onboarding: Onboarding?
-    /// How the app hands a link to the system (Messages, System Settings) or
-    /// shows a file in the Finder; only ever on a person's click. A test
-    /// build records them instead, so a run never opens anything.
+    /// How the app hands a link to the system (Messages, System Settings);
+    /// only ever on a person's click. A test build records them instead, so
+    /// a run never opens anything.
     var open: (URL) -> Void = { NSWorkspace.shared.open($0) }
-    var reveal: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+    /// Floats the Full Disk Access helper under System Settings, with this
+    /// app to drag into the list.
+    var guideGrant: (URL) -> any GrantGuide = { GrantHelper.show(dragging: $0) }
     /// Turns "Start when you log in" on or off; a test build records it.
     var setLoginItem: (Bool) throws -> Void = { try LoginItem.set($0) }
     var loginItemIsOn: () -> Bool = { LoginItem.isOn }

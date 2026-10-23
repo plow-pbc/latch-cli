@@ -225,6 +225,13 @@ struct GatekeeperTests {
     }
 }
 
+/// The Full Disk Access helper, as calls made to it.
+final class FakeGuide: GrantGuide {
+    private(set) var calls: [String] = []
+    func granted() { calls.append("granted") }
+    func stop() { calls.append("stop") }
+}
+
 /// A latch whose `plugins enable` answers as a test says, after a pause,
 /// and counts its calls; `rules set` takes the same pause.
 final class ScriptedClient: LatchClient, @unchecked Sendable {
@@ -334,7 +341,7 @@ struct ClosingTests {
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var opened: [URL] = []
         app.open = { opened.append($0) }
-        app.reveal = { opened.append($0) }
+        app.guideGrant = { opened.append($0); return FakeGuide() }
         let flow = app.stage(.access)
         flow.requestAccess()
         try await Task.sleep(for: .milliseconds(50))
@@ -344,6 +351,52 @@ struct ClosingTests {
         #expect(opened.isEmpty)
         #expect(flow.messages == .unknown)
         #expect(client.enabled == ["messages"])
+    }
+
+    @Test func theHelperFloatsUntilAccessLands() async throws {
+        let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access", grant: "/Applications/Plow Latch.app",
+                                      settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        let calls = Mutex(0)
+        let client = ScriptedClient { _ in
+            // Messages and Contacts both wait for the grant once, then have it.
+            if calls.withLock({ $0 += 1; return $0 }) <= 2 { throw LatchError.failed(notGranted) }
+            return nil
+        }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        var opened: [URL] = []
+        app.open = { opened.append($0) }
+        let guide = FakeGuide()
+        var guided: [URL] = []
+        app.guideGrant = { guided.append($0); return guide }
+        let flow = app.stage(.access)
+        flow.requestAccess()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(opened == [URL(string: notGranted.settings!)!])
+        #expect(guided == [URL(filePath: "/Applications/Plow Latch.app")])
+        #expect(guide.calls.isEmpty)
+        try await Task.sleep(for: .milliseconds(2300))
+        #expect(flow.accessDone)
+        #expect(guide.calls == ["granted"])
+        // Leaving afterwards stops it at once, granted or not.
+        flow.next()
+        #expect(guide.calls == ["granted", "stop"])
+    }
+
+    @Test func leavingContactsAndMessagesTakesTheHelperAway() async throws {
+        let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access", grant: "/Applications/Plow Latch.app",
+                                      settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        let client = ScriptedClient { _ in throw LatchError.failed(notGranted) }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        app.open = { _ in }
+        let guide = FakeGuide()
+        app.guideGrant = { _ in guide }
+        let flow = app.stage(.access)
+        flow.requestAccess()
+        try await Task.sleep(for: .milliseconds(200))
+        flow.back()
+        #expect(guide.calls.first == "stop")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!guide.calls.contains("granted"))
     }
 
     @Test func aRerunShowsTheLoginItemAsItIs() {
@@ -428,7 +481,7 @@ struct ClosingTests {
         client.status = attached ? Fixtures.servingAttached : Fixtures.serving
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.open = { _ in }
-        app.reveal = { _ in }
+        app.guideGrant = { _ in FakeGuide() }
         await app.refreshStatus()
         let flow = app.stage(.access)
         flow.checkAccess()

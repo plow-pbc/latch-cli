@@ -424,7 +424,7 @@ struct AccessView: View {
             } else if flow.waitingForAccess {
                 Text("This screen updates when access is granted.").foregroundStyle(Brand.muted)
             } else if flow.messages.isNeeded || flow.contacts.isNeeded {
-                Text("Drag \(AppName.shown) from the Finder window into the Full Disk Access list, then switch it on.")
+                Text("Drag \(AppName.shown) into the Full Disk Access list, then switch it on.")
                     .foregroundStyle(Brand.muted)
             }
             Spacer(minLength: 0)
