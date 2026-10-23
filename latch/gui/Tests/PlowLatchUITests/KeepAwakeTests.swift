@@ -45,6 +45,19 @@ struct KeepAwakeTests {
         #expect(!app.keepAwakeBinding.wrappedValue)
     }
 
+    /// Start follows this Mac's status: unplugged after showing "keeping
+    /// awake", its line says the Mac sleeps on battery.
+    @Test func startFollowsThePowerSource() async {
+        let client = ScriptedClient { _ in nil }
+        client.followed = [held, Fixtures.keepAwake(#"{"enabled":true,"held":false,"reason":"on_battery"}"#)]
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.start)
+        let showing = Task { await flow.startAppeared() }
+        await waitUntil { app.status?.thisMachine.hosting.keepAwake?.reason == "on_battery" }
+        #expect(app.status?.thisMachine.hosting.keepAwake?.said == "On battery, this Mac sleeps as usual.")
+        showing.cancel()
+    }
+
     /// Unreadable settings: no switch to set.
     @Test func unreadableSettingsCantBeSet() async {
         let client = ScriptedClient { _ in nil }

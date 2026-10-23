@@ -811,6 +811,12 @@ final class Onboarding {
         }
     }
 
+    /// Start showing: this Mac's status, followed while the screen shows, so
+    /// the keep-awake line changes as the Mac is plugged in or unplugged.
+    func startAppeared() async {
+        await app.followStatus()
+    }
+
     /// Start is waiting for the login item to be allowed in Login Items.
     var loginItemNeedsApproval: Bool { startError == LoginItem.needsApproval }
 

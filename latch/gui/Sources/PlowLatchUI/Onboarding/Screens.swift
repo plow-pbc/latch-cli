@@ -541,7 +541,7 @@ struct StartView: View {
         }
         .padding(.horizontal, 56)
         .padding(.top, 52)
-        .task { if !app.still { await app.refreshStatus() } }
+        .task { if !app.still { await flow.startAppeared() } }
     }
 
     private func toggle(_ title: String, _ symbol: String, _ on: Binding<Bool>) -> some View {
