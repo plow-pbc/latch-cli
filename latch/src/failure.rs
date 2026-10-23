@@ -358,6 +358,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("stale_revision", Exit::Failed),
     ("stale_snapshot", Exit::Failed),
     ("state_busy", Exit::Failed),
+    ("state_dir", Exit::Failed),
     ("state_dir_too_long", Exit::Usage),
     ("state_format", Exit::Failed),
     ("state_io", Exit::Failed),

@@ -916,7 +916,7 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[ex(
             "Edit one agent's rules",
-            &["rules", "edit", "--from", "ada"],
+            &["rules", "edit", "--agent", "ada"],
         )],
     },
     Entry {
@@ -939,10 +939,10 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "rules.try",
-        runs_on: |_| RunsOn::Host,
-        output: "`verdict`: allow, not_covered, owner_said_no, no_intent, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, chat window, rule revisions, model, latency, cost). A refusal is a preview that worked: exit 0.",
+        runs_on: |_| RunsOn::Either,
+        output: "`verdict`: allow, not_covered, owner_said_no, no_intent, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, new_agent, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, chat window, rule revisions, model, latency, cost). A refusal is a preview that worked: exit 0. This machine's previews are judged by the calling latch, so they need no running host; another host's go to it. `--draft` judges against draft rules for every agent, never saved; `--new-agent` judges by the rules alone, as a new agent with no chat and no rules of its own, whatever connectors and --deny-exec the host has.",
         effect: Repeatable(
-            "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001); the request itself never runs, and the preview is not audited",
+            "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001); the request itself never runs, the draft is never saved, and the preview is not audited",
         ),
         owner_only: true,
         connector: None,
@@ -950,8 +950,26 @@ const ENTRIES: &[Entry] = &[
             ex(
                 "Would Penny be allowed to build the site?",
                 &[
-                    "rules", "try", "--from", "Penny", "--", "exec", "--write", "~/site", "--",
+                    "rules", "try", "--agent", "Penny", "--", "exec", "--write", "~/site", "--",
                     "npm", "run", "build",
+                ],
+            ),
+            ex(
+                "Would a new agent be allowed to build the site under draft rules read from stdin?",
+                &[
+                    "rules",
+                    "try",
+                    "--new-agent",
+                    "--draft",
+                    "-",
+                    "--",
+                    "exec",
+                    "--write",
+                    "~/site",
+                    "--",
+                    "npm",
+                    "run",
+                    "build",
                 ],
             ),
             ex(

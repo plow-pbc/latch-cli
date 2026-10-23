@@ -1495,7 +1495,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
         ),
     ];
     let (dir, state, key) = owner_host();
-    // `--from`, and the two shows (edit's and the last), each read the account.
+    // `--agent`, and the two shows (edit's and the last), each read the account.
     let (url, server) = fake_plow([account.clone(), account.clone(), account].concat());
     use_plow(&state, &url);
 
@@ -1511,7 +1511,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     let file = rules_file.to_str().unwrap();
     let agent = latch(
         &state,
-        &["rules", "set", "--from", "ada-latch", "--file", file],
+        &["rules", "set", "--agent", "ada-latch", "--file", file],
         &[],
     );
     assert_eq!(agent.status.code(), Some(0), "{agent:?}");
@@ -2716,7 +2716,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
                 "set",
                 "--host",
                 "host",
-                "--from",
+                "--agent",
                 "Research bot",
                 "--file",
                 file,
@@ -2725,7 +2725,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         ),
         run(
             &owner,
-            &["rules", "edit", "--host", "host", "--from", "Research bot"],
+            &["rules", "edit", "--host", "host", "--agent", "Research bot"],
             &[("EDITOR", editor.as_path())],
         ),
         run(&owner, &["rules", "show", "--host", "host"], &[]),
@@ -2736,7 +2736,14 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         &["rules", "show", "--host", "host"][..],
         &["rules", "set", "--host", "host", "Anything goes."],
         &["rules", "edit", "--host", "host"],
-        &["rules", "clear", "--host", "host", "--from", "Research bot"],
+        &[
+            "rules",
+            "clear",
+            "--host",
+            "host",
+            "--agent",
+            "Research bot",
+        ],
     ]
     .iter()
     .map(|args| run(&agent, args, &[("EDITOR", editor.as_path()), agent_env[0]]))
@@ -2744,7 +2751,14 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let rules_after_agent = fs::read_to_string(host.join(format!("rules/{AGENT_UID}.txt")));
     let cleared = run(
         &owner,
-        &["rules", "clear", "--host", "host", "--from", "Research bot"],
+        &[
+            "rules",
+            "clear",
+            "--host",
+            "host",
+            "--agent",
+            "Research bot",
+        ],
         &[],
     );
 
@@ -2903,7 +2917,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let before = local(&never);
     assert!(!never.exists(), "status --local made the state folder");
     assert_eq!(before["peer"], Value::Null);
-    assert_eq!(before["protocol"], 3);
+    assert_eq!(before["protocol"], 4);
     assert_eq!(
         before["serve"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
@@ -3554,7 +3568,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve-v3.sock").exists() {
+    while !host.join("serve-v4.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -3747,7 +3761,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v3.sock")).unwrap();
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v4.sock")).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -3776,7 +3790,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     plow.state.lock().unwrap().google = Some("google-token".into());
     let _serve = serving(&host, &relay);
     assert_eq!(
-        fs::metadata(host.join("serve-v3.sock"))
+        fs::metadata(host.join("serve-v4.sock"))
             .unwrap()
             .permissions()
             .mode()
@@ -5213,7 +5227,7 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v3.sock")).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v4.sock")).unwrap();
     thread::spawn(move || {
         let mut held = Vec::new();
         for connection in listener.incoming() {
@@ -6280,7 +6294,7 @@ mod lifecycle {
     fn a_stale_socket_of_this_version_is_never_taken_for_its_host() {
         let (_dir, state, _) = owner_host();
         let (_old, _socket, said) = old_host(&state);
-        let current = state.join("serve-v3.sock");
+        let current = state.join("serve-v4.sock");
         // A socket no one listens on any more, then a plain file.
         drop(std::os::unix::net::UnixListener::bind(&current).unwrap());
         let serve = local_serve(&state);
@@ -7549,7 +7563,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     };
 
     // From the owner's other machine, as the agent: allowed, and nothing ran.
-    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    let (code, tried) = previewed(&owner, &["--host", "host", "--agent", "Research bot"]);
     assert_eq!(code, Some(0), "{tried}");
     assert_eq!(tried["verdict"], "allow");
     assert_eq!(tried["host"], "host");
@@ -7569,15 +7583,16 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(tried["as"], "owner");
     assert_eq!(tried["gate"]["source"], "owner_request");
 
-    // Without --host, the owner's other machine previews on its own host,
-    // which does not serve: never on the account's one host.
-    let (code, error) = previewed(&owner, &[]);
-    assert_eq!(code, Some(3), "{error}");
-    assert_eq!(error["error"]["code"], "serve_required");
+    // Without --host, the owner's other machine previews on itself, never
+    // on the account's one host: judged here, though it does not serve.
+    let (code, tried) = previewed(&owner, &[]);
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["host"], "owner-mac");
+    assert_eq!(tried["gate"]["caller"], "owner_on_host");
 
     // A refusal is a preview that worked.
     plow.state.lock().unwrap().forbidden = true;
-    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    let (code, tried) = previewed(&owner, &["--host", "host", "--agent", "Research bot"]);
     assert_eq!(code, Some(0), "{tried}");
     assert_eq!(tried["verdict"], "owner_said_no");
 
@@ -7600,7 +7615,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     );
     plow.state.lock().unwrap().out_of_credits = false;
 
-    let (code, error) = previewed(&owner, &["--host", "host", "--from", "Nobody"]);
+    let (code, error) = previewed(&owner, &["--host", "host", "--agent", "Nobody"]);
     assert_eq!(
         (code, &error["error"]["code"]),
         (Some(2), &json!("no_such_agent"))
@@ -7620,8 +7635,45 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
         (Some(2), &json!("not_previewable"))
     );
 
-    // Previews are not audited: the host's audit has no preview and no exec.
+    // With its host stopped, the host's machine still previews on itself:
+    // here as a new agent, against draft rules read from stdin.
     drop(serve);
+    plow.state.lock().unwrap().forbidden = false;
+    let words: Vec<&str> = [
+        &["rules", "try", "--new-agent", "--draft", "-", "--"][..],
+        &build,
+    ]
+    .concat();
+    let mut child = latch_command(&host, &words, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let draft = "Builds of the site are fine.";
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(draft.as_bytes())
+        .unwrap();
+    let (code, tried) = answered(&child.wait_with_output().unwrap());
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["host"], "host");
+    assert_eq!(tried["as"], "new_agent");
+    assert_eq!(tried["gate"]["source"], "rules");
+    // Another host that is offline is still only reached where it runs.
+    for (peer, _) in plow.state.lock().unwrap().peers.iter_mut() {
+        if peer["name"] == "host" {
+            peer["online"] = json!(false);
+        }
+    }
+    let (code, error) = previewed(&owner, &["--host", "host"]);
+    assert_eq!(code, Some(3), "{error}");
+    assert_eq!(error["error"]["code"], "host_offline");
+
+    // Previews are not audited: the host's audit has no preview and no exec.
     let records = audit_records(&host);
     let ops: Vec<&str> = records
         .iter()
@@ -7630,6 +7682,9 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
         .collect();
     assert!(ops.is_empty(), "{records:?}");
     assert!(!home.join("out").exists());
+    // The draft was never saved.
+    let (_, shown) = answered(&latch(&host, &["rules", "show"], &[]));
+    assert_eq!(shown["every_agent"]["text"], Value::Null, "{shown}");
 }
 
 #[test]
@@ -7672,6 +7727,14 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
         let message = error["error"]["message"].as_str().unwrap();
         assert!(message.contains("latch rules try --host NAME"), "{message}");
     }
+    // A draft on stdin, and a request that reads stdin too.
+    let both = [
+        "rules", "try", "--draft", "-", "--", "exec", "--stdin", "--", "cat",
+    ];
+    let (code, error) = answered(&latch(&fresh, &both, &[]));
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("--draft F"), "{message}");
     let settings = ["rules", "try", "--", "vault", "list"];
     let (code, error) = answered(&latch(&fresh, &settings, &[]));
     assert_eq!(
