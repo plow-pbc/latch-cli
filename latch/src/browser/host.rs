@@ -819,18 +819,15 @@ async fn open(
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
-    let engine = if name.is_empty() {
-        let state_dir = browsers.state_dir.clone();
-        tokio::task::spawn_blocking(move || super::engine::default(&state_dir))
-            .await
-            .expect("the engine check does not panic")?
+    let named = if name.is_empty() {
+        None
     } else {
-        super::engine::unnamed(name).ok_or_else(|| {
+        Some(super::engine::unnamed(name).ok_or_else(|| {
             Failure::new(
                 code::bad_arguments,
                 format!("no browser engine {name:?}: use chrome or camoufox"),
             )
-        })?
+        })?)
     };
     let url = args["url"].as_str();
     if let Some(url) = url {
@@ -840,6 +837,16 @@ async fn open(
         let action = judged::open_site(browsers, url);
         judged::judge(caller.gate, action, audit).await?;
     }
+    // Judged first, as a named engine's own check comes only at its launch.
+    let engine = match named {
+        Some(engine) => engine,
+        None => {
+            let state_dir = browsers.state_dir.clone();
+            tokio::task::spawn_blocking(move || super::engine::default(&state_dir))
+                .await
+                .expect("the engine check does not panic")?
+        }
+    };
     open_judged(browsers, caller.key, engine, args, audit).await
 }
 
