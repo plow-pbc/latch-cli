@@ -1,13 +1,6 @@
 # How latch works
 
-This page is the map: who does what, what latch supports and what it doesn't.
-The detail is in [Getting started](GETTING-STARTED.md) and the area guides:
-[browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
-[Google](../latch/GOOGLE.md), [macOS](../latch/MACOS.md) and
-[Docker](../latch/DOCKER.md). Everything here describes `main` today. Lines
-marked **Next build** are in pull requests that haven't merged yet.
-
-## 1. What latch is
+## 1. In short
 
 latch lets your agents use the files, programs and browser of a machine
 you trust, your Google account through it, and on a Mac its Messages and
@@ -16,6 +9,29 @@ other machines and your agents call it over an encrypted connection between
 the two machines, with Plow as the directory that says who each caller is.
 The host's gatekeeper checks each action against what you asked for, and
 the host records every call in its audit log.
+
+| | Who it is | What it can do | How its calls are judged |
+|---|---|---|---|
+| **Owner** | Your machines, logged in with your own Plow login. | Call any host, manage the rules and vault on any host, turn connectors on or off on the host itself, run a host. | As your own request: refused only where the host's rules forbid it. |
+| **Owner on the host** | Anything running as your OS user on the host that uses its state folder. An agent running there counts. | Everything the owner can, on that host, through its local socket. | Like the owner. |
+| **Agent** | An agent logged in with its own Plow agent credential. | Call hosts. It can't manage rules, the vault or connectors, and can't run a host. | Against your messages in its Plow chat, plus the host's rules. |
+| **Host** | A machine running `latch serve`. | Runs each call in a sandbox, and holds the vault, rules, browser, connectors and audit log. | Its gatekeeper judges callers' actions; an action it can't judge doesn't run. |
+
+**Read more:** [who's who in detail](#2-whos-who) ·
+[Mac and Linux hosts](#3-hosts-mac-and-linux) ·
+[what an agent can do](#4-what-an-agent-can-do-through-a-host) ·
+[the gatekeeper](#5-the-gatekeeper) ·
+[managing a host](#6-managing-a-host) · [trust](#7-trust-model) ·
+[install and update](#8-install-update-log-out) ·
+[not supported](#9-not-supported) ·
+[direction](#10-direction-not-built-yet). For the detail, see
+[Getting started](GETTING-STARTED.md) and the guides for the
+[browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
+[Google](../latch/GOOGLE.md), [macOS](../latch/MACOS.md) and
+[Docker](../latch/DOCKER.md).
+
+Everything here describes `main` today. Lines marked **Next build** are in
+pull requests that haven't merged yet.
 
 ## 2. Who's who
 
