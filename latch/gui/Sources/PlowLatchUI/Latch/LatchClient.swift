@@ -19,6 +19,15 @@ nonisolated protocol LatchClient: Sendable {
     /// The same, with `--check-access`: whether Plow Latch has Full Disk
     /// Access, which takes a moment.
     func setupStatusCheckingAccess() async throws -> SetupStatus
+    /// `latch rules set --file -` (or `rules clear` for no text) on a host,
+    /// for every agent or, with `agent` (a uid), that agent's own.
+    func rulesSet(_ text: String, host: String?, agent: String?) async throws
+    /// `latch agents [--host NAME]`.
+    func agents(host: String?) async throws -> AgentsList
+    /// `latch rules try`: the verdict `request` (as an agent would send it)
+    /// would get on a host now, as `agent` (a uid), a new agent, or you;
+    /// `draft` judges against unsaved rules for every agent.
+    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry
     /// `latch plugins list`, on this Mac's host or, with `host`, another.
     func pluginsList(host: String?) async throws -> PluginsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
@@ -127,6 +136,27 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func setupStatusCheckingAccess() async throws -> SetupStatus {
         try decode(SetupStatus.self, try await run(["setup", "--status", "--check-access"]))
+    }
+
+    func rulesSet(_ text: String, host: String?, agent: String?) async throws {
+        let whose = on(host) + (agent.map { ["--agent", $0] } ?? [])
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            _ = try await run(["rules", "clear"] + whose)
+        } else {
+            _ = try await run(["rules", "set", "--file", "-"] + whose, input: Data(text.utf8))
+        }
+    }
+
+    func agents(host: String?) async throws -> AgentsList {
+        try decode(AgentsList.self, try await run(["agents"] + on(host)))
+    }
+
+    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+        var arguments = ["rules", "try"] + on(host)
+        if let agent { arguments += ["--agent", agent] }
+        if newAgent { arguments.append("--new-agent") }
+        if draft != nil { arguments += ["--draft", "-"] }
+        return try decode(RulesTry.self, try await run(arguments + ["--"] + request, input: draft.map { Data($0.utf8) }))
     }
 
     func pluginsList(host: String?) async throws -> PluginsList {

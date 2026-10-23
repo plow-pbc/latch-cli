@@ -69,6 +69,24 @@ enum TestHooks {
         on("record") { id in app.selectedRecord = id }
         on("filter") { name in if let filter = name.flatMap(ActivityView.Filter.init(rawValue:)) { app.activityFilter = filter } }
         on("connections") { value in app.showConnections = value == "1" }
+        // Try a request: "AS|REQUEST", AS being you, new, or an agent's uid.
+        on("try") { argument in
+            guard let argument, let bar = argument.firstIndex(of: "|"), let host = app.host else { return }
+            let who = String(argument[..<bar])
+            app.trial.caller = who == "you" ? .you : who == "new" ? .newAgent : .agent(who)
+            app.trial.request = String(argument[argument.index(after: bar)...])
+            Task { await app.trial.run(on: host, app: app) }
+        }
+        on("focus") { uid in app.rulesFocus = uid }
+        // Saves "UID|TEXT" (UID empty: every agent's) on the selected host
+        // as Save does, over the revision on screen.
+        on("save-rules") { argument in
+            guard let argument, let bar = argument.firstIndex(of: "|"), let host = app.host,
+                  case let .success(show)? = app.summaries[host.name]?.rules else { return }
+            let uid = argument[..<bar].isEmpty ? nil : String(argument[..<bar])
+            let revision = uid.map { show.agent($0)?.revision } ?? show.everyAgent?.revision
+            Task { try? await app.saveRules(String(argument[argument.index(after: bar)...]), on: host, agent: uid, revision: revision) }
+        }
         on("quit") { _ in NSApp.terminate(nil) }
         on("settings-stand-in") { pid in standIn = pid.flatMap { pid_t($0) } }
         on("grant-helper") { path in

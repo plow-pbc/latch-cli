@@ -14,6 +14,8 @@ struct MainView: View {
             switch app.section {
             case .home: HomeView()
             case .activity: ActivityView()
+            case .agents: AgentsView()
+            case .rules: HostRulesView()
             default: NotYetView(item: app.section)
             }
         }

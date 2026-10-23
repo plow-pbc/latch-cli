@@ -126,7 +126,7 @@ final class AppModel {
         summaries[host.name, default: HostSummary()].plugins = plugins
     }
 
-    private static func result<T>(_ read: () async throws -> T) async -> Result<T, LatchError> {
+    static func result<T>(_ read: () async throws -> T) async -> Result<T, LatchError> {
         do {
             return .success(try await read())
         } catch {
@@ -137,6 +137,74 @@ final class AppModel {
     /// For snapshots: what a host said.
     func stage(summary: HostSummary, for host: String) {
         summaries[host] = summary
+    }
+
+    /// The account's agents (`latch agents`), and each one's standing on
+    /// each host (`latch agents --host`), by host name then agent uid; a
+    /// host latch couldn't ask has its error instead.
+    private(set) var agents: [AgentsList.Agent]?
+    private(set) var agentsError: LatchError?
+    private(set) var standings: [String: Result<[String: AgentsList.Agent.Standing], LatchError>] = [:]
+
+    func refreshAgents() async {
+        do {
+            agents = try await client.agents(host: nil).agents
+            agentsError = nil
+        } catch {
+            agentsError = error as? LatchError ?? .unreachable(error.localizedDescription)
+        }
+        // One host at a time: each is a read over latch's connection.
+        for host in hosts where host.isThisMac || host.online != false {
+            await refreshStanding(on: host)
+        }
+    }
+
+    func refreshStanding(on host: HostEntry) async {
+        let result = await Self.result { try await self.client.agents(host: host.name) }
+        standings[host.name] = result.map { Dictionary($0.agents.compactMap { agent in agent.standing.map { (agent.uid, $0) } },
+                                                        uniquingKeysWith: { first, _ in first }) }
+    }
+
+    /// The Agents page's path: an agent's uid opens its page.
+    var agentsPath: [String] = []
+    /// The agent whose rules the Rules screen brings into view.
+    var rulesFocus: String?
+    /// Rules' Try a request.
+    let trial = Trial()
+
+    /// Reads a host's rules again (the Rules screen, after a save).
+    func refreshRules(on host: HostEntry) async {
+        let rules = await Self.result { try await self.client.rulesShow(host: host.isThisMac ? nil : host.name) }
+        summaries[host.name, default: HostSummary()].rules = rules
+    }
+
+    /// Saves rules on a host, for every agent or one agent's own, only if
+    /// they're still what the person started editing (`revision`, nil when
+    /// there were none): a save never replaces rules changed elsewhere
+    /// meanwhile. Empty text clears them.
+    func saveRules(_ text: String, on host: HostEntry, agent: String?, revision: String?) async throws {
+        let target = host.isThisMac ? nil : host.name
+        let now = try await client.rulesShow(host: target)
+        let current = agent.map { now.agent($0)?.revision } ?? now.everyAgent?.revision
+        guard current == revision else { throw LatchError.unreachable(Self.changedElsewhere) }
+        try await client.rulesSet(text, host: target, agent: agent)
+        await refreshRules(on: host)
+        await refreshStanding(on: host)
+    }
+
+    static let changedElsewhere = "These rules changed since you started editing. Revert to see the saved rules, then make your change again."
+
+    /// `latch rules try` on a host.
+    func tryRequest(_ request: [String], on host: HostEntry, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+        try await client.rulesTry(request, host: host.isThisMac ? nil : host.name, agent: agent, newAgent: newAgent, draft: draft)
+    }
+
+    /// For snapshots: as `latch agents` said.
+    func stage(agents: AgentsList, standings: [String: Result<AgentsList, LatchError>]) {
+        self.agents = agents.agents
+        self.standings = standings.mapValues { result in
+            result.map { Dictionary($0.agents.compactMap { agent in agent.standing.map { (agent.uid, $0) } }, uniquingKeysWith: { a, _ in a }) }
+        }
     }
 
     /// Each host's activity, by host name, made when a screen first shows it.

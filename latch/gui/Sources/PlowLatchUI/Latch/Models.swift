@@ -105,12 +105,62 @@ nonisolated struct LoginLine: Decodable {
 }
 
 /// `latch rules show`: the rules for every agent on a host, and each
-/// agent's own rules there.
+/// agent's own rules there, each with the revision a save checks against.
 nonisolated struct RulesShow: Decodable, Equatable {
-    struct Text: Decodable, Equatable { var text: String }
-    struct Agent: Decodable, Equatable { var agentName: String? }
+    struct Text: Decodable, Equatable {
+        var text: String
+        var revision: String?
+    }
+    struct Agent: Decodable, Equatable {
+        var agentName: String?
+        var agentUid: String?
+        var text: String?
+        var revision: String?
+    }
+    /// Agents the host refuses exec (`serve --deny-exec`).
+    struct DenyExec: Decodable, Equatable {
+        var everyAgent: Bool?
+        var agentUids: [String]?
+    }
     var everyAgent: Text?
     var agents: [Agent]?
+    var denyExec: DenyExec?
+
+    func agent(_ uid: String) -> Agent? { agents?.first { $0.agentUid == uid } }
+
+    /// Whether the host refuses this agent exec.
+    func execBlocked(_ uid: String) -> Bool {
+        denyExec?.everyAgent == true || denyExec?.agentUids?.contains(uid) == true
+    }
+}
+
+/// `latch agents [--host NAME]`: the account's agents and, with a host,
+/// each one's standing there.
+nonisolated struct AgentsList: Decodable, Equatable {
+    struct Agent: Decodable, Equatable, Identifiable {
+        struct Line: Decodable, Equatable { var number: String?; var name: String? }
+        struct Standing: Decodable, Equatable {
+            /// It has rules of its own on that host.
+            var ownRules: Bool?
+            /// The host refuses it exec (`serve --deny-exec`).
+            var execBlocked: Bool?
+        }
+        var uid: String
+        var name: String
+        /// `own` or `cloud`.
+        var kind: String?
+        var cloudKind: String?
+        var line: Line?
+        /// Plow's word on a cloud agent (e.g. `provisioning`); nil for own.
+        var status: String?
+        /// As Plow writes them (UTC, no zone); shown as given.
+        var createdAt: String?
+        var lastSeenAt: String?
+        var standing: Standing?
+
+        var id: String { uid }
+    }
+    var agents: [Agent]
 }
 
 /// `latch vault list`: a host's vault items, never their secrets.
@@ -125,6 +175,8 @@ nonisolated struct RulesTry: Decodable, Equatable {
     var verdict: String
     /// Why the host refused it before asking the judge, for `host_refused`.
     var refused: LatchFailure?
+    /// The gatekeeper's judgment, when it was asked.
+    var gate: AuditRecord.Gate?
 }
 
 /// `latch setup --status`: each setup step as the state folder says, with

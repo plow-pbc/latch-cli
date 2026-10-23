@@ -1,0 +1,353 @@
+import SwiftUI
+
+/// A host's rules: those for every agent, each agent's own, and Try a
+/// request against them.
+struct HostRulesView: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Group {
+            if let host = app.host {
+                if !host.isThisMac, host.online == false {
+                    ContentUnavailableView {
+                        Label("\(host.name) is offline", systemImage: "wifi.slash")
+                    } description: {
+                        Text("Its rules are kept on \(host.name). Start `latch serve` there to see and change them.")
+                    }
+                } else {
+                    HostRules(host: host).id(host.id)
+                }
+            } else {
+                ContentUnavailableView("No host", systemImage: "list.bullet.rectangle",
+                                       description: Text("Rules are kept on each host. Pick one in the sidebar."))
+            }
+        }
+        .navigationTitle("Rules")
+        .navigationSubtitle(app.host?.name ?? "")
+    }
+}
+
+private struct HostRules: View {
+    var host: HostEntry
+    private static let verdictAnchor = "verdict"
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let rules = app.summaries[host.name]?.rules
+        ScrollViewReader { scroller in
+            Form {
+                switch rules {
+                case nil:
+                    Section { ProgressView("Reading the rules on \(host.name)…").frame(maxWidth: .infinity) }
+                case let .failure(error)?:
+                    Section {
+                        Label("Couldn't read the rules on \(host.name)", systemImage: "exclamationmark.triangle")
+                        Text(error.message).foregroundStyle(.secondary)
+                    }
+                case let .success(show)?:
+                    RulesEditor(title: "Rules for every agent on \(host.name)",
+                                note: "Every agent is judged by these, on top of anything of its own.",
+                                saved: show.everyAgent, host: host, agent: nil)
+                    ForEach(app.agents ?? []) { agent in
+                        RulesEditor(title: "\(agent.name)'s rules on \(host.name)",
+                                    note: show.execBlocked(agent.uid)
+                                        ? "\(host.name) refuses \(agent.name) exec (latch serve --deny-exec), whatever these say."
+                                        : "Only \(agent.name) is judged by these, with the rules for every agent.",
+                                    saved: show.agent(agent.uid).map { RulesShow.Text(text: $0.text ?? "", revision: $0.revision) },
+                                    host: host, agent: agent)
+                            .id(agent.uid)
+                    }
+                    // A verdict arrives below the fold: it's brought into view.
+                    TryPanel(host: host, everyAgentSaved: show.everyAgent?.text ?? "")
+                        .id(Self.verdictAnchor)
+                }
+            }
+            .formStyle(.grouped)
+            .onChange(of: app.rulesFocus, initial: true) { _, uid in
+                guard let uid else { return }
+                withAnimation { scroller.scrollTo(uid, anchor: .top) }
+            }
+            .onChange(of: app.trial.results[host.name]) {
+                withAnimation { scroller.scrollTo(Self.verdictAnchor, anchor: .bottom) }
+            }
+        }
+        .task {
+            guard !app.still else { return }
+            if app.agents == nil { await app.refreshAgents() }
+            await app.refreshRules(on: host)
+        }
+    }
+}
+
+/// One set of rules: the saved text, edited in place, saved only when
+/// changed and only over what was there when editing began.
+private struct RulesEditor: View {
+    var title: String
+    var note: String
+    var saved: RulesShow.Text?
+    var host: HostEntry
+    var agent: AgentsList.Agent?
+    @Environment(AppModel.self) private var app
+    @State private var text = ""
+    /// The revision the edit started from; nil when there were no rules.
+    @State private var base: String?
+    @State private var editing = false
+    @State private var saving = false
+    @State private var error: String?
+
+    var body: some View {
+        Section {
+            if saved == nil, !editing {
+                HStack {
+                    Text(agent == nil ? "None yet." : "None of its own: it follows the rules for every agent.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Add Rules…") { begin() }
+                }
+            } else {
+                TextEditor(text: Binding { editing ? text : saved?.text ?? "" } set: { new in
+                    if !editing { begin() }
+                    text = new
+                })
+                .font(.body)
+                .frame(minHeight: 70)
+                .accessibilityLabel(title)
+                if let error {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+                }
+                if editing {
+                    HStack {
+                        Spacer()
+                        Button("Revert") { revert() }
+                            .disabled(saving)
+                        Button(saving ? "Saving…" : "Save") { Task { await save() } }
+                            .keyboardShortcut("s", modifiers: .command)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(saving || !changed)
+                    }
+                }
+            }
+        } header: {
+            Text(title)
+        } footer: {
+            Text(note).foregroundStyle(.secondary)
+        }
+        .onChange(of: saved) { _, new in
+            // The saved rules changed under an unedited editor: show them.
+            if !editing { base = new?.revision }
+        }
+    }
+
+    private var changed: Bool { text != (saved?.text ?? "") || base != saved?.revision }
+
+    private func begin() {
+        text = saved?.text ?? ""
+        base = saved?.revision
+        editing = true
+        error = nil
+    }
+
+    private func revert() {
+        editing = false
+        error = nil
+        Task { await app.refreshRules(on: host) }
+    }
+
+    private func save() async {
+        saving = true
+        defer { saving = false }
+        do {
+            try await app.saveRules(text, on: host, agent: agent?.uid, revision: base)
+            editing = false
+            error = nil
+        } catch {
+            self.error = (error as? LatchError)?.message ?? error.localizedDescription
+        }
+    }
+}
+
+/// Try a request: the verdict the gatekeeper would give it on this host
+/// now, as you, an agent, or a new agent. Nothing runs.
+private struct TryPanel: View {
+    var host: HostEntry
+    var everyAgentSaved: String
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        @Bindable var trial = app.trial
+        Section {
+            Picker("As", selection: $trial.caller) {
+                Text("You").tag(Caller.you)
+                ForEach(app.agents ?? []) { Text($0.name).tag(Caller.agent($0.uid)) }
+                Text("A new agent").tag(Caller.newAgent)
+            }
+            TextField("Request", text: $trial.request, prompt: Text("exec -- ls ~/Projects"))
+                .font(.body.monospaced())
+                .onSubmit { Task { await trial.run(on: host, app: app) } }
+            Toggle("Judge against draft rules for every agent", isOn: $trial.useDraft)
+            if trial.useDraft {
+                TextEditor(text: $trial.draft)
+                    .font(.body)
+                    .frame(minHeight: 50)
+                    .accessibilityLabel("Draft rules for every agent")
+                    .onAppear { if trial.draft.isEmpty { trial.draft = everyAgentSaved } }
+            }
+            HStack {
+                Text("Nothing runs and nothing is recorded. Each try is billed like a real judgment, about $0.0001.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button(trial.trying ? "Trying…" : "Try") { Task { await trial.run(on: host, app: app) } }
+                    .disabled(trial.trying || trial.words == nil || trial.words?.isEmpty == true)
+            }
+            switch trial.results[host.name] {
+            case let .success(verdict)?: VerdictView(verdict: verdict)
+            case let .failure(error)?: Label(error.message, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+            case nil: EmptyView()
+            }
+        } header: {
+            Text("Try a request")
+        } footer: {
+            Text("Type it as an agent would send it after `latch`: exec, file, google, messages or contacts.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+}
+
+/// Who a try is judged as.
+enum Caller: Hashable { case you, newAgent, agent(String) }
+
+/// Try a request's state, kept while the person moves around: the request,
+/// who it's tried as, a draft, and each host's last verdict.
+@Observable
+final class Trial {
+    var request = ""
+    var caller = Caller.you
+    var draft = ""
+    var useDraft = false
+    private(set) var trying = false
+    private(set) var results: [String: Result<RulesTry, LatchError>] = [:]
+
+    var words: [String]? { ShellWords.split(request) }
+
+    func run(on host: HostEntry, app: AppModel) async {
+        guard let words, !words.isEmpty else { return }
+        trying = true
+        defer { trying = false }
+        let agent: String? = if case let .agent(uid) = caller { uid } else { nil }
+        do {
+            results[host.name] = .success(try await app.tryRequest(words, on: host, agent: agent, newAgent: caller == .newAgent,
+                                                                   draft: useDraft ? draft : nil))
+        } catch {
+            results[host.name] = .failure(error as? LatchError ?? .unreachable(error.localizedDescription))
+        }
+    }
+
+    /// For snapshots: a host's verdict.
+    func stage(_ verdict: RulesTry, request: String, caller: Caller, on host: String) {
+        self.request = request
+        self.caller = caller
+        results[host] = .success(verdict)
+    }
+}
+
+/// A preview's verdict, in words, with the gatekeeper's reading.
+struct VerdictView: View {
+    var verdict: RulesTry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label {
+                Text(title).font(.headline)
+            } icon: {
+                Image(systemName: symbol).foregroundStyle(tint)
+            }
+            if let refused = verdict.refused {
+                Text(refused.message).foregroundStyle(.secondary)
+            }
+            if let gate = verdict.gate {
+                if let source = gate.source {
+                    LabeledContent("Read", value: Self.sources[source] ?? source)
+                }
+                if let p = gate.p {
+                    ForEach([("Covered", "COVERED", Color.green), ("Not covered", "NOT_COVERED", .orange), ("Forbidden", "FORBIDDEN", .red)],
+                            id: \.1) { title, key, tint in
+                        if let value = p[key] {
+                            VStack(alignment: .leading, spacing: 2) {
+                                LabeledContent(title, value: value.formatted(.percent.precision(.fractionLength(0))))
+                                ProgressView(value: value).tint(tint).accessibilityHidden(true)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+    }
+
+    var title: String {
+        switch verdict.verdict {
+        case "allow": "Would be allowed"
+        case "not_covered": "Not covered: would be refused"
+        case "owner_said_no": "You said no: would be refused"
+        case "no_intent": "No instructions from you: would be refused"
+        case "host_refused": "The host refuses it: would be refused"
+        default: verdict.verdict.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    private var symbol: String {
+        switch verdict.verdict {
+        case "allow": "checkmark.circle.fill"
+        case "not_covered", "no_intent": "questionmark.circle.fill"
+        case "host_refused": "nosign"
+        default: "xmark.circle.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch verdict.verdict {
+        case "allow": .green
+        case "not_covered", "no_intent": .orange
+        default: .red
+        }
+    }
+
+    static let sources = [
+        "owner_request": "Your own request",
+        "rules": "Rules only (no chat)",
+        "chat_and_rules": "Your chat with the agent + rules",
+        "chat": "Your chat with the agent",
+    ]
+}
+
+/// A request typed as in a shell: words split on spaces, with quotes and
+/// backslashes as a shell reads them; nil while a quote is open.
+enum ShellWords {
+    static func split(_ line: String) -> [String]? {
+        var words: [String] = []
+        var word = ""
+        var inWord = false
+        var quote: Character?
+        var escaped = false
+        for c in line {
+            if escaped {
+                word.append(c); escaped = false; inWord = true
+            } else if c == "\\", quote != "'" {
+                escaped = true
+            } else if let q = quote {
+                if c == q { quote = nil } else { word.append(c) }
+            } else if c == "'" || c == "\"" {
+                quote = c; inWord = true
+            } else if c.isWhitespace {
+                if inWord { words.append(word); word = ""; inWord = false }
+            } else {
+                word.append(c); inWord = true
+            }
+        }
+        guard quote == nil, !escaped else { return nil }
+        if inWord { words.append(word) }
+        return words
+    }
+}
