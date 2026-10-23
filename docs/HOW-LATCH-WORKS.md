@@ -135,23 +135,42 @@ model, through Plow on the host's own Plow login, whether it may run.
 | | Owner (any machine of yours, or on the host) | Agent |
 |---|---|---|
 | What the judge reads | Your request itself, plus the host's rules. | Two judgments of the same request. The rules: a built-in policy plus the host's rules for every agent and that agent's own rules, without the chat. The chat, if the agent has one: your messages there, plus the same rules. |
-| Allowed when | The rules don't forbid it. It's refused only when the judge finds "forbidden" at least as likely as "covered". | Neither judgment says no (under 50% sure it's allowed, and finding "forbidden" at least as likely as "not covered"), and at least one is 50% or more sure it's allowed. |
+| Allowed when | The rules don't forbid it. It's refused only when the judge finds "forbidden" at least as likely as "covered". | Neither judgment says no, and at least one is 50% or more sure it's allowed. A judgment under 50% sure says no when it finds "forbidden" at least as likely as "not covered"; the chat judgment also says no at 15% "forbidden", so a "stop" in chat holds even when the judge is unsure of it. |
 | When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4): change the rules to go ahead. | `gatekeeper_denied` (exit 4). Reason `not_covered`: ask the owner in chat, naming exactly what you'll do, then retry. Reason `owner_said_no`: don't retry unless the owner changes their mind. |
 
 - Only your rules, the built-in policy and the messages Plow marks as
   yours count. Messages
   from the agent, other people, web pages or the action itself are
   context, never permission.
-- **What an agent may do.** Your agents can look things up in your
-  calendar, email, messages and files, and create or edit ordinary files,
-  without waiting for another request; what they read goes back to the
-  agent. Riskier actions (sending, buying, deleting, changing calendars or
-  shared systems, giving a program internet access, accessing secrets or
-  sending data elsewhere) need permission in your rules or Plow chat. The
-  gatekeeper checks your rules on their own, and separately what you've
-  told the agent in chat. Your rules remain in force when you ask in chat,
-  and they can restrict everyday work too. An agent with no chat and no
-  rules is judged by the built-in policy alone.
+- **What an agent may do.** The built-in policy has three tiers:
+  - **Everyday work, without asking:** looking things up in your
+    calendar, email, messages, contacts and files, and on the web;
+    working on your own files and projects (creating, editing, moving and
+    organizing files, running a project's builds, tests and scripts, and
+    installing the packages it already lists, with network); deleting
+    temporary files and build output, or moving files to the Trash;
+    archiving email or marking it read; adding calendar entries that
+    invite no one; writing drafts; and filling a saved login into the site
+    it belongs to, without the agent seeing it. What they read goes back
+    to the agent.
+  - **Needs your rules or your OK in Plow chat:** sending email or
+    messages, inviting or answering people, posting; deleting or
+    overwriting your other files, email or events; adding a package or
+    installing software; pushing code; changing settings, accounts or
+    shared systems.
+  - **Needs a rule or message that names it:** buying or paying, reading
+    passwords, keys or other secrets, sending your files or private data
+    off the machine, running code downloaded from the internet, deleting
+    folders or many files at once, and mail rules that forward or act
+    later.
+
+  A rule that allows something only adds to this: after "Agents may run
+  tests in ~/work", tests elsewhere are still everyday work. A rule
+  restricts when it says so ("do not", "never", "only", "keep … inside");
+  then it holds for everyday work too, and asking in chat doesn't lift it.
+  The gatekeeper checks your rules on their own, and separately what
+  you've told the agent in chat. An agent with no chat and no rules is
+  judged by the built-in policy alone.
 - **Which chat:** the agent's chat if its line has one; with none, only the
   rules are judged. If it has several, the agent names one with
   `--plow-chat ID` or `LATCH_PLOW_CHAT`; otherwise the call stops with
