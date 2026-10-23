@@ -88,13 +88,7 @@ class Suites(unittest.TestCase):
         cls.directory.cleanup()
 
     def selected(self, suite, where):
-        listed = subprocess.run(["cargo", "nextest", "list", "--message-format", "json", "-E",
-                                 runner.filterset(suite, where)], cwd=self.crate, check=True,
-                                capture_output=True, text=True)
-        return {f"{binary['binary-name']}:{name}"
-                for binary in json.loads(listed.stdout)["rust-suites"].values()
-                for name, case in binary["testcases"].items()
-                if case["filter-match"]["status"] == "matches"}
+        return self.listed(runner.filterset(suite, where))
 
     def listed(self, expression):
         listed = subprocess.run(["cargo", "nextest", "list", "--message-format", "json", "-E", expression],
@@ -269,6 +263,24 @@ class Plans(unittest.TestCase):
                 with mock.patch.object(runner, "where_we_are", return_value="macos"), \
                         mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"):
                     runner.plan(args)
+
+    def test_only_reaches_the_run_inside_the_container_and_needs_a_rust_suite(self):
+        args = runner.argparse.Namespace(suites=["browser"], linux=True, shard=None, ci=False,
+                                         dry_run=False, build_archive=None, from_archive=None,
+                                         only="a_check")
+        with mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=0)) as ran, \
+                mock.patch.object(runner, "container_seccomp", return_value=Path("/x.json")):
+            runner.in_container(args)
+        inner = ran.call_args_list[-1].args[0]
+        self.assertEqual(inner[inner.index("scripts/test.py"):], ["scripts/test.py", "browser", "--only", "a_check"])
+        with self.assertRaises(SystemExit) as refused:
+            args = runner.argparse.Namespace(suites=["installer"], linux=False, shard=None, ci=False,
+                                             dry_run=True, build_archive=None, from_archive=None,
+                                             only="a_check")
+            with mock.patch.object(runner, "where_we_are", return_value="macos"), \
+                    mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"):
+                runner.plan(args)
+        self.assertIn("installer has none", str(refused.exception))
 
     def test_the_container_is_linux_arm64_on_any_host(self):
         for machine in ("x86_64", "arm64"):

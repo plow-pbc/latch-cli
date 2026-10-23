@@ -198,6 +198,8 @@ def plan(args):
             raise SystemExit("test.py: --only is for one test at hand, not CI's --shard or archives")
         if "installer" in suites:
             suites.remove("installer")
+        if not suites:
+            raise SystemExit("test.py: --only picks Rust tests, and installer has none")
     args.archive = None
     if args.build_archive or args.from_archive:
         if args.build_archive and args.from_archive:
@@ -449,6 +451,8 @@ def in_container(args):
         inner += ["--shard", "%d/%d" % args.shard]
     if args.ci:
         inner.append("--ci")
+    if args.only:
+        inner += ["--only", args.only]
     # --init: a PID 1 that reaps orphans, as a host's init does; the tests
     # check that a dead host's worker is gone, not left a zombie.
     # On an AppArmor host, docker-default refuses bwrap's mounts; the
