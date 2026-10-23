@@ -3471,6 +3471,13 @@ fn vault_management_and_self_rules_are_local_without_serve() {
             .iter()
             .any(|r| r["op"] == "rules" && r["args"]["command"] == "set")
     );
+    // Each record names its command as the board shows it.
+    let commands: Vec<&str> = records
+        .iter()
+        .filter_map(|r| r["command"].as_str())
+        .collect();
+    assert!(commands.contains(&"latch vault edit"), "{commands:?}");
+    assert!(commands.contains(&"latch rules set"), "{commands:?}");
     let sealed = fs::read_to_string(host.join("audit.sealed.ndjson")).unwrap();
     assert!(!sealed.contains("\"op\""), "audit records were not sealed");
     println!("local vault edit and rules set share the sealed audit; no legacy file");

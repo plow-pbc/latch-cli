@@ -12,7 +12,7 @@
 use jiff::{Timestamp, tz::TimeZone};
 use serde_json::Value;
 
-use super::describe::capitalized;
+use super::describe::{capitalized, command_line};
 use super::{Board, Call, Caller, Outcome, State, Task};
 use crate::paint::{self, DIM, FAINT, RED, VOLT};
 use crate::term;
@@ -524,9 +524,8 @@ fn call_steps(task: &Task, call: &Call) -> Vec<String> {
     }
     lines.push(String::new());
     lines.push(format!(
-        "Command: latch {} {}",
-        term::one_line(&call.kind),
-        term::one_line(&call.command)
+        "Command: {}",
+        command_line(&call.kind, &call.command)
     ));
     lines.push(format!("Action: {}", term::one_line(&detail.action)));
     if let Some(page) = &detail.page {

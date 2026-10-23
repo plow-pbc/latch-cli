@@ -1168,7 +1168,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "audit",
         runs_on: |_| RunsOn::Either,
-        output: "JSON lines: `hello`; a `snapshot` (`cursor`, the id before the first record shown, and `has_older`); a `record` line each (`cursor`, its id, and `record`: id, time, caller, caller_name, agent, op, decision, outcome, and `details` with started, args and gate, credential-looking values hidden, best effort); then `caught_up` (the last `cursor`, `has_older`). With --follow, then each new record. The newest 50 unless --last N or --all; --before ID reads the page before. With --host, another host's, the same lines.",
+        output: "JSON lines: `hello`; a `snapshot` (`cursor`, the id before the first record shown, and `has_older`); a `record` line each (`cursor`, its id, and `record`: id, time, caller, caller_name, agent, op, command (the command it ran, as `latch KIND …`, as the dashboard shows it, secrets masked; null for a connection), decision, outcome, and `details` with started, args and gate, credential-looking values hidden, best effort); then `caught_up` (the last `cursor`, `has_older`). With --follow, then each new record. The newest 50 unless --last N or --all; --before ID reads the page before. With --host, another host's, the same lines.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
