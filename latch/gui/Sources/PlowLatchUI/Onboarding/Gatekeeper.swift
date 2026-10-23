@@ -38,6 +38,8 @@ struct RulesView: View {
             .padding(.top, 10)
             if let error = flow.rulesError {
                 Text(error).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
+            } else if flow.draftRules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !(flow.savedRules ?? "").isEmpty {
+                Text("An empty box keeps your saved rules; the examples show them.").foregroundStyle(Brand.muted).font(.callout).padding(.top, 8)
             }
             Deck(flow: flow, reduceMotion: reduceMotion)
                 .padding(.top, 30)

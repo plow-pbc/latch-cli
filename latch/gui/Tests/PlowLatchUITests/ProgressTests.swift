@@ -129,6 +129,19 @@ struct GatekeeperTests {
         #expect(client.saved.isEmpty)
     }
 
+    @Test func anEmptyBoxPreviewsTheSavedRulesItKeeps() async {
+        let client = ScriptedClient { _ in nil }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.savedRules = "Allow everything."
+        flow.draftRules = "  "
+        flow.draftChanged()
+        await until { !flow.reviewing && !client.tries.isEmpty }
+        // Continue keeps the saved rules, so they are what the examples show.
+        #expect(flow.primaryTitle == "Continue")
+        #expect(!client.tries.isEmpty && client.tries.allSatisfy { $0.draft == "Allow everything." })
+    }
+
     @Test func typingWaitsASecondAndDropsOlderAnswers() async throws {
         let client = ScriptedClient(pause: .milliseconds(300)) { _ in nil }
         client.verdict = { draft, _ in draft == "second" ? "not_covered" : "allow" }

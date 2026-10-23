@@ -290,6 +290,13 @@ final class Onboarding {
 
     /// Whether Continue on the rules screen saves: the box holds rules
     /// other than the saved ones.
+    /// The rules Continue leaves in place: the box's, or, while it's empty,
+    /// the saved ones it keeps.
+    var previewedRules: String {
+        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
+        return draft.isEmpty ? savedRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : draft
+    }
+
     var rulesChanged: Bool {
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
         return !draft.isEmpty && draft != savedRules?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -380,7 +387,7 @@ final class Onboarding {
     /// The box changed: the examples show Checking… at once and are judged
     /// a second after the person stops typing.
     func draftChanged() {
-        guard draftRules.trimmingCharacters(in: .whitespacesAndNewlines) != reviewed else { return }
+        guard previewedRules != reviewed else { return }
         startReview(after: .seconds(1))
     }
 
@@ -388,7 +395,7 @@ final class Onboarding {
     /// (`rules try --new-agent --draft`), all at once, each verdict shown
     /// as it comes. Nothing is saved. A newer review drops older answers.
     private func startReview(after delay: Duration = .zero) {
-        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draft = previewedRules
         reviewed = draft
         review += 1
         let current = review
