@@ -189,20 +189,15 @@ if [ "$(uname -s)" = Linux ]; then
     esac
     command -v unzip >/dev/null 2>&1 || missing="${missing:+$missing }unzip"
     command -v Xvfb >/dev/null 2>&1 || missing="${missing:+$missing }xvfb"
-    if [ "$engine" = chrome ]; then
-      for pair in libgtk-3.so.0:libgtk-3-0 libasound.so.2:libasound2 libnss3.so:libnss3 libgbm.so.1:libgbm1; do
-        library=${pair%%:*}
-        package=${pair#*:}
-        printf '%s\n' "$libraries" | grep -Fq "$library " || missing="${missing:+$missing }$package"
-      done
-    fi
-    if [ "$engine" = camoufox ]; then
-      for pair in libgtk-3.so.0:libgtk-3-0 libasound.so.2:libasound2 libX11-xcb.so.1:libx11-xcb1 libdbus-1.so.3:libdbus-1-3; do
-        library=${pair%%:*}
-        package=${pair#*:}
-        printf '%s\n' "$libraries" | grep -Fq "$library " || missing="${missing:+$missing }$package"
-      done
-    fi
+    case "$engine" in
+      chrome) dependencies="libgtk-3.so.0:libgtk-3-0 libasound.so.2:libasound2 libnss3.so:libnss3 libgbm.so.1:libgbm1" ;;
+      camoufox) dependencies="libgtk-3.so.0:libgtk-3-0 libasound.so.2:libasound2 libX11-xcb.so.1:libx11-xcb1 libdbus-1.so.3:libdbus-1-3" ;;
+    esac
+    for pair in $dependencies; do
+      library=${pair%%:*}
+      package=${pair#*:}
+      printf '%s\n' "$libraries" | grep -Fq "$library " || missing="${missing:+$missing }$package"
+    done
   done
   [ -z "$missing" ] || as_root_install $missing
 fi
