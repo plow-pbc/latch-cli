@@ -74,17 +74,16 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
         }
     };
     // Signing in waits here, outside any host call or hold on the state
-    // folder; a stop asked for meanwhile answers null, for nothing to print.
-    let signed_in = match send().await {
+    // folder.
+    match send().await {
         Err(failure) if failure.code == "google_not_connected" => {
             super::connect::google(state, Some(failure), None, events, send).await
         }
         Ok(result) if adding => {
             super::connect::google(state, None, Some(result), events, send).await
         }
-        answer => return answer,
-    };
-    signed_in.map(Option::unwrap_or_default)
+        answer => answer,
+    }
 }
 
 /// `enable` or `disable` with no host running: the host's own setup and

@@ -289,6 +289,7 @@ codes! {
     gog_unverified: Denied,
     gone: Failed,
     google_failed: Failed,
+    google_connect_cancelled: Failed,
     google_not_connected: Failed,
     google_timeout: Failed,
     google_worker_failed: Failed,

@@ -184,7 +184,7 @@ impl Setup {
             .stderr(Stdio::inherit())
             .stdout(Stdio::piped())
             .output();
-        // A stopped wait also exits 0, with nothing on stdout.
+        // Google is on only once the enable printed its result.
         if enabled.is_ok_and(|output| output.status.success() && !output.stdout.is_empty()) {
             done("Google is connected.");
         } else {
