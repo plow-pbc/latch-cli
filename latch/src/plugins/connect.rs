@@ -87,9 +87,6 @@ where
         }
         loop {
             tokio::time::sleep(POLL.min(deadline.saturating_duration_since(Instant::now()))).await;
-            if events && stdout_gone() {
-                return Ok(Connecting::Cancelled);
-            }
             // A mint or a look that fails ends the wait with its own failure.
             if reached(&plow, &wanted).await? {
                 return Ok(Connecting::Appeared);
@@ -123,7 +120,9 @@ where
     let connected = if waits {
         tokio::select! {
             connected = bounded => connected,
+            // Heard even while Plow is still answering a look or a link.
             () = crate::remote::stop_requested() => Ok(Connecting::Cancelled),
+            () = reader_gone() => Ok(Connecting::Cancelled),
         }
     } else {
         bounded.await
@@ -131,12 +130,12 @@ where
     match connected.map_err(|failure| with_page(failure, &page))? {
         Connecting::Cancelled => Err(cancelled(adding)),
         // Nobody reads the result any more: no enable on their behalf.
-        Connecting::Appeared if events && stdout_gone() => Err(cancelled(adding)),
+        Connecting::Appeared if stdout_gone() => Err(cancelled(adding)),
         // Once the enable is sent, a stop can no longer say what it did.
         Connecting::Appeared => tokio::select! {
             enabled = enable() => enabled,
             () = crate::remote::stop_requested() => Err(unknown()),
-            () = reader_gone(events) => Err(unknown()),
+            () = reader_gone() => Err(unknown()),
         },
         // No one here to wait with: the link is the answer.
         Connecting::HandedOver(link) => match enabled {
@@ -304,12 +303,11 @@ fn accounts(connectors: &plow::Connectors) -> Vec<String> {
         .collect()
 }
 
-/// Finishes once `--events`' stdout reader has gone; never without
-/// `--events`. The kernel has no wake-up for it, so it is looked at often.
-async fn reader_gone(events: bool) {
-    if !events {
-        return std::future::pending().await;
-    }
+/// Finishes once stdout's reader has gone, with `--events` or at a
+/// terminal alike (whose result goes there too); never for a terminal or a
+/// file on stdout. The kernel has no wake-up for it, so it is looked at
+/// often.
+async fn reader_gone() {
     while !stdout_gone() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
