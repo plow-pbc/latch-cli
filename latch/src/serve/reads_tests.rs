@@ -44,11 +44,16 @@ impl Stream {
         Stream { connection, recv }
     }
 
+    /// The next frame. The time limit only guards against a hang: before
+    /// its first line, a debug-built host reads, opens and masks the whole
+    /// log, which for a 16 MiB record takes most of a minute on a slow CI
+    /// runner.
     async fn next(&mut self) -> Response {
-        let frame = tokio::time::timeout(Duration::from_secs(10), wire::read_frame(&mut self.recv))
-            .await
-            .expect("a frame within 10s")
-            .unwrap();
+        let frame =
+            tokio::time::timeout(Duration::from_secs(120), wire::read_frame(&mut self.recv))
+                .await
+                .expect("a frame within 120s")
+                .unwrap();
         serde_json::from_slice(&frame).unwrap()
     }
 
