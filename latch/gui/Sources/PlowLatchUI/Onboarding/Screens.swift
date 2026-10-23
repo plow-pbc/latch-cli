@@ -255,6 +255,10 @@ struct GoogleView: View {
             if case let .failed(message) = flow.google {
                 Text(message).foregroundStyle(Brand.clay).font(.callout)
             }
+            if flow.google != .done {
+                Button("Connect Google in Plow") { flow.connectGoogleInPlow() }
+                    .buttonStyle(.link).foregroundStyle(Brand.volt)
+            }
             if flow.google == .done, !flow.googleAccounts.isEmpty {
                 Text(flow.googleAccounts.joined(separator: ", ")).foregroundStyle(Brand.muted)
             }
@@ -362,6 +366,11 @@ struct StartView: View {
                 toggle("Run in the background", "arrow.clockwise", $flow.runInBackground)
                 Rectangle().fill(Brand.line).frame(height: 1)
                 toggle("Start when you log in", "clock", $flow.startAtLogin)
+                    .disabled(!flow.runInBackground)
+                    .opacity(flow.runInBackground ? 1 : 0.5)
+            }
+            if !flow.runInBackground {
+                Text("Latch starts at login only when it runs in the background.").foregroundStyle(Brand.muted)
             }
             if let blocked = app.status?.serve.blocked {
                 Text(blocked.message).foregroundStyle(Brand.clay).font(.callout)

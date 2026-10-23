@@ -65,26 +65,22 @@ package enum SnapshotRunner {
             ("02-login-verified", .login, Fixtures.serving, Progress(), { $0.login = .verified(name: "studio") }),
             ("03-privacy", .privacy, Fixtures.stopped, Progress(), { _ in }),
             ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), {
-                $0.previewNote = "Previews need Latch running."
+                $0.previewNote = "Previews arrive with the next Latch update."
             }),
             ("04-rules-rerun-prefilled", .rules, Fixtures.stopped, Progress(), {
-                $0.savedRules = rules; $0.draftRules = rules; $0.previewNote = "Previews need Latch running."
+                $0.savedRules = rules; $0.draftRules = rules; $0.previewNote = "Previews arrive with the next Latch update."
             }),
-            ("04-rules-analyzing", .rules, Fixtures.serving, Progress(), {
+            ("04-rules-analyzing-after-1b", .rules, Fixtures.serving, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules; $0.reviewing = true
                 for example in $0.deck.examples { $0.previews[example.id] = .checking }
             }),
-            ("04-rules-edited", .rules, Fixtures.serving, Progress(), {
-                $0.savedRules = rules; $0.draftRules = rules + " Ask me before installing anything."
-                $0.previewNote = "Verdicts show your saved rules. Continue to save these."
-            }),
-            ("04-rules-verdicts-fake-latch", .rules, Fixtures.serving, Progress(), {
+            ("04-rules-verdicts-after-1b-fake-latch", .rules, Fixtures.serving, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules
                 let answers = [Fixtures.allow, Fixtures.allow, Fixtures.allow, Fixtures.hostRefused, Fixtures.saidNo]
                 for (example, answer) in zip($0.deck.examples, answers) { $0.previews[example.id] = .verdict(try! Fixtures.decode(answer)) }
                 $0.macLit = true
             }),
-            ("04-rules-executive-open-fake-latch", .rules, Fixtures.serving, Progress(), {
+            ("04-rules-executive-open-after-1b-fake-latch", .rules, Fixtures.serving, Progress(), {
                 let deck = Onboarding.decks[1]
                 $0.deck = deck; $0.savedRules = deck.rules; $0.draftRules = deck.rules
                 let answers = [Fixtures.allow, Fixtures.allow, Fixtures.allow, Fixtures.notCovered, Fixtures.saidNo]
@@ -92,7 +88,7 @@ package enum SnapshotRunner {
                 $0.openExamples = [deck.examples[4].id]
             }),
             ("04-rules-save-failed", .rules, Fixtures.stopped, Progress(), {
-                $0.draftRules = rules; $0.previewNote = "Previews need Latch running."
+                $0.draftRules = rules; $0.previewNote = "Previews arrive with the next Latch update."
                 $0.rulesError = "rules are at most 8 KB together; shorten them, then save again"
             }),
             ("05-google-not-checked", .google, Fixtures.stopped, Progress(), { $0.google = .unknown }),
@@ -117,6 +113,7 @@ package enum SnapshotRunner {
                 $0.contacts = .done
             }),
             ("07-start", .start, Fixtures.stopped, Progress(), { _ in }),
+            ("07-start-background-off", .start, Fixtures.stopped, Progress(), { $0.runInBackground = false }),
             ("07-start-already-running", .start, Fixtures.serving, Progress(), { _ in }),
             ("07-start-other-version", .start, Fixtures.otherVersion, Progress(), { _ in }),
             ("07-start-error", .start, Fixtures.stopped, Progress(), {

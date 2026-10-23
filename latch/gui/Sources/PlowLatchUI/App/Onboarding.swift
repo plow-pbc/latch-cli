@@ -111,12 +111,18 @@ final class Onboarding {
     // Connect Google.
     var google: Check = .unknown
     var googleAccounts: [String] = []
+    /// Where latch says to connect Google, once it has said.
+    var googleConnectURL: URL?
     // Contacts & Messages.
     var messages: Check = .unknown
     var contacts: Check = .unknown
     var waitingForAccess = false
     // Start Latch.
-    var runInBackground = true
+    /// Starting at login runs `serve -d --again`, which needs a host this
+    /// Mac started in the background before; so it's only on with it.
+    var runInBackground = true {
+        didSet { if !runInBackground { startAtLogin = false } }
+    }
     var startAtLogin = true
     var starting = false
     var startError: String?
@@ -190,7 +196,7 @@ final class Onboarding {
         case .welcome: "Get started"
         case .login: verified ? "Continue" : "Waiting…"
         case .privacy, .rules: "Continue"
-        case .google: google == .done ? "Continue" : google == .unknown ? "Connect Google" : "Check again"
+        case .google: google == .done ? "Continue" : google == .unknown ? "Check Google" : "Check again"
         case .access: accessDone ? "Continue" : "Open System Settings"
         case .start: "Start Latch"
         case .done: "Open Latch"
@@ -295,10 +301,21 @@ final class Onboarding {
         startReview(after: .zero)
     }
 
+    /// Whether latch can judge the examples as the rules screen needs: an
+    /// unsaved draft, judged by its rules alone, as a new agent would be.
+    /// Today's `rules try` judges the saved rules as the owner, which only
+    /// ever refuses less, so the examples wait for that update.
+    static let previewsAvailable = false
+
     private func startReview(after delay: Duration) {
         review += 1
         let current = review
         reviewTask?.cancel()
+        guard Self.previewsAvailable else {
+            for example in deck.examples { previews[example.id] = .notChecked }
+            previewNote = "Previews arrive with the next Latch update."
+            return
+        }
         for example in deck.examples { previews[example.id] = .checking }
         previewNote = nil
         reviewTask = Task {
@@ -381,11 +398,18 @@ final class Onboarding {
         do {
             googleAccounts = try await client.enable("google")?.accounts ?? []
             google = .done
-        } catch let error as LatchError where error.code == "google_not_connected" {
+        } catch let LatchError.failed(failure) where failure.code == "google_not_connected" {
             google = .needed("Connect Google in Plow, then come back here.")
+            googleConnectURL = failure.connectUrl
         } catch {
             google = .failed((error as? LatchError)?.message ?? error.localizedDescription)
         }
+    }
+
+    /// "Connect Google in Plow": the page latch names, or Plow's home page
+    /// until latch names one. Only ever on a click.
+    func connectGoogleInPlow() {
+        app.open(googleConnectURL ?? URL(string: "https://plow.co")!)
     }
 
     // MARK: Contacts & Messages
@@ -451,7 +475,7 @@ final class Onboarding {
                     try await client.serve(again: false)
                 }
             }
-            try app.setLoginItem(startAtLogin)
+            try app.setLoginItem(runInBackground && startAtLogin)
             started = runInBackground
             await app.refreshStatus()
             next()

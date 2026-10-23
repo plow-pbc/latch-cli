@@ -26,20 +26,21 @@ struct Progress: Equatable {
     var passed: [Step: Passed] = [:]
     var finished = false
 
-    /// Where a launch lands: finished → the main window; not logged in →
-    /// Welcome until it was passed, then Log in; logged in → the first
+    /// Where a launch lands: not logged in → Welcome until it was passed,
+    /// then Log in, finished or not (a logout means setting up again);
+    /// logged in and finished → the main window; logged in → the first
     /// screen after Log in not passed yet (Done once all are).
     func destination(loggedIn: Bool) -> Destination {
-        if finished { return .main }
         if !loggedIn { return .onboarding(passed[.welcome] == nil ? .welcome : .login) }
+        if finished { return .main }
         let next = [Step.privacy, .rules, .google, .access, .start].first { passed[$0] == nil }
         return .onboarding(next ?? .done)
     }
 
-    /// "Set up again…": the first screen skipped, or else the first after
-    /// Log in; every screen after it shows what's set up now.
-    func setUpAgain() -> Step {
-        Step.allCases.first { passed[$0] == .skipped } ?? .privacy
+    /// "Set up again…": every screen after Log in is walked again, each
+    /// showing what's set up now; a relaunch midway resumes there.
+    func settingUpAgain() -> Progress {
+        Progress(passed: passed.filter { $0.key == .welcome || $0.key == .login }, finished: false)
     }
 }
 

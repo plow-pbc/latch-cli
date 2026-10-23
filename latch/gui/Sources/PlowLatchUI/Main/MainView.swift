@@ -31,9 +31,15 @@ struct MainView: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 420, minHeight: 360)
-        .task { await app.refreshStatus() }
+        .task {
+            await app.refreshStatus()
+            if !app.still { app.leaveMainIfLoggedOut() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await app.refreshStatus() }
+            Task {
+                await app.refreshStatus()
+                app.leaveMainIfLoggedOut()
+            }
         }
     }
 

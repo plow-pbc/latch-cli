@@ -61,12 +61,21 @@ final class AppModel {
         dismissWindow?(Self.mainWindow)
     }
 
-    /// "Set up again…" from the main window.
+    /// "Set up again…" from the main window: every screen, from the first
+    /// after Log in (Log in itself when this Mac is logged out).
     func setUpAgain() {
-        var progress = Progress.load()
-        progress.finished = false
+        let progress = Progress.load().settingUpAgain()
         progress.save()
-        let step = status?.peer == nil ? Step.login : progress.setUpAgain()
+        guard case let .onboarding(step) = progress.destination(loggedIn: status?.peer != nil) else { return }
+        beginOnboarding(at: step, progress: progress)
+    }
+
+    /// The main window learned this Mac is logged out (a `latch logout`):
+    /// onboarding takes over, at Log in.
+    func leaveMainIfLoggedOut() {
+        guard let status, status.peer == nil, onboarding == nil else { return }
+        let progress = Progress.load()
+        guard case let .onboarding(step) = progress.destination(loggedIn: false) else { return }
         beginOnboarding(at: step, progress: progress)
     }
 

@@ -29,6 +29,8 @@ nonisolated struct LatchFailure: Decodable, Equatable {
     /// Full Disk Access not granted: what to grant it to, and where.
     var grant: String?
     var settings: String?
+    /// `google_not_connected`: where to connect Google in Plow.
+    var connectUrl: URL?
 }
 
 /// One run of latch: argv only (never a shell), stdout for answers, stderr
@@ -154,7 +156,7 @@ nonisolated final class LatchProcess: @unchecked Sendable {
     private nonisolated static func failure(status: Int32, stderr: Data) -> LatchError {
         // latch prints its error as the last line of stderr.
         let last = stderr.split(separator: UInt8(ascii: "\n")).last.map { Data($0) } ?? Data()
-        if let line = try? JSONDecoder().decode(ErrorLine.self, from: last) {
+        if let line = try? LatchJSON.decoder.decode(ErrorLine.self, from: last) {
             return .failed(line.error)
         }
         let text = String(decoding: stderr.suffix(300), as: UTF8.self)

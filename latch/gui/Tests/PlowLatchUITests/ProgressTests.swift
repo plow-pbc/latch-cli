@@ -21,12 +21,26 @@ struct ResumeTests {
     }
 
     @Test func finishedOpensTheMainWindow() {
-        #expect(Progress(finished: true).destination(loggedIn: false) == .main)
+        #expect(Progress(finished: true).destination(loggedIn: true) == .main)
     }
 
-    @Test func setUpAgainStartsAtTheFirstSkippedScreen() {
-        #expect(Progress(passed: [.rules: .continued, .google: .skipped, .access: .skipped]).setUpAgain() == .google)
-        #expect(Progress(passed: [.rules: .continued]).setUpAgain() == .privacy)
+    @Test func notLoggedInBeatsFinished() {
+        let loggedOut = Progress(passed: [.welcome: .continued, .login: .continued], finished: true)
+        #expect(loggedOut.destination(loggedIn: false) == .onboarding(.login))
+    }
+
+    @Test func setUpAgainWalksEveryScreenAfterLogIn() {
+        let all = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .continued,
+                                    .google: .skipped, .access: .skipped, .start: .continued, .done: .continued], finished: true)
+        let again = all.settingUpAgain()
+        #expect(again.destination(loggedIn: true) == .onboarding(.privacy))
+        #expect(again.passed == [.welcome: .continued, .login: .continued])
+        #expect(!again.finished)
+        // Quit midway through: the next launch carries on from there.
+        var midway = again
+        midway.passed[.privacy] = .continued
+        midway.passed[.rules] = .continued
+        #expect(midway.destination(loggedIn: true) == .onboarding(.google))
     }
 
     @Test func progressIsSavedAndLoaded() throws {
@@ -79,32 +93,47 @@ struct GatekeeperTests {
         for _ in 0..<200 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
     }
 
-    @Test func aDefaultIsTriedAtOnceAndAStoppedLatchSaysSo() async {
+    @Test func examplesWaitForTheNextLatchWithoutVerdicts() async {
         let app = AppModel(client: FakeLatchClient(), still: true)
         let flow = app.stage(.rules)
         flow.choose(Onboarding.decks[1])
         #expect(flow.draftRules == Onboarding.decks[1].rules)
-        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .checking })
-        // The default isn't saved yet, so it can't be judged until it is.
-        await until { flow.previewNote != nil }
-        #expect(flow.previewNote == "Verdicts show your saved rules. Continue to save these.")
-    }
-
-    @Test func savedRulesAreJudgedAndAStoppedLatchSaysSo() async {
-        let app = AppModel(client: FakeLatchClient(), still: true)
-        let flow = app.stage(.rules)
-        await flow.loadRules()
-        await until { flow.previewNote != nil }
-        #expect(flow.previewNote == "Previews need Latch running.")
+        #expect(flow.previewNote == "Previews arrive with the next Latch update.")
         #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .notChecked })
+        await flow.loadRules()
+        #expect(flow.previewNote == "Previews arrive with the next Latch update.")
     }
 
-    @Test func aPathThisMacRefusesIsItsRefusal() async {
-        let refusal = LatchFailure(code: "bad_path", message: "writes outside home are refused")
-        let app = AppModel(client: FakeLatchClient(tryFailure: refusal), still: true)
-        let flow = app.stage(.rules)
-        await flow.loadRules()
-        await until { flow.previews.values.allSatisfy { $0 != .checking } }
-        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .verdict(RulesTry(verdict: "host_refused", refused: refusal)) })
+    @Test func startAtLoginOnlyWithRunInTheBackground() async {
+        let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped), still: true)
+        var loginItem: [Bool] = []
+        app.setLoginItem = { loginItem.append($0) }
+        let flow = app.stage(.start)
+        flow.runInBackground = false
+        #expect(!flow.startAtLogin)
+        flow.startAtLogin = true
+        await flow.startLatch()
+        #expect(loginItem == [false])
+        let again = app.stage(.start)
+        await again.startLatch()
+        #expect(loginItem == [false, true])
+    }
+
+    @Test func connectGoogleInPlowOpensWhatLatchNamesOrPlow() {
+        let app = AppModel(client: FakeLatchClient(), still: true)
+        var opened: [URL] = []
+        app.open = { opened.append($0) }
+        let flow = app.stage(.google)
+        flow.connectGoogleInPlow()
+        flow.googleConnectURL = URL(string: "https://plow.co/connect/google")
+        flow.connectGoogleInPlow()
+        #expect(opened == [URL(string: "https://plow.co")!, URL(string: "https://plow.co/connect/google")!])
+    }
+
+    @Test func googleNotConnectedCarriesLatchsConnectURL() throws {
+        struct Line: Decodable { var error: LatchFailure }
+        let json = #"{"error":{"code":"google_not_connected","message":"connect Google in Plow","connect_url":"https://plow.co/connect/google"}}"#
+        let line = try LatchJSON.decoder.decode(Line.self, from: Data(json.utf8))
+        #expect(line.error.connectUrl == URL(string: "https://plow.co/connect/google"))
     }
 }
