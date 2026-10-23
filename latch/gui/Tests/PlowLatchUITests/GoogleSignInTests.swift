@@ -95,9 +95,10 @@ struct GoogleSignInTests {
             if opened().last == renewed { break }
             try? await Task.sleep(for: .milliseconds(10))
         }
-        #expect(opened().first == first && opened().last == renewed)
-        // The renewal itself opened nothing: only open again did.
-        #expect(opened().filter { $0 == renewed }.count == 1)
+        // Every open before the renewal was in was the first link, and the
+        // renewal itself opened nothing: only open again did.
+        #expect(opened().last == renewed)
+        #expect(opened().dropLast().allSatisfy { $0 == first })
         // Back in the app while latch waits: its answer stands for a check.
         flow.recheckGoogle()
         client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
@@ -115,10 +116,12 @@ struct GoogleSignInTests {
         flow.connectGoogle()
         await until { client.events != nil }
         client.events?.yield(.link(first))
+        await until { flow.canOpenGoogleSignInAgain }
         client.events?.finish(throwing: timeout)
         await until { flow.google != .waiting }
         #expect(flow.google == .notConnected)
         #expect(flow.googleWaitEnded)
+        #expect(!flow.canOpenGoogleSignInAgain)
         #expect(!flow.primaryEnabled)
         flow.connectGoogle()
         #expect(flow.google == .waiting && !flow.googleWaitEnded)
@@ -248,9 +251,12 @@ struct GoogleSignInTests {
 
         app.connectGoogle(adding: true)
         await until { client.signIns.count == 2 }
+        client.events?.yield(.link(first))
+        await until { app.canOpenGoogleSignInAgain }
         client.events?.finish(throwing: timeout)
         await until { app.googleSignIn?.failure != nil }
         #expect(app.googleSignIn?.failure == GoogleSignIn.problem(timeout, adding: true))
+        #expect(!app.canOpenGoogleSignInAgain)
         let unreachable = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:9"))
         for problem in [GoogleSignIn.problem(timeout, adding: true), GoogleSignIn.problem(timeout, adding: false),
                         GoogleSignIn.problem(unreachable, adding: false)] {
