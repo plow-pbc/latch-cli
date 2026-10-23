@@ -660,3 +660,110 @@ async fn a_path_the_host_never_allows_is_the_hosts_refusal() {
     assert_eq!(refusal(&response).1, "bad_request");
     assert_eq!(traces(&t), untouched());
 }
+
+/// A preview of a login fill of `title` on `url`, into `fields`.
+fn fill_args(url: &str, kind: &str, title: &str, fields: Value) -> Value {
+    json!({"fill": {"url": url, "item": {"kind": kind, "title": title}, "fields": fields}})
+}
+
+/// The names in the host's state folder.
+fn state_files(t: &super::gated_tests::TestHost) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(&t.state)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn a_login_fill_is_judged_as_the_browser_judges_it_and_nothing_is_opened() {
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    let before = state_files(&t);
+    let fill = fill_args(
+        "https://www.instacart.com/login",
+        "login",
+        "Instacart",
+        json!(["username", "password"]),
+    );
+    let tried = answer(t.call(&device, "rules_try", fill).await.0);
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["as"], "owner");
+    assert_eq!(tried["gate"]["caller"], "owner_device");
+    // The action a real fill shows the judge, and only that.
+    let shown = json!({"kind": "vault_fill", "site": "instacart.com",
+                       "item": {"kind": "login", "title": "Instacart"},
+                       "fields": ["username", "password"]});
+    let judged = t.plow.world.lock().unwrap().asked.last().unwrap()["proposed_action"].clone();
+    assert_eq!(judged, shown);
+    assert_eq!(tried["request"], json!({"op": "browser", "action": shown}));
+    assert_eq!(t.judged(), 1);
+    // No vault opened or made, no key read or written, no browser
+    // session, and nothing audited.
+    assert_eq!(state_files(&t), before);
+    assert!(
+        !before.iter().any(|name| name.starts_with("vault")),
+        "{before:?}"
+    );
+    assert_eq!(traces(&t), untouched());
+}
+
+#[tokio::test]
+async fn a_fill_preview_judges_as_the_agent_by_its_rules_alone() {
+    let t = start(chat_with(by_the_rules)).await;
+    let device = t.caller("device").await;
+    let set = json!({"command": "set", "from": "Juno", "text": "Builds are fine."});
+    answer(t.call(&device, "rules", set).await.0);
+    let mut fill = fill_args(
+        "https://shop.example/login",
+        "login",
+        "Shop",
+        json!(["password"]),
+    );
+    fill["from"] = json!("Juno");
+    let tried = answer(t.call(&device, "rules_try", fill.clone()).await.0);
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(
+        tried["as"],
+        json!({"agent_uid": AGENT, "agent_name": "Juno"})
+    );
+    assert_eq!(tried["gate"]["caller"], "agent");
+    assert_eq!(tried["gate"]["source"], "rules");
+    assert_eq!(tried["request"]["action"]["fields"], json!(["password"]));
+
+    // A draft for every agent stands in for the saved rules.
+    fill["draft"] = json!("Never run builds.");
+    let tried = answer(t.call(&device, "rules_try", fill).await.0);
+    assert_eq!(tried["verdict"], "owner_said_no");
+    assert_eq!(t.judged(), 2);
+}
+
+#[tokio::test]
+async fn a_fill_that_is_not_a_login_on_a_site_is_refused_unjudged() {
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    let login = json!(["username", "password"]);
+    for fill in [
+        fill_args("instacart", "login", "Instacart", login.clone()),
+        fill_args("https://www.instacart.com/", "card", "Visa", login.clone()),
+        fill_args("https://www.instacart.com/", "login", " ", login.clone()),
+        fill_args(
+            "https://www.instacart.com/",
+            "login",
+            "Instacart",
+            json!([]),
+        ),
+        fill_args(
+            "https://www.instacart.com/",
+            "login",
+            "Instacart",
+            json!([""]),
+        ),
+    ] {
+        let (response, _) = t.call(&device, "rules_try", fill.clone()).await;
+        let (exit, code, _) = refusal(&response);
+        assert_eq!((exit, code), (Exit::Usage, "bad_request"), "{fill}");
+    }
+    assert_eq!(t.judged(), 0);
+}

@@ -30,9 +30,22 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
             agent,
             new_agent,
             draft,
+            fill_login,
+            url,
+            fields,
             request,
         } => {
-            let args = json!({"from": agent, "new_agent": new_agent});
+            let mut args = json!({"from": agent, "new_agent": new_agent});
+            if let (Some(title), Some(url)) = (fill_login, url) {
+                let fields = match fields.is_empty() {
+                    true => vec!["username".to_string(), "password".to_string()],
+                    false => fields,
+                };
+                args["fill"] = json!({"url": url, "item": {"kind": "login", "title": title},
+                                      "fields": fields});
+                args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
+                return previewed(state, host, args).await;
+            }
             return preview(state, host, args, draft, request).await;
         }
         RulesCommand::Set { ref scope, .. }
@@ -196,6 +209,12 @@ async fn preview(
         }
     };
     args["request"] = json!({"op": op, "args": request, "chat": asked.plow_chat});
+    previewed(state, host, args).await
+}
+
+/// The `rules_try` operation with `args`, on this machine's own host or the
+/// one `--host` names.
+async fn previewed(state: &StateDir, host: Option<String>, args: Value) -> Result<Value, Failure> {
     if hosts::local_target(state, host.as_deref())? {
         return crate::serve::preview_here(state, &args).await;
     }

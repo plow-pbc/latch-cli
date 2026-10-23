@@ -209,7 +209,11 @@ effort.
 - **Rules** are plain text in your own words: one text for every agent,
   which your own calls are judged against too, and one per agent. Together
   they're at most 8 KiB. `latch rules show` reminds you they're judged, not
-  guaranteed.
+  guaranteed. `latch rules try` previews the verdict a request would get,
+  without running it. `--fill-login TITLE --url URL` previews a browser
+  fill of a saved login: the fill's judgment only, not the whole sign-in
+  (opening the site is judged on its own) nor whether the vault has that
+  login. Nothing is opened or filled, and the vault isn't read.
 - **Vault** secrets never come from the command line or the environment:
   you type them at a prompt, import another password manager's export, or
   add them from your phone with `vault link`. No vault command shows a

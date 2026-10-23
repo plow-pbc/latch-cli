@@ -12,6 +12,12 @@
 //! On this machine the preview is judged in the previewing process
 //! (`preview_here`), so it needs no running host.
 //!
+//! A `fill` in place of the request previews a vault login fill
+//! (`previewed_fill`): the judgment the agent's fill would get, built from
+//! the item's kind and title as given. Only the judge is asked: no browser
+//! is started and the vault is never opened. The site's own judgment and
+//! the host's checks on the fill are not previewed.
+//!
 //! A refusal is a verdict, not an error: `not_covered`, `owner_said_no`,
 //! or `host_refused` for a refusal the host makes without asking the judge
 //! (`--deny-exec`, a connector that is off, a path it never lets a worker
@@ -93,13 +99,26 @@ async fn preview(
     if let Err(failure) = gate::owner::owner_only(&identity.kind, "the rules") {
         return refused(failure);
     }
-    let Ok(mut request) = serde_json::from_value::<Request>(args["request"].clone()) else {
-        let message = "The request to preview is not a latch request.".to_string();
-        return refused(Failure::new(code::bad_request, message));
+    let fill = match &args["fill"] {
+        Value::Null => None,
+        fill => match login_fill(fill) {
+            Ok(fill) => Some(fill),
+            Err(failure) => return refused(failure),
+        },
     };
-    if gate::gated(&request.op, &request.args).is_none() {
-        return refused(not_previewable(&request.op));
-    }
+    let request = match fill {
+        Some(_) => None,
+        None => {
+            let Ok(request) = serde_json::from_value::<Request>(args["request"].clone()) else {
+                let message = "The request to preview is not a latch request.".to_string();
+                return refused(Failure::new(code::bad_request, message));
+            };
+            if gate::gated(&request.op, &request.args).is_none() {
+                return refused(not_previewable(&request.op));
+            }
+            Some(request)
+        }
+    };
 
     // A blank draft is no rules for every agent, as `rules clear` leaves.
     let draft = args["draft"]
@@ -133,7 +152,7 @@ async fn preview(
         (None, false) => (identity, local, json!("owner")),
     };
 
-    let chat = request.chat.clone();
+    let chat = request.as_ref().and_then(|request| request.chat.clone());
     let none_denied = DenyExec::default();
     let rules_alone;
     let host = match new_agent {
@@ -176,6 +195,26 @@ async fn preview(
         },
         (gate, _) => gate,
     };
+    let shape = |op: &str, action: Option<Value>, judged: Option<Value>, verdict: &str| {
+        answer_shape(host.name, &shown_as, op, action, judged, verdict)
+    };
+    // A fill is only judged: no host operation runs, so there is nothing
+    // to check before the judge.
+    let Some(mut request) = request else {
+        let fill = fill.expect("a fill when there is no request");
+        let judgment = match gate {
+            Ok(gate) => gate.judge(&fill).await,
+            Err(failure) => return refused(failure),
+        };
+        let action = serde_json::to_value(&fill).expect("an action serializes");
+        let verdict = verdict(judgment.verdict)?;
+        return Ok(shape(
+            "browser",
+            Some(action),
+            Some(judgment.gate),
+            &verdict,
+        ));
+    };
     let checked = check(host, judged_as, gate, chat.as_deref(), &mut request).await;
     let judged = checked
         .judgment
@@ -191,21 +230,7 @@ async fn preview(
     // The action as the judge was shown it.
     let action =
         gate::gated(&request.op, &request.args).map(|gated| judged_action(&request.op, &gated));
-    let answer = |verdict: &str| {
-        // One shape whatever the verdict: no judgment is a null `gate`,
-        // and a judgment with no rules has null `rules`.
-        let mut gate = judged.clone().unwrap_or(Value::Null);
-        if gate.is_object() && gate.get("rules").is_none() {
-            gate["rules"] = Value::Null;
-        }
-        json!({
-            "verdict": verdict,
-            "host": host.name,
-            "as": shown_as,
-            "request": {"op": request.op, "action": action},
-            "gate": gate,
-        })
-    };
+    let answer = |verdict: &str| shape(&request.op, action.clone(), judged.clone(), verdict);
     let host_refused = |code: &str, message: &str| {
         let mut answer = answer("host_refused");
         answer["refused"] = json!({"code": code, "message": message});
@@ -215,16 +240,7 @@ async fn preview(
     // A judgment is there only if nothing stopped the request before the
     // judge; the judge's own no is its verdict.
     match (checked.judgment, checked.stop) {
-        (Some(judgment), _) => match judgment.verdict {
-            Ok(()) => Ok(answer("allow")),
-            // A refusal the judge makes is the preview's verdict; one it
-            // cannot make (no chat chosen, an outage) is an error.
-            Err(failure) if failure.exit == Exit::Denied => {
-                let verdict = failure.details["reason"].as_str().unwrap_or(&failure.code);
-                Ok(answer(verdict))
-            }
-            Err(failure) => Err(Response::error(&failure)),
-        },
+        (Some(judgment), _) => Ok(answer(&verdict(judgment.verdict)?)),
         (None, Some(Stop::Host(_))) if exec_off => {
             let uid = judged_as.agent_uid.as_deref().unwrap_or_default();
             let off = exec_turned_off(host.deny_exec.every_agent, uid);
@@ -237,6 +253,78 @@ async fn preview(
         (None, Some(Stop::Refused(done))) => Err(done.response),
         (None, None) => Err(Response::error(&not_previewable(&request.op))),
     }
+}
+
+/// The preview's answer, one shape whatever the verdict: no judgment is a
+/// null `gate`, and a judgment with no rules has null `rules`.
+fn answer_shape(
+    host: &str,
+    shown_as: &Value,
+    op: &str,
+    action: Option<Value>,
+    judged: Option<Value>,
+    verdict: &str,
+) -> Value {
+    let mut gate = judged.unwrap_or(Value::Null);
+    if gate.is_object() && gate.get("rules").is_none() {
+        gate["rules"] = Value::Null;
+    }
+    json!({
+        "verdict": verdict,
+        "host": host,
+        "as": shown_as,
+        "request": {"op": op, "action": action},
+        "gate": gate,
+    })
+}
+
+/// A judgment as the preview's verdict: a refusal the judge makes is one;
+/// one it cannot make (no chat chosen, an outage) is an error.
+fn verdict(judged: Result<(), Failure>) -> Result<String, Response> {
+    match judged {
+        Ok(()) => Ok("allow".into()),
+        Err(failure) if failure.exit == Exit::Denied => Ok(failure.details["reason"]
+            .as_str()
+            .unwrap_or(&failure.code)
+            .to_string()),
+        Err(failure) => Err(Response::error(&failure)),
+    }
+}
+
+/// The vault fill a `fill` previews: a login, on a URL with a site, into
+/// fields named by their labels.
+fn login_fill(fill: &Value) -> Result<impl serde::Serialize + use<>, Failure> {
+    let bad = |message: &str| Err(Failure::new(code::bad_request, message.to_string()));
+    let url = fill["url"].as_str().unwrap_or_default();
+    if crate::vault::sites::site_of(url).is_none() {
+        return bad(
+            "The fill's URL has no site to fill on: give a web address like https://www.instacart.com/login.",
+        );
+    }
+    if fill["item"]["kind"] != "login" {
+        return bad("Only a login fill can be previewed.");
+    }
+    let Some(title) = fill["item"]["title"]
+        .as_str()
+        .filter(|t| !t.trim().is_empty())
+    else {
+        return bad("The fill names no login: give its title.");
+    };
+    let fields: Option<Vec<String>> = fill["fields"].as_array().and_then(|fields| {
+        fields
+            .iter()
+            .map(|field| {
+                field
+                    .as_str()
+                    .filter(|f| !f.trim().is_empty())
+                    .map(str::to_string)
+            })
+            .collect()
+    });
+    let Some(fields) = fields.filter(|fields| !fields.is_empty()) else {
+        return bad("The fill names no fields: give each field's label, like username.");
+    };
+    Ok(crate::browser::previewed_fill(url, "login", title, fields))
 }
 
 /// What the judge was shown, masked as the audit keeps the same request:
@@ -273,9 +361,10 @@ fn exec_turned_off(every_agent: bool, uid: &str) -> Failure {
 pub(crate) fn not_previewable(op: &str) -> Failure {
     let instead = "Preview an exec, file, google, messages or contacts request instead.";
     let message = match op {
-        "browser" => format!(
-            "Browser steps can't be previewed: they are judged against the page they act on. {instead}"
-        ),
+        "browser" => "Browser steps can't be previewed: they are judged against the page they \
+                      act on. Preview a login fill with --fill-login TITLE --url URL, or an \
+                      exec, file, google, messages or contacts request instead."
+            .to_string(),
         op => format!(
             "`{op}` is not judged by the gatekeeper, so there is nothing to preview. {instead}"
         ),
