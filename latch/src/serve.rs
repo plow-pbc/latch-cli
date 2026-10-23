@@ -910,14 +910,7 @@ async fn serve_request(
             );
             // Any caller's exec, file or Google operation runs only if the
             // gatekeeper allows it.
-            let gate = if local {
-                Ok(Gate {
-                    keeper: &host.gatekeeper,
-                    caller: Caller::OwnerOnHost,
-                })
-            } else {
-                host.gate(&identity, request.chat.as_deref())
-            };
+            let gate = host.gate(&identity, local, request.chat.as_deref());
             // An exec this host's owner denies is refused without asking.
             let denied_exec = op == "exec" && host.deny_exec.refuses(&identity);
             // A worker started now would run the new latch under this old
@@ -1362,12 +1355,23 @@ impl Host {
     fn gate<'a>(
         &'a self,
         identity: &'a Identity,
+        local: bool,
         chat: Option<&'a str>,
     ) -> Result<Gate<'a>, Failure> {
-        if identity.kind == "device" {
+        if local || identity.kind == "device" {
+            if chat.is_some() {
+                return Err(Failure::usage(
+                    "plow_chat_not_supported",
+                    "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat; omit them on owner calls".into(),
+                ));
+            }
             return Ok(Gate {
                 keeper: &self.gatekeeper,
-                caller: Caller::Owner,
+                caller: if local {
+                    Caller::OwnerOnHost
+                } else {
+                    Caller::Owner
+                },
             });
         }
         match identity.agent_uid.as_deref() {

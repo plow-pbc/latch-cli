@@ -460,10 +460,8 @@ pub async fn run(
     .to_string();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
-    for key in ["ppid", "turn"] {
-        if !args[key].is_null() {
-            audit.insert(key.into(), args[key].clone());
-        }
+    if !args["ppid"].is_null() {
+        audit.insert("ppid".into(), args["ppid"].clone());
     }
     if command == "eval" {
         eval_audit(args["script"].as_str().unwrap_or_default(), &mut audit);

@@ -265,7 +265,7 @@ before anything is dispatched.
 
 The host audits each call: command, session, engine, tab, origin
 and path (never the query), snapshot, target ref and role, the outcome,
-and the client's parent process id (or `--turn`, `LATCH_TURN`). A plan
+and the client's parent process id. A plan
 (`do`, or `act`) records its request id, its
 step count and how many are goals, its status and stop (step and code),
 each step's kind and outcome, and per action the step and action number,
@@ -328,7 +328,9 @@ the owner in chat, saying exactly what you will do, then retry; with
 model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs;
 its message says what fixes it (below, under the decision model).
 An agent whose line has more than one chat names the one it acts for
-with `--chat C` or `LATCH_CHAT`. The call's audit record holds the
+with `--plow-chat C` or `LATCH_PLOW_CHAT`. Owner calls and local modes
+(`setup`, `handoff done`, `do --dry-run`) refuse this selector instead of
+ignoring it. The call's audit record holds the
 judgment as `gate` (verdict, probabilities, model, cost, latency, the
 message ids read), never chat text. `just gated-shopping HOST_STATE OUT`
 measures a shopping task's judgments on the decision model.
