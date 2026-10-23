@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import ServiceManagement
+import Synchronization
 
 /// The onboarding flow: which screen shows, each screen's state, and what
 /// it asks latch. Views only draw it and call its intents.
@@ -472,27 +473,30 @@ final class Onboarding {
         }
     }
 
-    /// One example's verdict, or `.noAnswer` once `deadline` passes first:
-    /// latch is then stopped.
+    /// One example's verdict, or `.noAnswer` once `deadline` passes first.
+    /// The row never waits on a latch past it: that latch is stopped, and
+    /// whatever it says after is dropped.
     private nonisolated static func judge(_ example: Example, draft: String, client: any LatchClient, within deadline: Duration) async -> Preview {
-        await withTaskGroup(of: Preview?.self) { race in
-            race.addTask {
-                do {
-                    return .verdict(try await client.rulesTry(example.request, host: nil, agent: nil, newAgent: true, draft: draft))
-                } catch is CancellationError {
-                    return nil
-                } catch {
-                    return .failed(.from(error))
-                }
+        let first = FirstAnswer()
+        let asking = Task {
+            do {
+                first.give(.verdict(try await client.rulesTry(example.request, host: nil, agent: nil, newAgent: true, draft: draft)))
+            } catch {
+                first.give(.failed(.from(error)))
             }
-            race.addTask {
-                try? await Task.sleep(for: deadline)
-                return Task.isCancelled ? nil : .noAnswer
-            }
-            let first = await race.next() ?? nil
-            race.cancelAll()
-            return first ?? .noAnswer
         }
+        let timer = Task {
+            try? await Task.sleep(for: deadline)
+            first.give(.noAnswer)
+        }
+        let preview = await withTaskCancellationHandler {
+            await first.value()
+        } onCancel: {
+            first.give(.noAnswer)
+        }
+        asking.cancel()
+        timer.cancel()
+        return preview
     }
 
     /// Continue: saves the rules only if the person changed them. An empty
@@ -785,6 +789,35 @@ enum LoginItem {
         case (true, .enabled), (false, .notRegistered), (false, .notFound): return
         case (true, _): try service.register()
         case (false, _): try service.unregister()
+        }
+    }
+}
+
+/// The first answer given; any given after it is dropped.
+nonisolated private final class FirstAnswer: Sendable {
+    private struct State {
+        var answer: Onboarding.Preview?
+        var waiting: CheckedContinuation<Onboarding.Preview, Never>?
+    }
+    private let state = Mutex(State())
+
+    func give(_ answer: Onboarding.Preview) {
+        let waiting = state.withLock { state -> CheckedContinuation<Onboarding.Preview, Never>? in
+            guard case .none = state.answer else { return nil }
+            state.answer = answer
+            defer { state.waiting = nil }
+            return state.waiting
+        }
+        waiting?.resume(returning: answer)
+    }
+
+    func value() async -> Onboarding.Preview {
+        await withCheckedContinuation { continuation in
+            let answer = state.withLock { state in
+                if case .none = state.answer { state.waiting = continuation }
+                return state.answer
+            }
+            if let answer { continuation.resume(returning: answer) }
         }
     }
 }
