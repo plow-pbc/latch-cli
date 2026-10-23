@@ -29,6 +29,36 @@ nonisolated struct LocalStatus: Decodable, Equatable {
         var pid: Int?
         /// Set when a running host can't be used, e.g. another latch version's.
         var blocked: LatchFailure?
+        /// The keep-awake switch; nil when its saved settings can't be read.
+        var keepAwake: KeepAwake?
+    }
+
+    /// "Keep this Mac awake while plugged in" (`latch settings set
+    /// --keep-awake`): the saved choice, and what the host makes of it.
+    struct KeepAwake: Decodable, Equatable {
+        /// The saved choice, which the switch shows.
+        var enabled: Bool
+        /// Whether the serving host holds off idle sleep now; nil until a
+        /// starting host says.
+        var held: Bool?
+        /// Why not, when not held: `disabled`, `not_serving`, `on_battery`,
+        /// `unsupported`, `refused` or `unknown`.
+        var reason: String?
+
+        /// What the host is doing about it, in words; nil when the switch
+        /// says it all.
+        var said: String? {
+            guard enabled, held != nil else { return nil }
+            if held == true { return "Latch is keeping this Mac awake while it's plugged in." }
+            return switch reason {
+            case "not_serving": "Latch isn't running, so this Mac sleeps as usual."
+            case "on_battery": "On battery, this Mac sleeps as usual."
+            case "refused": "macOS didn't let Latch keep this Mac awake."
+            case "unknown": "Latch can't tell whether this Mac is plugged in, so it sleeps as usual."
+            case "unsupported": "This Mac can't be kept awake by Latch."
+            default: nil
+            }
+        }
     }
 
     struct Update: Decodable, Equatable {

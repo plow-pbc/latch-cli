@@ -508,7 +508,11 @@ struct StartView: View {
                         .disabled(!flow.runInBackground)
                         .opacity(flow.runInBackground ? 1 : 0.5)
                 }
+                Rectangle().fill(Brand.line).frame(height: 1)
+                toggle(KeepAwakeSwitch.title, "cup.and.saucer", app.keepAwakeBinding)
+                    .disabled(!app.canSetKeepAwake)
             }
+            KeepAwakeSwitch.Said().foregroundStyle(Brand.muted)
             if app.loginItemOffered, !flow.runInBackground {
                 Text("Latch can start when you log in only if it runs now.").foregroundStyle(Brand.muted)
             }

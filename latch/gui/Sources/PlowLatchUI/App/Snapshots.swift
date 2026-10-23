@@ -122,6 +122,10 @@ nonisolated enum Fixtures {
         return #"{"step":"google","state":"needed","reason":"Google is connected in Plow (\#(accounts.joined(separator: ", "))); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":\#(list(accounts))\#(again)}"#
     }
 
+    /// `status`, its host's keep-awake switch as latch says it.
+    static func keepAwake(_ keepAwake: String, in status: String = serving) -> String {
+        status.replacingOccurrences(of: #""blocked":null"#, with: #""blocked":null,"keep_awake":\#(keepAwake)"#)
+    }
     static let serving = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
     static let stopped = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null}},"update":{"available":true,"build":1342,"checked_at":"2026-10-22T22:07:54.186472Z"},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
     static let loggedOut = #"{"login":null,"this_machine":{"name":null,"key":null,"hosting":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
@@ -368,6 +372,8 @@ package enum SnapshotRunner {
             ("07-start", .start, Fixtures.stopped, Progress(), { _ in }),
             ("07-start-background-off", .start, Fixtures.stopped, Progress(), { $0.runInBackground = false }),
             ("07-start-already-running", .start, Fixtures.serving, Progress(), { _ in }),
+            ("07-start-keep-awake-held", .start, Fixtures.keepAwake(#"{"enabled":true,"held":true,"reason":null}"#), Progress(), { _ in }),
+            ("07-start-keep-awake-off", .start, Fixtures.keepAwake(#"{"enabled":false,"held":false,"reason":"disabled"}"#, in: Fixtures.stopped), Progress(), { _ in }),
             ("07-start-other-version", .start, Fixtures.otherVersion, Progress(), { _ in }),
             ("07-start-error", .start, Fixtures.stopped, Progress(), {
                 $0.startError = LatchError.failed(LatchFailure(code: "serve_failed", message: "the host did not answer within 30 seconds (`latch logs` has its log)"))
@@ -642,6 +648,8 @@ package enum SnapshotRunner {
                 with: #""self":false,"online":false,"last_seen_at":null"#)
             let screens: [(String, String, String, String?, Bool)] = [
                 ("19-settings-this-mac-serving", Fixtures.serving, Fixtures.studioHosts, nil, false),
+                ("19-settings-this-mac-keep-awake-on-battery", Fixtures.keepAwake(#"{"enabled":true,"held":false,"reason":"on_battery"}"#),
+                 Fixtures.studioHosts, nil, false),
                 ("19-settings-this-mac-stopped-update", Fixtures.stopped, Fixtures.studioHosts, nil, true),
                 ("19-settings-remote-online", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", false),
                 ("19-settings-remote-offline", Fixtures.serving, piOffline, "pi-kitchen", false),
