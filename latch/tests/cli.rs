@@ -2875,10 +2875,15 @@ fn a_host_runs_exec_and_files_under_home() {
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
-    // The host uses the test's own home, where its files go.
+    // The host uses the test's own home, where its files go, and the bare
+    // PATH a host started by the Mac app or the login item has.
     let home = dir.path().join("home");
     fs::create_dir(&home).unwrap();
-    let (serve, _) = serving_with_env(&host, &relay, &[("HOME", &home)]);
+    let env = [
+        ("HOME", home.as_path()),
+        ("PATH", Path::new("/usr/bin:/bin")),
+    ];
+    let (serve, _) = serving_with_env(&host, &relay, &env);
     let local = latch(&host, &["status", "--local"], &[]);
     let local: Value = serde_json::from_slice(&local.stdout).unwrap();
     assert_eq!(local["this_machine"]["hosting"]["state"], "serving");
@@ -2889,6 +2894,22 @@ fn a_host_runs_exec_and_files_under_home() {
     assert_eq!(executed.status.code(), Some(0), "{executed:?}");
     let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
     assert_eq!(result["exit_code"], 0);
+    // Exec still finds Homebrew's tools, after the host's own PATH.
+    let script = [
+        "exec",
+        "--host",
+        "host",
+        "--",
+        "/bin/sh",
+        "-c",
+        "echo $PATH",
+    ];
+    let executed = latch(&owner, &script, &[]);
+    let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
+    assert_eq!(
+        result["stdout"], "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin\n",
+        "{executed:?}"
+    );
     // A get reads what exec can (home and the system's files), and a put
     // goes under home.
     let system = latch(
