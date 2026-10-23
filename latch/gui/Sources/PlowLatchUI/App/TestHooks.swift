@@ -39,12 +39,22 @@ enum TestHooks {
             app.onboarding?.loginName = name ?? ""
             app.onboarding?.useAnotherName()
         }
+        on("replace") { _ in app.onboarding?.replaceMachine() }
         on("start-at-login") { value in app.onboarding?.startAtLogin = value == "1" }
         on("set-up-again") { _ in app.setUpAgain() }
+        // Moves the window off every display, where the window server still
+        // draws it while the screen is locked or asleep (snapshots of an
+        // on-screen window come back blank then).
+        on("offscreen") { _ in
+            NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+        }
+        // The main window's host picker and sidebar, as a click picks them.
+        on("host") { name in app.chosenHost = name }
+        on("section") { item in if let item = item.flatMap(SidebarItem.init(rawValue:)) { app.section = item } }
         on("quit") { _ in NSApp.terminate(nil) }
         on("snapshot") { path in
-            guard let path, let view = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain })?.contentView else { return }
-            try? Render.png(view, to: URL(filePath: path))
+            guard let path, let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }
+            try? Render.window(window, to: URL(filePath: path))
         }
         // A key press, delivered to the app as the keyboard would: `return`,
         // `tab` or `space`; nothing outside the app is touched.

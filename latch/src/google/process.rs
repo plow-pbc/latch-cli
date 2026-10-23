@@ -24,10 +24,6 @@ pub struct Job {
 
 /// Refuses to run gog unless its sha256 is one of the pinned release's.
 pub fn verify(program: &Path) -> Result<(), Failure> {
-    let mut file =
-        File::open(program).map_err(|_| problem(Exit::Denied, "gog_unverified", json!({})))?;
-    let digest =
-        sha256(&mut file).map_err(|_| problem(Exit::Denied, "gog_unverified", json!({})))?;
     // A test build's stand-in is a latch built with it (see `fake.rs`):
     // its bytes hold the marker. (A worker has no /proc to find its own.)
     #[cfg(feature = "fake-gog")]
@@ -37,6 +33,10 @@ pub fn verify(program: &Path) -> Result<(), Failure> {
     }) {
         return Ok(());
     }
+    let mut file =
+        File::open(program).map_err(|_| problem(Exit::Denied, "gog_unverified", json!({})))?;
+    let digest =
+        sha256(&mut file).map_err(|_| problem(Exit::Denied, "gog_unverified", json!({})))?;
     if !super::PIN.hashes.contains(&digest) {
         return Err(problem(Exit::Denied, "gog_unverified", json!({})));
     }

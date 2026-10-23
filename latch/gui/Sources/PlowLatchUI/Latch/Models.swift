@@ -32,6 +32,35 @@ nonisolated struct LocalStatus: Decodable, Equatable {
     var update: Update?
 }
 
+/// `latch status`: the account's hosts, as Plow's directory lists them.
+nonisolated struct AccountStatus: Decodable, Equatable {
+    struct Host: Decodable, Equatable {
+        var key: String
+        var name: String
+        /// When Plow last heard from it, and whether it counts it online.
+        var lastSeenAt: Date?
+        var online: Bool?
+        /// This machine, the one that ran `latch status`.
+        var isThisMac: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case key, name, lastSeenAt, online
+            case isThisMac = "self"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            key = try c.decode(String.self, forKey: .key)
+            name = try c.decode(String.self, forKey: .name)
+            lastSeenAt = try c.decodeIfPresent(Date.self, forKey: .lastSeenAt)
+            online = try c.decodeIfPresent(Bool.self, forKey: .online)
+            isThisMac = try c.decodeIfPresent(Bool.self, forKey: .isThisMac) ?? false
+        }
+    }
+
+    var hosts: [Host]
+}
+
 /// What to text, from `latch login --events`. The code is a credential:
 /// shown, never logged.
 nonisolated struct LoginCode: Decodable, Equatable {
@@ -73,10 +102,19 @@ nonisolated struct LoginLine: Decodable {
     }
 }
 
-/// `latch rules show`: the rules for every agent on this Mac's host.
+/// `latch rules show`: the rules for every agent on a host, and each
+/// agent's own rules there.
 nonisolated struct RulesShow: Decodable, Equatable {
     struct Text: Decodable, Equatable { var text: String }
+    struct Agent: Decodable, Equatable { var agentName: String? }
     var everyAgent: Text?
+    var agents: [Agent]?
+}
+
+/// `latch vault list`: a host's vault items, never their secrets.
+nonisolated struct VaultList: Decodable, Equatable {
+    struct Item: Decodable, Equatable { var item: String }
+    var items: [Item]
 }
 
 /// `latch rules try`: the verdict a request would get now, without running it.
@@ -105,10 +143,23 @@ nonisolated struct SetupStatus: Decodable, Equatable {
         var accounts: [String]?
         /// Google's, when none is connected in Plow: where to connect one.
         var connectUrl: URL?
+        /// Messages' and Contacts', when asked: whether Plow Latch has Full
+        /// Disk Access (`granted`, `not_granted` or `unknown`).
+        var access: String?
     }
     var steps: [Step]
 
     func step(_ name: String) -> Step? { steps.first { $0.step == name } }
+}
+
+/// `latch plugins list`: each connector on a host and whether it's on.
+nonisolated struct PluginsList: Decodable, Equatable {
+    struct Plugin: Decodable, Equatable {
+        var name: String
+        /// `enabled`, `disabled` or `needs_setup`.
+        var state: String
+    }
+    var plugins: [Plugin]
 }
 
 /// `latch plugins enable google`'s answer.

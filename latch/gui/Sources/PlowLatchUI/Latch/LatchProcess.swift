@@ -31,6 +31,10 @@ nonisolated struct LatchFailure: Decodable, Equatable {
     var settings: String?
     /// `google_not_connected`: where to connect Google in Plow.
     var connectUrl: URL?
+    /// `conflict` at login: the machine that has the name, and when Plow
+    /// last saw it.
+    var existingName: String?
+    var lastSeenAt: Date?
 }
 
 /// One run of latch: argv only (never a shell), stdout for answers, stderr
