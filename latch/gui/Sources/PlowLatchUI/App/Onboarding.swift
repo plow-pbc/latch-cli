@@ -528,10 +528,11 @@ final class Onboarding {
         defer { lookingAtGoogle = false }
         // Waiting, or already on, the screen keeps saying so until latch answers.
         if google != .waiting, google != .connected { google = .checking }
-        let before = googleAccounts.accounts
+        let before = googleAccounts.working
         if let seen = await lookAtGoogle() { google = seen }
-        // A sign-in finished after the wait ended: its timeout no longer holds.
-        if googleAccounts.accounts.contains(where: { !before.contains($0) }) { googleWaitEnded = nil }
+        // A sign-in finished after the wait ended, adding an account or
+        // signing one in again: its timeout no longer holds.
+        if googleAccounts.working.contains(where: { !before.contains($0) }) { googleWaitEnded = nil }
     }
 
     /// Try again, or the app back in front: a check that leaving the

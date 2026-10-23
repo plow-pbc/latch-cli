@@ -73,26 +73,35 @@ struct GoogleAccountsTests {
     }
 
     /// A wait that timed out, then a sign-in finished in the browser
-    /// anyway: back in the app, the check finds the new account and the
-    /// timeout goes. A check that finds nothing new keeps it.
-    @Test(arguments: [false, true])
-    func aSignInFinishedAfterTheTimeoutRetiresIt(adding: Bool) async {
-        let had = adding ? [three[0]] : []
+    /// anyway: back in the app, the check finds an account working that
+    /// didn't before, a new one or one signed in again, and the timeout
+    /// goes. A check that finds nothing newly working keeps it.
+    @Test(arguments: ["connect", "add", "sign in again"])
+    func aSignInFinishedAfterTheTimeoutRetiresIt(signIn: String) async {
+        let had = signIn == "connect" ? [] : [three[0]]
+        let after = signIn == "add" ? had + [three[1]] : signIn == "connect" ? [three[1]] : had
+        let adding = signIn == "add"
         let client = SignInClient()
-        client.google = adding ? Fixtures.googleConnected(had) : Fixtures.googleNotConnected
+        client.google = signIn == "connect" ? Fixtures.googleNotConnected
+            : Fixtures.googleConnected(had, needsSignIn: signIn == "sign in again" ? had : [])
+        if signIn == "sign in again" {
+            client.enableRefusal = LatchFailure(code: "google_needs_sign_in", message: "Google needs the owner to sign in again.")
+        }
         let flow = app(client).stage(.google)
         await flow.checkGoogle()
         flow.connectGoogle()
         await waitUntil { client.events != nil }
+        #expect(client.signIns == [adding])
         client.events?.finish(throwing: timeout)
         await waitUntil { flow.google != .waiting }
         #expect(flow.googleWaitEnded == GoogleSignIn.problem(timeout, adding: adding))
         await flow.checkGoogle()
         #expect(flow.googleWaitEnded == GoogleSignIn.problem(timeout, adding: adding))
-        client.google = Fixtures.googleConnected(had + [three[1]])
+        client.google = Fixtures.googleConnected(after)
+        client.enableRefusal = nil
         await flow.checkGoogle()
         #expect(flow.google == .connected)
-        #expect(flow.googleAccounts.accounts == had + [three[1]])
+        #expect(flow.googleAccounts == GoogleAccounts(accounts: after))
         #expect(flow.googleWaitEnded == nil)
     }
 

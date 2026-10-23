@@ -28,9 +28,12 @@ nonisolated struct GoogleAccounts: Equatable {
 
     func needsSignIn(_ account: String) -> Bool { needsSignIn.contains(account) }
 
+    /// The accounts that work.
+    var working: [String] { accounts.filter { !needsSignIn($0) } }
+
     /// One account works, so a sign-in adds another (`--add-account`);
     /// otherwise it connects the first, or signs in again with them all.
-    var addsAccount: Bool { accounts.contains { !needsSignIn($0) } }
+    var addsAccount: Bool { !working.isEmpty }
 
     /// None of them works: each one's row offers to sign in again, which
     /// waits until they all work.
