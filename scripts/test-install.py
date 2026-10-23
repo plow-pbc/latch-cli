@@ -248,7 +248,7 @@ def fake_latch(version, log, managed=True, stop_ok=True, start_ok=True, running=
     start = "echo '{}'" if start_ok else "exit 1"
     return f"""#!/bin/sh
 case "$*" in
-  --version) echo "latch {version}" ;;
+  --version) echo '{{"version":"{version}"}}' ;;
   *"status --local") echo '{serve}' ;;
   *" stop") {stop} ;;
   *"serve -d --again") echo "{version} serve -d --again" >> "{log}"; {start} ;;
@@ -297,7 +297,7 @@ class HostUpgrade(unittest.TestCase):
         self.assertIn("it starts again with the new latch once the install is done",
                       result.stdout, "the stop says it will start again after installation")
         self.assertNotIn("is stopped", result.stderr)
-        self.assertIn("latch 0.1.0 (2)", subprocess.check_output([str(dest), "--version"], text=True))
+        self.assertIn('"0.1.0 (2)"', subprocess.check_output([str(dest), "--version"], text=True))
 
     def test_a_mac_host_is_found_through_the_app_without_a_link_to_it(self):
         """On macOS the app is what gets replaced: its host is stopped and
@@ -334,7 +334,7 @@ class HostUpgrade(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(log.read_text().splitlines(),
                          ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
-        self.assertIn("latch 0.1.0 (2)", subprocess.check_output([str(old), "--version"], text=True))
+        self.assertIn('"0.1.0 (2)"', subprocess.check_output([str(old), "--version"], text=True))
 
     def test_a_failed_stop_changes_nothing(self):
         log = self.log()
@@ -386,7 +386,7 @@ class HostUpgrade(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(calls, [], "nothing was stopped, by either latch")
             self.assertIn("install-binary.sh: a host from another latch version\n", result.stdout)
-            self.assertIn("latch 0.1.0 (2)",
+            self.assertIn('"0.1.0 (2)"',
                           subprocess.check_output([str(dest), "--version"], text=True))
 
     def test_no_host_or_the_same_version_stops_nothing(self):
@@ -406,7 +406,8 @@ class MessagesReaderInstall(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=parent) as directory:
             root = Path(directory)
             state = root / "state"
-            script = '#!/bin/sh\necho "latch 9.9.9 (fixture)"\n'
+            # What a latch says to --version: one line of JSON.
+            script = '#!/bin/sh\necho \'{"version":"9.9.9 (fixture)"}\'\n'
             setup, _, tools = fixture(root, state, script, system="Darwin", machine="arm64")
             (setup / "latch-messages").write_bytes(b"reader-fixture")
             # A Mac install also puts Chrome for Testing in place: one already there.

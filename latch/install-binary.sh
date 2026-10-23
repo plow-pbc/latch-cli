@@ -304,7 +304,8 @@ fi
 # in a folder named for this latch's version (the one that runs it).
 reader="$(dirname "$src")/latch-messages"
 if [ "$(uname -s)" = Darwin ] && [ -f "$reader" ]; then
-  latch_version=$("$dest" --version | awk '{print $2}')
+  # `--version` says {"version":"0.1.0 (1327): commit …"}: its first word.
+  latch_version=$("$dest" --version | sed -n 's/.*"version": *"\([^" ]*\).*/\1/p')
   [ -n "$latch_version" ] || die "could not read $dest's version"
   reader_dir="$state_dir/plugins/messages/$latch_version"
   mkdir -p "$reader_dir"
