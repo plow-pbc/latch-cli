@@ -232,27 +232,30 @@ impl Plugins {
             .collect()
     }
 
-    /// Every connector with its state, and for one not enabled, why and
-    /// the owner's command that turns it on.
     fn list(&self) -> Value {
-        let inner = self.inner.lock().expect("plugins lock");
-        let plugins: Vec<Value> = Connector::ALL
-            .iter()
-            .map(|&connector| {
-                let name = connector.name();
-                match inner.settings.get(&connector) {
-                    Some(Setting::Enabled) => json!({"name": name, "state": "enabled"}),
-                    Some(Setting::NeedsSetup { reason }) => json!({"name": name,
-                        "state": "needs_setup", "reason": reason,
-                        "enable": connector.enable_command()}),
-                    None => json!({"name": name, "state": "disabled",
-                        "reason": "its owner has not enabled it on this host",
-                        "enable": connector.enable_command()}),
-                }
-            })
-            .collect();
-        json!({"plugins": plugins})
+        listed(&self.inner.lock().expect("plugins lock").settings)
     }
+}
+
+/// Every connector with its state, and for one not enabled, why and the
+/// owner's command that turns it on.
+fn listed(settings: &BTreeMap<Connector, Setting>) -> Value {
+    let plugins: Vec<Value> = Connector::ALL
+        .iter()
+        .map(|&connector| {
+            let name = connector.name();
+            match settings.get(&connector) {
+                Some(Setting::Enabled) => json!({"name": name, "state": "enabled"}),
+                Some(Setting::NeedsSetup { reason }) => json!({"name": name,
+                    "state": "needs_setup", "reason": reason,
+                    "enable": connector.enable_command()}),
+                None => json!({"name": name, "state": "disabled",
+                    "reason": "its owner has not enabled it on this host",
+                    "enable": connector.enable_command()}),
+            }
+        })
+        .collect();
+    json!({"plugins": plugins})
 }
 
 /// The settings saved in `state`'s `plugins.json`, which a running host
@@ -273,6 +276,12 @@ pub(crate) fn saved(state: &StateDir) -> Result<BTreeMap<Connector, Setting>, Fa
             format!("{}: {err}", path.display()),
         )),
     }
+}
+
+/// `list` for this machine, from `state`'s saved settings: the same answer
+/// its host gives while it runs, since it saves each change first.
+pub fn list_saved(state: &StateDir) -> Result<Value, Failure> {
+    Ok(listed(&saved(state)?))
 }
 
 /// One running operation of a connector; it ends when this is dropped.

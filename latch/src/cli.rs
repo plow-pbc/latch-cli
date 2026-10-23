@@ -694,7 +694,8 @@ pub struct PluginsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PluginsCommand {
-    /// Every connector: enabled, disabled or needs_setup, with the reason
+    /// Every connector: enabled, disabled or needs_setup, with the reason;
+    /// this machine's, running or not, unless --host names another
     List {
         /// Name of the host to ask
         #[arg(long, env = "LATCH_HOST")]
