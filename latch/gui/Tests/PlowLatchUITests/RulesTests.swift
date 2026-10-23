@@ -11,7 +11,7 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     var show = try! Fixtures.decode(Fixtures.rulesStudio) as RulesShow
     private(set) var sets: [(text: String, host: String?, agent: String?)] = []
-    private(set) var tries: [[String]] = []
+    private(set) var tries: [TryRequest] = []
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -41,7 +41,7 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
     func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
-    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         tries.append(request)
         return try Fixtures.decode(Fixtures.tries["allow-owner"]!)
     }

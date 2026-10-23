@@ -246,7 +246,7 @@ private struct Lane: View {
     /// app's words: one sentence, with no step to take from here.
     private var reason: String? {
         switch preview {
-        case let .failed(error): ErrorCopy.said(error, host: ErrorCopy.thisMac, place: .tryRequest(connector: example.request.first))
+        case let .failed(error): ErrorCopy.said(error, host: ErrorCopy.thisMac, place: .tryRequest(connector: example.request.words?.first))
         case let .verdict(answer):
             answer.refused.flatMap {
                 ErrorCopy.sentence(.failed($0), host: ErrorCopy.thisMac, place: .tryRequest(connector: answer.connector))

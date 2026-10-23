@@ -128,7 +128,7 @@ struct DecodingTests {
 struct GatekeeperTests {
     @Test func examplesAreJudgedOnTheDraftAsANewAgent() async {
         let client = ScriptedClient { _ in nil }
-        client.verdict = { draft, request in draft.contains("Never let it share") && request.first == "exec" ? "owner_said_no" : "allow" }
+        client.verdict = { draft, request in draft.contains("Never let it share") && request.words?.first == "exec" ? "owner_said_no" : "allow" }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
         flow.choose(Onboarding.decks[0])
@@ -406,11 +406,11 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     }
     private(set) var saved: [String] = []
     /// What `rules try` answers for a draft and request, and what it was asked.
-    var verdict: @Sendable (String, [String]) -> String = { _, _ in "allow" }
+    var verdict: @Sendable (String, TryRequest) -> String = { _, _ in "allow" }
     /// `rules try` runs several at once.
-    private let asked = Mutex<[(draft: String, request: [String])]>([])
-    var tries: [(draft: String, request: [String])] { asked.withLock { $0 } }
-    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+    private let asked = Mutex<[(draft: String, request: TryRequest)]>([])
+    var tries: [(draft: String, request: TryRequest)] { asked.withLock { $0 } }
+    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         let draft = draft ?? ""
         asked.withLock { $0.append((draft, request)) }
         await held("try \(draft)")
