@@ -585,9 +585,9 @@ class BrowserEngines(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, options)
             self.assertIn(says, result.stderr, options)
 
-    def chrome_fixture(self, tools):
+    def chrome_fixture(self, tools, machine="aarch64", key="linux_arm64", folder="chrome-linux-arm64"):
         """A browser-engines.sh beside a pin for a local CfT archive, on a
-        Linux arm64 machine whose curl serves only that archive. Returns the
+        Linux machine whose curl serves only that archive. Returns the
         script's folder, the archive, and the file listing each download."""
         setup = self.root / "engines"
         (setup / "src/browser").mkdir(parents=True)
@@ -595,21 +595,22 @@ class BrowserEngines(unittest.TestCase):
         shutil.copyfile(ROOT / "latch/install-packages.sh", setup / "install-packages.sh")
         archive = self.root / "cft.zip"
         with zipfile.ZipFile(archive, "w") as zip_file:
-            zip_file.writestr("chrome-linux-arm64/chrome", "#!/bin/sh\n")
+            zip_file.writestr(f"{folder}/chrome", "#!/bin/sh\n")
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         # The pin's fixed shape, as browser-engines.sh reads it with sed.
         (setup / "src/browser/cft.json").write_text(f"""{{
   "version": "1.0.0",
   "builds": {{
-    "linux_arm64": {{
+    "{key}": {{
       "url": "https://example.invalid/cft.zip",
       "zip_sha256": "{digest}",
-      "folder": "chrome-linux-arm64"
+      "folder": "{folder}"
     }}
   }}
 }}
 """)
-        tool(tools, "uname", 'case "$1" in -s) echo Linux;; -m) echo aarch64;; esac\n')
+        tool(tools, "uname", f'case "$1" in -s) echo Linux;; -m) echo {machine};; esac\n')
+        tool(tools, "ldconfig", "printf '%s\\n' 'libgtk-3.so.0 present' 'libasound.so.2 present' 'libnss3.so present' 'libgbm.so.1 present'\n")
         fetched = self.root / "fetched"
         # Serves the fixture for the pinned URL; anything else fails.
         tool(tools, "curl", f"""out=""; url=""
@@ -619,6 +620,22 @@ echo "$url" >> "{fetched}"
 cp "{archive}" "$out"
 """)
         return setup, archive, fetched
+
+    def test_linux_x86_64_chrome_installs_its_pinned_build(self):
+        setup, _, fetched = self.chrome_fixture(self.tools, "x86_64", "linux_x64", "chrome-linux64")
+        tool(self.tools, "Xvfb", "exit 0\n")
+        tool(self.tools, "ldconfig", "printf '%s\\n' 'libgtk-3.so.0 present' 'libasound.so.2 present' 'libgbm.so.1 present'\n")
+        log = self.root / "packages"
+        tool(self.tools, "id", "echo 0\n")
+        tool(self.tools, "apt-get", f'echo "$*" >> "{log}"\n')
+        state = self.root / "state"
+        result = subprocess.run(
+            ["sh", str(setup / "browser-engines.sh"), "--state-dir", str(state), "chrome"],
+            env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((state / "plugins/cft/1.0.0/chrome-linux64/chrome").is_file())
+        self.assertIn("install -y -q libnss3", log.read_text())
+        self.assertEqual(fetched.read_text().count("\n"), 1)
 
     def test_chrome_installs_the_pinned_build_once_and_checks_its_hash(self):
         setup, archive, fetched = self.chrome_fixture(self.tools)
@@ -750,9 +767,9 @@ esac
         self.assertIn("apt-get install -y -q bubblewrap", log.read_text())
 
     def test_chrome_set_up_after_no_browser_installs_unzip_and_xvfb_first(self):
-        # A Pi with neither unzip nor Xvfb: only the tools named here are on
+        # A Linux x86_64 host with neither unzip nor Xvfb: only the tools named here are on
         # its PATH, and its package manager installs the two.
-        tools = self.root / "pi"
+        tools = self.root / "linux"
         tools.mkdir()
         link_basic_tools(tools)
         unzip = shutil.which("unzip")
@@ -768,7 +785,7 @@ for package in "$@"; do case "$package" in
   xvfb) printf '#!/bin/sh\\nexit 0\\n' > "{tools}/Xvfb"; chmod 755 "{tools}/Xvfb" ;;
 esac; done
 """)
-        setup, _, fetched = self.chrome_fixture(tools)
+        setup, _, fetched = self.chrome_fixture(tools, "x86_64", "linux_x64", "chrome-linux64")
         env = {**self.env, "PATH": str(tools)}
         state = self.root / "state"
 

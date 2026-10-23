@@ -37,7 +37,7 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         }
         RulesCommand::Set { ref scope, .. }
         | RulesCommand::Edit { ref scope }
-        | RulesCommand::Clear { ref scope }
+        | RulesCommand::Clear { ref scope, .. }
         | RulesCommand::Show { ref scope } => scope,
     };
     let target = Target {
@@ -48,7 +48,12 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
     // version read it.
     let from = scope.agent.clone();
     match args.command {
-        RulesCommand::Set { text, file, .. } => {
+        RulesCommand::Set {
+            text,
+            file,
+            revision,
+            ..
+        } => {
             let text = match (text, file) {
                 (Some(text), None) => text,
                 (None, Some(file)) => read_file(&file)?,
@@ -57,9 +62,14 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                     return Err(Failure::new(code::bad_arguments, message.into()));
                 }
             };
-            target
-                .call(json!({"command": "set", "from": from, "text": text}))
-                .await
+            // A save at a revision is the edit hosts of every version
+            // check.
+            let args = match revision {
+                None => json!({"command": "set", "from": from, "text": text}),
+                Some(revision) => json!({"command": "edit", "from": from, "text": text,
+                                         "revision": expected(&revision)}),
+            };
+            target.call(args).await
         }
         RulesCommand::Edit { .. } => {
             // It opens the person's editor: a program sets the rules instead.
@@ -89,7 +99,16 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                 .await
                 .map_err(Failure::told)
         }
-        RulesCommand::Clear { .. } => target.call(json!({"command": "clear", "from": from})).await,
+        RulesCommand::Clear { revision, .. } => {
+            // A host older than the revision check refuses the command it
+            // does not know, rather than clearing.
+            let args = match revision {
+                None => json!({"command": "clear", "from": from}),
+                Some(revision) => json!({"command": "clear_at_revision", "from": from,
+                                         "revision": expected(&revision)}),
+            };
+            target.call(args).await
+        }
         RulesCommand::Show { .. } => target.call(json!({"command": "show", "from": from})).await,
         RulesCommand::Try { .. } => unreachable!("previewed above"),
     }
@@ -227,6 +246,14 @@ impl Target<'_> {
         record.args = done.audit_args;
         let audit_id = log.append(record)?;
         crate::serve::with_audit_id(done.response, audit_id).into_result()
+    }
+}
+
+/// `--revision R` as the host compares it: `none` is no rules.
+fn expected(revision: &str) -> Value {
+    match revision {
+        "none" => Value::Null,
+        revision => json!(revision),
     }
 }
 

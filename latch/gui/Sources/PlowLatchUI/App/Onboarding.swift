@@ -11,9 +11,10 @@ final class Onboarding {
         case waiting(LoginCode)
         case expired(LoginCode)
         case failed(String)
-        /// Plow already has a machine by this Mac's name; the text was
-        /// received, so another name logs in with no second text.
-        case nameTaken
+        /// Another of the owner's machines has this Mac's name, and when
+        /// Plow last saw it. The text was received, so another name, or
+        /// replacing that machine, logs in with no second text.
+        case nameTaken(existing: String?, lastSeen: Date?)
         case verified(name: String)
     }
 
@@ -123,6 +124,8 @@ final class Onboarding {
     var messages: Check = .unknown
     var contacts: Check = .unknown
     var waitingForAccess = false
+    /// Whether Plow Latch has Full Disk Access, as latch last said.
+    var fullDiskAccess: String?
     var restarting = false
     /// Why Restart Latch failed, while it shows.
     var restartError: String?
@@ -213,7 +216,7 @@ final class Onboarding {
         case .login, .privacy: "Continue"
         case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
         case .google: google != .unknown ? "Continue" : googleAccounts.isEmpty ? "Check connection" : "Turn on"
-        case .access: accessDone || accessFailed ? "Continue" : "Open System Settings"
+        case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.serve.ready != true ? "Start Latch" : "Continue"
         case .done: "Open Latch"
         }
@@ -237,7 +240,8 @@ final class Onboarding {
         case .rules: Task { await saveRules() }
         case .google:
             if google == .done { next() } else if google == .unknown { Task { await checkGoogle() } } else { skip() }
-        case .access: if accessDone { next() } else if accessFailed { skip() } else { requestAccess() }
+        case .access:
+            if accessDone { next() } else if accessFailed { skip() } else if accessGranted { checkAccess() } else { requestAccess() }
         case .start: Task { await startLatch() }
         case .done: finish()
         }
@@ -248,6 +252,9 @@ final class Onboarding {
     }
 
     var accessDone: Bool { messages == .done && contacts == .done }
+    /// latch found Full Disk Access already granted: turning the connectors
+    /// on needs no trip to System Settings.
+    var accessGranted: Bool { fullDiskAccess == "granted" }
 
     /// A step already set up shows Continue alone, not Skip for now.
     var stepDone: Bool {
@@ -286,11 +293,12 @@ final class Onboarding {
 
     /// Runs `latch login --events` until it ends or the screen goes. A Mac
     /// already logged in goes straight to verified. `name`, when given, is
-    /// the name this Mac takes in Plow.
-    func startLogin(name: String? = nil) {
+    /// the name this Mac takes in Plow; `replace` takes it from the machine
+    /// that has it, only ever on the person's choice.
+    func startLogin(name: String? = nil, replace: Bool = false) {
         loginTask?.cancel()
         login = .starting
-        let events = client.login(name: name)
+        let events = client.login(name: name, replace: replace)
         loginTask = Task {
             do {
                 for try await event in events {
@@ -302,7 +310,9 @@ final class Onboarding {
                         await app.refreshStatus()
                     case .expired:
                         if case let .waiting(code) = login { login = .expired(code) } else { login = .failed("This code expired.") }
-                    case let .error(failure): login = failure.code == "conflict" ? .nameTaken : .failed(failure.message)
+                    case let .error(failure) where failure.code == "conflict":
+                        login = .nameTaken(existing: failure.existingName, lastSeen: failure.lastSeenAt)
+                    case let .error(failure): login = .failed(failure.message)
                     }
                 }
             } catch is CancellationError {
@@ -320,6 +330,13 @@ final class Onboarding {
         let name = loginName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         startLogin(name: name)
+    }
+
+    /// "Replace studio": that machine leaves the account, signed out of
+    /// Plow, and this Mac takes its name.
+    func replaceMachine() {
+        guard case let .nameTaken(existing?, _) = login else { return }
+        startLogin(name: existing, replace: true)
     }
 
     /// The person clicked the code: Messages opens with the text filled in.
@@ -461,11 +478,12 @@ final class Onboarding {
         }
     }
 
-    /// Arriving at Contacts & Messages: what latch says is on shows as on.
-    /// Looking never runs `plugins enable`; turning one on is the person's
-    /// click.
+    /// Arriving at Contacts & Messages: what latch says is on shows as on,
+    /// and whether Full Disk Access is granted already. Looking never runs
+    /// `plugins enable`; turning one on is the person's click.
     func accessAppeared() async {
-        guard let setup = try? await client.setupStatus() else { return }
+        guard let setup = try? await client.setupStatusCheckingAccess() else { return }
+        fullDiskAccess = setup.step("messages")?.access
         for plugin in ["messages", "contacts"] where setup.step(plugin)?.state == "done" {
             set(plugin, .done)
         }
@@ -509,7 +527,7 @@ final class Onboarding {
         restartError = nil
         do {
             if app.status?.serve.running == true { try await client.stop() }
-            try await startHost()
+            try await app.startHost()
             await app.refreshStatus()
             checkAccess()
         } catch {
@@ -537,18 +555,6 @@ final class Onboarding {
 
     // MARK: Start Latch
 
-    /// Starts the host the way `setup --status` says (with the last serve's
-    /// flags when there were any). Nothing to do when it isn't needed.
-    /// A host latch says can't start now throws latch's reason.
-    private func startHost() async throws {
-        guard let host = try await client.setupStatus().step("host") else { return }
-        switch host.state {
-        case "needed": if let args = host.args { try await client.perform(args) }
-        case "blocked": throw HostBlocked(reason: host.reason)
-        default: break
-        }
-    }
-
     /// Starts the host in the background and sets the login item, as the
     /// toggles say.
     func startLatch() async {
@@ -556,7 +562,7 @@ final class Onboarding {
         defer { starting = false }
         startError = nil
         do {
-            if runInBackground, app.status?.serve.ready != true { try await startHost() }
+            if runInBackground, app.status?.serve.ready != true { try await app.startHost() }
             if app.loginItemOffered { try app.setLoginItem(runInBackground && startAtLogin) }
             started = runInBackground
             await app.refreshStatus()

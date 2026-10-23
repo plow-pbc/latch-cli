@@ -35,7 +35,9 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
             match command {
                 "show" => show(state_dir, &dir, plow, host, from).await,
                 "set" | "edit" => set(&dir, plow, host, command, args, &mut audit).await,
-                "clear" => clear(&dir, plow, host, from, &mut audit).await,
+                "clear" | "clear_at_revision" => {
+                    clear(&dir, plow, host, command, args, &mut audit).await
+                }
                 _ => Err(Failure::new(
                     code::bad_command,
                     format!("unknown rules command {command:?}"),
@@ -104,10 +106,11 @@ async fn clear(
     dir: &RulesDir,
     plow: &Plow,
     host: &str,
-    from: Option<&str>,
+    command: &str,
+    args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
-    let (scope, name) = match from {
+    let (scope, name) = match args["from"].as_str() {
         None => (Scope::Host, None),
         Some(from) => {
             let account = Account::read(plow).await?;
@@ -117,7 +120,8 @@ async fn clear(
         }
     };
     note_scope(audit, &scope);
-    let change = dir.clear(&scope)?;
+    let expected = (command == "clear_at_revision").then(|| args["revision"].as_str());
+    let change = dir.clear(&scope, expected)?;
     note_change(audit, &change);
     let mut done = described(host, &scope, name);
     done["cleared"] = json!(change.before.is_some());
@@ -545,6 +549,19 @@ mod tests {
             refusal(host.owner(edit(Value::Null, "four")).await),
             (Exit::Denied, "stale_revision".into())
         );
+    }
+
+    #[tokio::test]
+    async fn a_clear_at_a_revision_removes_only_the_text_it_read() {
+        let host = Host::new();
+        let clear = |revision: Value| json!({"command": "clear_at_revision", "from": "Ada", "revision": revision});
+        host.owner(set(Some("Ada"), "one")).await.unwrap();
+        let (exit, code, _) = host.owner(clear(Value::Null)).await.unwrap_err();
+        assert_eq!((exit, code.as_str()), (Exit::Denied, "stale_revision"));
+        assert_eq!(host.judged(ADA).agent.as_deref(), Some("one"));
+        let done = host.owner(clear(json!(revision("one")))).await.unwrap();
+        assert_eq!(done["cleared"], true);
+        assert_eq!(host.judged(ADA).agent, None);
     }
 
     #[tokio::test]

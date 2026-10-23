@@ -9,12 +9,12 @@
 # src/browser/camoufox.json and camoufox/ (the helper's lockfile), and so is
 # install-packages.sh.
 #
-# chrome: Chrome for Testing, on macOS and on Linux arm64 (the Pi), the
+# chrome: Chrome for Testing, on macOS and Linux arm64/x86_64, the
 # release pinned in src/browser/cft.json, into
 # <state-dir>/plugins/cft/<version>/, beside older versions, with the pin
 # copied in as manifest.json. That download needs curl, and ditto (macOS)
 # or unzip (Linux). On Linux, Chrome also needs Xvfb, the display of a host
-# with no screen: unzip and Xvfb are installed first if missing, which
+# with no screen: missing runtime libraries, unzip and Xvfb are installed first, which
 # needs root, so it asks for sudo once. On another platform it says so and
 # installs nothing.
 #
@@ -67,6 +67,7 @@ chrome() {
     Darwin/x86_64) cft_build=mac_x64 ;;
     Darwin/*) die "no Chrome for Testing build for $(uname -m)" ;;
     Linux/aarch64 | Linux/arm64) cft_build=linux_arm64 ;;
+    Linux/x86_64) cft_build=linux_x64 ;;
     *)
       say "no Chrome for Testing build for $(uname -s) $(uname -m): this host runs no browser"
       return 0
@@ -183,18 +184,20 @@ if [ "$(uname -s)" = Linux ]; then
   libraries=$(PATH="$PATH:/sbin:/usr/sbin" ldconfig -p 2>/dev/null || true)
   for engine in $engines; do
     case "$engine/$(uname -m)" in
-      chrome/aarch64 | chrome/arm64 | camoufox/*) ;;
+      chrome/aarch64 | chrome/arm64 | chrome/x86_64 | camoufox/*) ;;
       *) continue ;;
     esac
     command -v unzip >/dev/null 2>&1 || missing="${missing:+$missing }unzip"
     command -v Xvfb >/dev/null 2>&1 || missing="${missing:+$missing }xvfb"
-    if [ "$engine" = camoufox ]; then
-      for pair in libgtk-3.so.0:libgtk-3-0 libasound.so.2:libasound2 libX11-xcb.so.1:libx11-xcb1 libdbus-1.so.3:libdbus-1-3; do
-        library=${pair%%:*}
-        package=${pair#*:}
-        printf '%s\n' "$libraries" | grep -Fq "$library " || missing="${missing:+$missing }$package"
-      done
-    fi
+    case "$engine" in
+      chrome) dependencies="libgtk-3.so.0:libgtk-3-0 libasound.so.2:libasound2 libnss3.so:libnss3 libgbm.so.1:libgbm1" ;;
+      camoufox) dependencies="libgtk-3.so.0:libgtk-3-0 libasound.so.2:libasound2 libX11-xcb.so.1:libx11-xcb1 libdbus-1.so.3:libdbus-1-3" ;;
+    esac
+    for pair in $dependencies; do
+      library=${pair%%:*}
+      package=${pair#*:}
+      printf '%s\n' "$libraries" | grep -Fq "$library " || missing="${missing:+$missing }$package"
+    done
   done
   [ -z "$missing" ] || as_root_install $missing
 fi

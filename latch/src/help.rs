@@ -1038,14 +1038,20 @@ const ENTRIES: &[Entry] = &[
         effect: Repeatable("replaces the rules"),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Let agents read mail, never send it",
-            &[
-                "rules",
-                "set",
-                "Agents may search my mail but never send any.",
-            ],
-        )],
+        examples: &[
+            ex(
+                "Let agents read mail, never send it",
+                &[
+                    "rules",
+                    "set",
+                    "Agents may search my mail but never send any.",
+                ],
+            ),
+            ex(
+                "Save over the rules only if they are still at the revision `rules show` gave (`none`: there were none); otherwise stale_revision, with the revision they are at",
+                &["rules", "set", "--revision", "9f2c…", "--file", "rules.txt"],
+            ),
+        ],
     },
     Entry {
         id: "rules.edit",
@@ -1066,7 +1072,13 @@ const ENTRIES: &[Entry] = &[
         effect: Repeatable("removes the rules"),
         owner_only: true,
         connector: None,
-        examples: &[ex("Remove every agent's rules", &["rules", "clear"])],
+        examples: &[
+            ex("Remove every agent's rules", &["rules", "clear"]),
+            ex(
+                "Remove one agent's rules only if they are still at the revision `rules show` gave",
+                &["rules", "clear", "--agent", "ada", "--revision", "9f2c…"],
+            ),
+        ],
     },
     Entry {
         id: "rules.show",

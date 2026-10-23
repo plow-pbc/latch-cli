@@ -13,6 +13,8 @@ target/
 /latch/messages-reader/.build/
 /latch/messages-reader/dist/
 /latch/gui/.build/
+# SwiftPM run from latch/ (a tool or editor) leaves one here too
+/latch/.build/
 /latch/gui/dist/
 
 # Local agent tooling

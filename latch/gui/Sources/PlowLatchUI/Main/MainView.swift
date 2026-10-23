@@ -1,61 +1,154 @@
 import SwiftUI
 
-/// The main window until the main app lands: this Mac's latch as
-/// `status --local` says, what onboarding set up, and Set up again.
+/// The main window: a sidebar with the account tier (Agents) above the host
+/// tier (the host picker and that host's screens), and the selected screen.
 struct MainView: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        Form {
-            Section("This Mac") {
-                LabeledContent("Mac name in Plow", value: failed ? "Couldn't check" : app.status?.peer?.name ?? "Not logged in")
-                LabeledContent("Latch") {
-                    Text(hostState).foregroundStyle(app.status?.serve.ready == true ? Brand.volt : .secondary)
-                }
-                if let blocked = app.status?.serve.blocked ?? app.status?.lastError {
-                    Text(blocked.message).foregroundStyle(.red)
-                }
-                if let update = app.status?.update, update.available {
-                    LabeledContent("Update", value: "Available")
-                }
-                if let error = app.statusError {
-                    Text(error).foregroundStyle(.red)
-                }
-            }
-            Section("Your setup") {
-                ForEach(Array(Summary.rows(app: app, flow: nil).dropFirst().dropLast().enumerated()), id: \.offset) { _, row in
-                    LabeledContent(row.title, value: row.state)
-                }
-                Button("Set up again…") { app.setUpAgain() }
+        @Bindable var app = app
+        NavigationSplitView {
+            Sidebar()
+                .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 320)
+        } detail: {
+            switch app.section {
+            case .home: HomeView()
+            default: NotYetView(item: app.section)
             }
         }
-        .formStyle(.grouped)
-        .frame(minWidth: 420, minHeight: 360)
+        .frame(minWidth: 680, minHeight: 440)
+        .confirmationDialog("Start hosting on this Mac?", isPresented: $app.confirmingStartHosting) {
+            Button("Start Hosting") { Task { await app.startHosting() } }
+        } message: {
+            Text("Latch runs in the background, and your agents can reach this Mac, judged by your rules.")
+        }
         .task {
             guard !app.still else { return }
             await app.refreshStatus()
             app.leaveMainIfLoggedOut()
-            await app.refreshSetup()
+            await app.refreshAccount()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard !app.still else { return }
             Task {
                 await app.refreshStatus()
                 app.leaveMainIfLoggedOut()
+                await app.refreshAccount()
+                if app.section == .home { await app.refreshSummary() }
+            }
+        }
+    }
+}
+
+private struct Sidebar: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        List(selection: selection) {
+            Section("Your account") {
+                ForEach(SidebarItem.account) { item in
+                    Label(item.title, systemImage: item.symbol).tag(item)
+                }
+            }
+            Section("Host") {
+                HostPicker()
+                ForEach(SidebarItem.host) { item in
+                    Label(item.title, systemImage: item.symbol).tag(item)
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let me = app.status?.peer {
+                Text(app.viewerOnly ? "Logged in as \(me.name) · viewing only" : "Logged in as \(me.name)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
             }
         }
     }
 
-    /// `status --local` failed: nothing about this Mac is known.
-    private var failed: Bool { app.status == nil && app.statusError != nil }
+    private var selection: Binding<SidebarItem?> {
+        Binding { app.section } set: { if let item = $0 { app.section = item } }
+    }
+}
 
-    private var hostState: String {
-        if failed { return "Couldn't check" }
-        return switch app.status?.serve.state {
-        case "serving": app.status?.serve.ready == true ? "Running" : "Not ready"
-        case "starting": "Starting…"
-        case "error": "Stopped after an error"
-        case nil: "Checking…"
-        default: "Not running"
+/// Which host the host tier shows: this Mac and the account's other hosts.
+/// Picking one changes the host tier only; the sidebar item stays.
+struct HostPicker: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Menu {
+            if app.viewerOnly, let me = app.status?.peer {
+                Section {
+                    Button {} label: {
+                        Text("This Mac (\(me.name))")
+                        Text("Not hosting · you're viewing your hosts")
+                    }
+                    .disabled(true)
+                    Button("Start hosting on this Mac…") { app.confirmingStartHosting = true }
+                }
+            }
+            Picker("Host", selection: chosen) {
+                ForEach(app.hosts) { host in
+                    Text(host.name).tag(host.name)
+                        .badge(Text(host.subtitle(local: app.status)))
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+            if let notice = app.plowNotice {
+                Divider()
+                Text(notice.title)
+            }
+            Divider()
+            Text("To add a host, install Latch there and run latch serve.")
+        } label: {
+            HStack(spacing: 8) {
+                StateDot(state: app.host.map { HostState($0, local: app.status) })
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(app.host?.name ?? "No host").font(.headline)
+                    Text(app.host?.subtitle(local: app.status) ?? (app.viewerOnly ? "This Mac isn't hosting" : "Checking…"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .lineLimit(1)
+            }
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.visible)
+        .accessibilityLabel("Host: \(app.host.map { "\($0.name), \($0.subtitle(local: app.status))" } ?? "none")")
+        .padding(.vertical, 2)
+    }
+
+    private var chosen: Binding<String> {
+        Binding { app.host?.name ?? "" } set: { app.chosenHost = $0 }
+    }
+}
+
+/// A host's state as a coloured dot; the words beside it say the same.
+struct StateDot: View {
+    var state: HostState?
+
+    var body: some View {
+        Circle()
+            .fill(state?.isUp == true ? Color.green : state?.isProblem == true ? Color.red : Color.secondary)
+            .frame(width: 8, height: 8)
+            .accessibilityHidden(true)
+    }
+}
+
+/// A screen still to come: its place in the sidebar, honestly empty.
+private struct NotYetView: View {
+    var item: SidebarItem
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        ContentUnavailableView(item.title, systemImage: item.symbol, description: Text("Not available yet."))
+            .navigationTitle(item.title)
+            .navigationSubtitle(SidebarItem.host.contains(item) ? app.host?.name ?? "" : "")
     }
 }

@@ -754,6 +754,11 @@ pub enum RulesCommand {
         text: Option<String>,
         #[arg(long, value_name = "F")]
         file: Option<PathBuf>,
+        /// Save only if the rules are still at revision R, as `rules show`
+        /// gave it (`none`: there were none); otherwise refused, and
+        /// nothing changes
+        #[arg(long, value_name = "R")]
+        revision: Option<String>,
         #[command(flatten)]
         scope: RulesScope,
     },
@@ -764,6 +769,10 @@ pub enum RulesCommand {
     },
     /// Remove the rules
     Clear {
+        /// Remove them only if they are still at revision R, as `rules
+        /// show` gave it; otherwise refused, and nothing changes
+        #[arg(long, value_name = "R")]
+        revision: Option<String>,
         #[command(flatten)]
         scope: RulesScope,
     },

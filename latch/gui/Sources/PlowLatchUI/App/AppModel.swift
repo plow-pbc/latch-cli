@@ -65,6 +65,104 @@ final class AppModel {
         self.setup = setup
     }
 
+    /// The account's hosts as `latch status` last said; it asks Plow, so it
+    /// can fail where `status --local` doesn't.
+    private(set) var account: AccountStatus?
+    private(set) var accountError: LatchError?
+
+    func refreshAccount() async {
+        do {
+            account = try await client.accountStatus()
+            accountError = nil
+        } catch {
+            accountError = error as? LatchError ?? .unreachable(error.localizedDescription)
+        }
+    }
+
+    /// What Home and the picker say while `latch status` fails.
+    var plowNotice: PlowNotice? { accountError.map { PlowNotice(error: $0, listed: account != nil) } }
+
+    /// The main window's place: a sidebar item, and the host the host tier
+    /// shows (the picker's choice; nil until the person picks one).
+    var section: SidebarItem = .home
+    var chosenHost: String?
+
+    /// The picker's hosts, this Mac first.
+    var hosts: [HostEntry] { HostEntry.list(local: status, account: account) }
+
+    /// The host the host tier shows: the one picked, else this Mac when it
+    /// hosts, else the first other host.
+    var host: HostEntry? { hosts.first { $0.name == chosenHost } ?? hosts.first }
+
+    /// Logged in, with nothing served here: this Mac only views its hosts.
+    /// Known once Plow has listed them.
+    var viewerOnly: Bool { status?.peer != nil && account != nil && !hosts.contains(where: \.isThisMac) }
+
+    /// What each host last said of its rules, vault and connectors, by host
+    /// name; Home shows the selected host's.
+    private(set) var summaries: [String: HostSummary] = [:]
+
+    /// Reads the selected host's summary: this Mac's from its own state
+    /// folder, another host's with `--host`. One read at a time (a remote
+    /// read in parallel is no faster), each shown as it answers. Another
+    /// host Plow counts offline isn't asked; this Mac always is.
+    func refreshSummary() async {
+        guard let host, host.isThisMac || host.online != false else { return }
+        let target = host.isThisMac ? nil : host.name
+        let rules = await Self.result { try await self.client.rulesShow(host: target) }
+        summaries[host.name, default: HostSummary()].rules = rules
+        let vault = await Self.result { try await self.client.vaultList(host: target) }
+        summaries[host.name, default: HostSummary()].vault = vault
+        let plugins = await Self.result { try await self.client.pluginsList(host: target) }
+        summaries[host.name, default: HostSummary()].plugins = plugins
+    }
+
+    private static func result<T>(_ read: () async throws -> T) async -> Result<T, LatchError> {
+        do {
+            return .success(try await read())
+        } catch {
+            return .failure(error as? LatchError ?? .unreachable(error.localizedDescription))
+        }
+    }
+
+    /// For snapshots: what a host said.
+    func stage(summary: HostSummary, for host: String) {
+        summaries[host] = summary
+    }
+
+    /// "Start hosting on this Mac…" asked, awaiting the person's yes; and a
+    /// start from the main window, while it runs and how it failed.
+    var confirmingStartHosting = false
+    private(set) var startingHost = false
+    private(set) var startHostError: String?
+
+    /// Starts this Mac's host from the main window, then reads back what
+    /// latch and Plow say.
+    func startHosting() async {
+        startingHost = true
+        startHostError = nil
+        defer { startingHost = false }
+        do {
+            try await startHost()
+        } catch {
+            startHostError = (error as? LatchError)?.message ?? error.localizedDescription
+        }
+        await refreshStatus()
+        await refreshAccount()
+    }
+
+    /// Starts this Mac's host the way `setup --status` says (with the last
+    /// serve's flags when there were any). Nothing to do when it isn't
+    /// needed. A host latch says can't start now throws latch's reason.
+    func startHost() async throws {
+        guard let host = try await client.setupStatus().step("host") else { return }
+        switch host.state {
+        case "needed": if let args = host.args { try await client.perform(args) }
+        case "blocked": throw HostBlocked(reason: host.reason)
+        default: break
+        }
+    }
+
     func refreshStatus() async {
         do {
             status = try await client.localStatus()
@@ -126,5 +224,11 @@ final class AppModel {
     func stage(status: LocalStatus?, error: String? = nil) {
         self.status = status
         statusError = error
+    }
+
+    /// For snapshots: as `latch status` said.
+    func stage(account: AccountStatus?, error: LatchError? = nil) {
+        self.account = account
+        accountError = error
     }
 }
