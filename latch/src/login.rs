@@ -26,8 +26,6 @@ use crate::term;
 const POLL: Duration = Duration::from_secs(1);
 const POLL_FAST_FOR: Duration = Duration::from_secs(2 * 60);
 const POLL_SLOW: Duration = Duration::from_secs(5);
-/// How long a login by text waits for the text before it gives up.
-const GIVE_UP_AFTER: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Serialize)]
 pub struct LoginOutput {
@@ -241,7 +239,8 @@ async fn by_text(
     }
 }
 
-/// Asks Plow until the code was texted: the login's token, saved.
+/// Asks Plow until the code was texted: the login's token, saved. Only Plow
+/// knows how long its code lasts, so this asks until Plow says it expired.
 async fn wait_for_text(
     state: &StateDir,
     api_url: &str,
@@ -284,22 +283,8 @@ async fn wait_for_text(
                 heartbeat::backoff(failures, failure.retry_after()).max(poll)
             }
         };
-        let Some(wait) = before_giving_up(started.elapsed(), wait) else {
-            let message = format!(
-                "no text arrived within {} minutes; run `latch login` again",
-                GIVE_UP_AFTER.as_secs() / 60
-            );
-            return Err(Failure::new(code::code_expired, message));
-        };
         tokio::time::sleep(wait).await;
     }
-}
-
-/// `wait`, cut short so the last ask comes when the login gives up; none
-/// once it has, `waited` into the login.
-fn before_giving_up(waited: Duration, wait: Duration) -> Option<Duration> {
-    let left = GIVE_UP_AFTER.saturating_sub(waited);
-    (!left.is_zero()).then(|| wait.min(left))
 }
 
 /// How long to wait between asks, `waited` into the login.
@@ -521,17 +506,6 @@ mod tests {
         assert_eq!(poll_every(Duration::from_secs(119)), Duration::from_secs(1));
         assert_eq!(poll_every(Duration::from_secs(120)), Duration::from_secs(5));
         assert_eq!(poll_every(Duration::from_secs(599)), Duration::from_secs(5));
-    }
-
-    #[test]
-    fn a_login_gives_up_after_ten_minutes() {
-        let second = Duration::from_secs(1);
-        assert_eq!(before_giving_up(Duration::ZERO, second), Some(second));
-        assert_eq!(
-            before_giving_up(Duration::from_millis(599_500), 5 * second),
-            Some(Duration::from_millis(500))
-        );
-        assert_eq!(before_giving_up(Duration::from_secs(600), second), None);
     }
 
     #[test]
