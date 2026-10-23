@@ -450,7 +450,7 @@ impl Plow {
                 .to_string()
         };
         let config = state.load_config().ok().flatten().ok_or_else(not_in)?;
-        let token = state.load_token().ok().flatten().ok_or_else(not_in)?;
+        let token = crate::credential::token(&state).map_err(|_| not_in())?;
         Ok(Plow::new(&config.api_url, token))
     }
 }
@@ -472,20 +472,19 @@ impl Provider for Plow {
         Box::pin(async move {
             let body = Body::new(&self.model, state, questions);
             let started = Instant::now();
-            let response = self
-                .http
-                .post(&self.url)
-                .bearer_auth(&self.token)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|_| {
-                    CallFailed::new(
-                        "unreachable",
-                        "Plow's decision route could not be reached from this host; retry once \
+            let request = self.http.post(&self.url).json(&body);
+            let request = if self.token.is_empty() {
+                request
+            } else {
+                request.bearer_auth(&self.token)
+            };
+            let response = request.send().await.map_err(|_| {
+                CallFailed::new(
+                    "unreachable",
+                    "Plow's decision route could not be reached from this host; retry once \
                          its network and Plow are up",
-                    )
-                })?;
+                )
+            })?;
             let latency_ms = started.elapsed().as_millis() as u64;
             let status = response.status();
             if !status.is_success() {
