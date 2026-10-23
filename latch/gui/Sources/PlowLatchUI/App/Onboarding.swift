@@ -767,6 +767,14 @@ final class Onboarding {
         }
     }
 
+    /// Start is waiting for the login item to be allowed in Login Items.
+    var loginItemNeedsApproval: Bool { startError == LoginItem.needsApproval }
+
+    /// "Open Login Items Settings…".
+    func openLoginItemsSettings() {
+        app.openLoginItems()
+    }
+
     /// Puts the flow at a given point without running it, for snapshots.
     func stage(_ step: Step) {
         self.step = step
@@ -809,7 +817,11 @@ enum LoginItem {
     }
 
     static let needsApproval = LatchError.unreachable(
-        "Allow \(AppName.shown) in System Settings ▸ General ▸ Login Items so it can start when you log in, then try again. Or turn off Start when you log in.")
+        "Latch is running now. To start it when you log in, allow \(AppName.shown) in Login Items & Extensions. Then click Continue, or turn off “Start when you log in”.")
+
+    static func openSettings() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
 }
 
 /// The first answer given; any given after it is dropped.
