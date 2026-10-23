@@ -77,6 +77,8 @@ let spare = null;
 let opening = 0;
 /// New pages being taken in as tabs: `settle` waits for them.
 let adopting = 0;
+/// Popup navigations can start before Playwright exposes their pages.
+const openingPages = new Set();
 const dialogWaiters = new Set();
 const frameIds = new WeakMap();
 const framesById = new Map();
@@ -263,10 +265,10 @@ function frameOf(id) {
 
 /// Runs `work(frame)` in the frame's isolated world; a frame that went
 /// away under it, or whose document was replaced, is stale.
-async function inFrame(id, work) {
+async function inFrame(id, work, options) {
   const frame = frameOf(id);
   try {
-    return await guarded(work(frame));
+    return await guarded(work(frame), options);
   } catch (error) {
     if (error instanceof Failure) throw error;
     const message = String(error?.message ?? error);
@@ -359,6 +361,16 @@ async function launch(params) {
     handleSIGTERM: false,
     handleSIGHUP: false,
   });
+  context.on("request", (request) => {
+    if (!request.isNavigationRequest()) return;
+    try {
+      request.frame();
+    } catch {
+      // The popup's frame has no Page until the engine reports it ready.
+      openingPages.add(request);
+    }
+  });
+  context.on("requestfailed", (request) => openingPages.delete(request));
   context.on("page", async (page) => {
     if (opening > 0) return;
     adopting += 1;
@@ -370,6 +382,11 @@ async function launch(params) {
       const id = adopt(owner.key, page, owner.tab.id);
       owner.share.pending.push({ event: "new_tab", tab: id, url: page.url(), opener: owner.tab.id });
     } finally {
+      for (const request of openingPages) {
+        try {
+          if (request.frame().page() === page) openingPages.delete(request);
+        } catch {}
+      }
       adopting -= 1;
     }
   });
@@ -607,14 +624,32 @@ const ops = {
   /// Waits for what an input started (a navigation, a load) to finish, or
   /// a dialog to open, and returns the events since the last call.
   async settle() {
-    await sleep(NAVIGATION_STARTS);
     const mine = share();
     const t = mine.tabs.find((each) => each.id === mine.active);
     const deadline = Math.min(Date.now() + LOADING, due);
+    // Give the page's event loop its action window: a busy page's timers
+    // can run after a wait of the same length in the helper has ended.
+    if (t && !mine.dialog) {
+      try {
+        await inFrame(
+          frameId(t.page.mainFrame()),
+          (frame) => frame.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), NAVIGATION_STARTS),
+          { ms: deadline - Date.now() },
+        );
+      } catch (error) {
+        if (!["stale_snapshot", "dialog_open"].includes(error?.code)) throw error;
+      }
+    }
     while (t?.started && t.loading && !mine.dialog && Date.now() < deadline) await sleep(100);
     if (t) t.started = false;
     await sleep(150);
-    while (adopting > 0 && Date.now() < deadline) await sleep(20);
+    // A successful request may finish before Playwright exposes its page.
+    while ((openingPages.size > 0 || adopting > 0) && !mine.dialog && Date.now() < deadline) await sleep(20);
+    if (!mine.dialog && (openingPages.size > 0 || adopting > 0)) {
+      openingPages.clear();
+      ranOut = true;
+      throw new Failure("timeout", "a popup did not become ready in time");
+    }
     return mine.pending.splice(0);
   },
 

@@ -147,57 +147,6 @@ async fn google_setup_refuses_a_missing_or_unverified_gog_and_stays_off() {
     assert_eq!(t.plow.saw("access-token"), 0, "no credential asked for");
 }
 
-/// Installs the pinned gog `just cft` puts (on macOS, where `just test`
-/// runs it) in `.dev/cft-state`, and returns where.
-#[cfg(target_os = "macos")]
-fn install_pinned_gog(t: &TestHost) -> PathBuf {
-    let pinned = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../.dev/cft-state/plugins/gog")
-        .join(&crate::google::PIN.version)
-        .join("gog");
-    let gog = gog_folder(t).join("gog");
-    std::fs::create_dir_all(gog_folder(t)).unwrap();
-    std::fs::copy(&pinned, &gog).expect("the pinned gog; run `just cft`");
-    gog
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn google_is_enabled_only_once_its_setup_succeeds_and_stays_so_across_a_restart() {
-    use std::os::unix::fs::PermissionsExt;
-    let t = start(World {
-        decide: Some(always_covered),
-        ..World::default()
-    })
-    .await;
-    ok(plugins(&t, "disable", "google").await);
-    let gog = install_pinned_gog(&t);
-
-    std::fs::set_permissions(&gog, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let answer = plugins(&t, "enable", "google").await;
-    assert_eq!(refusal(&answer).1, "gog_not_executable");
-    std::fs::set_permissions(&gog, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-    // gog, but no Google account connected in Plow.
-    let answer = plugins(&t, "enable", "google").await;
-    assert_eq!(refusal(&answer).1, "google_not_connected");
-    assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
-
-    t.plow.world.lock().unwrap().google_accounts = vec!["me@example.com".into()];
-    let enabled = ok(plugins(&t, "enable", "google").await);
-    assert_eq!(enabled["state"], "enabled");
-    assert_eq!(enabled["accounts"], json!(["me@example.com"]));
-    let listed = ok(t.local_call("google", accounts()).await);
-    assert_eq!(listed["accounts"], json!(["me@example.com"]));
-
-    // A host started again on this state folder keeps it enabled.
-    let state = crate::state::StateDir {
-        path: t.state.clone(),
-    };
-    let again = crate::plugins::Plugins::load(&state, Path::new("/nonexistent")).unwrap();
-    assert!(again.start(crate::plugins::Connector::Google).is_ok());
-}
-
 /// Sends one operation over the host's socket in the background.
 fn pending(t: &Arc<TestHost>, op: &'static str, args: Value) -> tokio::task::JoinHandle<Response> {
     let t = t.clone();
@@ -257,32 +206,6 @@ async fn disable_refuses_new_calls_at_once_and_returns_after_the_running_one() {
         t.plow.saw("access-token"),
         1,
         "the refused call got no credential"
-    );
-}
-
-/// A Google setup still waiting on Plow when the owner disables Google
-/// leaves it disabled.
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn a_setup_overtaken_by_disable_changes_nothing() {
-    let t = Arc::new(start(covered()).await);
-    ok(plugins(&t, "disable", "google").await);
-    install_pinned_gog(&t);
-    t.plow.world.lock().unwrap().google_paused = true;
-    let enabling = pending(
-        &t,
-        "plugins",
-        json!({"command": "enable", "name": "google"}),
-    );
-    asked_for_google(&t, 1).await;
-    ok(plugins(&t, "disable", "google").await);
-
-    t.plow.world.lock().unwrap().google_paused = false;
-    assert_eq!(refusal(&enabling.await.unwrap()).1, "setup_superseded");
-    assert_eq!(state_of(&t, "google").await["state"], "disabled");
-    assert_eq!(
-        refusal(&t.local_call("google", accounts()).await).1,
-        "not_enabled"
     );
 }
 
@@ -423,4 +346,85 @@ fn full_disk_access_is_granted_to_the_app_the_latch_is_inside() {
     );
     let bare = Path::new("/usr/local/bin/latch");
     assert_eq!(crate::plugins::host::grantee(bare), bare);
+}
+
+/// Google with the pinned gog `install-binary.sh` downloads (`just test
+/// browser` puts it in `.dev/cft-state`).
+#[cfg(target_os = "macos")]
+mod pinned {
+    use super::*;
+
+    /// Installs the pinned gog `just test browser` puts in `.dev/cft-state`,
+    /// and returns where.
+    fn install_pinned_gog(t: &TestHost) -> PathBuf {
+        let pinned = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.dev/cft-state/plugins/gog")
+            .join(&crate::google::PIN.version)
+            .join("gog");
+        let gog = gog_folder(t).join("gog");
+        std::fs::create_dir_all(gog_folder(t)).unwrap();
+        std::fs::copy(&pinned, &gog).expect("the pinned gog; run `just test browser`");
+        gog
+    }
+
+    #[tokio::test]
+    async fn google_is_enabled_only_once_its_setup_succeeds_and_stays_so_across_a_restart() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = start(World {
+            decide: Some(always_covered),
+            ..World::default()
+        })
+        .await;
+        ok(plugins(&t, "disable", "google").await);
+        let gog = install_pinned_gog(&t);
+
+        std::fs::set_permissions(&gog, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let answer = plugins(&t, "enable", "google").await;
+        assert_eq!(refusal(&answer).1, "gog_not_executable");
+        std::fs::set_permissions(&gog, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // gog, but no Google account connected in Plow.
+        let answer = plugins(&t, "enable", "google").await;
+        assert_eq!(refusal(&answer).1, "google_not_connected");
+        assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
+
+        t.plow.world.lock().unwrap().google_accounts = vec!["me@example.com".into()];
+        let enabled = ok(plugins(&t, "enable", "google").await);
+        assert_eq!(enabled["state"], "enabled");
+        assert_eq!(enabled["accounts"], json!(["me@example.com"]));
+        let listed = ok(t.local_call("google", accounts()).await);
+        assert_eq!(listed["accounts"], json!(["me@example.com"]));
+
+        // A host started again on this state folder keeps it enabled.
+        let state = crate::state::StateDir {
+            path: t.state.clone(),
+        };
+        let again = crate::plugins::Plugins::load(&state, Path::new("/nonexistent")).unwrap();
+        assert!(again.start(crate::plugins::Connector::Google).is_ok());
+    }
+
+    /// A Google setup still waiting on Plow when the owner disables Google
+    /// leaves it disabled.
+    #[tokio::test]
+    async fn a_setup_overtaken_by_disable_changes_nothing() {
+        let t = Arc::new(start(covered()).await);
+        ok(plugins(&t, "disable", "google").await);
+        install_pinned_gog(&t);
+        t.plow.world.lock().unwrap().google_paused = true;
+        let enabling = pending(
+            &t,
+            "plugins",
+            json!({"command": "enable", "name": "google"}),
+        );
+        asked_for_google(&t, 1).await;
+        ok(plugins(&t, "disable", "google").await);
+
+        t.plow.world.lock().unwrap().google_paused = false;
+        assert_eq!(refusal(&enabling.await.unwrap()).1, "setup_superseded");
+        assert_eq!(state_of(&t, "google").await["state"], "disabled");
+        assert_eq!(
+            refusal(&t.local_call("google", accounts()).await).1,
+            "not_enabled"
+        );
+    }
 }
