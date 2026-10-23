@@ -4,7 +4,6 @@ import contextlib
 import importlib.util
 import io
 import json
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -89,11 +88,9 @@ class Suites(unittest.TestCase):
         cls.directory.cleanup()
 
     def selected(self, suite, where):
-        # The fixture has no nextest config, so no `just test --ci` profile.
-        env = {k: v for k, v in os.environ.items() if k != "NEXTEST_PROFILE"}
         listed = subprocess.run(["cargo", "nextest", "list", "--message-format", "json", "-E",
                                  runner.filterset(suite, where)], cwd=self.crate, check=True,
-                                capture_output=True, text=True, env=env)
+                                capture_output=True, text=True)
         return {f"{binary['binary-name']}:{name}"
                 for binary in json.loads(listed.stdout)["rust-suites"].values()
                 for name, case in binary["testcases"].items()
@@ -219,6 +216,10 @@ class Plans(unittest.TestCase):
             self.assertIn("--archive-file", rust)
             self.assertEqual(rust[rust.index("--extract-to") + 1], str(runner.LATCH))
             self.assertIn("hash:1/4", rust)
+            self.assertNotIn("--profile", rust)
+            ci = runner.steps("linux", ["core"], False, None, None, ci=True)
+            ci_rust = next(command for name, _, command, _ in ci if name == "rust")
+            self.assertEqual(ci_rust[ci_rust.index("--profile") + 1], "ci")
             self.assertNotIn("--features", rust)
             # The build job has no bubblewrap or systemd session, and needs neither.
             def which(tool):
