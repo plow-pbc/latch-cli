@@ -16,6 +16,7 @@ struct MainView: View {
             case .activity: ActivityView()
             case .agents: AgentsView()
             case .rules: HostRulesView()
+            case .vault: VaultView()
             default: NotYetView(item: app.section)
             }
         }

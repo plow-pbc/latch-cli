@@ -139,6 +139,85 @@ final class AppModel {
         summaries[host] = summary
     }
 
+    /// The Vault screen's selected item, and what `vault show` said of
+    /// items, by host name then item.
+    var selectedVaultItem: VaultList.Item.ID?
+    /// The sheet over the Vault screen: New Item, Edit, or Import.
+    var vaultSheet: VaultSheet?
+    private(set) var vaultShows: [String: [String: Result<VaultShow, LatchError>]] = [:]
+
+    /// Reads a host's vault again (the Vault screen, after a change).
+    func refreshVault(on host: HostEntry) async {
+        let vault = await Self.result { try await self.client.vaultList(host: host.isThisMac ? nil : host.name) }
+        summaries[host.name, default: HostSummary()].vault = vault
+    }
+
+    /// Reads an item's non-secret values.
+    func showVaultItem(_ item: String, on host: HostEntry) async {
+        let show = await Self.result { try await self.client.vaultShow(item, host: host.isThisMac ? nil : host.name) }
+        vaultShows[host.name, default: [:]][item] = show
+    }
+
+    /// Opens an item's Edit sheet, from the item as it is now.
+    func beginVaultEdit(_ item: VaultList.Item, on host: HostEntry) async {
+        await showVaultItem(item.item, on: host)
+        switch vaultShows[host.name]?[item.item] {
+        case let .success(show)?: vaultSheet = .editor(VaultEditor(editing: show))
+        case let .failure(error)?: vaultSheet = .editor(VaultEditor(failed: item, error.message))
+        case nil: break
+        }
+    }
+
+    /// Adds an item to a host's vault and selects it.
+    func addVaultItem(_ draft: VaultDraft, on host: HostEntry) async throws {
+        let item = try await vaultChange(on: host) { try await self.client.vaultAdd(draft, host: $0) }
+        selectedVaultItem = item.item
+    }
+
+    /// Changes an item at the revision the person saw: an item changed
+    /// elsewhere meanwhile is refused, never overwritten.
+    func editVaultItem(_ item: VaultList.Item, _ draft: VaultDraft, on host: HostEntry) async throws {
+        _ = try await vaultChange(on: host) { try await self.client.vaultEdit(item.item, revision: item.revision, draft, host: $0) }
+        await showVaultItem(item.item, on: host)
+    }
+
+    func removeVaultItem(_ item: VaultList.Item, on host: HostEntry) async throws {
+        try await vaultChange(on: host) { try await self.client.vaultRemove(item.item, revision: item.revision, host: $0) }
+        if selectedVaultItem == item.item { selectedVaultItem = nil }
+        vaultShows[host.name]?[item.item] = nil
+    }
+
+    /// `latch vault import FILE --preview` on a host.
+    func previewImport(_ file: URL, on host: HostEntry) async throws -> ImportPreview {
+        try await client.vaultImportPreview(file, host: host.isThisMac ? nil : host.name)
+    }
+
+    /// Imports the rows picked from a preview.
+    func importRows(_ picks: [Int], from file: URL, on host: HostEntry) async throws -> ImportResult {
+        try await vaultChange(on: host) { try await self.client.vaultImport(file, picks: picks, host: $0) }
+    }
+
+    /// A change to a host's vault, then the vault read again, whether it
+    /// worked or not. An item changed elsewhere is said in the app's words.
+    private func vaultChange<T>(on host: HostEntry, _ change: (String?) async throws -> T) async throws -> T {
+        do {
+            let result = try await change(host.isThisMac ? nil : host.name)
+            await refreshVault(on: host)
+            return result
+        } catch {
+            await refreshVault(on: host)
+            if (error as? LatchError)?.code == "stale_revision" { throw LatchError.unreachable(Self.itemChangedElsewhere) }
+            throw error
+        }
+    }
+
+    static let itemChangedElsewhere = "This item changed since you opened it. Nothing was saved; look at it again, then make your change."
+
+    /// For snapshots: what `vault show` said.
+    func stage(vaultShow: VaultShow, on host: String) {
+        vaultShows[host, default: [:]][vaultShow.item.item] = .success(vaultShow)
+    }
+
     /// The account's agents (`latch agents`), and each one's standing on
     /// each host (`latch agents --host`), by host name then agent uid; a
     /// host latch couldn't ask has its error instead.

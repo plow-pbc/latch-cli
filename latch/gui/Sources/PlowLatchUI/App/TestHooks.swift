@@ -102,6 +102,54 @@ enum TestHooks {
                 }
             }
         }
+        // Vault, as a person clicks and types: select an item, open New
+        // Item ("KIND") or an item's Edit, type "LABEL=VALUE" (title, sites
+        // and other-sites too), save, remove an item, pick an export (a
+        // path, as the file chooser gives it), and import its picked rows.
+        func vaultItem(_ id: String?) -> VaultList.Item? {
+            guard let host = app.host, case let .success(vault)? = app.summaries[host.name]?.vault else { return nil }
+            return vault.items.first { $0.item == id }
+        }
+        on("vault-select") { id in app.selectedVaultItem = id }
+        on("vault-new") { kind in app.vaultSheet = .editor(VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login)) }
+        on("vault-edit") { id in
+            guard let item = vaultItem(id), let host = app.host else { return }
+            Task { await app.beginVaultEdit(item, on: host) }
+        }
+        on("vault-type") { argument in
+            guard case let .editor(editor)? = app.vaultSheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
+            let label = String(argument[..<equals]), value = String(argument[argument.index(after: equals)...])
+            switch label {
+            case "title": editor.title = value
+            case "sites": editor.sites = value
+            case "other-sites": editor.otherTopSites = value
+            default: editor.values[label] = value
+            }
+        }
+        on("vault-save") { _ in
+            guard case let .editor(editor)? = app.vaultSheet, let host = app.host else { return }
+            Task { if await editor.save(on: host, app: app) { app.vaultSheet = nil } }
+        }
+        on("vault-remove") { id in
+            guard let item = vaultItem(id), let host = app.host else { return }
+            Task { try? await app.removeVaultItem(item, on: host) }
+        }
+        on("vault-import") { path in
+            guard let path, let host = app.host else { return }
+            let importer = VaultImport(file: URL(filePath: path))
+            app.vaultSheet = .importer(importer)
+            Task { await importer.load(on: host, app: app) }
+        }
+        on("vault-import-run") { _ in
+            guard case let .importer(importer)? = app.vaultSheet, let host = app.host else { return }
+            Task { await importer.run(on: host, app: app) }
+        }
+        on("sheet-close") { _ in app.vaultSheet = nil }
+        // The main window's open sheet, as the window server shows it.
+        on("snapshot-sheet") { path in
+            guard let path, let sheet = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain })?.attachedSheet else { return }
+            try? Render.window(sheet, to: URL(filePath: path))
+        }
         on("quit") { _ in NSApp.terminate(nil) }
         on("settings-stand-in") { pid in standIn = pid.flatMap { pid_t($0) } }
         on("grant-helper") { path in

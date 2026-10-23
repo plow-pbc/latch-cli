@@ -54,9 +54,22 @@ nonisolated struct FakeLatchClient: LatchClient {
     func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         try Fixtures.decode(Fixtures.tries["not-covered"]!)
     }
+    func vaultShow(_ item: String, host: String?) async throws -> VaultShow { try Fixtures.decode(Fixtures.vaultShows[item]!) }
+    func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item { throw LatchError.unreachable("a still") }
+    func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
+        throw LatchError.unreachable("a still")
+    }
+    func vaultRemove(_ item: String, revision: Int, host: String?) async throws {}
+    func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview {
+        (try Fixtures.decode(Fixtures.importPreview) as ImportPreviewFixture).preview
+    }
+    func vaultImport(_ file: URL, picks: [Int], host: String?) async throws -> ImportResult { try Fixtures.decode(Fixtures.importResult) }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }
+
+/// `vault import --preview`'s answer, around the preview.
+nonisolated struct ImportPreviewFixture: Decodable { var preview: ImportPreview }
 
 nonisolated enum Fixtures {
     /// `latch setup --status` on a logged-in Mac whose host is stopped,
@@ -95,6 +108,15 @@ nonisolated enum Fixtures {
     static let piRules = #"{"agents":[],"audit_id":"c57f1209db34c3767c262960f596b34ec61e8b932a2b3011b3677db297f74bea","every_agent":{"revision":"8419fd077d6e4e3adc59789beedadb9864635746da5e22ae63b727c9b42c8715","text":"This Pi runs the kitchen display. Agents may read ~/recipes and write only to ~/recipes/drafts."},"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
     static let piPlugins = #"{"audit_id":"9727a671710eb349e52bc36fc65f7958273c76056619f26705bee57f164b7a5e","plugins":[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
     static let piVault = #"{"audit_id":"1e059a4e60011ac425fc08b23c8c43e6de7a4db7a571fe8fcce7881388c9f00e","items":[]}"#
+    // `vault list`, `vault show` and `vault import --preview` on vstudio, and
+    // the import of a Chrome export's first row: real runs.
+    static let vaultItems = #"{"audit_id":"f9283602fbe14976983de000e647f02d9fc24b58c0cede0c0929370005928e51","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"},{"alias":false,"custom":false,"hidden":true,"label":"totp"}],"item":"v1","kind":"login","revision":2,"sites":["shop.example"],"title":"Shop","totp":true,"username":"ada"},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"notes"}],"item":"v2","kind":"note","revision":2,"sites":[],"title":"Building notes","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"expiry month"},{"alias":false,"custom":false,"hidden":false,"label":"expiry year"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"},{"alias":false,"custom":false,"hidden":false,"label":"brand"},{"alias":false,"custom":false,"hidden":false,"label":"expiry"}],"item":"v3","kind":"card","revision":1,"sites":[],"title":"Visa (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"title"},{"alias":false,"custom":false,"hidden":false,"label":"first name"},{"alias":false,"custom":false,"hidden":false,"label":"middle name"},{"alias":false,"custom":false,"hidden":false,"label":"last name"},{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":false,"label":"company"},{"alias":false,"custom":false,"hidden":true,"label":"ssn"},{"alias":false,"custom":false,"hidden":true,"label":"passport number"},{"alias":false,"custom":false,"hidden":false,"label":"license number"},{"alias":false,"custom":false,"hidden":false,"label":"email"},{"alias":false,"custom":false,"hidden":false,"label":"phone"},{"alias":false,"custom":false,"hidden":false,"label":"address1"},{"alias":false,"custom":false,"hidden":false,"label":"city"},{"alias":false,"custom":false,"hidden":false,"label":"state"},{"alias":false,"custom":false,"hidden":false,"label":"postal code"},{"alias":false,"custom":false,"hidden":false,"label":"country"},{"alias":false,"custom":false,"hidden":false,"label":"date of birth"}],"item":"v4","kind":"identity","revision":2,"sites":[],"title":"Me (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v6","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer","totp":false,"username":"ada@example.com"}]}"#
+    static let vaultShows: [String: String] = ["v1": #"{"audit_id":"4717b21309079ff522a8e928d3a3568bce6153501a8c88a113bf7f5f22c964a4","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"},{"alias":false,"custom":false,"hidden":true,"label":"totp"}],"item":"v1","kind":"login","revision":2,"sites":["shop.example"],"title":"Shop","totp":true,"username":"ada"},"values":{"username":"ada"}}"#, "v2": #"{"audit_id":"6b10d127b072ef1aa4029d6fcf3f3d9e4a12ad9ff1ad255208e11e48fbb4dccd","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"notes"}],"item":"v2","kind":"note","revision":2,"sites":[],"title":"Building notes","totp":false},"values":{"notes":"Gate code is in the binder."}}"#, "v3": #"{"audit_id":"413bffa87e6bbae0a5168ddbaa4175a861b2783f8fa0c4a93d26e9fd4d66ee0b","item":{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"expiry month"},{"alias":false,"custom":false,"hidden":false,"label":"expiry year"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"},{"alias":false,"custom":false,"hidden":false,"label":"brand"},{"alias":false,"custom":false,"hidden":false,"label":"expiry"}],"item":"v3","kind":"card","revision":1,"sites":[],"title":"Visa (test)","totp":false},"values":{"brand":"Visa","cardholder name":"Ada L","expiry":"2031-04","expiry month":"04","expiry year":"2031"}}"#, "v4": #"{"audit_id":"7d4a4fff30229a51f4efc6cfe33f086b4c2b22906f611c91e06e24e4b9b41739","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"title"},{"alias":false,"custom":false,"hidden":false,"label":"first name"},{"alias":false,"custom":false,"hidden":false,"label":"middle name"},{"alias":false,"custom":false,"hidden":false,"label":"last name"},{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":false,"label":"company"},{"alias":false,"custom":false,"hidden":true,"label":"ssn"},{"alias":false,"custom":false,"hidden":true,"label":"passport number"},{"alias":false,"custom":false,"hidden":false,"label":"license number"},{"alias":false,"custom":false,"hidden":false,"label":"email"},{"alias":false,"custom":false,"hidden":false,"label":"phone"},{"alias":false,"custom":false,"hidden":false,"label":"address1"},{"alias":false,"custom":false,"hidden":false,"label":"city"},{"alias":false,"custom":false,"hidden":false,"label":"state"},{"alias":false,"custom":false,"hidden":false,"label":"postal code"},{"alias":false,"custom":false,"hidden":false,"label":"country"},{"alias":false,"custom":false,"hidden":false,"label":"date of birth"}],"item":"v4","kind":"identity","revision":2,"sites":[],"title":"Me (test)","totp":false},"values":{"address1":"1 St","city":"London","company":"Co","country":"UK","date of birth":"1815-12-10","email":"ada@example.com","first name":"Ada","last name":"Lovelace","license number":"L1","middle name":"K","phone":"555","postal code":"N1","state":"LDN","title":"Dr","username":"ada2"}}"#, "v6": #"{"audit_id":"e20c23c3a649234daae8e584c7b9621856cf6d253b4871e7bc2ab8c6c7ef2125","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v6","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer","totp":false,"username":"ada@example.com"},"values":{"username":"ada@example.com"}}"#]
+    // Another host's, read with `--host`.
+    static let remoteVaultItems = #"{"audit_id":"7eff2d3d62fc8f3d16f422e2e19ea204fdf62d80e9d9ed0eee14bf1f6e9400d7","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["router.example"],"title":"Router (test)","totp":false,"username":"admin"}]}"#
+    static let remoteVaultShow = #"{"audit_id":"004c3cca9d220ff417c05d233f61fe3741a745079edd629be94432757a376f70","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["router.example"],"title":"Router (test)","totp":false,"username":"admin"},"values":{"username":"admin"}}"#
+    static let importPreview = #"{"preview":{"items":[{"changed":[],"duplicate":false,"has_password":true,"has_totp":false,"kind":"login","pick":1,"title":"shop.example","url":"https://shop.example/login","username":"ada","warnings":[]},{"changed":[],"duplicate":false,"has_password":true,"has_totp":false,"kind":"login","pick":2,"title":"grocer.example","url":"https://grocer.example","username":"ada@example.com","warnings":[]}],"skipped":[{"reason":"has no website address; add it by hand as a new item if you still use it","title":"nosite"}],"source":"Chrome","vaults":[]}}"#
+    static let importResult = #"{"audit_id":"4e253dfc8c33887f696ca5c6fd51a95788774fbe3896c8bc1668ae284aacaed0","duplicates":0,"failed":[],"picked":[1],"saved":1,"source":"Chrome","updated":0}"#
     // `latch audit` on studio and, from laptop, `latch audit --host pi-kitchen`:
     // real runs, with names and home folders shortened.
     static let studioAudit = #"""
@@ -420,6 +442,64 @@ package enum SnapshotRunner {
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 1120, height: 700), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+        }
+        // Vault: this Mac's items with each kind in the inspector, the empty
+        // state, another host's, one offline, and the sheets.
+        for dark in [false, true] {
+            let piOffline = Fixtures.studioHosts.replacingOccurrences(
+                of: #""name":"pi-kitchen","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:30.037004Z","online":true"#,
+                with: #""name":"pi-kitchen","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":null,"online":false"#)
+            let screens: [(String, String?, String, String?, String)] = [
+                ("17-vault-login-2fa", nil, Fixtures.vaultItems, "v1", Fixtures.studioHosts),
+                ("17-vault-card", nil, Fixtures.vaultItems, "v3", Fixtures.studioHosts),
+                ("17-vault-identity", nil, Fixtures.vaultItems, "v4", Fixtures.studioHosts),
+                ("17-vault-login-also-inside", nil, Fixtures.vaultItems, "v6", Fixtures.studioHosts),
+                ("17-vault-empty", nil, #"{"items":[]}"#, nil, Fixtures.studioHosts),
+                ("17-vault-remote-pi-kitchen", "pi-kitchen", Fixtures.remoteVaultItems, "v1", Fixtures.studioHosts),
+                ("17-vault-remote-offline", "pi-kitchen", #"{"items":[]}"#, nil, piOffline),
+            ]
+            for (name, chosen, items, selected, account) in screens {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(account))
+                app.stage(summary: HostSummary(vault: .success(try Fixtures.decode(items))), for: chosen ?? "studio")
+                let shows = chosen == nil ? Array(Fixtures.vaultShows.values) : [Fixtures.remoteVaultShow]
+                for show in shows { app.stage(vaultShow: try Fixtures.decode(show), on: chosen ?? "studio") }
+                app.chosenHost = chosen
+                app.section = .vault
+                app.selectedVaultItem = selected
+                _ = app.stage(.done, progress: full)
+                try await renderWindow(MainView().environment(app), size: CGSize(width: 1020, height: 620), dark: dark,
+                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            let app = AppModel(client: FakeLatchClient(), still: true)
+            app.stage(status: try Fixtures.decode(Fixtures.serving))
+            app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+            guard let studio = app.host else { return }
+            let newLogin = VaultEditor()
+            newLogin.title = "Grocer"; newLogin.sites = "grocer.example"; newLogin.values = ["username": "ada@example.com", "password": "secret"]
+            let editCard = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v3"]!))
+            let stale = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!))
+            stale.values["username"] = "ada2"; stale.error = AppModel.itemChangedElsewhere
+            let preview = (try Fixtures.decode(Fixtures.importPreview) as ImportPreviewFixture).preview
+            let previewing = VaultImport(file: URL(filePath: "/Users/me/Downloads/Chrome Passwords.csv"))
+            previewing.stage(preview: preview)
+            let imported = VaultImport(file: URL(filePath: "/Users/me/Downloads/Chrome Passwords.csv"))
+            imported.stage(preview: preview, result: try Fixtures.decode(Fixtures.importResult))
+            let sheets: [(String, AnyView)] = [
+                ("18-vault-new-login", AnyView(VaultItemSheet(editor: newLogin, host: studio))),
+                ("18-vault-new-identity", AnyView(VaultItemSheet(editor: VaultEditor(kind: .identity), host: studio))),
+                ("18-vault-edit-card", AnyView(VaultItemSheet(editor: editCard, host: studio))),
+                ("18-vault-edit-changed-elsewhere", AnyView(VaultItemSheet(editor: stale, host: studio))),
+                ("18-vault-import-preview", AnyView(ImportSheet(importer: previewing, host: studio))),
+                ("18-vault-import-done", AnyView(ImportSheet(importer: imported, host: studio))),
+            ]
+            for (name, sheet) in sheets {
+                let size = name.contains("import") ? CGSize(width: 560, height: 460)
+                    : name.contains("identity") ? CGSize(width: 480, height: 640) : CGSize(width: 480, height: 520)
+                try await render(sheet.environment(app), size: size, dark: dark,
+                                 file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
         // The welcome entrance, mid-way.
