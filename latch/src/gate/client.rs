@@ -5,7 +5,7 @@
 //! log as the host would.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::parser::ValueSource;
@@ -18,7 +18,7 @@ use crate::cli::{Cli, Command as Latch, FileCommand, HostArg, RulesArgs, RulesCo
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure};
 use crate::hosts;
-use crate::plow::{Peer, Plow};
+use crate::plow::Plow;
 use crate::state::StateDir;
 use crate::wire::Request;
 use crate::{google, transfer};
@@ -27,9 +27,14 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
     let scope = match args.command {
         RulesCommand::Try {
             host,
-            from,
+            agent,
+            new_agent,
+            draft,
             request,
-        } => return preview(state, host, from, request).await,
+        } => {
+            let args = json!({"from": agent, "new_agent": new_agent});
+            return preview(state, host, args, draft, request).await;
+        }
         RulesCommand::Set { ref scope, .. }
         | RulesCommand::Edit { ref scope }
         | RulesCommand::Clear { ref scope }
@@ -39,7 +44,9 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         state,
         host: scope.host.clone(),
     };
-    let from = scope.from.clone();
+    // The operation still calls the agent `from`, as hosts of every
+    // version read it.
+    let from = scope.agent.clone();
     match args.command {
         RulesCommand::Set { text, file, .. } => {
             let text = match (text, file) {
@@ -79,15 +86,19 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
 }
 
 /// `latch rules try -- REQUEST`: REQUEST parsed and built exactly as
-/// latch would send it, then previewed on the host (the `rules_try`
-/// operation), which runs nothing. The host is the one `--host` names, or
-/// this machine's own, as for every rules command: never `LATCH_HOST`, and
-/// a `--host` inside REQUEST is refused. Its `--plow-chat` (or
-/// `LATCH_PLOW_CHAT`) means what it would on the real call.
+/// latch would send it, then previewed (the `rules_try` operation, with
+/// `args` saying as whom and against which rules), which runs nothing. The
+/// host is the one `--host` names, where it runs; or this machine's own,
+/// judged here, running or not. Never `LATCH_HOST`, as for every rules
+/// command, and a `--host` inside REQUEST is refused. Its `--plow-chat`
+/// (or `LATCH_PLOW_CHAT`) means what it would on the real call. A
+/// `--draft` is read before REQUEST is built, and only one of them may
+/// read stdin.
 async fn preview(
     state: &StateDir,
     host: Option<String>,
-    from: Option<String>,
+    mut args: Value,
+    draft: Option<PathBuf>,
     words: Vec<String>,
 ) -> Result<Value, Failure> {
     // The parser's message, its usage line written as the request goes
@@ -112,7 +123,15 @@ async fn preview(
                        latch rules try --host NAME -- <request>";
         return Err(Failure::usage("usage", message.to_string()));
     }
-    let (op, args, asked): (&str, Value, HostArg) = match parsed.command {
+    if draft.as_deref() == Some(Path::new("-"))
+        && matches!(&parsed.command, Latch::Exec(exec) if exec.stdin)
+    {
+        let message = "--draft - and exec --stdin both read stdin: give the draft as a file, \
+                       --draft F";
+        return Err(Failure::usage("usage", message.to_string()));
+    }
+    args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
+    let (op, request, asked): (&str, Value, HostArg) = match parsed.command {
         Latch::Exec(args) => ("exec", crate::exec::request(&args)?, args.host),
         Latch::File(FileCommand::Get {
             remote_path, host, ..
@@ -147,17 +166,14 @@ async fn preview(
             return Err(crate::serve::not_previewable(name));
         }
     };
-    let peer = if hosts::local_target(state, host.as_deref())? {
-        Peer {
-            this_machine: true,
-            ..state.require_login()?.peer
-        }
-    } else {
-        hosts::resolve(state, host).await?
-    };
+    args["request"] = json!({"op": op, "args": request, "chat": asked.plow_chat});
+    if hosts::local_target(state, host.as_deref())? {
+        return crate::serve::preview_here(state, &args).await;
+    }
+    let peer = hosts::resolve(state, host).await?;
     let request = Request {
         op: "rules_try".to_string(),
-        args: json!({"request": {"op": op, "args": args, "chat": asked.plow_chat}, "from": from}),
+        args,
         chat: None,
     };
     dial::call(state, &peer, &request, ANSWER_WITHIN).await
