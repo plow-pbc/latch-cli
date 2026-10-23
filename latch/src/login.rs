@@ -148,7 +148,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             } else {
                 "latch login"
             };
-            clash(&plow, registration, rerun).await?
+            clash(&plow, registration, rerun, args.replace).await?
         }
         result => result?,
     };
@@ -314,12 +314,19 @@ fn for_people(number: &str) -> String {
     }
 }
 
-/// The name is taken by another peer. A person at the terminal may replace
-/// another of the owner's machines (removed in Plow, which signs it out) or
-/// pick a new name, and the login goes on with the login already in hand.
-/// Anyone else is told what to run next. An agent's name is never taken
-/// over.
-async fn clash(plow: &Plow, mut registration: Registration, rerun: &str) -> Result<Peer, Failure> {
+/// The name is taken by another peer. Another of the owner's machines is
+/// replaced (removed in Plow, which signs it out) when the login says
+/// `--replace`, or when a person at the terminal says yes; that person may
+/// pick a new name instead. Either way the login goes on with the login
+/// already in hand. Anyone else is told what to run next, with the
+/// machine's name and when it was last seen in the error's details. An
+/// agent's name is never taken over.
+async fn clash(
+    plow: &Plow,
+    mut registration: Registration,
+    rerun: &str,
+    replace: bool,
+) -> Result<Peer, Failure> {
     let name = registration.name.clone().expect("a clash is over a name");
     let peers = plow.list_peers().await.unwrap_or_default();
     let machine = match peers.iter().find(|peer| peer.name == name) {
@@ -339,18 +346,22 @@ async fn clash(plow: &Plow, mut registration: Registration, rerun: &str) -> Resu
     let taken = || {
         let message = format!(
             "a machine named {name:?} already exists (last seen {last_seen}); run \
-             `{rerun} --name OTHER` to use another name, or `{rerun} --name {}` again at a \
-             terminal to replace it (no second text needed)",
+             `{rerun} --name OTHER` to use another name, or `{rerun} --name {} --replace` \
+             to replace it, which signs it out of Plow (no second text needed)",
             shell_quoted(&name)
         );
-        Failure::usage("conflict", message)
+        let mut failure = Failure::usage("conflict", message);
+        failure.details = json!({"existing_name": name, "last_seen_at": machine.last_seen_at});
+        failure
     };
-    if !term::interactive() {
+    if !replace && !term::interactive() {
         return Err(taken());
     }
-    if term::confirm(&format!(
-        "A machine named {name:?} already exists (last seen {last_seen}). Replace it (this signs it out of Plow)?"
-    )) {
+    if replace
+        || term::confirm(&format!(
+            "A machine named {name:?} already exists (last seen {last_seen}). Replace it (this signs it out of Plow)?"
+        ))
+    {
         devices::remove_from_plow(plow, machine).await?;
         return plow.register(&registration).await;
     }

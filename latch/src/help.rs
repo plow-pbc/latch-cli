@@ -100,6 +100,10 @@ const ENTRIES: &[Entry] = &[
                 "An owner's machine, with a token file",
                 &["login", "--token-file", "plow.token", "--name", "mac"],
             ),
+            ex(
+                "Take the name of your machine it replaces, signing that one out",
+                &["login", "--events", "--name", "mac", "--replace"],
+            ),
         ],
     },
     Entry {
