@@ -373,11 +373,10 @@ class HostUpgrade(unittest.TestCase):
         self.assertNotIn("is stopped", result.stderr)
         self.assertIn("latch 0.1.0 (2)", subprocess.check_output([str(dest), "--version"], text=True))
 
-    def test_a_mac_host_is_found_through_the_app_without_a_link_to_it(self):
-        """On macOS the app is what gets replaced: its host is stopped and
-        started again even when no latch is in the bin folder (the link is
-        in another one, or none is)."""
-        log = self.log()
+    def mac_upgrade(self, old_version, new_version, log, old_window="", new_window=""):
+        """Installs an app whose latch says `new_version` over one whose
+        latch says `old_version`, with no latch in the bin folder (the link
+        is in another one, or none is)."""
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
         directory = tempfile.TemporaryDirectory(dir=parent)
@@ -387,28 +386,45 @@ class HostUpgrade(unittest.TestCase):
         home = root / "home"
         setup, _, tools = fixture(root, state, "", system="Darwin", machine="arm64")
         (setup / "latch").unlink()
-        app = setup / "Plow Latch.app/Contents/MacOS"
-        app.mkdir(parents=True)
-        (app / "latch").write_text(fake_latch("0.1.0 (2)", log))
-        (app / "latch").chmod(0o755)
-        (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
         # Chrome for Testing already in place, so nothing is downloaded.
         cft_pin = '{\n  "version": "1.0"\n}\n'
         (setup / "src/browser").mkdir(parents=True)
         (setup / "src/browser/cft.json").write_text(cft_pin)
         (state / "plugins/cft/1.0").mkdir(parents=True)
         (state / "plugins/cft/1.0/manifest.json").write_text(cft_pin)
-        old = home / "Applications/Plow Latch.app/Contents/MacOS/latch"
-        old.parent.mkdir(parents=True)
-        old.write_text(fake_latch("0.1.0 (1)", log))
-        old.chmod(0o755)
+        for app, version, window in [(setup / "Plow Latch.app", new_version, new_window),
+                                     (home / "Applications/Plow Latch.app", old_version, old_window)]:
+            (app / "Contents/MacOS").mkdir(parents=True)
+            (app / "Contents/MacOS/latch").write_text(fake_latch(version, log))
+            (app / "Contents/MacOS/latch").chmod(0o755)
+            (app / "Contents/Frameworks").mkdir()
+            (app / "Contents/Frameworks/libPlowLatchUI.dylib").write_text(window)
+        (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
         env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
         result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
                                  str(setup / "latch")], cwd=root, env=env, capture_output=True, text=True)
+        calls = log.read_text().splitlines() if log.exists() else []
+        return result, calls, home / "Applications/Plow Latch.app"
+
+    def test_a_mac_host_is_found_through_the_app_without_a_link_to_it(self):
+        """On macOS the app is what gets replaced: its host is stopped and
+        started again even when no latch is in the bin folder."""
+        log = self.log()
+        result, calls, app = self.mac_upgrade("0.1.0 (1)", "0.1.0 (2)", log)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(log.read_text().splitlines(),
-                         ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
-        self.assertIn("latch 0.1.0 (2)", subprocess.check_output([str(old), "--version"], text=True))
+        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
+        self.assertIn("latch 0.1.0 (2)",
+                      subprocess.check_output([str(app / "Contents/MacOS/latch"), "--version"], text=True))
+
+    def test_a_new_window_with_the_same_latch_restarts_its_host(self):
+        """Replacing the app replaces its latch too, which the running host
+        then refuses to serve from until it starts again."""
+        log = self.log()
+        result, calls, app = self.mac_upgrade("0.1.0 (2)", "0.1.0 (2)", log,
+                                              old_window="window-one\n", new_window="window-two\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
+        self.assertEqual((app / "Contents/Frameworks/libPlowLatchUI.dylib").read_text(), "window-two\n")
 
     def test_a_failed_stop_changes_nothing(self):
         log = self.log()

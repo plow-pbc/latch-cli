@@ -150,6 +150,18 @@ fi
 # A first install: no login in the state directory yet.
 first_install=""
 [ -f "$state_dir/config.json" ] || first_install=1
+# Whether the install replaces the latch there. On macOS the whole app
+# counts: a new window with the same latch is a new app. cksum, unlike cmp,
+# is on every system.
+replace=1
+if [ -n "$app" ]; then
+  installed="$HOME/Applications/$(basename "$app")"
+  if [ -d "$installed" ] && diff -rq "$app" "$installed" >/dev/null 2>&1; then
+    replace=""
+  fi
+elif [ -f "$dest" ] && [ ! -L "$dest" ] && [ "$(cksum < "$src")" = "$(cksum < "$dest")" ]; then
+  replace=""
+fi
 
 # 0. A host running the latch being replaced is stopped first; only a stop
 # it confirms counts, and a failed one changes nothing. If anything fails
@@ -169,7 +181,7 @@ trap on_exit EXIT
 # The new latch asks and stops: the latch there may be too old to know
 # `stop`, or to reach a host of a latch older still.
 host=""
-if [ -x "$old" ]; then
+if [ -x "$old" ] && [ -n "$replace" ]; then
   host=$("$src" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
   case "$host" in
     # A host this latch cannot reach: its owner is told how to stop it,
@@ -179,8 +191,6 @@ if [ -x "$old" ]; then
       host=""
       ;;
   esac
-  # Only a host of the latch being replaced is stopped.
-  [ "$("$old" --version 2>/dev/null)" != "$("$src" --version 2>/dev/null)" ] || host=""
 fi
 case "$host" in
   *'"running":true'*)
@@ -203,11 +213,9 @@ case "$host" in
 esac
 
 # 1. The binary. Copy next to the target, then rename, so a running latch is
-# never overwritten in place. cksum, unlike cmp, is on every system.
+# never overwritten in place.
 if [ -n "$app" ]; then
-  installed="$HOME/Applications/$(basename "$app")"
-  # The whole app counts: a new window with the same latch is a new app.
-  if [ -d "$installed" ] && diff -rq "$app" "$installed" >/dev/null 2>&1; then
+  if [ -z "$replace" ]; then
     say "$(basename "$app") already installed at $installed"
   else
     # Copied beside the old one first. The old one then moves aside, not
@@ -243,7 +251,7 @@ if [ -n "$app" ]; then
     mv -f "$dest.tmp" "$dest"
     say "linked $dest to $link"
   fi
-elif [ -f "$dest" ] && [ ! -L "$dest" ] && [ "$(cksum < "$src")" = "$(cksum < "$dest")" ]; then
+elif [ -z "$replace" ]; then
   say "latch already installed at $dest"
 else
   mkdir -p "$bin_dir"
