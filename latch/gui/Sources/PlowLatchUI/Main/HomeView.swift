@@ -8,6 +8,18 @@ struct HomeView: View {
 
     var body: some View {
         Form {
+            if let notice = app.plowNotice {
+                Section {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(notice.title)
+                            Text(notice.detail).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "icloud.slash").foregroundStyle(.orange)
+                    }
+                }
+            }
             if app.viewerOnly {
                 ViewerSection()
             }
@@ -34,12 +46,7 @@ struct HomeView: View {
                         Text("To add a host, install Latch there and run `latch serve`, or start hosting on this Mac.")
                     }
                 }
-            } else if let error = app.accountError {
-                Section("Your hosts") {
-                    Text("Couldn't list your hosts.")
-                    Text(error).foregroundStyle(.secondary)
-                }
-            } else {
+            } else if app.plowNotice == nil {
                 Section {
                     ProgressView("Checking your hosts…").frame(maxWidth: .infinity)
                 }

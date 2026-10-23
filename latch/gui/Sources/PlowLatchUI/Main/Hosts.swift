@@ -118,6 +118,25 @@ extension HostEntry {
     }
 }
 
+/// `latch status` failed, so the account's other hosts aren't known: in
+/// plain words, Plow being out of reach above all.
+struct PlowNotice: Equatable {
+    var title: String
+    var detail: String
+
+    init(error: LatchError, listed: Bool) {
+        let others = listed ? "Your other hosts are shown as Plow last listed them."
+            : "Your other hosts can't be listed until it can."
+        if error.code == "plow_unreachable" {
+            title = "Plow can't be reached right now."
+            detail = "\(others) This Mac's own host works as usual."
+        } else {
+            title = "Couldn't list your hosts."
+            detail = "\(error.message)\n\(others)"
+        }
+    }
+}
+
 /// What a host said of its rules, vault and connectors, each read on its
 /// own: one can fail while the others answer; nil until it has answered.
 struct HostSummary: Equatable {

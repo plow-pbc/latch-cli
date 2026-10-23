@@ -191,7 +191,7 @@ package enum SnapshotRunner {
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
             // The main window's host tier: each kind of host, and switching.
-            let plowDown = "Plow couldn't be reached at http://127.0.0.1:18934; check your connection, then try again"
+            let plowDown = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:18934: error sending request for url (http://127.0.0.1:18934/v1/latch/peers)"))
             let homes: [(String, String, String?, String?, SidebarItem)] = [
                 ("10-home-this-mac-serving", Fixtures.serving, Fixtures.studioHosts, nil, .home),
                 ("10-home-this-mac-terminal", Fixtures.servingAttached, Fixtures.studioHosts, nil, .home),

@@ -99,9 +99,9 @@ struct HostPicker: View {
             }
             .pickerStyle(.inline)
             .labelsHidden()
-            if let error = app.accountError {
+            if let notice = app.plowNotice {
                 Divider()
-                Text("Couldn't list your other hosts: \(error)")
+                Text(notice.title)
             }
             Divider()
             Text("To add a host, install Latch there and run latch serve.")

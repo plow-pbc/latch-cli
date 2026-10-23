@@ -1,6 +1,9 @@
 import Testing
 @testable import PlowLatchUI
 
+private let unreachable = LatchError.failed(LatchFailure(
+    code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:9: error sending request"))
+
 @MainActor
 struct HostsTests {
     private func app(status: String, account: String) throws -> AppModel {
@@ -31,13 +34,25 @@ struct HostsTests {
         let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped),
                            store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.stopped))
-        app.stage(account: nil, error: "Plow couldn't be reached")
+        app.stage(account: nil, error: unreachable)
         #expect(app.hosts.map(\.name) == ["studio"])
         #expect(app.host?.isThisMac == true)
         #expect(!app.viewerOnly)
         await app.refreshSummary()
         #expect(app.summaries["studio"]?.rules != nil)
         #expect(app.summaries["studio"]?.vault != nil)
+    }
+
+    @Test func homeSaysPlainlyThatPlowIsOutOfReach() throws {
+        let app = try app(status: Fixtures.serving, account: Fixtures.studioHosts)
+        app.stage(account: nil, error: unreachable)
+        #expect(app.plowNotice?.title == "Plow can't be reached right now.")
+        #expect(app.plowNotice?.detail.contains("can't be listed") == true)
+        #expect(app.plowNotice?.detail.contains("127.0.0.1") == false)
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts), error: unreachable)
+        #expect(app.plowNotice?.detail.contains("as Plow last listed them") == true)
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        #expect(app.plowNotice == nil)
     }
 
     @Test func aMacThatNeverServedOnlyViews() throws {

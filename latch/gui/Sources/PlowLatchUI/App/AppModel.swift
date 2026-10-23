@@ -63,16 +63,19 @@ final class AppModel {
     /// The account's hosts as `latch status` last said; it asks Plow, so it
     /// can fail where `status --local` doesn't.
     private(set) var account: AccountStatus?
-    private(set) var accountError: String?
+    private(set) var accountError: LatchError?
 
     func refreshAccount() async {
         do {
             account = try await client.accountStatus()
             accountError = nil
         } catch {
-            accountError = (error as? LatchError)?.message ?? error.localizedDescription
+            accountError = error as? LatchError ?? .unreachable(error.localizedDescription)
         }
     }
+
+    /// What Home and the picker say while `latch status` fails.
+    var plowNotice: PlowNotice? { accountError.map { PlowNotice(error: $0, listed: account != nil) } }
 
     /// The main window's place: a sidebar item, and the host the host tier
     /// shows (the picker's choice; nil until the person picks one).
@@ -217,7 +220,7 @@ final class AppModel {
     }
 
     /// For snapshots: as `latch status` said.
-    func stage(account: AccountStatus?, error: String? = nil) {
+    func stage(account: AccountStatus?, error: LatchError? = nil) {
         self.account = account
         accountError = error
     }
