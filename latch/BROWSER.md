@@ -26,12 +26,23 @@ crash handler from writing to the user's Library; the Linux arm64 build
 leaves it out, because with it the network service crashes at once on the
 Pi ("FD ownership violation") and no page loads.
 
-Before every launch latch hashes the whole unpacked build (every file's
-bytes and execute bit, every link and folder) and refuses one that differs
-from the pin's `tree_sha256` (`engine_unverified`), so a changed framework
-or helper is caught, not only a changed main binary. To pin a new release,
-run `python3 scripts/cft-pin.py VERSION` on a Mac and put its output in
-`builds`.
+latch hashes the whole unpacked build (every file's bytes and execute bit,
+every link and folder) and refuses one that differs from the pin's
+`tree_sha256` (`engine_unverified`), so a changed framework or helper is
+caught, not only a changed main binary. A hash that matches leaves
+`receipt.json` beside the build: the hashes it matched and every entry's
+metadata (path, type, size, mode, inode, change times) then. Before each
+launch latch compares that metadata alone, tens of milliseconds instead
+of seconds, and hashes the whole build again only when anything in it was
+written, replaced, renamed or chmodded since, or the pin changed. The
+host does this check before it starts the worker, so the receipt is
+written where the sandboxed worker could not; `latch browser setup` leaves
+one at once, and an install by install.sh gets one at the first `open`.
+Anyone who can write the plugins folder can write a receipt too: the host's
+own user, whom latch trusts with its state directory anyway.
+
+To pin a new release, run `python3 scripts/cft-pin.py VERSION` on a Mac
+and put its output in `builds`.
 
 ## Camoufox, the second engine
 
@@ -49,7 +60,8 @@ camoufox` later, installs Camoufox, pinned in
   replaced by a few lines over Node's own (`camoufox/sqlite/`), so no
   package downloads anything unchecked.
 
-Before every launch latch checks each part's tree hash against the pin.
+latch checks each part's tree hash against the pin, with a receipt as for
+CfT (above).
 `python3 scripts/camoufox-pin.py` prints them for both architectures of
 the host's OS.
 
@@ -118,7 +130,9 @@ engine's data folder (Chrome's, created with password saving and autofill
 off, or Firefox's). A session closes on `close`, after 30 minutes without
 a call (counted from the end of its last one), when its browser fails to
 launch, or when the host stops; its browser closes and its profile is
-deleted then. A host that did not stop cleanly (it was killed) leaves its
+deleted then. `close` answers at once: the session is gone for every later
+call, and its browser closes behind the answer, after any call still under
+way in it; a host that stops waits for those. A host that did not stop cleanly (it was killed) leaves its
 sessions' profiles, and the next host on the state directory deletes them
 as it starts. Downloads an agent saved with `download get` are its own
 files, and the audit keeps its records as ever. `exec` and file workers
@@ -251,7 +265,7 @@ before anything is dispatched.
 
 The host audits each call: command, session, engine, tab, origin
 and path (never the query), snapshot, target ref and role, the outcome,
-and the client's parent process id (or `--turn`, `LATCH_TURN`). A plan
+and the client's parent process id. A plan
 (`do`, or `act`) records its request id, its
 step count and how many are goals, its status and stop (step and code),
 each step's kind and outcome, and per action the step and action number,
@@ -314,7 +328,9 @@ the owner in chat, saying exactly what you will do, then retry; with
 model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs;
 its message says what fixes it (below, under the decision model).
 An agent whose line has more than one chat names the one it acts for
-with `--chat C` or `LATCH_CHAT`. The call's audit record holds the
+with `--plow-chat C` or `LATCH_PLOW_CHAT`. Owner calls and local modes
+(`setup`, `handoff done`, `do --dry-run`) refuse this selector instead of
+ignoring it. The call's audit record holds the
 judgment as `gate` (verdict, probabilities, model, cost, latency, the
 message ids read), never chat text. `just gated-shopping HOST_STATE OUT`
 measures a shopping task's judgments on the decision model.

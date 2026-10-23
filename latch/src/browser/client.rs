@@ -25,12 +25,6 @@ use crate::wire::Request;
 pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> {
     // An engine is installed on the host itself, by its owner.
     if let BrowserCommand::Setup { engine } = &args.command {
-        if args.host.is_some() {
-            return Err(Failure::usage(
-                "bad_arguments",
-                "`browser setup` runs on the host itself, without --host".into(),
-            ));
-        }
         return super::setup::run(state, *engine);
     }
     // `handoff done` runs on the host, on its own state directory: no call.
@@ -57,7 +51,6 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     let mut request = json!({
         "session": args.session,
         "ppid": std::os::unix::process::parent_id(),
-        "turn": args.turn,
     });
     // Where bytes go: a screenshot or download into a file here, an
     // upload's out of one.
@@ -163,7 +156,7 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     let request = Request {
         op: "browser".to_string(),
         args: request,
-        chat: args.chat,
+        chat: args.plow_chat,
     };
     let id = request.args["request"].clone();
     match transfer {

@@ -13,3 +13,8 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'test(/^browser::tests::/)'
 test-group = 'engines'
+
+# CI (`just test --ci`): more tests at once than the runners' 4 cores, since
+# many CLI tests wait on a host or a timer rather than the CPU.
+[profile.ci]
+test-threads = 8
