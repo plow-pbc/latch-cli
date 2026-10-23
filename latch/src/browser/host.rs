@@ -61,6 +61,9 @@ pub struct Browsers {
     pub(super) screen: Option<bool>,
     /// Open sessions, by id.
     sessions: Mutex<HashMap<String, Arc<Entry>>>,
+    /// Browsers closing after their sessions ended, which nothing waits on
+    /// but a host that is stopping.
+    closing: std::sync::Mutex<tokio::task::JoinSet<()>>,
     pub(super) vault: Arc<Vault>,
     /// Plan requests under way, as `session/request`: a journal with no
     /// end reads as running while its request is here, else interrupted.
@@ -172,6 +175,7 @@ impl Browsers {
             #[cfg(test)]
             screen: None,
             sessions: Mutex::new(HashMap::new()),
+            closing: Default::default(),
             vault,
             running: Default::default(),
             #[cfg(test)]
@@ -311,6 +315,12 @@ impl Browsers {
     }
 
     async fn start(&self, engine: &str) -> Result<Runtime, Failure> {
+        // Checked here first, outside the worker's sandbox, so that a full
+        // hash leaves its receipt and the worker's own check is quick.
+        let (state_dir, name) = (self.state_dir.clone(), engine.to_string());
+        tokio::task::spawn_blocking(move || super::engine::verify(&state_dir, &name))
+            .await
+            .expect("the engine check does not panic")?;
         #[cfg(test)]
         if let Some((latch, _)) = &self.test {
             return Runtime::start_with(
@@ -336,12 +346,10 @@ impl Browsers {
 
     /// Closes every runtime at once, for a host that is stopping.
     pub async fn close_all(&self) {
-        let mut closing = tokio::task::JoinSet::new();
         for (_, entry) in self.sessions.lock().await.drain() {
-            closing.spawn(async move {
-                let _ = tokio::time::timeout(CLOSING, entry.runtime.close()).await;
-            });
+            self.end(entry);
         }
+        let closing = std::mem::take(&mut *self.closing.lock().expect("closing lock"));
         closing.join_all().await;
     }
 
@@ -387,7 +395,7 @@ impl Browsers {
             }
             sessions.remove(id).expect("found above")
         };
-        self.end(&entry).await
+        Ok(self.end(entry))
     }
 
     /// Ends the session whose id hashes to `hash`, whoever opened it: how
@@ -408,15 +416,27 @@ impl Browsers {
         };
         entry.note(audit);
         audit.insert("by_owner_device".into(), json!(true));
-        Some(self.end(&entry).await)
+        Some(Ok(self.end(entry)))
     }
 
-    /// A session the map no longer has: its browser closes, and its
-    /// profile goes once the last call holding it has ended.
-    async fn end(&self, entry: &Entry) -> Result<Value, Failure> {
-        let _turn = entry.session.lock().await;
-        let _ = tokio::time::timeout(CLOSING, entry.runtime.close()).await;
-        Ok(json!({"closed": true}))
+    /// Tests only: until every browser closing now has closed.
+    #[cfg(test)]
+    pub(super) async fn settled(&self) {
+        let closing = std::mem::take(&mut *self.closing.lock().expect("closing lock"));
+        closing.join_all().await;
+    }
+
+    /// A session the map no longer has: its browser closes, after any call
+    /// under way in it, and its profile goes once the last call holding it
+    /// has ended. Neither waits: the answer is at once.
+    fn end(&self, entry: Arc<Entry>) -> Value {
+        let mut closing = self.closing.lock().expect("closing lock");
+        while closing.try_join_next().is_some() {}
+        closing.spawn(async move {
+            let _turn = entry.session.lock().await;
+            let _ = tokio::time::timeout(CLOSING, entry.runtime.close()).await;
+        });
+        json!({"closed": true})
     }
 }
 
@@ -440,10 +460,8 @@ pub async fn run(
     .to_string();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
-    for key in ["ppid", "turn"] {
-        if !args[key].is_null() {
-            audit.insert(key.into(), args[key].clone());
-        }
+    if !args["ppid"].is_null() {
+        audit.insert("ppid".into(), args["ppid"].clone());
     }
     if command == "eval" {
         eval_audit(args["script"].as_str().unwrap_or_default(), &mut audit);
@@ -837,7 +855,7 @@ async fn open_judged(
         Err(failure) => {
             let opened = browsers.sessions.lock().await.remove(&id);
             if let Some(entry) = opened {
-                let _ = browsers.end(&entry).await;
+                browsers.end(entry);
             }
             Err(failure)
         }

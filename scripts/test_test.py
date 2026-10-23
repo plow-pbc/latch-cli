@@ -1,5 +1,6 @@
 """scripts/test.py's own tests: each Rust test is in exactly one suite, as
 nextest selects them, and a plan refuses what cannot run where it was asked."""
+import contextlib
 import importlib.util
 import io
 import json
@@ -15,9 +16,13 @@ spec.loader.exec_module(runner)
 
 
 def plan(*argv, where="macos"):
+    """The plan for `argv` on `where`, with every tool installed unless the
+    test says otherwise: a macOS runner has no Docker."""
     args = runner.argparse.Namespace(suites=list(argv), linux=False, shard=None, ci=False, dry_run=True,
-                                     build_archive=None, from_archive=None)
-    with mock.patch.object(runner, "where_we_are", return_value=where):
+                                     build_archive=None, from_archive=None, only=None)
+    tools = (contextlib.nullcontext() if isinstance(runner.shutil.which, mock.Mock)
+             else mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"))
+    with mock.patch.object(runner, "where_we_are", return_value=where), tools:
         return runner.plan(args)
 
 
@@ -83,13 +88,27 @@ class Suites(unittest.TestCase):
         cls.directory.cleanup()
 
     def selected(self, suite, where):
-        listed = subprocess.run(["cargo", "nextest", "list", "--message-format", "json", "-E",
-                                 runner.filterset(suite, where)], cwd=self.crate, check=True,
-                                capture_output=True, text=True)
+        return self.listed(runner.filterset(suite, where))
+
+    def listed(self, expression):
+        listed = subprocess.run(["cargo", "nextest", "list", "--message-format", "json", "-E", expression],
+                                cwd=self.crate, check=True, capture_output=True, text=True)
         return {f"{binary['binary-name']}:{name}"
                 for binary in json.loads(listed.stdout)["rust-suites"].values()
                 for name, case in binary["testcases"].items()
                 if case["filter-match"]["status"] == "matches"}
+
+    @mock.patch.object(runner, "restricted", return_value=False)
+    @mock.patch.object(runner, "pinned_engines", return_value={"cft": True, "camoufox": True})
+    def test_only_picks_the_named_tests_in_whichever_suites_hold_them(self, *_):
+        found = {suite: self.listed(runner.selection(suite, "macos", "a_check"))
+                 for suite in ("core", "sandbox", "browser", "lifecycle", "scenario", "messages")}
+        # An untagged browser test asked for by name runs on macOS too.
+        self.assertEqual(found["browser"], {"latch:browser::tests::cft::a_check",
+                                            "latch:browser::tests::camoufox::a_check"})
+        self.assertFalse(any(found[suite] for suite in found if suite != "browser"))
+        self.assertEqual(self.listed(runner.selection("lifecycle", "linux", "managed")),
+                         {"cli:lifecycle::a_managed_host"})
 
     @mock.patch.object(runner, "restricted", return_value=False)
     def test_each_test_is_in_exactly_one_suite(self, _):
@@ -161,7 +180,7 @@ class Plans(unittest.TestCase):
             self.assertIn("systemd user session", dict(not_here)["lifecycle"])
             for argv, ci in ((["lifecycle"], False), ([], True)):
                 args = runner.argparse.Namespace(suites=argv, linux=False, shard=None, ci=ci, dry_run=True,
-                                                 build_archive=None, from_archive=None)
+                                                 build_archive=None, from_archive=None, only=None)
                 with mock.patch.object(runner, "where_we_are", return_value="linux"), \
                         self.assertRaises(SystemExit) as refused:
                     runner.plan(args)
@@ -211,6 +230,10 @@ class Plans(unittest.TestCase):
             self.assertIn("--archive-file", rust)
             self.assertEqual(rust[rust.index("--extract-to") + 1], str(runner.LATCH))
             self.assertIn("hash:1/4", rust)
+            self.assertNotIn("--profile", rust)
+            ci = runner.steps("linux", ["core"], False, None, None, ci=True)
+            ci_rust = next(command for name, _, command, _ in ci if name == "rust")
+            self.assertEqual(ci_rust[ci_rust.index("--profile") + 1], "ci")
             self.assertNotIn("--features", rust)
             # The build job has no bubblewrap or systemd session, and needs neither.
             def which(tool):
@@ -219,16 +242,45 @@ class Plans(unittest.TestCase):
                     mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=1)), \
                     mock.patch.object(runner, "where_we_are", return_value="linux"):
                 args = runner.argparse.Namespace(suites=[], linux=False, shard=None, ci=True, dry_run=True,
-                                                 build_archive=str(archive), from_archive=None)
+                                                 build_archive=str(archive), from_archive=None, only=None)
                 self.assertIn("lifecycle", runner.plan(args)[1])
             with mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"), \
                     mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=0)):
                 args = runner.argparse.Namespace(suites=[], linux=False, shard="1/4", ci=True, dry_run=True,
-                                                 build_archive=None, from_archive=str(archive))
+                                                 build_archive=None, from_archive=str(archive), only=None)
                 with mock.patch.object(runner, "where_we_are", return_value="linux"), \
                         self.assertRaises(SystemExit) as refused:
                     runner.plan(args)
                 self.assertIn("no archive at", str(refused.exception))
+
+    def test_only_skips_lint_and_the_non_rust_checks_and_takes_part_of_a_name(self):
+        names = [name for name, *_ in runner.steps("macos", runner.GATE["macos"], True, None, only="x")]
+        self.assertEqual([n for n in names if n not in ("build", "engines", "rust")], [])
+        for bad in ("a b", "x)|all()", ""):
+            with self.assertRaises(SystemExit):
+                args = runner.argparse.Namespace(suites=[], linux=False, shard=None, ci=False, dry_run=True,
+                                                 build_archive=None, from_archive=None, only=bad)
+                with mock.patch.object(runner, "where_we_are", return_value="macos"), \
+                        mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"):
+                    runner.plan(args)
+
+    def test_only_reaches_the_run_inside_the_container_and_needs_a_rust_suite(self):
+        args = runner.argparse.Namespace(suites=["browser"], linux=True, shard=None, ci=False,
+                                         dry_run=False, build_archive=None, from_archive=None,
+                                         only="a_check")
+        with mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=0)) as ran, \
+                mock.patch.object(runner, "container_seccomp", return_value=Path("/x.json")):
+            runner.in_container(args)
+        inner = ran.call_args_list[-1].args[0]
+        self.assertEqual(inner[inner.index("scripts/test.py"):], ["scripts/test.py", "browser", "--only", "a_check"])
+        with self.assertRaises(SystemExit) as refused:
+            args = runner.argparse.Namespace(suites=["installer"], linux=False, shard=None, ci=False,
+                                             dry_run=True, build_archive=None, from_archive=None,
+                                             only="a_check")
+            with mock.patch.object(runner, "where_we_are", return_value="macos"), \
+                    mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"):
+                runner.plan(args)
+        self.assertIn("installer has none", str(refused.exception))
 
     def test_the_container_is_linux_arm64_on_any_host(self):
         for machine in ("x86_64", "arm64"):

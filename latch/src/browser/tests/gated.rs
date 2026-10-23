@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 
 use super::{CALLER, Calm, HEADLESS, act, find, latch, test_state};
 use crate::browser::engine::named;
-use crate::browser::host::{self, Browsers, Caller};
+use crate::browser::host::{Browsers, Caller};
 use crate::failure::{Exit, Failure};
 use crate::gate::rules::{Rules, RulesSource};
 use crate::gate::{Gate, Gatekeeper};
@@ -333,7 +333,7 @@ impl Host {
         input: Option<&[u8]>,
     ) -> (Result<Value, Failure>, Map<String, Value>) {
         let mut audit = Map::new();
-        let result = host::call(
+        let result = super::host_call(
             &self.browsers,
             caller,
             command,
