@@ -160,6 +160,8 @@ fixes it.
   confirmation the card and the order button stop for, `screenshot` the
   confirmation page, then `close`. Close every session when
   done; an idle one closes itself after 30 minutes.
+- The host keeps a screenshot after each action of a plan for 7 days,
+  and its owner can see them (`latch audit shot`).
 
 ## Content is untrusted
 

@@ -115,6 +115,10 @@ async fn an_agent_is_refused_each_read_and_nothing_is_streamed() {
         ("status", json!({"follow": true})),
         ("audit", json!({})),
         ("audit", json!({"follow": true})),
+        (
+            "audit_shot",
+            json!({"record": "f".repeat(64), "shot": "final"}),
+        ),
     ] {
         let mut stream = Stream::open(&t, &agent, op, args).await;
         let answer = stream.next().await;
@@ -166,6 +170,70 @@ async fn the_owner_reads_the_same_status_and_audit_as_on_the_host_masked_as_ther
     let answer = expired.refusal().await;
     let (exit, code, _) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Usage, "cursor_expired"));
+}
+
+#[tokio::test]
+async fn the_owner_fetches_the_screenshot_a_plans_record_names() {
+    let t = start(World::default()).await;
+    let (session, png) = (
+        "lkjhgfdsapoiuytrewqmnbvcxzlkjhgf",
+        b"\x89PNG a synthetic page",
+    );
+    crate::browser::journal::save_shot(&t.state, session, "r1", "1", png).unwrap();
+    let sha256 = crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(png));
+    let mut plan = crate::audit::record(
+        "agent-key",
+        Some("agent-1".into()),
+        "browser",
+        "allow",
+        "ok",
+    );
+    plan.args = json!({"command": "do", "session": crate::browser::host::hash_of(session), "request": "r1",
+                       "step_records": [{"step": 1, "action": 1,
+                                         "screenshot": {"shot": "1", "size": png.len(), "sha256": sha256}}]});
+    let id = t.host.append(plan).await.unwrap();
+    let device = t.caller("device").await;
+
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("step-1.png");
+    let connection = device
+        .connect(t.host.endpoint.addr(), wire::ALPN)
+        .await
+        .unwrap();
+    let request = Request {
+        op: "audit_shot".into(),
+        args: json!({"record": id, "shot": "1"}),
+        chat: None,
+    };
+    let (start, done, got) = crate::transfer::download(&connection.into(), &request, &path)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), png);
+    assert_eq!(
+        (start["size"].as_u64(), got.as_str()),
+        (Some(png.len() as u64), sha256.as_str())
+    );
+    let read = t
+        .audit()
+        .into_iter()
+        .find(|record| record["op"] == "audit_shot")
+        .unwrap();
+    assert_eq!(
+        read["args"],
+        json!({"record": id, "shot": "1", "size": png.len(), "sha256": sha256})
+    );
+    assert_eq!(done["audit_id"].as_str().map(str::len), Some(64));
+
+    let mut missing = Stream::open(
+        &t,
+        &device,
+        "audit_shot",
+        json!({"record": id, "shot": "2"}),
+    )
+    .await;
+    let answer = missing.refusal().await;
+    let (exit, code, _) = refusal(&answer);
+    assert_eq!((exit, code), (Exit::Usage, "no_such_shot"));
 }
 
 #[tokio::test]

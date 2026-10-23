@@ -1145,7 +1145,7 @@ async fn serve_request(
                         )
                         .await
                     }
-                    "status" | "audit" => {
+                    "status" | "audit" | "audit_shot" => {
                         reads::run(host, &identity.kind, op, &request.args, &mut send, cut_off)
                             .await
                     }

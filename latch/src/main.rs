@@ -329,7 +329,7 @@ async fn run(
         Command::Audit(cli::AuditArgs {
             action: Some(action),
             ..
-        }) => json(pretty, audit::run(&state, action)?),
+        }) => json(pretty, audit::run(&state, action).await?),
         Command::Audit(args) => {
             let range = audit::Range {
                 last: args.last,

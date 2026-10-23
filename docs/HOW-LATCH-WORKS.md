@@ -45,7 +45,7 @@ latch's commands and behavior here are `main`'s today.
 |---|---|---|---|---|---|
 | **Owner** (your CLI) | A machine logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: list them on any host; turn them on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` or `LATCH_HOST` naming another machine. An agent running there counts. | That host, through its private local socket; other hosts as the owner. | Yes, on that host. Rules and vault work without `latch serve` or the decision model. | It is the host. | Exactly like the owner; recorded as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host` and `audit --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It sees the ones each host has on, in `latch status`. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host`, `audit --host` and `audit shot --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It sees the ones each host has on, in `latch status`. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
 
 - **Every machine logged in with your own Plow login is the owner today.**
   There's no host-only or view-only login yet (see section 11).
@@ -193,7 +193,11 @@ output, but a credential typed into arguments or a plan ends up in the
 record. The record is written after the call runs, so an `audit_failed`
 answer can come after the work was done; a refused caller's record is best
 effort. The dashboard and `serve.log` hide credential-looking values, best
-effort.
+effort. A browser plan's record also names the screenshots the host kept
+of it, one after each action, for 7 days; you can see them with `latch
+audit shot`. latch doesn't redact their pixels: it takes none while a
+value filled from the vault is on the page, and none of a fill step, but
+typed text and the rest of the page can show.
 
 ## 6. Managing a host
 
@@ -204,7 +208,7 @@ effort.
 | Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`); `latch status --local` lists them | `latch status` shows the ones each host has on; `latch status --host NAME` lists them all | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
 | Let the browser reach local addresses | `"allow_local_browsing": true` in `host.json` | No | — |
-| Audit log | `latch audit` (the newest records, args masked; `--before ID`, `--all`), `latch audit verify` (needs no key), `latch audit rotate-key` | `latch audit --host NAME` (`LATCH_HOST` doesn't apply); `verify` and `rotate-key` only on the host | Yes |
+| Audit log | `latch audit` (the newest records, args masked; `--before ID`, `--all`), `latch audit shot ID N --output F` (a screenshot a browser plan's record names), `latch audit verify` (needs no key), `latch audit rotate-key` | `latch audit --host NAME` and `latch audit shot … --host NAME` (`LATCH_HOST` doesn't apply); `verify` and `rotate-key` only on the host | Yes |
 | Watch it | `latch dashboard`, `latch logs`, `latch audit --follow`, `latch status --local --follow` | `latch audit --follow --host NAME`, `latch status --host NAME --follow` | Yes, except `dashboard` |
 
 - **Rules** are plain text in your own words: one text for every agent,
