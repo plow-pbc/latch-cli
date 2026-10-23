@@ -188,7 +188,16 @@ async fn run(
                 }
             }
         }
-        Command::Login(args) => json(pretty, login::run(&state, args).await?),
+        Command::Login(args) => {
+            let output = login::run(&state, args).await?;
+            // A person who logged in by text reads one line where they
+            // texted; every other login is a regular command's JSON.
+            if output.by_text {
+                eprintln!("Logged in as {}.", output.peer.name);
+                return Ok(Printed(String::new()));
+            }
+            json(pretty, output)
+        }
         Command::Logout(args) => json(pretty, logout::run(&state, args.purge).await?),
         Command::Devices(args) => match args.action {
             None => json(pretty, devices::list(&state).await?),

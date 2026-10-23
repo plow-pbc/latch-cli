@@ -587,8 +587,9 @@ fn a_name_clash_at_a_terminal_replaces_the_old_machine_with_no_second_text() {
         ),
         "{shown}"
     );
-    let login: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(login["peer"]["name"], "mac");
+    // A login by text: it ends in a line for the person, not JSON.
+    assert!(shown.trim_end().ends_with("Logged in as mac."), "{shown}");
+    assert!(stdout.is_empty(), "{stdout}");
     let config: Value =
         serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
     assert_eq!(config["peer"]["name"], "mac");
@@ -801,71 +802,6 @@ fn shape(value: &Value) -> Value {
         Value::Bool(_) => json!("bool"),
         Value::Null => Value::Null,
     }
-}
-
-/// Every regular command but the streams (`events`, `logs`), each run on a
-/// fresh owner's machine three times: at a terminal, piped, and piped with
-/// `--pretty`. A success prints the same JSON shape every way, `--pretty`
-/// indented, with nothing on stderr; a failure prints one error line.
-#[test]
-fn every_regular_command_prints_the_same_json_at_a_terminal_piped_and_pretty() {
-    let plow = LivePlow::start();
-    let dir = test_dir();
-    let streams = [&["events"][..], &["logs"]];
-    let commands: Vec<Vec<String>> = regular_commands()
-        .into_iter()
-        .filter(|args| !streams.iter().any(|stream| args[..] == **stream))
-        .collect();
-    let mut worked = Vec::new();
-    for (n, args) in commands.iter().enumerate() {
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let fresh = |mode: &str| {
-            // `logout` signs the owner's login out of Plow: each run logs in anew.
-            plow.state.lock().unwrap().owner = "owner-login".to_string();
-            let machine = dir.path().join(format!("{n}-{mode}"));
-            fs::create_dir_all(&machine).unwrap();
-            owner_host_on(&plow, &machine)
-        };
-        let (code, shown, _) = latch_at_a_terminal(&fresh("terminal"), &args, "", true, &[]);
-        let shown = shown.replace("\r\n", "\n");
-        let piped = latch(&fresh("piped"), &args, &[]);
-        assert_eq!(piped.status.code(), code, "{args:?}: {shown} / {piped:?}");
-        let mut pretty_args = args.clone();
-        pretty_args.push("--pretty");
-        let pretty = latch(&fresh("pretty"), &pretty_args, &[]);
-        assert_eq!(pretty.status.code(), code, "{args:?}: {pretty:?}");
-        if code != Some(0) {
-            let error = one_error_line(&String::from_utf8_lossy(&piped.stderr), code);
-            assert_eq!(
-                shape(&one_error_line(&shown, code)),
-                shape(&error),
-                "{args:?}"
-            );
-            one_error_line(&String::from_utf8_lossy(&pretty.stderr), code);
-            continue;
-        }
-        worked.push(args.join(" "));
-        assert!(piped.stderr.is_empty(), "{args:?}: {piped:?}");
-        assert!(pretty.stderr.is_empty(), "{args:?}: {pretty:?}");
-        let text = String::from_utf8(piped.stdout).unwrap();
-        assert_eq!(text.lines().count(), 1, "{args:?}: {text}");
-        let result: Value = serde_json::from_str(&text).unwrap();
-        let at_terminal: Value = serde_json::from_str(shown.trim())
-            .unwrap_or_else(|_| panic!("{args:?}: not only JSON at a terminal: {shown}"));
-        assert_eq!(shape(&at_terminal), shape(&result), "{args:?}");
-        let indented = String::from_utf8(pretty.stdout).unwrap();
-        let same: Value = serde_json::from_str(&indented).unwrap();
-        assert_eq!(shape(&same), shape(&result), "{args:?}");
-        if matches!(&result, Value::Object(map) if !map.is_empty()) {
-            assert!(
-                indented.contains("\n  \""),
-                "{args:?} not indented: {indented}"
-            );
-        }
-    }
-    // The ones a machine with no host running can do.
-    assert!(worked.len() >= 8, "{worked:?}");
-    eprintln!("worked: {worked:?}");
 }
 
 /// `--pretty` changes the layout, never the content.
@@ -1089,7 +1025,7 @@ fn a_login_by_text_stops_at_plows_refusal_and_retries_a_slow_down() {
 }
 
 #[test]
-fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_then_its_json() {
+fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
     let (api_url, server) = plow_texted_at_once();
     let dir = test_dir();
     let state = dir.path().join("state");
@@ -1112,26 +1048,39 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_then_its_json() {
         shown.contains(&format!("{opens}{link}\x1b]8;;\x1b\\")),
         "{shown}"
     );
-    // Then what to do, that it is waiting, and the result: its JSON, as
-    // anywhere else.
+    // Then what to do, that it is waiting, and one line when it is done:
+    // a human login, so no JSON.
     let said: Vec<&str> = rows
         .iter()
         .filter(|row| !row.contains(&opens))
         .map(|row| row.trim_end())
         .collect();
     assert_eq!(
-        said[..2],
-        ["Text TRY12 to +1 415-555-0100", "Waiting for your text…"]
+        said,
+        [
+            "Text TRY12 to +1 415-555-0100",
+            "Waiting for your text…",
+            "Logged in as mac."
+        ]
     );
-    let result: Value = serde_json::from_str(said[2]).unwrap();
-    assert_eq!(result["peer"]["name"], "mac");
-    assert_eq!(said.len(), 3, "{shown}");
     assert_eq!(server.join().unwrap().len(), 3);
 }
 
+/// Only a login a person does by texting a code is human: it ends in a line
+/// on their terminal, even with stdout piped. A login that asks no one,
+/// at a terminal or not, prints its JSON.
 #[test]
-fn a_login_by_text_piped_still_prints_its_json() {
-    let (api_url, server) = plow_texted_at_once();
+fn a_login_by_text_ends_in_a_line_and_one_that_asks_no_one_in_json() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let mac = peer(Value::Null, "mac", "device", Value::Null);
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (200, mac.clone()),
+        (200, mac.clone()),
+        (200, mac),
+    ]);
     let dir = test_dir();
     let state = dir.path().join("state");
     let args = ["login", "--api-url", &api_url, "--name", "mac"];
@@ -1139,10 +1088,22 @@ fn a_login_by_text_piped_still_prints_its_json() {
     let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", false, &[]);
     assert_eq!(code, Some(0), "{shown}");
     assert!(shown.contains("Text TRY12 to +1 415-555-0100"), "{shown}");
-    assert!(!shown.contains("Logged in as"), "{shown}");
-    let output: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(output["peer"]["name"], "mac");
-    assert_eq!(server.join().unwrap().len(), 3);
+    assert_eq!(
+        shown.trim_end().lines().last(),
+        Some("Logged in as mac."),
+        "{shown}"
+    );
+    assert!(stdout.is_empty(), "{stdout}");
+
+    // Logged in already: nothing to ask, so JSON, at a terminal and piped.
+    let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", true, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    let again: Value = serde_json::from_str(shown.trim()).unwrap();
+    assert_eq!(again["peer"]["name"], "mac");
+    let piped = latch(&state, &["login"], &[]);
+    let again: Value = serde_json::from_slice(&piped.stdout).unwrap();
+    assert_eq!(again["peer"]["name"], "mac");
+    assert_eq!(server.join().unwrap().len(), 5);
 }
 
 #[test]
@@ -1946,6 +1907,14 @@ impl LivePlow {
                 }
             }
             ("POST", path) if path.ends_with("/offline") => (200, json!({})),
+            // `devices remove`: that machine goes.
+            ("DELETE", path) if kind == "device" && path != "/v1/latch/peers/self" => {
+                let key = path.trim_start_matches("/v1/latch/peers/");
+                match state.peers.iter().position(|(peer, _)| peer["key"] == key) {
+                    Some(at) => (200, state.peers.remove(at).0),
+                    None => (404, json!({})),
+                }
+            }
             // Logging out: this login's machines go, and the login with them.
             ("DELETE", "/v1/latch/peers/self") if kind == "device" => {
                 let (removed, kept) = std::mem::take(&mut state.peers)
@@ -6179,4 +6148,756 @@ fn q_in_an_attached_serve_leaves_its_host_running_and_shows_the_call() {
     shows(&shown, "note.txt");
     terminal.write_all(b"\x03").unwrap();
     assert!(exits_within(&mut serve, 45).success());
+}
+
+// Every regular command, shown working.
+
+/// Regular commands this test cannot make work here, and why. An entry
+/// ending in `.` covers every command under it.
+fn not_shown_working(listed: &[String]) -> Vec<(String, &'static str)> {
+    let mut out: Vec<(&str, &'static str)> = vec![
+        (
+            "events",
+            "a stream of JSON lines, not one result; its own tests read the lines",
+        ),
+        (
+            "logs",
+            "a stream of the host's log, not one result; its own tests read it",
+        ),
+        (
+            "update",
+            "a local build never updates itself; update::tests installs from a local signed release server",
+        ),
+        (
+            "browser.handoff",
+            "it waits for a person at a headed host's screen, and the test host's browsers are headless; browser::tests::handoff covers it",
+        ),
+        (
+            "browser.fill",
+            "a fill goes only to a named site, never a local one like the test site; the origin map that lets fills run there is the browser unit tests' (browser::tests::fills)",
+        ),
+    ];
+    if !cfg!(any(target_os = "macos", feature = "linux-browser-tests")) {
+        out.push((
+            "browser.",
+            "no browser engine here without the linux-browser-tests feature",
+        ));
+    }
+    let served = |id: &str| GOG.iter().any(|(gog, _)| id == format!("google.{gog}"));
+    for id in listed {
+        if id.starts_with("google.") && !served(id) {
+            out.push((
+                id.as_str(),
+                "the fake gog answers only gmail search, messages search, get and thread get; this one needs a real Google account",
+            ));
+        }
+    }
+    if !cfg!(feature = "fake-gog") {
+        let why = "Google needs a real account, or the fake gog this build was made without";
+        out.extend([
+            ("google", why),
+            ("google.", why),
+            ("plugins.enable", why),
+            ("plugins.disable", why),
+        ]);
+    }
+    out.into_iter()
+        .map(|(id, why)| (id.to_string(), why))
+        .collect()
+}
+
+/// A host and its owner on one machine, serving, with what a regular
+/// command needs to work: a home for files, the test site, the fake gog
+/// as Google, and on macOS the synthetic Messages and address book.
+struct Kitchen {
+    plow: LivePlow,
+    _relay: tokio::runtime::Runtime,
+    dir: tempfile::TempDir,
+    host: PathBuf,
+    site: String,
+    /// The browser session the browser commands run in now, and its page.
+    session: std::sync::Mutex<Option<(String, &'static str, Value)>>,
+    _serve: Serving,
+}
+
+impl Kitchen {
+    fn new() -> Kitchen {
+        let plow = LivePlow::start();
+        let (relay_runtime, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let home = dir.path().join("home");
+        fs::create_dir(&home).unwrap();
+        // The pages the browser commands open, where there is a browser.
+        #[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
+        let site = shop_server::serve_site();
+        #[cfg(not(any(target_os = "macos", feature = "linux-browser-tests")))]
+        let site = String::new();
+        fs::create_dir_all(host.join("plugins")).unwrap();
+        #[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
+        browser_host(&host);
+        #[cfg(feature = "fake-gog")]
+        {
+            let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
+            let gog = host
+                .join("plugins/gog")
+                .join(pin["version"].as_str().unwrap());
+            fs::create_dir_all(&gog).unwrap();
+            fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+            plow.state.lock().unwrap().google = Some(format!("shop={site}"));
+            google_enabled(&host);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            messages_home(&home);
+            let reader = host
+                .join("plugins/messages")
+                .join(env!("CARGO_PKG_VERSION"))
+                .join("latch-messages");
+            fs::create_dir_all(reader.parent().unwrap()).unwrap();
+            fs::copy(messages_reader(), &reader).unwrap();
+        }
+        let mut command = serve_command(&host, &relay);
+        command.arg("--headless-browsers").env("HOME", &home);
+        let (serve, mut log, _) = serving_with(command);
+        thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+        until_serving(&host, &serve);
+        #[cfg(target_os = "macos")]
+        for name in ["messages", "contacts"] {
+            worked(&host, &["plugins", "enable", name]);
+        }
+        Kitchen {
+            plow,
+            _relay: relay_runtime,
+            dir,
+            host,
+            site,
+            session: std::sync::Mutex::default(),
+            _serve: serve,
+        }
+    }
+
+    fn path(&self, name: &str) -> String {
+        self.dir.path().join(name).to_str().unwrap().to_string()
+    }
+
+    /// A new browser session on the test site's `page`, in place of the
+    /// one before: its id, and the page.
+    fn open(&self, page: &'static str) -> (String, Value) {
+        self.close_session();
+        let url = format!("{}/{page}", self.site);
+        let opened = worked(&self.host, &["browser", "open", &url]);
+        let session = opened["session"].as_str().unwrap().to_string();
+        let observed = worked(&self.host, &["browser", "--session", &session, "observe"]);
+        *self.session.lock().unwrap() = Some((session.clone(), page, observed.clone()));
+        (session, observed)
+    }
+
+    /// The session on `page` already open, or a new one: opening a browser
+    /// is most of a browser command's time.
+    fn reuse(&self, page: &'static str) -> (String, Value) {
+        let open = self.session.lock().unwrap().clone();
+        match open {
+            Some((session, on, observed)) if on == page => (session, observed),
+            _ => self.open(page),
+        }
+    }
+
+    fn close_session(&self) {
+        if let Some((session, _, _)) = self.session.lock().unwrap().take() {
+            latch(
+                &self.host,
+                &["browser", "--session", &session, "close"],
+                &[],
+            );
+        }
+    }
+
+    /// An owner's machine of its own, logged in anew, with no host.
+    fn fresh(&self, name: &str) -> PathBuf {
+        self.plow.state.lock().unwrap().owner = "owner-login".to_string();
+        let machine = self.dir.path().join(name);
+        fs::create_dir_all(&machine).unwrap();
+        owner_host_on(&self.plow, &machine)
+    }
+}
+
+/// `latch ARGS` on `state`, which must work: its JSON.
+fn worked(state: &Path, args: &[&str]) -> Value {
+    let output = latch(state, args, &[]);
+    assert!(output.status.success(), "{args:?}: {output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// The ref of the element with `role` and `name` on an observed page.
+fn element(page: &Value, role: &str, name: &str) -> String {
+    let found = page["elements"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|element| {
+            element["role"] == role
+                && element["name"]
+                    .as_str()
+                    .is_some_and(|n| n.starts_with(name))
+        });
+    found.unwrap_or_else(|| panic!("no {role} {name:?}: {page}"))["ref"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// One way of running a regular command: the state it runs on and its
+/// arguments.
+struct Run {
+    state: PathBuf,
+    args: Vec<String>,
+}
+
+type Prepare = Box<dyn Fn(&Kitchen, usize) -> Run>;
+
+fn on_host(args: &[&str]) -> Prepare {
+    let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+    Box::new(move |kitchen, _| Run {
+        state: kitchen.host.clone(),
+        args: args.clone(),
+    })
+}
+
+/// A browser command on a fresh session on `page`, its arguments made from
+/// the session and the page.
+fn in_session(page: &'static str, rest: fn(&Kitchen, &Value, usize) -> Vec<String>) -> Prepare {
+    Box::new(move |kitchen, n| {
+        let (session, observed) = kitchen.reuse(page);
+        let mut args = vec!["browser".to_string(), "--session".to_string(), session];
+        args.extend(rest(kitchen, &observed, n));
+        Run {
+            state: kitchen.host.clone(),
+            args,
+        }
+    })
+}
+
+/// `in_session`, on a session of its own each time: for a command that
+/// changes the page under the refs it was given, or ends the session.
+fn in_new_session(page: &'static str, rest: fn(&Kitchen, &Value, usize) -> Vec<String>) -> Prepare {
+    Box::new(move |kitchen, n| {
+        let (session, observed) = kitchen.open(page);
+        let mut args = vec!["browser".to_string(), "--session".to_string(), session];
+        args.extend(rest(kitchen, &observed, n));
+        Run {
+            state: kitchen.host.clone(),
+            args,
+        }
+    })
+}
+
+fn strings(words: &[&str]) -> Vec<String> {
+    words.iter().map(|word| word.to_string()).collect()
+}
+
+/// What each regular command is given to work, in the order they run (the
+/// connector toggles after the Google commands; `stop` and `logout` last).
+fn shown_working() -> Vec<(&'static str, Prepare)> {
+    let mut commands: Vec<(&'static str, Prepare)> = vec![
+        ("login", on_host(&["login"])),
+        ("status", on_host(&["status"])),
+        ("devices", on_host(&["devices"])),
+        (
+            "devices.remove",
+            Box::new(|kitchen, n| {
+                let gone = format!("gone-{n}");
+                let token = kitchen.path("owner.token");
+                let other = kitchen.dir.path().join(&gone);
+                let login = [
+                    "login",
+                    "--api-url",
+                    &kitchen.plow.url,
+                    "--token-file",
+                    &token,
+                    "--name",
+                    &gone,
+                ];
+                worked(&other, &login);
+                Run {
+                    state: kitchen.host.clone(),
+                    args: strings(&["devices", "remove", &gone, "--yes"]),
+                }
+            }),
+        ),
+        ("exec", on_host(&["exec", "--", "true"])),
+        (
+            "file.get",
+            Box::new(|kitchen, n| Run {
+                state: kitchen.host.clone(),
+                args: strings(&[
+                    "file",
+                    "get",
+                    "/etc/hosts",
+                    &kitchen.path(&format!("hosts-{n}")),
+                ]),
+            }),
+        ),
+        (
+            "file.put",
+            Box::new(|kitchen, n| {
+                let local = kitchen.path(&format!("put-{n}.txt"));
+                fs::write(&local, "hi").unwrap();
+                Run {
+                    state: kitchen.host.clone(),
+                    args: strings(&["file", "put", &local, &format!("~/put-{n}.txt")]),
+                }
+            }),
+        ),
+        ("rules.set", on_host(&["rules", "set", "Never send email."])),
+        ("rules.show", on_host(&["rules", "show"])),
+        ("rules.clear", on_host(&["rules", "clear"])),
+        ("audit.show", on_host(&["audit", "show"])),
+        ("audit.verify", on_host(&["audit", "verify"])),
+        ("audit.rotate-key", on_host(&["audit", "rotate-key"])),
+        ("vault.list", on_host(&["vault", "list"])),
+        (
+            "vault.add",
+            Box::new(|kitchen, n| Run {
+                state: kitchen.host.clone(),
+                args: strings(&[
+                    "vault",
+                    "add",
+                    "--kind",
+                    "identity",
+                    "--title",
+                    &format!("Person {n}"),
+                    "--field",
+                    "city=Example",
+                ]),
+            }),
+        ),
+        (
+            "vault.edit",
+            Box::new(|kitchen, n| {
+                let (item, revision) = identity(kitchen, &format!("Edit {n}"));
+                Run {
+                    state: kitchen.host.clone(),
+                    args: strings(&[
+                        "vault",
+                        "edit",
+                        &item,
+                        "--revision",
+                        &revision,
+                        "--title",
+                        "Edited",
+                    ]),
+                }
+            }),
+        ),
+        (
+            "vault.remove",
+            Box::new(|kitchen, n| {
+                let (item, revision) = identity(kitchen, &format!("Remove {n}"));
+                Run {
+                    state: kitchen.host.clone(),
+                    args: strings(&["vault", "remove", &item, "--revision", &revision]),
+                }
+            }),
+        ),
+        (
+            "vault.link",
+            Box::new(|kitchen, n| Run {
+                state: kitchen.host.clone(),
+                args: strings(&[
+                    "vault",
+                    "link",
+                    "--kind",
+                    "identity",
+                    "--title",
+                    &format!("Phone {n}"),
+                    "--page",
+                    "https://phone.example/",
+                ]),
+            }),
+        ),
+        (
+            "vault.import",
+            Box::new(|kitchen, n| {
+                let file = kitchen.path(&format!("export-{n}.json"));
+                fs::write(
+                    &file,
+                    r#"{"items":[{"type":3,"name":"Imported","identity":{"city":"Example"}}]}"#,
+                )
+                .unwrap();
+                Run {
+                    state: kitchen.host.clone(),
+                    args: strings(&["vault", "import", &file]),
+                }
+            }),
+        ),
+        ("plugins.list", on_host(&["plugins", "list"])),
+        (
+            "google",
+            on_host(&["google", "--", "gmail", "search", "order"]),
+        ),
+    ];
+    for (id, gog) in GOG {
+        let mut args = vec!["google", "--"];
+        args.extend(id.split('.'));
+        args.extend(*gog);
+        let id: &'static str = Box::leak(format!("google.{id}").into_boxed_str());
+        commands.push((id, on_host(&args)));
+    }
+    commands.extend::<Vec<(&'static str, Prepare)>>(vec![
+        (
+            "plugins.disable",
+            Box::new(|kitchen, _| {
+                worked(&kitchen.host, &["plugins", "enable", "google"]);
+                Run {
+                    state: kitchen.host.clone(),
+                    args: strings(&["plugins", "disable", "google"]),
+                }
+            }),
+        ),
+        (
+            "plugins.enable",
+            Box::new(|kitchen, _| {
+                worked(&kitchen.host, &["plugins", "disable", "google"]);
+                Run {
+                    state: kitchen.host.clone(),
+                    args: strings(&["plugins", "enable", "google"]),
+                }
+            }),
+        ),
+        ("messages.search", on_host(&["messages", "search", "code"])),
+        (
+            "messages.thread",
+            on_host(&["messages", "thread", "--with", "+1 555 000 0001"]),
+        ),
+        ("messages.chats", on_host(&["messages", "chats"])),
+        ("messages.unreplied", on_host(&["messages", "unreplied"])),
+        ("contacts.search", on_host(&["contacts", "search", "ann"])),
+        (
+            "contacts.lookup",
+            on_host(&["contacts", "lookup", "+15550000001"]),
+        ),
+        (
+            "browser.open",
+            Box::new(|kitchen, _| Run {
+                state: kitchen.host.clone(),
+                args: strings(&["browser", "open", &format!("{}/counter.html", kitchen.site)]),
+            }),
+        ),
+        (
+            "browser.observe",
+            in_session("counter.html", |_, _, _| strings(&["observe"])),
+        ),
+        (
+            "browser.text",
+            in_session("counter.html", |_, _, _| strings(&["text"])),
+        ),
+        (
+            "browser.screenshot",
+            in_session("counter.html", |kitchen, _, n| {
+                strings(&["screenshot", &kitchen.path(&format!("shot-{n}.png"))])
+            }),
+        ),
+        (
+            "browser.do",
+            in_new_session("counter.html", |_, page, _| {
+                vec![
+                    "do".to_string(),
+                    format!("click {}", element(page, "button", "Add one")),
+                ]
+            }),
+        ),
+        (
+            "browser.act",
+            in_new_session("counter.html", |_, page, _| {
+                strings(&["act", "click", &element(page, "button", "Add one")])
+            }),
+        ),
+        (
+            "browser.find",
+            in_session("counter.html", |_, _, _| {
+                strings(&["find", "--role", "button", "--name", "Add one"])
+            }),
+        ),
+        (
+            "browser.wait",
+            in_session("counter.html", |_, _, _| {
+                strings(&["wait", "--text", "Added"])
+            }),
+        ),
+        (
+            "browser.goto",
+            in_session("counter.html", |kitchen, _, _| {
+                strings(&["goto", &format!("{}/next.html", kitchen.site)])
+            }),
+        ),
+        (
+            "browser.tab.new",
+            in_session("counter.html", |kitchen, _, _| {
+                strings(&["tab", "new", &format!("{}/next.html", kitchen.site)])
+            }),
+        ),
+        (
+            "browser.tab.switch",
+            in_session("counter.html", |kitchen, _, _| {
+                strings(&["tab", "switch", &new_tab(kitchen)])
+            }),
+        ),
+        (
+            "browser.tab.close",
+            in_session("counter.html", |kitchen, _, _| {
+                strings(&["tab", "close", &new_tab(kitchen)])
+            }),
+        ),
+        (
+            "browser.dialog",
+            in_new_session("alert.html", |kitchen, page, _| {
+                let session = last_session(kitchen);
+                worked(
+                    &kitchen.host,
+                    &[
+                        "browser",
+                        "--session",
+                        &session,
+                        "act",
+                        "click",
+                        &element(page, "button", "Show alert"),
+                    ],
+                );
+                strings(&["dialog", "accept"])
+            }),
+        ),
+        (
+            "browser.eval",
+            in_session("counter.html", |kitchen, _, n| {
+                let script = kitchen.path(&format!("title-{n}.js"));
+                fs::write(&script, "document.title").unwrap();
+                strings(&["eval", "--script-file", &script])
+            }),
+        ),
+        (
+            "browser.upload",
+            in_new_session("files.html", |kitchen, page, n| {
+                let file = kitchen.path(&format!("upload-{n}.txt"));
+                fs::write(&file, "hello").unwrap();
+                strings(&["upload", &element(page, "button", "Attachment"), &file])
+            }),
+        ),
+        (
+            "browser.downloads",
+            in_session("files.html", |_, _, _| strings(&["downloads"])),
+        ),
+        (
+            "browser.download.get",
+            in_new_session("files.html", |kitchen, page, n| {
+                let session = last_session(kitchen);
+                let link = element(page, "link", "Download the report");
+                let check = format!("click {link} -> download: complete");
+                worked(
+                    &kitchen.host,
+                    &["browser", "--session", &session, "do", &check],
+                );
+                strings(&[
+                    "download",
+                    "get",
+                    "d1",
+                    "--output",
+                    &kitchen.path(&format!("report-{n}.csv")),
+                ])
+            }),
+        ),
+        ("browser.sessions", on_host(&["browser", "sessions"])),
+        (
+            "browser.close",
+            in_new_session("counter.html", |_, _, _| strings(&["close"])),
+        ),
+        (
+            "browser.profile.create",
+            Box::new(|kitchen, n| Run {
+                state: kitchen.host.clone(),
+                args: strings(&["browser", "profile", "create", &format!("profile-{n}")]),
+            }),
+        ),
+        ("browser.setup", on_host(&["browser", "setup"])),
+        (
+            "stop",
+            Box::new(|kitchen, n| Run {
+                state: kitchen.fresh(&format!("stopped-{n}")),
+                args: strings(&["stop"]),
+            }),
+        ),
+        (
+            "logout",
+            Box::new(|kitchen, n| Run {
+                state: kitchen.fresh(&format!("logged-out-{n}")),
+                args: strings(&["logout"]),
+            }),
+        ),
+    ]);
+    commands
+}
+
+/// The Google commands the fake gog answers (it holds one order email),
+/// with arguments gog takes.
+const GOG: &[(&str, &[&str])] = &[
+    ("gmail.search", &["order"]),
+    ("gmail.messages.search", &["order"]),
+    ("gmail.get", &["msg-a1001"]),
+    ("gmail.thread.get", &["thread-a1001"]),
+];
+
+/// An identity added to the vault: its id and revision.
+fn identity(kitchen: &Kitchen, title: &str) -> (String, String) {
+    let args = [
+        "vault",
+        "add",
+        "--kind",
+        "identity",
+        "--title",
+        title,
+        "--field",
+        "city=Example",
+    ];
+    let added = worked(&kitchen.host, &args);
+    let item = &added["item"];
+    (
+        item["item"].as_str().unwrap().to_string(),
+        item["revision"].to_string(),
+    )
+}
+
+/// The session the browser commands run in now.
+fn last_session(kitchen: &Kitchen) -> String {
+    kitchen.session.lock().unwrap().as_ref().unwrap().0.clone()
+}
+
+/// A second tab in the newest session: its id.
+fn new_tab(kitchen: &Kitchen) -> String {
+    let session = last_session(kitchen);
+    let url = format!("{}/next.html", kitchen.site);
+    let opened = worked(
+        &kitchen.host,
+        &["browser", "--session", &session, "tab", "new", &url],
+    );
+    opened["tab"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no tab: {opened}"))
+        .to_string()
+}
+
+/// Commands that may ask a person something at a terminal: there, their
+/// JSON comes after the question.
+const ASKS_AT_A_TERMINAL: [&str; 2] = ["vault.import", "vault.link"];
+
+/// Every regular command `help --json` lists works at a terminal, piped and
+/// with `--pretty`: the same JSON shape each way, nothing on stderr, and
+/// `--pretty` indented. A command this test cannot make work here is named
+/// in `not_shown_working`, with why; any other that fails, fails the test.
+#[test]
+fn every_regular_command_works_the_same_at_a_terminal_piped_and_pretty() {
+    let listed: Vec<String> = {
+        let dir = test_dir();
+        let help = latch(&dir.path().join("none"), &["help", "--json"], &[]);
+        let help: Value = serde_json::from_slice(&help.stdout).unwrap();
+        let human = ["setup", "dashboard", "serve", "rules.edit", "help", "skill"];
+        help["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|action| action["id"].as_str().unwrap().to_string())
+            .filter(|id| !human.contains(&id.as_str()))
+            .collect()
+    };
+    let excluded = not_shown_working(&listed);
+    let is_excluded = |id: &str| {
+        excluded
+            .iter()
+            .any(|(name, _)| id == name || (name.ends_with('.') && id.starts_with(name.as_str())))
+    };
+    let commands = shown_working();
+    let given: Vec<&str> = commands.iter().map(|(id, _)| *id).collect();
+    let missing: Vec<&String> = listed
+        .iter()
+        .filter(|id| !is_excluded(id) && !given.contains(&id.as_str()))
+        .collect();
+    assert!(missing.is_empty(), "no way to make these work: {missing:?}");
+
+    let kitchen = Kitchen::new();
+    let mut shown = Vec::new();
+    for (id, prepare) in &commands {
+        if !listed.iter().any(|listed| listed == id) || is_excluded(id) {
+            continue;
+        }
+        let started = std::time::Instant::now();
+        let mut shapes = Vec::new();
+        for (way, n) in ["terminal", "piped", "pretty"].iter().zip(0..) {
+            let Run { state, mut args } = prepare(&kitchen, n);
+            let result = match *way {
+                "terminal" => {
+                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                    // Enter, for a command that asks: the answer that picks nothing.
+                    let (code, said, _) = latch_at_a_terminal(&state, &args, "\n", true, &[]);
+                    let said = said.replace("\r\n", "\n");
+                    assert_eq!(code, Some(0), "{id} at a terminal: {said}");
+                    // After a question, the JSON is what follows it, to the end.
+                    let json = match ASKS_AT_A_TERMINAL.contains(id) {
+                        true => said
+                            .match_indices('{')
+                            .map(|(at, _)| &said[at..])
+                            .find(|rest| serde_json::from_str::<Value>(rest.trim()).is_ok())
+                            .unwrap_or(&said),
+                        false => said.as_str(),
+                    };
+                    serde_json::from_str(json.trim()).unwrap_or_else(|_| {
+                        panic!("{id}: not its JSON alone at a terminal: {said}")
+                    })
+                }
+                "piped" => {
+                    let output = latch(
+                        &state,
+                        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+                        &[],
+                    );
+                    assert_eq!(output.status.code(), Some(0), "{id} piped: {output:?}");
+                    let text = String::from_utf8(output.stdout).unwrap();
+                    assert_eq!(text.lines().count(), 1, "{id}: {text}");
+                    serde_json::from_str(&text).unwrap()
+                }
+                _ => {
+                    // Before the command, so it is never a program's argument.
+                    args.insert(0, "--pretty".to_string());
+                    let output = latch(
+                        &state,
+                        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+                        &[],
+                    );
+                    assert_eq!(output.status.code(), Some(0), "{id} --pretty: {output:?}");
+                    let text = String::from_utf8(output.stdout).unwrap();
+                    let result: Value = serde_json::from_str(&text).unwrap();
+                    if matches!(&result, Value::Object(map) if !map.is_empty()) {
+                        assert!(text.contains("\n  \""), "{id} not indented: {text}");
+                    }
+                    result
+                }
+            };
+            // A session `browser open` opened is closed at once.
+            if let Some(session) = result["session"].as_str() {
+                latch(
+                    &kitchen.host,
+                    &["browser", "--session", session, "close"],
+                    &[],
+                );
+            }
+            shapes.push(shape(&result));
+        }
+        kitchen.close_session();
+        assert!(
+            shapes.iter().all(|one| *one == shapes[0]),
+            "{id}: {shapes:?}"
+        );
+        eprintln!("{id}: {:?}", started.elapsed());
+        shown.push(*id);
+    }
+    eprintln!("shown working: {shown:?}");
+    eprintln!("not shown working: {excluded:?}");
 }

@@ -33,6 +33,10 @@ const GIVE_UP_AFTER: Duration = Duration::from_secs(10 * 60);
 pub struct LoginOutput {
     pub peer: Peer,
     pub key_created: bool,
+    /// The person logged in by texting a code at a terminal: a human login,
+    /// which ends in a line for them rather than JSON.
+    #[serde(skip)]
+    pub by_text: bool,
 }
 
 /// Where this login's credential comes from.
@@ -86,6 +90,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         name = hostname();
     }
 
+    let texted = matches!(source, Source::ByText) && !args.events;
     let token = match source {
         Source::Given(token) | Source::Saved(token) | Source::Agent(token) => token,
         Source::ByText => {
@@ -163,7 +168,11 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         api_url,
         peer: peer.clone(),
     })?;
-    Ok(LoginOutput { peer, key_created })
+    Ok(LoginOutput {
+        peer,
+        key_created,
+        by_text: texted,
+    })
 }
 
 /// Registers this peer again as it last was, when Plow no longer lists it:
@@ -231,10 +240,6 @@ async fn by_text(
                 };
                 state.create()?;
                 state.save_token(&token, api_url)?;
-                // At a terminal, the result says it, with the name.
-                if !term::stdout_is_terminal() && !events {
-                    eprintln!("Logged in.");
-                }
                 return Ok(token);
             }
             Ok(_) => {
