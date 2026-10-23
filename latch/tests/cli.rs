@@ -5476,7 +5476,7 @@ mod lifecycle {
         let env = [("LATCH_TEST_RELAY_URL", Path::new(&relay))];
 
         let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
-        shows(&shown, "Ctrl-C stop host");
+        let mut output = shows(&shown, "Ctrl-C stop host");
         // The attached serve's cleanup waits for the start/stop lock, held
         // here while its host stops and another takes the folder over.
         let launching = fs::File::open(host.join("launch.lock")).unwrap();
@@ -5485,7 +5485,12 @@ mod lifecycle {
         assert!(eventually(45, || local_serve(&host)["running"] == false));
         let replacement = serving(&host, &relay);
         drop(launching);
-        assert!(exits_within(&mut serve, 45).success());
+        let status = exits_within(&mut serve, 45);
+        output.extend(shown.iter());
+        assert!(
+            status.success(),
+            "attached serve exited {status:?}; PTY output:\n{output}"
+        );
         let hello = local_operation(&host, "host_hello", json!({}));
         assert_eq!(hello["ok"]["pid"], replacement.0.id(), "{hello}");
         // And a stop meant for another host is refused by this one.
