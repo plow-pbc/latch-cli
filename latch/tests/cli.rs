@@ -1566,8 +1566,15 @@ fn bare_latch_waits_on_a_stalled_service_manager_only_until_its_deadline() {
     // is its service, it hangs.
     let bin = dir.path().join("bin");
     fs::create_dir(&bin).unwrap();
+    let hung = dir.path().join("hung.pid");
     for manager in ["launchctl", "systemctl"] {
-        fs::write(bin.join(manager), "#!/bin/sh\nexec sleep 8\n").unwrap();
+        // It outlives the terminal closing, as one would under a shell
+        // that is not the terminal's session leader.
+        let script = format!(
+            "#!/bin/sh\ntrap '' HUP\necho $$ > '{}'\nexec sleep 8\n",
+            hung.display()
+        );
+        fs::write(bin.join(manager), script).unwrap();
         fs::set_permissions(bin.join(manager), fs::Permissions::from_mode(0o755)).unwrap();
     }
     let path = std::env::join_paths(
@@ -1586,6 +1593,10 @@ fn bare_latch_waits_on_a_stalled_service_manager_only_until_its_deadline() {
     assert!(last.contains("Ada Example"), "{last}");
     assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
     assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    // The hung command was killed and reaped before latch exited.
+    let pid: i32 = fs::read_to_string(&hung).unwrap().trim().parse().unwrap();
+    // SAFETY: signal 0 only asks whether the process exists.
+    assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "pid {pid} outlived latch");
     println!("service manager stalled: prompt back after {took:?}");
 }
 

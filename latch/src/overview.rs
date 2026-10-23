@@ -45,22 +45,27 @@ pub fn no_terminal() -> Failure {
 /// What arrives from the threads that may wait.
 enum Arrived {
     Plow(Result<Directory, Failure>),
-    Host(Hosted),
+    /// `None`: the service manager didn't answer in time.
+    Host(Option<Hosted>),
 }
 
 pub fn run(state: &StateDir) -> Result<(), Failure> {
     let color = !term::no_color();
     paint::set_color(color);
-    // Each is asked on a thread of its own, so nothing here waits for it;
-    // one that never answers is left behind.
+    // Each is asked on a thread of its own, so nothing here waits for it.
+    // Plow's is left behind if it never answers; the host's ends by the
+    // deadline, its service manager's command killed and reaped.
     state.check_format()?;
     let deadline = Instant::now() + WITHIN;
     let config = state.load_config()?;
     let (arrived, arrivals) = mpsc::channel();
     let path = state.path.clone();
     let host = arrived.clone();
-    std::thread::spawn(move || {
-        let _ = host.send(Arrived::Host(status::hosted(&StateDir { path })));
+    let hosting = std::thread::spawn(move || {
+        let _ = host.send(Arrived::Host(status::hosted(
+            &StateDir { path },
+            Some(deadline),
+        )));
     });
     if config.is_some() {
         let path = state.path.clone();
@@ -141,7 +146,8 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
         if waiting {
             match arrivals.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(Arrived::Plow(answer)) => facts.plow = Some(Pending::from(answer)),
-                Ok(Arrived::Host(hosted)) => facts.host = Pending::Got(hosted),
+                Ok(Arrived::Host(Some(hosted))) => facts.host = Pending::Got(hosted),
+                Ok(Arrived::Host(None)) => facts.host = Pending::NoAnswer,
                 Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
                 Err(_) => facts.give_up(),
             }
@@ -153,6 +159,8 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
         }
     }
     screen.finish(&mut out, &facts);
+    // Nothing it started outlives it.
+    let _ = hosting.join();
     Ok(())
 }
 

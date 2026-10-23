@@ -202,7 +202,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
     let Hosted {
         hosting,
         last_error,
-    } = hosted(state);
+    } = hosted(state, None).expect("with no deadline the service manager is waited for");
     Ok(LocalStatus {
         login: config.as_ref().map(|config| Login {
             kind: config.peer.kind.clone(),
@@ -234,8 +234,9 @@ pub struct Hosted {
 
 /// The part of `--local` that can wait: on the service manager
 /// (`launchctl`, `systemctl`), and up to half a second on a running host's
-/// socket.
-pub fn hosted(state: &StateDir) -> Hosted {
+/// socket. With `until`, `None` if the service manager has not answered by
+/// then; its command is killed and reaped.
+pub fn hosted(state: &StateDir, until: Option<std::time::Instant>) -> Option<Hosted> {
     let host = lifecycle::now(&state.path);
     let blocked = lifecycle::other_version(&state.path).map(|pid| {
         let failure = lifecycle::other_version_running(pid);
@@ -245,12 +246,13 @@ pub fn hosted(state: &StateDir) -> Hosted {
         }
     });
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
-    Hosted {
+    let managed = host.running && crate::managed::Service::new(&dir).registered_by(until)?;
+    Some(Hosted {
         hosting: Hosting {
             running: host.running,
             ready: host.state == Phase::Serving && blocked.is_none(),
             configuring: host.configuring,
-            managed: host.running && crate::managed::Service::new(&dir).registered(),
+            managed,
             attached: host.attached,
             state: host.state,
             pid: host.pid,
@@ -258,7 +260,7 @@ pub fn hosted(state: &StateDir) -> Hosted {
             deny_exec: crate::managed::saved_deny_exec(&dir),
         },
         last_error: host.error,
-    }
+    })
 }
 
 /// `status --local --follow`: `hello`, then this machine's `status --local`
