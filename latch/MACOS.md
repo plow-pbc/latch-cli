@@ -87,7 +87,9 @@ its argument (a vault value can be one): `visible_ms`, until the window
 server's image of the window first changes, looked at on each display
 refresh for up to 2 s (null if it didn't change), and `next_refresh_ms`,
 when the refresh after the action was due, which only schedules a frame
-and is no proof the change was on it. Both are null with no window. `send
+and is no proof the change was on it. `visible_ms` is the first change of
+any pixel, which a blinking caret or a spinner can make early: check that
+the intended content appeared too (`send snapshot PATH` after the hook). Both are null with no window. `send
 measure` with no path stops. Each timed hook and each screen's reads are
 signposted (`co.plow.latch`, Points of Interest) for Instruments, the
 evidence for a visible-response budget alongside `visible_ms`.

@@ -6,7 +6,7 @@ import Testing
 struct TestHooksTests {
     // A hook's argument can be a vault value (`vault-type password=…`):
     // timing keeps the hook's name, never what it was given.
-    @Test func aTimedHookKeepsItsNameAndNeverItsArgument() throws {
+    @Test func aTimedHookKeepsItsNameAndNeverItsArgument() async throws {
         let file = FileManager.default.temporaryDirectory.appending(path: "timings-\(UUID().uuidString).jsonl")
         defer { try? FileManager.default.removeItem(at: file) }
         TestHooks.timings = file
@@ -14,6 +14,9 @@ struct TestHooksTests {
         var given: String?
         TestHooks.run("vault-type", "password=hunter2") { given = $0 }
         #expect(given == "password=hunter2")
+        // With another test's window open, the line waits for that window
+        // to change.
+        await waitUntil { FileManager.default.fileExists(atPath: file.path) }
         let line = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]
         #expect(line?["command"] as? String == "vault-type")
         #expect(try !String(contentsOf: file, encoding: .utf8).contains("hunter2"))
