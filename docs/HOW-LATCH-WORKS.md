@@ -31,8 +31,7 @@ host keeps a sealed audit log of the calls it handles.
 [Google](../latch/GOOGLE.md), [macOS](../latch/MACOS.md) and
 [Docker](../latch/DOCKER.md).
 
-Everything here describes `main` today. **Next build** marks work in an
-open pull request; **Planned** marks work with no pull request yet.
+Everything here describes `main` today.
 
 ## 2. Who's who
 
@@ -140,10 +139,10 @@ ask for this?
 - An agent with no chat and no rules is refused every judged call
   (`no_intent`, exit 4); the model isn't asked.
 - **Which chat:** the agent's chat if its line has one. If it has several,
-  the agent names one with `--chat ID` or `LATCH_CHAT`; otherwise the call
-  stops with `which_chat` (exit 2). `--chat` makes no difference to the
-  owner's calls.
-  > **Planned:** `--chat` is renamed `--plow-chat` (`LATCH_PLOW_CHAT`).
+  the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`; otherwise
+  the call stops with `which_chat` (exit 2), which lists the choices. Owner
+  calls refuse the selector (`plow_chat_not_supported`, exit 2), and so do
+  commands that don't call a host.
 - The chat and the rules are read fresh at every judgment, so a "stop" or
   a rules change counts from the next call. The judge doesn't remember
   earlier calls: a repeat is judged again on its own.
@@ -226,10 +225,10 @@ host. With no hosts you get `no_host`, and with several and none named
 | `outcome_unknown`, `no_answer` | 5 | The request went out, but no answer came back. Check before resending. |
 | `protocol_mismatch` | 1 | The two machines run latch builds that speak different protocols. Nothing was sent; update the older one. |
 
-> **Next build** ([#106](https://github.com/plow-pbc/latch-cli/pull/106)):
-> commands that only run locally refuse `--host` instead of ignoring it.
-> Today `browser handoff done`, `browser do --dry-run` and `google -- help`
-> ignore it and act on this machine.
+The few commands that take `--host` but run only on this machine
+(`browser setup`, `browser handoff done`, `browser do --dry-run` and
+`google -- help`) refuse it, and refuse `LATCH_HOST` too
+(`host_not_supported`, exit 2).
 
 ## 7. Trust model
 
