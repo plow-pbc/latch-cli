@@ -20,6 +20,9 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     var decision: String
     /// `ok`, or why not: `gatekeeper_denied`, `exec_denied`, `not_enabled`, …
     var outcome: String
+    /// The request as latch shows it (`latch exec ls Projects`), secrets
+    /// hidden; nil for a connection, which no command sends.
+    var command: String?
     var details: Details?
 
     struct Details: Decodable, Equatable {

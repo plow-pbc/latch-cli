@@ -180,39 +180,6 @@ nonisolated extension AuditRecord {
         }
     }
 
-    /// The request, close to how it was typed after `latch`, secrets by
-    /// name only.
-    var command: String {
-        let a = args
-        switch op {
-        case "exec":
-            var words: [String] = []
-            for path in a?.writes ?? [] { words += ["--write", Self.quoted(path)] }
-            if a?.network == true { words.append("--network") }
-            for secret in a?.secretEnv ?? [] { words += ["--secret-env", "\(secret.name ?? "?")=•••"] }
-            words += (a?.argv ?? []).map(Self.quoted)
-            return words.joined(separator: " ")
-        case "file_get": return "file get \(a?.path ?? "")"
-        case "file_put": return "file put \(a?.path ?? "")"
-        case "connect": return "connect"
-        case "messages", "contacts":
-            return [op, a?.action?.replacingOccurrences(of: "\(op).", with: "")].compactMap { $0 }.joined(separator: " ")
-        case "browser":
-            return ["browser", a?.command, a?.origin].compactMap { $0 }.joined(separator: " ")
-        case "rules":
-            let scope = a?.scope.map { " · \($0 == "every agent" ? "rules for every agent" : $0)" } ?? ""
-            return ["rules", a?.command].compactMap { $0 }.joined(separator: " ") + scope
-        default:
-            return [op.replacingOccurrences(of: "_", with: " "), a?.command?.replacingOccurrences(of: ".", with: " ")]
-                .compactMap { $0 }.joined(separator: " ")
-        }
-    }
-
-    private static func quoted(_ word: String) -> String {
-        let plain = word.allSatisfy { $0.isLetter || $0.isNumber || "-_./=:,@%+~".contains($0) }
-        return plain && !word.isEmpty ? word : "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
     /// Who asked: an agent by its name, else the owner, from which machine.
     /// `hostKey` is the key of the host the record is on.
     func callerLabel(hostKey: String?, hostName: String, isThisMac: Bool) -> (who: String, kind: String) {

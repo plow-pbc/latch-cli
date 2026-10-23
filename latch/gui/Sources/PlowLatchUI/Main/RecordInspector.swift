@@ -11,10 +11,12 @@ struct RecordInspector: View {
         Form {
             Section {
                 StatusLabel(status: record.status)
-                Text(record.command)
-                    .font(.body.monospaced())
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let command = record.command {
+                    Text(command)
+                        .font(.body.monospaced())
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Section("Request") {
                 LabeledContent("Caller", value: "\(caller.who) · \(caller.kind)")

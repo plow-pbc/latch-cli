@@ -194,7 +194,7 @@ private struct RecentRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(record.command).font(.body.monospaced()).lineLimit(1).truncationMode(.middle)
+            Text(record.command ?? "—").font(.body.monospaced()).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 8)
             Text("\(caller.who) · \(caller.kind)").foregroundStyle(.secondary).lineLimit(1)
             StatusLabel(status: record.status).lineLimit(1)
