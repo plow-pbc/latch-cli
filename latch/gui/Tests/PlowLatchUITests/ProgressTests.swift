@@ -17,8 +17,8 @@ struct ResumeTests {
     @Test func loggedInResumesAtTheFirstScreenNotPassed() {
         #expect(Progress().destination(loggedIn: true) == .onboarding(.privacy))
         let skippedRules = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .skipped])
-        #expect(skippedRules.destination(loggedIn: true) == .onboarding(.google))
-        let allPassed = Progress(passed: [.privacy: .continued, .rules: .continued, .google: .skipped, .access: .skipped, .start: .continued])
+        #expect(skippedRules.destination(loggedIn: true) == .onboarding(.access))
+        let allPassed = Progress(passed: [.privacy: .continued, .rules: .continued, .access: .skipped, .start: .continued])
         #expect(allPassed.destination(loggedIn: true) == .onboarding(.done))
     }
 
@@ -49,7 +49,7 @@ struct ResumeTests {
 
     @Test func setUpAgainWalksEveryScreen() {
         let all = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .continued,
-                                    .google: .skipped, .access: .skipped, .start: .continued, .done: .continued], finished: true)
+                                    .access: .skipped, .start: .continued, .done: .continued], finished: true)
         let again = all.settingUpAgain()
         #expect(again.destination(loggedIn: true) == .onboarding(.welcome))
         #expect(again.passed.isEmpty)
@@ -57,14 +57,14 @@ struct ResumeTests {
         // Quit midway through: the next launch carries on from there.
         var midway = again
         for step in [Step.welcome, .login, .privacy, .rules] { midway.passed[step] = .continued }
-        #expect(midway.destination(loggedIn: true) == .onboarding(.google))
+        #expect(midway.destination(loggedIn: true) == .onboarding(.access))
     }
 
     @Test func progressIsKeptPerStateFolder() {
         let memory = ProgressStore.Memory()
         let home = ProgressStore(memory: memory, stateDir: "/Users/me/.latch")
         let dev = ProgressStore(memory: memory, stateDir: "/Users/me/dev/.dev/state")
-        let progress = Progress(passed: [.welcome: .continued, .google: .skipped], finished: true)
+        let progress = Progress(passed: [.welcome: .continued, .access: .skipped], finished: true)
         home.save(progress)
         #expect(home.load() == progress)
         #expect(dev.load() == Progress())
@@ -303,7 +303,7 @@ struct GatekeeperTests {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.stage(status: try? Fixtures.decode(Fixtures.serving))
         // Every screen continued, but latch says nothing is on.
-        _ = app.stage(.done, progress: Progress(passed: [.rules: .continued, .google: .continued, .access: .continued]))
+        _ = app.stage(.done, progress: Progress(passed: [.rules: .continued, .access: .continued]))
         app.stage(rulesSaved: false, setup: try? Fixtures.decode(Fixtures.setup(on: ["messages"])))
         let states = Summary.rows(app: app, flow: nil).map(\.state)
         #expect(states == ["Logged in", "Not set up", "Not set up", "Not set up", "Running"])
@@ -557,16 +557,16 @@ struct ClosingTests {
         #expect(flow.step == .rules)
         save.open()
         await saving.value
-        // The save moves on from Set your rules, and Google is still to do.
-        #expect(flow.step == .google)
+        // The save moves on from Set your rules, and Grant access is still to do.
+        #expect(flow.step == .access)
         #expect(flow.progress.passed[.rules] == .continued)
-        #expect(flow.progress.passed[.google] == nil)
+        #expect(flow.progress.passed[.access] == nil)
     }
 
     @Test func notSetUpIsOnlyLatchsAnswer() {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.stage(status: try? Fixtures.decode(Fixtures.stopped))
-        _ = app.stage(.done, progress: Progress(passed: [.google: .skipped, .access: .skipped, .rules: .skipped]))
+        _ = app.stage(.done, progress: Progress(passed: [.access: .skipped, .rules: .skipped]))
         app.stage(rulesSaved: true, setup: try? Fixtures.decode(Fixtures.setup(on: ["google"])))
         // Skipped this time, but latch has rules and Google, with no host running.
         #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Saved", "Connected", "Not set up", "Not running"])
@@ -606,6 +606,23 @@ struct ClosingTests {
         #expect(client.enabled == ["messages", "contacts", "messages", "contacts"])
     }
 
+    /// Granted in System Settings, then both readers on: the Full Disk
+    /// Access row reads latch's answer again, whether System Settings was
+    /// opened or the readers were only checked.
+    @Test(arguments: [true, false])
+    func grantingAccessShowsOnItsRow(opened: Bool) async {
+        let client = ScriptedClient { _ in nil }
+        client.access = "not_granted"
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.access)
+        await flow.accessAppeared()
+        #expect(flow.fullDiskAccess == "not_granted")
+        client.access = "granted"
+        if opened { flow.requestAccess() } else { flow.checkAccess() }
+        await waitUntil { flow.accessDone && flow.fullDiskAccess == "granted" }
+        #expect(flow.fullDiskAccess == "granted")
+    }
+
     @Test func aTerminalHostIsLeftToLatchsWords() async {
         let (client, _, flow) = await accessFlow(attached: true)
         #expect(flow.terminalHostNeedsRestart)
@@ -613,30 +630,77 @@ struct ClosingTests {
         #expect(client.stopped == 0)
     }
 
+    /// Grant access: while Contacts & Messages aren't on, the main button
+    /// works on them; once they are, it is Continue, which never skips
+    /// Google: until Google is on too, Skip for now does that.
     @Test func continueNeverSkipsGoogleSilently() async {
         let client = ScriptedClient { _ in nil }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
+        #expect(flow.primaryTitle == "Open System Settings")
+        flow.messages = .done
+        flow.contacts = .done
         for state: Onboarding.Google in [.checking, .notConnected, .waiting, .unreachable, .failed(Onboarding.couldNotCheck)] {
             flow.google = state
             #expect(flow.primaryTitle == "Continue")
             #expect(!flow.primaryEnabled)
             #expect(!flow.stepDone)
             flow.primary()
-            #expect(flow.step == .google)
-            #expect(flow.progress.passed[.google] == nil)
+            #expect(flow.step == .access)
+            #expect(flow.progress.passed[.access] == nil)
         }
         // Skipping is its own, visible choice.
         flow.skip()
-        #expect(flow.step == .access)
-        #expect(flow.progress.passed[.google] == .skipped)
+        #expect(flow.step == .start)
+        #expect(flow.progress.passed[.access] == .skipped)
 
-        let connected = app.stage(.google)
+        let connected = app.stage(.access)
+        connected.messages = .done
+        connected.contacts = .done
         connected.google = .connected
         #expect(connected.stepDone)
         connected.primary()
-        #expect(connected.step == .access)
-        #expect(connected.progress.passed[.google] == .continued)
+        #expect(connected.step == .start)
+        #expect(connected.progress.passed[.access] == .continued)
+
+        // Contacts & Messages couldn't turn on: Continue still waits for
+        // Google, and Skip for now stays; with Google on, Continue moves on
+        // as a skip, since access isn't set up.
+        let failed = app.stage(.access)
+        failed.messages = .failed(LatchError.failed(LatchFailure(code: "messages_not_installed", message: "")))
+        failed.contacts = .done
+        for state: Onboarding.Google in [.notConnected, .waiting] {
+            failed.google = state
+            #expect(failed.primaryTitle == "Continue")
+            #expect(!failed.primaryEnabled)
+            #expect(!failed.primarySkips)
+            failed.primary()
+            #expect(failed.step == .access)
+            #expect(failed.progress.passed[.access] == nil)
+        }
+        failed.google = .connected
+        #expect(failed.primaryEnabled && failed.primarySkips)
+        failed.primary()
+        #expect(failed.step == .start)
+        #expect(failed.progress.passed[.access] == .skipped)
+    }
+
+    /// Every screen's Back and Skip for now: Back goes to the screen
+    /// before, from Log in on; Skip for now is on Set your rules and Grant
+    /// access only, and goes to the screen after.
+    @Test func backAndSkipOnEveryScreen() {
+        let order: [Step] = [.welcome, .login, .privacy, .rules, .access, .start, .done]
+        #expect(Step.allCases == order)
+        #expect(order.filter(\.skippable) == [.rules, .access])
+        let app = AppModel(client: ScriptedClient { _ in nil }, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        for (index, step) in order.enumerated() {
+            let back = app.stage(step)
+            back.back()
+            #expect(back.step == (index > 0 ? order[index - 1] : step), "Back from \(step)")
+            let skip = app.stage(step)
+            skip.skip()
+            #expect(skip.step == (step.skippable ? order[index + 1] : step), "Skip from \(step)")
+        }
     }
 
     @Test func googleTurnsOnOnceAnAccountIsConnected() async {
@@ -645,19 +709,19 @@ struct ClosingTests {
         app.open = { Issue.record("opened \($0)") }
 
         client.google = Fixtures.googleNotConnected
-        let notConnected = app.stage(.google)
+        let notConnected = app.stage(.access)
         await notConnected.checkGoogle()
         #expect(notConnected.google == .notConnected)
 
         client.google = Fixtures.googleUnreachable
-        let unreachable = app.stage(.google)
+        let unreachable = app.stage(.access)
         await unreachable.checkGoogle()
         #expect(unreachable.google == .unreachable)
         #expect(client.enabled.isEmpty)
 
         // Connected in Plow, off here: on with no press.
         client.google = Fixtures.googleConnectedOff
-        let off = app.stage(.google)
+        let off = app.stage(.access)
         await off.checkGoogle()
         #expect(off.google == .connected)
         #expect(off.googleAccounts.accounts == ["testuser@plow.test"])
@@ -665,14 +729,14 @@ struct ClosingTests {
 
         // Already on: nothing to run.
         client.google = Fixtures.googleOn
-        let on = app.stage(.google, progress: Progress(rerun: true))
+        let on = app.stage(.access, progress: Progress(rerun: true))
         await on.checkGoogle()
         #expect(on.google == .connected)
         #expect(client.enabled == ["google"])
 
         // Turned on once, then disconnected in Plow: not connected.
         client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow.","args":null,"enabled":true,"ready":false,"accounts":[],"connect_url":"http://localhost:3000/connections"}"#
-        let disconnected = app.stage(.google, progress: Progress(rerun: true))
+        let disconnected = app.stage(.access, progress: Progress(rerun: true))
         await disconnected.checkGoogle()
         #expect(disconnected.google == .notConnected)
         app.stage(rulesSaved: true, setup: try? await client.setupStatus())
@@ -685,7 +749,7 @@ struct ClosingTests {
         let look = Gate()
         client.holds["look 1"] = look
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         flow.google = .unreachable
         // Try again, then Skip for now before latch answers.
         let check = Task { await flow.checkGoogle() }
@@ -693,7 +757,7 @@ struct ClosingTests {
         flow.skip()
         look.open()
         await check.value
-        #expect(flow.step == .access)
+        #expect(flow.step == .start)
         #expect(client.enabled.isEmpty)
     }
 
@@ -703,7 +767,7 @@ struct ClosingTests {
         let look = Gate()
         client.holds["look 1"] = look
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         flow.google = .unreachable
         flow.recheckGoogle()
         await waitUntil { client.looked == 1 }
@@ -723,7 +787,7 @@ struct ClosingTests {
         let client = ScriptedClient { _ in nil }
         client.google = Fixtures.googleOn
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         await flow.checkGoogle()
         #expect(flow.google == .connected)
         // Disconnected in Plow meanwhile; the app comes back to the front.
@@ -746,7 +810,7 @@ struct ClosingTests {
             let client = ScriptedClient { _ in throw LatchError.failed(refusal) }
             client.google = Fixtures.googleConnectedOff
             let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-            let flow = app.stage(.google)
+            let flow = app.stage(.access)
             await flow.checkGoogle()
             #expect(flow.google == shown)
             if case let .failed(why) = flow.google {

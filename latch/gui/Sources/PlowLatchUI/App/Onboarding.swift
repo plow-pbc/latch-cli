@@ -262,7 +262,6 @@ final class Onboarding {
         case .welcome: "Get started"
         case .login, .privacy: "Continue"
         case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
-        case .google: "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.thisMachine.hosting.ready != true ? "Start Latch" : "Continue"
         case .done: textAgent.map { "Text \($0.name)" } ?? "Open Latch"
@@ -273,9 +272,8 @@ final class Onboarding {
         switch step {
         case .login: verified
         case .rules: !savingRules
-        // Continue never skips: until Google is on, Skip for now does that.
-        case .google: google == .connected
-        case .access: accessDone || !waitingForAccess
+        // Continue never skips: until Google is on too, Skip for now does that.
+        case .access: accessDone || accessFailed ? google == .connected : !waitingForAccess
         case .start: !starting
         default: true
         }
@@ -286,7 +284,6 @@ final class Onboarding {
         switch step {
         case .welcome, .login, .privacy: next()
         case .rules: Task { await saveRules() }
-        case .google: next()
         case .access:
             if accessDone { next() } else if accessFailed { skip() } else if accessGranted { checkAccess() } else { requestAccess() }
         case .start: Task { await startLatch() }
@@ -330,17 +327,17 @@ final class Onboarding {
     var stepDone: Bool {
         switch step {
         case .rules: !(savedRules ?? "").isEmpty && !rulesChanged
-        case .google: google == .connected
-        case .access: accessDone
+        case .access: accessDone && google == .connected
         default: false
         }
     }
-    /// Continue moves on without it: the step couldn't be set up here, and
-    /// checking again is the screen's own button, so Skip for now would say
-    /// the same thing twice.
+    /// Continue moves on without Contacts & Messages: they couldn't be set
+    /// up here, and checking again is the screen's own button. Only once
+    /// Google is on, since Continue never skips it; Skip for now would then
+    /// say the same thing twice.
     var primarySkips: Bool {
         switch step {
-        case .access: !accessDone && accessFailed
+        case .access: !accessDone && accessFailed && google == .connected
         default: false
         }
     }
@@ -562,7 +559,7 @@ final class Onboarding {
     /// screen stops. One already under way stands for it, and while latch
     /// waits for a sign-in, its answer does.
     func recheckGoogle() {
-        guard step == .google, !lookingAtGoogle, google != .waiting else { return }
+        guard step == .access, !lookingAtGoogle, google != .waiting else { return }
         googleCheck = Task { await checkGoogle() }
     }
 
@@ -635,7 +632,7 @@ final class Onboarding {
         if google == .waiting { return .waiting }
         guard !accounts.accounts.isEmpty else { return .notConnected }
         // Turning Google on is this screen's alone: not once it was left.
-        guard !Task.isCancelled, self.step == .google else { return nil }
+        guard !Task.isCancelled, self.step == .access else { return nil }
         do {
             googleAccounts = try await client.enable("google").map(GoogleAccounts.init) ?? accounts
             return .connected
@@ -673,34 +670,39 @@ final class Onboarding {
         grantGuide?.stop()
         grantGuide = nil
         accessTask = Task {
-            var opened = false
-            var guide: (any GrantGuide)?
-            waitingForAccess = true
-            defer {
-                waitingForAccess = false
-                if accessDone { guide?.granted() } else { guide?.stop() }
-            }
-            let deadline = ContinuousClock.now + .seconds(180)
-            while !Task.isCancelled {
-                for plugin in ["messages", "contacts"] where check(plugin) != .done {
-                    let result = await enableAccess(plugin)
-                    // Left the screen meanwhile: a late answer changes nothing.
-                    guard !Task.isCancelled else { return }
-                    set(plugin, result.check)
-                    if let failure = result.failure, !opened, let settings = failure.settings.flatMap(URL.init(string:)) {
-                        opened = true
-                        app.open(settings)
-                        if let grant = failure.grant {
-                            guide = app.guideGrant(URL(filePath: grant))
-                            grantGuide = guide
-                        }
+            await waitForAccess()
+            await readFullDiskAccess()
+        }
+    }
+
+    private func waitForAccess() async {
+        var opened = false
+        var guide: (any GrantGuide)?
+        waitingForAccess = true
+        defer {
+            waitingForAccess = false
+            if accessDone { guide?.granted() } else { guide?.stop() }
+        }
+        let deadline = ContinuousClock.now + .seconds(180)
+        while !Task.isCancelled {
+            for plugin in ["messages", "contacts"] where check(plugin) != .done {
+                let result = await enableAccess(plugin)
+                // Left the screen meanwhile: a late answer changes nothing.
+                guard !Task.isCancelled else { return }
+                set(plugin, result.check)
+                if let failure = result.failure, !opened, let settings = failure.settings.flatMap(URL.init(string:)) {
+                    opened = true
+                    app.open(settings)
+                    if let grant = failure.grant {
+                        guide = app.guideGrant(URL(filePath: grant))
+                        grantGuide = guide
                     }
                 }
-                if messages == .done && contacts == .done { return }
-                if [messages, contacts].contains(where: { if case .failed = $0 { true } else { false } }) { return }
-                guard ContinuousClock.now < deadline else { return }
-                try? await Task.sleep(for: accessRecheck)
             }
+            if messages == .done && contacts == .done { return }
+            if [messages, contacts].contains(where: { if case .failed = $0 { true } else { false } }) { return }
+            guard ContinuousClock.now < deadline else { return }
+            try? await Task.sleep(for: accessRecheck)
         }
     }
 
@@ -727,7 +729,15 @@ final class Onboarding {
                 guard !Task.isCancelled else { return }
                 set(plugin, result.check)
             }
+            await readFullDiskAccess()
         }
+    }
+
+    /// Full Disk Access as latch says it now, for its row: read again after
+    /// each round of turning the connectors on, which granting it changes.
+    private func readFullDiskAccess() async {
+        guard !Task.isCancelled, let setup = try? await client.setupStatusCheckingAccess(), !Task.isCancelled else { return }
+        fullDiskAccess = setup.step("messages")?.access
     }
 
     /// Whether access is missing while a host latch started in the

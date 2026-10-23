@@ -45,7 +45,7 @@ struct GooglePlowTests {
         var approvals: [Task<Void, Error>] = []
         app.open = { link in approvals.append(Task { try await Self.approve(link, google: google) }) }
 
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         await flow.checkGoogle()
         #expect(flow.google == .notConnected)
         #expect(flow.googleAccounts.accounts.isEmpty && flow.googleAccounts.buttonTitle == "Connect Google…")

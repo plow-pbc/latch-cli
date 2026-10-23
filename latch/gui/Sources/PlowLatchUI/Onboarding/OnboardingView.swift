@@ -37,8 +37,7 @@ struct OnboardingView: View {
         case .login: LoginView(flow: flow)
         case .privacy: PrivacyView()
         case .rules: RulesView(flow: flow)
-        case .google: GoogleView(flow: flow)
-        case .access: AccessView(flow: flow)
+        case .access: GrantAccessView(flow: flow)
         case .start: StartView(flow: flow)
         case .done: DoneView(flow: flow)
         }
@@ -123,7 +122,7 @@ struct OnboardingFooter: View {
             if flow.step == .done, flow.textAgent != nil {
                 Button("Open Latch") { flow.finish() }
             }
-            if [.login, .privacy, .rules, .google, .access, .start].contains(flow.step) {
+            if [.login, .privacy, .rules, .access, .start].contains(flow.step) {
                 Button("Back") { flow.back() }
                     .buttonStyle(.plain)
                     .foregroundStyle(Brand.muted)
@@ -140,7 +139,7 @@ struct OnboardingFooter: View {
 
     /// One dot for each screen from Log in to Start Latch.
     private var dots: some View {
-        let steps: [Step] = [.login, .privacy, .rules, .google, .access, .start]
+        let steps: [Step] = [.login, .privacy, .rules, .access, .start]
         let current = steps.firstIndex(of: flow.step) ?? steps.count
         return HStack(spacing: 8) {
             ForEach(Array(steps.enumerated()), id: \.offset) { index, _ in

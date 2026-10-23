@@ -304,166 +304,115 @@ struct PrivacyView: View {
     }
 }
 
-/// Connect Google: Gmail and Calendar, through the accounts connected in
-/// Plow, listed as Connections lists them.
-struct GoogleView: View {
+/// Grant access: Full Disk Access for Contacts & Messages, and Google, in
+/// one list as the old app had it.
+struct GrantAccessView: View {
     var flow: Onboarding
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            PlowMark().fill(Brand.volt, style: FillStyle(eoFill: true)).frame(width: 56, height: 56).accessibilityHidden(true)
-            ScreenHeader(title: "Connect Google",
-                         lead: "Let your agents use Gmail and Calendar. Connecting opens your browser so you can sign in with Google.")
+            ScreenHeader(title: "Grant access", lead: "The Plow Gatekeeper will monitor how your agents use these permissions.")
             Form {
-                GoogleAccountsSection(state: state, stateColor: color, accounts: flow.googleAccounts, canSignIn: canSignIn,
-                                      signIn: flow.connectGoogle) { detail }
+                accessSection
+                GoogleAccountsSection(state: googleState, stateColor: googleColor, accounts: flow.googleAccounts, canSignIn: canSignIn,
+                                      signIn: flow.connectGoogle) { googleDetail }
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
             .padding(.horizontal, -20)
-            if flow.google != .connected {
+            if !flow.stepDone {
                 Text("You can finish this later in Settings.").foregroundStyle(Brand.muted).font(.callout)
             }
         }
         .padding(.horizontal, 56)
         .padding(.top, 52)
         .padding(.bottom, 24)
-        .task { if !flow.app.still { await flow.checkGoogle() } }
-        // Back from the browser, or from anywhere: check again.
+        .task {
+            guard !flow.app.still else { return }
+            await flow.app.refreshStatus()
+            await flow.accessAppeared()
+            await flow.checkGoogle()
+        }
+        // Back from the browser, or from anywhere: check Google again.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             flow.recheckGoogle()
         }
+        .onDisappear { flow.stopWork() }
     }
 
-    private var canSignIn: Bool { flow.google == .notConnected || flow.google == .connected }
+    // MARK: Contacts & Messages
 
-    /// Each state's words, and its action beyond signing in.
-    @ViewBuilder private var detail: some View {
-        if let ended = flow.googleWaitEnded {
-            Text(ended).foregroundStyle(Brand.muted)
-        }
-        switch flow.google {
-        case .checking, .notConnected, .connected:
-            EmptyView()
-        case .waiting:
-            HStack(spacing: 10) {
-                ProgressView().controlSize(.small).accessibilityHidden(true)
-                Text("Finish signing in with Google in your browser. This screen updates when you're done.")
-            }
-            HStack {
-                Spacer()
-                Button("Open the Sign-In Page Again") { flow.openGoogleSignInAgain() }
-                    .disabled(!flow.canOpenGoogleSignInAgain)
-            }
-        case .unreachable:
-            problem("Latch couldn't get an answer from Plow, so it can't tell whether Google is connected. Check your internet connection, then try again.")
-        case let .failed(why):
-            problem(why)
-        }
-    }
-
-    @ViewBuilder private func problem(_ why: String) -> some View {
-        Text(why).foregroundStyle(Brand.clay)
-        HStack {
-            Spacer()
-            Button("Try Again") { flow.recheckGoogle() }
-        }
-    }
-
-    private var state: String {
-        switch flow.google {
-        case .checking: "Checking…"
-        case .notConnected, .connected: flow.googleAccounts.state
-        case .waiting: "Waiting for sign-in"
-        case .unreachable: "Couldn't reach Plow"
-        case .failed: "Couldn't check"
-        }
-    }
-
-    private var color: Color {
-        switch flow.google {
-        case .connected: Brand.volt
-        case .notConnected, .waiting, .unreachable: Brand.amber
-        case .failed: Brand.clay
-        case .checking: Brand.muted
-        }
-    }
-}
-
-/// Contacts & Messages: Full Disk Access for Plow Latch, then both connectors.
-struct AccessView: View {
-    var flow: Onboarding
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            ScreenHeader(title: "Contacts & Messages",
-                         lead: "Let your agents search your messages and contacts on this Mac. macOS requires Full Disk Access for this.")
-            Panel {
-                HStack(spacing: 12) {
-                    Image(systemName: flow.accessGranted ? "checkmark.shield" : "lock.shield").frame(width: 20)
-                        .foregroundStyle(flow.accessGranted ? Brand.volt : Brand.muted).accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        if flow.accessGranted {
-                            Text("\(Text(AppName.shown).bold()) has Full Disk Access")
-                            Text("Turn on lets your agents use Messages and Contacts.").font(.callout).foregroundStyle(Brand.muted)
-                        } else {
-                            Text("Turn on \(Text(AppName.shown).bold()) in Full Disk Access")
-                            Text("System Settings ▸ Privacy & Security ▸ Full Disk Access").font(.callout).foregroundStyle(Brand.muted)
-                        }
-                    }
-                    Spacer()
+    private var accessSection: some View {
+        Section {
+            LabeledContent {
+                Text(fullDiskAccess).foregroundStyle(flow.accessGranted ? Brand.volt : Brand.muted)
+            } label: {
+                Label {
+                    Text("Full Disk Access")
+                    Text("For Messages · Contacts").foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: flow.accessGranted ? "checkmark.shield" : "lock.shield")
                 }
-                .padding(14)
-                .accessibilityElement(children: .combine)
             }
-            Panel {
-                PanelRow(symbol: "message", title: "Messages", state: state(flow.messages), stateColor: color(flow.messages))
-                Rectangle().fill(Brand.line).frame(height: 1)
-                PanelRow(symbol: "person.crop.circle", title: "Contacts", state: state(flow.contacts), stateColor: color(flow.contacts))
-            }
+            row("Messages", symbol: "message", flow.messages)
+            row("Contacts", symbol: "person.crop.circle", flow.contacts)
             ForEach([flow.messages, flow.contacts].compactMap { if case let .failed(error) = $0 { error } else { nil } }, id: \.self) {
-                ErrorText(error: $0).foregroundStyle(Brand.clay).font(.callout)
+                ErrorText(error: $0).foregroundStyle(Brand.clay)
             }
-            if flow.primarySkips {
-                Button("Check again") { flow.requestAccess() }.disabled(flow.waitingForAccess)
+            if flow.accessFailed {
+                HStack {
+                    Spacer()
+                    Button("Check Again") { flow.requestAccess() }.disabled(flow.waitingForAccess)
+                }
             }
             if let error = flow.restartError {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(flow.app.status?.thisMachine.hosting.running == true ? "Latch couldn't restart." : "Latch is stopped. It couldn't start again.")
-                    ErrorText(error: error, titled: true).font(.callout).foregroundStyle(Brand.clay)
-                    Button(flow.restarting ? "Restarting…" : "Try again") { Task { await flow.restartLatch() } }
+                    ErrorText(error: error, titled: true).foregroundStyle(Brand.clay)
+                }
+                HStack {
+                    Spacer()
+                    Button(flow.restarting ? "Restarting…" : "Try Again") { Task { await flow.restartLatch() } }
                         .disabled(flow.restarting)
                 }
             } else if flow.backgroundHostNeedsRestart {
                 HStack(spacing: 12) {
-                    Text("Turn on access, then restart Latch to apply it.").foregroundStyle(Brand.muted)
+                    Text("Turn on access, then restart Latch to apply it.").foregroundStyle(.secondary)
                     Spacer()
                     Button(flow.restarting ? "Restarting…" : "Restart Latch") { Task { await flow.restartLatch() } }
                         .disabled(flow.restarting)
                 }
             } else if flow.terminalHostNeedsRestart {
                 HStack(spacing: 12) {
-                    Text("Latch is running in a terminal. Turn on access, then restart it there.")
-                        .foregroundStyle(Brand.muted)
+                    Text("Latch is running in a terminal. Turn on access, then restart it there.").foregroundStyle(.secondary)
                     Spacer()
-                    Button("Check again") { flow.checkAccess() }
+                    Button("Check Again") { flow.checkAccess() }
                 }
             } else if flow.waitingForAccess {
-                Text("This screen updates when access is granted.").foregroundStyle(Brand.muted)
+                Text("This screen updates when access is granted.").foregroundStyle(.secondary)
             } else if flow.messages.isNeeded || flow.contacts.isNeeded {
-                Text("Drag \(AppName.shown) into the Full Disk Access list, then switch it on.")
-                    .foregroundStyle(Brand.muted)
+                Text("Drag \(AppName.shown) into the Full Disk Access list, then switch it on.").foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
+        } footer: {
+            Text("Let your agents search your messages and contacts on this Mac. macOS requires Full Disk Access for this: System Settings ▸ Privacy & Security ▸ Full Disk Access.")
+                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 56)
-        .padding(.top, 52)
-        .task {
-            guard !flow.app.still else { return }
-            await flow.app.refreshStatus()
-            await flow.accessAppeared()
+    }
+
+    private var fullDiskAccess: String {
+        switch flow.fullDiskAccess {
+        case "granted": "Granted"
+        case "not_granted": "Not granted"
+        default: "Not checked"
         }
-        .onDisappear { flow.stopWork() }
+    }
+
+    private func row(_ title: String, symbol: String, _ check: Onboarding.Check) -> some View {
+        LabeledContent {
+            Text(state(check)).foregroundStyle(color(check))
+        } label: {
+            Label(title, systemImage: symbol)
+        }
     }
 
     private func state(_ check: Onboarding.Check) -> String {
@@ -482,6 +431,62 @@ struct AccessView: View {
         case .needed: Brand.amber
         case .failed: Brand.clay
         default: Brand.muted
+        }
+    }
+
+    // MARK: Google
+
+    private var canSignIn: Bool { flow.google == .notConnected || flow.google == .connected }
+
+    /// Each state's words, and its action beyond signing in.
+    @ViewBuilder private var googleDetail: some View {
+        if let ended = flow.googleWaitEnded {
+            Text(ended).foregroundStyle(Brand.muted)
+        }
+        switch flow.google {
+        case .checking, .notConnected, .connected:
+            EmptyView()
+        case .waiting:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small).accessibilityHidden(true)
+                Text("Finish signing in with Google in your browser. This screen updates when you're done.")
+            }
+            HStack {
+                Spacer()
+                Button("Open the Sign-In Page Again") { flow.openGoogleSignInAgain() }
+                    .disabled(!flow.canOpenGoogleSignInAgain)
+            }
+        case .unreachable:
+            googleProblem("Latch couldn't get an answer from Plow, so it can't tell whether Google is connected. Check your internet connection, then try again.")
+        case let .failed(why):
+            googleProblem(why)
+        }
+    }
+
+    @ViewBuilder private func googleProblem(_ why: String) -> some View {
+        Text(why).foregroundStyle(Brand.clay)
+        HStack {
+            Spacer()
+            Button("Try Again") { flow.recheckGoogle() }
+        }
+    }
+
+    private var googleState: String {
+        switch flow.google {
+        case .checking: "Checking…"
+        case .notConnected, .connected: flow.googleAccounts.state
+        case .waiting: "Waiting for sign-in"
+        case .unreachable: "Couldn't reach Plow"
+        case .failed: "Couldn't check"
+        }
+    }
+
+    private var googleColor: Color {
+        switch flow.google {
+        case .connected: Brand.volt
+        case .notConnected, .waiting, .unreachable: Brand.amber
+        case .failed: Brand.clay
+        case .checking: Brand.muted
         }
     }
 }

@@ -86,7 +86,7 @@ struct GoogleSignInTests {
         client.google = #"{"step":"google","state":"needed","reason":"Google needs you to sign in again with testuser@plow.test: `latch plugins enable google` signs you in.","args":["plugins","enable","google","--events"],"enabled":false,"ready":false,"accounts":["testuser@plow.test"],"needs_sign_in":["testuser@plow.test"]}"#
         client.enableRefusal = LatchFailure(code: "google_needs_sign_in", message: "Google needs the owner to sign in again with testuser@plow.test.")
         let (app, _, _) = app(client)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         await flow.checkGoogle()
         #expect(client.enabled == ["google"])
         #expect(flow.google == .notConnected)
@@ -104,7 +104,7 @@ struct GoogleSignInTests {
     @Test func connectOpensLatchsLinkAndLatchTurnsGoogleOn() async {
         let client = SignInClient()
         let (app, _, opened) = app(client)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         await flow.checkGoogle()
         #expect(flow.google == .notConnected)
         flow.connectGoogle()
@@ -137,7 +137,7 @@ struct GoogleSignInTests {
     @Test func noAccountInTimeIsSaidAndConnectCanStartAgain() async {
         let client = SignInClient()
         let (app, _, _) = app(client)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         flow.connectGoogle()
         await waitUntil { client.events != nil }
         client.events?.yield(.link(first))
@@ -147,7 +147,7 @@ struct GoogleSignInTests {
         #expect(flow.google == .notConnected)
         #expect(flow.googleWaitEnded == GoogleSignIn.problem(timeout, adding: false))
         #expect(!flow.canOpenGoogleSignInAgain)
-        #expect(!flow.primaryEnabled)
+        #expect(!flow.stepDone)
         flow.connectGoogle()
         #expect(flow.google == .waiting && flow.googleWaitEnded == nil)
         await waitUntil { client.signIns.count == 2 }
@@ -160,7 +160,7 @@ struct GoogleSignInTests {
         for leave in [{ (flow: Onboarding) in flow.skip() }, { $0.back() }, { $0.stopWork() }] {
             let client = SignInClient()
             let (app, _, _) = app(client)
-            let flow = app.stage(.google)
+            let flow = app.stage(.access)
             flow.connectGoogle()
             await waitUntil { client.events != nil }
             client.events?.yield(.link(first))
@@ -185,7 +185,7 @@ struct GoogleSignInTests {
     @Test func onboardingOpensACanaryLinkAndKeepsItNowhere() async throws {
         let client = SignInClient()
         let (app, memory, opened) = app(client)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         flow.connectGoogle()
         await waitUntil { client.events != nil }
         client.events?.yield(.link(canary))
