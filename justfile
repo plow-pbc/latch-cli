@@ -24,6 +24,6 @@ test-plan *args:
 gatekeeper *args:
     @just --justfile latch/justfile gatekeeper {{args}}
 
-# This checkout as a dev Mac app (.dev/app/Plow Latch Dev.app), on `just build`'s latch, with gog and the Messages reader.
+# This checkout as a dev Mac app (.dev/app/Plow Latch Dev.app), on `just build`'s latch, with gog, the Messages reader and Chrome for Testing.
 app *args:
     @just --justfile latch/justfile app {{args}}
