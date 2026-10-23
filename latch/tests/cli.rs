@@ -5792,71 +5792,64 @@ fn a_last_second_sign_in_counts_and_a_stop_during_the_enable_is_unknown() {
     assert_eq!(last["result"]["state"], "enabled", "{last}");
     assert_eq!(child.wait().unwrap().code(), Some(0));
 
-    // Stopped while the final enable waits on Plow: the result is unknown.
-    fs::remove_file(host.join("plugins.json")).unwrap();
-    plow.state.lock().unwrap().google = None;
-    let (mut child, mut out) = spawned(&[]);
-    assert_eq!(next(&mut out)["type"], "hello");
-    assert_eq!(next(&mut out)["type"], "link");
+    // Stopped while the final enable waits on Plow, by closing stdin or by
+    // the reader going (stdin /dev/null): either way the result is unknown.
     let asked = || {
         plow.seen()
             .iter()
             .filter(|(line, _)| line.contains("access-token"))
             .count()
     };
-    let before = asked();
-    {
-        let mut state = plow.state.lock().unwrap();
-        state.tokens_slow = std::time::Duration::from_secs(20);
-        state.google = Some("google-token".into());
-    }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while asked() == before {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the enable never asked Plow"
+    for close_stdin in [true, false] {
+        fs::remove_file(host.join("plugins.json")).ok();
+        {
+            let mut state = plow.state.lock().unwrap();
+            state.tokens_slow = std::time::Duration::ZERO;
+            state.google = None;
+        }
+        let stdin = if close_stdin {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        };
+        let mut child = latch_command(&host, &events, &[])
+            .stdin(stdin)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        assert_eq!(next(&mut out)["type"], "hello");
+        assert_eq!(next(&mut out)["type"], "link");
+        let before = asked();
+        {
+            let mut state = plow.state.lock().unwrap();
+            state.tokens_slow = std::time::Duration::from_secs(20);
+            state.google = Some("google-token".into());
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while asked() == before {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the enable never asked Plow"
+            );
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let started = std::time::Instant::now();
+        if close_stdin {
+            drop(child.stdin.take());
+            let stopped = next(&mut out);
+            assert_eq!(stopped["error"]["code"], "outcome_unknown", "{stopped}");
+        } else {
+            drop(out);
+        }
+        assert_eq!(
+            child.wait().unwrap().code(),
+            Some(5),
+            "stdin closed: {close_stdin}"
         );
-        thread::sleep(std::time::Duration::from_millis(100));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
-    drop(child.stdin.take());
-    let stopped = next(&mut out);
-    assert_eq!(stopped["error"]["code"], "outcome_unknown", "{stopped}");
-    assert_eq!(child.wait().unwrap().code(), Some(5));
-
-    // The same with stdin /dev/null and the reader gone instead.
-    fs::remove_file(host.join("plugins.json")).ok();
-    {
-        let mut state = plow.state.lock().unwrap();
-        state.tokens_slow = std::time::Duration::ZERO;
-        state.google = None;
-    }
-    let mut child = latch_command(&host, &events, &[])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-    assert_eq!(next(&mut out)["type"], "hello");
-    assert_eq!(next(&mut out)["type"], "link");
-    let before = asked();
-    {
-        let mut state = plow.state.lock().unwrap();
-        state.tokens_slow = std::time::Duration::from_secs(20);
-        state.google = Some("google-token".into());
-    }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while asked() == before {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the enable never asked Plow"
-        );
-        thread::sleep(std::time::Duration::from_millis(100));
-    }
-    drop(out);
-    let started = std::time::Instant::now();
-    assert_eq!(child.wait().unwrap().code(), Some(5));
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     plow.state.lock().unwrap().tokens_slow = std::time::Duration::ZERO;
 }
 
