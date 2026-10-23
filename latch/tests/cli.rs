@@ -6943,31 +6943,26 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     );
 }
 
-/// Messages and Contacts are macOS connectors: a Linux latch has no such
-/// commands and its help names neither.
+/// A Linux latch asks for Messages and Contacts like any other: its help
+/// has them, and a Linux host refuses them as a platform it can't serve,
+/// before anything is judged or checked for being on.
 #[cfg(not(target_os = "macos"))]
 #[test]
-fn a_linux_latch_has_no_messages_or_contacts() {
+fn a_linux_latch_asks_for_messages_and_a_linux_host_says_it_cannot_read_them() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
     let dir = test_dir();
-    for command in ["messages", "contacts"] {
-        let output = latch(dir.path(), &[command, "--help"], &[]);
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(error["error"]["code"], "usage");
-        let message = error["error"]["message"].as_str().unwrap();
-        assert!(
-            message.contains(&format!("unrecognized subcommand '{command}'")),
-            "{message}"
-        );
-    }
-    let help = String::from_utf8(latch(dir.path(), &["--help"], &[]).stdout).unwrap();
-    assert!(!help.contains("latch messages"), "{help}");
-    let listed = help
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .any(|word| word == "messages" || word == "contacts");
-    assert!(!listed, "{help}");
-    let catalog = latch(dir.path(), &["help", "--json"], &[]);
+    let host = owner_host_on(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+
+    let help = String::from_utf8(latch(&agent, &["--help"], &[]).stdout).unwrap();
+    assert!(help.contains("latch messages"), "{help}");
+    let catalog = latch(&agent, &["help", "--json"], &[]);
     let catalog: Value = serde_json::from_slice(&catalog.stdout).unwrap();
     let ids: Vec<&str> = catalog["actions"]
         .as_array()
@@ -6975,11 +6970,29 @@ fn a_linux_latch_has_no_messages_or_contacts() {
         .iter()
         .map(|action| action["id"].as_str().unwrap())
         .collect();
-    assert!(ids.contains(&"exec"), "{ids:?}");
-    assert!(
-        !ids.iter()
-            .any(|id| id.starts_with("messages") || id.starts_with("contacts")),
-        "{ids:?}"
+    assert!(ids.contains(&"messages.search"), "{ids:?}");
+    assert!(ids.contains(&"contacts.lookup"), "{ids:?}");
+
+    let _serve = serving(&host, &relay);
+    for command in [
+        &[
+            "messages", "search", "--host", "host", "--since", "10m", "code",
+        ][..],
+        &["contacts", "lookup", "--host", "host", "+15550000001"],
+    ] {
+        let output = latch(&agent, command, &agent_env);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "unsupported_platform", "{error}");
+        assert_eq!(
+            error["error"]["next"],
+            "ask a macOS host with --host H; `latch status` lists your hosts"
+        );
+    }
+    assert_eq!(
+        plow.state.lock().unwrap().decisions.len(),
+        0,
+        "never judged"
     );
 }
 

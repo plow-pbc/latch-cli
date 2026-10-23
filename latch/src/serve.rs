@@ -1194,7 +1194,7 @@ async fn serve_request(
 
 /// Everything a request meets before it runs, in order: its file path
 /// resolved, the caller's gate, the host's own refusals (`--deny-exec`, a
-/// connector that is off, a replaced binary), an exec's paths checked, a
+/// connector this host can't run or that is off, a replaced binary), an exec's paths checked, a
 /// messages read planned, then the gatekeeper's judgment. Nothing the
 /// request asks for runs here; `rules_try` stops after it.
 struct Checked<'a> {
@@ -1211,8 +1211,8 @@ struct Checked<'a> {
 /// Why a checked request does not run, as its caller is answered.
 enum Stop {
     /// The host's own refusal, made without asking the judge: an exec its
-    /// owner turned off (`--deny-exec`), a connector that is off, a path it
-    /// never lets a worker use.
+    /// owner turned off (`--deny-exec`), a connector this host can't run or
+    /// that is off, a path it never lets a worker use.
     Host(Done),
     /// Any other: a replaced binary, a bad request, the gatekeeper's no.
     Refused(Done),
@@ -1265,16 +1265,19 @@ async fn check<'a>(
     } else {
         (None, None)
     };
-    // Nor for a connector its owner has not enabled. One that is
-    // counts as running until its answer is audited, so `disable`
-    // waits for it.
-    let (running, not_enabled) = match crate::plugins::Connector::of_op(op)
-        .zip(host.plugins)
-        .map(|(connector, plugins)| plugins.start(connector))
-    {
-        Some(Ok(running)) => (Some(running), None),
-        Some(Err(failure)) => (None, Some(failure)),
-        None => (None, None),
+    // Nor for a connector this host can't run, or one its owner has not
+    // enabled. One that is counts as running until its answer is
+    // audited, so `disable` waits for it.
+    let (running, not_enabled) = match crate::messages::host::supported_here(op) {
+        Err(failure) => (None, Some(failure)),
+        Ok(()) => match crate::plugins::Connector::of_op(op)
+            .zip(host.plugins)
+            .map(|(connector, plugins)| plugins.start(connector))
+        {
+            Some(Ok(running)) => (Some(running), None),
+            Some(Err(failure)) => (None, Some(failure)),
+            None => (None, None),
+        },
     };
     // A messages call reads the address book for names only while
     // Contacts is enabled too, held the same way.

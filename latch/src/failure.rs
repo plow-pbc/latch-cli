@@ -333,7 +333,6 @@ codes! {
     messages_missing: Failed,
     messages_not_granted: Failed,
     messages_not_installed: Failed,
-    messages_unavailable: Failed,
     messages_unreadable: Failed,
     messages_unverified: Denied,
     missing_field: Usage,
