@@ -1,19 +1,110 @@
 import SwiftUI
 
+/// The Google accounts connected in Plow, as onboarding and Connections
+/// both list them, and which sign-in each offers.
+nonisolated struct GoogleAccounts: Equatable {
+    var accounts: [String]
+    /// Those Google wants the owner to sign in with again.
+    var needsSignIn: [String] = []
+
+    init(accounts: [String], needsSignIn: [String] = []) {
+        self.accounts = accounts
+        self.needsSignIn = needsSignIn
+    }
+
+    /// From `setup --status`'s Google step, which lists every account,
+    /// those needing a sign-in again among them; nil when Plow didn't say.
+    init?(_ step: SetupStatus.Step?) {
+        guard let accounts = step?.accounts else { return nil }
+        self.init(accounts: accounts, needsSignIn: step?.needsSignIn ?? [])
+    }
+
+    /// From latch's enable, which lists the accounts that work and names
+    /// the rest apart.
+    init(_ enabled: GoogleEnabled) {
+        let again = enabled.needsSignIn ?? []
+        self.init(accounts: enabled.accounts + again.filter { !enabled.accounts.contains($0) }, needsSignIn: again)
+    }
+
+    func needsSignIn(_ account: String) -> Bool { needsSignIn.contains(account) }
+
+    /// One account works, so a sign-in adds another (`--add-account`);
+    /// otherwise it connects the first, or signs in again with them all.
+    var addsAccount: Bool { accounts.contains { !needsSignIn($0) } }
+
+    /// None of them works: each one's row offers to sign in again, which
+    /// waits until they all work.
+    var noneWorks: Bool { !accounts.isEmpty && !addsAccount }
+
+    /// Google's state, by its accounts.
+    var state: String { accounts.isEmpty ? "Not connected" : noneWorks ? "Needs sign-in" : "Connected" }
+
+    /// The section's own button, while some or no account works.
+    var buttonTitle: String? {
+        if noneWorks { return nil }
+        return addsAccount ? "Add Another Account…" : "Connect Google…"
+    }
+
+    /// Whether the account's row offers Sign In Again….
+    func signsInAgain(_ account: String) -> Bool { noneWorks && needsSignIn(account) }
+}
+
 /// What Connections shows of Google: the accounts connected in Plow, or
 /// that Plow couldn't say.
 nonisolated enum Connections: Equatable {
-    case google(accounts: [String])
+    case google(GoogleAccounts)
     case unknown
 
-    /// From `setup --status`'s Google step, which lists the accounts only
-    /// when Plow answered.
     init(_ setup: SetupStatus?) {
-        guard let accounts = setup?.step("google")?.accounts else {
+        guard let accounts = GoogleAccounts(setup?.step("google")) else {
             self = .unknown
             return
         }
-        self = .google(accounts: accounts)
+        self = .google(accounts)
+    }
+}
+
+/// Google in a grouped Form, the same in onboarding and Connections: its
+/// state, every account connected in Plow, and the one sign-in it offers.
+/// `detail` is the screen's own lines: a wait, a problem, a retry.
+struct GoogleAccountsSection<Detail: View>: View {
+    var state: String
+    var stateColor: Color = .secondary
+    var accounts: GoogleAccounts
+    /// False while a check or a sign-in is under way.
+    var canSignIn: Bool
+    /// The sign-in `accounts` offers.
+    var signIn: () -> Void
+    @ViewBuilder var detail: Detail
+
+    var body: some View {
+        Section {
+            LabeledContent("Google") { Text(state).foregroundStyle(stateColor) }
+            ForEach(accounts.accounts, id: \.self) { account in
+                LabeledContent {
+                    if accounts.needsSignIn(account) {
+                        HStack(spacing: 10) {
+                            Text("Needs sign-in").foregroundStyle(.secondary)
+                            if accounts.signsInAgain(account) {
+                                Button("Sign In Again…", action: signIn).disabled(!canSignIn)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(account, systemImage: "envelope")
+                }
+            }
+            detail
+            if canSignIn, let title = accounts.buttonTitle {
+                HStack {
+                    Spacer()
+                    Button(title, action: signIn)
+                }
+            }
+        } footer: {
+            Text("Gmail and Google Calendar, for every host where the Google plugin is on. You sign in with Google in your browser.")
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -65,9 +156,10 @@ struct ConnectionsView: View {
         }
     }
 
-    @ViewBuilder
     private var googleSection: some View {
-        Section {
+        let accounts = if case let .google(accounts)? = app.connections { accounts } else { GoogleAccounts(accounts: []) }
+        return GoogleAccountsSection(state: googleState, accounts: accounts, canSignIn: app.connections != .unknown && app.connections != nil,
+                                     signIn: { app.connectGoogle(adding: accounts.addsAccount) }) {
             switch app.connections {
             case nil:
                 ProgressView().frame(maxWidth: .infinity)
@@ -77,23 +169,17 @@ struct ConnectionsView: View {
                     Spacer()
                     Button("Check Again") { Task { await app.refreshConnections() } }
                 }
-            case let .google(accounts)?:
-                if accounts.isEmpty {
-                    Text("No Google account is connected.").foregroundStyle(.secondary)
-                }
-                ForEach(accounts, id: \.self) { account in
-                    Label(account, systemImage: "envelope")
-                }
-                HStack {
-                    Spacer()
-                    Button(accounts.isEmpty ? "Connect Google Account…" : "Add Another Account…") { app.connectGoogle(adding: !accounts.isEmpty) }
-                }
+            case .google?:
+                EmptyView()
             }
-        } header: {
-            Text("Google")
-        } footer: {
-            Text("Gmail and Google Calendar, for every host where the Google plugin is on. You sign in with Google in your browser.")
-                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var googleState: String {
+        switch app.connections {
+        case nil: "Checking…"
+        case .unknown?: "Couldn't reach Plow"
+        case let .google(accounts)?: accounts.state
         }
     }
 

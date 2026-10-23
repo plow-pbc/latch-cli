@@ -660,7 +660,7 @@ struct ClosingTests {
         let off = app.stage(.google)
         await off.checkGoogle()
         #expect(off.google == .connected)
-        #expect(off.googleAccounts == ["testuser@plow.test"])
+        #expect(off.googleAccounts.accounts == ["testuser@plow.test"])
         #expect(client.enabled == ["google"])
 
         // Already on: nothing to run.

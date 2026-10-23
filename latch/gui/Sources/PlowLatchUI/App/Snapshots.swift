@@ -115,8 +115,11 @@ nonisolated enum Fixtures {
 
     /// `setup --status`'s Google step with these accounts connected in Plow
     /// (the plugin off here).
-    static func googleConnected(_ accounts: [String]) -> String {
-        #"{"step":"google","state":"needed","reason":"Google is connected in Plow (\#(accounts.joined(separator: ", "))); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":[\#(accounts.map { "\"\($0)\"" }.joined(separator: ","))]}"#
+    static let threeAccounts = ["alex@example.com", "alex.work@example.com", "family@example.com"]
+    static func googleConnected(_ accounts: [String], needsSignIn: [String] = []) -> String {
+        func list(_ names: [String]) -> String { "[" + names.map { "\"\($0)\"" }.joined(separator: ",") + "]" }
+        let again = needsSignIn.isEmpty ? "" : #","needs_sign_in":\#(list(needsSignIn))"#
+        return #"{"step":"google","state":"needed","reason":"Google is connected in Plow (\#(accounts.joined(separator: ", "))); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":\#(list(accounts))\#(again)}"#
     }
 
     static let serving = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
@@ -324,9 +327,20 @@ package enum SnapshotRunner {
                 await $0.checkGoogle(); $0.google = .waiting; $0.stage(googleSignInLink: Fixtures.signInLink)
             }),
             ("05-google-wait-ended", .google, Fixtures.stopped, Progress(), {
-                await $0.checkGoogle(); $0.googleWaitEnded = true
+                await $0.checkGoogle(); $0.googleWaitEnded = GoogleSignIn.problem(.failed(LatchFailure(code: "sign_in_timeout", message: "")), adding: false)
             }),
             ("05-google-connected-turned-on", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-google-three-accounts", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-google-adding-waiting", .google, Fixtures.stopped, Progress(), {
+                await $0.checkGoogle(); $0.google = .waiting; $0.stage(googleSignInLink: Fixtures.signInLink)
+            }),
+            ("05-google-adding-timed-out", .google, Fixtures.stopped, Progress(), {
+                await $0.checkGoogle(); $0.googleWaitEnded = GoogleSignIn.problem(.failed(LatchFailure(code: "sign_in_timeout", message: "")), adding: true)
+            }),
+            ("05-google-some-need-sign-in", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-google-all-need-sign-in", .google, Fixtures.stopped, Progress(), {
+                $0.googleAccounts = GoogleAccounts(accounts: Fixtures.threeAccounts, needsSignIn: Fixtures.threeAccounts); $0.google = .notConnected
+            }),
             ("05-google-rerun-connected", .google, Fixtures.serving, Progress(rerun: true), { await $0.checkGoogle() }),
             ("05-google-plow-unreachable", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
             ("05-google-tools-missing", .google, Fixtures.stopped, Progress(), { $0.google = .failed(Onboarding.toolsMissing) }),
@@ -663,6 +677,9 @@ package enum SnapshotRunner {
                 ("21-connections-none", Fixtures.googleNotConnected),
                 ("21-connections-one", Fixtures.googleConnected(["ada@example.com"])),
                 ("21-connections-two", Fixtures.googleConnected(["ada@example.com", "ada.work@example.com"])),
+                ("21-connections-three", Fixtures.googleConnected(Fixtures.threeAccounts)),
+                ("21-connections-some-need-sign-in", Fixtures.googleConnected(Fixtures.threeAccounts, needsSignIn: ["family@example.com"])),
+                ("21-connections-all-need-sign-in", Fixtures.googleConnected(Fixtures.threeAccounts, needsSignIn: Fixtures.threeAccounts)),
                 ("21-connections-unknown", Fixtures.googleUnreachable),
             ]
             for (name, google) in connections {
@@ -733,6 +750,10 @@ package enum SnapshotRunner {
         "05-google-waiting": Fixtures.googleNotConnected,
         "05-google-wait-ended": Fixtures.googleNotConnected,
         "05-google-connected-turned-on": Fixtures.googleConnectedOff,
+        "05-google-three-accounts": Fixtures.googleConnected(Fixtures.threeAccounts),
+        "05-google-adding-waiting": Fixtures.googleConnected(Fixtures.threeAccounts),
+        "05-google-adding-timed-out": Fixtures.googleConnected(Fixtures.threeAccounts),
+        "05-google-some-need-sign-in": Fixtures.googleConnected(Fixtures.threeAccounts, needsSignIn: ["family@example.com"]),
         "05-google-rerun-connected": Fixtures.googleOn,
         "05-google-plow-unreachable": Fixtures.googleUnreachable,
     ]

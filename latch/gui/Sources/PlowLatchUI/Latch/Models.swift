@@ -354,6 +354,9 @@ nonisolated struct SetupStatus: Decodable, Equatable {
         var enabled: Bool?
         /// Google's: the accounts connected in Plow, when Plow said.
         var accounts: [String]?
+        /// Google's: those of them Google wants the owner to sign in with
+        /// again, when there are some.
+        var needsSignIn: [String]?
         /// Messages' and Contacts', when asked: whether Plow Latch has Full
         /// Disk Access (`granted`, `not_granted` or `unknown`).
         var access: String?
@@ -378,7 +381,10 @@ nonisolated struct PluginsList: Decodable, Equatable {
 
 /// `latch plugins enable google`'s answer.
 nonisolated struct GoogleEnabled: Decodable, Equatable {
+    /// The accounts that work.
     var accounts: [String]
+    /// The rest, which Google wants the owner to sign in with again.
+    var needsSignIn: [String]?
 }
 
 /// An event of `latch plugins enable google --events`.

@@ -32,7 +32,10 @@ final class SignInClient: LatchClient, @unchecked Sendable {
     func enable(_ plugin: String) async throws -> GoogleEnabled? {
         enabled.append(plugin)
         if let enableRefusal { throw LatchError.failed(enableRefusal) }
-        return GoogleEnabled(accounts: ["testuser@plow.test"])
+        // As the host says it: the accounts that work, and the rest apart.
+        let step = try await setupStatus().step("google")
+        let again = step?.needsSignIn
+        return GoogleEnabled(accounts: (step?.accounts ?? []).filter { !(again ?? []).contains($0) }, needsSignIn: again)
     }
     func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(Fixtures.studioPluginsSetUp) }
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
@@ -75,10 +78,10 @@ struct GoogleSignInTests {
     /// it for "open again" without opening a second page; latch's result
     /// is Google on, with no enable of the app's own.
     /// Every connected account needs signing in again: the enable is
-    /// refused with google_needs_sign_in, and the screen offers Connect
-    /// Google, whose sign-in latch runs, never a Try again that repeats the
+    /// refused with google_needs_sign_in, and the screen offers Sign In
+    /// Again…, whose sign-in latch runs, never a Try again that repeats the
     /// refused enable.
-    @Test func signingInAgainOffersConnectGoogle() async {
+    @Test func signingInAgainOffersSignInAgain() async {
         let client = SignInClient()
         client.google = #"{"step":"google","state":"needed","reason":"Google needs you to sign in again with testuser@plow.test: `latch plugins enable google` signs you in.","args":["plugins","enable","google","--events"],"enabled":false,"ready":false,"accounts":["testuser@plow.test"],"needs_sign_in":["testuser@plow.test"]}"#
         client.enableRefusal = LatchFailure(code: "google_needs_sign_in", message: "Google needs the owner to sign in again with testuser@plow.test.")
@@ -87,6 +90,7 @@ struct GoogleSignInTests {
         await flow.checkGoogle()
         #expect(client.enabled == ["google"])
         #expect(flow.google == .notConnected)
+        #expect(flow.googleAccounts.signsInAgain("testuser@plow.test"))
         flow.connectGoogle()
         #expect(flow.google == .waiting)
         await waitUntil { client.events != nil }
@@ -125,7 +129,7 @@ struct GoogleSignInTests {
         client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
         client.events?.finish()
         await waitUntil { flow.google == .connected }
-        #expect(flow.googleAccounts == ["testuser@plow.test"])
+        #expect(flow.googleAccounts.accounts == ["testuser@plow.test"])
         #expect(client.enabled.isEmpty)
         #expect(!flow.canOpenGoogleSignInAgain)
     }
@@ -141,11 +145,11 @@ struct GoogleSignInTests {
         client.events?.finish(throwing: timeout)
         await waitUntil { flow.google != .waiting }
         #expect(flow.google == .notConnected)
-        #expect(flow.googleWaitEnded)
+        #expect(flow.googleWaitEnded == GoogleSignIn.problem(timeout, adding: false))
         #expect(!flow.canOpenGoogleSignInAgain)
         #expect(!flow.primaryEnabled)
         flow.connectGoogle()
-        #expect(flow.google == .waiting && !flow.googleWaitEnded)
+        #expect(flow.google == .waiting && flow.googleWaitEnded == nil)
         await waitUntil { client.signIns.count == 2 }
         #expect(client.signIns == [false, false])
     }
@@ -191,7 +195,7 @@ struct GoogleSignInTests {
         await waitUntil { flow.google != .waiting }
         #expect(flow.google == .failed(Onboarding.couldNotCheck))
         #expect(!flow.canOpenGoogleSignInAgain)
-        for shown in [Onboarding.couldNotCheck, flow.primaryTitle] + flow.googleAccounts {
+        for shown in [Onboarding.couldNotCheck, flow.primaryTitle] + flow.googleAccounts.accounts {
             #expect(!shown.contains(canaryCode))
         }
         flow.skip()
@@ -226,9 +230,9 @@ struct GoogleSignInTests {
         func googleOn() -> Bool {
             (try? app.summaries["studio"]?.plugins?.get())?.plugins.first { $0.name == "google" }?.state == "enabled"
         }
-        await waitUntil { app.googleSignIn == nil && app.connections == .google(accounts: after) && googleOn() }
+        await waitUntil { app.googleSignIn == nil && app.connections == .google(GoogleAccounts(accounts: after)) && googleOn() }
         #expect(app.googleSignIn == nil)
-        #expect(app.connections == .google(accounts: after))
+        #expect(app.connections == .google(GoogleAccounts(accounts: after)))
         #expect(googleOn())
         #expect(!app.canOpenGoogleSignInAgain)
     }

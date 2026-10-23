@@ -138,9 +138,10 @@ final class Onboarding {
     var openExamples: Set<String> = []
     // Connect Google.
     var google: Google = .checking
-    var googleAccounts: [String] = []
-    /// The last wait for a sign-in ended with no account in Plow.
-    var googleWaitEnded = false
+    var googleAccounts = GoogleAccounts(accounts: [])
+    /// Why the last wait for a sign-in ended with no new account, in the
+    /// app's words.
+    var googleWaitEnded: String?
     /// The newest sign-in link latch gave, kept only to open again.
     private var googleSignInLink: URL?
     private(set) var googleTask: Task<Void, Never>?
@@ -538,31 +539,34 @@ final class Onboarding {
         googleCheck = Task { await checkGoogle() }
     }
 
-    /// "Connect Google": latch gets a sign-in link from Plow, which opens in
-    /// the browser, and waits (up to 5 minutes, while the screen shows) for
-    /// the account, then turns Google on; only ever on a click.
+    /// "Connect Google…", "Add Another Account…" or "Sign In Again…", as
+    /// `googleAccounts` offers: latch gets a sign-in link from Plow, which
+    /// opens in the browser, and waits (up to 5 minutes, while the screen
+    /// shows) for the account, then turns Google on; only ever on a click.
     func connectGoogle() {
-        googleWaitEnded = false
+        let adding = googleAccounts.addsAccount
+        googleWaitEnded = nil
         google = .waiting
         googleTask?.cancel()
         googleTask = Task {
             do {
-                let accounts = try await app.signInWithGoogle(addAccount: false) { googleSignInLink = $0 }
+                let enabled = try await app.signInWithGoogle(addAccount: adding) { googleSignInLink = $0 }
                 guard !Task.isCancelled else { return }
                 googleSignInLink = nil
-                guard let accounts else {
+                guard let enabled else {
                     // latch stopped before it answered: what is there now.
                     google = .checking
                     return await checkGoogle()
                 }
-                googleAccounts = accounts
+                googleAccounts = GoogleAccounts(enabled)
                 google = .connected
             } catch {
                 guard !Task.isCancelled else { return }
                 googleSignInLink = nil
-                if (error as? LatchError)?.code == "sign_in_timeout" {
-                    google = .notConnected
-                    googleWaitEnded = true
+                if let error = error as? LatchError, error.code == "sign_in_timeout" {
+                    // Adding, the accounts already there still work.
+                    google = adding ? .connected : .notConnected
+                    googleWaitEnded = GoogleSignIn.problem(error, adding: adding)
                 } else {
                     google = Self.googleProblem(error)
                 }
@@ -597,16 +601,16 @@ final class Onboarding {
         guard let step = setup.step("google") else { return .failed(Self.couldNotCheck) }
         // Logged in as the owner, Google's step lacks accounts only when
         // Plow couldn't be asked.
-        guard let accounts = step.accounts else { return .unreachable }
+        guard let accounts = GoogleAccounts(step) else { return .unreachable }
         googleAccounts = accounts
         if step.state == "done" { return .connected }
         // While latch waits for a sign-in, turning Google on is its to do.
         if google == .waiting { return .waiting }
-        guard !accounts.isEmpty else { return .notConnected }
+        guard !accounts.accounts.isEmpty else { return .notConnected }
         // Turning Google on is this screen's alone: not once it was left.
         guard !Task.isCancelled, self.step == .google else { return nil }
         do {
-            googleAccounts = try await client.enable("google")?.accounts ?? accounts
+            googleAccounts = try await client.enable("google").map(GoogleAccounts.init) ?? accounts
             return .connected
         } catch {
             return Task.isCancelled ? nil : Self.googleProblem(error)
