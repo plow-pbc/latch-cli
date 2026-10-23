@@ -26,7 +26,7 @@ nonisolated struct FakeLatchClient: LatchClient {
 nonisolated enum Fixtures {
     /// `latch setup --status` on a logged-in Mac whose host is stopped,
     /// with these connectors on.
-    static func setup(on: [String]) -> String {
+    static func setup(on: [String], host: String = #"{"step":"host","state":"needed","reason":"latch is not running.","args":["serve","-d","--again"]}"#) -> String {
         let connectors = ["google", "messages", "contacts"].map { name in
             on.contains(name)
                 ? #"{"step":"\#(name)","state":"done","reason":"The \#(name.capitalized) connector is on; agents can use it once latch is running.","args":null,"enabled":true,"ready":false}"#
@@ -34,7 +34,7 @@ nonisolated enum Fixtures {
         }
         return #"{"steps":[{"step":"login","state":"done","reason":"Logged in as studio.","args":null},"#
             + connectors.joined(separator: ",")
-            + #",{"step":"host","state":"needed","reason":"latch is not running.","args":["serve","-d","--again"]}]}"#
+            + "," + host + "]}"
     }
 
     static let serving = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null},"last_error":null,"update":{"available":false,"build":null,"checked_at":null}}"#

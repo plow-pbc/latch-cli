@@ -92,6 +92,8 @@ nonisolated struct SetupStatus: Decodable, Equatable {
         var step: String
         /// `done`, `needed` or `blocked`.
         var state: String
+        /// Why, in latch's words.
+        var reason: String
         /// The words after `latch` that do this step, while it isn't done.
         var args: [String]?
         /// A connector's: its owner turned it on.

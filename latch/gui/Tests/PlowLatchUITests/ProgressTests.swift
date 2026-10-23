@@ -196,7 +196,11 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
             continuation.finish()
         }
     }
-    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn)) }
+    /// The host step `setup --status` gives, when not the default.
+    var host: String?
+    func setupStatus() async throws -> SetupStatus {
+        try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, host: $0) } ?? Fixtures.setup(on: connectorsOn))
+    }
     func rulesShow() async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
     /// How a setup step (`serve -d`) fails, if it does.
@@ -395,17 +399,32 @@ struct ClosingTests {
         #expect(client.enabled == ["google"])
     }
 
-    @Test func arrivingAtAccessShowsWhatsOnAndTriesTheRestOnce() async {
+    @Test func arrivingAtAccessOnlyReadsWhatsOn() async throws {
         let client = ScriptedClient { _ in nil }
         client.connectorsOn = ["messages"]
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.open = { Issue.record("opened \($0)") }
         let flow = app.stage(.access)
         await flow.accessAppeared()
-        await until { flow.accessDone }
-        #expect(flow.accessDone)
-        // Messages was on: never enabled again. Contacts was tried once.
-        #expect(client.enabled == ["contacts"])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(flow.messages == .done)
+        #expect(flow.contacts == .unknown)
+        // Looking turns nothing on.
+        #expect(client.enabled.isEmpty)
+    }
+
+    @Test func aBlockedHostNeitherMovesOnNorSetsTheLoginItem() async {
+        let client = ScriptedClient { _ in nil }
+        client.host = #"{"step":"host","state":"blocked","reason":"a host from another latch version (pid 4242) holds this state folder; stop it with `kill 4242`, then start latch again","args":null}"#
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        var loginItem: [Bool] = []
+        app.setLoginItem = { loginItem.append($0) }
+        let flow = app.stage(.start)
+        await flow.startLatch()
+        #expect(flow.step == .start)
+        #expect(loginItem.isEmpty)
+        #expect(client.performed.isEmpty)
+        #expect(flow.startError?.hasPrefix("a host from another latch version (pid 4242)") == true)
     }
 
     @Test func aTakenNameAsksForAnother() async {

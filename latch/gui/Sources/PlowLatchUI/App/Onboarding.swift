@@ -454,16 +454,14 @@ final class Onboarding {
         }
     }
 
-    /// Arriving at Contacts & Messages: what latch says is on shows as on;
-    /// each connector that isn't is tried once (`plugins enable`), opening
-    /// nothing, so access granted earlier shows at once. A connector that's
-    /// on is never enabled again.
+    /// Arriving at Contacts & Messages: what latch says is on shows as on.
+    /// Looking never runs `plugins enable`; turning one on is the person's
+    /// click.
     func accessAppeared() async {
-        guard let steps = try? await client.setupStatus().steps else { return }
-        for plugin in ["messages", "contacts"] where steps.first(where: { $0.step == plugin })?.enabled == true {
+        guard let setup = try? await client.setupStatus() else { return }
+        for plugin in ["messages", "contacts"] where setup.step(plugin)?.enabled == true {
             set(plugin, .done)
         }
-        checkAccess()
     }
 
     /// One check of each connector not on yet, opening nothing.
@@ -534,9 +532,14 @@ final class Onboarding {
 
     /// Starts the host the way `setup --status` says (with the last serve's
     /// flags when there were any). Nothing to do when it isn't needed.
+    /// A host latch says can't start now throws latch's reason.
     private func startHost() async throws {
-        guard let host = try await client.setupStatus().step("host"), host.state == "needed", let args = host.args else { return }
-        try await client.perform(args)
+        guard let host = try await client.setupStatus().step("host") else { return }
+        switch host.state {
+        case "needed": if let args = host.args { try await client.perform(args) }
+        case "blocked": throw HostBlocked(reason: host.reason)
+        default: break
+        }
     }
 
     /// Starts the host in the background and sets the login item, as the
@@ -561,6 +564,12 @@ final class Onboarding {
     func stage(_ step: Step) {
         self.step = step
     }
+}
+
+/// `setup --status` says the host can't start now, and why.
+struct HostBlocked: LocalizedError {
+    var reason: String
+    var errorDescription: String? { reason }
 }
 
 /// "Start when you log in": the agent in the app's bundle that runs its
