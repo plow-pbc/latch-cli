@@ -64,19 +64,9 @@ nonisolated struct LiveLatchClient: LatchClient {
     }
 
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> {
-        let lines = stream(["status", "--local", "--follow"]) { try decode(StatusLine.self, $0) }
-        return AsyncThrowingStream { continuation in
-            let reader = Task {
-                do {
-                    for try await line in lines {
-                        if case let .status(status) = line { continuation.yield(status) }
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in reader.cancel() }
+        stream(["status", "--local", "--follow"]) { data -> LocalStatus? in
+            guard case let .status(status) = try decode(StatusLine.self, data) else { return nil }
+            return status
         }
     }
 

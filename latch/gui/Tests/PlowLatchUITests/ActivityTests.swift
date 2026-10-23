@@ -116,6 +116,21 @@ struct LiveActivityTests {
         #expect(Self.followers(state) == 0)
     }
 
+    // `status --local --follow` works on any state folder, even one never
+    // logged in: its first line is the status.
+    @Test(.enabled(if: env["LATCH_LIVE_LATCH"] != nil))
+    func statusFollowYieldsTheStatus() async throws {
+        let latch = URL(filePath: try #require(Self.env["LATCH_LIVE_LATCH"]))
+        let state = FileManager.default.temporaryDirectory.appending(path: "latch-live-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: state) }
+        var first: LocalStatus?
+        for try await status in LiveLatchClient(executable: latch, stateDir: state.path).statusFollow() {
+            first = status
+            break
+        }
+        #expect(first?.serve.state == "stopped")
+    }
+
     /// `latch audit --follow` runs still started on `state`.
     static func followers(_ state: String) -> Int {
         let ps = Process()
