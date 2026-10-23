@@ -522,7 +522,17 @@ impl Plow {
             .http
             .post(format!("{}/v1/connectors/gmail/access-token", self.api_url))
             .json(&serde_json::json!({"all":true}));
-        let response = self.send(request).await?;
+        let response = self.send(request).await.map_err(|failure| {
+            // Every account needs signing in again: said as such, by name.
+            match failure
+                .plow
+                .as_ref()
+                .and_then(|said| said.needs_sign_in.clone())
+            {
+                Some(accounts) => crate::google::needs_sign_in(accounts),
+                None => failure,
+            }
+        })?;
         response
             .json::<Envelope>()
             .await
@@ -578,12 +588,25 @@ impl Plow {
             .get("retry-after")
             .and_then(|value| value.to_str().ok())
             .and_then(retry_after);
-        let code = response
+        let detail = response
             .json::<serde_json::Value>()
             .await
-            .ok()
-            .and_then(|body| body["detail"]["code"].as_str().map(Box::from));
-        failure.plow = Some(Box::new(crate::failure::PlowSaid { retry_after, code }));
+            .map(|mut body| body["detail"].take())
+            .unwrap_or_default();
+        let code = detail["code"].as_str().map(Box::from);
+        let needs_sign_in = (detail["reason"] == "needs_reauth").then(|| {
+            detail["accounts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|account| account.as_str().map(String::from))
+                .collect()
+        });
+        failure.plow = Some(Box::new(crate::failure::PlowSaid {
+            retry_after,
+            code,
+            needs_sign_in,
+        }));
         Err(failure)
     }
 }

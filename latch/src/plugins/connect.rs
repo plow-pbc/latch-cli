@@ -34,9 +34,11 @@ const LAST_LOOK: Duration = Duration::from_secs(3);
 
 const ENABLE: &str = "latch plugins enable google";
 
-/// `refused` is a plain enable's `google_not_connected`; `enabled` is the
-/// result of one that succeeded before `--add-account` adds an account.
-/// `enable` runs the enable again once a new account is there.
+/// `refused` is a plain enable's `google_not_connected`, or its
+/// `google_needs_sign_in` naming the accounts to sign in with again;
+/// `enabled` is the result of one that succeeded before `--add-account`
+/// adds an account. `enable` runs the enable again once a new account is
+/// there, or every named one works again.
 pub(super) async fn google<F, Fut>(
     state: &StateDir,
     refused: Option<Failure>,
@@ -51,26 +53,43 @@ where
     let deadline = Instant::now() + give_up_after();
     let at_terminal = !events && term::interactive();
     let adding = enabled.is_some();
+    let again: Option<Vec<String>> = refused
+        .as_ref()
+        .filter(|refused| refused.code == code::google_needs_sign_in.name)
+        .map(|refused| {
+            refused.details["accounts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|account| account.as_str().map(String::from))
+                .collect()
+        });
     // The public page, from the host's refusal until Plow says it again.
     let mut page = refused
         .as_ref()
         .and_then(|refused| refused.details["connect_url"].as_str())
         .map(String::from);
     let plow = Plow::from_state(state).map_err(|failure| with_page(failure, &page))?;
-    // The accounts Plow had before, once it said.
-    let before: RefCell<Option<Vec<String>>> = RefCell::new(None);
+    // What ends the wait, once Plow said which accounts it had.
+    let goal: RefCell<Option<Goal>> = RefCell::new(None);
     // Everything up to an account appearing, Plow's answers included,
     // within the one deadline.
     let connecting = async {
         let connectors = plow.connectors().await?;
         page = Some(connectors.connections_page());
-        let had = accounts(&connectors);
-        *before.borrow_mut() = Some(had.clone());
+        let wanted = match &again {
+            Some(accounts) => Goal::Working(accounts.clone()),
+            None => Goal::New(accounts(&connectors)),
+        };
+        *goal.borrow_mut() = Some(wanted.clone());
         let mut link = plow.google_connect_link().await?;
         if !events && !at_terminal {
             return Ok(Connecting::HandedOver(link));
         }
-        if !offer(&link, events, at_terminal, adding, false) {
+        let offer = |link: &ConnectLink, renewed| {
+            offer(link, events, at_terminal, adding, again.as_deref(), renewed)
+        };
+        if !offer(&link, false) {
             return Ok(Connecting::Cancelled);
         }
         loop {
@@ -79,12 +98,12 @@ where
                 return Ok(Connecting::Cancelled);
             }
             // A mint or a look that fails ends the wait with its own failure.
-            if appeared(&plow.connectors().await?, &had) {
+            if reached(&plow, &wanted).await? {
                 return Ok(Connecting::Appeared);
             }
             if expired(&link) {
                 link = plow.google_connect_link().await?;
-                if !offer(&link, events, at_terminal, adding, true) {
+                if !offer(&link, true) {
                     return Ok(Connecting::Cancelled);
                 }
             }
@@ -96,11 +115,11 @@ where
             // The deadline: one last look, so a sign-in finished in its
             // final second still counts; nothing is renewed or waited for.
             Err(_) => {
-                let Some(had) = before.borrow().clone() else {
+                let Some(wanted) = goal.borrow().clone() else {
                     return Err(timed_out());
                 };
-                match tokio::time::timeout(LAST_LOOK, plow.connectors()).await {
-                    Ok(Ok(now)) if appeared(&now, &had) => Ok(Connecting::Appeared),
+                match tokio::time::timeout(LAST_LOOK, reached(&plow, &wanted)).await {
+                    Ok(Ok(true)) => Ok(Connecting::Appeared),
                     _ => Err(timed_out()),
                 }
             }
@@ -134,17 +153,18 @@ where
                 Ok(result)
             }
             None => {
-                let mut failure = Failure::new(
-                    code::google_not_connected,
-                    "No Google account is connected in Plow.".into(),
-                );
+                let mut failure = match &again {
+                    Some(accounts) => crate::google::needs_sign_in(accounts.clone()),
+                    None => Failure::new(
+                        code::google_not_connected,
+                        "No Google account is connected in Plow.".into(),
+                    ),
+                };
                 failure.next =
                     Some(format!("open sign_in_url, finish Google sign-in, then {ENABLE}").into());
-                failure.details = json!({
-                    "sign_in_url": link.url,
-                    "expires_at": link.expires_at,
-                    "connect_url": page,
-                });
+                failure.details["sign_in_url"] = json!(link.url);
+                failure.details["expires_at"] = json!(link.expires_at);
+                failure.details["connect_url"] = json!(page);
                 Err(failure)
             }
         },
@@ -161,9 +181,34 @@ enum Connecting {
     HandedOver(ConnectLink),
 }
 
-/// Whether Plow now has an account it did not have before.
-fn appeared(now: &plow::Connectors, had: &[String]) -> bool {
-    accounts(now).iter().any(|account| !had.contains(account))
+/// What a sign-in is waited for until.
+#[derive(Clone)]
+enum Goal {
+    /// An account Plow did not have: these are the ones it had.
+    New(Vec<String>),
+    /// Each of these accounts working again, Google having asked to sign
+    /// in with them again.
+    Working(Vec<String>),
+}
+
+/// Whether Plow says the sign-in waited for has happened. Accounts to sign
+/// in with again are known to work only by getting their credentials.
+async fn reached(plow: &Plow, goal: &Goal) -> Result<bool, Failure> {
+    match goal {
+        Goal::New(had) => Ok(accounts(&plow.connectors().await?)
+            .iter()
+            .any(|account| !had.contains(account))),
+        Goal::Working(wanted) => match plow.google_tokens().await {
+            Ok(tokens) => Ok(wanted.iter().all(|wanted| {
+                tokens
+                    .accounts
+                    .iter()
+                    .any(|account| account.account == *wanted && account.access_token.is_some())
+            })),
+            Err(failure) if failure.code == code::google_needs_sign_in.name => Ok(false),
+            Err(failure) => Err(failure),
+        },
+    }
 }
 
 fn timed_out() -> Failure {
@@ -212,7 +257,14 @@ fn with_page(mut failure: Failure, page: &Option<String>) -> Failure {
 
 /// Shows `link`: a `link` line, or at a terminal the link and its QR code.
 /// False once nobody reads the lines.
-fn offer(link: &ConnectLink, events: bool, at_terminal: bool, adding: bool, renewed: bool) -> bool {
+fn offer(
+    link: &ConnectLink,
+    events: bool,
+    at_terminal: bool,
+    adding: bool,
+    again: Option<&[String]>,
+    renewed: bool,
+) -> bool {
     if events {
         let line = json!({"type": "link", "url": link.url, "expires_at": link.expires_at});
         let mut out = std::io::stdout().lock();
@@ -221,6 +273,11 @@ fn offer(link: &ConnectLink, events: bool, at_terminal: bool, adding: bool, rene
     if at_terminal {
         if renewed {
             eprintln!("That link expired. If you haven't opened a link yet, use this new one.");
+        } else if let Some(accounts) = again {
+            eprintln!(
+                "Google needs you to sign in again with {}.",
+                accounts.join(", ")
+            );
         } else if adding {
             eprintln!("Sign in with another Google account to add it to Plow.");
         } else {

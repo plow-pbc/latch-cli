@@ -214,6 +214,15 @@ async fn operation(
         audit["outcomes"] = json!(outcomes);
         super::merge::sort(&plan.command, &mut items);
         if answered == 0 {
+            // Every account wants the owner to sign in again: one code for it.
+            let again: Vec<String> = outcomes
+                .iter()
+                .filter(|outcome| outcome["reason"] == code::google_needs_sign_in.name)
+                .filter_map(|outcome| outcome["account"].as_str().map(String::from))
+                .collect();
+            if !again.is_empty() && again.len() == outcomes.len() {
+                return Err(super::needs_sign_in(again));
+            }
             return Err(problem(code::google_failed, json!({"accounts":outcomes})));
         }
         let mut result = json!({"items":items,"accounts":outcomes});
@@ -395,7 +404,13 @@ async fn invoke(
         .access_token
         .as_deref()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| super::gog_failure(4))?;
+        .ok_or_else(|| {
+            if account.needs_sign_in {
+                super::needs_sign_in(vec![account.account.clone()])
+            } else {
+                problem(code::google_failed, json!({"reason": "unavailable"}))
+            }
+        })?;
     // Only this worker is granted the unique private folder in OS temp.
     let folder = tempfile::Builder::new()
         .prefix("latch-google-")
@@ -467,7 +482,7 @@ async fn conflict(
     booked: &str,
 ) -> Result<Vec<String>, Failure> {
     let (Some(from), Some(to)) = (plan.flag("from"), plan.flag("to")) else {
-        return Err(super::gog_failure(2));
+        return Err(super::gog_failure(2, &target.account));
     };
     // Query only the proposed span. No event titles or descriptions enter
     // this check or its refusal response.
@@ -657,7 +672,7 @@ async fn frame(send: &mut SendStream, value: Value) -> Result<(), Failure> {
     .map_err(|_| problem(code::connection_lost, json!({})))
 }
 /// The short reason for an account's failure in `outcomes`: the failure's
-/// `reason` detail when it has one (gog's, or `needs_reauth`), else its code.
+/// `reason` detail when it has one (gog's), else its code.
 fn reason(failure: &Failure) -> &str {
     failure.details["reason"].as_str().unwrap_or(&failure.code)
 }

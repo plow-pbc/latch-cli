@@ -1942,6 +1942,8 @@ struct LiveState {
     google: Option<String>,
     /// Google accounts added after that one, listed by `GET /v1/connectors`.
     added_google: Vec<String>,
+    /// Connected accounts Google wants signed in again: minted no token.
+    google_reauth: Vec<String>,
     /// How long a Google sign-in link lasts, in seconds (Plow's is 120).
     sign_in_for: i64,
     /// Plow refuses this login a Google sign-in link.
@@ -1972,6 +1974,7 @@ impl LivePlow {
                 seen: Vec::new(),
                 google: None,
                 added_google: Vec::new(),
+                google_reauth: Vec::new(),
                 sign_in_for: 120,
                 sign_in_refused: false,
                 sign_in_slow: std::time::Duration::ZERO,
@@ -2113,17 +2116,37 @@ impl LivePlow {
                 (412, json!({"detail": "No Gmail account connected."}))
             }
             ("POST", "/v1/connectors/gmail/access-token") => {
-                let accounts: Vec<Value> = state
-                    .google
+                let token = state.google.clone().unwrap_or_default();
+                let connected: Vec<String> = std::iter::once("owner@example.com".to_string())
+                    .chain(state.added_google.iter().cloned())
+                    .collect();
+                let (again, working): (Vec<String>, Vec<String>) = connected
+                    .into_iter()
+                    .partition(|account| state.google_reauth.contains(account));
+                if working.is_empty() {
+                    return (
+                        401,
+                        json!({"detail": {"reason": "needs_reauth", "accounts": again,
+                                          "message": "Reconnect to grant access again."}}),
+                    );
+                }
+                let accounts: Vec<Value> = working
                     .iter()
-                    .map(|token| {
-                        json!({"account": "owner@example.com", "access_token": token,
-                               "is_default": true,
+                    .map(|account| {
+                        json!({"account": account, "access_token": token,
+                               "is_default": account == "owner@example.com",
                                "capabilities": {"mail_read": true, "mail_write": true,
                                                 "calendar_read": true, "calendar_write": true}})
                     })
                     .collect();
-                (200, json!({"data": {"accounts": accounts}}))
+                let degraded: Vec<Value> = again
+                    .iter()
+                    .map(|account| json!({"account": account, "reason": "needs_reauth"}))
+                    .collect();
+                (
+                    200,
+                    json!({"data": {"accounts": accounts, "degraded": degraded}}),
+                )
             }
             ("POST", "/v1/latch/peers") => {
                 let sent: Value = serde_json::from_slice(&request.body).unwrap();
@@ -5393,7 +5416,8 @@ fn setup_sets_up_every_connector_with_no_host_running() {
 /// `setup --status` asks Plow, read only, whether Google is connected
 /// there: none connected says where to connect one; connected, the
 /// connector is the step; enabled, it is done. The state folder is not
-/// changed and no credential is asked for.
+/// changed, no sign-in link is made, and credentials are asked for only
+/// once an account is connected (to learn which need signing in again).
 #[test]
 fn setup_status_says_whether_google_is_connected_in_plow() {
     let plow = LivePlow::start();
@@ -5416,6 +5440,13 @@ fn setup_status_says_whether_google_is_connected_in_plow() {
     let before = files();
 
     let none = google();
+    let credentials = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.contains("access-token"))
+            .count()
+    };
+    assert_eq!(credentials(), 0, "none connected: no credentials asked for");
     assert_eq!(none["step"], "google");
     assert_eq!(none["state"], "needed");
     assert_eq!(none["connect_url"], "https://app.example.com/connections");
@@ -5444,9 +5475,7 @@ fn setup_status_says_whether_google_is_connected_in_plow() {
     assert_eq!(on["args"], Value::Null);
     let asked: Vec<String> = plow.seen().into_iter().map(|(line, _)| line).collect();
     assert!(
-        !asked
-            .iter()
-            .any(|line| line.contains("access-token") || line.contains("connect-code")),
+        !asked.iter().any(|line| line.contains("connect-code")),
         "{asked:?}"
     );
 }
@@ -5742,6 +5771,87 @@ fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
         "{shown}"
     );
     assert!(!shown.contains("\"link\""), "{shown}");
+}
+
+/// Google wanting the owner to sign in again: with no account working,
+/// `plugins enable google` says `google_needs_sign_in` with the accounts and
+/// a sign-in link, and waits (`--events`) until they work again; with some
+/// working it enables and names the rest. `setup --status` says the same.
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "systemd-tests")
+))]
+#[test]
+fn signing_in_again_is_offered_and_waited_for() {
+    use std::io::BufRead;
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
+    let gog = host
+        .join("plugins/gog")
+        .join(pin["version"].as_str().unwrap());
+    fs::create_dir_all(&gog).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    {
+        let mut state = plow.state.lock().unwrap();
+        state.google = Some("google-token".into());
+        state.google_reauth = vec!["owner@example.com".into()];
+    }
+    let google_step = || {
+        let output = latch(&host, &["setup", "--status"], &[]);
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        status["steps"][1].clone()
+    };
+
+    // No account works: the error names it and carries the sign-in link.
+    let output = latch(&host, &["plugins", "enable", "google"], &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    let error = &error["error"];
+    assert_eq!(error["code"], "google_needs_sign_in", "{error}");
+    assert_eq!(error["accounts"], json!(["owner@example.com"]));
+    assert!(error["sign_in_url"].is_string(), "{error}");
+    assert_eq!(error["connect_url"], "https://app.example.com/connections");
+    let step = google_step();
+    assert_eq!(step["state"], "needed", "{step}");
+    assert_eq!(step["needs_sign_in"], json!(["owner@example.com"]));
+    assert_eq!(
+        step["args"],
+        json!(["plugins", "enable", "google", "--events"])
+    );
+
+    // `--events` waits until the account works again, then enables.
+    let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &[])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
+    assert_eq!(next()["type"], "hello");
+    assert_eq!(next()["type"], "link");
+    plow.state.lock().unwrap().google_reauth.clear();
+    let result = next();
+    assert_eq!(result["type"], "result", "{result}");
+    assert_eq!(result["result"]["accounts"], json!(["owner@example.com"]));
+    assert!(child.wait().unwrap().success());
+
+    // One works, one doesn't: enabled, the other named.
+    {
+        let mut state = plow.state.lock().unwrap();
+        state.added_google = vec!["second@example.com".into()];
+        state.google_reauth = vec!["second@example.com".into()];
+    }
+    let output = latch(&host, &["plugins", "enable", "google"], &[]);
+    assert!(output.status.success(), "{output:?}");
+    let enabled: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(enabled["accounts"], json!(["owner@example.com"]));
+    assert_eq!(enabled["needs_sign_in"], json!(["second@example.com"]));
+    let step = google_step();
+    assert_eq!(step["state"], "done", "{step}");
+    assert_eq!(step["needs_sign_in"], json!(["second@example.com"]));
 }
 
 /// The end of a Google sign-in wait: an account that appears in its last
