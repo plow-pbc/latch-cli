@@ -59,8 +59,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::Parser;
 use clap::error::ErrorKind;
+use clap::{CommandFactory, FromArgMatches};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -82,10 +82,15 @@ fn main() -> ExitCode {
         logo::show(color);
         return ExitCode::SUCCESS;
     }
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
         Err(err) => return usage_error(err),
     };
+    if let Err(failure) = help::check_host(&matches) {
+        report(&failure);
+        return failure.exit.into();
+    }
+    let cli = Cli::from_arg_matches(&matches).expect("the command line was validated");
     // Workers confine the initial thread before any runtime threads exist.
     let command = match cli.command {
         Command::Worker(args) => return worker::run(args),

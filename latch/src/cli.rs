@@ -1037,6 +1037,12 @@ pub struct GoogleArgs {
     pub gog_args: Vec<String>,
 }
 
+impl GoogleArgs {
+    pub fn local_help(&self) -> bool {
+        matches!(self.gog_args.as_slice(), [one] if one == "help" || one == "--help" || one == "-h")
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Subcommand, Debug)]
 pub enum MessagesCommand {
