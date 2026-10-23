@@ -67,10 +67,10 @@ latch's commands and behavior here are `main`'s today.
 | `latch serve` runs as | a launchd job, using the `latch` inside `~/Applications/Plow Latch.app` | a systemd user service |
 | Key, Plow login, vault and audit keys | Keychain, in the signed release app | files only you can read (0600) |
 | Messages and Contacts | Yes, once turned on and given Full Disk Access (for a release install, granted to Plow Latch.app) | No |
-| Chrome for Testing | Yes | arm64 only; latch pins no x86_64 build |
-| Camoufox | Yes | Yes |
+| Chrome for Testing | Yes | arm64 and x86_64; x86_64 currently needs `--headless-browsers` |
+| Camoufox | Yes | Yes; x86_64 currently needs `--headless-browsers` |
 | The browser's sandbox | the engine's own (Chrome's or Camoufox's); the engine runs outside latch's Seatbelt | inside latch's bubblewrap, with the engine's own sandbox nested inside |
-| Browser windows | on your screen; `browser handoff` works | on a private virtual display; `browser handoff` answers `needs_owner` (`no_screen`) |
+| Browser windows | on your screen; `browser handoff` works | x86_64 currently runs headless; otherwise a private virtual display. `browser handoff` answers `needs_owner` (`no_screen`) |
 
 - A host that can't set up its sandbox refuses to start. There's no
   unsandboxed mode.
@@ -273,7 +273,7 @@ The few commands that take `--host` but run only on this machine
   The installer checks the archive against the release's `SHA256SUMS`,
   installs `~/.local/bin/latch` (on a Mac, a link into
   `~/Applications/Plow Latch.app`), gog for Google, and Chrome on a Mac or
-  Linux arm64 (`--browser camoufox` for Camoufox, `--no-browser` for none).
+  Linux arm64/x86_64 (`--browser camoufox` for Camoufox, `--no-browser` for none).
   A first install at a terminal then runs `latch setup`: log in, connect
   Google, on a Mac turn on Messages and Contacts, then offer to start the
   host. On macOS 26 or later it opens Plow Latch.app instead, whose window
@@ -305,7 +305,7 @@ The few commands that take `--host` but run only on this machine
 | Scripting other apps (AppleScript, System Events) | Left out on purpose |
 | Google beyond Gmail and Calendar | Not supported |
 | Messages and Contacts on a Linux host, or from a Linux latch | Not supported |
-| Chrome on Linux x86_64 | No build; use `--engine camoufox` |
+| Headed browsers on Linux x86_64 | Private Xvfb startup fails; use `--headless-browsers` |
 | Browser handoff on a Linux host or with `--headless-browsers` | Not supported |
 | A host with no sandbox; Windows | Not supported |
 | An agent's login running a host | Doesn't work today: with the usual agent credential, login saves no Plow token, so `latch serve` stops with `not_logged_in` |

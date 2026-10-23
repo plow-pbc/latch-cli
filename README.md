@@ -29,9 +29,11 @@ The archive's executable `install-binary.sh` installs the adjacent `latch` with 
 arguments, accepts options before or after an explicit binary path, and shows
 usage with `--help`.
 It downloads pinned gog into `~/.latch/plugins`, and Chrome for Testing for
-`latch browser` on macOS and Linux arm64: `--browser camoufox` installs Camoufox
+`latch browser` on macOS and Linux arm64/x86_64: `--browser camoufox` installs Camoufox
 instead (name both with `--browser chrome --browser camoufox`), `--no-browser`
 none, and `latch browser setup --engine chrome|camoufox` installs one later.
+Browsers on Linux x86_64 currently need `latch serve --headless-browsers`;
+see [browser setup](latch/BROWSER.md).
 Setup requires curl, tar and SHA-256 tools.
 Linux hosting needs bubblewrap and usable user namespaces; setup explains missing
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
