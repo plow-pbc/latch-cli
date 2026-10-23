@@ -268,9 +268,9 @@ package enum SnapshotRunner {
         let code: LoginCode = try Fixtures.decode(Fixtures.code)
         let rules = "Agents may read and summarize anything in ~/Projects. Ask me before sending any email or deleting files. Never touch ~/Finance."
         let skipped = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .skipped,
-                                        .google: .skipped, .access: .skipped, .start: .continued])
+                                        .access: .skipped, .start: .continued])
         let full = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .continued,
-                                     .google: .continued, .access: .continued, .start: .continued])
+                                     .access: .continued, .start: .continued])
 
         typealias Stage = (Onboarding) async -> Void
         let states: [(String, Step, String, Progress, Stage)] = [
@@ -321,47 +321,47 @@ package enum SnapshotRunner {
                 $0.draftRules = rules
                 $0.rulesError = LatchError.failed(LatchFailure(code: "rules_too_long", message: "rules are at most 8 KB together; shorten them, then save again"))
             }),
-            ("05-google-checking", .google, Fixtures.stopped, Progress(), { _ in }),
-            ("05-google-not-connected", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
-            ("05-google-waiting", .google, Fixtures.stopped, Progress(), {
+            ("05-grant-google-checking", .access, Fixtures.stopped, Progress(), { _ in }),
+            ("05-grant-google-not-connected", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-waiting", .access, Fixtures.stopped, Progress(), {
                 await $0.checkGoogle(); $0.google = .waiting; $0.stage(googleSignInLink: Fixtures.signInLink)
             }),
-            ("05-google-wait-ended", .google, Fixtures.stopped, Progress(), {
+            ("05-grant-google-wait-ended", .access, Fixtures.stopped, Progress(), {
                 await $0.checkGoogle(); $0.googleWaitEnded = GoogleSignIn.problem(.failed(LatchFailure(code: "sign_in_timeout", message: "")), adding: false)
             }),
-            ("05-google-connected-turned-on", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
-            ("05-google-three-accounts", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
-            ("05-google-adding-waiting", .google, Fixtures.stopped, Progress(), {
+            ("05-grant-google-connected-turned-on", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-three-accounts", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-adding-waiting", .access, Fixtures.stopped, Progress(), {
                 await $0.checkGoogle(); $0.google = .waiting; $0.stage(googleSignInLink: Fixtures.signInLink)
             }),
-            ("05-google-adding-timed-out", .google, Fixtures.stopped, Progress(), {
+            ("05-grant-google-adding-timed-out", .access, Fixtures.stopped, Progress(), {
                 await $0.checkGoogle(); $0.googleWaitEnded = GoogleSignIn.problem(.failed(LatchFailure(code: "sign_in_timeout", message: "")), adding: true)
             }),
-            ("05-google-some-need-sign-in", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
-            ("05-google-all-need-sign-in", .google, Fixtures.stopped, Progress(), {
+            ("05-grant-google-some-need-sign-in", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-all-need-sign-in", .access, Fixtures.stopped, Progress(), {
                 $0.googleAccounts = GoogleAccounts(accounts: Fixtures.threeAccounts, needsSignIn: Fixtures.threeAccounts); $0.google = .notConnected
             }),
-            ("05-google-rerun-connected", .google, Fixtures.serving, Progress(rerun: true), { await $0.checkGoogle() }),
-            ("05-google-plow-unreachable", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
-            ("05-google-tools-missing", .google, Fixtures.stopped, Progress(), { $0.google = .failed(Onboarding.toolsMissing) }),
-            ("06-access-not-checked", .access, Fixtures.stopped, Progress(), { _ in }),
-            ("06-access-waiting", .access, Fixtures.stopped, Progress(), {
+            ("05-grant-google-rerun-connected", .access, Fixtures.serving, Progress(rerun: true), { await $0.checkGoogle() }),
+            ("05-grant-google-plow-unreachable", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-tools-missing", .access, Fixtures.stopped, Progress(), { $0.google = .failed(Onboarding.toolsMissing) }),
+            ("05-grant-access-not-checked", .access, Fixtures.stopped, Progress(), { _ in }),
+            ("05-grant-access-waiting", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access"); $0.waitingForAccess = true
             }),
-            ("06-access-allowed", .access, Fixtures.stopped, Progress(), {
+            ("05-grant-access-allowed", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .done; $0.contacts = .done
             }),
-            ("06-access-restart-latch", .access, Fixtures.serving, Progress(), {
+            ("05-grant-access-restart-latch", .access, Fixtures.serving, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
             }),
-            ("06-access-restart-failed", .access, Fixtures.stopped, Progress(), {
+            ("05-grant-access-restart-failed", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
                 $0.restartError = LatchError.failed(LatchFailure(code: "serve_failed", message: "the host did not answer within 30 seconds (`latch logs` has its log)"))
             }),
-            ("06-access-terminal-host", .access, Fixtures.servingAttached, Progress(), {
+            ("05-grant-access-terminal-host", .access, Fixtures.servingAttached, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
             }),
-            ("06-access-unavailable", .access, Fixtures.stopped, Progress(), {
+            ("05-grant-access-unavailable", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .failed(LatchError.failed(LatchFailure(code: "messages_not_installed", message: "the Messages reader is not installed at /Users/me/.latch/plugins/messages/0.1.0/latch-messages; run install.sh")))
                 $0.contacts = .done
             }),
@@ -381,7 +381,7 @@ package enum SnapshotRunner {
                 $0.app.stage(agents: try! Fixtures.decode(Fixtures.agents), standings: [:])
             }),
             ("08-done-google-skipped", .done, Fixtures.serving,
-             Progress(passed: full.passed.merging([.google: .skipped]) { $1 }), {
+             Progress(passed: full.passed.merging([.access: .skipped]) { $1 }), {
                 $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["messages", "contacts"], google: Fixtures.googleNotConnected)))
             }),
             ("08-done-with-skips", .done, Fixtures.serving, skipped, {
@@ -750,16 +750,16 @@ package enum SnapshotRunner {
 
     /// What `setup --status` says of Google for each Connect Google still.
     private static let google: [String: String] = [
-        "05-google-not-connected": Fixtures.googleNotConnected,
-        "05-google-waiting": Fixtures.googleNotConnected,
-        "05-google-wait-ended": Fixtures.googleNotConnected,
-        "05-google-connected-turned-on": Fixtures.googleConnectedOff,
-        "05-google-three-accounts": Fixtures.googleConnected(Fixtures.threeAccounts),
-        "05-google-adding-waiting": Fixtures.googleConnected(Fixtures.threeAccounts),
-        "05-google-adding-timed-out": Fixtures.googleConnected(Fixtures.threeAccounts),
-        "05-google-some-need-sign-in": Fixtures.googleConnected(Fixtures.threeAccounts, needsSignIn: ["family@example.com"]),
-        "05-google-rerun-connected": Fixtures.googleOn,
-        "05-google-plow-unreachable": Fixtures.googleUnreachable,
+        "05-grant-google-not-connected": Fixtures.googleNotConnected,
+        "05-grant-google-waiting": Fixtures.googleNotConnected,
+        "05-grant-google-wait-ended": Fixtures.googleNotConnected,
+        "05-grant-google-connected-turned-on": Fixtures.googleConnectedOff,
+        "05-grant-google-three-accounts": Fixtures.googleConnected(Fixtures.threeAccounts),
+        "05-grant-google-adding-waiting": Fixtures.googleConnected(Fixtures.threeAccounts),
+        "05-grant-google-adding-timed-out": Fixtures.googleConnected(Fixtures.threeAccounts),
+        "05-grant-google-some-need-sign-in": Fixtures.googleConnected(Fixtures.threeAccounts, needsSignIn: ["family@example.com"]),
+        "05-grant-google-rerun-connected": Fixtures.googleOn,
+        "05-grant-google-plow-unreachable": Fixtures.googleUnreachable,
     ]
 
     /// Each host's activity as `latch audit` printed it.

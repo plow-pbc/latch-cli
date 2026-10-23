@@ -19,7 +19,7 @@ struct GoogleAccountsTests {
         let client = SignInClient()
         client.google = google
         let app = app(client)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         await flow.checkGoogle()
         await app.refreshConnections()
         return (flow.googleAccounts, app.connections)
@@ -59,7 +59,7 @@ struct GoogleAccountsTests {
     @Test func addingPassesAddAccountAndATimeoutSaysItIsntAddedAgain() async {
         let client = SignInClient()
         client.google = Fixtures.googleConnected(three)
-        let flow = app(client).stage(.google)
+        let flow = app(client).stage(.access)
         await flow.checkGoogle()
         #expect(flow.google == .connected)
         flow.connectGoogle()
@@ -87,7 +87,7 @@ struct GoogleAccountsTests {
         if signIn == "sign in again" {
             client.enableRefusal = LatchFailure(code: "google_needs_sign_in", message: "Google needs the owner to sign in again.")
         }
-        let flow = app(client).stage(.google)
+        let flow = app(client).stage(.access)
         await flow.checkGoogle()
         flow.connectGoogle()
         await waitUntil { client.events != nil }
@@ -120,7 +120,7 @@ struct GoogleAccountsTests {
         client.google = google
         client.enableRefusal = LatchFailure(code: "google_needs_sign_in", message: "Google needs the owner to sign in again.")
         let app = app(client)
-        let flow = app.stage(.google)
+        let flow = app.stage(.access)
         await flow.checkGoogle()
         #expect(flow.google == .notConnected)
         flow.connectGoogle()

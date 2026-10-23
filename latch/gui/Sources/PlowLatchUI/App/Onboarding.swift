@@ -262,7 +262,6 @@ final class Onboarding {
         case .welcome: "Get started"
         case .login, .privacy: "Continue"
         case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
-        case .google: "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.thisMachine.hosting.ready != true ? "Start Latch" : "Continue"
         case .done: textAgent.map { "Text \($0.name)" } ?? "Open Latch"
@@ -273,9 +272,8 @@ final class Onboarding {
         switch step {
         case .login: verified
         case .rules: !savingRules
-        // Continue never skips: until Google is on, Skip for now does that.
-        case .google: google == .connected
-        case .access: accessDone || !waitingForAccess
+        // Continue never skips: until Google is on too, Skip for now does that.
+        case .access: accessDone ? google == .connected : accessFailed || !waitingForAccess
         case .start: !starting
         default: true
         }
@@ -286,7 +284,6 @@ final class Onboarding {
         switch step {
         case .welcome, .login, .privacy: next()
         case .rules: Task { await saveRules() }
-        case .google: next()
         case .access:
             if accessDone { next() } else if accessFailed { skip() } else if accessGranted { checkAccess() } else { requestAccess() }
         case .start: Task { await startLatch() }
@@ -330,8 +327,7 @@ final class Onboarding {
     var stepDone: Bool {
         switch step {
         case .rules: !(savedRules ?? "").isEmpty && !rulesChanged
-        case .google: google == .connected
-        case .access: accessDone
+        case .access: accessDone && google == .connected
         default: false
         }
     }
@@ -562,7 +558,7 @@ final class Onboarding {
     /// screen stops. One already under way stands for it, and while latch
     /// waits for a sign-in, its answer does.
     func recheckGoogle() {
-        guard step == .google, !lookingAtGoogle, google != .waiting else { return }
+        guard step == .access, !lookingAtGoogle, google != .waiting else { return }
         googleCheck = Task { await checkGoogle() }
     }
 
@@ -635,7 +631,7 @@ final class Onboarding {
         if google == .waiting { return .waiting }
         guard !accounts.accounts.isEmpty else { return .notConnected }
         // Turning Google on is this screen's alone: not once it was left.
-        guard !Task.isCancelled, self.step == .google else { return nil }
+        guard !Task.isCancelled, self.step == .access else { return nil }
         do {
             googleAccounts = try await client.enable("google").map(GoogleAccounts.init) ?? accounts
             return .connected
