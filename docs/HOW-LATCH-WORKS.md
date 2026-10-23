@@ -142,7 +142,7 @@ ask for this?
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`; otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Owner
   calls refuse the selector (`plow_chat_not_supported`, exit 2), and so do
-  commands that don't call a host.
+  the local modes listed in section 6.
 - The chat and the rules are read fresh at every judgment, so a "stop" or
   a rules change counts from the next call. The judge doesn't remember
   earlier calls: a repeat is judged again on its own.
