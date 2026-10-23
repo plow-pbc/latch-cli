@@ -18,7 +18,9 @@ final class ContractTests {
     let state: URL
 
     init() throws {
-        let built = Self.env["CARGO_TARGET_DIR"].map { URL(filePath: $0) } ?? Self.latchDir.appending(path: "target")
+        // Cargo, run in latch/, reads a relative CARGO_TARGET_DIR from there.
+        let built = Self.env["CARGO_TARGET_DIR"].map { $0.hasPrefix("/") ? URL(filePath: $0) : Self.latchDir.appending(path: $0) }
+            ?? Self.latchDir.appending(path: "target")
         latch = Self.env["LATCH_CONTRACT_LATCH"].map { URL(filePath: $0) } ?? built.appending(path: "debug/latch")
         try #require(FileManager.default.isExecutableFile(atPath: latch.path),
                      "no latch at \(latch.path): run `cargo build` in latch/, or set LATCH_CONTRACT_LATCH")

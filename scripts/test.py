@@ -306,7 +306,7 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
                 out.append(("latch", ["installer"], ["cargo", "build", "--locked", "--features", features],
                             LATCH))
             # Its ContractTests run the latch just built.
-            out.append(("swift app", ["installer"], ["env", f"LATCH_CONTRACT_LATCH={target_dir(where) / 'debug/latch'}",
+            out.append(("swift app", ["installer"], ["env", f"LATCH_CONTRACT_LATCH={LATCH / target_dir(where) / 'debug/latch'}",
                                                       "swift", "test"], LATCH / "gui"))
             out.append(("app bundle", ["installer"], ["sh", str(ROOT / "scripts/test-app-bundle.sh")], LATCH))
     return out
