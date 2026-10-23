@@ -15,7 +15,7 @@ the host records every call in its audit log.
 | **Owner** | Your machines, logged in with your own Plow login. | Call any host, manage the rules and vault on any host, turn connectors on or off on the host itself, run a host. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as your OS user on the host that uses its state folder. An agent running there counts. | Everything the owner can, on that host, through its local socket. | Like the owner. |
 | **Agent** | An agent logged in with its own Plow agent credential. | Call hosts. It can't manage rules, the vault or connectors, and can't run a host. | Against your messages in its Plow chat, plus the host's rules. |
-| **Host** | A machine running `latch serve`. | Runs each call in a sandbox, and holds the vault, rules, browser, connectors and audit log. | Its gatekeeper judges callers' actions; an action it can't judge doesn't run. |
+| **Host** | A machine running `latch serve`. | Runs programs, file copies and connector calls in a sandbox, and holds the vault, rules, browser and audit log. | Its gatekeeper judges callers' actions; an action it can't judge doesn't run. |
 
 **Read more:** [who's who in detail](#2-whos-who) ·
 [Mac and Linux hosts](#3-hosts-mac-and-linux) ·
