@@ -12,11 +12,18 @@ final class RulesClient: LatchClient, @unchecked Sendable {
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
-    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
+    func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow { show }
     func rulesSet(_ text: String) async throws {}
-    func rulesSet(_ text: String, host: String?, agent: String?) async throws {
+    /// As `rules set|clear --revision R` does: refused with
+    /// `stale_revision` unless the rules are still at R (nil: none).
+    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {
+        let current = agent.map { show.agent($0)?.revision } ?? show.everyAgent?.revision
+        guard current == revision else {
+            throw LatchError.failed(LatchFailure(code: "stale_revision", message: "the rules changed; they are at \(current ?? "none")"))
+        }
         sets.append((text, host, agent))
         if let agent {
             show.agents = (show.agents ?? []).filter { $0.agentUid != agent }
@@ -95,12 +102,25 @@ struct RulesTests {
         let client = RulesClient()
         let (app, host) = try app(client)
         let started = client.show.everyAgent?.revision
-        try await client.rulesSet("Changed on the laptop.", host: nil, agent: nil)
+        try await client.rulesSet("Changed on the laptop.", host: nil, agent: nil, revision: started)
         await #expect(throws: LatchError.unreachable(AppModel.changedElsewhere)) {
             try await app.saveRules("My edit.", on: host, agent: nil, revision: started)
         }
         #expect(client.sets.count == 1)
         #expect(client.show.everyAgent?.text == "Changed on the laptop.")
+    }
+
+    // An agent with no rules of its own when editing began: if some were
+    // added meanwhile, the first save doesn't replace them.
+    @Test func aFirstSaveNeverReplacesRulesAddedMeanwhile() async throws {
+        let client = RulesClient()
+        let (app, host) = try app(client)
+        let helper = try #require((try Fixtures.decode(Fixtures.agents) as AgentsList).agents.first { $0.name == "helper" }).uid
+        try await client.rulesSet("Added on the laptop.", host: nil, agent: helper, revision: nil)
+        await #expect(throws: LatchError.unreachable(AppModel.changedElsewhere)) {
+            try await app.saveRules("My first rules.", on: host, agent: helper, revision: nil)
+        }
+        #expect(client.show.agent(helper)?.text == "Added on the laptop.")
     }
 
     @Test func requestsSplitAsAShellWould() {

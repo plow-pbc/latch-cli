@@ -43,7 +43,7 @@ nonisolated struct FakeLatchClient: LatchClient {
             }
         }
     }
-    func rulesSet(_ text: String, host: String?, agent: String?) async throws {}
+    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {}
     func agents(host: String?) async throws -> AgentsList {
         switch host {
         case nil: try Fixtures.decode(Fixtures.agents)

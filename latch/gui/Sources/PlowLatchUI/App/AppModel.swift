@@ -189,14 +189,14 @@ final class AppModel {
 
     /// Saves rules on a host, for every agent or one agent's own, only if
     /// they're still what the person started editing (`revision`, nil when
-    /// there were none): a save never replaces rules changed elsewhere
+    /// there were none): latch refuses a save over rules changed elsewhere
     /// meanwhile. Empty text clears them.
     func saveRules(_ text: String, on host: HostEntry, agent: String?, revision: String?) async throws {
-        let target = host.isThisMac ? nil : host.name
-        let now = try await client.rulesShow(host: target)
-        let current = agent.map { now.agent($0)?.revision } ?? now.everyAgent?.revision
-        guard current == revision else { throw LatchError.unreachable(Self.changedElsewhere) }
-        try await client.rulesSet(text, host: target, agent: agent)
+        do {
+            try await client.rulesSet(text, host: host.isThisMac ? nil : host.name, agent: agent, revision: revision)
+        } catch let error as LatchError where error.code == "stale_revision" {
+            throw LatchError.unreachable(Self.changedElsewhere)
+        }
         await refreshRules(on: host)
         await refreshStanding(on: host)
     }

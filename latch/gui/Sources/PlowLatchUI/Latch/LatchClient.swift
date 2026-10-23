@@ -20,8 +20,10 @@ nonisolated protocol LatchClient: Sendable {
     /// Access, which takes a moment.
     func setupStatusCheckingAccess() async throws -> SetupStatus
     /// `latch rules set --file -` (or `rules clear` for no text) on a host,
-    /// for every agent or, with `agent` (a uid), that agent's own.
-    func rulesSet(_ text: String, host: String?, agent: String?) async throws
+    /// for every agent or, with `agent` (a uid), that agent's own, only if
+    /// they are still at `revision` (nil: there were none); otherwise latch
+    /// refuses with `stale_revision` and nothing changes.
+    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws
     /// `latch agents [--host NAME]`.
     func agents(host: String?) async throws -> AgentsList
     /// `latch rules try`: the verdict `request` (as an agent would send it)
@@ -138,12 +140,14 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(SetupStatus.self, try await run(["setup", "--status", "--check-access"]))
     }
 
-    func rulesSet(_ text: String, host: String?, agent: String?) async throws {
+    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {
         let whose = on(host) + (agent.map { ["--agent", $0] } ?? [])
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            _ = try await run(["rules", "clear"] + whose)
+            // No rules to clear when there were none.
+            guard let revision else { return }
+            _ = try await run(["rules", "clear", "--revision", revision] + whose)
         } else {
-            _ = try await run(["rules", "set", "--file", "-"] + whose, input: Data(text.utf8))
+            _ = try await run(["rules", "set", "--revision", revision ?? "none", "--file", "-"] + whose, input: Data(text.utf8))
         }
     }
 

@@ -93,7 +93,14 @@ enum TestHooks {
                   case let .success(show)? = app.summaries[host.name]?.rules else { return }
             let uid = argument[..<bar].isEmpty ? nil : String(argument[..<bar])
             let revision = uid.map { show.agent($0)?.revision } ?? show.everyAgent?.revision
-            Task { try? await app.saveRules(String(argument[argument.index(after: bar)...]), on: host, agent: uid, revision: revision) }
+            Task {
+                do {
+                    try await app.saveRules(String(argument[argument.index(after: bar)...]), on: host, agent: uid, revision: revision)
+                    print("save-rules: saved")
+                } catch {
+                    print("save-rules: refused: \((error as? LatchError)?.message ?? error.localizedDescription)")
+                }
+            }
         }
         on("quit") { _ in NSApp.terminate(nil) }
         on("settings-stand-in") { pid in standIn = pid.flatMap { pid_t($0) } }
