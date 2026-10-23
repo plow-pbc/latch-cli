@@ -7178,6 +7178,8 @@ mod pinned {
         };
         let url = format!("{}/socket-page", plow.url);
         let opened = run(&["browser", "open", &url]);
+        // Named no engine: the host's default, Chrome, which it has.
+        assert_eq!(opened["engine"], "chrome", "{opened}");
         let session = opened["session"].as_str().unwrap();
         let observed = run(&["browser", "--host", "host", "--session", session, "observe"]);
         assert!(
