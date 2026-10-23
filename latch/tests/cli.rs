@@ -2725,51 +2725,25 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         "{error}"
     );
     assert!(!taken.exists());
-    let before = posts();
-    let (code, error, _) = run(&[
-        "agents",
-        "new",
-        "--cloud",
-        "exe:hermes",
-        "--name",
-        "H",
-        "--line",
-        "ln_lost",
-    ]);
-    assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(5), &json!("outcome_unknown")),
-        "{error}"
-    );
-    assert_eq!(posts(), before + 1, "sent once");
-    let (code, error, _) = run(&[
-        "agents",
-        "new",
-        "--cloud",
-        "self_hosted",
-        "--name",
-        "H",
-        "--line",
-        "ln_free",
-    ]);
-    assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(2), &json!("unknown_cloud_kind"))
-    );
-    let (code, error, _) = run(&[
-        "agents",
-        "new",
-        "--cloud",
-        "exe:hermes",
-        "--name",
-        "H",
-        "--line",
-        "+1999",
-    ]);
-    assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(2), &json!("no_such_line"))
-    );
+    // A lost answer is sent once, never resent; an unknown kind or line is
+    // refused before anything is sent.
+    for (kind, line, exit, code, sent) in [
+        ("exe:hermes", "ln_lost", 5, "outcome_unknown", 1),
+        ("self_hosted", "ln_free", 2, "unknown_cloud_kind", 0),
+        ("exe:hermes", "+1999", 2, "no_such_line", 0),
+    ] {
+        let before = posts();
+        let new_cloud = [
+            "agents", "new", "--cloud", kind, "--name", "H", "--line", line,
+        ];
+        let (exit_code, error, _) = run(&new_cloud);
+        assert_eq!(
+            (exit_code, &error["error"]["code"]),
+            (Some(exit), &json!(code)),
+            "{error}"
+        );
+        assert_eq!(posts(), before + sent, "{code}");
+    }
     let (code, cloud, _) = run(&[
         "agents",
         "new",
@@ -5039,21 +5013,17 @@ fn offline_plugin_commands_on_one_state_folder_take_turns() {
     assert_eq!(local_serve(&host)["configuring"], false);
 }
 
-/// Whether launchd still has the one-shot Full Disk Access check's job.
+/// Whether launchd still has a one-shot Full Disk Access check's job for
+/// this state folder.
 #[cfg(target_os = "macos")]
 fn access_job_registered(state: &Path) -> bool {
     use sha2::Digest;
     let real = state.canonicalize().unwrap();
     let hash = sha2::Sha256::digest(real.as_os_str().as_encoded_bytes());
     let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
-    // SAFETY: getuid cannot fail.
-    let job = format!(
-        "gui/{}/co.plow.latch.access.{}",
-        unsafe { libc::getuid() },
-        &hex[..16]
-    );
-    let print = Command::new("launchctl").args(["print", &job]).output();
-    print.unwrap().status.success()
+    let jobs = Command::new("launchctl").arg("list").output().unwrap();
+    let prefix = format!("co.plow.latch.access.{}.", &hex[..16]);
+    String::from_utf8_lossy(&jobs.stdout).contains(&prefix)
 }
 
 /// A managed host's state folder: `latch stop` when the test ends, passing
@@ -6648,6 +6618,113 @@ mod messages {
     /// launchd job of latch's own, not from the terminal: refused there, it
     /// names this latch to grant and needs no restart; answered, it saves the
     /// setting the next host reads.
+    /// `setup --status --check-access` asks, as the app, whether it has Full
+    /// Disk Access, for Messages and Contacts both, without turning either
+    /// on or writing anything in the state folder; plain `--status` never
+    /// asks.
+    #[test]
+    fn setup_status_checks_full_disk_access_only_when_asked_and_changes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let plow = LivePlow::start();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let home = dir.path().join("home");
+        messages_home(&home);
+        let messages = home.join("Library/Messages");
+        let steps = |args: &[&str], env: &[(&str, &Path)]| {
+            let output = latch(&host, args, env);
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let by_name: std::collections::HashMap<String, Value> = status["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|step| (step["step"].as_str().unwrap().to_string(), step.clone()))
+                .collect();
+            by_name
+        };
+        // Every file in the state folder, and what it holds.
+        let contents = || {
+            let mut found = Vec::new();
+            let mut folders = vec![host.clone()];
+            while let Some(folder) = folders.pop() {
+                for entry in fs::read_dir(&folder).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        folders.push(path);
+                    } else {
+                        found.push((path.clone(), fs::read(&path).unwrap()));
+                    }
+                }
+            }
+            found.sort();
+            found
+        };
+        let before = contents();
+
+        let plain = steps(&["setup", "--status"], &[]);
+        assert!(
+            plain["messages"].get("access").is_none(),
+            "{}",
+            plain["messages"]
+        );
+
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = steps(
+            &["setup", "--status", "--check-access"],
+            &[("HOME", home.as_path())],
+        );
+        fs::set_permissions(&messages, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            refused["messages"]["access"], "not_granted",
+            "{}",
+            refused["messages"]
+        );
+        assert_eq!(refused["contacts"]["access"], "not_granted");
+        assert_eq!(refused["messages"]["state"], "needed", "still off");
+
+        let granted = steps(
+            &["setup", "--status", "--check-access"],
+            &[("LATCH_TEST_ACCESS", Path::new("granted"))],
+        );
+        assert_eq!(granted["messages"]["access"], "granted");
+        assert_eq!(granted["contacts"]["access"], "granted");
+        assert_eq!(granted["messages"]["enabled"], false, "nothing turned on");
+        assert!(granted["google"].get("access").is_none());
+
+        // Checks at the same time on one state folder (a status beside a
+        // `plugins enable`, say) never stop each other's.
+        let granted = [("LATCH_TEST_ACCESS", Path::new("granted"))];
+        let together: Vec<_> = (0..3)
+            .map(|_| {
+                let host = host.clone();
+                thread::spawn(move || {
+                    latch(&host, &["setup", "--status", "--check-access"], &granted)
+                })
+            })
+            .collect();
+        for check in together {
+            let output = check.join().unwrap();
+            let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(status["steps"][2]["access"], "granted", "{status}");
+        }
+
+        assert_eq!(contents(), before, "nothing written in the state folder");
+        assert!(!access_job_registered(&host), "the check's job outlived it");
+
+        // Before any login, the check still answers, and makes no folder.
+        let fresh = dir.path().join("fresh");
+        let output = latch(
+            &fresh,
+            &["setup", "--status", "--check-access"],
+            &[("LATCH_TEST_ACCESS", Path::new("not_granted"))],
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(status["steps"][2]["access"], "not_granted", "{status}");
+        assert!(!fresh.exists());
+    }
+
     #[test]
     fn messages_setup_with_no_host_running_checks_from_a_job_of_its_own() {
         use std::os::unix::fs::PermissionsExt;

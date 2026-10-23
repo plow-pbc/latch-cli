@@ -11,6 +11,9 @@ final class Onboarding {
         case waiting(LoginCode)
         case expired(LoginCode)
         case failed(String)
+        /// Plow already has a machine by this Mac's name; the text was
+        /// received, so another name logs in with no second text.
+        case nameTaken
         case verified(name: String)
     }
 
@@ -90,6 +93,8 @@ final class Onboarding {
     private(set) var step: Step
     private(set) var progress: Progress
     var login: Login = .starting
+    /// "Use another name": what the person typed.
+    var loginName = ""
     // Set your rules.
     var savedRules: String?
     var draftRules = ""
@@ -112,6 +117,8 @@ final class Onboarding {
     var googleAccounts: [String] = []
     /// Where latch says to connect Google, once it has said.
     var googleConnectURL: URL?
+    /// The person went to Plow to connect Google: coming back checks again.
+    private var connectingGoogle = false
     // Contacts & Messages.
     var messages: Check = .unknown
     var contacts: Check = .unknown
@@ -205,9 +212,9 @@ final class Onboarding {
         case .welcome: "Get started"
         case .login, .privacy: "Continue"
         case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
-        case .google: google == .done ? "Continue" : google == .unknown ? "Check connection" : "Check again"
-        case .access: accessDone ? "Continue" : accessFailed ? "Check again" : "Open System Settings"
-        case .start: starting ? "Starting…" : runInBackground && app.status?.serve.state != "serving" ? "Start Latch" : "Continue"
+        case .google: google != .unknown ? "Continue" : googleAccounts.isEmpty ? "Check connection" : "Turn on"
+        case .access: accessDone || accessFailed ? "Continue" : "Open System Settings"
+        case .start: starting ? "Starting…" : runInBackground && app.status?.serve.ready != true ? "Start Latch" : "Continue"
         case .done: "Open Latch"
         }
     }
@@ -228,8 +235,9 @@ final class Onboarding {
         switch step {
         case .welcome, .login, .privacy: next()
         case .rules: Task { await saveRules() }
-        case .google: if google == .done { next() } else { Task { await checkGoogle() } }
-        case .access: if accessDone { next() } else { requestAccess() }
+        case .google:
+            if google == .done { next() } else if google == .unknown { Task { await checkGoogle() } } else { skip() }
+        case .access: if accessDone { next() } else if accessFailed { skip() } else { requestAccess() }
         case .start: Task { await startLatch() }
         case .done: finish()
         }
@@ -250,6 +258,17 @@ final class Onboarding {
         default: false
         }
     }
+    /// Continue moves on without it: the step couldn't be set up here, and
+    /// checking again is the screen's own button, so Skip for now would say
+    /// the same thing twice.
+    var primarySkips: Bool {
+        switch step {
+        case .google: google.isNeeded || { if case .failed = google { true } else { false } }()
+        case .access: !accessDone && accessFailed
+        default: false
+        }
+    }
+
     /// A connector failed for a reason other than access: System Settings
     /// won't help.
     var accessFailed: Bool {
@@ -266,11 +285,12 @@ final class Onboarding {
     // MARK: Log in to Plow
 
     /// Runs `latch login --events` until it ends or the screen goes. A Mac
-    /// already logged in goes straight to verified.
-    func startLogin() {
+    /// already logged in goes straight to verified. `name`, when given, is
+    /// the name this Mac takes in Plow.
+    func startLogin(name: String? = nil) {
         loginTask?.cancel()
         login = .starting
-        let events = client.login()
+        let events = client.login(name: name)
         loginTask = Task {
             do {
                 for try await event in events {
@@ -282,16 +302,24 @@ final class Onboarding {
                         await app.refreshStatus()
                     case .expired:
                         if case let .waiting(code) = login { login = .expired(code) } else { login = .failed("This code expired.") }
-                    case let .error(failure): login = .failed(failure.message)
+                    case let .error(failure): login = failure.code == "conflict" ? .nameTaken : .failed(failure.message)
                     }
                 }
             } catch is CancellationError {
             } catch {
-                if case .verified = login { return }
-                if case .expired = login { return }
-                login = .failed((error as? LatchError)?.message ?? error.localizedDescription)
+                switch login {
+                case .verified, .expired, .nameTaken: return
+                default: login = .failed((error as? LatchError)?.message ?? error.localizedDescription)
+                }
             }
         }
+    }
+
+    /// "Use this name": logs in again under the name typed.
+    func useAnotherName() {
+        let name = loginName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        startLogin(name: name)
     }
 
     /// The person clicked the code: Messages opens with the text filled in.
@@ -370,20 +398,35 @@ final class Onboarding {
 
     /// "Connect Google in Plow": the page latch names; only ever on a click.
     func connectGoogleInPlow() {
-        if let url = googleConnectURL { app.open(url) }
+        guard let url = googleConnectURL else { return }
+        connectingGoogle = true
+        app.open(url)
     }
 
-    /// Arriving at Google: on Set up again, what's connected now.
+    /// Arriving at Google: what latch and Plow say of it. On; connected in
+    /// Plow but off, which Turn on changes; not connected in Plow, with
+    /// where to connect it. Looking never turns it on.
     func googleAppeared() async {
-        guard progress.rerun, google == .unknown else { return }
-        await checkGoogle()
+        guard google == .unknown, let setup = try? await client.setupStatus(), let step = setup.step("google") else { return }
+        googleAccounts = step.accounts ?? []
+        if step.state == "done" {
+            google = .done
+        } else if let url = step.connectUrl {
+            googleConnectURL = url
+            google = .needed(step.reason)
+        }
     }
 
-    /// Back in the app (from Plow, say): checks again unless Google is
-    /// connected or a check is under way.
+    /// Back in the app: from connecting Google in Plow, checks again;
+    /// otherwise only reads what latch says.
     func returnedToApp() async {
         guard step == .google, google != .done, google != .checking else { return }
-        await checkGoogle()
+        if connectingGoogle {
+            connectingGoogle = false
+            await checkGoogle()
+        } else {
+            await googleAppeared()
+        }
     }
 
     // MARK: Contacts & Messages
@@ -418,8 +461,17 @@ final class Onboarding {
         }
     }
 
-    /// One check of both, opening nothing: what Set up again shows on
-    /// arrival.
+    /// Arriving at Contacts & Messages: what latch says is on shows as on.
+    /// Looking never runs `plugins enable`; turning one on is the person's
+    /// click.
+    func accessAppeared() async {
+        guard let setup = try? await client.setupStatus() else { return }
+        for plugin in ["messages", "contacts"] where setup.step(plugin)?.state == "done" {
+            set(plugin, .done)
+        }
+    }
+
+    /// One check of each connector not on yet, opening nothing.
     func checkAccess() {
         accessTask?.cancel()
         accessTask = Task {
@@ -437,27 +489,27 @@ final class Onboarding {
     /// after it started, so latch must restart to see it.
     var backgroundHostNeedsRestart: Bool {
         guard messages.isNeeded || contacts.isNeeded, let serve = app.status?.serve else { return false }
-        return serve.state == "serving" && serve.managed && serve.attached != true
+        return serve.ready && serve.managed && serve.attached != true
     }
 
     /// The same, for a host held by a terminal: the person restarts it
     /// there; the app never does.
     var terminalHostNeedsRestart: Bool {
         guard messages.isNeeded || contacts.isNeeded, let serve = app.status?.serve else { return false }
-        return serve.state == "serving" && !backgroundHostNeedsRestart
+        return serve.ready && !backgroundHostNeedsRestart
     }
 
     /// The person's "Restart Latch": stops the background host and starts
-    /// it again with its last flags, then checks access again. A failure
-    /// stays on screen, with Try again, which starts it (stopping it first
-    /// only if it is still running).
+    /// it again as latch says to, then checks access again. A failure stays
+    /// on screen, with Try again, which starts it (stopping it first only
+    /// if it is still running).
     func restartLatch() async {
         restarting = true
         defer { restarting = false }
         restartError = nil
         do {
-            if app.status?.serve.state == "serving" { try await client.stop() }
-            try await client.serve(again: true)
+            if app.status?.serve.running == true { try await client.stop() }
+            try await startHost()
             await app.refreshStatus()
             checkAccess()
         } catch {
@@ -485,20 +537,26 @@ final class Onboarding {
 
     // MARK: Start Latch
 
-    /// Starts the host in the background (with the last serve's flags when
-    /// there were any) and sets the login item, as the toggles say.
+    /// Starts the host the way `setup --status` says (with the last serve's
+    /// flags when there were any). Nothing to do when it isn't needed.
+    /// A host latch says can't start now throws latch's reason.
+    private func startHost() async throws {
+        guard let host = try await client.setupStatus().step("host") else { return }
+        switch host.state {
+        case "needed": if let args = host.args { try await client.perform(args) }
+        case "blocked": throw HostBlocked(reason: host.reason)
+        default: break
+        }
+    }
+
+    /// Starts the host in the background and sets the login item, as the
+    /// toggles say.
     func startLatch() async {
         starting = true
         defer { starting = false }
         startError = nil
         do {
-            if runInBackground, app.status?.serve.state != "serving" {
-                do {
-                    try await client.serve(again: true)
-                } catch let error as LatchError where error.code == "nothing_to_start_again" {
-                    try await client.serve(again: false)
-                }
-            }
+            if runInBackground, app.status?.serve.ready != true { try await startHost() }
             if app.loginItemOffered { try app.setLoginItem(runInBackground && startAtLogin) }
             started = runInBackground
             await app.refreshStatus()
@@ -513,6 +571,12 @@ final class Onboarding {
     func stage(_ step: Step) {
         self.step = step
     }
+}
+
+/// `setup --status` says the host can't start now, and why.
+struct HostBlocked: LocalizedError {
+    var reason: String
+    var errorDescription: String? { reason }
 }
 
 /// "Start when you log in": the agent in the app's bundle that runs its

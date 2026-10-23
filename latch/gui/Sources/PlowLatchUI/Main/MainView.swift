@@ -10,7 +10,7 @@ struct MainView: View {
             Section("This Mac") {
                 LabeledContent("Mac name in Plow", value: failed ? "Couldn't check" : app.status?.peer?.name ?? "Not logged in")
                 LabeledContent("Latch") {
-                    Text(hostState).foregroundStyle(app.status?.serve.state == "serving" ? Brand.volt : .secondary)
+                    Text(hostState).foregroundStyle(app.status?.serve.ready == true ? Brand.volt : .secondary)
                 }
                 if let blocked = app.status?.serve.blocked ?? app.status?.lastError {
                     Text(blocked.message).foregroundStyle(.red)
@@ -51,7 +51,7 @@ struct MainView: View {
     private var hostState: String {
         if failed { return "Couldn't check" }
         return switch app.status?.serve.state {
-        case "serving": "Running"
+        case "serving": app.status?.serve.ready == true ? "Running" : "Not ready"
         case "starting": "Starting…"
         case "error": "Stopped after an error"
         case nil: "Checking…"
