@@ -29,7 +29,7 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
 }
 
 /// What `--version` prints, e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
-/// 03:45 UTC, local build, protocol plow/latch/3)`, or for a release build
+/// 03:45 UTC, local build, protocol plow/latch/4)`, or for a release build
 /// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
 /// came from (see `build.rs`), the protocol it speaks to peers and, for a
 /// build with baked-in defaults, those, so it is obvious which build this is.
