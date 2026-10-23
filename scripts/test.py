@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -190,6 +191,13 @@ def plan(args):
                 raise SystemExit(f"test.py: lifecycle {reason}")
             not_here.append(("lifecycle", reason))
             suites.remove("lifecycle")
+    if args.only is not None:
+        if not re.fullmatch(r"[A-Za-z0-9_:]+", args.only):
+            raise SystemExit("test.py: --only takes part of a test's name: letters, digits, _ and ::")
+        if args.shard or args.build_archive or args.from_archive:
+            raise SystemExit("test.py: --only is for one test at hand, not CI's --shard or archives")
+        if "installer" in suites:
+            suites.remove("installer")
     args.archive = None
     if args.build_archive or args.from_archive:
         if args.build_archive and args.from_archive:
@@ -227,11 +235,21 @@ def engines_state(where):
     return DEV / ("linux-cft-state" if where == "container" else "cft-state")
 
 
-def steps(where, suites, gate, shard, archive=None, ci=False):
+def selection(suite, where, only=None):
+    """A suite's filterset, narrowed to tests whose names contain `only`. A
+    browser test asked for by name runs on macOS too, tagged `mac` or not."""
+    if not only:
+        return filterset(suite, where)
+    chosen = BROWSER if suite == "browser" and where == "macos" else filterset(suite, where)
+    return f"({chosen}) & test({only})"
+
+
+def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
     """What runs, in order: (name, suites it serves, command, cwd). With
     `archive` ("out", PATH), the run only lints and builds the tests into a
-    nextest archive; with ("in", PATH), it tests that archive's build."""
-    first_shard = not shard or shard[0] == 1
+    nextest archive; with ("in", PATH), it tests that archive's build. With
+    `only`, it runs just the Rust tests whose names contain it."""
+    first_shard = (not shard or shard[0] == 1) and not only
     features = FEATURES["macos" if where == "macos" else "linux"]
     rust = [s for s in suites if s not in ("installer",)]
     out = []
@@ -261,7 +279,7 @@ def steps(where, suites, gate, shard, archive=None, ci=False):
         out.append(("engines", ["browser", "scenario"], command, LATCH))
     if rust:
         # latch/.config/nextest.toml keeps the browser tests' limits.
-        union = " | ".join(f"({filterset(suite, where)})" for suite in rust)
+        union = " | ".join(f"({selection(suite, where, only)})" for suite in rust)
         partition = ["--partition", "hash:%d/%d" % shard] if shard else []
         # The archive's build, unpacked where it was made: the tests use
         # paths compiled into them (CARGO_BIN_EXE_latch, CARGO_MANIFEST_DIR).
@@ -307,24 +325,27 @@ def show(command):
 
 def print_plan(where, suites, gate, not_here, args):
     here = {"macos": "this Mac", "linux": "this Linux machine", "container": "the Linux test container"}
-    print(f"test.py: {'gate: ' if gate else ''}{' '.join(suites)} on {here[where]} "
+    print(f"test.py: {'gate: ' if gate and not args.only else ''}{' '.join(suites)} on {here[where]} "
           f"({platform.machine()}{', shard %d/%d' % args.shard if args.shard else ''})")
     for suite, reason in not_here:
         print(f"  {suite}: {reason}")
     if "browser" in suites and restricted(where):
         print("  browser: Ubuntu's user-namespace restriction is on, so latch runs Chrome with page "
               "isolation off: only Chrome's conformance checks (browser::tests::cft::)")
-    for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive, args.ci):
+    if args.only:
+        print(f"  only the tests with `{args.only}` in their names, from whichever of these suites hold them")
+    for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive, args.ci,
+                                            args.only):
         print(f"  {name:<18} [{', '.join(serves)}] {show(command)}")
 
 
-def count(where, suites, env):
+def count(where, suites, env, only=None):
     """How many tests each Rust suite selects here; none is a broken suite."""
     features = FEATURES["macos" if where == "macos" else "linux"]
     counts = {}
     for suite in suites:
         listed = subprocess.run(["cargo", "nextest", "list", "--locked", "--features", features,
-                                 "--message-format", "json", "-E", filterset(suite, where)],
+                                 "--message-format", "json", "-E", selection(suite, where, only)],
                                 cwd=LATCH, env=env, capture_output=True, text=True, check=True)
         counts[suite] = sum(1 for binary in json.loads(listed.stdout)["rust-suites"].values()
                             for case in binary["testcases"].values()
@@ -342,13 +363,25 @@ def run(args):
     print_plan(where, suites, gate, not_here, args)
     env = cargo_env(where)
     results = []
-    for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive, args.ci):
+    todo = steps(where, suites, gate, args.shard, args.archive, args.ci, args.only)
+    while todo:
+        name, serves, command, cwd = todo.pop(0)
         print(f"\n== {name} [{', '.join(serves)}]", flush=True)
         began = time.monotonic()
         detail = None
         if name == "build":
             status = subprocess.run(command, cwd=cwd, env=env, stdout=subprocess.DEVNULL).returncode
-            if status == 0:
+            if status == 0 and args.only:
+                # Only the suites that hold a matching test, and their steps.
+                counts = {suite: n for suite, n in count(where, serves, env, args.only).items() if n}
+                detail = ", ".join(f"{suite} {n}" for suite, n in counts.items()) or "no test"
+                print(f"  {detail}", flush=True)
+                if not counts:
+                    print(f"test.py: no test in {', '.join(serves)} has `{args.only}` in its name")
+                    status = 1
+                todo = [step for step in steps(where, list(counts), False, None, None, args.ci, args.only)
+                        if step[0] != "build"]
+            elif status == 0:
                 counts = count(where, serves, env)
                 detail = ", ".join(f"{suite} {n}" for suite, n in counts.items())
                 print(f"  {detail}", flush=True)
@@ -466,6 +499,8 @@ def main():
                         help="lint and build the tests into a nextest archive, and run none (CI)")
     parser.add_argument("--from-archive", metavar="PATH",
                         help="test the build in this archive instead of building (CI)")
+    parser.add_argument("--only", metavar="NAME",
+                        help="only the Rust tests whose names contain NAME, in whichever suites hold them")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and run nothing")
     parser.add_argument("--list", action="store_true", help="list the suites")
     args = parser.parse_args()
