@@ -227,7 +227,7 @@ struct PrivacyView: View {
                           "Every request, allowed or refused, goes in a sealed log on this Mac.")
                 Rectangle().fill(Brand.line).frame(height: 1).padding(.leading, 44)
                 statement("lock", "Encrypted end to end.",
-                          "Plow checks what each request asks for, and never sees your passwords, your secrets or the results.")
+                          "The connection between your agents and this Mac is encrypted end to end.")
             }
             Spacer(minLength: 0)
         }
