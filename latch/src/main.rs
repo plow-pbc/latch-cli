@@ -311,8 +311,7 @@ async fn run(
             json(pretty, result)
         }
         Command::Serve(args) if args.foreground => {
-            let deny_exec = serve::DenyExec::from_flags(&args.deny_exec);
-            serve::run(&state, args.headless_browsers, deny_exec, args.attached).await?;
+            serve::run(&state, &args).await?;
             // A clean stop prints nothing: the host's output was its log.
             Ok(Printed(String::new()))
         }

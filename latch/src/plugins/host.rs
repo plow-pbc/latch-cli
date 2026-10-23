@@ -125,19 +125,37 @@ async fn google(workers: &WorkerSetup, plow: &Plow) -> Result<Value, Failure> {
         let message = format!("{} cannot be run; run install.sh again", gog.display());
         return Err(Failure::failed("gog_not_executable", message));
     }
-    let tokens = plow.google_tokens().await?;
+    let tokens = match plow.google_tokens().await {
+        // Plow's answer when the owner has no Google account connected.
+        Err(failure) if failure.code == "precondition_failed" => {
+            return Err(google_not_connected(plow).await);
+        }
+        tokens => tokens?,
+    };
     let accounts: Vec<&str> = tokens
         .accounts
         .iter()
         .filter(|account| account.access_token.is_some())
         .map(|account| account.account.as_str())
         .collect();
-    if accounts.is_empty() {
-        let message = "Plow has no Google account this host can use; connect one in Plow, \
-                       then run `latch plugins enable google` again";
-        return Err(Failure::failed("google_not_connected", message.into()));
-    }
     Ok(json!({"accounts": accounts}))
+}
+
+/// No Google account connected in Plow: where the owner connects one
+/// (`connect_url`, also in the message), then the command to run again.
+async fn google_not_connected(plow: &Plow) -> Failure {
+    let page = plow.connections_page().await.ok();
+    let place = match &page {
+        Some(page) => format!("connect one at {page}"),
+        None => "connect one in Plow".to_string(),
+    };
+    let message = format!(
+        "Plow has no Google account this host can use; {place}, then run \
+         `latch plugins enable google` again"
+    );
+    let mut failure = Failure::failed("google_not_connected", message);
+    failure.details = json!({"connect_url": page});
+    failure
 }
 
 /// Messages' and Contacts' setup: Full Disk Access as the host sees it.

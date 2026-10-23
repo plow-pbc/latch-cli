@@ -1,9 +1,10 @@
-//! `latch plugins …`. `list` asks any host, as other commands do; `enable`
-//! and `disable` are for this machine only, and only from the owner's own
-//! login: managing another host's connectors from here is not a thing
-//! latch does. They go to this machine's host over its private socket when
-//! it runs; when none does, this command makes the same change itself, in
-//! the state folder the next `latch serve` reads.
+//! `latch plugins …`. `list` asks another host named by `--host`; for this
+//! machine it reads the state folder, running host or not, as `rules show`
+//! does. `enable` and `disable` are for this machine only, and only from
+//! the owner's own login: managing another host's connectors from here is
+//! not a thing latch does. They go to this machine's host over its private
+//! socket when it runs; when none does, this command makes the same change
+//! itself, in the state folder the next `latch serve` reads.
 
 use std::time::Duration;
 
@@ -25,6 +26,9 @@ const HOLD_WITHIN: Duration = Duration::from_secs(60);
 
 pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> {
     let (host, args) = match args.command {
+        PluginsCommand::List { host } if hosts::local_target(state, host.as_deref())? => {
+            return super::list_saved(state);
+        }
         PluginsCommand::List { host } => (
             hosts::resolve(state, host).await?,
             json!({"command": "list"}),

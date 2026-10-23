@@ -1624,9 +1624,19 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
         "Never send email.\nNever buy anything."
     );
 
+    // The host last ran refusing exec to Ada alone.
+    fs::write(
+        state.join("serve-args.json"),
+        format!(r#"["--deny-exec={ADA}"]"#),
+    )
+    .unwrap();
     let show = latch(&state, &["rules", "show"], &[]);
     assert_eq!(show.status.code(), Some(0), "{show:?}");
     let show: Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(
+        show["deny_exec"],
+        json!({"every_agent": false, "agent_uids": [ADA]})
+    );
     assert_eq!(
         show["every_agent"]["text"],
         "Never send email.\nNever buy anything."
@@ -1985,6 +1995,10 @@ impl LivePlow {
             }
         }
         match (method, path) {
+            // Plow's answer with no Google account connected.
+            ("POST", "/v1/connectors/gmail/access-token") if state.google.is_none() => {
+                (412, json!({"detail": "No Gmail account connected."}))
+            }
             ("POST", "/v1/connectors/gmail/access-token") => {
                 let accounts: Vec<Value> = state
                     .google
@@ -2853,7 +2867,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(
         before["serve"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
-               "state": "stopped", "pid": null, "blocked": null})
+               "state": "stopped", "pid": null, "blocked": null,
+               "deny_exec": {"every_agent": false, "agent_uids": []}})
     );
     assert_eq!(before["last_error"], Value::Null);
 
@@ -2870,7 +2885,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(
         up["serve"],
         json!({"running": true, "ready": true, "configuring": false, "managed": false, "attached": false,
-               "state": "serving", "pid": pid, "blocked": null})
+               "state": "serving", "pid": pid, "blocked": null,
+               "deny_exec": {"every_agent": false, "agent_uids": []}})
     );
     drop(serve);
     let stopped = local(&host);
@@ -3717,6 +3733,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
     google_enabled(&host);
+    plow.state.lock().unwrap().google = Some("google-token".into());
     let _serve = serving(&host, &relay);
     assert_eq!(
         fs::metadata(host.join("serve-v3.sock"))
@@ -3749,7 +3766,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     assert_eq!(exec["stdout"], "local socket\n");
     assert_eq!(
         run(&["google", "--host", "host", "--", "accounts"])["accounts"],
-        json!([])
+        json!(["owner@example.com"])
     );
     let source = dir.path().join("source.txt");
     let remote = share.join("copied.txt");
@@ -4663,6 +4680,10 @@ fn setup_sets_up_every_connector_with_no_host_running() {
         assert!(!plugins.is_empty(), "{listed}");
         plugins.iter().all(|plugin| plugin["state"] == "enabled")
     };
+    assert!(
+        enabled(&latch(&host, &["plugins", "list"], &[])),
+        "saved, with no host running"
+    );
     let _serve = serving(&host, &relay);
     assert!(
         enabled(&latch(&host, &["plugins", "list"], &[])),
@@ -4878,7 +4899,9 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
     for instruction in ["latch serve -d", "--deny-exec", "--headless-browsers"] {
         assert!(message.contains(instruction), "{error}");
     }
+    // Status still answers, saying it cannot tell.
     assert_eq!(local_serve(&state)["running"], false);
+    assert_eq!(local_serve(&state)["deny_exec"], Value::Null);
 }
 
 /// `latch ARGS` on a terminal of its own, as its controlling terminal, the
@@ -5399,10 +5422,10 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     let saved: Value =
         serde_json::from_str(&fs::read_to_string(host.join("plugins.json")).unwrap()).unwrap();
     assert_eq!(saved["google"]["state"], "needs_setup", "{saved}");
-    // Listing still needs the host.
-    let (code, error) = run(&host, &["plugins", "list", "--host", "host"], &[]);
-    assert_eq!(code, Some(3));
-    assert_eq!(error["error"]["code"], "serve_required");
+    // Listing this machine's needs no host: it reads what was saved.
+    let (code, listed) = run(&host, &["plugins", "list", "--host", "host"], &[]);
+    assert_eq!(code, Some(0));
+    assert_eq!(listed["plugins"][0]["state"], "needs_setup", "{listed}");
     let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(disabled["state"], "disabled");
@@ -6021,6 +6044,10 @@ mod lifecycle {
         // Nobody else asks the host on the network what its socket answers.
         assert_eq!(local_serve(&host)["state"], "serving");
         assert_eq!(local_serve(&host)["managed"], true);
+        assert_eq!(
+            local_serve(&host)["deny_exec"],
+            json!({"every_agent": true, "agent_uids": []})
+        );
 
         let stopped = latch(&host, &["stop"], &[]);
         assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");

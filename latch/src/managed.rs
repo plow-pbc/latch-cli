@@ -202,12 +202,11 @@ async fn launch(
             None => already_serving(&dir).await,
         });
     }
+    // The host saves them again once it holds the folder.
     let given = if args.again {
         given_before(&dir)?
     } else {
-        let given = given_now(args);
-        save_given(&dir, &given)?;
-        given
+        given_now(args)
     };
     let program = std::env::current_exe()
         .and_then(|exe| exe.canonicalize())
@@ -239,7 +238,7 @@ async fn launch(
 }
 
 /// What `args` give the host after `serve --foreground`.
-fn given_now(args: &ServeArgs) -> Vec<String> {
+pub(crate) fn given_now(args: &ServeArgs) -> Vec<String> {
     let mut given = Vec::new();
     if args.headless_browsers {
         given.push("--headless-browsers".to_string());
@@ -254,7 +253,7 @@ fn given_now(args: &ServeArgs) -> Vec<String> {
 }
 
 /// Keeps `given` for a later `serve -d --again`.
-fn save_given(dir: &Path, given: &[String]) -> Result<(), Failure> {
+pub(crate) fn save_given(dir: &Path, given: &[String]) -> Result<(), Failure> {
     let path = dir.join(ARGS_FILE);
     crate::state::write_private(&path, json!(given).to_string().as_bytes())
         .map_err(|err| io_failure(&path, err))
@@ -262,15 +261,35 @@ fn save_given(dir: &Path, given: &[String]) -> Result<(), Failure> {
 
 /// What the last start gave the host, for `serve -d --again`.
 fn given_before(dir: &Path) -> Result<Vec<String>, Failure> {
-    let path = dir.join(ARGS_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+    match saved(dir)? {
+        Some((given, _)) => Ok(given),
+        None => {
             let message = "no `latch serve` has run on this state folder to start again; \
                            `latch serve -d` starts one"
                 .to_string();
-            return Err(Failure::usage("nothing_to_start_again", message));
+            Err(Failure::usage("nothing_to_start_again", message))
         }
+    }
+}
+
+/// The `--deny-exec` the host on `dir` runs with, or last ran with (none
+/// before any host ran here); `None` when its saved flags cannot be read,
+/// which `serve -d --again` reports.
+pub fn saved_deny_exec(dir: &Path) -> Option<crate::serve::DenyExec> {
+    let saved = saved(dir).ok()?;
+    Some(
+        saved
+            .map(|(_, args)| crate::serve::DenyExec::from_flags(&args.deny_exec))
+            .unwrap_or_default(),
+    )
+}
+
+/// The flags the last host on `dir` saved, as given and as parsed.
+fn saved(dir: &Path) -> Result<Option<(Vec<String>, ServeArgs)>, Failure> {
+    let path = dir.join(ARGS_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(io_failure(&path, err)),
     };
     let invalid = || {
@@ -282,13 +301,16 @@ fn given_before(dir: &Path) -> Result<Vec<String>, Failure> {
         )
     };
     let given: Vec<String> = serde_json::from_str(&text).map_err(|_| invalid())?;
-    crate::cli::Cli::try_parse_from(
+    let parsed = crate::cli::Cli::try_parse_from(
         ["latch", "serve", "--foreground"]
             .into_iter()
             .chain(given.iter().map(String::as_str)),
     )
     .map_err(|_| invalid())?;
-    Ok(given)
+    match parsed.command {
+        crate::cli::Command::Serve(args) => Ok(Some((given, args))),
+        _ => Err(invalid()),
+    }
 }
 
 /// Waits until the host just started answers on its socket, or says why

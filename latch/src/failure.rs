@@ -325,6 +325,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("plow_error", Exit::Failed),
     ("plow_rejected", Exit::Failed),
     ("plow_unreachable", Exit::Failed),
+    ("precondition_failed", Exit::Failed),
     ("press_required", Exit::Denied),
     ("profile_failed", Exit::Failed),
     ("protocol_mismatch", Exit::Failed),

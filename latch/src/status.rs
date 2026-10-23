@@ -113,6 +113,9 @@ pub struct Serve {
     pub pid: Option<u32>,
     /// Why a host that runs cannot be used: one from another latch version.
     pub blocked: Option<Problem>,
+    /// The agents refused `exec` here (`serve --deny-exec`): as the host
+    /// runs, or as the last one ran; `null` if its saved flags are unreadable.
+    pub deny_exec: Option<crate::serve::DenyExec>,
 }
 
 /// `status --local`: reads the state folder and asks no one, so it works
@@ -146,6 +149,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
             state: host.state,
             pid: host.pid,
             blocked,
+            deny_exec: crate::managed::saved_deny_exec(&dir),
         },
         last_error: host.error,
         update: crate::update::status(&dir),
