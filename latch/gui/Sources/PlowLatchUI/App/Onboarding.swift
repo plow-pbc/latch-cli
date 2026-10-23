@@ -73,6 +73,9 @@ final class Onboarding {
         var id: String { name }
     }
 
+    /// Every default's examples, in order.
+    nonisolated static var examples: [Example] { decks.flatMap(\.examples) }
+
     /// The defaults, their calendar requests for the week from today.
     nonisolated static var decks: [Deck] { decks(from: .now) }
 

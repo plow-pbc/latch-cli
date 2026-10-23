@@ -132,6 +132,19 @@ struct RulesTests {
         #expect(ShellWords.split(#"exec -- echo "open"#) == nil)
     }
 
+    /// Each of the Examples menu's items fills the request field with
+    /// words that split back to the example's request.
+    @Test func everyExampleFillsTheRequestWithItsWords() {
+        #expect(Onboarding.examples.count == 10)
+        let trial = Trial()
+        for example in Onboarding.examples {
+            trial.use(example)
+            #expect(trial.words == example.request, "\(example.title): \(trial.request)")
+        }
+        let awkward = ["", "it's", #"say "hi""#, #"back\slash"#, "two\nlines", "plain"]
+        #expect(ShellWords.split(ShellWords.join(awkward)) == awkward)
+    }
+
     @Test func everyVerdictHasItsWords() throws {
         var titles: [String: String] = [:]
         for (name, json) in Fixtures.tries {
