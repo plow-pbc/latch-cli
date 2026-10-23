@@ -3,7 +3,7 @@ use crate::lifecycle::Problem;
 use crate::status::{Account, Host, Hosting};
 use serde_json::json;
 
-/// A Mac signed in as the owner, serving in the background, Google and
+/// A Mac logged in as the account owner, serving in the background, Google and
 /// Messages on, Contacts off, checked for updates this morning.
 fn facts() -> Facts {
     Facts {
@@ -105,22 +105,22 @@ fn a_mac_serving_says_who_where_and_what_plow_says() {
     assert_eq!(
         shown(&facts()),
         "\
-latch 0.1.0 (local build) · api.plow.co
+latch 0.1.0 (local build) · Plow: api.plow.co
 
 Account    Ada Lovelace
-Login      owner (device)
+Login      account owner
 
 Hosts      this Mac: studio
            serving (background)
-           Plow: online
+           Plow says: online
            pi: not online, last seen Oct 22
-Commands   go to studio
+Commands   default host: studio
 Connectors Google on · Messages on
            Contacts off
 Update     up to date (checked 3:58 PM)
 Folder     ~/.latch
 
-As JSON: latch status. Live activity: latch dashboard."
+For agents (JSON): latch status. Live activity: latch dashboard."
             .replace("this Mac", &format!("this {}", here()))
     );
 }
@@ -138,10 +138,10 @@ fn before_login_it_suggests_a_name_and_says_to_set_up() {
     facts.plow = None;
     let text = shown(&facts);
     for row in [
-        "Account    not signed in",
-        "not signed in\n           suggested name: studio\n           stopped\n           sign in to see the others",
+        "Account    not logged in",
+        "not logged in\n           name at login: studio\n           stopped\n           log in to see other hosts",
         "Update     not checked",
-        "isn't signed in to Plow. Run: latch setup",
+        "isn't logged in to Plow. Run: latch setup",
     ] {
         assert!(text.contains(row), "{row:?} in:\n{text}");
     }
@@ -156,18 +156,21 @@ fn plow_rows_wait_then_say_plow_did_not_answer_never_logged_out_or_zero() {
     facts.plow = Some(Pending::Waiting);
     let waiting = shown(&facts);
     assert!(waiting.contains("Account    …"), "{waiting}");
-    assert!(waiting.contains("Plow: …"), "{waiting}");
+    assert!(waiting.contains("Plow says: …"), "{waiting}");
     // This machine has served: where commands go needs no Plow.
-    assert!(waiting.contains("Commands   go to studio"), "{waiting}");
+    assert!(
+        waiting.contains("Commands   default host: studio"),
+        "{waiting}"
+    );
 
     facts.plow = Some(Pending::NoAnswer);
     facts.here_default = None;
     let late = shown(&facts);
     assert!(late.contains("Account    Plow didn't answer"), "{late}");
-    assert!(late.contains("Plow: didn't answer"), "{late}");
+    assert!(late.contains("           Plow didn't answer\n"), "{late}");
     assert!(late.contains("Commands   Plow didn't answer"), "{late}");
     assert!(
-        !late.contains("not signed in") && !late.contains("no hosts"),
+        !late.contains("not logged in") && !late.contains("no hosts"),
         "{late}"
     );
 
@@ -181,9 +184,12 @@ fn plow_rows_wait_then_say_plow_did_not_answer_never_logged_out_or_zero() {
     );
     // Said once: the other rows point to it.
     assert_eq!(refused.matches("HTTP 401").count(), 1, "{refused}");
-    assert!(refused.contains("Plow: refused (see Account)"), "{refused}");
     assert!(
-        refused.contains("Commands   Plow refused (see Account)"),
+        refused.contains("           Plow error (see Account)\n"),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("Commands   Plow error (see Account)"),
         "{refused}"
     );
 }
@@ -196,7 +202,10 @@ fn the_host_row_waits_for_the_service_manager_and_never_guesses() {
     assert!(waiting.contains(": studio\n           …\n"), "{waiting}");
     facts.host = Pending::NoAnswer;
     let late = shown(&facts);
-    assert!(late.contains("latch didn't say in time"), "{late}");
+    assert!(
+        late.contains("state unknown: the check timed out"),
+        "{late}"
+    );
     // Unknown is not stopped: no step to start it, and no Exec row.
     assert!(
         !late.contains("Run: latch serve") && !late.contains("Exec"),
@@ -216,12 +225,12 @@ fn several_hosts_and_never_served_needs_a_host_and_lists_three() {
         ("e", false, Some(true)),
     ])));
     let text = shown(&facts);
-    assert!(text.contains("Plow: not listed as a host"), "{text}");
+    assert!(text.contains("Plow says: not listed as a host"), "{text}");
     assert!(text.contains("           c: not online\n"), "{text}");
     assert!(text.contains("+2 more: latch status"), "{text}");
     assert!(!text.contains("d: online"), "{text}");
     assert!(
-        text.contains("Commands   need --host: a, b, c, d, e"),
+        text.contains("Commands   choose with --host: a, b, c, d, e"),
         "{text}"
     );
 }
@@ -272,12 +281,21 @@ fn the_next_step_is_the_first_thing_to_do() {
     });
     let text = shown(&facts);
     assert!(
-        text.contains("blocked by another latch (pid 4242)"),
+        text.contains("blocked by another latch version (…"),
         "{text}"
     );
-    assert!(
-        text.contains("\na host from another latch version is running (pid 4242); stop it\n"),
-        "{text}"
+    let step: String = facts
+        .next_step()
+        .unwrap()
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect();
+    assert_eq!(
+        step,
+        format!(
+            "Another latch version is running on this {}. Stop it: Ctrl-C in its terminal, or kill 4242.",
+            here()
+        )
     );
 }
 
@@ -344,7 +362,7 @@ fn the_mark_sits_beside_the_facts_in_80_columns_and_above_them_when_narrower() {
         "{lines:#?}"
     );
     assert!(
-        lines[0].ends_with("latch 0.1.0 (local build) · api.plow.co"),
+        lines[0].ends_with("latch 0.1.0 (local build) · Plow: api.plow.co"),
         "{lines:#?}"
     );
 

@@ -1545,9 +1545,8 @@ fn bare_latch_draws_what_it_knows_at_once_and_plow_as_it_answers() {
     use_plow(&host, &url);
     let (shown, took) = overview(&host, &[], (100, 30));
     let last = &shown[shown.rfind("\x1b[?2026h").unwrap()..];
-    assert_eq!(last.matches("Plow didn't answer").count(), 2, "{last}");
-    assert!(last.contains("didn't answer"), "{last}");
-    assert!(!last.contains("not signed in"), "{last}");
+    assert_eq!(last.matches("Plow didn't answer").count(), 3, "{last}");
+    assert!(!last.contains("not logged in"), "{last}");
     assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
     assert!(took < std::time::Duration::from_secs(5), "{took:?}");
     println!("Plow silent: prompt back after {took:?}");
@@ -1578,7 +1577,10 @@ fn bare_latch_waits_on_a_stalled_service_manager_only_until_its_deadline() {
     assert!(first.contains("Folder") && first.contains("…"), "{first}");
     assert!(!first.contains("serving"), "{first}");
     let last = &shown[shown.rfind("\x1b[?2026h").unwrap()..];
-    assert!(last.contains("latch didn't say in time"), "{last}");
+    assert!(
+        last.contains("state unknown: the check timed out"),
+        "{last}"
+    );
     assert!(last.contains("Ada Example"), "{last}");
     assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
     assert!(took < std::time::Duration::from_secs(5), "{took:?}");
@@ -1598,7 +1600,7 @@ fn bare_latch_narrow_puts_the_mark_above_and_no_color_keeps_it_still() {
     assert!(mark < header, "{shown}");
     assert!(!shown[mark..header].contains("Account"), "{shown}");
     assert!(
-        shown.contains("isn't signed in to Plow. Run: latch setup"),
+        shown.contains("isn't logged in to Plow. Run: latch setup"),
         "{shown}"
     );
     assert!(!state.exists(), "the overview made the state folder");

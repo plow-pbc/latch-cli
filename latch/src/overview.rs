@@ -247,14 +247,13 @@ impl Facts {
         let mut rows = vec![self.header(), vec![]];
         let logged_in = self.login.as_ref();
         let account = match (&self.plow, logged_in) {
-            (_, None) | (None, _) => plain("not signed in"),
-            (Some(Pending::Got(directory)), _) => plain(
-                directory
-                    .account
-                    .display_name
-                    .clone()
-                    .unwrap_or_else(|| directory.account.owner_uid.clone()),
-            ),
+            (_, None) | (None, _) => plain("not logged in"),
+            (Some(Pending::Got(directory)), _) => {
+                plain(directory.account.display_name.clone().unwrap_or_else(|| {
+                    let id: String = directory.account.owner_uid.chars().take(8).collect();
+                    format!("no name set in Plow (ID {id}…)")
+                }))
+            }
             (Some(pending), _) => not_answered(pending, "Plow didn't answer", None),
         };
         rows.push(labeled("Account", vec![account]));
@@ -262,7 +261,7 @@ impl Facts {
             rows.push(labeled(
                 "Login",
                 match login.kind.as_str() {
-                    "device" => vec![plain("owner "), toned("(device)", Tone::Dim)],
+                    "device" => vec![plain("account owner")],
                     kind => vec![plain(kind)],
                 },
             ));
@@ -295,12 +294,12 @@ impl Facts {
             plain(format!(
                 " {} ({})",
                 env!("CARGO_PKG_VERSION"),
-                build.unwrap_or("local build")
+                build.map_or("local build".to_string(), |build| format!("build {build}"))
             )),
         ];
         if let Some(api) = &self.api {
             let host = api.split("://").last().unwrap_or(api).trim_end_matches('/');
-            line.extend([toned(" · ", Tone::Dim), plain(host)]);
+            line.extend([toned(" · Plow: ", Tone::Dim), plain(host)]);
         }
         line
     }
@@ -317,11 +316,11 @@ impl Facts {
             None => {
                 lines.push(vec![
                     toned(format!("this {},", here()), Tone::Dim),
-                    plain(" not signed in"),
+                    plain(" not logged in"),
                 ]);
                 if let Some(name) = &self.suggested {
                     lines.push(vec![
-                        toned("suggested name: ", Tone::Dim),
+                        toned("name at login: ", Tone::Dim),
                         plain(term::one_line(name)),
                     ]);
                 }
@@ -329,16 +328,19 @@ impl Facts {
         }
         lines.extend(self.host_state());
         match &self.plow {
-            None => lines.push(vec![toned("sign in to see the others", Tone::Dim)]),
+            None => lines.push(vec![toned("log in to see other hosts", Tone::Dim)]),
             Some(Pending::Got(directory)) => {
                 let own = directory.hosts.iter().find(|host| host.this_machine);
                 lines.push(match own {
                     Some(host) => {
-                        let mut line = vec![toned("Plow: ", Tone::Dim)];
+                        let mut line = vec![toned("Plow says: ", Tone::Dim)];
                         line.extend(self.seen(host));
                         line
                     }
-                    None => vec![toned("Plow: ", Tone::Dim), plain("not listed as a host")],
+                    None => vec![
+                        toned("Plow says: ", Tone::Dim),
+                        plain("not listed as a host"),
+                    ],
                 });
                 let others: Vec<_> = directory
                     .hosts
@@ -357,10 +359,15 @@ impl Facts {
                     )]);
                 }
             }
-            Some(pending) => lines.push(vec![
-                toned("Plow: ", Tone::Dim),
-                not_answered(pending, "didn't answer", Some("refused (see Account)")),
+            Some(Pending::Waiting) => lines.push(vec![
+                toned("Plow says: ", Tone::Dim),
+                toned("…", Tone::Warn),
             ]),
+            Some(pending) => lines.push(vec![not_answered(
+                pending,
+                "Plow didn't answer",
+                Some(PLOW_ERROR),
+            )]),
         }
         let mut lines = lines.into_iter();
         let first = labeled("Hosts", lines.next().unwrap_or_default());
@@ -376,7 +383,7 @@ impl Facts {
         else {
             return vec![vec![not_answered(
                 &self.host,
-                "latch didn't say in time",
+                "state unknown: the check timed out",
                 None,
             )]];
         };
@@ -387,7 +394,7 @@ impl Facts {
                 .map(|pid| format!(" (pid {pid})"))
                 .unwrap_or_default();
             return vec![vec![toned(
-                format!("blocked by another latch{pid}"),
+                format!("blocked by another latch version{pid}"),
                 Tone::Warn,
             )]];
         }
@@ -396,7 +403,7 @@ impl Facts {
                 let how = match (hosting.managed, hosting.attached) {
                     (_, true) => "in a terminal",
                     (true, false) => "background",
-                    (false, false) => "foreground",
+                    (false, false) => "--foreground",
                 };
                 vec![vec![
                     toned("serving", Tone::Good),
@@ -444,17 +451,13 @@ impl Facts {
 
     fn commands(&self, plow: &Pending<Directory>) -> (String, Tone) {
         if let Some(name) = &self.here_default {
-            return plain(format!("go to {}", term::one_line(name)));
+            return plain(format!("default host: {}", term::one_line(name)));
         }
         let Pending::Got(directory) = plow else {
-            return not_answered(
-                plow,
-                "Plow didn't answer",
-                Some("Plow refused (see Account)"),
-            );
+            return not_answered(plow, "Plow didn't answer", Some(PLOW_ERROR));
         };
         if let Some(name) = &directory.default_host {
-            return plain(format!("go to {}", term::one_line(name)));
+            return plain(format!("default host: {}", term::one_line(name)));
         }
         let names: Vec<String> = directory
             .hosts
@@ -462,10 +465,10 @@ impl Facts {
             .map(|host| term::one_line(&host.name))
             .collect();
         match directory.default_host_reason.as_deref() {
-            Some("host_required") => plain(format!("need --host: {}", names.join(", "))),
+            Some("host_required") => plain(format!("choose with --host: {}", names.join(", "))),
             Some("unknown_host") => toned(
                 format!(
-                    "LATCH_HOST names no host: {}",
+                    "no matching host for LATCH_HOST={}",
                     term::one_line(&std::env::var("LATCH_HOST").unwrap_or_default())
                 ),
                 Tone::Warn,
@@ -543,11 +546,18 @@ impl Facts {
         let run = |what: String, command: String| {
             vec![plain(format!("{what} Run: ")), toned(command, Tone::Good)]
         };
-        if let Some(blocked) = hosting.and_then(|hosting| hosting.blocked.as_ref()) {
-            return Some(vec![plain(term::one_line(&blocked.message))]);
+        if let Some(hosting) = hosting.filter(|hosting| hosting.blocked.is_some()) {
+            let kill = hosting
+                .pid
+                .map(|pid| format!(", or kill {pid}"))
+                .unwrap_or_default();
+            return Some(vec![plain(format!(
+                "Another latch version is running on this {}. Stop it: Ctrl-C in its terminal{kill}.",
+                here()
+            ))]);
         }
         let Some(login) = &self.login else {
-            let what = format!("This {} isn't signed in to Plow.", here());
+            let what = format!("This {} isn't logged in to Plow.", here());
             return Some(run(what, "latch setup".into()));
         };
         let owner = login.kind == "device";
@@ -584,15 +594,17 @@ impl Facts {
         let mut lines = vec![vec![]];
         lines.extend(self.next_step());
         lines.push(vec![toned(
-            "As JSON: latch status. Live activity: latch dashboard.",
+            "For agents (JSON): latch status. Live activity: latch dashboard.",
             Tone::Dim,
         )]);
         lines
     }
 }
 
-/// A row that has no answer (yet).
-/// What went wrong is said once, on the Account row; the other rows that
+/// What a row that needed Plow's answer says when asking failed.
+const PLOW_ERROR: &str = "Plow error (see Account)";
+
+/// A row that has no answer (yet). What went wrong is said once, on the Account row; the other rows that
 /// needed the answer say `elsewhere`.
 fn not_answered<T>(
     pending: &Pending<T>,
