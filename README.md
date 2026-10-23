@@ -69,9 +69,10 @@ No Homebrew tap is included.
   the token file, or `$PLOW_API_BASE`'s proxy) and registers under the
   agent's name in Plow. Never copy a device login (a machine's state
   folder or its token) onto another machine: hosts would take it for the
-  owner's own request, not judge it against what the owner asked the agent.
-- **Denied, ask, retry.** A host's gatekeeper lets an agent do what the owner
-  asked for, in their Plow chat with that agent or in the host's rules. A
+  owner's own request instead of judging it as the agent's.
+- **Denied, ask, retry.** A host's gatekeeper lets an agent do everyday
+  work, like looking things up, on its own; anything riskier needs the
+  owner's OK, in their Plow chat with that agent or in the host's rules. A
   refusal is exit 4, `gatekeeper_denied`:
   - `not_covered`: ask the owner in your Plow chat, naming exactly what you
     will do, then retry once they agree. This is the one exit 4 to retry.

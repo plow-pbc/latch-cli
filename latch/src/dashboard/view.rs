@@ -844,7 +844,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// `REFUSED - outside your instructions. This action did not run.`
+/// `REFUSED - needed the owner's OK. This action did not run.`
 fn headline(outcome: &Outcome) -> String {
     let line = outcome.line();
     let (state, rest) = line
