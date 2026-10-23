@@ -391,6 +391,7 @@ impl Harness {
         let before = std::mem::replace(&mut self.id, id);
         self.entry = entry;
         self.browsers.close(&before, CALLER).await.unwrap();
+        self.browsers.settled().await;
     }
 
     /// A call as the host makes it for an agent (pause and eval flags
@@ -399,7 +400,7 @@ impl Harness {
     async fn call(&mut self, command: &str, args: Value) -> Result<Value, crate::failure::Failure> {
         let mut audit = Map::new();
         let command = if command == "open" { "goto" } else { command };
-        let result = host::call(
+        let result = super::host_call(
             &self.browsers,
             CALLER.into(),
             command,
@@ -1111,7 +1112,7 @@ async fn a_fill_pauses_its_own_session_and_no_other(engine: &str) {
     let mut shown_b = Vec::new();
     let mut call_b = async |command: &str, name: &str, args: Value| {
         let mut audit = Map::new();
-        let result = host::call(
+        let result = super::host_call(
             &browsers,
             other.into(),
             command,

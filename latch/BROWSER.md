@@ -118,7 +118,9 @@ engine's data folder (Chrome's, created with password saving and autofill
 off, or Firefox's). A session closes on `close`, after 30 minutes without
 a call (counted from the end of its last one), when its browser fails to
 launch, or when the host stops; its browser closes and its profile is
-deleted then. A host that did not stop cleanly (it was killed) leaves its
+deleted then. `close` answers at once: the session is gone for every later
+call, and its browser closes behind the answer, after any call still under
+way in it; a host that stops waits for those. A host that did not stop cleanly (it was killed) leaves its
 sessions' profiles, and the next host on the state directory deletes them
 as it starts. Downloads an agent saved with `download get` are its own
 files, and the audit keeps its records as ever. `exec` and file workers
