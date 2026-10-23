@@ -161,8 +161,9 @@ No Homebrew tap is included.
 - The host's audit log is sealed: each record is encrypted with the host's
   audit key, kept with its other secrets. `latch audit show` prints every
   record in full, each command as it ran; `latch audit verify` checks the
-  chain without the key; `latch audit rotate-key` starts a new key and keeps
-  the old ones (a running `latch serve` uses it from its next record). The serve
+  chain without the key, and that no records were cut off its end (with the
+  key, that check can't be faked); `latch audit rotate-key` starts a new key
+  and keeps the old ones (a running `latch serve` uses it from its next record). The serve
   dashboard and `serve.log` hide credential-looking values in commands, best
   effort: some can slip through. The sealed log is
   `audit.sealed.ndjson`; a plaintext `audit.ndjson` from an older latch is

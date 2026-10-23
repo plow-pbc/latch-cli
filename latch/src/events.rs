@@ -411,6 +411,7 @@ mod tests {
 
         // Another log in its place: start over.
         std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(dir.path().join(audit::HEAD)).unwrap();
         append(dir.path(), "vault");
         let lines = follower.changes().unwrap();
         assert_eq!(lines[0], json!({"type": "reset"}));
@@ -478,13 +479,17 @@ mod tests {
         assert!(!line.to_string().contains(secret), "{line}");
     }
 
-    /// The line `append` would write next, without writing it.
+    /// The line `append` would write next, without writing it (or moving
+    /// the log's head on).
     fn fs_line(dir: &Path, op: &str) -> String {
         let path = dir.join(audit::FILE);
+        let head = dir.join(audit::HEAD);
         let before = std::fs::read_to_string(&path).unwrap();
+        let head_before = std::fs::read(&head).unwrap();
         append(dir, op);
         let after = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, &before).unwrap();
+        std::fs::write(&head, head_before).unwrap();
         after[before.len()..].to_string()
     }
 }

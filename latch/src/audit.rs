@@ -8,10 +8,19 @@
 //! id (`kid`), the `nonce`, `prev` and `hash`. `hash` is the sha256 of the
 //! line written with `hash` empty, and `prev` is the line before's `hash`
 //! (64 zeros for the first). So the chain verifies without the key: a
-//! changed, removed or reordered line is caught, the newest included. The
-//! body is sealed with `kid` and `prev` as associated data, so it can't be
-//! moved to another line either. The log is readable by the host's user
-//! only.
+//! changed, removed or reordered line is caught. The body is sealed with
+//! `kid` and `prev` as associated data, so it can't be moved to another
+//! line either. The log is readable by the host's user only.
+//!
+//! The chain alone can't tell a log cut short at its end from one that
+//! ended there. So beside it, `audit.head` names the newest record's hash,
+//! sealed with the audit key, and is rewritten after each record: a log
+//! that no longer holds the record its head names, or has lines but no
+//! head, had records cut off its end. Without the key the head's hash is
+//! still compared; the key also checks its seal, so it can't be made up.
+//! The head may name the record before the newest, as a crash between the
+//! two writes leaves it. A head copied from earlier, put back with the log
+//! cut to match, is not caught.
 //!
 //! The keys are the state folder's secret (see `secrets.rs`), and rotate:
 //! `latch audit rotate-key` starts a new key and keeps the old ones, so every
@@ -46,6 +55,8 @@ use crate::state::{StateDir, to_hex};
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 /// The sealed log, in the state folder.
 pub const FILE: &str = "audit.sealed.ndjson";
+/// The log's head, beside it: the newest record's hash, sealed.
+pub const HEAD: &str = "audit.head";
 /// The plaintext log an older latch kept, which this one never reads.
 const PLAINTEXT: &str = "audit.ndjson";
 
@@ -87,6 +98,16 @@ struct Line {
     body: String,
     prev: String,
     hash: String,
+}
+
+/// The log's head on disk: `hash` in the clear, and `seal`, an AES-GCM tag
+/// over nothing with `kid` and `hash` as associated data.
+#[derive(Serialize, Deserialize)]
+struct Head {
+    hash: String,
+    kid: String,
+    nonce: String,
+    seal: String,
 }
 
 /// The audit keys, by id, and which one seals new records.
@@ -187,6 +208,30 @@ impl Keys {
         line
     }
 
+    /// The head naming `hash` as the log's newest record.
+    fn seal_head(&self, hash: &str) -> Head {
+        let aad = head_aad(&self.current, hash);
+        let sealed = crate::seal::seal(&self.keys[&self.current], b"", &aad);
+        Head {
+            hash: hash.to_string(),
+            kid: self.current.clone(),
+            nonce: sealed.nonce,
+            seal: sealed.ciphertext,
+        }
+    }
+
+    fn opens_head(&self, head: &Head) -> bool {
+        self.keys.get(&head.kid).is_some_and(|key| {
+            crate::seal::open(
+                key,
+                &head.nonce,
+                &head.seal,
+                &head_aad(&head.kid, &head.hash),
+            )
+            .is_some()
+        })
+    }
+
     /// The record a verified line holds, by number for messages.
     fn open(&self, line: &Line, number: usize) -> Result<Record, String> {
         let Some(key) = self.keys.get(&line.kid) else {
@@ -209,6 +254,10 @@ fn aad(kid: &str, prev: &str) -> Vec<u8> {
     format!("latch audit v1|{kid}|{prev}").into_bytes()
 }
 
+fn head_aad(kid: &str, hash: &str) -> Vec<u8> {
+    format!("latch audit head v1|{kid}|{hash}").into_bytes()
+}
+
 pub struct AuditLog {
     path: PathBuf,
     records: usize,
@@ -221,12 +270,12 @@ pub struct AuditLog {
 const RECENT_CALLS: usize = 200;
 
 impl AuditLog {
-    /// Opens (or starts) the log and checks it whole first: the chain, and
-    /// every record opened with its key. A broken chain or a record that
-    /// does not open is an error: the host refuses to run on a tampered
-    /// log. It is opened for appending, so a log that can't be
-    /// written to is an error now, before anything that needs it runs, and
-    /// read under the audit lock (`lock`), so a record another process is
+    /// Opens (or starts) the log and checks it whole first: the chain,
+    /// every record opened with its key, and its head. A broken chain, a
+    /// record that does not open or a log cut short is an error: the host
+    /// refuses to run on a tampered log. It is opened for appending, so a
+    /// log that can't be written to is an error now, before anything that
+    /// needs it runs, and read under the audit lock (`lock`), so a record another process is
     /// appending, or a conversion, is read whole or not at all.
     pub fn open(path: PathBuf) -> Result<AuditLog, Failure> {
         let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -240,16 +289,21 @@ impl AuditLog {
             .open(&path)
             .and_then(|mut file| file.read_to_string(&mut text))
             .map_err(|err| io_failure(&path, err))?;
+        let head = read_head(&dir)?;
         let keys = match Keys::existing(&dir)? {
             Some(keys) => keys,
-            None if text.is_empty() => Keys::ready(&dir)?,
+            None if text.is_empty() && head.is_none() => Keys::ready(&dir)?,
             None => {
                 // A broken chain is the first thing to say, key or not.
-                verify(&text).map_err(|problem| broken(&path, &problem))?;
+                verify(&text, head.as_deref(), None).map_err(|problem| broken(&path, &problem))?;
                 return Err(no_key(&path));
             }
         };
-        let all = open_all(&keys, &text, &path)?;
+        let all = open_all(&keys, &text, head.as_deref(), &path)?;
+        if head.is_none() {
+            // A log just started: its head names no record yet.
+            write_head(&dir, &keys.seal_head(GENESIS))?;
+        }
         let records = all.len();
         let mut recent: Vec<Record> = all
             .into_iter()
@@ -282,7 +336,8 @@ impl AuditLog {
     /// file's own last line, read under the audit lock, and is sealed with
     /// the keys as they are now, so a `latch audit rotate-key` since takes
     /// effect at once. The log is opened only once the lock is held, so it
-    /// is never a file a conversion has since replaced.
+    /// is never a file a conversion has since replaced. Then the head is
+    /// moved on to it.
     pub fn append(&mut self, record: Record) -> Result<String, Failure> {
         let dir = self.path.parent().unwrap_or(Path::new("."));
         let _lock = lock(dir)?;
@@ -300,6 +355,7 @@ impl AuditLog {
         file.write_all(format!("{text}\n").as_bytes())
             .and_then(|()| file.sync_data())
             .map_err(|err| io_failure(&self.path, err))?;
+        write_head(dir, &keys.seal_head(&line.hash))?;
         self.records += 1;
         Ok(line.hash)
     }
@@ -321,9 +377,14 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
             Ok(json!({"records": records}))
         }
         AuditAction::Verify => {
-            let text = read_locked(&path)?;
-            let (records, last) = verify(&text).map_err(|problem| broken(&path, &problem))?;
-            Ok(json!({"records": records, "last": last, "checked_without_the_key": true}))
+            let (text, head) = read_locked(&path)?;
+            let keys = Keys::existing(&state.path)?;
+            let (records, last) = verify(&text, head.as_deref(), keys.as_ref())
+                .map_err(|problem| broken(&path, &problem))?;
+            Ok(
+                json!({"records": records, "last": last, "checked_without_the_key": true,
+                      "head_seal_checked": keys.is_some()}),
+            )
         }
         AuditAction::RotateKey => {
             let keys = Keys::rotate(&state.path)?;
@@ -361,16 +422,52 @@ fn last_hash(file: &mut File) -> std::io::Result<String> {
 }
 
 /// Checks, without the key, every line's own `hash` and its `prev`
-/// against the line before. Returns the number of lines and the last
-/// hash, or what is wrong, by line number.
-pub fn verify(text: &str) -> Result<(usize, String), String> {
-    let mut prev = GENESIS.to_string();
-    let mut count = 0;
+/// against the line before, then that the log still holds the record its
+/// `head` names (see `check_head`; its seal too, given `keys`). Returns
+/// the number of lines and the last hash, or what is wrong, by line number.
+fn verify(text: &str, head: Option<&str>, keys: Option<&Keys>) -> Result<(usize, String), String> {
+    let mut hashes = chain(text)?;
+    check_head(head, keys, &hashes)?;
+    Ok((hashes.len() - 1, hashes.pop().expect("genesis")))
+}
+
+/// The chain's hashes, `GENESIS` first, each line checked as `verify_line`
+/// does.
+fn chain(text: &str) -> Result<Vec<String>, String> {
+    let mut hashes = vec![GENESIS.to_string()];
     for (index, text) in text.lines().enumerate() {
-        prev = verify_line(&prev, text.as_bytes(), index + 1)?.hash;
-        count += 1;
+        let prev = hashes.last().expect("genesis");
+        let line = verify_line(prev, text.as_bytes(), index + 1)?;
+        hashes.push(line.hash);
     }
-    Ok((count, prev))
+    Ok(hashes)
+}
+
+/// Checks the log's `head` (the file's text, if there is one) against
+/// `hashes`, the chain's from `GENESIS` on: a log with lines has a head,
+/// and the record it names is still there. Given `keys`, the head must
+/// open with one.
+fn check_head(head: Option<&str>, keys: Option<&Keys>, hashes: &[String]) -> Result<(), String> {
+    let Some(head) = head else {
+        if hashes.len() == 1 {
+            return Ok(());
+        }
+        return Err(format!(
+            "its head ({HEAD}) is missing: records may have been cut off its end"
+        ));
+    };
+    let head: Head =
+        serde_json::from_str(head).map_err(|_| format!("its head ({HEAD}) is damaged"))?;
+    if keys.is_some_and(|keys| !keys.opens_head(&head)) {
+        return Err(format!("its head ({HEAD}) does not open with its key"));
+    }
+    if !hashes.contains(&head.hash) {
+        return Err(format!(
+            "records were cut off its end: its newest, {}, is gone",
+            head.hash
+        ));
+    }
+    Ok(())
 }
 
 /// Checks line `number` as the one after the line whose hash is `prev`
@@ -443,48 +540,77 @@ pub fn follow(state: &StateDir) -> Result<(), Failure> {
     }
 }
 
-/// The log's text, read under the audit lock, so a record being appended
-/// is read whole or not at all and what is read is the log as written: a
-/// last line cut short fails its checks. A log not started yet is empty.
-fn read_locked(path: &Path) -> Result<String, Failure> {
+/// The log's text and its head's, read under the audit lock, so a record
+/// being appended is read whole or not at all and what is read is the log
+/// as written: a last line cut short fails its checks. A log not started
+/// yet is empty.
+fn read_locked(path: &Path) -> Result<(String, Option<String>), Failure> {
+    let dir = path.parent().unwrap_or(Path::new("."));
     if !path.exists() {
-        return Ok(String::new());
+        return Ok((String::new(), read_head(dir)?));
     }
     // Shared, through a read-only descriptor: closing it is no write, so
     // a follower watching the folder is not woken by its own reads.
-    let lock = path.parent().unwrap_or(Path::new(".")).join(LOCK);
+    let lock = dir.join(LOCK);
     let _lock = File::open(&lock)
         .and_then(|file| file.lock_shared().map(|()| file))
         .map_err(|err| io_failure(&lock, err))?;
-    match fs::read_to_string(path) {
-        Ok(text) => Ok(text),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(String::new()),
-        Err(err) => Err(io_failure(path, err)),
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(io_failure(path, err)),
+    };
+    Ok((text, read_head(dir)?))
+}
+
+/// The text of the head in `dir`, if there is one.
+fn read_head(dir: &Path) -> Result<Option<String>, Failure> {
+    let path = dir.join(HEAD);
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(io_failure(&path, err)),
     }
 }
 
-/// Every record of the log at `path`: the chain checked, each record opened.
+/// Writes the head in `dir`, whole. Only with the audit lock held.
+fn write_head(dir: &Path, head: &Head) -> Result<(), Failure> {
+    let path = dir.join(HEAD);
+    let text = serde_json::to_string(head).expect("a head serializes");
+    crate::state::write_private(&path, text.as_bytes()).map_err(|err| io_failure(&path, err))
+}
+
+/// Every record of the log at `path`: the chain checked, each record
+/// opened, and its head checked.
 pub fn read_all(path: &Path) -> Result<Vec<Record>, Failure> {
-    let text = read_locked(path)?;
-    if text.is_empty() {
+    let (text, head) = read_locked(path)?;
+    if text.is_empty() && head.is_none() {
         return Ok(Vec::new());
     }
     let dir = path.parent().unwrap_or(Path::new("."));
     let keys = Keys::existing(dir)?.ok_or_else(|| no_key(path))?;
-    open_all(&keys, &text, path)
+    open_all(&keys, &text, head.as_deref(), path)
 }
 
 /// Every record of the log `text` (at `path`, for messages), each line's
-/// chain checked and its record opened with `keys`.
-fn open_all(keys: &Keys, text: &str, path: &Path) -> Result<Vec<Record>, Failure> {
-    let mut prev = GENESIS.to_string();
+/// chain checked and its record opened with `keys`, then its `head`
+/// checked (see `check_head`).
+fn open_all(
+    keys: &Keys,
+    text: &str,
+    head: Option<&str>,
+    path: &Path,
+) -> Result<Vec<Record>, Failure> {
+    let mut hashes = vec![GENESIS.to_string()];
     let mut records = Vec::new();
     for (index, line) in text.lines().enumerate() {
-        let record = read_next(keys, &prev, line.as_bytes(), index + 1)
+        let prev = hashes.last().expect("genesis");
+        let record = read_next(keys, prev, line.as_bytes(), index + 1)
             .map_err(|problem| broken(path, &problem))?;
-        prev = record.hash.clone();
+        hashes.push(record.hash.clone());
         records.push(record);
     }
+    check_head(head, Some(keys), &hashes).map_err(|problem| broken(path, &problem))?;
     Ok(records)
 }
 
@@ -587,6 +713,12 @@ mod tests {
 
     const SECRET: &str = "synthetic-credential-5d1e";
 
+    /// `latch audit verify`'s checks of the log at `path`, without the key.
+    fn checked(path: &Path) -> Result<(usize, String), String> {
+        let (text, head) = read_locked(path).unwrap();
+        verify(&text, head.as_deref(), None)
+    }
+
     fn exec_record(caller: &str) -> Record {
         let mut entry = record(caller, None, "exec", "allow", "ok");
         entry.args = json!({"argv": ["curl", "-H", format!("Authorization: Bearer {SECRET}")]});
@@ -621,7 +753,7 @@ mod tests {
             assert!(!text.contains(content), "{content} is on disk in the clear");
         }
         // The chain checks without the key...
-        assert_eq!(verify(&text).unwrap().0, 3);
+        assert_eq!(checked(&path).unwrap().0, 3);
         // ...and the key opens every record, the command whole.
         let records = read_all(&path).unwrap();
         let ops: Vec<&str> = records.iter().map(|r| r.op.as_str()).collect();
@@ -646,7 +778,7 @@ mod tests {
         let changed =
             [lines[0], lines[1], &serde_json::to_string(&line).unwrap()].join("\n") + "\n";
         assert_eq!(
-            verify(&changed).unwrap_err(),
+            chain(&changed).unwrap_err(),
             "line 3 was changed: its hash does not match"
         );
 
@@ -662,7 +794,7 @@ mod tests {
             [lines[0], &serde_json::to_string(&moved).unwrap()].join("\n") + "\n",
         )
         .unwrap();
-        assert!(verify(&fs::read_to_string(&path).unwrap()).is_ok());
+        assert!(chain(&fs::read_to_string(&path).unwrap()).is_ok());
         for refused in [
             read_all(&path).unwrap_err(),
             AuditLog::open(path.clone()).err().unwrap(),
@@ -685,6 +817,65 @@ mod tests {
                 .message
                 .ends_with("chain broken at line 2: it does not follow line 1")
         );
+    }
+
+    #[test]
+    fn records_cut_off_the_end_are_caught() {
+        let (dir, path) = log_with_three_records();
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let head = dir.path().join(HEAD);
+        let cut = |kept: &[&str]| {
+            fs::write(
+                &path,
+                kept.iter()
+                    .map(|line| format!("{line}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap()
+        };
+
+        // The newest record gone, or every one: its head names a record
+        // the log no longer holds.
+        for kept in [&lines[..2], &[]] {
+            cut(kept);
+            let cut_off = "records were cut off its end";
+            assert!(checked(&path).unwrap_err().starts_with(cut_off));
+            for refused in [
+                read_all(&path).unwrap_err(),
+                AuditLog::open(path.clone()).err().unwrap(),
+            ] {
+                assert_eq!(refused.code, "audit_broken");
+                assert!(refused.message.contains(cut_off), "{}", refused.message);
+            }
+        }
+
+        // The head removed too.
+        cut(&lines[..2]);
+        let sealed = fs::read_to_string(&head).unwrap();
+        fs::remove_file(&head).unwrap();
+        assert!(checked(&path).unwrap_err().contains("is missing"));
+        assert!(AuditLog::open(path.clone()).is_err());
+
+        // A head made up for the shorter log passes without the key, but
+        // not with it.
+        let mut forged: Head = serde_json::from_str(&sealed).unwrap();
+        forged.hash = serde_json::from_str::<Line>(lines[1]).unwrap().hash;
+        fs::write(&head, serde_json::to_string(&forged).unwrap()).unwrap();
+        assert!(checked(&path).is_ok());
+        let refused = read_all(&path).unwrap_err();
+        assert!(
+            refused.message.ends_with("does not open with its key"),
+            "{}",
+            refused.message
+        );
+
+        // The head one behind, as a crash between the two writes leaves it.
+        cut(&lines);
+        let keys = Keys::existing(dir.path()).unwrap().unwrap();
+        write_head(dir.path(), &keys.seal_head(&forged.hash)).unwrap();
+        assert_eq!(read_all(&path).unwrap().len(), 3);
+        assert_eq!(checked(&path).unwrap().0, 3);
     }
 
     #[test]
@@ -720,7 +911,7 @@ mod tests {
         assert_eq!(records.len(), 4);
         assert_eq!(records[3].caller, "caller-three");
         assert_eq!(records[1].caller, "caller-one");
-        assert!(verify(&fs::read_to_string(&path).unwrap()).is_ok());
+        assert!(checked(&path).is_ok());
     }
 
     #[test]

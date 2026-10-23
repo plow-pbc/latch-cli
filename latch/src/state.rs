@@ -11,8 +11,9 @@
 //! - `plow-url`: the Plow a saved token belongs to, written with it, so a
 //!   login that fails after the token arrived is retried against that Plow.
 //! - `audit.sealed.ndjson`, on a host: its audit log, each record sealed
-//!   (see `audit.rs`); `audit.keys`*: the keys that seal it; `audit.lock`:
-//!   held by what writes it. A plaintext `audit.ndjson` from an older latch
+//!   (see `audit.rs`); `audit.head`: its newest record's hash, sealed;
+//!   `audit.keys`*: the keys that seal it; `audit.lock`: held by what
+//!   writes it. A plaintext `audit.ndjson` from an older latch
 //!   is never read, and every command says it can be deleted.
 //! - `serve.log`, on a host: what a managed host logs (`latch logs`).
 //! - `serve.plist` (macOS) and `launch.lock`, on a host: the managed host's
