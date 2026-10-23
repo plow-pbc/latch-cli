@@ -214,10 +214,11 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
             continuation.finish()
         }
     }
-    /// The host step `setup --status` gives, when not the default.
+    /// The Google and host steps `setup --status` gives, when not the default.
+    var google: String?
     var host: String?
     func setupStatus() async throws -> SetupStatus {
-        try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, host: $0) } ?? Fixtures.setup(on: connectorsOn))
+        try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
     }
     func rulesShow() async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
@@ -415,6 +416,38 @@ struct ClosingTests {
         #expect(flow.step == .access)
         #expect(flow.progress.passed[.google] == .skipped)
         #expect(client.enabled == ["google"])
+    }
+
+    @Test func arrivingAtGoogleReadsWhatPlowSays() async {
+        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["me@example.com"]) }
+        client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow: connect it at http://127.0.0.1:18934/connections, then run `latch plugins enable google`.","args":null,"enabled":false,"ready":false,"accounts":[],"connect_url":"http://127.0.0.1:18934/connections"}"#
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        var opened: [URL] = []
+        app.open = { opened.append($0) }
+        let notConnected = app.stage(.google)
+        await notConnected.googleAppeared()
+        #expect(notConnected.google.isNeeded)
+        #expect(notConnected.primaryTitle == "Continue")
+        notConnected.connectGoogleInPlow()
+        #expect(opened == [URL(string: "http://127.0.0.1:18934/connections")!])
+
+        client.google = #"{"step":"google","state":"needed","reason":"Google is connected in Plow (me@example.com); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":["me@example.com"]}"#
+        let off = app.stage(.google)
+        await off.googleAppeared()
+        #expect(off.google == .unknown)
+        #expect(off.googleAccounts == ["me@example.com"])
+        #expect(off.primaryTitle == "Turn on")
+        // Looking turns nothing on; Turn on does.
+        #expect(client.enabled.isEmpty)
+        off.primary()
+        await until { off.google == .done }
+        #expect(client.enabled == ["google"])
+
+        client.google = #"{"step":"google","state":"done","reason":"Google is connected in Plow (me@example.com); the Google connector is on.","args":null,"enabled":true,"ready":true,"accounts":["me@example.com"]}"#
+        let on = app.stage(.google)
+        await on.googleAppeared()
+        #expect(on.google == .done)
+        #expect(on.googleAccounts == ["me@example.com"])
     }
 
     @Test func arrivingAtAccessOnlyReadsWhatsOn() async throws {

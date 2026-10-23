@@ -113,6 +113,10 @@ nonisolated struct SetupStatus: Decodable, Equatable {
         var args: [String]?
         /// A connector's: its owner turned it on.
         var enabled: Bool?
+        /// Google's: the accounts connected in Plow, when Plow said.
+        var accounts: [String]?
+        /// Google's, when none is connected in Plow: where to connect one.
+        var connectUrl: URL?
     }
     var steps: [Step]
 

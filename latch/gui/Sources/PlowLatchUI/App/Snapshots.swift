@@ -26,9 +26,11 @@ nonisolated struct FakeLatchClient: LatchClient {
 nonisolated enum Fixtures {
     /// `latch setup --status` on a logged-in Mac whose host is stopped,
     /// with these connectors on.
-    static func setup(on: [String], host: String = #"{"step":"host","state":"needed","reason":"latch is not running.","args":["serve","-d","--again"]}"#) -> String {
+    static func setup(on: [String], google: String? = nil,
+                      host: String = #"{"step":"host","state":"needed","reason":"latch is not running.","args":["serve","-d","--again"]}"#) -> String {
         let connectors = ["google", "messages", "contacts"].map { name in
-            on.contains(name)
+            if name == "google", let google { return google }
+            return on.contains(name)
                 ? #"{"step":"\#(name)","state":"done","reason":"The \#(name.capitalized) connector is on; agents can use it once latch is running.","args":null,"enabled":true,"ready":false}"#
                 : #"{"step":"\#(name)","state":"needed","reason":"The \#(name.capitalized) connector is off.","args":["plugins","enable","\#(name)"],"enabled":false,"ready":false}"#
         }
@@ -111,6 +113,9 @@ package enum SnapshotRunner {
             }),
             ("05-google-not-connected-with-link", .google, Fixtures.stopped, Progress(), {
                 $0.google = .needed("connect a Google account in Plow"); $0.googleConnectURL = URL(string: "https://plow.co/connect/google")
+            }),
+            ("05-google-off-connected-in-plow", .google, Fixtures.stopped, Progress(), {
+                $0.google = .unknown; $0.googleAccounts = ["owner@example.com"]
             }),
             ("05-google-connected", .google, Fixtures.stopped, Progress(), {
                 $0.google = .done; $0.googleAccounts = ["owner@example.com"]

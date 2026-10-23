@@ -307,6 +307,9 @@ struct GoogleView: View {
             }
             if flow.google == .done, !flow.googleAccounts.isEmpty {
                 Text("Connected as \(ListFormatter.localizedString(byJoining: flow.googleAccounts)).").foregroundStyle(Brand.muted)
+            } else if flow.google == .unknown, !flow.googleAccounts.isEmpty {
+                Text("Connected in Plow as \(ListFormatter.localizedString(byJoining: flow.googleAccounts)). Turn on lets your agents use it here.")
+                    .foregroundStyle(Brand.muted)
             }
             Spacer(minLength: 0)
         }
@@ -321,7 +324,7 @@ struct GoogleView: View {
 
     private var state: String {
         switch flow.google {
-        case .unknown: "Not checked"
+        case .unknown: flow.googleAccounts.isEmpty ? "Not checked" : "Off"
         case .checking: "Checking…"
         case .done: "Connected"
         case .needed: "Not connected in Plow"

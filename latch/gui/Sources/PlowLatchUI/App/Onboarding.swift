@@ -212,7 +212,7 @@ final class Onboarding {
         case .welcome: "Get started"
         case .login, .privacy: "Continue"
         case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
-        case .google: google == .unknown ? "Check connection" : "Continue"
+        case .google: google != .unknown ? "Continue" : googleAccounts.isEmpty ? "Check connection" : "Turn on"
         case .access: accessDone || accessFailed ? "Continue" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.serve.ready != true ? "Start Latch" : "Continue"
         case .done: "Open Latch"
@@ -403,11 +403,18 @@ final class Onboarding {
         app.open(url)
     }
 
-    /// Arriving at Google: on when latch says it's on; otherwise Not
-    /// checked until the person checks. Looking never turns it on.
+    /// Arriving at Google: what latch and Plow say of it. On; connected in
+    /// Plow but off, which Turn on changes; not connected in Plow, with
+    /// where to connect it. Looking never turns it on.
     func googleAppeared() async {
-        guard google == .unknown, let setup = try? await client.setupStatus() else { return }
-        if setup.step("google")?.enabled == true { google = .done }
+        guard google == .unknown, let setup = try? await client.setupStatus(), let step = setup.step("google") else { return }
+        googleAccounts = step.accounts ?? []
+        if step.enabled == true {
+            google = .done
+        } else if let url = step.connectUrl {
+            googleConnectURL = url
+            google = .needed(step.reason)
+        }
     }
 
     /// Back in the app: from connecting Google in Plow, checks again;
