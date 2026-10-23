@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -112,6 +112,8 @@ struct Fake {
     down: AtomicBool,
     /// Milliseconds each risk answer takes.
     slow: AtomicU64,
+    /// When set, how many more calls it answers before it goes down.
+    down_after: Mutex<Option<usize>>,
 }
 
 const FAKE_RISKY: [&str; 1] = ["Place order"];
@@ -120,6 +122,12 @@ const FAKE_VAGUE: [&str; 1] = ["finish the expense report"];
 
 impl Provider for Fake {
     fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+        if let Some(left) = self.down_after.lock().unwrap().as_mut() {
+            match left.checked_sub(1) {
+                Some(fewer) => *left = fewer,
+                None => self.down.store(true, Ordering::SeqCst),
+            }
+        }
         if self.down.load(Ordering::SeqCst) {
             return Box::pin(async {
                 Err(CallFailed::new(
@@ -766,6 +774,21 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
         .await
         .unwrap_err();
     assert_eq!(failure.code, "model_unavailable");
+    // The model vets the sentence, then fails judging it: the step's action
+    // has gone out, and the answer says so.
+    fake.down.store(false, Ordering::SeqCst);
+    *fake.down_after.lock().unwrap() = Some(1);
+    let failure = h
+        .short(&[&format!("type {note} \"for Bo\" -> the draft was saved")])
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "model_unavailable");
+    assert!(
+        failure.message.contains("step 1's action was already sent"),
+        "{}",
+        failure.message
+    );
+    assert_eq!(failure.details["trail"][0]["op"], "type");
     // A confirmation issued before the outage still dispatches.
     let placed = h.confirm(issued["id"].as_str().unwrap()).await.unwrap();
     assert_eq!(placed["page"]["title"], "Order · Shop");
