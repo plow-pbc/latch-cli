@@ -21,6 +21,9 @@ final class AppModel {
     /// only ever on a person's click. A test build records them instead, so
     /// a run never opens anything.
     var open: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// Shows a file in the Finder (the New Agent sheet's key file); only on
+    /// a click. A test build records it.
+    var reveal: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
     /// Floats the Full Disk Access helper under System Settings, with this
     /// app to drag into the list.
     var guideGrant: (URL) -> any GrantGuide = { GrantHelper.show(dragging: $0) }
@@ -226,6 +229,109 @@ final class AppModel {
     /// For snapshots: what `vault show` said.
     func stage(vaultShow: VaultShow, on host: String) {
         vaultShows[host, default: [:]][vaultShow.item.item] = .success(vaultShow)
+    }
+
+    /// Host Settings: the account's logged-in machines (`latch devices`),
+    /// the last update check, and a start, stop or restart of this Mac's
+    /// host while it runs and how it failed.
+    private(set) var devices: Result<[DeviceList.Device], LatchError>?
+    private(set) var update: Result<UpdateCheck, LatchError>?
+    private(set) var checkingUpdate = false
+    private(set) var hostAction: HostAction?
+    private(set) var hostActionError: String?
+
+    enum HostAction { case stopping, restarting }
+
+    func refreshDevices() async {
+        devices = await Self.result { try await self.client.devices().devices }
+    }
+
+    /// Logged-in machines that don't host: what the account's devices list
+    /// holds beyond the hosts Plow lists.
+    var loggedInDevices: [DeviceList.Device]? {
+        guard case let .success(devices)? = devices else { return nil }
+        let hostKeys = Set(hosts.compactMap(\.key))
+        return devices.filter { !hostKeys.contains($0.key) }
+    }
+
+    /// Why the last removal of a machine failed.
+    private(set) var deviceRemoveError: String?
+
+    /// Removes a machine from the account; it's logged out there. A
+    /// refusal is kept for Host Settings to say.
+    func removeDevice(_ name: String) async {
+        let removed = await Self.result { try await self.client.removeDevice(name) }
+        await refreshDevices()
+        if case let .failure(error) = removed { deviceRemoveError = error.message } else { deviceRemoveError = nil }
+    }
+
+    func checkForUpdate() async {
+        checkingUpdate = true
+        defer { checkingUpdate = false }
+        update = await Self.result { try await self.client.updateCheck() }
+    }
+
+    /// Stops this Mac's host; agents can't reach it until it's started.
+    func stopHost() async {
+        await hostAction(.stopping) { try await self.client.stop() }
+    }
+
+    /// Stops this Mac's host and starts it again as it last ran.
+    func restartHost() async {
+        await hostAction(.restarting) {
+            try await self.client.stop()
+            try await self.startHost()
+        }
+    }
+
+    private func hostAction(_ action: HostAction, _ run: () async throws -> Void) async {
+        hostAction = action
+        hostActionError = nil
+        defer { hostAction = nil }
+        do {
+            try await run()
+        } catch {
+            hostActionError = (error as? LatchError)?.message ?? error.localizedDescription
+        }
+        await refreshStatus()
+    }
+
+    /// Turns a connector on this Mac's host on or off, then reads the
+    /// connectors again.
+    func setConnector(_ name: String, on: Bool, host: HostEntry) async throws {
+        let changed = await Self.result {
+            if on { _ = try await self.client.enable(name) } else { try await self.client.disable(name) }
+        }
+        summaries[host.name, default: HostSummary()].plugins = await Self.result { try await self.client.pluginsList(host: nil) }
+        try changed.get()
+    }
+
+    /// `latch logout`: this Mac leaves the account, and onboarding takes
+    /// over once the status stream says so.
+    func logOut() async throws {
+        try await client.logout()
+        await refreshStatus()
+        leaveMainIfLoggedOut()
+    }
+
+    /// The New Agent sheet, while open.
+    var newAgent: NewAgent?
+
+    func agentCatalog() async throws -> AgentCatalog { try await client.agentCatalog() }
+    func agentLines() async throws -> AgentLines { try await client.agentLines() }
+    func agentStatus(_ uid: String) async throws -> AgentsList.Agent { try await client.agentShow(uid) }
+
+    /// Creates an agent, then lists the account's agents again.
+    func createAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
+        let created = try await client.newAgent(name: name, cloud: cloud, tokenFile: tokenFile, line: line)
+        await refreshAgents()
+        return created
+    }
+
+    /// For snapshots: as latch said.
+    func stage(devices: DeviceList?, update: UpdateCheck?) {
+        self.devices = devices.map { .success($0.devices) }
+        self.update = update.map { .success($0) }
     }
 
     /// The account's agents (`latch agents`), and each one's standing on

@@ -21,8 +21,9 @@ enum TestHooks {
     static var helper: GrantHelper?
 
     static func install(_ app: AppModel) {
-        // Nothing leaves the app: links are recorded.
+        // Nothing leaves the app: links and Finder reveals are recorded.
         app.open = { opened.append("open \($0.absoluteString)") }
+        app.reveal = { opened.append("reveal \($0.path)") }
         GrantHelper.settingsApp = { standIn }
         let guide = app.guideGrant
         app.guideGrant = { bundle in
@@ -61,6 +62,12 @@ enum TestHooks {
         // on-screen window come back blank then).
         on("offscreen") { _ in
             NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+        }
+        // Resizes the main window ("WIDTHxHEIGHT"), as a drag of its corner.
+        on("resize") { size in
+            guard let parts = size?.split(separator: "x").compactMap({ Double($0) }), parts.count == 2,
+                  let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }
+            window.setFrame(CGRect(origin: window.frame.origin, size: CGSize(width: parts[0], height: parts[1])), display: true)
         }
         // The main window's host picker and sidebar, as a click picks them.
         on("host") { name in app.chosenHost = name }
@@ -147,7 +154,44 @@ enum TestHooks {
             guard case let .importer(importer)? = app.vaultSheet else { return }
             Task { await importer.run(app: app) }
         }
-        on("sheet-close") { _ in app.vaultSheet = nil }
+        on("sheet-close") { _ in
+            app.vaultSheet = nil
+            app.newAgent = nil
+        }
+        // Host Settings' buttons and toggles, as a click (and its
+        // confirmation) presses them: "NAME|1" turns a connector on.
+        on("check-update") { _ in Task { await app.checkForUpdate() } }
+        on("restart") { _ in Task { await app.restartHost() } }
+        on("stop") { _ in Task { await app.stopHost() } }
+        on("start") { _ in Task { await app.startHosting() } }
+        on("connector") { argument in
+            guard let parts = argument?.split(separator: "|"), parts.count == 2, let host = app.host else { return }
+            Task { try? await app.setConnector(String(parts[0]), on: parts[1] == "1", host: host) }
+        }
+        on("device-remove") { name in
+            guard let name else { return }
+            Task { await app.removeDevice(name) }
+        }
+        on("logout") { _ in Task { try? await app.logOut() } }
+        // New Agent: open it, fill "FIELD=VALUE" (kind own|cloud, name,
+        // cloud, line, file: the path the save panel would give), create.
+        on("new-agent") { _ in app.newAgent = NewAgent() }
+        on("agent-type") { argument in
+            guard let flow = app.newAgent, let argument, let equals = argument.firstIndex(of: "=") else { return }
+            let value = String(argument[argument.index(after: equals)...])
+            switch argument[..<equals] {
+            case "kind": flow.kind = value == "own" ? .own : .cloud
+            case "name": flow.name = value
+            case "cloud": flow.cloudKind = value
+            case "line": flow.line = value
+            case "file": flow.tokenFile = URL(filePath: value)
+            default: break
+            }
+        }
+        on("agent-create") { _ in
+            guard let flow = app.newAgent else { return }
+            Task { await flow.create(app: app) }
+        }
         // The main window's open sheet, as the window server shows it.
         on("snapshot-sheet") { path in
             guard let path, let sheet = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain })?.attachedSheet else { return }

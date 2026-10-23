@@ -82,3 +82,22 @@ struct ChildEnvironmentTests {
         #expect(child == ["HOME": "/Users/me", "PATH": "/bin"])
     }
 }
+
+@MainActor
+struct HostSettingsTests {
+    @Test func loggedInDevicesAreTheAccountsMachinesThatDontHost() throws {
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.stage(devices: try Fixtures.decode(Fixtures.devices), update: nil)
+        #expect(app.loggedInDevices?.map(\.name) == ["laptop"])
+        let check: UpdateCheck = try Fixtures.decode(Fixtures.updateCheck)
+        #expect(!check.available && check.current == nil && check.latest?.tag != nil)
+    }
+
+    /// A released latch's `update --check` gives its build as a number.
+    @Test func aReleasedBuildsUpdateCheckDecodes() throws {
+        let check: UpdateCheck = try Fixtures.decode(#"{"available":true,"current":137,"latest":{"build":138,"tag":"v0.1.0-138"}}"#)
+        #expect(check.available && check.current == 137 && check.latest?.build == 138)
+    }
+}

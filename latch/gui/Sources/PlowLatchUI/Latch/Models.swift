@@ -19,6 +19,7 @@ nonisolated struct LocalStatus: Decodable, Equatable {
         /// `latch serve` held by a terminal (`attached`).
         var managed: Bool
         var attached: Bool?
+        var pid: Int?
         /// Set when a running host can't be used, e.g. another latch version's.
         var blocked: LatchFailure?
     }
@@ -30,6 +31,8 @@ nonisolated struct LocalStatus: Decodable, Equatable {
 
     var peer: Peer?
     var serve: Serve
+    /// The bundle's latch, in words: version, commit and build.
+    var version: String?
     var lastError: LatchFailure?
     var update: Update?
 }
@@ -192,6 +195,53 @@ nonisolated struct VaultList: Decodable, Equatable {
     var items: [Item]
 }
 
+/// `latch agents catalog`: the cloud agents Plow offers.
+nonisolated struct AgentCatalog: Decodable, Equatable {
+    struct Kind: Decodable, Equatable, Identifiable { var id: String; var name: String }
+    var kinds: [Kind]
+}
+
+/// `latch agents lines`: the account's phone lines, and which are free.
+nonisolated struct AgentLines: Decodable, Equatable {
+    struct Line: Decodable, Equatable, Identifiable {
+        var uid: String
+        var number: String
+        var name: String?
+        var available: Bool
+        var id: String { uid }
+    }
+    var lines: [Line]
+}
+
+/// `latch agents new`'s answer: the agent, and for your own agent the file
+/// its credential was written to (never the credential).
+nonisolated struct AgentCreated: Decodable, Equatable {
+    var agent: AgentsList.Agent
+    var tokenFile: String?
+    var apiUrl: String?
+}
+
+/// `latch devices`: every machine logged in to the account.
+nonisolated struct DeviceList: Decodable, Equatable {
+    struct Device: Decodable, Equatable, Identifiable {
+        var key: String
+        var name: String
+        var online: Bool?
+        var lastSeenAt: Date?
+        var id: String { key }
+    }
+    var devices: [Device]
+}
+
+/// `latch update --check`: whether a newer Latch is published.
+nonisolated struct UpdateCheck: Decodable, Equatable {
+    struct Release: Decodable, Equatable { var build: Int?; var tag: String? }
+    var available: Bool
+    /// This latch's build number; nil for a local build.
+    var current: Int?
+    var latest: Release?
+}
+
 /// A vault item as the person wrote it, for `vault add` or `vault edit`:
 /// the title and sites go in argv, every value only on stdin.
 nonisolated struct VaultDraft: Equatable, Sendable {
@@ -291,6 +341,9 @@ nonisolated struct PluginsList: Decodable, Equatable {
         var name: String
         /// `enabled`, `disabled` or `needs_setup`.
         var state: String
+        /// Why, in latch's words, and the command that turns it on.
+        var reason: String?
+        var enable: String?
     }
     var plugins: [Plugin]
 }

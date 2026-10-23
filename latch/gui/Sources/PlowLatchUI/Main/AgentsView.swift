@@ -41,12 +41,21 @@ struct AgentsView: View {
                 }
             }
         }
+        .toolbar {
+            ToolbarItem {
+                Button("New Agent", systemImage: "plus") { app.newAgent = NewAgent() }
+                    .help("Create a cloud agent or your own")
+            }
+        }
+        .sheet(item: $app.newAgent) { NewAgentSheet(flow: $0) }
         .task {
             guard !app.still else { return }
             await app.refreshAgents()
         }
     }
 }
+
+extension NewAgent: Identifiable {}
 
 private struct AgentRow: View {
     var agent: AgentsList.Agent
