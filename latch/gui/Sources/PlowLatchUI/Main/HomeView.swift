@@ -217,7 +217,7 @@ private struct OnHostSection: View {
         Section("On \(host.name)") {
             SummaryRow(title: "Rules", value: summary?.rules?.map(Self.rules), open: "Open") { app.section = .rules }
             SummaryRow(title: "Vault", value: summary?.vault?.map(Self.vault), open: "Open") { app.section = .vault }
-            SummaryRow(title: "Connectors", value: summary?.plugins?.map(Self.plugins), open: "Host Settings") {
+            SummaryRow(title: "Plugins", value: summary?.plugins?.map(Self.plugins), open: "Host Settings") {
                 app.section = .settings
             }
             if host.isThisMac {

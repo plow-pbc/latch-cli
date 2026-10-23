@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import PlowLatchUI
 
@@ -104,6 +105,70 @@ struct HostSettingsTests {
         #expect(status.update?.build == 138)
     }
 
+    /// Connections lists Google's accounts in Plow, offering to connect one
+    /// where latch names the page, and never takes "Plow couldn't say" for
+    /// none.
+    @Test func connectionsAreWhatPlowSaysOfGoogle() throws {
+        func connections(_ google: String) throws -> Connections {
+            Connections(try Fixtures.decode(Fixtures.setup(on: [], google: google)) as SetupStatus)
+        }
+        #expect(try connections(Fixtures.googleNotConnected) == .google(accounts: [], connect: URL(string: "http://localhost:3000/connections")))
+        #expect(try connections(Fixtures.googleConnected(["ada@example.com", "ada.work@example.com"]))
+            == .google(accounts: ["ada@example.com", "ada.work@example.com"], connect: nil))
+        #expect(try connections(Fixtures.googleUnreachable) == .unknown)
+        #expect(Connections(nil) == .unknown)
+    }
+
+    /// Another host's version is its own `status --local`, asked with
+    /// `--host`; one Plow counts offline isn't asked.
+    @Test func anotherHostsVersionIsWhatItSays() async throws {
+        let app = AppModel(client: FakeLatchClient(account: Fixtures.studioHosts.replacingOccurrences(
+            of: #""name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:33.384336Z","online":true"#,
+            with: #""name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":null,"online":false"#)),
+                           store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        await app.refreshStatus()
+        await app.refreshAccount()
+        app.chosenHost = "pi-kitchen"
+        await app.refreshHostStatus()
+        #expect(try app.summaries["pi-kitchen"]?.status?.get().version?.hasPrefix("0.1.0 (138)") == true)
+        app.chosenHost = "sidecar"
+        await app.refreshHostStatus()
+        #expect(app.summaries["sidecar"]?.status == nil)
+        app.chosenHost = "studio"
+        await app.refreshHostStatus()
+        #expect(app.summaries["studio"]?.status == nil)
+    }
+
+    @Test func manageAccountsOpensConnections() throws {
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.section = .settings
+        app.manageAccounts()
+        #expect(app.section == .connections)
+    }
+
+    /// latch's reasons and refusals name commands and pages; the Plugins
+    /// area says them in its own words.
+    @Test func pluginsAreSaidWithoutCommandsOrAddresses() throws {
+        let plugins = try (Fixtures.decode(Fixtures.studioPluginsSetUp) as PluginsList).plugins
+        #expect(plugins.map(PluginCopy.state) == ["On", "Needs Full Disk Access for Plow Latch, in System Settings", "Off"])
+        #expect(plugins.contains { $0.reason?.contains("`") == true })
+        // Google saves needs_setup for any failed setup, not only a missing account.
+        let google = PluginsList.Plugin(name: "google", state: "needs_setup", reason: "gog 0.45.0 is not installed at /s/plugins/gog/0.45.0/gog; run install.sh")
+        #expect(PluginCopy.state(google) == "Needs setting up")
+        let refusals = [
+            ("google", LatchFailure(code: "google_not_connected", message: "Plow has no Google account this host can use; connect one at http://localhost:3000/connections, then run `latch plugins enable google` again")),
+            ("messages", LatchFailure(code: "needs_setup", message: "this host has no Full Disk Access; turn it on for /Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), then run `latch plugins enable messages` again")),
+            ("contacts", LatchFailure(code: "serve_required", message: "this machine needs a live receiver; start `latch serve` on this state folder, then retry")),
+            ("google", LatchFailure(code: "gog_not_configured", message: "gog 0.45.0 is not installed at /s/plugins/gog/0.45.0/gog; run install.sh")),
+        ]
+        #expect(refusals.map { PluginCopy.refusal(.failed($1), plugin: $0, on: true) } == [
+            "Connect a Google account first, in Connections.",
+            "Needs Full Disk Access for Plow Latch, in System Settings.",
+            "Couldn't turn Contacts on.",
+            "Couldn't turn Google on.",
+        ])
+    }
+
     /// A released latch's `update --check` gives its build as a number.
     @Test func aReleasedBuildsUpdateCheckDecodes() throws {
         let check: UpdateCheck = try Fixtures.decode(#"{"available":true,"current":137,"latest":{"build":138,"tag":"v0.1.0-138"}}"#)
@@ -152,7 +217,7 @@ struct AccountTests {
         let app = AppModel(client: AccountClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         try await app.logOut()
-        #expect(app.logOutWarning?.contains("`latch devices remove studio` on another of your machines") == true)
+        #expect(app.logOutWarning == "This Mac is logged out, but Plow couldn't take studio out of your account. It may still be listed until Plow can be reached.")
         #expect(app.onboarding == nil)
         app.acknowledgeLogOutWarning()
         #expect(app.onboarding != nil)

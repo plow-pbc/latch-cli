@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The main window: a sidebar with the account tier (Agents) above the host
-/// tier (the host picker and that host's screens), and the selected screen.
+/// The main window: a sidebar with the account tier (Agents, Connections)
+/// above the host tier (the host picker and that host's screens), and the
+/// selected screen.
 struct MainView: View {
     @Environment(AppModel.self) private var app
 
@@ -15,6 +16,7 @@ struct MainView: View {
             case .home: HomeView()
             case .activity: ActivityView()
             case .agents: AgentsView()
+            case .connections: ConnectionsView()
             case .rules: HostRulesView()
             case .vault: VaultView()
             case .settings: HostSettingsView()
@@ -38,6 +40,8 @@ struct MainView: View {
             Task {
                 await app.refreshAccount()
                 if app.section == .home { await app.refreshSummary() }
+                // Back from connecting an account in Plow.
+                if app.section == .connections { await app.refreshConnections() }
             }
         }
     }
