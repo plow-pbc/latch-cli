@@ -584,6 +584,7 @@ struct DoneView: View {
             guard !app.still else { return }
             await app.refreshStatus()
             await app.refreshSetup()
+            await app.refreshAgentList()
         }
     }
 }
