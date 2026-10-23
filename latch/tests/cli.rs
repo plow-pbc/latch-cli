@@ -6004,11 +6004,12 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(tried["as"], "owner");
     assert_eq!(tried["gate"]["source"], "owner_request");
 
-    // Without --host, the owner's other machine previews on its own host,
-    // which does not serve: never on the account's one host.
-    let (code, error) = previewed(&owner, &[]);
-    assert_eq!(code, Some(3), "{error}");
-    assert_eq!(error["error"]["code"], "serve_required");
+    // Without --host, the owner's other machine previews on itself, never
+    // on the account's one host: judged here, though it does not serve.
+    let (code, tried) = previewed(&owner, &[]);
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["host"], "owner-mac");
+    assert_eq!(tried["gate"]["caller"], "owner_on_host");
 
     // A refusal is a preview that worked.
     plow.state.lock().unwrap().forbidden = true;
@@ -6055,8 +6056,45 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
         (Some(2), &json!("not_previewable"))
     );
 
-    // Previews are not audited: the host's audit has no preview and no exec.
+    // With its host stopped, the host's machine still previews on itself:
+    // here as a new agent, against draft rules read from stdin.
     drop(serve);
+    plow.state.lock().unwrap().forbidden = false;
+    let words: Vec<&str> = [
+        &["rules", "try", "--new-agent", "--draft", "-", "--"][..],
+        &build,
+    ]
+    .concat();
+    let mut child = latch_command(&host, &words, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let draft = "Builds of the site are fine.";
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(draft.as_bytes())
+        .unwrap();
+    let (code, tried) = answered(&child.wait_with_output().unwrap());
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["host"], "host");
+    assert_eq!(tried["as"], "new_agent");
+    assert_eq!(tried["gate"]["source"], "rules");
+    // Another host that is offline is still only reached where it runs.
+    for (peer, _) in plow.state.lock().unwrap().peers.iter_mut() {
+        if peer["name"] == "host" {
+            peer["online"] = json!(false);
+        }
+    }
+    let (code, error) = previewed(&owner, &["--host", "host"]);
+    assert_eq!(code, Some(3), "{error}");
+    assert_eq!(error["error"]["code"], "host_offline");
+
+    // Previews are not audited: the host's audit has no preview and no exec.
     let records = audit_records(&host);
     let ops: Vec<&str> = records
         .iter()
@@ -6065,6 +6103,9 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
         .collect();
     assert!(ops.is_empty(), "{records:?}");
     assert!(!home.join("out").exists());
+    // The draft was never saved.
+    let (_, shown) = answered(&latch(&host, &["rules", "show"], &[]));
+    assert_eq!(shown["every_agent"]["text"], Value::Null, "{shown}");
 }
 
 #[test]

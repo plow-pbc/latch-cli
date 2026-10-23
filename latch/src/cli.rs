@@ -754,6 +754,16 @@ pub enum RulesCommand {
         /// latch it calls from, or its agent uid [default: you]
         #[arg(long, value_name = "NAME")]
         from: Option<String>,
+        /// Judge by the rules alone, as a new agent would be judged: no Plow
+        /// chat and no rules of its own, whatever connectors and
+        /// --deny-exec the host has
+        #[arg(long, conflicts_with = "from")]
+        new_agent: bool,
+        /// Judge against draft rules for every agent instead of the saved
+        /// ones, without saving them: the text of F (- reads stdin). An
+        /// empty draft is no such rules
+        #[arg(long, value_name = "F")]
+        draft: Option<PathBuf>,
         /// The latch command to preview, after `--`, as an agent would send
         /// it: exec, file, google, messages or contacts. Example: `-- exec
         /// --write ~/site -- npm run build`
