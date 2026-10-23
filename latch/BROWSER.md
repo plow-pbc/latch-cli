@@ -84,7 +84,7 @@ the same device for the whole task, and a new one the next.
 Camoufox ships with password saving and form autofill off; its uBlock
 add-on is left out.
 
-`open` runs on Chrome for Testing unless it names Camoufox:
+`open` names Camoufox to run on it where Chrome is installed too:
 
     latch browser open --engine camoufox https://example.com
 
