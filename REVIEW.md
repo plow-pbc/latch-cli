@@ -46,7 +46,9 @@ hosts (Macs and Linux VMs), agents run by Plow. Pre-PMF.
   dispatches nothing.
 - **State lives in one folder** (`--state-dir`, default `~/.latch`), mode
   0600 files, versioned by `latch.json`'s format. A latch reads only its own
-  format; there is no migration code, by design.
+  format; there is no migration code, by design, but for one deliberate
+  in-place upgrade: a format-2 folder becomes format 3 by giving its audit
+  log a sealed head (`audit::upgrade`, `state.rs` `check_format`).
 - Workers are confined by the OS (Seatbelt on macOS, bubblewrap and seccomp
   on Linux) before they start anything, and never see the state folder.
 - The browser engines (Chrome for Testing, Camoufox) are pinned by hash and
@@ -124,7 +126,7 @@ owner set, or does it manage a resource nobody has run out of?
 | Scope creep — DON'T | Worth blocking on — DO |
 |---|---|
 | A retention, eviction, cache or capacity layer for a resource with no observed pressure. | An agent request that reaches a worker, a file, the browser or Google without passing the gatekeeper, or that runs when the gatekeeper could not judge. |
-| A migration, compatibility branch or fallback path for an older state folder or wire shape. A format change raises `FORMAT` (or the vault's version) and refuses the old one. | A secret (token, key, vault value, TOTP seed) reaching a log line, an error string, a URL, stdout JSON, the audit log or a test fixture, in any encoding. |
+| A migration, compatibility branch or fallback path for an older state folder or wire shape. A format change raises `FORMAT` (or the vault's version) and refuses the old one. The one exception, deliberate: format 2 → 3 gives the audit log its head in place. | A secret (token, key, vault value, TOTP seed) reaching a log line, an error string, a URL, stdout JSON, the audit log or a test fixture, in any encoding. |
 | A defensive branch for a state the pinned engine or the OS cannot produce. | A caller trusted by its name, or by anything the agent sent, rather than by its key and Plow's answer for it. |
 | An integration test that needs a live Plow stack or a real model to be the remedy; say "verify by hand and report what you saw". | A sandbox policy that newly lets a worker write outside its areas, see the state folder, or reach the network it should not. |
 | A new abstraction, registry or manager to hold state an existing owner already holds. | Chat text or page content reaching anything but the judge's input: a rule key, a sandbox policy, a launch flag. |

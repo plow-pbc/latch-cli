@@ -20,13 +20,11 @@
 //! checks its seal, so it can't be made up. The head may name the record
 //! before the newest, as a crash between the two writes leaves it. A record
 //! is appended only to a log that still reaches its head, so a log cut
-//! short can't be given a new, valid head by writing on. A log with no
-//! head is trusted as it is: a folder of state format 2 (whose latch kept
-//! none) gets one as it is upgraded (`upgrade`), and opening a log for
-//! writing, or `latch audit verify`, gives one to a log without it, naming
-//! its last record. So a log cut short before its head was made, or a head deleted
-//! along with the end of the log, is not caught; nor is a head copied from
-//! earlier and put back with the log cut to match.
+//! short can't be given a new, valid head by writing on. A log with
+//! records and no head is refused too: a folder of state format 2 (whose
+//! latch kept none) gets one as it is upgraded (`upgrade`), and every later
+//! latch keeps it. A head copied from earlier and put back with the log cut
+//! to match is not caught.
 //!
 //! The keys are the state folder's secret (see `secrets.rs`), and rotate:
 //! `latch audit rotate-key` starts a new key and keeps the old ones, so every
@@ -307,10 +305,8 @@ impl AuditLog {
         };
         let all = open_all(&keys, &text, head.as_deref(), &path)?;
         if head.is_none() {
-            // A log just started, or one an older latch wrote: trusted as
-            // it is.
-            let last = all.last().map_or(GENESIS, |record| &record.hash);
-            write_head(&dir, &keys.seal_head(last))?;
+            // A log just started: its head names no record yet.
+            write_head(&dir, &keys.seal_head(GENESIS))?;
         }
         let records = all.len();
         let mut recent: Vec<Record> = all
@@ -359,7 +355,12 @@ impl AuditLog {
             .open(&self.path)
             .map_err(|err| io_failure(&self.path, err))?;
         let prev = last_hash(&mut file).map_err(|err| io_failure(&self.path, err))?;
-        if let Some(head) = read_head(dir)? {
+        let head = read_head(dir)?;
+        if head.is_none() && prev != GENESIS {
+            check_head(None, None, &[GENESIS.to_string(), prev.clone()])
+                .map_err(|problem| broken(&self.path, &problem))?;
+        }
+        if let Some(head) = head {
             // Usually the head names the last line; otherwise the whole
             // log is checked to still reach it.
             let at_end = serde_json::from_str::<Head>(&head)
@@ -403,14 +404,9 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
             let keys = Keys::existing(&state.path)?;
             let (records, last) = verify(&text, head.as_deref(), keys.as_ref())
                 .map_err(|problem| broken(&path, &problem))?;
-            let head_created = match &keys {
-                Some(keys) if head.is_none() && records > 0 => create_head(&path, keys)?,
-                _ => false,
-            };
             Ok(
                 json!({"records": records, "last": last, "checked_without_the_key": true,
-                      "head_seal_checked": keys.is_some() && !head_created,
-                      "head_created": head_created}),
+                      "head_seal_checked": keys.is_some()}),
             )
         }
         AuditAction::RotateKey => {
@@ -472,11 +468,16 @@ fn chain(text: &str) -> Result<Vec<String>, String> {
 
 /// Checks the log's `head` (the file's text, if there is one) against
 /// `hashes`, the chain's from `GENESIS` on: the record it names is still
-/// there. Given `keys`, the head must open with one. A log with no head
-/// passes: it gets one as it is (see `create_head`).
+/// there. Given `keys`, the head must open with one. Only a log with no
+/// records may have no head.
 fn check_head(head: Option<&str>, keys: Option<&Keys>, hashes: &[String]) -> Result<(), String> {
     let Some(head) = head else {
-        return Ok(());
+        if hashes.len() == 1 {
+            return Ok(());
+        }
+        return Err(format!(
+            "its head ({HEAD}) is missing: records may have been cut off its end"
+        ));
     };
     let head: Head =
         serde_json::from_str(head).map_err(|_| format!("its head ({HEAD}) is damaged"))?;
@@ -595,20 +596,6 @@ fn read_head(dir: &Path) -> Result<Option<String>, Failure> {
     }
 }
 
-/// Gives the log at `path`, which has records, a head naming its last one,
-/// under the audit lock. `false` when another process made one first.
-fn create_head(path: &Path, keys: &Keys) -> Result<bool, Failure> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let _lock = lock(dir)?;
-    if read_head(dir)?.is_some() {
-        return Ok(false);
-    }
-    let text = fs::read_to_string(path).map_err(|err| io_failure(path, err))?;
-    let hashes = chain(&text).map_err(|problem| broken(path, &problem))?;
-    write_head(dir, &keys.seal_head(hashes.last().expect("genesis")))?;
-    Ok(true)
-}
-
 /// Upgrades the log in `dir` from state format 2, whose latch kept no head,
 /// or kept one only some of the time: once its records are checked, and
 /// the head it has, if any, is found reached, its head names its last
@@ -624,7 +611,10 @@ pub fn upgrade(dir: &Path) -> Result<(), Failure> {
     let Some(keys) = Keys::existing(dir)? else {
         return Ok(());
     };
-    let records = open_all(&keys, &text, read_head(dir)?.as_deref(), &path)?;
+    let records = match read_head(dir)? {
+        Some(head) => open_all(&keys, &text, Some(&head), &path)?,
+        None => open_chain(&keys, &text, &path)?,
+    };
     let last = records.last().map_or(GENESIS, |record| &record.hash);
     write_head(dir, &keys.seal_head(last))
 }
@@ -657,16 +647,25 @@ fn open_all(
     head: Option<&str>,
     path: &Path,
 ) -> Result<Vec<Record>, Failure> {
-    let mut hashes = vec![GENESIS.to_string()];
+    let records = open_chain(keys, text, path)?;
+    let hashes: Vec<String> = std::iter::once(GENESIS.to_string())
+        .chain(records.iter().map(|record| record.hash.clone()))
+        .collect();
+    check_head(head, Some(keys), &hashes).map_err(|problem| broken(path, &problem))?;
+    Ok(records)
+}
+
+/// Every record of the log `text` (at `path`, for messages), each line's
+/// chain checked and its record opened with `keys`.
+fn open_chain(keys: &Keys, text: &str, path: &Path) -> Result<Vec<Record>, Failure> {
+    let mut prev = GENESIS.to_string();
     let mut records = Vec::new();
     for (index, line) in text.lines().enumerate() {
-        let prev = hashes.last().expect("genesis");
-        let record = read_next(keys, prev, line.as_bytes(), index + 1)
+        let record = read_next(keys, &prev, line.as_bytes(), index + 1)
             .map_err(|problem| broken(path, &problem))?;
-        hashes.push(record.hash.clone());
+        prev = record.hash.clone();
         records.push(record);
     }
-    check_head(head, Some(keys), &hashes).map_err(|problem| broken(path, &problem))?;
     Ok(records)
 }
 
@@ -906,24 +905,28 @@ mod tests {
             }
         }
 
-        // No head, as an older latch left the log: trusted as it is, and
-        // given a head naming its last record.
+        // The head removed too: nothing is read, and nothing written.
         cut(&lines[..2]);
         let sealed = fs::read_to_string(&head).unwrap();
         fs::remove_file(&head).unwrap();
-        assert_eq!(checked(&path).unwrap().0, 2);
-        assert_eq!(AuditLog::open(path.clone()).unwrap().len(), 2);
-        let created: Head = serde_json::from_str(&fs::read_to_string(&head).unwrap()).unwrap();
-        assert_eq!(
-            created.hash,
-            serde_json::from_str::<Line>(lines[1]).unwrap().hash
-        );
-        cut(&lines[..1]);
-        assert!(
-            checked(&path)
-                .unwrap_err()
-                .starts_with("records were cut off its end")
-        );
+        let missing = "its head (audit.head) is missing";
+        assert!(checked(&path).unwrap_err().starts_with(missing));
+        for refused in [
+            read_all(&path).unwrap_err(),
+            AuditLog::open(path.clone()).err().unwrap(),
+            AuditLog {
+                path: path.clone(),
+                records: 2,
+                recent: Vec::new(),
+            }
+            .append(exec_record("caller-three"))
+            .unwrap_err(),
+        ] {
+            assert_eq!(refused.code, "audit_broken");
+            assert!(refused.message.contains(missing), "{}", refused.message);
+        }
+        assert!(!head.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 2);
 
         // A head made up for the shorter log passes without the key, but
         // not with it.
