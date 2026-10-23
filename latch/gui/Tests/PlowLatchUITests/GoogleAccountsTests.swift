@@ -25,12 +25,23 @@ struct GoogleAccountsTests {
         return (flow.googleAccounts, app.connections)
     }
 
-    @Test func threeAccountsGiveThreeRowsInBothPlaces() async {
-        let (onboarding, connections) = await listed(Fixtures.googleConnected(three))
-        #expect(onboarding.accounts == three)
-        #expect(connections == .google(onboarding))
-        #expect(!three.contains { onboarding.needsSignIn($0) || onboarding.signsInAgain($0) })
-        #expect(onboarding.state == "Connected")
+    /// Three accounts give three rows, the same in both places, with none
+    /// or one needing a sign-in again. That one is marked, with no button:
+    /// latch doesn't wait for it while others work, so it says to reconnect
+    /// it in Plow. The others work, so the section still adds an account.
+    @Test(arguments: [[String](), [Fixtures.threeAccounts[2]]])
+    func workingAccountsAreListedInBothPlaces(again: [String]) async {
+        let (accounts, connections) = await listed(Fixtures.googleConnected(three, needsSignIn: again))
+        #expect(accounts.accounts == three)
+        #expect(connections == .google(accounts))
+        #expect(accounts.needsSignIn == again)
+        for account in three {
+            #expect(accounts.needsSignIn(account) == again.contains(account))
+            #expect(!accounts.signsInAgain(account))
+            #expect(accounts.reconnectsInPlow(account) == again.contains(account))
+        }
+        #expect(accounts.state == "Connected")
+        #expect(accounts.buttonTitle == "Add Another Account…" && accounts.addsAccount)
     }
 
     @Test func theButtonConnectsTheFirstAccountThenAddsAnother() {
@@ -83,20 +94,6 @@ struct GoogleAccountsTests {
         #expect(flow.google == .connected)
         #expect(flow.googleAccounts.accounts == had + [three[1]])
         #expect(flow.googleWaitEnded == nil)
-    }
-
-    /// The account Google wants signed in again is marked, with no button:
-    /// latch doesn't wait for it while others work, so it says to reconnect
-    /// it in Plow. The others work, so the section still adds an account.
-    @Test func someNeedingSignInAreMarked() async {
-        let (onboarding, connections) = await listed(Fixtures.googleConnected(three, needsSignIn: [three[2]]))
-        #expect(connections == .google(onboarding))
-        #expect(onboarding.needsSignIn == [three[2]])
-        #expect(onboarding.needsSignIn(three[2]) && !onboarding.needsSignIn(three[0]))
-        #expect(!three.contains { onboarding.signsInAgain($0) })
-        #expect(onboarding.reconnectsInPlow(three[2]) && !onboarding.reconnectsInPlow(three[0]))
-        #expect(onboarding.state == "Connected")
-        #expect(onboarding.buttonTitle == "Add Another Account…" && onboarding.addsAccount)
     }
 
     /// None works: every row offers Sign In Again…, the section's own button
