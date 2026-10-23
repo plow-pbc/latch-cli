@@ -175,10 +175,12 @@ def plan(args):
         require("cargo")
         if set(suites) - {"installer"}:
             require("cargo-nextest")
-    if where == "linux" and set(suites) - {"installer"} and not shutil.which("bwrap"):
+    # A build-only run needs the toolchain, not what the tests run under.
+    building = bool(getattr(args, "build_archive", None))
+    if where == "linux" and not building and set(suites) - {"installer"} and not shutil.which("bwrap"):
         raise SystemExit("test.py: latch's Linux sandbox needs bubblewrap (bwrap); install it, as "
                          "install-binary.sh does")
-    if "lifecycle" in suites and where == "linux":
+    if "lifecycle" in suites and where == "linux" and not building:
         session = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True)
         if session.returncode:
             reason = ("needs a systemd user session (`systemctl --user` answers); on a CI runner, "
@@ -188,6 +190,20 @@ def plan(args):
                 raise SystemExit(f"test.py: lifecycle {reason}")
             not_here.append(("lifecycle", reason))
             suites.remove("lifecycle")
+    args.archive = None
+    if args.build_archive or args.from_archive:
+        if args.build_archive and args.from_archive:
+            raise SystemExit("test.py: --build-archive and --from-archive are two jobs, not one")
+        if where == "container":
+            raise SystemExit("test.py: the shared build is for CI's Linux jobs, not --linux")
+        if args.build_archive:
+            args.archive = ("out", Path(args.build_archive).resolve())
+            args.archive[1].parent.mkdir(parents=True, exist_ok=True)
+        else:
+            path = Path(args.from_archive).resolve()
+            if not path.is_file():
+                raise SystemExit(f"test.py: no archive at {path}; `just test --build-archive` makes it")
+            args.archive = ("in", path)
     if args.shard:
         try:
             shard, count = (int(n) for n in args.shard.split("/"))
@@ -211,17 +227,24 @@ def engines_state(where):
     return DEV / ("linux-cft-state" if where == "container" else "cft-state")
 
 
-def steps(where, suites, gate, shard):
-    """What runs, in order: (name, suites it serves, command, cwd)."""
+def steps(where, suites, gate, shard, archive=None, ci=False):
+    """What runs, in order: (name, suites it serves, command, cwd). With
+    `archive` ("out", PATH), the run only lints and builds the tests into a
+    nextest archive; with ("in", PATH), it tests that archive's build."""
     first_shard = not shard or shard[0] == 1
     features = FEATURES["macos" if where == "macos" else "linux"]
     rust = [s for s in suites if s not in ("installer",)]
     out = []
-    if gate and first_shard:
+    building, built = (archive or (None, None))[0] == "out", (archive or (None, None))[0] == "in"
+    if gate and first_shard and not built:
         out.append(("fmt", ["gate"], ["cargo", "fmt", "--check"], LATCH))
         out.append(("clippy", ["gate"], ["cargo", "clippy", "--locked", "--all-targets", "--features",
                                          features, "--", "-D", "warnings"], LATCH))
-    if rust:
+    if building:
+        out.append(("build", rust, ["cargo", "nextest", "archive", "--locked", "--features", features,
+                                    "--archive-file", str(archive[1])], LATCH))
+        return out
+    if rust and not built:
         out.append(("build", rust, ["cargo", "nextest", "list", "--locked", "--features", features,
                                     "--message-format", "oneline"], LATCH))
     if {"browser", "scenario"} & set(suites):
@@ -240,8 +263,14 @@ def steps(where, suites, gate, shard):
         # latch/.config/nextest.toml keeps the browser tests' limits.
         union = " | ".join(f"({filterset(suite, where)})" for suite in rust)
         partition = ["--partition", "hash:%d/%d" % shard] if shard else []
-        out.append(("rust", rust, ["cargo", "nextest", "run", "--locked", "--features", features,
-                                   "--no-fail-fast", *partition, "-E", union], LATCH))
+        # The archive's build, unpacked where it was made: the tests use
+        # paths compiled into them (CARGO_BIN_EXE_latch, CARGO_MANIFEST_DIR).
+        source = (["--archive-file", str(archive[1]), "--workspace-remap", str(LATCH), "--extract-to",
+                   str(LATCH), "--extract-overwrite"] if built else ["--locked", "--features", features])
+        # CI's profile (latch/.config/nextest.toml) for latch's run only.
+        profile = ["--profile", "ci"] if ci else []
+        out.append(("rust", rust, ["cargo", "nextest", "run", *source, *profile, "--no-fail-fast",
+                                   *partition, "-E", union], LATCH))
     if "messages" in suites and first_shard:
         out.append(("swift reader", ["messages"], ["env", "LATCH_FUZZ_ITERATIONS=50000", "swift", "test"],
                     LATCH / "messages-reader"))
@@ -285,7 +314,7 @@ def print_plan(where, suites, gate, not_here, args):
     if "browser" in suites and restricted(where):
         print("  browser: Ubuntu's user-namespace restriction is on, so latch runs Chrome with page "
               "isolation off: only Chrome's conformance checks (browser::tests::cft::)")
-    for name, serves, command, cwd in steps(where, suites, gate, args.shard):
+    for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive, args.ci):
         print(f"  {name:<18} [{', '.join(serves)}] {show(command)}")
 
 
@@ -313,7 +342,7 @@ def run(args):
     print_plan(where, suites, gate, not_here, args)
     env = cargo_env(where)
     results = []
-    for name, serves, command, cwd in steps(where, suites, gate, args.shard):
+    for name, serves, command, cwd in steps(where, suites, gate, args.shard, args.archive, args.ci):
         print(f"\n== {name} [{', '.join(serves)}]", flush=True)
         began = time.monotonic()
         detail = None
@@ -342,7 +371,8 @@ def run(args):
                   "steps": [{"name": n, "exit": s, "seconds": round(t, 2), "detail": d}
                             for n, s, t, d in results]}
         (DEV / "ci").mkdir(parents=True, exist_ok=True)
-        name = f"tests-{where}-{args.shard[0] if args.shard else 1}.json"
+        part = "build" if args.archive and args.archive[0] == "out" else args.shard[0] if args.shard else 1
+        name = f"tests-{where}-{part}.json"
         (DEV / "ci" / name).write_text(json.dumps(report, indent=2) + "\n")
     print(f"\ntest.py: {'failed: ' + ', '.join(failed) if failed else 'all passed'}")
     return 1 if failed else 0
@@ -432,6 +462,10 @@ def main():
     parser.add_argument("--linux", action="store_true", help="run in the Linux test container")
     parser.add_argument("--shard", metavar="N/COUNT", help="only this share of the Rust tests (CI)")
     parser.add_argument("--ci", action="store_true", help="also write a report to .dev/ci/")
+    parser.add_argument("--build-archive", metavar="PATH",
+                        help="lint and build the tests into a nextest archive, and run none (CI)")
+    parser.add_argument("--from-archive", metavar="PATH",
+                        help="test the build in this archive instead of building (CI)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and run nothing")
     parser.add_argument("--list", action="store_true", help="list the suites")
     args = parser.parse_args()

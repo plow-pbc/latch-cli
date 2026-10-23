@@ -78,17 +78,14 @@ jobs:
       ref: ${{ inputs.source-ref }}
       shards: 1
 
-  # The Linux gate (`just test`) on arm64, where both engines are pinned, in
-  # four shards: shard 1 also lints and runs the Python checks.
-  linux:
+  # The Linux gate (`just test`) on arm64, where both engines are pinned:
+  # linux-build lints and builds the tests once into a nextest archive, and
+  # four shards and linux-restricted test that build.
+  linux-build:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,7 +96,34 @@ jobs:
         with:
           workspaces: latch -> target
           shared-key: linux-arm64
-          save-if: ${{ matrix.shard == 1 }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest@0.9.148
+      - run: just test --build-archive linux-tests.tar.zst --ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tests
+          path: linux-tests.tar.zst
+          retention-days: 1
+
+  linux:
+    needs: linux-build
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      # Some tests build small fixtures with rustc as they run.
+      - run: rustup toolchain install
+        working-directory: latch
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-tests
       - uses: actions/cache@v4
         with:
           path: .dev/cft-state/plugins/cft
@@ -123,7 +147,7 @@ jobs:
           for _ in $(seq 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
-      - run: just test --shard ${{ matrix.shard }}/4 --ci
+      - run: just test --shard ${{ matrix.shard }}/4 --from-archive linux-tests.tar.zst --ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -136,8 +160,7 @@ jobs:
   # isolation off; status --local says so, and `just test browser` runs
   # Chrome's conformance checks.
   linux-restricted:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
+    needs: linux-build
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -146,11 +169,9 @@ jobs:
           ref: ${{ inputs.source-ref || github.sha }}
       - run: rustup toolchain install
         working-directory: latch
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          workspaces: latch -> target
-          shared-key: linux-arm64
-          save-if: false
+          name: linux-tests
       - uses: actions/cache@v4
         with:
           path: .dev/cft-state/plugins/cft
@@ -159,9 +180,14 @@ jobs:
         with:
           tool: just,cargo-nextest@0.9.148
       - run: test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
-      - run: cd latch && cargo build --locked && HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --no-browser target/debug/latch
+      # The archive's latch, unpacked where it was built, installs Ubuntu's
+      # bwrap profile and reports the reduced isolation.
+      - run: cargo nextest list --archive-file ../linux-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite > /dev/null
+        working-directory: latch
+      - run: HOME="$RUNNER_TEMP/cft-home" sh install-binary.sh --non-interactive --no-browser target/debug/latch
+        working-directory: latch
       - run: latch/target/debug/latch --state-dir "$RUNNER_TEMP/status-state" status --local | tee /dev/stderr | grep -q '"page_isolation":"page isolation off on this host"'
-      - run: just test browser --ci
+      - run: just test browser --from-archive linux-tests.tar.zst --ci
 
   # x86_64 Linux, where no Chrome for Testing is pinned: the gate runs every
   # suite but browser and scenario, and says so.
@@ -227,7 +253,7 @@ jobs:
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
-    needs: [changes, mac, linux, linux-restricted, linux-x64, linux-static]
+    needs: [changes, mac, linux-build, linux, linux-restricted, linux-x64, linux-static]
     runs-on: ubuntu-24.04
     env:
       RESULTS: ${{ toJSON(needs) }}

@@ -2,8 +2,7 @@
 //! holding the session the whole time:
 //!
 //! 1. `PrepareFill` pauses the session (every agent call now gets
-//!    `session_paused`, and the worker answers every other session on the
-//!    browser the same) and reports, for each ref of the mapping, what the
+//!    `session_paused`) and reports, for each ref of the mapping, what the
 //!    page's markup says of it (`__latch.fillTarget`) and where a value
 //!    would go: the field frame's effective origin (`self.origin` in
 //!    latch's isolated world), the top-level origin, and the document's
@@ -578,9 +577,6 @@ mod tests {
             unreachable!()
         }
         fn back(&mut self) -> Result<bool, Failure> {
-            unreachable!()
-        }
-        fn back_url(&mut self) -> Result<Option<String>, Failure> {
             unreachable!()
         }
         fn run(&mut self, _: &Frame, _: &str) -> Result<Value, Failure> {
