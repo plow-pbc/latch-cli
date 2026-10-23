@@ -61,14 +61,16 @@ struct GoogleAccountsTests {
         #expect(flow.googleWaitEnded == "No new Google account showed up in time. An account that's already connected isn't added again.")
     }
 
-    /// The account Google wants signed in again is marked; the others work,
-    /// so the section still adds an account.
+    /// The account Google wants signed in again is marked, with no button:
+    /// latch doesn't wait for it while others work, so it says to reconnect
+    /// it in Plow. The others work, so the section still adds an account.
     @Test func someNeedingSignInAreMarked() async {
         let (onboarding, connections) = await listed(Fixtures.googleConnected(three, needsSignIn: [three[2]]))
         #expect(connections == .google(onboarding))
         #expect(onboarding.needsSignIn == [three[2]])
         #expect(onboarding.needsSignIn(three[2]) && !onboarding.needsSignIn(three[0]))
         #expect(!three.contains { onboarding.signsInAgain($0) })
+        #expect(onboarding.reconnectsInPlow(three[2]) && !onboarding.reconnectsInPlow(three[0]))
         #expect(onboarding.state == "Connected")
         #expect(onboarding.buttonTitle == "Add Another Account…" && onboarding.addsAccount)
     }
@@ -80,7 +82,7 @@ struct GoogleAccountsTests {
         let google = Fixtures.googleConnected(three, needsSignIn: three)
         let (onboarding, connections) = await listed(google)
         #expect(connections == .google(onboarding))
-        #expect(three.allSatisfy { onboarding.signsInAgain($0) })
+        #expect(three.allSatisfy { onboarding.signsInAgain($0) && !onboarding.reconnectsInPlow($0) })
         #expect(onboarding.buttonTitle == nil && !onboarding.addsAccount)
         #expect(onboarding.state == "Needs sign-in")
 

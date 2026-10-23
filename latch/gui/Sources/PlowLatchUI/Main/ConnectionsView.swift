@@ -47,6 +47,12 @@ nonisolated struct GoogleAccounts: Equatable {
 
     /// Whether the account's row offers Sign In Again….
     func signsInAgain(_ account: String) -> Bool { noneWorks && needsSignIn(account) }
+
+    /// Some work, so latch turns Google on without waiting for this one:
+    /// the owner reconnects it in Plow, as latch tells agents.
+    func reconnectsInPlow(_ account: String) -> Bool { !noneWorks && needsSignIn(account) }
+
+    static let reconnect = "Reconnect it on Plow's Connections page."
 }
 
 /// What Connections shows of Google: the accounts connected in Plow, or
@@ -91,7 +97,14 @@ struct GoogleAccountsSection<Detail: View>: View {
                         }
                     }
                 } label: {
-                    Label(account, systemImage: "envelope")
+                    Label {
+                        Text(account)
+                        if accounts.reconnectsInPlow(account) {
+                            Text(GoogleAccounts.reconnect).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "envelope")
+                    }
                 }
             }
             detail
