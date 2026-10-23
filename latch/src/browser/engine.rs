@@ -7,10 +7,13 @@
 //! `latch browser setup` installs either later; an agent's call never
 //! downloads one.
 //!
-//! The pin is compiled into latch and is what counts: before every launch
-//! latch hashes the installed build's whole folder (`tree_hash`) and refuses
-//! one that differs from the pin, so a changed library or helper is caught,
-//! not only a changed main binary.
+//! The pin is compiled into latch and is what counts: latch hashes the
+//! installed build's whole folder (`tree_hash`) and refuses one that differs
+//! from the pin, so a changed library or helper is caught, not only a changed
+//! main binary. A full hash that matches leaves a receipt beside the build:
+//! the hashes it matched and every file's metadata then. Before each launch
+//! latch compares the metadata alone, and hashes the whole folder again only
+//! when anything in it was touched since (`checked`).
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -20,7 +23,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::failure::{Exit, Failure};
@@ -146,31 +149,18 @@ impl CamoufoxPin {
         if !root.join("manifest.json").is_file() {
             return Err(not_installed(&self.engine, &self.version, &root));
         }
-        for (part, pinned) in [
-            ("camoufox", &build.camoufox.tree_sha256),
-            ("node", &build.node.tree_sha256),
-            ("runtime", &build.runtime_tree_sha256),
-        ] {
-            let folder = root.join(part);
-            let hash = tree_hash(&folder).map_err(|err| {
-                Failure::new(
-                    Exit::Denied,
-                    "engine_unverified",
-                    format!("{} at {}: {err}", self.engine, folder.display()),
-                )
-            })?;
-            if hash != *pinned {
-                return Err(Failure::new(
-                    Exit::Denied,
-                    "engine_unverified",
-                    format!(
-                        "{} at {}: tree sha256 {hash} is not the pinned {pinned}",
-                        self.engine,
-                        folder.display()
-                    ),
-                ));
-            }
-        }
+        let parts = [
+            (root.join("camoufox"), build.camoufox.tree_sha256.as_str()),
+            (root.join("node"), build.node.tree_sha256.as_str()),
+            (root.join("runtime"), build.runtime_tree_sha256.as_str()),
+        ];
+        checked(&root.join(RECEIPT), &parts).map_err(|detail| {
+            Failure::new(
+                Exit::Denied,
+                "engine_unverified",
+                format!("{}: {detail}", self.engine),
+            )
+        })?;
         Ok(engine)
     }
 }
@@ -245,21 +235,24 @@ impl Pin {
         if !executable.is_file() {
             return Err(not_installed(&self.engine, &self.version, &executable));
         }
-        let unverified = |detail: String| {
+        let receipt = self.folder(state_dir).join(RECEIPT);
+        checked(&receipt, &[(root, build.tree_sha256.as_str())]).map_err(|detail| {
             Failure::new(
                 Exit::Denied,
                 "engine_unverified",
-                format!("{} at {}: {detail}", self.engine, root.display()),
+                format!("{}: {detail}", self.engine),
             )
-        };
-        let hash = tree_hash(&root).map_err(|err| unverified(err.to_string()))?;
-        if hash != build.tree_sha256 {
-            return Err(unverified(format!(
-                "tree sha256 {hash} is not the pinned {}",
-                build.tree_sha256
-            )));
-        }
+        })?;
         Ok(Engine { executable, recipe })
+    }
+}
+
+/// Checks the installed build of `engine` (`cft` or `camoufox`) against its
+/// pin, as a launch does.
+pub fn verify(state_dir: &Path, engine: &str) -> Result<(), Failure> {
+    match engine {
+        "camoufox" => CAMOUFOX.verified(state_dir).map(drop),
+        _ => CFT.verified(state_dir).map(drop),
     }
 }
 
@@ -343,6 +336,89 @@ pub fn tree_hash(root: &Path) -> io::Result<String> {
     Ok(to_hex(&digest.finalize()))
 }
 
+/// The receipt's file, beside the folders it vouches for.
+const RECEIPT: &str = "receipt.json";
+
+/// A full hash that matched: the tree hashes, and a hash of the metadata of
+/// every entry in those folders then (`metadata_hash`).
+#[derive(Serialize, Deserialize, PartialEq)]
+struct Receipt {
+    trees: Vec<String>,
+    metadata: String,
+}
+
+/// Checks that each folder in `parts` has its pinned tree hash. Quick when
+/// the receipt at `receipt` is for these pins and nothing in the folders was
+/// touched since it was written; otherwise each folder is hashed whole, and a
+/// match writes the receipt anew where latch can write (a sandboxed worker
+/// can't, the host can). The error says which folder differs, and how.
+fn checked(receipt: &Path, parts: &[(PathBuf, &str)]) -> Result<(), String> {
+    let trees: Vec<String> = parts.iter().map(|(_, pinned)| pinned.to_string()).collect();
+    let folders: Vec<&Path> = parts.iter().map(|(folder, _)| folder.as_path()).collect();
+    let kept = fs::read(receipt)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Receipt>(&bytes).ok());
+    if let Some(kept) = &kept
+        && kept.trees == trees
+        && metadata_hash(&folders).is_ok_and(|now| now == kept.metadata)
+    {
+        return Ok(());
+    }
+    for (folder, pinned) in parts {
+        let hash = tree_hash(folder).map_err(|err| format!("{}: {err}", folder.display()))?;
+        if hash != *pinned {
+            return Err(format!(
+                "{}: tree sha256 {hash} is not the pinned {pinned}",
+                folder.display()
+            ));
+        }
+    }
+    if let (Ok(metadata), Some(dir)) = (metadata_hash(&folders), receipt.parent()) {
+        let json = serde_json::to_vec(&Receipt { trees, metadata }).expect("JSON");
+        let _ = tempfile::NamedTempFile::new_in(dir).and_then(|mut temp| {
+            io::Write::write_all(&mut temp, &json)?;
+            temp.persist(receipt).map_err(|err| err.error)?;
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+/// A hash of what the file system says of every entry in `folders`, without
+/// reading a file: its path, type, size, mode, inode, and when its content
+/// and its metadata last changed. Any write, replacement, rename or chmod
+/// changes it.
+fn metadata_hash(folders: &[&Path]) -> io::Result<String> {
+    use std::os::unix::fs::MetadataExt;
+    let mut digest = Sha256::new();
+    for folder in folders {
+        let mut entries = Vec::new();
+        walk(folder, folder, &mut entries)?;
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        // Each folder's entries by their paths inside it: the same build
+        // reached by another path (a link to it) reads alike.
+        digest.update(b"\n");
+        for (rel, path) in entries {
+            let meta = fs::symlink_metadata(&path)?;
+            digest.update(&rel);
+            digest.update(
+                format!(
+                    "\0{:o} {} {} {}.{} {}.{}\n",
+                    meta.mode(),
+                    meta.len(),
+                    meta.ino(),
+                    meta.mtime(),
+                    meta.mtime_nsec(),
+                    meta.ctime(),
+                    meta.ctime_nsec()
+                )
+                .as_bytes(),
+            );
+        }
+    }
+    Ok(to_hex(&digest.finalize()))
+}
+
 fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
@@ -412,6 +488,45 @@ mod tests {
         let before = tree_hash(root).unwrap();
         fs::set_permissions(root.join("ABOUT"), fs::Permissions::from_mode(0o755)).unwrap();
         assert_ne!(tree_hash(root).unwrap(), before);
+    }
+
+    #[test]
+    fn a_receipt_spares_the_full_hash_until_anything_in_the_build_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let build = dir.path().join("build");
+        fs::create_dir_all(build.join("lib")).unwrap();
+        fs::write(build.join("run"), b"engine").unwrap();
+        fs::write(build.join("lib/one"), b"library").unwrap();
+        let pinned = tree_hash(&build).unwrap();
+        let receipt = dir.path().join(RECEIPT);
+
+        // A build that differs from its pin is refused, and leaves no receipt.
+        let other = "0".repeat(64);
+        let refused = checked(&receipt, &[(build.clone(), &other)]).unwrap_err();
+        assert!(refused.contains("is not the pinned"), "{refused}");
+        assert!(!receipt.exists());
+        // One that matches leaves one.
+        checked(&receipt, &[(build.clone(), &pinned)]).unwrap();
+        assert!(receipt.exists());
+
+        // With the receipt standing, nothing is read: a receipt for another
+        // pin, over this very metadata, is taken at its word.
+        let metadata = metadata_hash(&[build.as_path()]).unwrap();
+        let vouched = Receipt {
+            trees: vec![other.clone()],
+            metadata,
+        };
+        fs::write(&receipt, serde_json::to_vec(&vouched).unwrap()).unwrap();
+        checked(&receipt, &[(build.clone(), &other)]).unwrap();
+        // Once anything in the build is touched, it is hashed whole again.
+        fs::write(build.join("lib/one"), b"librarx").unwrap();
+        let changed = checked(&receipt, &[(build.clone(), &other)]).unwrap_err();
+        assert!(changed.contains("is not the pinned"), "{changed}");
+        // And a receipt for other pins is never taken for this one's.
+        fs::write(build.join("lib/one"), b"library").unwrap();
+        checked(&receipt, &[(build.clone(), &pinned)]).unwrap();
+        let kept: Receipt = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+        assert_eq!(kept.trees, [pinned]);
     }
 
     #[test]

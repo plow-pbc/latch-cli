@@ -26,12 +26,23 @@ crash handler from writing to the user's Library; the Linux arm64 build
 leaves it out, because with it the network service crashes at once on the
 Pi ("FD ownership violation") and no page loads.
 
-Before every launch latch hashes the whole unpacked build (every file's
-bytes and execute bit, every link and folder) and refuses one that differs
-from the pin's `tree_sha256` (`engine_unverified`), so a changed framework
-or helper is caught, not only a changed main binary. To pin a new release,
-run `python3 scripts/cft-pin.py VERSION` on a Mac and put its output in
-`builds`.
+latch hashes the whole unpacked build (every file's bytes and execute bit,
+every link and folder) and refuses one that differs from the pin's
+`tree_sha256` (`engine_unverified`), so a changed framework or helper is
+caught, not only a changed main binary. A hash that matches leaves
+`receipt.json` beside the build: the hashes it matched and every entry's
+metadata (path, type, size, mode, inode, change times) then. Before each
+launch latch compares that metadata alone, tens of milliseconds instead
+of seconds, and hashes the whole build again only when anything in it was
+written, replaced, renamed or chmodded since, or the pin changed. The
+host does this check before it starts the worker, so the receipt is
+written where the sandboxed worker could not; `latch browser setup` leaves
+one at once, and an install by install.sh gets one at the first `open`.
+Anyone who can write the plugins folder can write a receipt too: the host's
+own user, whom latch trusts with its state directory anyway.
+
+To pin a new release, run `python3 scripts/cft-pin.py VERSION` on a Mac
+and put its output in `builds`.
 
 ## Camoufox, the second engine
 
@@ -49,7 +60,8 @@ camoufox` later, installs Camoufox, pinned in
   replaced by a few lines over Node's own (`camoufox/sqlite/`), so no
   package downloads anything unchecked.
 
-Before every launch latch checks each part's tree hash against the pin.
+latch checks each part's tree hash against the pin, with a receipt as for
+CfT (above).
 `python3 scripts/camoufox-pin.py` prints them for both architectures of
 the host's OS.
 

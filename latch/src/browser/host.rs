@@ -311,6 +311,12 @@ impl Browsers {
     }
 
     async fn start(&self, engine: &str) -> Result<Runtime, Failure> {
+        // Checked here first, outside the worker's sandbox, so that a full
+        // hash leaves its receipt and the worker's own check is quick.
+        let (state_dir, name) = (self.state_dir.clone(), engine.to_string());
+        tokio::task::spawn_blocking(move || super::engine::verify(&state_dir, &name))
+            .await
+            .expect("the engine check does not panic")?;
         #[cfg(test)]
         if let Some((latch, _)) = &self.test {
             return Runtime::start_with(
