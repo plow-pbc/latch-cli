@@ -18,6 +18,9 @@ final class AppModel {
     /// Turns "Start when you log in" on or off; a test build records it.
     var setLoginItem: (Bool) throws -> Void = { try LoginItem.set($0) }
     var loginItemIsOn: () -> Bool = { LoginItem.isOn }
+    /// The login item starts latch's default state folder, so it's offered
+    /// only when the app runs on that folder, never on a `--state-dir` one.
+    let loginItemOffered: Bool
     /// The windows SwiftUI opens and closes, set by the app's scenes.
     var openWindow: ((String) -> Void)?
     var dismissWindow: ((String) -> Void)?
@@ -31,9 +34,10 @@ final class AppModel {
     /// Onboarding progress for this state folder, in the app's preferences.
     let store: ProgressStore
 
-    init(client: any LatchClient, store: ProgressStore? = nil, still: Bool = false) {
+    init(client: any LatchClient, store: ProgressStore? = nil, still: Bool = false, loginItemOffered: Bool = true) {
         self.client = client
         self.still = still
+        self.loginItemOffered = loginItemOffered
         self.store = store ?? ProgressStore(defaults: .standard, stateDir: client.stateDir)
     }
 

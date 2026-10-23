@@ -131,6 +131,7 @@ struct OnboardingFooter: View {
                     .foregroundStyle(Brand.muted)
             }
         }
+        .disabled(flow.busy)
     }
 
     /// One dot for each screen from Log in to Start Latch.

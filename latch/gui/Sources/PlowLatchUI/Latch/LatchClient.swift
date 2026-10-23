@@ -11,8 +11,6 @@ nonisolated protocol LatchClient: Sendable {
     func rulesShow() async throws -> RulesShow
     /// `latch rules set --file -`, the text on stdin.
     func rulesSet(_ text: String) async throws
-    /// `latch rules try -- REQUEST`, as the owner.
-    func rulesTry(_ request: [String]) async throws -> RulesTry
     /// `latch plugins list`, on this Mac's host (it must be running).
     func pluginsList() async throws -> PluginsList
     /// `latch plugins enable NAME`; Google answers with its accounts.
@@ -59,10 +57,6 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func rulesSet(_ text: String) async throws {
         _ = try await run(["rules", "set", "--file", "-"], input: Data(text.utf8))
-    }
-
-    func rulesTry(_ request: [String]) async throws -> RulesTry {
-        try decode(RulesTry.self, try await run(["rules", "try", "--"] + request))
     }
 
     func pluginsList() async throws -> PluginsList {

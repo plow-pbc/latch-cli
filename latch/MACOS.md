@@ -19,7 +19,9 @@ Keychain, and it carries the app's window.
   release's build number;
 - `Contents/Library/LaunchAgents/co.plow.latch.cli.login.plist`, the
   agent behind the window's "Start when you log in": registered with
-  ServiceManagement, it runs the bundle's `latch serve -d --again` at login;
+  ServiceManagement, it runs the bundle's `latch serve -d --again` at login,
+  on latch's default state folder, so the window offers it only when it was
+  opened without `--state-dir`;
 - `Contents/Resources/AppIcon.icns` (`latch/macos/`);
 - `Contents/embedded.provisionprofile`, the Developer ID profile that lets
   the signature claim latch's keychain group.

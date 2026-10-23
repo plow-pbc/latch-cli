@@ -107,9 +107,6 @@ final class Onboarding {
     var macLit = false
     /// Which examples show their request and verdict.
     var openExamples: Set<String> = []
-    /// Each edit starts a new review; a late answer to an older one is dropped.
-    private var review = 0
-    private var reviewTask: Task<Void, Never>?
     // Connect Google.
     var google: Check = .unknown
     var googleAccounts: [String] = []
@@ -142,7 +139,11 @@ final class Onboarding {
         self.step = step
         self.progress = progress
         // A rerun shows the login item as it is; a first run offers it on.
-        if progress.rerun { startAtLogin = app.loginItemIsOn() }
+        if !app.loginItemOffered {
+            startAtLogin = false
+        } else if progress.rerun {
+            startAtLogin = app.loginItemIsOn()
+        }
     }
 
     private var client: any LatchClient { app.client }
@@ -152,14 +153,18 @@ final class Onboarding {
     /// Continue: records the screen as passed and shows the next one.
     func next() { leave(.continued) }
 
+    /// While Continue saves the rules or starts Latch, Back and Skip wait:
+    /// its answer moves on from the screen it was asked on.
+    var busy: Bool { savingRules || starting }
+
     /// Skip for now, on the optional screens.
     func skip() {
-        guard step.skippable else { return }
+        guard step.skippable, !busy else { return }
         leave(.skipped)
     }
 
     func back() {
-        guard let index = Step.allCases.firstIndex(of: step), index > 0 else { return }
+        guard !busy, let index = Step.allCases.firstIndex(of: step), index > 0 else { return }
         show(Step.allCases[index - 1])
     }
 
@@ -188,9 +193,6 @@ final class Onboarding {
     func stopWork() {
         loginTask?.cancel()
         loginTask = nil
-        reviewTask?.cancel()
-        reviewTask = nil
-        reviewing = false
         accessTask?.cancel()
         accessTask = nil
         waitingForAccess = false
@@ -312,13 +314,7 @@ final class Onboarding {
         } catch {
             rulesError = (error as? LatchError)?.message ?? error.localizedDescription
         }
-        startReview(after: .zero)
-    }
-
-    /// The box changed: every verdict is stale at once, and the examples are
-    /// judged again a second after the typing stops.
-    func rulesEdited() {
-        startReview(after: .seconds(1))
+        startReview()
     }
 
     /// "Use a default": its rules in the box, its requests in the deck,
@@ -327,78 +323,15 @@ final class Onboarding {
         self.deck = deck
         openExamples = []
         draftRules = deck.rules
-        startReview(after: .zero)
+        startReview()
     }
 
-    /// Whether latch can judge the examples as the rules screen needs: an
-    /// unsaved draft, judged by its rules alone, as a new agent would be.
-    /// Today's `rules try` judges the saved rules as the owner, which only
-    /// ever refuses less, so the examples wait for that update.
-    static let previewsAvailable = false
-
-    private func startReview(after delay: Duration) {
-        review += 1
-        let current = review
-        reviewTask?.cancel()
-        guard Self.previewsAvailable else {
-            for example in deck.examples { previews[example.id] = .notChecked }
-            previewNote = "Previews arrive with the next Latch update."
-            return
-        }
-        for example in deck.examples { previews[example.id] = .checking }
-        previewNote = nil
-        reviewTask = Task {
-            try? await Task.sleep(for: delay)
-            guard !Task.isCancelled, current == review else { return }
-            await judge(current)
-        }
-    }
-
-    /// Asks `latch rules try` for every example at once and shows the
-    /// verdicts together. A draft can't be judged until latch can preview
-    /// unsaved rules, so an edited box shows no verdicts rather than the
-    /// saved rules' ones.
-    private func judge(_ current: Int) async {
-        guard draftRules == (savedRules ?? "") else {
-            for example in deck.examples { previews[example.id] = .notChecked }
-            previewNote = "The examples can't check unsaved rules yet."
-            return
-        }
-        reviewing = true
-        defer { if current == review { reviewing = false } }
-        let client = self.client
-        // Every example at once; the answers are shown together.
-        let asked = deck.examples.map { example in
-            (example.id, Task.detached { () -> Result<RulesTry, Error> in
-                do { return .success(try await client.rulesTry(example.request)) } catch { return .failure(error) }
-            })
-        }
-        var results: [String: Result<RulesTry, Error>] = [:]
-        for (id, task) in asked { results[id] = await task.value }
-        guard current == review else { return }
-        if results.values.contains(where: { if case let .failure(error as LatchError) = $0 { error.code == "serve_required" } else { false } }) {
-            for example in deck.examples { previews[example.id] = .notChecked }
-            previewNote = "Previews need Latch running."
-            return
-        }
-        for (id, result) in results {
-            switch result {
-            case let .success(answer): previews[id] = .verdict(answer)
-            // A path this Mac won't let any request use is its refusal,
-            // made before the judge is asked, as a real call's would be.
-            case let .failure(LatchError.failed(failure)) where failure.code == "bad_path":
-                previews[id] = .verdict(RulesTry(verdict: "host_refused", refused: failure))
-            case let .failure(error): previews[id] = .failed((error as? LatchError)?.message ?? error.localizedDescription)
-            }
-        }
-        if results.values.contains(where: { if case let .success(answer) = $0 { answer.verdict == "allow" } else { false } }) {
-            Task {
-                try? await Task.sleep(for: .milliseconds(420))
-                macLit = true
-                try? await Task.sleep(for: .milliseconds(260))
-                macLit = false
-            }
-        }
+    /// The examples show no verdicts yet: `rules try` judges the saved
+    /// rules as the owner, while this screen needs an unsaved draft judged
+    /// as a new agent would be, which comes with a later latch.
+    private func startReview() {
+        for example in deck.examples { previews[example.id] = .notChecked }
+        previewNote = "Previews arrive with the next Latch update."
     }
 
     /// Continue: saves the rules only if the person changed them. An empty
@@ -566,7 +499,7 @@ final class Onboarding {
                     try await client.serve(again: false)
                 }
             }
-            try app.setLoginItem(runInBackground && startAtLogin)
+            if app.loginItemOffered { try app.setLoginItem(runInBackground && startAtLogin) }
             started = runInBackground
             await app.refreshStatus()
             next()

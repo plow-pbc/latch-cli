@@ -16,13 +16,8 @@ nonisolated struct FakeLatchClient: LatchClient {
             ?? #"{"agents":[],"every_agent":null,"host":"studio"}"#)
     }
     func rulesSet(_ text: String) async throws {}
-    /// How every `rules try` fails: by default, no host is running.
-    var tryFailure = LatchFailure(code: "serve_required", message: "this machine needs a live receiver; start `latch serve` on this state folder, then retry")
-    func rulesTry(_ request: [String]) async throws -> RulesTry {
-        throw LatchError.failed(tryFailure)
-    }
     func pluginsList() async throws -> PluginsList {
-        throw LatchError.failed(tryFailure)
+        throw LatchError.failed(LatchFailure(code: "serve_required", message: "this machine needs a live receiver; start `latch serve` on this state folder, then retry"))
     }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func serve(again: Bool) async throws {}

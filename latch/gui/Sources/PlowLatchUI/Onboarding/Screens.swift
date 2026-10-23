@@ -405,12 +405,14 @@ struct StartView: View {
             ScreenHeader(title: "Start Latch", lead: "Choose when Latch runs on this Mac.")
             Panel {
                 toggle("Run Latch now", "arrow.clockwise", $flow.runInBackground)
-                Rectangle().fill(Brand.line).frame(height: 1)
-                toggle("Start when you log in", "clock", $flow.startAtLogin)
-                    .disabled(!flow.runInBackground)
-                    .opacity(flow.runInBackground ? 1 : 0.5)
+                if app.loginItemOffered {
+                    Rectangle().fill(Brand.line).frame(height: 1)
+                    toggle("Start when you log in", "clock", $flow.startAtLogin)
+                        .disabled(!flow.runInBackground)
+                        .opacity(flow.runInBackground ? 1 : 0.5)
+                }
             }
-            if !flow.runInBackground {
+            if app.loginItemOffered, !flow.runInBackground {
                 Text("Latch can start when you log in only if it runs now.").foregroundStyle(Brand.muted)
             }
             if let blocked = app.status?.serve.blocked {

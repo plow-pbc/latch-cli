@@ -72,7 +72,6 @@ struct RulesView: View {
                 }
             }
             .accessibilityLabel("Your rules for agents on this Mac")
-            .onChange(of: flow.draftRules) { flow.rulesEdited() }
     }
 }
 

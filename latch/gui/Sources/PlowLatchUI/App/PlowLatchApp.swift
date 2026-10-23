@@ -1,12 +1,13 @@
 import SwiftUI
 
 /// latch's way in (src/gui.rs): called on the main thread with the path of
-/// the bundle's own latch and the state folder; returns when the app quits.
+/// the bundle's own latch, the state folder, and whether that folder is
+/// latch's default (no `--state-dir`); returns when the app quits.
 @_cdecl("latch_gui_main")
-nonisolated public func latchGUIMain(_ executable: UnsafePointer<CChar>, _ stateDir: UnsafePointer<CChar>) -> Int32 {
+nonisolated public func latchGUIMain(_ executable: UnsafePointer<CChar>, _ stateDir: UnsafePointer<CChar>, _ defaultState: Int32) -> Int32 {
     let client = LiveLatchClient(executable: URL(filePath: String(cString: executable)), stateDir: String(cString: stateDir))
     MainActor.assumeIsolated {
-        PlowLatchApp.model = AppModel(client: client)
+        PlowLatchApp.model = AppModel(client: client, loginItemOffered: defaultState != 0)
         #if LATCH_TEST_HOOKS
         TestHooks.install(PlowLatchApp.model)
         #endif

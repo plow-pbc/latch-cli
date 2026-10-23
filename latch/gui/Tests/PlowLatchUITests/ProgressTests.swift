@@ -165,7 +165,7 @@ struct GatekeeperTests {
 }
 
 /// A latch whose `plugins enable` answers as a test says, after a pause,
-/// and counts its calls.
+/// and counts its calls; `rules set` takes the same pause.
 final class ScriptedClient: LatchClient, @unchecked Sendable {
     let stateDir = "/Users/me/.latch"
     var status = Fixtures.stopped
@@ -183,8 +183,7 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
     func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func rulesShow() async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
-    func rulesSet(_ text: String) async throws {}
-    func rulesTry(_ request: [String]) async throws -> RulesTry { throw CancellationError() }
+    func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
     func pluginsList() async throws -> PluginsList { throw CancellationError() }
     /// How `serve -d` fails, if it does.
     var serveFailure: LatchFailure?
@@ -249,6 +248,35 @@ struct ClosingTests {
         #expect(Progress().settingUpAgain().rerun)
     }
 
+    @Test func aLaunchOnAnotherStateFolderLeavesTheLoginItemAlone() async {
+        // The login item starts the default state folder only.
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/tmp/dev-state"), still: true,
+                           loginItemOffered: false)
+        var set: [Bool] = []
+        app.setLoginItem = { set.append($0) }
+        app.loginItemIsOn = { true }
+        let flow = app.stage(.start, progress: Progress(rerun: true))
+        #expect(!flow.startAtLogin)
+        await flow.startLatch()
+        #expect(set.isEmpty)
+    }
+
+    @Test func skipWaitsWhileTheRulesSave() async {
+        let client = ScriptedClient(pause: .milliseconds(300)) { _ in nil }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.draftRules = "Never send email."
+        let saving = Task { await flow.saveRules() }
+        await until { flow.savingRules }
+        flow.skip()
+        #expect(flow.step == .rules)
+        await saving.value
+        // The save moves on from Set your rules, and Google is still to do.
+        #expect(flow.step == .google)
+        #expect(flow.progress.passed[.rules] == .continued)
+        #expect(flow.progress.passed[.google] == nil)
+    }
+
     @Test func connectGoogleInPlowOnlyWithLatchsURL() async {
         let quiet = LatchFailure(code: "google_not_connected", message: "connect a Google account in Plow")
         let client = ScriptedClient { _ in throw LatchError.failed(quiet) }
@@ -276,11 +304,17 @@ struct ClosingTests {
         #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Saved", "Couldn't check", "Couldn't check", "Not running"])
     }
 
-    @Test func aBackgroundHostRestartsOnlyWhenAsked() async throws {
-        let notGranted = LatchFailure(code: "needs_setup", message: "this host has no Full Disk Access; turn it on for Plow Latch.app in System Settings, restart the host, then run `latch plugins enable messages` again",
+    /// Contacts & Messages refused for want of Full Disk Access, on a host
+    /// this Mac runs in the background or in a terminal (`attached`), and
+    /// checked once: both wait for access until `granted` says so.
+    private func accessFlow(attached: Bool, granted: @escaping @Sendable () -> Bool = { false }) async -> (ScriptedClient, AppModel, Onboarding) {
+        let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access; restart the host",
                                       grant: "/Applications/Plow Latch.app", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
-        let client = ScriptedClient { _ in throw LatchError.failed(notGranted) }
-        client.status = #"{"peer":{"name":"studio"},"serve":{"state":"serving","ready":true,"managed":true,"attached":false,"blocked":null},"last_error":null}"#
+        let client = ScriptedClient { _ in
+            if granted() { return nil }
+            throw LatchError.failed(notGranted)
+        }
+        client.status = attached ? Fixtures.servingAttached : Fixtures.serving
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.open = { _ in }
         app.reveal = { _ in }
@@ -288,6 +322,11 @@ struct ClosingTests {
         let flow = app.stage(.access)
         flow.checkAccess()
         await until { flow.messages.isNeeded && flow.contacts.isNeeded }
+        return (client, app, flow)
+    }
+
+    @Test func aBackgroundHostRestartsOnlyWhenAsked() async throws {
+        let (client, _, flow) = await accessFlow(attached: false)
         #expect(flow.backgroundHostNeedsRestart)
         #expect(!flow.terminalHostNeedsRestart)
         // Never by itself: only the person's Restart Latch stops and starts it.
@@ -300,15 +339,7 @@ struct ClosingTests {
     }
 
     @Test func aTerminalHostIsLeftToLatchsWords() async {
-        let notGranted = LatchFailure(code: "needs_setup", message: "this host has no Full Disk Access; restart the host",
-                                      grant: "/Applications/Plow Latch.app", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
-        let client = ScriptedClient { _ in throw LatchError.failed(notGranted) }
-        client.status = #"{"peer":{"name":"studio"},"serve":{"state":"serving","ready":true,"managed":true,"attached":true,"blocked":null},"last_error":null}"#
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        await app.refreshStatus()
-        let flow = app.stage(.access)
-        flow.checkAccess()
-        await until { flow.messages.isNeeded && flow.contacts.isNeeded }
+        let (client, _, flow) = await accessFlow(attached: true)
         #expect(flow.terminalHostNeedsRestart)
         #expect(!flow.backgroundHostNeedsRestart)
         #expect(client.stopped == 0)
@@ -329,16 +360,8 @@ struct ClosingTests {
     }
 
     @Test func aFailedRestartSaysTheHostIsStoppedAndWhyAndRetries() async {
-        let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access; restart the host",
-                                      grant: "/Applications/Plow Latch.app", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
-        let client = ScriptedClient { _ in throw LatchError.failed(notGranted) }
-        client.status = #"{"peer":{"name":"studio"},"serve":{"state":"serving","ready":true,"managed":true,"attached":false,"blocked":null},"last_error":null}"#
+        let (client, app, flow) = await accessFlow(attached: false)
         client.serveFailure = LatchFailure(code: "serve_failed", message: "the host did not answer within 30 s; see serve.log")
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        await app.refreshStatus()
-        let flow = app.stage(.access)
-        flow.checkAccess()
-        await until { flow.messages.isNeeded && flow.contacts.isNeeded }
         await flow.restartLatch()
         #expect(flow.restartError == "the host did not answer within 30 s; see serve.log")
         #expect(app.status?.serve.state == "stopped")
@@ -353,18 +376,7 @@ struct ClosingTests {
     @Test func checkAgainAfterATerminalRestartTurnsBothOn() async {
         nonisolated final class Grant: @unchecked Sendable { var on = false }
         let grant = Grant()
-        let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access; restart the host",
-                                      grant: "/Applications/Plow Latch.app", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
-        let client = ScriptedClient { _ in
-            if grant.on { return nil }
-            throw LatchError.failed(notGranted)
-        }
-        client.status = #"{"peer":{"name":"studio"},"serve":{"state":"serving","ready":true,"managed":true,"attached":true,"blocked":null},"last_error":null}"#
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        await app.refreshStatus()
-        let flow = app.stage(.access)
-        flow.checkAccess()
-        await until { flow.messages.isNeeded && flow.contacts.isNeeded }
+        let (client, _, flow) = await accessFlow(attached: true) { grant.on }
         #expect(flow.terminalHostNeedsRestart)
         // The person restarts latch in their terminal, then Check again.
         grant.on = true

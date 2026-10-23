@@ -67,6 +67,9 @@ fn run(bundle: &CFBundle, state_dir: Option<PathBuf>) -> Result<ExitCode, Failur
         too_old();
         return Ok(ExitCode::SUCCESS);
     }
+    // The login item runs this latch with no --state-dir, so it starts
+    // only the default state folder: the window offers it only there.
+    let default_state = c_int::from(state_dir.is_none());
     let state = StateDir::new(state_dir.or(crate::cli::BUILD_STATE_DIR.map(PathBuf::from)))?;
     let latch = std::env::current_exe().map_err(|err| missing(err.to_string()))?;
     let library = bundle
@@ -89,12 +92,13 @@ fn run(bundle: &CFBundle, state_dir: Option<PathBuf>) -> Result<ExitCode, Failur
     if entry.is_null() {
         return Err(missing("its library has no latch_gui_main".into()));
     }
-    // SAFETY: latch_gui_main is `(const char *latch, const char *state_dir)
-    // -> int` (latch/gui/Sources/PlowLatchUI/PlowLatchApp.swift); it runs
-    // the app on this, the main, thread and copies both strings first.
-    let main: extern "C" fn(*const c_char, *const c_char) -> c_int =
+    // SAFETY: latch_gui_main is `(const char *latch, const char *state_dir,
+    // int default_state) -> int`
+    // (latch/gui/Sources/PlowLatchUI/App/PlowLatchApp.swift); it runs the
+    // app on this, the main, thread and copies both strings first.
+    let main: extern "C" fn(*const c_char, *const c_char, c_int) -> c_int =
         unsafe { std::mem::transmute(entry) };
-    Ok(match main(latch.as_ptr(), state.as_ptr()) {
+    Ok(match main(latch.as_ptr(), state.as_ptr(), default_state) {
         0 => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
     })
