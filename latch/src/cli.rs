@@ -743,20 +743,20 @@ pub enum PluginsCommand {
         host: Option<String>,
     },
     /// Run NAME's setup for this machine's host, running or not; NAME is
-    /// enabled only if it succeeds (owner only). When Plow has no Google
-    /// account yet, `enable google` gets a sign-in link from Plow: at a
-    /// terminal it shows the link and a QR code and waits for the account
-    /// (up to 5 minutes); otherwise the error carries it in `connect_url`
+    /// enabled only if it succeeds (owner only). When no Google account is
+    /// connected in Plow, `enable google` gets a single-use sign-in link
+    /// from Plow: at a terminal it shows the link and a QR code and waits
+    /// up to 5 minutes for the account; otherwise the error carries it as
+    /// `sign_in_url`
     Enable {
         name: String,
-        /// For an app: report as JSON lines on stdout (connect, waiting,
-        /// enabled, error). When Google needs signing in, the link comes
-        /// first (`connect`), then the result once the account appears
+        /// For an app: report as JSON lines on stdout (hello, link, then
+        /// result or error), waiting for a Google sign-in as at a terminal
         #[arg(long)]
         events: bool,
-        /// Google only: sign in with another Google account and add it to
-        /// Plow, even when one is connected already. Without a terminal or
-        /// --events, the answer is the link (`connect_url`, `expires_at`)
+        /// Google only: enable it, then offer a link to sign in another
+        /// Google account, even when one is connected. Without a terminal
+        /// or --events, the answer is the result plus `sign_in_url`
         #[arg(long)]
         add_account: bool,
     },

@@ -46,7 +46,7 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
         } => {
             if add_account && Connector::named(&name)? != Connector::Google {
                 let message = "only Google takes --add-account".to_string();
-                return Err(Failure::usage("bad_arguments", message));
+                return Err(Failure::usage("usage", message));
             }
             (
                 this_host(state)?,
@@ -73,15 +73,18 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
             answer => answer,
         }
     };
-    if adding {
-        return super::connect::google(state, None, events, send).await;
-    }
-    match send().await {
+    // Signing in waits here, outside any host call or hold on the state
+    // folder; a stop asked for meanwhile answers null, for nothing to print.
+    let signed_in = match send().await {
         Err(failure) if failure.code == "google_not_connected" => {
-            super::connect::google(state, Some(failure), events, send).await
+            super::connect::google(state, Some(failure), None, events, send).await
         }
-        answer => answer,
-    }
+        Ok(result) if adding => {
+            super::connect::google(state, None, Some(result), events, send).await
+        }
+        answer => return answer,
+    };
+    signed_in.map(Option::unwrap_or_default)
 }
 
 /// `enable` or `disable` with no host running: the host's own setup and

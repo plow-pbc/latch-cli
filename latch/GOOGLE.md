@@ -17,15 +17,18 @@ file workers can neither read nor run anything under the state directory.
 Google is off on a host until its owner runs `latch plugins enable google`
 there, with or without `latch serve` running: the setup checks that gog is installed
 and that Plow has a Google account connected for this host to use. With
-none connected, it gets a single-use Google sign-in link from Plow (it
-works once, for about 2 minutes): at a terminal it shows the link and a QR
-code and waits up to 5 minutes for the account, then turns Google on;
-otherwise it fails with `google_not_connected`, the link in `connect_url`.
-`--events` reports the link, then the result, as JSON lines for an app.
-`--add-account` gets the same link to add another Google account when one
-is connected already. The
-link is a credential until used: latch never writes it to the audit or a
-log. Until then every Google call gets `not_enabled`. `latch plugins disable google`
+none connected, the command (never the host) gets a single-use Google
+sign-in link from Plow, `sign_in_url`, which works once, for about 2
+minutes. At a terminal it shows the link and a QR code and waits up to 5
+minutes for an account Plow did not have, renewing the link if it expires
+unopened, then turns Google on; otherwise it fails with
+`google_not_connected`, the link in `sign_in_url`. `--events` reports the
+wait as JSON lines for an app: `hello`, a `link` for each link, then one
+`result` or `error` (`sign_in_timeout` when no new account was seen).
+`--add-account` turns Google on and offers a link for another account.
+The link is a credential until used: latch never writes it to the audit,
+saved state or a log, and `connect_url` stays Plow's public Connections
+page. Until then every Google call gets `not_enabled`. `latch plugins disable google`
 only stops this host asking Plow for Google credentials; nothing is revoked
 at Google or Plow, and other hosts keep their access.
 

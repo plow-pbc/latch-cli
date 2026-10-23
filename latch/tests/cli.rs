@@ -1714,6 +1714,10 @@ struct LiveState {
     google: Option<String>,
     /// Google accounts added after that one, listed by `GET /v1/connectors`.
     added_google: Vec<String>,
+    /// How long a Google sign-in link lasts, in seconds (Plow's is 120).
+    sign_in_for: i64,
+    /// Plow refuses this login a Google sign-in link.
+    sign_in_refused: bool,
     /// The real Plow decision route and the login to ask it with: its
     /// decisions go there instead (`real_judge`).
     judge: Option<(String, String)>,
@@ -1736,6 +1740,8 @@ impl LivePlow {
                 seen: Vec::new(),
                 google: None,
                 added_google: Vec::new(),
+                sign_in_for: 120,
+                sign_in_refused: false,
                 judge: None,
             })),
         };
@@ -1841,10 +1847,14 @@ impl LivePlow {
             }
             // A single-use Google sign-in link, as Plow writes it: the code
             // in the path, never a query.
+            ("POST", "/v1/connectors/gmail/connect-code") if state.sign_in_refused => {
+                (403, json!({"detail": "Token does not have access to gmail:connect"}))
+            }
             ("POST", "/v1/connectors/gmail/connect-code") if kind == "device" => {
                 let minted = state.seen.iter().filter(|(line, _)| line.contains("connect-code"));
                 let code = format!("made-up-connect-code-{}", minted.count());
-                let expires_at = jiff::Timestamp::now() + jiff::SignedDuration::from_secs(120);
+                let expires_at =
+                    jiff::Timestamp::now() + jiff::SignedDuration::from_secs(state.sign_in_for);
                 (
                     200,
                     json!({"code": code, "url": format!("https://api.example.com/v1/connectors/gmail/connect/{code}"),
@@ -4938,7 +4948,10 @@ fn setup_status_says_whether_google_is_connected_in_plow() {
     assert_eq!(none["state"], "needed");
     assert_eq!(none["connect_url"], "https://app.example.com/connections");
     assert_eq!(none["accounts"], json!([]));
-    assert_eq!(none["args"], Value::Null);
+    assert_eq!(
+        none["args"],
+        json!(["plugins", "enable", "google", "--events"])
+    );
 
     plow.state.lock().unwrap().google = Some("google-token".into());
     let off = google();
@@ -4967,10 +4980,12 @@ fn setup_status_says_whether_google_is_connected_in_plow() {
 }
 
 /// With no Google account in Plow, `plugins enable google` gets a sign-in
-/// link from Plow: a pipe gets it in the error, `--events` gets it as a line
-/// and then the enable once the account appears (or a timeout), and a
-/// person at a terminal gets it with a QR code and the same wait. The link
-/// is never written to the audit or the state folder.
+/// link from Plow: a pipe gets it in the error (`sign_in_url`), `--events`
+/// gets `hello`, a `link` line (again when one expires unopened), then the
+/// enable once a new account appears, or `sign_in_timeout`; a person at a
+/// terminal gets the link with a QR code and the same wait. `--add-account`
+/// does the same with Google connected already. A refused link says so, a
+/// closed stdin pipe stops the wait, and no link is kept anywhere.
 #[cfg(all(
     feature = "fake-gog",
     any(target_os = "macos", feature = "systemd-tests")
@@ -4987,60 +5002,89 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
         .join(pin["version"].as_str().unwrap());
     fs::create_dir_all(&gog).unwrap();
     fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    let minted = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.contains("connect-code"))
+            .count()
+    };
     let link = |n: usize| {
         format!("https://api.example.com/v1/connectors/gmail/connect/made-up-connect-code-{n}")
     };
     let enable = ["plugins", "enable", "google"];
+    let events = ["plugins", "enable", "google", "--events"];
+    let lines = |output: &Output| -> Vec<Value> {
+        output
+            .stdout
+            .as_slice()
+            .lines()
+            .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
+            .collect()
+    };
+    // `--events` running on its own, read a line at a time.
+    let spawned = |args: &[&str], stdin: std::process::Stdio| {
+        let mut child = latch_command(&host, args, &[])
+            .stdin(stdin)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        (child, out)
+    };
+    let next = |out: &mut std::io::Lines<_>| -> Value {
+        serde_json::from_str(&out.next().unwrap().unwrap()).unwrap()
+    };
 
-    // A pipe: the error carries the link, and says to open it and rerun.
+    // A pipe: the error carries the link apart from the public page.
     let output = latch(&host, &enable, &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     let error = &error["error"];
     assert_eq!(error["code"], "google_not_connected");
-    assert_eq!(error["connect_url"], link(1));
+    assert_eq!(error["message"], "No Google account is connected in Plow.");
+    assert_eq!(error["sign_in_url"], link(1));
     assert!(error["expires_at"].is_string(), "{error}");
-    assert_eq!(error["next"], "latch plugins enable google");
-    assert!(
-        !error["message"]
-            .as_str()
-            .unwrap()
-            .contains("made-up-connect-code")
+    assert_eq!(error["connect_url"], "https://app.example.com/connections");
+    assert_eq!(
+        error["next"],
+        "Open sign_in_url, finish Google sign-in, then run latch plugins enable google."
     );
 
-    // `--events`: the link, waiting, then the timeout, the result unknown.
-    let wait_a_second = [("LATCH_TEST_CONNECT_WITHIN", Path::new("1"))];
-    let events = ["plugins", "enable", "google", "--events"];
-    let output = latch(&host, &events, &wait_a_second);
-    assert_eq!(output.status.code(), Some(5), "{output:?}");
-    let lines: Vec<Value> = output
-        .stdout
-        .as_slice()
-        .lines()
-        .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
-        .collect();
-    assert_eq!(lines[0]["type"], "connect");
-    assert_eq!(lines[0]["connect_url"], link(2));
-    assert_eq!(lines[1]["type"], "waiting");
-    assert_eq!(lines[2]["type"], "error");
-    assert_eq!(lines[2]["error"]["code"], "connect_timeout");
-    assert_eq!(lines.len(), 3, "{lines:?}");
+    // `--events`, nobody signs in: the link, then the timeout, exit 1.
+    let wait = |secs: &'static str| [("LATCH_TEST_CONNECT_WITHIN", Path::new(secs))];
+    let output = latch(&host, &events, &wait("1"));
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let shown = lines(&output);
+    assert_eq!(shown[0], json!({"type": "hello", "schema": 1}));
+    assert_eq!(shown[1]["type"], "link");
+    assert_eq!(shown[1]["url"], link(2));
+    assert_eq!(shown[2]["type"], "error");
+    assert_eq!(shown[2]["error"]["code"], "sign_in_timeout");
+    assert_eq!(shown.len(), 3, "{shown:?}");
+
+    // A link that expires unopened is renewed within the same wait.
+    plow.state.lock().unwrap().sign_in_for = 1;
+    let output = latch(&host, &events, &wait("5"));
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let shown = lines(&output);
+    let links: Vec<&Value> = shown.iter().filter(|l| l["type"] == "link").collect();
+    assert!(links.len() >= 2, "{shown:?}");
+    assert_eq!(links[0]["url"], link(3));
+    assert_eq!(links[1]["url"], link(4));
+    assert_eq!(shown.last().unwrap()["error"]["code"], "sign_in_timeout");
+    plow.state.lock().unwrap().sign_in_for = 120;
+    let renewed = minted();
 
     // `--events` again: the account appears while it waits, and Google is on.
-    let mut child = latch_command(&host, &events, &[])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
-    assert_eq!(next()["connect_url"], link(3));
-    assert_eq!(next()["type"], "waiting");
+    let (mut child, mut out) = spawned(&events, std::process::Stdio::null());
+    assert_eq!(next(&mut out)["type"], "hello");
+    assert_eq!(next(&mut out)["url"], link(renewed + 1));
     plow.state.lock().unwrap().google = Some("google-token".into());
-    let enabled = next();
-    assert_eq!(enabled["type"], "enabled", "{enabled}");
-    assert_eq!(enabled["state"], "enabled");
-    assert_eq!(enabled["accounts"], json!(["owner@example.com"]));
+    let result = next(&mut out);
+    assert_eq!(result["type"], "result", "{result}");
+    assert_eq!(result["result"]["state"], "enabled");
+    assert_eq!(result["result"]["accounts"], json!(["owner@example.com"]));
     assert!(child.wait().unwrap().success());
 
     // A person at a terminal: the link and its QR code, then the same wait.
@@ -5052,7 +5096,7 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
         all.contains("Sign in with Google to connect it to Plow."),
         "{all}"
     );
-    assert!(all.contains(&link(4)), "{all}");
+    assert!(all.contains(&link(renewed + 2)), "{all}");
     assert!(
         all.contains('\u{2580}') || all.contains('\u{2584}'),
         "a QR code: {all}"
@@ -5061,46 +5105,59 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     let all = all + &shows(&shown, "\"enabled\"");
     assert!(enabling.wait().unwrap().success(), "{all}");
 
-    // Connected already: a plain enable mints nothing, and `--add-account`
-    // offers a link for another account. From a pipe the link is the answer.
+    // Connected already: a plain enable mints nothing. `--add-account`
+    // enables and hands over a link; from a pipe that is the answer.
+    let before = minted();
     let output = latch(&host, &enable, &[]);
     assert!(output.status.success(), "{output:?}");
+    assert_eq!(minted(), before);
     let adding = ["plugins", "enable", "google", "--add-account"];
     let output = latch(&host, &adding, &[]);
     assert!(output.status.success(), "{output:?}");
-    let offered: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(offered["connect_url"], link(5), "{offered}");
-    assert!(offered["expires_at"].is_string(), "{offered}");
-    // With `--events`, it waits for the second account, then reports both.
-    let mut child = latch_command(&host, &[&adding[..], &["--events"]].concat(), &[])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
-    assert_eq!(next()["connect_url"], link(6));
-    assert_eq!(next()["type"], "waiting");
+    let handed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(handed["state"], "enabled", "{handed}");
+    assert_eq!(handed["sign_in_url"], link(before + 1));
+    assert!(handed["expires_at"].is_string(), "{handed}");
+    // With `--events`, it waits for the second account.
+    let add_events = ["plugins", "enable", "google", "--add-account", "--events"];
+    let (mut child, mut out) = spawned(&add_events, std::process::Stdio::null());
+    assert_eq!(next(&mut out)["type"], "hello");
+    assert_eq!(next(&mut out)["url"], link(before + 2));
     plow.state.lock().unwrap().added_google = vec!["second@example.com".into()];
-    let enabled = next();
-    assert_eq!(enabled["type"], "enabled", "{enabled}");
+    let result = next(&mut out);
+    assert_eq!(result["type"], "result", "{result}");
     assert!(child.wait().unwrap().success());
+    // The caller closing stdin, a pipe, stops the wait: no last line, exit 0.
+    let (mut child, mut out) = spawned(&add_events, std::process::Stdio::piped());
+    assert_eq!(next(&mut out)["type"], "hello");
+    assert_eq!(next(&mut out)["type"], "link");
+    drop(child.stdin.take());
+    assert!(child.wait().unwrap().success());
+    assert!(out.next().is_none(), "nothing after the stop");
     #[cfg(target_os = "macos")]
     {
         let messages = ["plugins", "enable", "messages", "--add-account"];
         let output = latch(&host, &messages, &[]);
         assert_eq!(output.status.code(), Some(2), "{output:?}");
         let refused: Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(refused["error"]["code"], "bad_arguments");
+        assert_eq!(refused["error"]["code"], "usage");
     }
 
-    // Six links, each minted once, none kept anywhere in the state folder.
-    let minted = plow
-        .seen()
-        .iter()
-        .filter(|(line, _)| line.contains("connect-code"))
-        .count();
-    assert_eq!(minted, 6);
+    // Plow refusing a link is said as itself, with the public page.
+    plow.state.lock().unwrap().sign_in_refused = true;
+    let output = latch(&host, &adding, &[]);
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let refused: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(refused["error"]["code"], "plow_denied");
+    assert_eq!(
+        refused["error"]["connect_url"],
+        "https://app.example.com/connections"
+    );
+
+    // No link is kept: not in the state folder (plugins.json, the audit,
+    // anything), nor in what `plugins list` says.
+    let listed = latch(&host, &["plugins", "list"], &[]);
+    assert!(!String::from_utf8_lossy(&listed.stdout).contains("made-up-connect-code"));
     fn kept(dir: &Path, found: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();

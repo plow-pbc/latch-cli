@@ -169,12 +169,14 @@ impl Setup {
         }
         step("Connect Google", "latch plugins enable google");
         // At this terminal, so a Google sign-in shows its link and waits for
-        // the account; a failure says why there itself.
+        // the account; a failure says why there itself. Its exit decides.
         let enabled = self
             .command(&["plugins", "enable", "google"])
-            .stdout(Stdio::null())
-            .status();
-        if enabled.is_ok_and(|status| status.success()) {
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .output();
+        if enabled.is_ok_and(|output| output.status.success()) {
             done("Google is connected.");
         } else {
             eprintln!("✗ Google is not on yet.\n  Try again later: latch plugins enable google");
@@ -473,10 +475,11 @@ fn google_in_plow(step: &mut Step, plow: &Result<crate::plow::Connectors, Failur
         let page = connectors.connections_page();
         step.state = Needed;
         step.reason = format!(
-            "Google is not connected in Plow: connect it at {page}, then run \
-             `latch plugins enable google`."
+            "Google is not connected in Plow: `latch plugins enable google` signs you in, \
+             or connect it at {page} first."
         );
-        step.args = None;
+        // Signs in and waits, reporting as JSON lines; asking mints nothing.
+        step.args = Some(vec!["plugins", "enable", "google", "--events"]);
         step.connect_url = Some(page);
     } else {
         // The connector's own state stands; Plow adds who is connected, and
