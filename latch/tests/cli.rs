@@ -2930,6 +2930,10 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         (code, &error["error"]["code"]),
         (Some(2), &json!("confirmation_required"))
     );
+    assert_eq!(
+        error["error"]["next"],
+        "latch agents remove 'Research bot' --yes"
+    );
     assert_eq!(deletes(), 0);
     let (code, removed, _) = run(&["agents", "remove", "Research bot", "--yes"]);
     assert_eq!(code, Some(0), "{removed}");
@@ -7433,8 +7437,10 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
     ] {
         let (code, error) = answered(&latch(&fresh, nested, &[]));
         assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
-        let message = error["error"]["message"].as_str().unwrap();
-        assert!(message.contains("latch rules try --host NAME"), "{message}");
+        assert_eq!(
+            error["error"]["next"],
+            "latch rules try --host NAME -- <request>"
+        );
     }
     // A draft on stdin, and a request that reads stdin too.
     let both = [
@@ -7442,8 +7448,10 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
     ];
     let (code, error) = answered(&latch(&fresh, &both, &[]));
     assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(message.contains("--draft F"), "{message}");
+    assert_eq!(
+        error["error"]["next"],
+        "give the draft as a file: --draft F"
+    );
     let settings = ["rules", "try", "--", "vault", "list"];
     let (code, error) = answered(&latch(&fresh, &settings, &[]));
     assert_eq!(

@@ -129,16 +129,18 @@ async fn preview(
     if innermost.ids().any(|id| id == "host")
         && innermost.value_source("host") == Some(ValueSource::CommandLine)
     {
-        let message = "The host goes on `latch rules try`, not on the request: \
-                       latch rules try --host NAME -- <request>";
-        return Err(Failure::new(code::usage, message.to_string()));
+        let message = "the host goes on `latch rules try`, not on the request";
+        let mut failure = Failure::new(code::usage, message.to_string());
+        failure.next = Some("latch rules try --host NAME -- <request>".into());
+        return Err(failure);
     }
     if draft.as_deref() == Some(Path::new("-"))
         && matches!(&parsed.command, Latch::Exec(exec) if exec.stdin)
     {
-        let message = "--draft - and exec --stdin both read stdin: give the draft as a file, \
-                       --draft F";
-        return Err(Failure::new(code::usage, message.to_string()));
+        let message = "--draft - and exec --stdin both read stdin";
+        let mut failure = Failure::new(code::usage, message.to_string());
+        failure.next = Some("give the draft as a file: --draft F".into());
+        return Err(failure);
     }
     args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
     let (op, request, asked): (&str, Value, HostArg) = match parsed.command {

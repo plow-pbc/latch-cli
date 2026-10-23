@@ -39,8 +39,16 @@ pub async fn remove(state: &StateDir, name: &str, yes: bool) -> Result<RemoveOut
     }
     if !yes {
         if !term::interactive() {
-            let message = format!("removing {name:?} signs that machine out; pass --yes to do it");
-            return Err(Failure::new(code::confirmation_required, message));
+            let message = format!("removing {name:?} signs that machine out");
+            let mut failure = Failure::new(code::confirmation_required, message);
+            failure.next = Some(
+                format!(
+                    "latch devices remove {} --yes",
+                    crate::login::shell_quoted(name)
+                )
+                .into(),
+            );
+            return Err(failure);
         }
         let question = format!(
             "Remove {name}? This signs that machine out of Plow, and anything else using \

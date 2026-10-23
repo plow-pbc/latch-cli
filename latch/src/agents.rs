@@ -81,8 +81,7 @@ pub async fn run(state: &StateDir, args: AgentsArgs) -> Result<Value, Failure> {
         .await
         .map_err(|mut failure| {
             if failure.code == "plow_denied" {
-                failure.details =
-                    json!({"next": "Use an owner login that can manage agents on Plow."});
+                failure.next = Some("Use an owner login that can manage agents on Plow.".into());
             }
             failure
         })
@@ -280,7 +279,7 @@ async fn resolve(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
         0 => {
             let message = format!("no agent in this account is called {named:?}");
             let mut failure = Failure::new(code::no_such_agent, message);
-            failure.details = json!({"next": "latch agents"});
+            failure.next = Some("latch agents".into());
             Err(failure)
         }
         n => {
@@ -353,7 +352,7 @@ async fn new(
             if kind == OWN || !kinds.iter().any(|known| &known.id == kind) {
                 let message = format!("Plow offers no cloud agent {kind:?}");
                 let mut failure = Failure::new(code::unknown_cloud_kind, message);
-                failure.details = json!({"next": "latch agents catalog"});
+                failure.next = Some("latch agents catalog".into());
                 return Err(failure);
             }
             kind.as_str()
@@ -398,7 +397,7 @@ async fn line_named(plow: &Plow, named: &str) -> Result<String, Failure> {
         None => {
             let message = format!("Plow has no line {named:?}");
             let mut failure = Failure::new(code::no_such_line, message);
-            failure.details = json!({"next": "latch agents lines"});
+            failure.next = Some("latch agents lines".into());
             Err(failure)
         }
     }
@@ -413,7 +412,7 @@ fn not_created(failure: Failure, line: &str) -> Failure {
         ("conflict", Some("AGENT_EXISTS")) => {
             let message = format!("line {line} already has an agent; pick a free one");
             let mut failure = Failure::new(code::line_taken, message);
-            failure.details = json!({"next": "latch agents lines"});
+            failure.next = Some("latch agents lines".into());
             failure
         }
         ("conflict", Some("NO_FREE_LINE")) => Failure::new(
@@ -423,7 +422,7 @@ fn not_created(failure: Failure, line: &str) -> Failure {
         (code, _) if lost(code) => {
             let message = "Plow may or may not have created the agent: its answer was lost; look before trying again";
             let mut failure = Failure::new(code::outcome_unknown, message.into());
-            failure.details = json!({"next": "latch agents"});
+            failure.next = Some("latch agents".into());
             failure
         }
         _ => failure,
@@ -442,8 +441,16 @@ async fn remove(plow: &Plow, named: &str, yes: bool) -> Result<Value, Failure> {
     let what = format!("{} ({})", agent.name, agent.line.provider_key);
     if !yes {
         if !term::interactive() {
-            let message = format!("removing {what} signs it out of Plow; pass --yes to do it");
-            return Err(Failure::new(code::confirmation_required, message));
+            let message = format!("removing {what} signs it out of Plow");
+            let mut failure = Failure::new(code::confirmation_required, message);
+            failure.next = Some(
+                format!(
+                    "latch agents remove {} --yes",
+                    crate::login::shell_quoted(named)
+                )
+                .into(),
+            );
+            return Err(failure);
         }
         let program = if own {
             " The program you run for it keeps running until you stop it."
@@ -467,7 +474,7 @@ async fn remove(plow: &Plow, named: &str, yes: bool) -> Result<Value, Failure> {
                 "Plow may or may not have removed {what}: its answer was lost; look before trying again"
             );
             let mut failure = Failure::new(code::outcome_unknown, message);
-            failure.details = json!({"next": format!("latch agents show {uid}")});
+            failure.next = Some(format!("latch agents show {uid}").into());
             Err(failure)
         }
         Err(failure) => Err(failure),

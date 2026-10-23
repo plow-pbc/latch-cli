@@ -280,12 +280,11 @@ fn given(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failure> {
             ));
         };
         if secret {
-            return Err(Failure::new(
-                code::secret_in_argv,
-                format!(
-                    "{label} is secret: it is asked for at a prompt or read with --stdin, never given on the command line"
-                ),
-            ));
+            let message = format!("{label} is secret: never given on the command line");
+            let mut failure = Failure::new(code::secret_in_argv, message);
+            failure.next =
+                Some(format!("pipe it as JSON with --stdin: {{{label:?}: \"…\"}}").into());
+            return Err(failure);
         }
         values.insert(label.to_string(), json!(value));
     }
@@ -579,6 +578,10 @@ mod tests {
             .unwrap();
         assert_eq!(refused.code, "secret_in_argv");
         assert!(!refused.message.contains("hunter2"));
+        assert_eq!(
+            refused.next.as_deref(),
+            Some(r#"pipe it as JSON with --stdin: {"password": "…"}"#)
+        );
         let refused = values("card", &["cvv=737".into()], &[], false)
             .err()
             .unwrap();
