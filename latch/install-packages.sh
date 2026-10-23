@@ -33,10 +33,14 @@ as_root_install() {
         ;;
       dnf:libgtk-3-0) package=gtk3 ;;
       dnf:libasound2) package=alsa-lib ;;
+      dnf:libnss3) package=nss ;;
+      dnf:libgbm1) package=mesa-libgbm ;;
       dnf:libx11-xcb1) package=libX11-xcb ;;
       dnf:libdbus-1-3) package=dbus-libs ;;
       pacman:libgtk-3-0) package=gtk3 ;;
       pacman:libasound2) package=alsa-lib ;;
+      pacman:libnss3) package=nss ;;
+      pacman:libgbm1) package=mesa ;;
       pacman:libx11-xcb1) package=libx11 ;;
       pacman:libdbus-1-3) package=dbus ;;
       dnf:xvfb) package=xorg-x11-server-Xvfb ;;

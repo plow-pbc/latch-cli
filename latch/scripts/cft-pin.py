@@ -24,6 +24,7 @@ PLATFORMS = {
     "mac_arm64": ("mac-arm64", ["ditto", "-x", "-k"], MAC_EXECUTABLE),
     "mac_x64": ("mac-x64", ["ditto", "-x", "-k"], MAC_EXECUTABLE),
     "linux_arm64": ("linux-arm64", ["unzip", "-q"], "chrome"),
+    "linux_x64": ("linux64", ["unzip", "-q"], "chrome"),
 }
 URL = "https://storage.googleapis.com/chrome-for-testing-public/{version}/{platform}/chrome-{platform}.zip"
 

@@ -450,7 +450,7 @@ mod tests {
         assert!(forbidden("--remote-debugging-port=9222"));
         assert!(forbidden("--headless=new"));
         assert!(forbidden("--no-sandbox"));
-        for key in ["mac_arm64", "mac_x64", "linux_arm64"] {
+        for key in ["mac_arm64", "mac_x64", "linux_arm64", "linux_x64"] {
             assert!(CFT.builds.contains_key(key), "{key}");
             assert!(!CFT.builds[key].args.iter().any(|arg| forbidden(arg)));
         }
