@@ -22,10 +22,12 @@ let package = Package(
         // Renders every onboarding screen and state, light and dark, on the
         // sample latch to PNGs: `swift run Snapshots OUTPUT_DIR`.
         .executableTarget(name: "Snapshots", dependencies: ["PlowLatchUI"], swiftSettings: isolated),
+        // Holds latch streams as the app does, for the tests that kill it.
+        .executableTarget(name: "StreamHolder", dependencies: ["PlowLatchUI"], swiftSettings: isolated),
         // `swift test` runs the model tests and `ContractTests`, which run
         // the real debug latch; `swift test --skip ContractTests` needs no
         // Rust build.
-        .testTarget(name: "PlowLatchUITests", dependencies: ["PlowLatchUI"], exclude: (live ? [] : ["Live"]) + (scaling ? [] : ["Scaling"]),
+        .testTarget(name: "PlowLatchUITests", dependencies: ["PlowLatchUI", "StreamHolder"], exclude: (live ? [] : ["Live"]) + (scaling ? [] : ["Scaling"]),
                     swiftSettings: isolated),
     ]
 )

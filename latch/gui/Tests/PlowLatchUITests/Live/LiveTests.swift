@@ -31,14 +31,13 @@ struct LiveTests {
         let client = LiveLatchClient(executable: latch, stateDir: state)
         let before = try await client.localStatus().thisMachine.hosting
         try #require(before.ready, "LATCH_LIVE_STATE's host must be serving")
-        let followers = try [["status", "--local", "--follow"], ["audit", "--follow"]].map {
-            try Follower(latch, ["--state-dir", state] + $0)
-        }
-        defer { followers.forEach { $0.stop() } }
-        await waitUntil { latchRuns(on: state, doing: "audit --follow") == 1 }
-        followers.forEach { $0.killApp() }
-        await waitUntil { followers.allSatisfy { !$0.latch.isRunning } }
-        #expect(followers.allSatisfy { !$0.latch.isRunning })
+        let app = try HeldStreams(latch: latch, state: state, ["status", "audit"])
+        defer { app.stop() }
+        func streams() -> Int { latchRuns(on: state, doing: "status --local --follow") + latchRuns(on: state, doing: "audit --follow") }
+        await waitUntil { streams() == 2 }
+        app.killApp()
+        await waitUntil { streams() == 0 }
+        #expect(streams() == 0)
         let after = try await client.localStatus().thisMachine.hosting
         #expect(after.ready && after.pid == before.pid)
     }
