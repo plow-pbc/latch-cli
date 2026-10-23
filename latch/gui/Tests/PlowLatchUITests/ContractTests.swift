@@ -52,6 +52,18 @@ final class ContractTests {
         await waitUntil { latchRuns(on: state.path, doing: "status --local --follow") == 0 }
     }
 
+    /// The app killed outright: its stream's latch sees its stdin close and
+    /// ends, with no one left to stop it. Starting the holder and latch takes
+    /// about half a second.
+    @Test func aStreamEndsWhenItsAppIsKilled() async throws {
+        let app = try HeldStreams(latch: latch, state: state.path, ["status"])
+        defer { app.stop() }
+        await waitUntil { latchRuns(on: state.path, doing: "status --local --follow") == 1 }
+        app.killApp()
+        await waitUntil { latchRuns(on: state.path, doing: "status --local --follow") == 0 }
+        #expect(latchRuns(on: state.path, doing: "status --local --follow") == 0)
+    }
+
     @Test func setupStatusOfAFreshStateFolder() async throws {
         let setup = try await client.setupStatus()
         #expect(setup.step("login")?.state == "needed")
@@ -82,6 +94,31 @@ final class ContractTests {
             return
         }
         #expect(error.code == "not_logged_in")
+    }
+}
+
+/// The app's streams on latch, held by `LiveLatchClient` in a process of
+/// their own (`StreamHolder`), so a test can kill that process outright
+/// with SIGKILL, as the app dying with no chance to stop them.
+struct HeldStreams {
+    let holder = Process()
+
+    /// `streams`: `status` (`status --local --follow`), `audit` (`audit --follow`).
+    init(latch: URL, state: String, _ streams: [String]) throws {
+        let products = Bundle(for: ContractTests.self).bundleURL.deletingLastPathComponent()
+        holder.executableURL = products.appending(path: "StreamHolder")
+        holder.arguments = [latch.path, state] + streams
+        holder.standardOutput = FileHandle.nullDevice
+        holder.standardError = FileHandle.nullDevice
+        try holder.run()
+    }
+
+    func killApp() {
+        kill(holder.processIdentifier, SIGKILL)
+    }
+
+    func stop() {
+        if holder.isRunning { killApp() }
     }
 }
 
