@@ -208,6 +208,9 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     }
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
+    func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
+    func pluginsList(host: String?) async throws -> PluginsList { throw CancellationError() }
+    func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
         loginNames.append(name)
         replaced.append(replace)
@@ -228,7 +231,7 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus {
         try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google, access: access))
     }
-    func rulesShow() async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
     /// How a setup step (`serve -d`) fails, if it does.
     var serveFailure: LatchFailure?

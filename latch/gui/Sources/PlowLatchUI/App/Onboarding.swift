@@ -527,7 +527,7 @@ final class Onboarding {
         restartError = nil
         do {
             if app.status?.serve.running == true { try await client.stop() }
-            try await startHost()
+            try await app.startHost()
             await app.refreshStatus()
             checkAccess()
         } catch {
@@ -555,18 +555,6 @@ final class Onboarding {
 
     // MARK: Start Latch
 
-    /// Starts the host the way `setup --status` says (with the last serve's
-    /// flags when there were any). Nothing to do when it isn't needed.
-    /// A host latch says can't start now throws latch's reason.
-    private func startHost() async throws {
-        guard let host = try await client.setupStatus().step("host") else { return }
-        switch host.state {
-        case "needed": if let args = host.args { try await client.perform(args) }
-        case "blocked": throw HostBlocked(reason: host.reason)
-        default: break
-        }
-    }
-
     /// Starts the host in the background and sets the login item, as the
     /// toggles say.
     func startLatch() async {
@@ -574,7 +562,7 @@ final class Onboarding {
         defer { starting = false }
         startError = nil
         do {
-            if runInBackground, app.status?.serve.ready != true { try await startHost() }
+            if runInBackground, app.status?.serve.ready != true { try await app.startHost() }
             if app.loginItemOffered { try app.setLoginItem(runInBackground && startAtLogin) }
             started = runInBackground
             await app.refreshStatus()

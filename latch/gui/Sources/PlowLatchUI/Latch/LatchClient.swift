@@ -5,10 +5,13 @@ nonisolated protocol LatchClient: Sendable {
     /// The state folder every run is given.
     var stateDir: String { get }
     func localStatus() async throws -> LocalStatus
+    /// `latch status`: the account's hosts, from Plow.
+    func accountStatus() async throws -> AccountStatus
     /// `latch login --events [--name NAME] [--replace]`: the code to text,
     /// then how it ends. Stopping the iteration cancels the login.
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error>
-    func rulesShow() async throws -> RulesShow
+    /// `latch rules show`, on this Mac's host or, with `host`, another.
+    func rulesShow(host: String?) async throws -> RulesShow
     /// `latch rules set --file -`, the text on stdin.
     func rulesSet(_ text: String) async throws
     /// `latch setup --status`: what's set up, read from the state folder.
@@ -16,12 +19,20 @@ nonisolated protocol LatchClient: Sendable {
     /// The same, with `--check-access`: whether Plow Latch has Full Disk
     /// Access, which takes a moment.
     func setupStatusCheckingAccess() async throws -> SetupStatus
+    /// `latch plugins list`, on this Mac's host or, with `host`, another.
+    func pluginsList(host: String?) async throws -> PluginsList
+    /// `latch vault list`, on this Mac's host or, with `host`, another.
+    func vaultList(host: String?) async throws -> VaultList
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
     /// A setup step, as `setup --status` gives its words after `latch`.
     func perform(_ args: [String]) async throws
     /// `latch stop`: stops the host on this state folder.
     func stop() async throws
+}
+
+extension LatchClient {
+    func rulesShow() async throws -> RulesShow { try await rulesShow(host: nil) }
 }
 
 /// The bundle's own latch, by absolute path, always with `--state-dir`.
@@ -33,9 +44,13 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(LocalStatus.self, try await run(["status", "--local"]))
     }
 
+    func accountStatus() async throws -> AccountStatus {
+        try decode(AccountStatus.self, try await run(["status"]))
+    }
+
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
         let arguments = ["login", "--events"] + (name.map { ["--name", $0] } ?? []) + (replace ? ["--replace"] : [])
-        let process = LatchProcess(executable: executable, arguments: withState(arguments))
+        let process = LatchProcess(executable: executable, arguments: withState(arguments), environment: Self.environment)
         return AsyncThrowingStream { continuation in
             let reader = Task.detached {
                 do {
@@ -56,8 +71,8 @@ nonisolated struct LiveLatchClient: LatchClient {
         }
     }
 
-    func rulesShow() async throws -> RulesShow {
-        try decode(RulesShow.self, try await run(["rules", "show"]))
+    func rulesShow(host: String?) async throws -> RulesShow {
+        try decode(RulesShow.self, try await run(["rules", "show"] + on(host)))
     }
 
     func rulesSet(_ text: String) async throws {
@@ -70,6 +85,14 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func setupStatusCheckingAccess() async throws -> SetupStatus {
         try decode(SetupStatus.self, try await run(["setup", "--status", "--check-access"]))
+    }
+
+    func pluginsList(host: String?) async throws -> PluginsList {
+        try decode(PluginsList.self, try await run(["plugins", "list"] + on(host)))
+    }
+
+    func vaultList(host: String?) async throws -> VaultList {
+        try decode(VaultList.self, try await run(["vault", "list"] + on(host)))
     }
 
     func enable(_ plugin: String) async throws -> GoogleEnabled? {
@@ -86,7 +109,21 @@ nonisolated struct LiveLatchClient: LatchClient {
     }
 
     private func run(_ arguments: [String], input: Data? = nil) async throws -> Data {
-        try await LatchProcess(executable: executable, arguments: withState(arguments), input: input).output()
+        try await LatchProcess(executable: executable, arguments: withState(arguments), input: input, environment: Self.environment).output()
+    }
+
+    /// The app's environment, less what would pick a target for latch: the
+    /// host and chat are always given as arguments, so an inherited
+    /// `LATCH_HOST` (a terminal launch, `launchctl setenv`) can't redirect
+    /// a read meant for this Mac.
+    private static let environment = childEnvironment(ProcessInfo.processInfo.environment)
+
+    static func childEnvironment(_ inherited: [String: String]) -> [String: String] {
+        inherited.filter { !["LATCH_HOST", "LATCH_PLOW_CHAT"].contains($0.key) }
+    }
+
+    private func on(_ host: String?) -> [String] {
+        host.map { ["--host", $0] } ?? []
     }
 
     private func withState(_ arguments: [String]) -> [String] {
