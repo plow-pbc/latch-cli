@@ -1415,6 +1415,41 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     );
     server.join().unwrap();
 
+    // `--revision`: a save or clear over rules that changed since they were
+    // read is refused with the revision they are at now, and changes nothing.
+    let now = show["every_agent"]["revision"].as_str().unwrap();
+    // The rules for every agent as first set, before `edit` changed them.
+    let stale = audit_records(&state)[0]["args"]["after"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for args in [
+        &["rules", "set", "--revision", &stale, "Anything goes."][..],
+        &["rules", "set", "--revision", "none", "Anything goes."],
+        &["rules", "clear", "--revision", &stale],
+    ] {
+        let refused = latch(&state, args, &[]);
+        assert_eq!(refused.status.code(), Some(4), "{args:?} {refused:?}");
+        let refused: Value = serde_json::from_slice(&refused.stderr).unwrap();
+        assert_eq!(refused["error"]["code"], "stale_revision");
+        assert_eq!(refused["error"]["revision"], now);
+    }
+    assert_eq!(
+        fs::read_to_string(state.join("rules/host.txt")).unwrap(),
+        "Never send email.\nNever buy anything."
+    );
+    let saved = latch(
+        &state,
+        &["rules", "set", "--revision", now, "Anything goes."],
+        &[],
+    );
+    assert_eq!(saved.status.code(), Some(0), "{saved:?}");
+    let saved: Value = serde_json::from_slice(&saved.stdout).unwrap();
+    let saved = saved["revision"].as_str().unwrap();
+    let cleared = latch(&state, &["rules", "clear", "--revision", saved], &[]);
+    assert_eq!(cleared.status.code(), Some(0), "{cleared:?}");
+    assert!(!state.join("rules/host.txt").exists());
+
     // Every command is in the host's audit log, by this machine's key, with
     // revisions and never the text.
     let records = audit_records(&state);
@@ -1423,7 +1458,21 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
         .iter()
         .map(|r| r["args"]["command"].as_str().unwrap())
         .collect();
-    assert_eq!(commands, ["set", "set", "show", "edit", "show"]);
+    assert_eq!(
+        commands,
+        [
+            "set",
+            "set",
+            "show",
+            "edit",
+            "show",
+            "edit",
+            "edit",
+            "clear_at_revision",
+            "edit",
+            "clear_at_revision"
+        ]
+    );
     assert!(
         records
             .iter()

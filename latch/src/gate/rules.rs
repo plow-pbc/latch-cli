@@ -242,18 +242,7 @@ impl RulesDir {
             return Err(Failure::usage("empty_rules", message.into()));
         }
         let _lock = self.lock()?;
-        let before = self.text(scope)?.as_deref().map(revision);
-        if let Some(expected) = expected
-            && expected != before.as_deref()
-        {
-            let mut refused = Failure::new(
-                Exit::Denied,
-                "stale_revision",
-                "the rules changed since they were read; nothing was saved, and the current text is kept".into(),
-            );
-            refused.details = serde_json::json!({"revision": before});
-            return Err(refused);
-        }
+        let before = self.current(scope, expected)?;
         let others = match scope {
             Scope::Host => {
                 let mut largest = 0;
@@ -286,10 +275,11 @@ impl RulesDir {
         })
     }
 
-    /// Removes `scope`'s text, and an agent's stored peer key.
-    pub fn clear(&self, scope: &Scope) -> Result<Change, Failure> {
+    /// Removes `scope`'s text, and an agent's stored peer key. With
+    /// `expected`, only if the text is still at that revision, as `set`.
+    pub fn clear(&self, scope: &Scope, expected: Option<Option<&str>>) -> Result<Change, Failure> {
         let _lock = self.lock()?;
-        let before = self.text(scope)?.as_deref().map(revision);
+        let before = self.current(scope, expected)?;
         self.remove(&scope.file())?;
         if let Scope::Agent(uid) = scope {
             self.remove(&format!("{uid}.peer"))?;
@@ -298,6 +288,28 @@ impl RulesDir {
             before,
             after: None,
         })
+    }
+
+    /// `scope`'s revision now, under the lock: refused if it is not
+    /// `expected`, when there is one.
+    fn current(
+        &self,
+        scope: &Scope,
+        expected: Option<Option<&str>>,
+    ) -> Result<Option<String>, Failure> {
+        let before = self.text(scope)?.as_deref().map(revision);
+        if let Some(expected) = expected
+            && expected != before.as_deref()
+        {
+            let mut refused = Failure::new(
+                Exit::Denied,
+                "stale_revision",
+                "the rules changed since they were read; nothing was changed, and the current text is kept".into(),
+            );
+            refused.details = serde_json::json!({"revision": before});
+            return Err(refused);
+        }
+        Ok(before)
     }
 
     fn lock(&self) -> Result<File, Failure> {
