@@ -27,7 +27,7 @@ use super::cdp::{self, Cdp, Pipes};
 use super::driver::{self, Download, Driver, Event, Frame, KEY_NAMES, Runtime, Tab};
 use super::engine::{CFT, Engine};
 use super::profile;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 
 /// How long the browser has to start, answer a command, or load a page.
 const STARTUP: Duration = Duration::from_secs(30);
@@ -128,8 +128,8 @@ impl Cft {
         page_isolation_off: bool,
     ) -> Result<Self, Failure> {
         if CFT.driver_contract != driver::CONTRACT {
-            return Err(Failure::failed(
-                "engine_unverified",
+            return Err(Failure::new(
+                code::engine_unverified,
                 format!(
                     "the {} plugin speaks driver contract {}, this latch {}",
                     CFT.engine,
@@ -411,8 +411,8 @@ impl Cft {
         self.cdp
             .call("Page.enable", json!({}), Some(&session), deadline)?;
         if !self.auto_attach(&session)? {
-            return Err(Failure::failed(
-                "engine_error",
+            return Err(Failure::new(
+                code::engine_error,
                 "the tab closed as it opened".into(),
             ));
         }
@@ -500,7 +500,7 @@ impl Cft {
             .tabs
             .iter()
             .find(|tab| tab.id == id)
-            .ok_or_else(|| Failure::usage("no_such_tab", format!("no tab {id}")))
+            .ok_or_else(|| Failure::new(code::no_such_tab, format!("no tab {id}")))
     }
 
     fn active_state(&self) -> &TabState {
@@ -721,8 +721,8 @@ impl Cft {
         // A page held by a dialog does not answer for its frames until the
         // dialog is answered: one open already, or one opening meanwhile.
         let blocked = || {
-            Failure::failed(
-                "dialog_open",
+            Failure::new(
+                code::dialog_open,
                 "a dialog is open; answer it with `dialog accept|dismiss`".into(),
             )
         };
@@ -840,8 +840,8 @@ impl Cft {
                             .as_str()
                             .or(details["text"].as_str())
                             .unwrap_or("failed");
-                        return Err(Failure::failed(
-                            "engine_error",
+                        return Err(Failure::new(
+                            code::engine_error,
                             format!("latch's page script: {}", clip(text, 200)),
                         ));
                     }
@@ -849,8 +849,8 @@ impl Cft {
                 }
                 Ok(Reply::Stopped) if self.cdp.removed(&frame.id) => return Err(stale()),
                 Ok(Reply::Stopped) => {
-                    return Err(Failure::failed(
-                        "dialog_open",
+                    return Err(Failure::new(
+                        code::dialog_open,
                         "a dialog is open; answer it with `dialog accept|dismiss`".into(),
                     ));
                 }
@@ -878,7 +878,7 @@ impl Cft {
             deadline,
         )?;
         if let Some(error) = navigated["errorText"].as_str() {
-            return Err(Failure::failed("navigation_failed", error.to_string()));
+            return Err(Failure::new(code::navigation_failed, error.to_string()));
         }
         // A page that opens a dialog while loading never fires its load event.
         let loaded = |event: &Value| {
@@ -893,8 +893,8 @@ impl Cft {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(Failure::failed(
-                    "timeout",
+                return Err(Failure::new(
+                    code::timeout,
                     format!("{url} did not finish loading"),
                 ));
             }
@@ -1002,8 +1002,8 @@ impl Driver for Cft {
     fn close_tab(&mut self, tab: &str) -> Result<(), Failure> {
         let target = self.tab(tab)?.target.clone();
         if self.share.tabs.len() == 1 {
-            return Err(Failure::usage(
-                "last_tab",
+            return Err(Failure::new(
+                code::last_tab,
                 "a session keeps at least one tab; close the session instead".into(),
             ));
         }
@@ -1125,11 +1125,11 @@ impl Driver for Cft {
             opened,
         ) {
             Ok(Reply::Answer(reply)) if reply.get("exceptionDetails").is_some() => Err(
-                Failure::failed("engine_error", "latch's page script failed".into()),
+                Failure::new(code::engine_error, "latch's page script failed".into()),
             ),
             Ok(Reply::Answer(reply)) => Ok(reply["result"]["value"].clone()),
-            Ok(Reply::Stopped) => Err(Failure::failed(
-                "dialog_open",
+            Ok(Reply::Stopped) => Err(Failure::new(
+                code::dialog_open,
                 "a dialog is open; answer it with `dialog accept|dismiss`".into(),
             )),
             Ok(Reply::Gone) | Err(_) => Err(stale()),
@@ -1294,8 +1294,8 @@ impl Driver for Cft {
 
     fn press(&mut self, name: &str) -> Result<(), Failure> {
         let key = named_key(name).ok_or_else(|| {
-            Failure::usage(
-                "bad_key",
+            Failure::new(
+                code::bad_key,
                 format!("unknown key {name:?}; keys: {}", KEY_NAMES.join(", ")),
             )
         })?;
@@ -1368,7 +1368,7 @@ impl Driver for Cft {
         self.cdp.pump(Duration::ZERO)?;
         self.absorb()?;
         let Some(tab) = self.share.dialog.clone() else {
-            return Err(Failure::failed("no_dialog", "no dialog is open".into()));
+            return Err(Failure::new(code::no_dialog, "no dialog is open".into()));
         };
         let session = self.tab(&tab)?.session.clone();
         let mut params = json!({"accept": accept});
@@ -1398,8 +1398,8 @@ impl Driver for Cft {
             .cdp
             .reply_or(id, "Runtime.evaluate", self.by(COMMAND), opened)?;
         let Some(reply) = reply else {
-            return Err(Failure::failed(
-                "dialog_open",
+            return Err(Failure::new(
+                code::dialog_open,
                 "the script opened a dialog; answer it with `dialog accept|dismiss`".into(),
             ));
         };
@@ -1408,7 +1408,7 @@ impl Driver for Cft {
                 .as_str()
                 .or(details["text"].as_str())
                 .unwrap_or("the script threw");
-            return Err(Failure::failed("eval_failed", clip(text, 1000)));
+            return Err(Failure::new(code::eval_failed, clip(text, 1000)));
         }
         Ok(reply["result"]["value"].clone())
     }
@@ -1461,8 +1461,8 @@ impl Driver for Cft {
             let Some((guid, download)) =
                 self.share.downloads.iter().find(|(_, d)| d.download == id)
             else {
-                return Err(Failure::usage(
-                    "no_such_download",
+                return Err(Failure::new(
+                    code::no_such_download,
                     format!("no download {id}"),
                 ));
             };
@@ -1471,14 +1471,14 @@ impl Driver for Cft {
                     return Ok((download.clone(), self.scratch.join("downloads").join(guid)));
                 }
                 "canceled" => {
-                    return Err(Failure::failed(
-                        "download_failed",
+                    return Err(Failure::new(
+                        code::download_failed,
                         format!("download {id} was canceled"),
                     ));
                 }
                 _ if Instant::now() >= deadline => {
-                    return Err(Failure::failed(
-                        "download_incomplete",
+                    return Err(Failure::new(
+                        code::download_incomplete,
                         format!("download {id} is still in progress; ask again later"),
                     ));
                 }
@@ -1510,7 +1510,7 @@ impl Driver for Cft {
             .as_str()
             .and_then(cdp::base64_decode)
             .filter(|png| png.starts_with(b"\x89PNG\r\n\x1a\n") && png.len() >= 24)
-            .ok_or_else(|| Failure::failed("engine_error", "no screenshot".into()))?;
+            .ok_or_else(|| Failure::new(code::engine_error, "no screenshot".into()))?;
         let width = u32::from_be_bytes(png[16..20].try_into().expect("4 bytes"));
         let height = u32::from_be_bytes(png[20..24].try_into().expect("4 bytes"));
         let viewport = &metrics["cssVisualViewport"];
@@ -1653,8 +1653,7 @@ fn holds_frame(tree: &Value, id: &str) -> bool {
 
 fn stale() -> Failure {
     Failure::new(
-        Exit::Failed,
-        "stale_snapshot",
+        code::stale_snapshot,
         "that element's document was replaced; observe again".into(),
     )
 }
@@ -1730,8 +1729,8 @@ fn start(
         });
     }
     let child = command.spawn().map_err(|err| {
-        Failure::failed(
-            "engine_failed",
+        Failure::new(
+            code::engine_failed,
             format!("{}: {err}", engine.executable.display()),
         )
     })?;
@@ -1740,7 +1739,7 @@ fn start(
 }
 
 pub fn io_failure(err: io::Error) -> Failure {
-    Failure::failed("engine_failed", err.to_string())
+    Failure::new(code::engine_failed, err.to_string())
 }
 
 #[cfg(test)]

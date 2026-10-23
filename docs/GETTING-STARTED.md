@@ -8,13 +8,12 @@ agents *call* it.
 This guide takes you from nothing to a Mac serving calls and a second
 machine calling it, in about 10 minutes.
 
-Most commands print one JSON object on stdout on success and
-`{"error": …}` on stderr on failure. At a terminal an error prints its
-message and any details; `login` prints for a person when stdout is a
-terminal. `status --pretty` prints a card even to a pipe. Other output
-includes `help` and `skill` (text), `login --events`, `audit` and
-`status --local --follow` (JSON lines), `logs`, `serve` without `-d`,
-`dashboard`, interactive `setup`, and `browser text --raw`.
+Every regular command prints one JSON object on stdout, at a terminal or
+not (`--pretty` indents it), and a failure one `{"error": …}` line on
+stderr. Streams print JSON lines, each with a `type`, the first `hello`:
+`login --events`, `audit`, `status --local --follow` and `logs`. `setup`,
+`login` by text, `serve` without `-d` and the dashboard are for a person;
+`help` and `skill` print text.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 host unreachable, 4 denied,
 5 connection lost after sending.
@@ -115,7 +114,7 @@ Check it:
 
 ```sh
 latch status            # JSON: this peer, your Plow URL, and the hosts it can reach
-latch status --pretty   # the same for a person, with key art to compare between machines
+latch status --pretty   # the same, indented; its key art is to compare between machines
 latch status --local    # only this machine: state folder, login and serve. Works offline
 ```
 

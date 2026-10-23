@@ -33,7 +33,7 @@ use serde_json::{Map, Value, json};
 
 use super::super::driver::{Driver, Frame};
 use super::{Core, stale};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 
 /// How long a submitted form has to replace or empty its document.
 const CLEANUP: Duration = Duration::from_secs(15);
@@ -106,8 +106,8 @@ impl<D: Driver> Core<D> {
             None => self.snapshots.back().ok_or_else(stale)?.id.clone(),
         };
         if prepare.fields.is_empty() {
-            return Err(Failure::usage(
-                "bad_arguments",
+            return Err(Failure::new(
+                code::bad_arguments,
                 "a fill names each field it fills".into(),
             ));
         }
@@ -291,20 +291,15 @@ impl<D: Driver> Core<D> {
         secret: bool,
     ) -> Result<Value, Failure> {
         let Some(at) = self.fill.targets.iter().position(|t| t.reference == target) else {
-            return Err(Failure::usage(
-                "bad_request",
+            return Err(Failure::new(
+                code::bad_request,
                 format!("{target} was not prepared for this fill"),
             ));
         };
         let frames = self.driver.frames()?;
         let target = &self.fill.targets[at];
-        let refused = |why: &str| {
-            Failure::new(
-                Exit::Denied,
-                "fill_refused",
-                format!("nothing was filled: {why}"),
-            )
-        };
+        let refused =
+            |why: &str| Failure::new(code::fill_refused, format!("nothing was filled: {why}"));
         if !frames
             .iter()
             .any(|f| f.id == target.frame.id && f.document == target.frame.document)
@@ -370,8 +365,8 @@ impl<D: Driver> Core<D> {
         if let Some(guard) = guard {
             let now = self.review(prepared.as_deref(), target, guard.enter, &mut Map::new())?;
             if super::fingerprint(&now) != guard.fingerprint {
-                return Err(Failure::failed(
-                    "context_changed",
+                return Err(Failure::new(
+                    code::context_changed,
                     "the button, or the lines around it, changed after the fill was confirmed; it was not pressed".into(),
                 ));
             }
@@ -420,8 +415,8 @@ impl<D: Driver> Core<D> {
     /// fill, until one's cleanup confirms the page holds none.
     pub(super) fn fill_resume(&mut self, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
         if self.fill.unclean {
-            return Err(Failure::failed(
-                "session_paused",
+            return Err(Failure::new(
+                code::session_paused,
                 "a value latch filled may still be on the page; the session stays paused (close it to end it)".into(),
             ));
         }
@@ -466,8 +461,8 @@ impl<D: Driver> Core<D> {
     fn holding(&mut self) -> Result<u64, Failure> {
         let filled = self.live_filled()?;
         if !filled.elsewhere.is_empty() {
-            return Err(Failure::failed(
-                "engine_error",
+            return Err(Failure::new(
+                code::engine_error,
                 "a tab latch filled is not the active one".into(),
             ));
         }
@@ -477,8 +472,8 @@ impl<D: Driver> Core<D> {
             // read is not known to be empty.
             let count = self.driver.run(&frame, "__latch.holding()")?;
             total += count.as_u64().ok_or_else(|| {
-                Failure::failed(
-                    "engine_error",
+                Failure::new(
+                    code::engine_error,
                     "latch could not count the filled fields".into(),
                 )
             })?;
@@ -496,8 +491,7 @@ impl<D: Driver> Core<D> {
     pub(super) fn no_secret_sent(&mut self) -> Result<(), Failure> {
         if self.driver.guard_stopped() {
             return Err(Failure::new(
-                Exit::Denied,
-                "get_form",
+                code::get_form,
                 "the page tried to send a value latch filled from the vault in an address (a GET request); latch stopped it, and nothing was sent".into(),
             ));
         }
@@ -509,8 +503,7 @@ impl<D: Driver> Core<D> {
     pub(super) fn no_value_on_page(&mut self, what: &str) -> Result<(), Failure> {
         if self.holding().ok() != Some(0) {
             return Err(Failure::new(
-                Exit::Denied,
-                "secret_on_page",
+                code::secret_on_page,
                 format!(
                     "a value latch filled from the vault may still be on a page of this session; {what} waits until it is gone (or its tab is closed)"
                 ),
@@ -547,8 +540,8 @@ mod tests {
             }])
         }
         fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
-            Err(Failure::failed(
-                "engine_error",
+            Err(Failure::new(
+                code::engine_error,
                 "the frames are gone".into(),
             ))
         }

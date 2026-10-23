@@ -13,7 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 
 pub enum Connection {
     Remote(iroh::endpoint::Connection),
@@ -166,7 +166,7 @@ fn socket_path(state: &Path) -> Result<PathBuf, Failure> {
             state.display(),
             path.display()
         );
-        return Err(Failure::usage("state_dir_too_long", message));
+        return Err(Failure::new(code::state_dir_too_long, message));
     }
     Ok(path)
 }
@@ -174,9 +174,9 @@ fn socket_path(state: &Path) -> Result<PathBuf, Failure> {
 pub async fn connect_local(state: &Path) -> Result<UnixStream, Failure> {
     UnixStream::connect(socket_path(state)?).await.map_err(|err| {
         if matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) {
-            Failure::new(Exit::Unreachable, "serve_required", "this machine needs a live receiver; start `latch serve` on this state folder, then retry".into())
+            Failure::new(code::serve_required, "this machine needs a live receiver; start `latch serve` on this state folder, then retry".into())
         } else {
-            Failure::failed("local_socket", format!("could not connect to this machine's receiver: {err}"))
+            Failure::new(code::local_socket, format!("could not connect to this machine's receiver: {err}"))
         }
     })
 }
@@ -189,7 +189,7 @@ pub struct LocalSocket {
 impl LocalSocket {
     pub fn bind(state: &Path) -> Result<Self, Failure> {
         let path = socket_path(state)?;
-        let io = |err| Failure::failed("local_socket", format!("{}: {err}", path.display()));
+        let io = |err| Failure::new(code::local_socket, format!("{}: {err}", path.display()));
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}

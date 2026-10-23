@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
 use super::Host;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Code, Failure, code};
 use crate::serve::Done;
 use crate::state::StateDir;
 use crate::transport::SendStream;
@@ -32,7 +32,7 @@ pub(super) async fn run(
     op: &str,
     args: &Value,
     send: &mut SendStream,
-    cut_off: impl Future<Output = &'static str>,
+    cut_off: impl Future<Output = Code>,
 ) -> Done {
     let result = match crate::gate::owner::owner_only(kind, &format!("this host's {op}")) {
         Ok(()) => read(host, op, args, send, cut_off).await,
@@ -46,7 +46,7 @@ async fn read(
     op: &str,
     args: &Value,
     send: &mut SendStream,
-    cut_off: impl Future<Output = &'static str>,
+    cut_off: impl Future<Output = Code>,
 ) -> Result<Value, Failure> {
     let dir = host.workers.state_dir.clone();
     match op {
@@ -67,7 +67,7 @@ async fn read(
         }
         _ => {
             let range: crate::audit::Range = serde_json::from_value(args.clone())
-                .map_err(|err| Failure::usage("usage", format!("not an audit range: {err}")))?;
+                .map_err(|err| Failure::new(code::usage, format!("not an audit range: {err}")))?;
             let whose = format!("{}'s", host.name);
             stream(host, send, cut_off, move |hangup, lines| {
                 crate::audit::read(&dir, &whose, &range, Some(hangup), |line| {
@@ -86,7 +86,7 @@ async fn blocking(
 ) -> Result<Value, Failure> {
     tokio::task::spawn_blocking(read)
         .await
-        .map_err(|err| Failure::failed("read_failed", err.to_string()))?
+        .map_err(|err| Failure::new(code::read_failed, err.to_string()))?
 }
 
 /// Sends the caller each line `lines` gives, as it gives it. It
@@ -96,11 +96,11 @@ async fn blocking(
 async fn stream(
     host: &Host,
     send: &mut SendStream,
-    cut_off: impl Future<Output = &'static str>,
+    cut_off: impl Future<Output = Code>,
     lines: impl FnOnce(RawFd, mpsc::Sender<Value>) -> Result<(), Failure> + Send + 'static,
 ) -> Result<Value, Failure> {
     let (hangup, hold) =
-        std::io::pipe().map_err(|err| Failure::failed("watch_failed", err.to_string()))?;
+        std::io::pipe().map_err(|err| Failure::new(code::watch_failed, err.to_string()))?;
     let (queue, mut queued) = mpsc::channel(QUEUED);
     let reader = tokio::task::spawn_blocking(move || lines(hangup.as_raw_fd(), queue));
     tokio::pin!(cut_off);
@@ -146,28 +146,27 @@ async fn stream(
     drop(queued);
     let read = reader
         .await
-        .map_err(|err| Failure::failed("read_failed", err.to_string()))?;
+        .map_err(|err| Failure::new(code::read_failed, err.to_string()))?;
     ended.and(read).map(|()| json!({}))
 }
 
 /// A record whose line is larger than the wire carries in one frame.
 fn too_large(line: &Value, size: usize) -> Failure {
     let id = &line["record"]["id"];
-    let mut failure = Failure::failed(
-        "record_too_large",
+    let mut failure = Failure::new(
+        code::record_too_large,
         format!(
-            "the record {id} is {size} bytes, more than the {} one frame carries; read it on that host",
+            "the record {id} is {size} bytes, more than the {} one frame carries",
             wire::MAX_FRAME
         ),
     );
+    failure.next = Some("read it on that host".into());
     failure.details = json!({"id": id, "size": size, "limit": wire::MAX_FRAME});
     failure
 }
 
 fn stopped(name: &str) -> Failure {
-    Failure::new(
-        Exit::Unreachable,
-        "host_stopped",
-        format!("host {name:?} stopped serving; run this again once it serves"),
-    )
+    let mut failure = Failure::new(code::host_stopped, format!("host {name:?} stopped serving"));
+    failure.next = Some("run this again once it serves".into());
+    failure
 }

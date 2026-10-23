@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 
 /// The most stdin an exec may bring: the judge reads all of it,
 /// and the whole judgment must fit Plow's decision route (60 KiB).
@@ -168,7 +168,7 @@ pub(crate) fn judged_stdin(stdin: &Value) -> Result<Option<String>, Failure> {
              send at most {} KiB of UTF-8 text, or put the input in a file and name it",
             JUDGED_STDIN / 1024
         );
-        Failure::usage("stdin_not_judgeable", message)
+        Failure::new(code::stdin_not_judgeable, message)
     };
     let bytes: Vec<u8> = serde_json::from_value(stdin.clone()).map_err(|_| refused("not bytes"))?;
     if bytes.len() > JUDGED_STDIN {

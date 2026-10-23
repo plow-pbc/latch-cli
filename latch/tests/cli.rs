@@ -108,9 +108,30 @@ fn test_dir() -> tempfile::TempDir {
 }
 
 /// `latch --state-dir STATE ARGS...`, with none of the caller's latch or
-/// Plow environment leaking in.
+/// Plow environment leaking in. A regular command that worked has said
+/// nothing on stderr, and its stdout is JSON: one result, or a stream's
+/// JSON lines.
 fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
-    latch_command(state, args, env).output().unwrap()
+    let output = latch_command(state, args, env).output().unwrap();
+    let options = args.split(|word| *word == "--").next().unwrap_or_default();
+    let human = match args {
+        _ if options.iter().any(|word| ["-h", "--help"].contains(word)) => true,
+        ["setup", rest @ ..] => !rest.contains(&"--status"),
+        ["help", rest @ ..] => !rest.contains(&"--json"),
+        ["rules", "edit", ..] => true,
+        [first, ..] => ["dashboard", "skill"].contains(first),
+        [] => false,
+    };
+    if output.status.success() && !human {
+        assert!(output.stderr.is_empty(), "{args:?}: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json = serde_json::from_str::<Value>(&stdout).is_ok()
+            || stdout
+                .lines()
+                .all(|line| serde_json::from_str::<Value>(line).is_ok());
+        assert!(json && !stdout.is_empty(), "{args:?}: not JSON: {stdout}");
+    }
+    output
 }
 
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
@@ -258,6 +279,30 @@ fn latch_at_a_terminal(
     let code = child.wait().unwrap().code();
     drop(main);
     (code, shown.join().unwrap(), stdout)
+}
+
+/// What a failed command put on stderr (or a terminal showed), which must
+/// be exactly one JSON error line whose `exit` is the process's exit code.
+fn one_error_line(stderr: &str, code: Option<i32>) -> Value {
+    let stderr = stderr.replace("\r\n", "\n");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    let error: Value = serde_json::from_str(lines[0]).unwrap_or_else(|_| panic!("{stderr}"));
+    assert_eq!(
+        error["error"]["exit"].as_i64(),
+        code.map(i64::from),
+        "{stderr}"
+    );
+    error
+}
+
+/// The JSON error line a person's terminal ended with, after whatever the
+/// command asked there (its last question unanswered, on the same line).
+fn last_error_line(shown: &str) -> Value {
+    let at = shown
+        .rfind("{\"error\"")
+        .unwrap_or_else(|| panic!("{shown}"));
+    serde_json::from_str(shown[at..].trim_end()).unwrap_or_else(|_| panic!("{shown}"))
 }
 
 /// Plow's answer to `GET /v1/agents/me`.
@@ -520,7 +565,12 @@ fn an_agent_with_neither_a_token_a_file_nor_a_proxy_has_no_credential() {
     let login = latch(&dir.path().join("state"), &args, &env);
     assert_eq!(login.status.code(), Some(2), "{login:?}");
     let error: Value = serde_json::from_slice(&login.stderr).unwrap();
+    // A credential, or a login by text, which needs a person there.
     assert_eq!(error["error"]["code"], "no_credential");
+    assert_eq!(
+        error["error"]["next"],
+        "latch login --token-file PATH, or latch login --events"
+    );
 }
 
 #[test]
@@ -591,11 +641,12 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     // Nobody to ask: it says what to run next.
     let message = error["error"]["message"].as_str().unwrap();
     assert!(
-        message.contains("`latch login --token-file FILE --name OTHER`")
-            && message.contains(&format!(
-                "`latch login --token-file FILE --name {hostname} --replace` to replace it"
-            )),
+        message.contains("`latch login --token-file FILE --name OTHER`"),
         "{message}"
+    );
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch login --token-file FILE --name {hostname} --replace")
     );
     // And, for an app to ask which, the machine that has the name.
     assert_eq!(error["error"]["existing_name"], hostname.as_str());
@@ -633,12 +684,7 @@ fn replace_takes_another_machines_name_with_no_terminal_and_an_events_login_says
     assert_eq!(error["error"]["code"], "conflict");
     assert_eq!(error["error"]["existing_name"], "mac");
     assert_eq!(error["error"]["last_seen_at"], "2026-10-15T01:30:12Z");
-    assert!(
-        error["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("--name mac --replace")
-    );
+    assert_eq!(error["error"]["next"], "latch login --name mac --replace");
     assert_eq!(server.join().unwrap().len(), 4, "nothing was removed");
 
     // With it: the old machine is removed, then this one takes its name,
@@ -690,8 +736,9 @@ fn a_name_clash_at_a_terminal_replaces_the_old_machine_with_no_second_text() {
         ),
         "{shown}"
     );
-    let login: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(login["peer"]["name"], "mac");
+    // A login by text: it ends in a line for the person, not JSON.
+    assert!(shown.trim_end().ends_with("Logged in as mac."), "{shown}");
+    assert!(stdout.is_empty(), "{stdout}");
     let config: Value =
         serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
     assert_eq!(config["peer"]["name"], "mac");
@@ -772,14 +819,14 @@ fn a_name_clash_at_a_terminal_asks_for_another_name_until_one_is_free_or_none_is
     ];
     let (code, shown, _) = latch_at_a_terminal(&state, &args, "n\n\n", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
+    let error = last_error_line(&shown);
+    let message = error["error"]["message"].as_str().unwrap();
     assert!(
-        shown.contains("`latch login --token-file FILE --name OTHER`"),
-        "{shown}"
+        message.contains("`latch login --token-file FILE --name OTHER`"),
+        "{message}"
     );
-    assert!(
-        shown.contains(
-            r"`latch login --token-file FILE --name 'Ada'\''s Mac' --replace` to replace it"
-        ),
+    assert_eq!(
+        error["error"]["next"], r"latch login --token-file FILE --name 'Ada'\''s Mac' --replace",
         "{shown}"
     );
     assert!(!state.join("config.json").exists());
@@ -787,42 +834,147 @@ fn a_name_clash_at_a_terminal_asks_for_another_name_until_one_is_free_or_none_is
 }
 
 #[test]
-fn a_login_that_knows_no_plow_says_so_in_a_sentence_at_a_terminal_and_json_piped() {
+fn a_login_that_knows_no_plow_says_so_in_the_same_json_at_a_terminal_and_piped() {
     let dir = test_dir();
     let state = dir.path().join("state");
 
     let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", false, &[]);
     assert_eq!(code, Some(2), "{shown}");
-    let sentence = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co";
-    assert!(shown.contains(sentence), "{shown}");
-    assert!(!shown.contains("\"error\""), "{shown}");
+    let at_terminal = one_error_line(&shown, code);
 
     let piped = latch(&state, &["login"], &[]);
     assert_eq!(piped.status.code(), Some(2), "{piped:?}");
-    let error: Value = serde_json::from_slice(&piped.stderr).unwrap();
+    let error = one_error_line(&String::from_utf8_lossy(&piped.stderr), Some(2));
     assert_eq!(error["error"]["code"], "not_configured");
+    assert_eq!(at_terminal, error);
     assert!(!state.join("config.json").exists());
 }
 
+/// `--pretty` changes the layout, never the content, and a terminal
+/// gets the same JSON as a pipe.
 #[test]
-fn any_command_fails_in_a_sentence_at_a_terminal_and_in_json_piped() {
-    let dir = test_dir();
-    let state = dir.path().join("state");
-    for args in [&["status"][..], &["exec", "--host", "h", "ls"][..]] {
-        let (code, shown, _) = latch_at_a_terminal(&state, args, "", false, &[]);
-        assert!(matches!(code, Some(1..=4)), "{args:?}: {shown}");
-        assert!(!shown.contains("\"error\""), "{args:?}: {shown}");
-        assert!(!shown.trim().is_empty(), "{args:?}");
-
-        let piped = latch(&state, args, &[]);
-        assert_eq!(piped.status.code(), code, "{args:?}");
-        let error: Value = serde_json::from_slice(&piped.stderr).unwrap();
-        assert!(error["error"]["code"].is_string(), "{args:?}: {error}");
+fn pretty_json_holds_the_same_content() {
+    let (_dir, state, _key) = owner_host();
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    for args in [&["rules", "show"][..], &["--version"], &["help", "--json"]] {
+        let compact = latch(&state, args, &[]);
+        let mut pretty_args = args.to_vec();
+        pretty_args.push("--pretty");
+        let pretty = latch(&state, &pretty_args, &[]);
+        let compact = String::from_utf8(compact.stdout).unwrap();
+        let pretty = String::from_utf8(pretty.stdout).unwrap();
+        assert_eq!(compact.lines().count(), 1, "{args:?}: {compact}");
+        assert!(pretty.lines().count() > 1, "{args:?}: {pretty}");
+        let (mut compact, mut pretty): (Value, Value) = (
+            serde_json::from_str(&compact).unwrap(),
+            serde_json::from_str(&pretty).unwrap(),
+        );
+        // Each read is audited under its own id.
+        for read in [&mut compact, &mut pretty] {
+            read.as_object_mut().unwrap().remove("audit_id");
+        }
+        assert_eq!(compact, pretty, "{args:?}");
+        // At a terminal, the same JSON and nothing else (stderr shows there too).
+        let (code, shown, _) = latch_at_a_terminal(&state, args, "", true, &[]);
+        assert_eq!(code, Some(0), "{args:?}: {shown}");
+        let mut at_terminal: Value = serde_json::from_str(shown.trim_end())
+            .unwrap_or_else(|_| panic!("{args:?}: not its JSON alone: {shown}"));
+        at_terminal.as_object_mut().unwrap().remove("audit_id");
+        assert_eq!(at_terminal, compact, "{args:?}");
     }
 }
 
 #[test]
-fn a_failure_with_details_shows_them_at_a_terminal_too() {
+fn browser_text_has_no_raw_mode() {
+    let dir = test_dir();
+    let raw = latch(&dir.path().join("none"), &["browser", "text", "--raw"], &[]);
+    assert_eq!(raw.status.code(), Some(2), "{raw:?}");
+    let error = one_error_line(&String::from_utf8_lossy(&raw.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "usage");
+}
+
+#[test]
+fn bad_arguments_exit_2_in_one_json_line_for_every_command() {
+    let dir = test_dir();
+    let help = latch(&dir.path().join("none"), &["help", "--json"], &[]);
+    let help: Value = serde_json::from_slice(&help.stdout).unwrap();
+    let mut words: Vec<Vec<&str>> = help["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| {
+            let id = action["id"].as_str().unwrap();
+            let words = if id.starts_with("google.") {
+                "google"
+            } else {
+                id
+            };
+            words.split('.').collect()
+        })
+        .collect();
+    words.dedup();
+    for mut args in words {
+        args.push("--no-such-flag");
+        let output = latch(&dir.path().join("none"), &args, &[]);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        assert_eq!(error["error"]["code"], "usage", "{args:?}: {error}");
+    }
+}
+
+/// Values latch rejects by their form or by what they name, before any
+/// work: the same exit as a bad flag.
+#[test]
+fn a_value_latch_rejects_exits_2_in_one_json_line() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let missing = dir.path().join("missing.js");
+    let missing = missing.to_str().unwrap();
+    for (args, code) in [
+        (
+            &["exec", "--secret-env", "LD_PRELOAD=x", "--", "true"][..],
+            "bad_secret_env",
+        ),
+        (
+            &["vault", "add", "--kind", "nope", "--title", "x"],
+            "bad_item",
+        ),
+        (&["browser", "eval", "--script-file", missing], "local_file"),
+        (&["browser", "upload", "e1", missing], "local_file"),
+    ] {
+        let output = latch(&state, args, &[]);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
+    }
+}
+
+#[test]
+fn help_lists_every_error_code_with_its_exit() {
+    let dir = test_dir();
+    let help = latch(&dir.path().join("none"), &["help", "--json"], &[]);
+    let help: Value = serde_json::from_slice(&help.stdout).unwrap();
+    let codes = help["error_codes"].as_array().unwrap();
+    for (code, exit) in [("usage", 2), ("state_format", 1), ("host_offline", 3)] {
+        assert!(
+            codes.contains(&json!({"code": code, "exit": exit})),
+            "{code}: {codes:?}"
+        );
+    }
+    let exits: Vec<&Value> = help["exit_codes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|exit| &exit["code"])
+        .collect();
+    assert!(codes.iter().all(|code| exits.contains(&&code["exit"])));
+}
+
+/// `rules edit` is a person's command: once their editor opened, a failed
+/// save or editor is a plain line for them, not JSON.
+#[test]
+fn a_failed_rules_edit_says_why_in_a_plain_line() {
     let (dir, state, _) = owner_host();
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
@@ -844,11 +996,62 @@ fn a_failure_with_details_shows_them_at_a_terminal_too() {
     let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &env);
     assert_eq!(code, Some(4), "{shown}");
     assert!(
-        shown.contains("the rules changed since they were read"),
+        shown
+            .trim()
+            .starts_with("the rules changed since they were read"),
         "{shown}"
     );
-    assert!(shown.contains("\"revision\""), "{shown}");
-    assert!(!shown.contains("\"error\""), "{shown}");
+    assert!(!shown.contains("{\"error\""), "{shown}");
+
+    // An editor that fails: nothing is saved, and the person reads why.
+    let failing = [("EDITOR", Path::new("false"))];
+    let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &failing);
+    assert_eq!(code, Some(1), "{shown}");
+    assert!(shown.contains("nothing was saved"), "{shown}");
+    assert!(!shown.contains("{\"error\""), "{shown}");
+}
+
+/// Without a terminal, `vault add` never prompts for a secret: they come
+/// with --stdin, or it fails naming that way.
+#[test]
+fn vault_secrets_without_a_terminal_come_from_stdin_or_not_at_all() {
+    let (_dir, state, _) = owner_host();
+    let args = [
+        "vault",
+        "add",
+        "--kind",
+        "login",
+        "--title",
+        "Shop",
+        "--site",
+        "shop.example",
+    ];
+    let refused = latch(&state, &args, &[]);
+    let error = one_error_line(&String::from_utf8_lossy(&refused.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+    assert_eq!(
+        error["error"]["next"],
+        "pipe them as JSON with --stdin: {\"password\": \"…\"}"
+    );
+    let listed: Value =
+        serde_json::from_slice(&latch(&state, &["vault", "list"], &[]).stdout).unwrap();
+    assert_eq!(listed["items"], json!([]), "nothing was added: {listed}");
+
+    let mut piped = latch_command(&state, &[&args[..], &["--stdin"]].concat(), &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    piped
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"password": "made-up-pass"}"#)
+        .unwrap();
+    let piped = piped.wait_with_output().unwrap();
+    assert_eq!(piped.status.code(), Some(0), "{piped:?}");
+    assert!(piped.stderr.is_empty(), "no prompt: {piped:?}");
 }
 
 /// A login by text: Plow gives a code, the phone texts it at once, and
@@ -952,11 +1155,11 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
         "{shown}"
     );
     // Then what to do, that it is waiting, and one line when it is done:
-    // no JSON.
+    // a human login, so no JSON.
     let said: Vec<&str> = rows
         .iter()
         .filter(|row| !row.contains(&opens))
-        .copied()
+        .map(|row| row.trim_end())
         .collect();
     assert_eq!(
         said,
@@ -969,9 +1172,21 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
     assert_eq!(server.join().unwrap().len(), 3);
 }
 
+/// Only a login a person does by texting a code is human: it ends in a line
+/// on their terminal, even with stdout piped. A login that asks no one,
+/// at a terminal or not, prints its JSON.
 #[test]
-fn a_login_by_text_piped_still_prints_its_json() {
-    let (api_url, server) = plow_texted_at_once();
+fn a_login_by_text_ends_in_a_line_and_one_that_asks_no_one_in_json() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let mac = peer(Value::Null, "mac", "device", Value::Null);
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (200, mac.clone()),
+        (200, mac.clone()),
+        (200, mac),
+    ]);
     let dir = test_dir();
     let state = dir.path().join("state");
     let args = ["login", "--api-url", &api_url, "--name", "mac"];
@@ -979,10 +1194,22 @@ fn a_login_by_text_piped_still_prints_its_json() {
     let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", false, &[]);
     assert_eq!(code, Some(0), "{shown}");
     assert!(shown.contains("Text TRY12 to +1 415-555-0100"), "{shown}");
-    assert!(!shown.contains("Logged in as"), "{shown}");
-    let output: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(output["peer"]["name"], "mac");
-    assert_eq!(server.join().unwrap().len(), 3);
+    assert_eq!(
+        shown.trim_end().lines().last(),
+        Some("Logged in as mac."),
+        "{shown}"
+    );
+    assert!(stdout.is_empty(), "{stdout}");
+
+    // Logged in already: nothing to ask, so JSON, at a terminal and piped.
+    let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", true, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    let again: Value = serde_json::from_str(shown.trim()).unwrap();
+    assert_eq!(again["peer"]["name"], "mac");
+    let piped = latch(&state, &["login"], &[]);
+    let again: Value = serde_json::from_slice(&piped.stdout).unwrap();
+    assert_eq!(again["peer"]["name"], "mac");
+    assert_eq!(server.join().unwrap().len(), 5);
 }
 
 #[test]
@@ -1048,10 +1275,9 @@ fn help_says_what_is_allowed_and_how_to_pass_a_command() {
     let missing = latch(&state, &["exec", "--host", "pi", "ls", "-la"], &[]);
     assert_eq!(missing.status.code(), Some(2));
     let error: Value = serde_json::from_slice(&missing.stderr).unwrap();
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("latch exec --host H -- <cmd> <args>"),
-        "{message}"
+    assert_eq!(
+        error["error"]["next"],
+        "latch exec --host H -- <cmd> <args>"
     );
 
     let exec_help = latch(&state, &["exec", "--help"], &[]);
@@ -1089,8 +1315,8 @@ fn help_and_skill_need_no_login_and_carry_this_version() {
     let dir = test_dir();
     let state = dir.path().join("none");
     let version = latch(&state, &["--version"], &[]);
-    let version = String::from_utf8(version.stdout).unwrap();
-    let version = version.trim().strip_prefix("latch ").unwrap();
+    let version: Value = serde_json::from_slice(&version.stdout).unwrap();
+    let version = version["version"].as_str().unwrap();
 
     let help = latch(&state, &["help", "--json"], &[]);
     assert_eq!(help.status.code(), Some(0), "{help:?}");
@@ -1384,8 +1610,11 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     )
     .unwrap();
     fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let edit = latch(&state, &["rules", "edit"], &[("EDITOR", editor.as_path())]);
-    assert_eq!(edit.status.code(), Some(0), "{edit:?}");
+    // A person's command: at a terminal, it ends in a line, not JSON.
+    let env = [("EDITOR", editor.as_path())];
+    let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", true, &env);
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(shown.trim(), "Saved the rules for every agent on studio.");
     assert_eq!(
         fs::read_to_string(state.join("rules/host.txt")).unwrap(),
         "Never send email.\nNever buy anything."
@@ -1589,13 +1818,12 @@ fn an_older_plaintext_audit_is_left_alone_and_a_sealed_one_starts_beside_it() {
 
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
-    let said = String::from_utf8_lossy(&set.stderr);
-    assert_eq!(said.lines().count(), 1, "{said}");
-    assert!(
-        said.contains("audit.ndjson is an older latch's plaintext audit log"),
-        "{said}"
-    );
-    assert!(said.contains("can be deleted"), "{said}");
+    assert!(set.stderr.is_empty(), "{set:?}");
+    // `status --local` names it, so its owner can delete it.
+    let local = latch(&state, &["status", "--local"], &[]);
+    let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+    let named = local["old_audit_log"].as_str().unwrap();
+    assert!(named.ends_with("audit.ndjson"), "{local}");
 
     // Neither read nor changed; the new record is in the sealed log.
     assert_eq!(fs::read_to_string(state.join("audit.ndjson")).unwrap(), old);
@@ -2526,7 +2754,7 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
 }
 
 #[test]
-fn latch_trace_shows_iroh_on_stderr_inside_each_host_operation() {
+fn latch_trace_goes_to_the_state_folder_and_a_hosts_log_never_to_a_commands_stderr() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -2555,12 +2783,29 @@ fn latch_trace_shows_iroh_on_stderr_inside_each_host_operation() {
     let mut host_log = String::new();
     log.read_to_string(&mut host_log).unwrap();
 
-    // The client's stdout is still only its JSON; iroh's events are on stderr.
+    // The client's stdout is still only its JSON, its stderr empty; iroh's
+    // events are in its state folder.
     assert_eq!(exec.status.code(), Some(0), "{exec:?}");
     let result: Value = serde_json::from_slice(&exec.stdout).unwrap();
     assert_eq!(result["stdout"], "hi\n");
-    let stderr = String::from_utf8_lossy(&exec.stderr);
-    assert!(stderr.contains(" iroh::"), "{stderr}");
+    assert!(exec.stderr.is_empty(), "{exec:?}");
+    let traced = fs::read_to_string(agent.join("trace.log")).unwrap();
+    assert!(traced.contains(" iroh::"), "{traced}");
+
+    // A traced command that fails: one error line, at a terminal and piped.
+    let args = ["exec", "--host", "nowhere", "--", "true"];
+    let trace = [("LATCH_TRACE", Path::new("trace"))];
+    let mut env = agent_env.to_vec();
+    env.extend(trace);
+    let failed = latch(&agent, &args, &env);
+    let error = one_error_line(
+        &String::from_utf8_lossy(&failed.stderr),
+        failed.status.code(),
+    );
+    assert_eq!(error["error"]["code"], "unknown_host", "{error}");
+    let (code, shown, _) = latch_at_a_terminal(&agent, &args, "", true, &env);
+    assert_eq!(one_error_line(&shown, code), error);
+    assert!(fs::read_to_string(agent.join("trace.log")).unwrap().len() > traced.len());
     // On the host, the operation's span closes inside its connection's.
     let closed = host_log
         .lines()
@@ -2813,6 +3058,10 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         (code, &error["error"]["code"]),
         (Some(2), &json!("confirmation_required"))
     );
+    assert_eq!(
+        error["error"]["next"],
+        "latch agents remove 'Research bot' --yes"
+    );
     assert_eq!(deletes(), 0);
     let (code, removed, _) = run(&["agents", "remove", "Research bot", "--yes"]);
     assert_eq!(code, Some(0), "{removed}");
@@ -2835,6 +3084,13 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let serve = serving(&host, &relay);
 
     let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
+        // `rules edit` opens the person's editor: at a terminal, where a
+        // saved edit says so in a line, and a failure is its JSON.
+        if args[1] == "edit" {
+            let (code, shown, _) = latch_at_a_terminal(state, args, "", true, env);
+            let json = serde_json::from_str::<Value>(shown.trim()).unwrap_or(json!(shown.trim()));
+            return (code, json);
+        }
         let output = latch(state, args, env);
         let printed = if output.status.success() {
             &output.stdout
@@ -2921,7 +3177,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     );
     assert_eq!(set_agent["agent_uid"], AGENT_UID);
     assert_eq!(set_agent["agent_name"], "Research bot");
-    assert_eq!(edited["agent_uid"], AGENT_UID);
+    assert_eq!(edited, "Saved the rules for Research bot on host.");
     let edited_text = "Run tests in the shared folder. Nothing else.";
     assert_eq!(shown["every_agent"]["text"], "Never send email.");
     assert_eq!(shown["agents"][0]["text"], edited_text);
@@ -3026,12 +3282,21 @@ fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     fs::write(state.join("latch.json"), marker).unwrap();
     // Not valid for this latch either way: a newer layout it would misread.
     fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
+    // A newer build is known: a build with a number would have said so
+    // after any command at a terminal, a second line.
+    let checked = json!({"checked_at": "2026-10-22T08:00:00Z",
+        "latest": {"tag": "v0.1.0-99999999", "build": 99_999_999}, "failures": 0,
+        "failed_at": null, "noticed_at": null});
+    fs::write(state.join("update.json"), checked.to_string()).unwrap();
 
     let status = latch(&state, &["status"], &[]);
 
     assert_eq!(status.status.code(), Some(1), "{status:?}");
-    let error: Value = serde_json::from_slice(&status.stderr).unwrap();
+    let error = one_error_line(&String::from_utf8_lossy(&status.stderr), Some(1));
     assert_eq!(error["error"]["code"], "state_format", "{error}");
+    // At a terminal, stdout and stderr both: the same one line.
+    let (code, shown, _) = latch_at_a_terminal(&state, &["status"], "", true, &[]);
+    assert_eq!(one_error_line(&shown, code), error);
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("update this latch"), "{message}");
     assert_eq!(
@@ -3113,10 +3378,12 @@ impl Lines {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        let hello: Value = serde_json::from_str(&stdout.next().unwrap().unwrap()).unwrap();
+        assert_eq!(hello, json!({"type": "hello", "schema": 1}));
         let (send, lines) = std::sync::mpsc::channel();
         thread::spawn(move || {
-            for line in stdout.lines() {
+            for line in stdout {
                 let _ = send.send(serde_json::from_str(&line.unwrap()).unwrap());
             }
         });
@@ -3209,8 +3476,7 @@ fn audit_follows_its_records_and_resumes_after_one_exactly_across_a_host_restart
     let serve = serving(&host, &relay);
     let audit = Lines::start(&host, &["audit", "--follow"]);
     let opening = audit.opening();
-    assert_eq!(opening[0], json!({"type": "hello", "schema": 1}));
-    assert_eq!(opening[1]["has_older"], false, "{opening:?}");
+    assert_eq!(opening[0]["has_older"], false, "{opening:?}");
     let first = exec("one");
     let line = audit.next_record();
     assert_eq!(line["cursor"], first);
@@ -3231,7 +3497,7 @@ fn audit_follows_its_records_and_resumes_after_one_exactly_across_a_host_restart
         .collect();
     let resumed = Lines::start(&host, &["audit", "--follow", "--after", &cursor]);
     let opening = resumed.opening();
-    assert_eq!(opening[1]["cursor"], cursor.as_str());
+    assert_eq!(opening[0]["cursor"], cursor.as_str());
     let ids: Vec<Value> = records_in(&opening)
         .into_iter()
         .filter(|record| record["op"] != "connect")
@@ -3267,7 +3533,6 @@ fn status_follow_says_each_change_of_the_host_through_a_restart() {
     let host = owner_host_on(&plow, dir.path());
 
     let status = Lines::start(&host, &["status", "--local", "--follow"]);
-    assert_eq!(status.next(), json!({"type": "hello", "schema": 1}));
     assert_eq!(status.status_in("stopped")["serve"]["running"], false);
     let serve = serving(&host, &relay);
     let first = status.status_in("serving");
@@ -3280,12 +3545,161 @@ fn status_follow_says_each_change_of_the_host_through_a_restart() {
     assert!(status.close().success());
 }
 
+/// A `login --events`' lines after its `hello`.
 fn event_lines(output: &Output) -> Vec<Value> {
-    String::from_utf8(output.stdout.clone())
+    let lines: Vec<Value> = String::from_utf8(output.stdout.clone())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+        .collect();
+    assert_eq!(lines[0], json!({"type": "hello", "schema": 1}));
+    lines[1..].to_vec()
+}
+
+/// `latch ARGS`, a stream, read piped: `ready` lines, then `more` runs and
+/// its stdin closes (which ends a follow), then every line to its end.
+fn stream_lines(state: &Path, args: &[&str], ready: usize, more: &dyn Fn()) -> Vec<String> {
+    let mut child = latch_command(state, args, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut lines: Vec<String> = (&mut out).take(ready).map(Result::unwrap).collect();
+    more();
+    drop(child.stdin.take());
+    lines.extend(out.map(Result::unwrap));
+    assert!(child.wait().unwrap().success(), "{args:?}: {lines:?}");
+    lines
+}
+
+/// Every stream, piped, with `--pretty` and without: its first line is
+/// `hello` with the schema, each line is one JSON object with a `type`, and
+/// `--pretty` changes none of it.
+#[test]
+fn every_stream_says_hello_first_and_types_every_line() {
+    let (dir, state, _) = owner_host();
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let log = state.join("serve.log");
+    fs::write(
+        &log,
+        "2026-10-22T08:00:00Z serving\n2026-10-22T08:00:01Z exec: ok\n",
+    )
+    .unwrap();
+    let append = || {
+        let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        // A record written in two pieces is one line, once whole.
+        file.write_all(b"2026-10-22T08:00:02Z stop").unwrap();
+        file.flush().unwrap();
+        thread::sleep(std::time::Duration::from_millis(300));
+        file.write_all(b"ping: asked\n").unwrap();
+        thread::sleep(std::time::Duration::from_millis(500));
+    };
+    let nothing = || {};
+    let mut texted = 0;
+    let mut login = |pretty: &[&str]| {
+        let (api_url, server) = plow_texted_at_once();
+        texted += 1;
+        let fresh = dir.path().join(format!("texted-{texted}"));
+        let mut args = pretty.to_vec();
+        args.extend(["login", "--events", "--api-url", &api_url, "--name", "mac"]);
+        let lines = stream_lines(&fresh, &args, 0, &nothing);
+        server.join().unwrap();
+        lines
+    };
+    for pretty in [&[][..], &["--pretty"]] {
+        let streams: Vec<(&str, Vec<String>)> = vec![
+            (
+                "audit",
+                stream_lines(&state, &[pretty, &["audit"]].concat(), 0, &nothing),
+            ),
+            (
+                "audit --follow",
+                stream_lines(
+                    &state,
+                    &[pretty, &["audit", "--follow"]].concat(),
+                    2,
+                    &nothing,
+                ),
+            ),
+            (
+                "status --local --follow",
+                stream_lines(
+                    &state,
+                    &[pretty, &["status", "--local", "--follow"]].concat(),
+                    2,
+                    &nothing,
+                ),
+            ),
+            (
+                "logs",
+                stream_lines(&state, &[pretty, &["logs"]].concat(), 0, &nothing),
+            ),
+            (
+                "logs -f",
+                stream_lines(&state, &[pretty, &["logs", "-f"]].concat(), 3, &append),
+            ),
+            ("login --events", login(pretty)),
+        ];
+        for (name, lines) in &streams {
+            let parsed: Vec<Value> = lines
+                .iter()
+                .map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("{name}: {line}")))
+                .collect();
+            assert_eq!(
+                parsed[0],
+                json!({"type": "hello", "schema": 1}),
+                "{name}: {lines:?}"
+            );
+            assert!(
+                parsed.iter().all(|line| line["type"].is_string()),
+                "{name}: {lines:?}"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| line.starts_with('{') && !line.contains("\n")),
+                "{name}"
+            );
+            let types: Vec<&str> = parsed
+                .iter()
+                .map(|line| line["type"].as_str().unwrap())
+                .collect();
+            println!("{name} {pretty:?}: {types:?}");
+        }
+        let logs = |name: &str| -> Vec<String> {
+            let (_, lines) = streams.iter().find(|(n, _)| *n == name).unwrap();
+            lines[1..]
+                .iter()
+                .map(|line| {
+                    serde_json::from_str::<Value>(line).unwrap()["line"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect()
+        };
+        // One line per record the host wrote.
+        assert_eq!(
+            logs("logs")[..2],
+            [
+                "2026-10-22T08:00:00Z serving",
+                "2026-10-22T08:00:01Z exec: ok"
+            ]
+        );
+        assert!(
+            logs("logs -f").contains(&"2026-10-22T08:00:02Z stopping: asked".to_string()),
+            "{:?}",
+            logs("logs -f")
+        );
+        // The log grows as the loop goes on: the next pass starts over.
+        fs::write(
+            &log,
+            "2026-10-22T08:00:00Z serving\n2026-10-22T08:00:01Z exec: ok\n",
+        )
+        .unwrap();
+    }
 }
 
 #[test]
@@ -3944,16 +4358,18 @@ fn a_local_vault_import_saves_only_picked_rows_without_serve() {
     )
     .unwrap();
     let before = plow.seen().len();
-    let mut command = latch_command(&host, &["vault", "import", file.to_str().unwrap()], &[]);
-    let mut child = command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(b"all\n").unwrap();
-    let output = child.wait_with_output().unwrap();
+    let file = file.to_str().unwrap();
+    // A program is asked nothing: without --pick it is told how to pick.
+    let refused = latch(&host, &["vault", "import", file], &[]);
+    let error = one_error_line(&String::from_utf8_lossy(&refused.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch vault import {file} --preview, then --pick ROWS")
+    );
+    let output = latch(&host, &["vault", "import", file, "--pick", "all"], &[]);
     assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["saved"], 1);
     assert_eq!(plow.seen().len(), before);
@@ -4254,7 +4670,7 @@ fn secret_files_in(state: &Path) -> Vec<&'static str> {
         .collect()
 }
 
-/// `latch vault add` a login titled `title`, its password typed in.
+/// `latch vault add` a login titled `title`, its password given on stdin.
 fn vault_add(owner: &Path, title: &str) {
     let mut add = latch_command(
         owner,
@@ -4271,6 +4687,7 @@ fn vault_add(owner: &Path, title: &str) {
             "shop.example",
             "--field",
             "username=ada",
+            "--stdin",
         ],
         &[],
     )
@@ -4282,7 +4699,7 @@ fn vault_add(owner: &Path, title: &str) {
     add.stdin
         .take()
         .unwrap()
-        .write_all(b"made-up-pass-5521\n")
+        .write_all(br#"{"password": "made-up-pass-5521"}"#)
         .unwrap();
     let added = add.wait_with_output().unwrap();
     assert_eq!(added.status.code(), Some(0), "{added:?}");
@@ -4730,12 +5147,48 @@ fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
     let output = client.wait_with_output().unwrap();
     drop(serve);
     assert!(stopped, "the program ran on past its time limit");
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["timed_out"], true, "{result}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let error = one_error_line(
+        &String::from_utf8_lossy(&output.stderr),
+        output.status.code(),
+    );
+    assert_eq!(
+        (&error["error"]["code"], &error["error"]["exit"]),
+        (&json!("timed_out"), &json!(1)),
+        "{error}"
+    );
+
     let records = bench.exec_records();
     assert_eq!(records.len(), 1, "{records:?}");
     assert_eq!(records[0]["outcome"], "timed_out", "{records:?}");
+}
+
+#[test]
+fn a_failing_program_is_a_result_and_one_past_its_timeout_an_error_with_its_output() {
+    let bench = Bench::new();
+    let _serve = bench.serve();
+    // latch worked: the program's own failure is in the result.
+    let failed = bench.exec(&bench.owner, "10", "echo no; exit 1");
+    let failed = failed.wait_with_output().unwrap();
+    assert_eq!(failed.status.code(), Some(0), "{failed:?}");
+    assert!(failed.stderr.is_empty(), "{failed:?}");
+    let result: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(
+        (&result["exit_code"], &result["stdout"]),
+        (&json!(1), &json!("no\n"))
+    );
+
+    // Stopped at its time limit: an error, with what it printed until then.
+    let stopped = bench.exec(&bench.owner, "1", "echo before; sleep 30");
+    let stopped = stopped.wait_with_output().unwrap();
+    assert!(stopped.stdout.is_empty(), "{stopped:?}");
+    let error = one_error_line(
+        &String::from_utf8_lossy(&stopped.stderr),
+        stopped.status.code(),
+    );
+    assert_eq!(error["error"]["code"], "timed_out", "{error}");
+    assert_eq!(error["error"]["exit"], 1, "{error}");
+    assert_eq!(error["error"]["stdout"], "before\n", "{error}");
 }
 
 #[test]
@@ -5061,7 +5514,7 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     assert_eq!(error["connect_url"], "https://app.example.com/connections");
     assert_eq!(
         error["next"],
-        "Open sign_in_url, finish Google sign-in, then run latch plugins enable google."
+        "open sign_in_url, finish Google sign-in, then latch plugins enable google"
     );
 
     // `--events`, nobody signs in: the link, then the timeout, exit 1.
@@ -5588,16 +6041,154 @@ fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::Ex
     status.unwrap()
 }
 
+/// Setup with no terminal names, as `next`, the first step `setup
+/// --status` says is not done: the same steps, read the same way.
 #[test]
-fn the_dashboard_and_an_attached_serve_need_a_terminal() {
+fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let fresh = dir.path().join("fresh");
+    let owner = owner_host_on(&plow, dir.path());
+    let ready = dir.path().join("ready");
+    fs::create_dir_all(&ready).unwrap();
+    let ready = owner_host_on(&plow, &ready);
+    // Every connector this OS's latch has on: Messages and Contacts are
+    // macOS's, and a Linux latch refuses a plugins.json that names them.
+    let names: &[&str] = if cfg!(target_os = "macos") {
+        &["google", "messages", "contacts"]
+    } else {
+        &["google"]
+    };
+    let connectors: Vec<String> = names
+        .iter()
+        .map(|name| format!(r#""{name}": {{"state": "enabled"}}"#))
+        .collect();
+    fs::write(
+        ready.join("plugins.json"),
+        format!("{{{}}}", connectors.join(", ")),
+    )
+    .unwrap();
+    let mut nexts = Vec::new();
+    // The owner without a Google account in Plow, then with one.
+    for (state, google) in [
+        (&fresh, false),
+        (&owner, false),
+        (&owner, true),
+        (&ready, true),
+    ] {
+        plow.state.lock().unwrap().google = google.then(|| "google-token".into());
+        let listed = latch(state, &["setup", "--status"], &[]);
+        let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        // The first step not done that names the command that does it.
+        let first = listed["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["state"] != "done" && step["args"].is_array())
+            .unwrap_or_else(|| panic!("{listed}"));
+        let words: Vec<&str> = first["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap())
+            .collect();
+        let expected = format!("latch {}", words.join(" "));
+        let output = latch(state, &["setup"], &[]);
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+        assert_eq!(error["error"]["next"], expected, "{listed}");
+        nexts.push(error["error"]["next"].as_str().unwrap().to_string());
+    }
+    assert_eq!(
+        nexts,
+        [
+            "latch login --events",
+            "latch plugins enable google --events",
+            "latch plugins enable google",
+            "latch serve -d"
+        ]
+    );
+}
+
+/// A login by text that fails once the person has the code says so in a
+/// plain line on their terminal, not JSON.
+#[test]
+fn a_login_by_text_that_fails_says_so_in_a_plain_line() {
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let (api_url, server) = fake_plow(vec![(200, activation), (410, json!({"detail": "expired"}))]);
     let dir = test_dir();
     let state = dir.path().join("state");
-    let view = latch(&state, &["dashboard"], &[]);
-    assert_eq!(view.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&view.stderr).contains("no_terminal"));
-    let serve = latch(&state, &["serve"], &[]);
-    assert_eq!(serve.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&serve.stderr).contains("serve -d"));
+    let args = ["login", "--api-url", &api_url, "--name", "mac"];
+    let (code, shown, stdout) = latch_at_a_terminal(&state, &args, "", true, &[]);
+    assert_eq!(code, Some(1), "{shown}");
+    assert!(stdout.is_empty());
+    assert!(shown.contains("Text TRY12 to"), "{shown}");
+    assert_eq!(
+        shown.trim_end().lines().last(),
+        Some("the code expired before it was texted; run `latch login` again"),
+        "{shown}"
+    );
+    assert!(!shown.contains("{\"error\""), "{shown}");
+    server.join().unwrap();
+}
+
+/// Each human command, run with no terminal, exits 2 with `no_terminal`
+/// and names, as `next`, the regular command a program uses instead. A
+/// login that needs no one still works there, in JSON.
+#[test]
+fn a_human_command_without_a_terminal_names_its_machine_equivalent() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let owner = owner_host_on(&plow, dir.path());
+    let fresh = dir.path().join("fresh");
+    // A login with no credential at all says so: a credential, or a
+    // login by text, which needs a person.
+    for (state, args, code, next) in [
+        (
+            &fresh,
+            &["setup"][..],
+            "no_terminal",
+            "latch login --events",
+        ),
+        (
+            &fresh,
+            &["login", "--api-url", "http://127.0.0.1:9"],
+            "no_credential",
+            "latch login --token-file PATH, or latch login --events",
+        ),
+        (&owner, &["serve"], "no_terminal", "latch serve -d"),
+        (
+            &owner,
+            &["dashboard"],
+            "no_terminal",
+            "latch audit --follow",
+        ),
+        (
+            &owner,
+            &["rules", "edit"],
+            "no_terminal",
+            "latch rules set TEXT",
+        ),
+    ] {
+        let output = latch(state, args, &[]);
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
+        assert_eq!(error["error"]["next"], next, "{args:?}: {error}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+    // An existing login, and an agent's own credential: JSON, no terminal.
+    let again = latch(&owner, &["login"], &[]);
+    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["peer"]["kind"], "device");
+    let token = dir.path().join("agent.token");
+    fs::write(&token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let login = ["login", "--api-url", plow.url.as_str()];
+    let agent = latch(&agent, &login, &[("PLOW_TOKEN_FILE", token.as_path())]);
+    assert_eq!(agent.status.code(), Some(0), "{agent:?}");
+    let agent: Value = serde_json::from_slice(&agent.stdout).unwrap();
+    assert_eq!(agent["peer"]["kind"], "agent");
 }
 
 #[test]
@@ -5795,10 +6386,7 @@ fn audit_says_why_it_cannot_read() {
     // Logged in, never served: no audit here.
     let none = refused(&["audit"]);
     assert_eq!(none["code"], "no_host_here", "{none}");
-    assert!(
-        none["message"].as_str().unwrap().contains("--host"),
-        "{none}"
-    );
+    assert_eq!(none["next"], "latch audit --host NAME", "{none}");
 
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
@@ -6572,7 +7160,13 @@ mod lifecycle {
         assert!(log.contains("stopping: asked to by `latch stop`"), "{log}");
         assert_eq!(log.matches("exec: refused to every agent").count(), 2);
         let logs = latch(&host, &["logs"], &[]);
-        assert_eq!(String::from_utf8_lossy(&logs.stdout), log);
+        let records: Vec<Value> = String::from_utf8_lossy(&logs.stdout)
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()["line"].clone())
+            .collect();
+        let written: Vec<Value> = log.lines().map(|line| json!(line)).collect();
+        assert_eq!(records, written);
         let records = audit_records(&host);
         let exec = records
             .iter()
@@ -6617,6 +7211,9 @@ mod lifecycle {
 
         terminal.write_all(b"\x03").unwrap();
         assert!(exits_within(&mut serve, 45).success());
+        // It ends in a line for the person, not JSON.
+        let ended = shows(&shown, "The host stopped.");
+        assert!(!ended.contains("{\"stopped\""), "{ended}");
         assert_eq!(local_serve(&host)["running"], false);
         assert!(!registered(&host), "Ctrl-C left the service registered");
 
@@ -7466,8 +8063,10 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
     ] {
         let (code, error) = answered(&latch(&fresh, nested, &[]));
         assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
-        let message = error["error"]["message"].as_str().unwrap();
-        assert!(message.contains("latch rules try --host NAME"), "{message}");
+        assert_eq!(
+            error["error"]["next"],
+            "latch rules try --host NAME -- <request>"
+        );
     }
     // A draft on stdin, and a request that reads stdin too.
     let both = [
@@ -7475,8 +8074,10 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
     ];
     let (code, error) = answered(&latch(&fresh, &both, &[]));
     assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(message.contains("--draft F"), "{message}");
+    assert_eq!(
+        error["error"]["next"],
+        "give the draft as a file: --draft F"
+    );
     let settings = ["rules", "try", "--", "vault", "list"];
     let (code, error) = answered(&latch(&fresh, &settings, &[]));
     assert_eq!(

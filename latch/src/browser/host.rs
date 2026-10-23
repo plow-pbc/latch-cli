@@ -36,7 +36,7 @@ use super::plan::Op;
 use super::runtime::Runtime;
 use super::session::Session;
 use super::tags;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::gate::Gate;
 use crate::serve::Done;
 use crate::state::to_hex;
@@ -531,7 +531,7 @@ pub async fn run(
     };
     if !sent {
         return Done::failed(
-            "connection_lost",
+            code::connection_lost,
             "the client left".into(),
             Value::Object(audit),
         );
@@ -818,8 +818,8 @@ async fn open(
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
     let engine = super::engine::unnamed(name).ok_or_else(|| {
-        Failure::usage(
-            "bad_arguments",
+        Failure::new(
+            code::bad_arguments,
             format!("no browser engine {name:?}: use chrome or camoufox"),
         )
     })?;
@@ -975,8 +975,8 @@ fn worker_call(command: &str, args: &Value) -> Result<Value, Failure> {
         "downloads" => Map::new(),
         "download_get" => pick(&["download"]),
         _ => {
-            return Err(Failure::usage(
-                "bad_command",
+            return Err(Failure::new(
+                code::bad_command,
                 format!("unknown browser command {command:?}"),
             ));
         }
@@ -1014,27 +1014,21 @@ async fn receive(
     audit: &mut Map<String, Value>,
 ) -> Result<Vec<u8>, Failure> {
     let (Some(size), Some(name)) = (args["size"].as_u64(), args["name"].as_str()) else {
-        return Err(Failure::usage(
-            "bad_arguments",
+        return Err(Failure::new(
+            code::bad_arguments,
             "an upload needs its size and name".into(),
         ));
     };
     audit.insert("file_name".into(), json!(name));
     audit.insert("file_size".into(), json!(size));
     if size > MAX_UPLOAD {
-        return Err(Failure::usage(
-            "file_too_large",
+        return Err(Failure::new(
+            code::file_too_large,
             format!("uploads are at most {MAX_UPLOAD} bytes"),
         ));
     }
     let go = serde_json::to_vec(&Response::Ok(json!({}))).expect("serializes");
-    let lost = || {
-        Failure::new(
-            Exit::Unknown,
-            "connection_lost",
-            "the upload broke off".into(),
-        )
-    };
+    let lost = || Failure::new(code::connection_lost, "the upload broke off".into());
     wire::write_frame(send, &go).await.map_err(|_| lost())?;
     let mut bytes = Vec::with_capacity(size as usize);
     let sha256 = wire::copy(recv, &mut bytes, size)
@@ -1058,16 +1052,15 @@ pub(super) fn take_audit(failure: &mut Failure, audit: &mut Map<String, Value>) 
 }
 
 pub(super) fn paused() -> Failure {
-    Failure::failed(
-        "session_paused",
+    Failure::new(
+        code::session_paused,
         "a vault fill holds this browser; nothing can be read or done until it finishes".into(),
     )
 }
 
 fn not_owner() -> Failure {
     Failure::new(
-        Exit::Denied,
-        "not_owner",
+        code::not_owner,
         "that session was opened by another caller, and only that caller can use it; \
          open a session of your own with `latch browser open`"
             .into(),
@@ -1075,8 +1068,8 @@ fn not_owner() -> Failure {
 }
 
 fn no_such_session() -> Failure {
-    Failure::failed(
-        "no_such_session",
+    Failure::new(
+        code::no_such_session,
         "you have no session with that id (it may have closed, or idled out); \
          `latch browser open` starts one and answers its id"
             .into(),
@@ -1130,7 +1123,7 @@ mod tests {
 
     #[test]
     fn a_failed_calls_audit_goes_to_the_record_not_the_agent() {
-        let mut failure = Failure::failed("stale_snapshot", "observe again".into());
+        let mut failure = Failure::new(code::stale_snapshot, "observe again".into());
         failure.details =
             json!({"audit": {"target": "e1", "origin": "https://a.example"}, "snapshot": "o4"});
         let mut audit = Map::new();
@@ -1140,7 +1133,7 @@ mod tests {
             json!({"target": "e1", "origin": "https://a.example"})
         );
         assert_eq!(failure.details, json!({"snapshot": "o4"}));
-        let mut bare = Failure::failed("timeout", "slow".into());
+        let mut bare = Failure::new(code::timeout, "slow".into());
         bare.details = json!({"audit": {}});
         take_audit(&mut bare, &mut Map::new());
         assert!(bare.details.is_null());

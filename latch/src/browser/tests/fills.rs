@@ -7,6 +7,7 @@
 //! the login's site, and a lookalike, `shop.example.evil.example`), so
 //! the real rules decide. A sandboxed frame stays opaque.
 
+use crate::failure::code;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -174,19 +175,17 @@ fn the_leak_check_leaves_out_incidental_digits_and_nothing_else() {
     // test site's port (here 58640) wherever the page's address names it; a
     // value, and an id-like string no confirmation carries, are still there.
     SITE_PORTS.lock().unwrap().push(58640);
-    let stale = crate::failure::Failure {
-        details: json!({
-            "steps": [{"code": "confirm_stale", "confirm": "c8640a1b2c3d4"}],
-            "stop": {"message": "confirmation c8640a1b2c3d4 was already used"},
-            "page": {"url": "http://127.0.0.1:50000/processor.html?frame=58640",
-                     "lines": ["c8640ffffffff", "frame=8640"],
-                     "links": ["http://127.0.0.1:50000/processor.html?frame=8640"]},
-        }),
-        ..crate::failure::Failure::usage(
-            "confirm_stale",
-            "confirmation c8640a1b2c3d4 was already used; nothing was sent".into(),
-        )
-    };
+    let mut stale = crate::failure::Failure::new(
+        code::confirm_stale,
+        "confirmation c8640a1b2c3d4 was already used; nothing was sent".into(),
+    );
+    stale.details = json!({
+        "steps": [{"code": "confirm_stale", "confirm": "c8640a1b2c3d4"}],
+        "stop": {"message": "confirmation c8640a1b2c3d4 was already used"},
+        "page": {"url": "http://127.0.0.1:50000/processor.html?frame=58640",
+                 "lines": ["c8640ffffffff", "frame=8640"],
+                 "links": ["http://127.0.0.1:50000/processor.html?frame=8640"]},
+    });
     let shown = seen_failure(&stale);
     assert_eq!(shown.matches(CVV).count(), 3, "{shown}");
     assert!(
@@ -195,13 +194,11 @@ fn the_leak_check_leaves_out_incidental_digits_and_nothing_else() {
     );
     // A secret where the processor's port goes is no port of a test site.
     assert!(shown.contains("processor.html?frame=8640\""), "{shown}");
-    let needed = crate::failure::Failure {
-        details: json!({"confirmation": {"id": "c8640a1b2c3d4", "lines": ["cvv 8640"]}}),
-        ..crate::failure::Failure::usage(
-            "confirm_needed",
-            "confirm it with `latch browser do --confirm c8640a1b2c3d4`".into(),
-        )
-    };
+    let mut needed = crate::failure::Failure::new(
+        code::confirm_needed,
+        "confirm it with `latch browser do --confirm c8640a1b2c3d4`".into(),
+    );
+    needed.details = json!({"confirmation": {"id": "c8640a1b2c3d4", "lines": ["cvv 8640"]}});
     assert_eq!(seen_failure(&needed).matches(CVV).count(), 1);
 }
 
@@ -1752,7 +1749,7 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
         );
         assert_eq!(
             (refused.exit, refused.code.as_str()),
-            (crate::failure::Exit::Denied, "bad_target")
+            (crate::failure::Exit::Usage, "bad_target")
         );
         assert!(refused.message.contains(why), "{}", refused.message);
     }

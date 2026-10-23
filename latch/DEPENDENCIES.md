@@ -25,7 +25,7 @@ only. CI runs it on every dependency change and daily.
 | `sha2` | sha256 for the audit log's hash chain | 1,062M / 302M | 2.3k | RustCrypto org | 0.11.1 (2026-10-12) | MIT/Apache-2.0 |
 | `tempfile` | Per-call Google folders, each browser session's scratch folder, and throwaway test state | 890M / 208M | 1.5k | Stebalien | 3.27.0 (2026-03-11) | MIT/Apache-2.0 |
 | `tracing` | `LATCH_TRACE`: a span per host connection and operation, around iroh's own events | 955M / 230M | 6.9k (tracing monorepo) | tokio-rs org | 0.1.44 (2025-12-18) | MIT |
-| `tracing-subscriber` (env-filter, fmt) | `LATCH_TRACE`: filters those events and writes them to the host's log | 682M / 167M | 6.9k (tracing monorepo) | tokio-rs org | 0.3.23 (2026-03-13) | MIT |
+| `tracing-subscriber` (env-filter, fmt) | `LATCH_TRACE`: filters those events and writes them to the state folder's `trace.log`, or the host's log | 682M / 167M | 6.9k (tracing monorepo) | tokio-rs org | 0.3.23 (2026-03-13) | MIT |
 | `aes-gcm` | The vault: items and its data key sealed with AES-256-GCM | 182M / 57M | 968 (AEADs monorepo) | RustCrypto org | 0.11.1 (2026-08-21) | Apache-2.0/MIT |
 | `csv` | The vault: reading password managers' CSV exports | 269M / 57M | 2.0k | BurntSushi | 1.4.0 (2025-10-17) | Unlicense/MIT |
 | `psl` | The vault: registrable domains (the public-suffix list, private suffixes included) | 36M / 7.9M | 38 | addr-rs org | 2.1.239 (2026-10-03); pinned in Cargo.lock, since each release is a new list | MIT/Apache-2.0 |

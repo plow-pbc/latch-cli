@@ -2,15 +2,14 @@
 //!
 //! `main` parses the command line, runs one command, and applies the output
 //! contract every command shares: on success one JSON object on stdout and
-//! exit 0; on failure `{"error": {"code", "message"}}` on stderr and an exit
-//! code from the table in `failure.rs`.
+//! exit 0; on failure one `{"error": {"code", "message", "next", "exit"}}`
+//! line on stderr and that exit code, from the table in `failure.rs`.
 
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 mod agents;
 mod audit;
 mod browser;
-mod card;
 mod cli;
 mod credential;
 mod dashboard;
@@ -49,6 +48,7 @@ mod serve;
 mod setup;
 mod state;
 mod status;
+mod stream;
 mod term;
 mod trace;
 mod transfer;
@@ -59,6 +59,7 @@ mod watch;
 mod wire;
 mod worker;
 
+use crate::failure::code;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -69,7 +70,7 @@ use clap::{CommandFactory, FromArgMatches};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use cli::{BrowserCommand, Cli, Command, DevicesAction, FileCommand, HostArg};
+use cli::{Cli, Command, DevicesAction, FileCommand, HostArg};
 use failure::{Exit, Failure};
 use state::StateDir;
 use wire::Request;
@@ -105,7 +106,9 @@ fn main() -> ExitCode {
     let command = match cli.command {
         Command::Worker(args) => return worker::run(args),
         // At a terminal, running other latch commands; no runtime of its own.
-        Command::Setup(args) if !args.status => return setup::run(cli.state_dir),
+        Command::Setup(args) if !args.status && term::interactive() => {
+            return setup::run(cli.state_dir);
+        }
         // A browser worker drives its engine on plain threads, no runtime.
         Command::BrowserWorker(args) => {
             return match StateDir::new(cli.state_dir) {
@@ -128,17 +131,23 @@ fn main() -> ExitCode {
             };
         }
         // Help is in latch itself: no state folder, no host.
-        Command::Help(args) => return help::run(args),
+        Command::Help(args) => return help::run(args, cli.pretty),
         Command::Skill => {
             print!("{}", help::skill());
             return ExitCode::SUCCESS;
         }
         command => command,
     };
-    // `setup --status` changes nothing, not even when the notice was shown.
-    let notice = !matches!(command, Command::Update(_) | Command::Setup(_));
+    // Only the human commands still say a newer build is out: a regular
+    // command's stderr is its error line alone, and `status --local` carries
+    // the same fact.
+    let notice = match &command {
+        Command::Dashboard => true,
+        Command::Serve(args) => !args.detach && !args.foreground,
+        _ => false,
+    };
     let state_dir = cli.state_dir.clone();
-    let exit = run_async(cli.state_dir, command);
+    let exit = run_async(cli.state_dir, command, cli.pretty);
     if notice && let Ok(state) = StateDir::new(state_dir) {
         update::notice(&state.path);
     }
@@ -146,13 +155,13 @@ fn main() -> ExitCode {
 }
 
 #[tokio::main]
-async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
-    let exit = match run(state_dir, command).await {
-        Ok(output) => {
-            if !output.text.is_empty() {
-                println!("{}", output.text);
+async fn run_async(state_dir: Option<PathBuf>, command: Command, pretty: bool) -> ExitCode {
+    let exit = match run(state_dir, command, pretty).await {
+        Ok(Printed(text)) => {
+            if !text.is_empty() {
+                println!("{text}");
             }
-            output.exit
+            ExitCode::SUCCESS
         }
         Err(failure) => {
             report(&failure);
@@ -163,32 +172,31 @@ async fn run_async(state_dir: Option<PathBuf>, command: Command) -> ExitCode {
     exit
 }
 
-/// What a command prints on stdout (JSON, `status --pretty`'s card, or
-/// `login`'s one line at a terminal), and the exit code that goes with it.
-/// That code is 0, except for an `exec` whose time ran out: its result is
-/// still printed, but latch exits 1.
-struct Printed {
-    text: String,
-    exit: ExitCode,
-}
+/// What a command that worked prints on stdout: its JSON; nothing, for a
+/// stream that printed its lines as they came; or, for a person leaving
+/// attached `serve`'s dashboard, one line.
+struct Printed(String);
 
 /// Runs one command and returns its JSON output.
-async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Failure> {
-    trace::init()?;
+async fn run(
+    state_dir: Option<PathBuf>,
+    command: Command,
+    pretty: bool,
+) -> Result<Printed, Failure> {
     let state = StateDir::new(state_dir)?;
     state.check_format()?;
+    let foreground = matches!(&command, Command::Serve(args) if args.foreground);
+    trace::init(&state, foreground)?;
     match command {
         Command::Login(args) if args.events => {
+            login::event(stream::hello());
             // Every ending is a line too; the failure still goes to stderr.
             match login::run(&state, args).await {
                 Ok(output) => {
                     let peer = &output.peer;
                     login::event(json!({"type": "verified", "peer":
                         {"name": peer.name, "key": peer.key, "kind": peer.kind}}));
-                    Ok(Printed {
-                        text: String::new(),
-                        exit: ExitCode::SUCCESS,
-                    })
+                    Ok(Printed(String::new()))
                 }
                 Err(failure) if failure.code == "code_expired" => {
                     login::event(json!({"type": "expired"}));
@@ -202,21 +210,20 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         }
         Command::Login(args) => {
             let output = login::run(&state, args).await?;
-            // A person at a terminal reads one line; a pipe gets the JSON.
-            if !term::stdout_is_terminal() {
-                return to_json(output);
+            // A person who logged in by text reads one line where they
+            // texted; every other login is a regular command's JSON.
+            if output.by_text {
+                eprintln!("Logged in as {}.", output.peer.name);
+                return Ok(Printed(String::new()));
             }
-            Ok(Printed {
-                text: format!("Logged in as {}.", output.peer.name),
-                exit: ExitCode::SUCCESS,
-            })
+            json(pretty, output)
         }
-        Command::Logout(args) => to_json(logout::run(&state, args.purge).await?),
-        Command::Agents(args) => to_json(agents::run(&state, args).await?),
+        Command::Logout(args) => json(pretty, logout::run(&state, args.purge).await?),
+        Command::Agents(args) => json(pretty, agents::run(&state, args).await?),
         Command::Devices(args) => match args.action {
-            None => to_json(devices::list(&state).await?),
+            None => json(pretty, devices::list(&state).await?),
             Some(DevicesAction::Remove { name, yes }) => {
-                to_json(devices::remove(&state, &name, yes).await?)
+                json(pretty, devices::remove(&state, &name, yes).await?)
             }
         },
         Command::Status(args) if args.host.is_some() || args.follow => {
@@ -226,37 +233,35 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                     let request = json!({"follow": true});
                     streamed(remote::stream(&state, &host, "status", request, true).await)
                 }
-                Some(host) => to_json(remote::call(&state, &host, "status", json!({})).await?),
+                Some(host) => json(
+                    pretty,
+                    remote::call(&state, &host, "status", json!({})).await?,
+                ),
                 None if follow => {
                     // Before the first login, too.
                     state.create()?;
                     let dir = state.path.clone();
                     print_local(true, move |send| status::follow(&dir, None, send))
                 }
-                None => to_json(status::local(&state)?),
+                None => json(pretty, status::local(&state)?),
             }
         }
-        Command::Status(args) if args.local => to_json(status::local(&state)?),
-        Command::Setup(args) => to_json(setup::status(&state, args.check_access).await?),
-        Command::Status(args) => {
-            let output = status::run(&state).await?;
-            if !args.pretty {
-                return to_json(output);
-            }
-            // The card is for a person: colored only at a terminal.
-            paint::set_color(term::stdout_is_terminal() && !term::no_color());
-            Ok(Printed {
-                text: card::render(&output, &state.path.display().to_string()),
-                exit: ExitCode::SUCCESS,
-            })
+        Command::Status(args) if args.local => json(pretty, status::local(&state)?),
+        Command::Status(_) => json(pretty, status::run(&state).await?),
+        Command::Setup(args) if !args.status => {
+            Err(setup::no_terminal(&setup::status(&state, false).await?))
         }
+        Command::Setup(args) => json(pretty, setup::status(&state, args.check_access).await?),
         Command::File(FileCommand::Get {
             remote_path,
             local_dest,
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::get(&state, &peer, host.plow_chat, &remote_path, local_dest).await?)
+            json(
+                pretty,
+                transfer::get(&state, &peer, host.plow_chat, &remote_path, local_dest).await?,
+            )
         }
         Command::File(FileCommand::Put {
             local_path,
@@ -264,25 +269,23 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::put(&state, &peer, host.plow_chat, &local_path, &remote_path).await?)
+            json(
+                pretty,
+                transfer::put(&state, &peer, host.plow_chat, &local_path, &remote_path).await?,
+            )
         }
-        Command::Google(args) => to_json(google::client::run(&state, args).await?),
-        Command::Browser(args) => {
-            let raw = matches!(args.command, BrowserCommand::Text { raw: true });
-            let result = browser::client::run(&state, args).await?;
-            if !raw {
-                return to_json(result);
-            }
-            if result["truncated"] == true {
-                eprintln!("latch: the page's text was cut short; this is its beginning");
-            }
-            Ok(Printed {
-                text: result["text"].as_str().unwrap_or_default().to_string(),
-                exit: ExitCode::SUCCESS,
-            })
+        Command::Google(args) => json(pretty, google::client::run(&state, args).await?),
+        Command::Browser(args) => json(pretty, browser::client::run(&state, args).await?),
+        Command::Vault(args) => json(pretty, vault::client::run(&state, args).await?),
+        // A person edited the rules in their editor: a line says it is saved.
+        Command::Rules(args) if matches!(args.command, cli::RulesCommand::Edit { .. }) => {
+            let saved = gate::client::run(&state, args).await?;
+            let whose = saved["agent_name"].as_str().unwrap_or("every agent");
+            let host = saved["host"].as_str().unwrap_or("this host");
+            eprintln!("Saved the rules for {whose} on {host}.");
+            Ok(Printed(String::new()))
         }
-        Command::Vault(args) => to_json(vault::client::run(&state, args).await?),
-        Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
+        Command::Rules(args) => json(pretty, gate::client::run(&state, args).await?),
         Command::Plugins(args)
             if matches!(
                 args.command,
@@ -291,7 +294,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         {
             // As `login --events`: `hello`, any `link` lines, then one
             // `result` or `error`, unless the caller stopped the wait.
-            login::event(json!({"type": "hello", "schema": 1}));
+            login::event(stream::hello());
             match plugins::client::run(&state, args).await {
                 Ok(Value::Null) => {}
                 Ok(result) => login::event(json!({"type": "result", "result": result})),
@@ -300,24 +303,18 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                     return Err(failure);
                 }
             }
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            Ok(Printed(String::new()))
         }
         Command::Plugins(args) => match plugins::client::run(&state, args).await? {
             // A wait stopped at the caller's request: nothing to say.
-            Value::Null => Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            }),
-            result => to_json(result),
+            Value::Null => Ok(Printed(String::new())),
+            result => json(pretty, result),
         },
-        Command::Update(args) => to_json(update::run(&state, args).await?),
+        Command::Update(args) => json(pretty, update::run(&state, args).await?),
         Command::Audit(cli::AuditArgs {
             action: Some(action),
             ..
-        }) => to_json(audit::run(&state, action)?),
+        }) => json(pretty, audit::run(&state, action)?),
         Command::Audit(args) => {
             let range = audit::Range {
                 last: args.last,
@@ -337,9 +334,10 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                     // A host's log begins when it first serves, or keeps an
                     // owner command here.
                     if !state.path.join(audit::FILE).exists() {
-                        let message = "this machine has never served, so it keeps no audit; \
-                                       read a host's with `latch audit --host NAME`";
-                        return Err(Failure::usage("no_host_here", message.into()));
+                        let message = "this machine has never served, so it keeps no audit";
+                        let mut failure = Failure::new(code::no_host_here, message.into());
+                        failure.next = Some("latch audit --host NAME".into());
+                        return Err(failure);
                     }
                     let whose = match state.load_config()? {
                         Some(config) => format!("{}'s", config.peer.name),
@@ -355,7 +353,8 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         #[cfg(target_os = "macos")]
         Command::Messages(command) => {
             let request = messages::messages_request(&command);
-            to_json(
+            json(
+                pretty,
                 call_host(
                     &state,
                     command.host(),
@@ -369,7 +368,8 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         #[cfg(target_os = "macos")]
         Command::Contacts(command) => {
             let request = messages::contacts_request(&command);
-            to_json(
+            json(
+                pretty,
                 call_host(
                     &state,
                     command.host(),
@@ -385,53 +385,49 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             // The host may let the program run for its whole timeout.
             let answer_within = Duration::from_secs(args.timeout) + dial::ANSWER_MARGIN;
             let result = call_host(&state, args.host, "exec", request, answer_within).await?;
-            let mut printed = to_json(&result)?;
             if result["timed_out"] == true {
-                printed.exit = Exit::Failed.into();
+                return Err(exec::timed_out(args.timeout, result));
             }
-            Ok(printed)
+            json(pretty, result)
         }
         Command::Serve(args) if args.foreground => {
             serve::run(&state, &args).await?;
             // A clean stop prints nothing: the host's output was its log.
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            Ok(Printed(String::new()))
         }
-        Command::Serve(args) if args.detach => to_json(managed::start(&state, &args).await?),
+        Command::Serve(args) if args.detach => json(pretty, managed::start(&state, &args).await?),
         Command::Serve(args) => {
             paint::set_color(!term::no_color());
+            // A person at the terminal reads one line, however it ends.
             match managed::attach(&state, &args).await? {
-                managed::Attached::Stopped(stopped) => to_json(stopped),
-                // A person at the terminal reads one line.
-                managed::Attached::Detached(line) => Ok(Printed {
-                    text: line,
-                    exit: ExitCode::SUCCESS,
-                }),
+                managed::Attached::Stopped(stopped) => {
+                    let line = match stopped["error"]["message"].as_str() {
+                        Some(why) => format!("The host stopped: {why}"),
+                        None => "The host stopped.".to_string(),
+                    };
+                    Ok(Printed(line))
+                }
+                managed::Attached::Detached(line) => Ok(Printed(line)),
             }
         }
-        Command::Stop => to_json(managed::stop(&state).await?),
+        Command::Stop => json(pretty, managed::stop(&state).await?),
         Command::Dashboard => {
             paint::set_color(!term::no_color());
             managed::dashboard(&state).await?;
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            Ok(Printed(String::new()))
         }
         // Its lines, printed as they come, are its whole output.
         Command::Logs(args) => {
             logs::run(&state, args.follow)?;
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            Ok(Printed(String::new()))
         }
         #[cfg(target_os = "macos")]
         Command::AccessCheck { name } => {
             let connector = plugins::Connector::named(&name)?;
-            to_json(messages::access::check_here(&state, connector).await?)
+            json(
+                pretty,
+                messages::access::check_here(&state, connector).await?,
+            )
         }
         Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
             unreachable!("handled in main")
@@ -489,59 +485,71 @@ fn print_local(
 
 /// A stream's lines, printed as they came, are its whole output.
 fn streamed(result: Result<(), Failure>) -> Result<Printed, Failure> {
-    result.map(|()| Printed {
-        text: String::new(),
-        exit: ExitCode::SUCCESS,
-    })
+    result.map(|()| Printed(String::new()))
 }
 
-fn to_json(output: impl Serialize) -> Result<Printed, Failure> {
+/// A command's result as its JSON: one line, or indented with `--pretty`.
+fn json(pretty: bool, output: impl Serialize) -> Result<Printed, Failure> {
     // Our outputs are plain structs of strings and lists, so this cannot fail.
-    let text = serde_json::to_string(&output).expect("output serializes");
-    Ok(Printed {
-        text,
-        exit: ExitCode::SUCCESS,
-    })
+    let text = match pretty {
+        true => serde_json::to_string_pretty(&output),
+        false => serde_json::to_string(&output),
+    };
+    Ok(Printed(text.expect("output serializes")))
 }
 
-/// clap prints `--help` and `--version` itself; every real usage error
-/// becomes a JSON error with exit 2, like latch's own errors.
+/// clap prints `--help` itself; `--version` is JSON, and every real usage
+/// error becomes a JSON error with exit 2, like latch's own errors.
 fn usage_error(err: clap::Error) -> ExitCode {
-    if matches!(
-        err.kind(),
-        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
-    ) {
+    if err.kind() == ErrorKind::DisplayHelp {
         let _ = err.print();
         return ExitCode::SUCCESS;
     }
-    let mut message = err.to_string().trim_end().to_string();
+    if err.kind() == ErrorKind::DisplayVersion {
+        // clap stops at `--version`, so `--pretty` is looked for by hand.
+        let pretty = std::env::args().any(|word| word == "--pretty");
+        let version = json!({ "version": cli::version() });
+        let _ = json(pretty, version).map(|Printed(text)| println!("{text}"));
+        return ExitCode::SUCCESS;
+    }
+    let message = err.to_string().trim_end().to_string();
+    let mut failure = Failure::new(code::usage, message);
     // `latch exec --host h ls -la` (no `--`): say how to pass a command.
     let exec = std::env::args().skip(1).any(|word| word == "exec");
     if exec && err.kind() == ErrorKind::UnknownArgument {
-        message.push_str("\n\nPut the command after `--`: latch exec --host H -- <cmd> <args>");
+        failure.next = Some("latch exec --host H -- <cmd> <args>".into());
     }
-    let failure = Failure::usage("usage", message);
     report(&failure);
     Exit::Usage.into()
 }
 
-/// Puts a failure on stderr: for a person at a terminal its message, a
-/// sentence, then any details it carries (a stopped plan's steps, a request
-/// id) as JSON; for a pipe the JSON error, so agents and scripts read its
-/// code.
+/// Puts a failure on stderr as its one JSON error line, whether a person
+/// or a program reads it; unless a human command already said it to the
+/// person in a plain line.
 fn report(failure: &Failure) {
-    if !term::stderr_is_terminal() {
+    if !failure.said {
         eprintln!("{}", failure.to_json());
-        return;
     }
-    eprintln!("{}", failure.message);
-    let has_details = match &failure.details {
-        Value::Null => false,
-        Value::Object(details) => !details.is_empty(),
-        _ => true,
-    };
-    if has_details {
-        let details = serde_json::to_string_pretty(&failure.details).expect("details serialize");
-        eprintln!("{details}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_result_is_one_line_or_indented_with_the_same_content() {
+        let result =
+            json!({"host": "mac", "sessions": [{"id": "s1", "tabs": 2}], "note": "café\nnext"});
+        let Ok(Printed(compact)) = json(false, &result) else {
+            unreachable!()
+        };
+        let Ok(Printed(pretty)) = json(true, &result) else {
+            unreachable!()
+        };
+        assert!(!compact.contains('\n'), "{compact}");
+        assert!(pretty.contains("\n  \"host\""), "{pretty}");
+        for text in [&compact, &pretty] {
+            assert_eq!(serde_json::from_str::<Value>(text).unwrap(), result);
+        }
     }
 }

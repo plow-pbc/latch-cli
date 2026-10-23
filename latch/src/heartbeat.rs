@@ -13,7 +13,7 @@ use std::time::Duration;
 use iroh::{Endpoint, Watcher};
 
 use crate::dashboard::Dashboard;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::log::log;
 use crate::plow::{Plow, Registration};
 use crate::state::{Config, StateDir};
@@ -72,12 +72,12 @@ pub async fn run(
                      so this host stops; run `latch login` here to take the name back"
                 );
                 log(&format!("heartbeat: refused: {message}"));
-                return Failure::failed("name_moved", message);
+                return Failure::new(code::name_moved, message);
             }
             Err(failure) => {
                 dashboard.directory(false);
                 failures += 1;
-                let wait = backoff(failures, failure.retry_after);
+                let wait = backoff(failures, failure.retry_after());
                 log(&format!(
                     "heartbeat: failed ({}: {}); retry {failures} in {:.1}s",
                     failure.code,

@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::{client, host, import};
 use crate::audit::{self, AuditLog};
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 
 fn audited(
@@ -46,7 +46,7 @@ pub(super) fn call(state: &StateDir, args: Value) -> Result<Value, Failure> {
 
 /// An export in `path`, parsed and marked against the vault.
 fn read_export(vault: &host::Vault, path: &Path) -> Result<import::Parsed, Failure> {
-    let io = |err| Failure::usage("local_file", format!("{}: {err}", path.display()));
+    let io = |err| Failure::new(code::local_file, format!("{}: {err}", path.display()));
     let mut bytes = Vec::new();
     fs::File::open(path)
         .map_err(io)?
@@ -54,8 +54,8 @@ fn read_export(vault: &host::Vault, path: &Path) -> Result<import::Parsed, Failu
         .read_to_end(&mut bytes)
         .map_err(io)?;
     if bytes.len() > 300 * 1024 * 1024 {
-        return Err(Failure::usage(
-            "file_too_large",
+        return Err(Failure::new(
+            code::file_too_large,
             "that export is too large".into(),
         ));
     }

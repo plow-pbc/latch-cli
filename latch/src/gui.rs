@@ -18,7 +18,7 @@ use core_foundation::base::TCFType;
 use core_foundation::bundle::CFBundle;
 use core_foundation::string::{CFString, CFStringRef};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 
 /// The library build.sh makes, in the bundle's Contents/Frameworks.
@@ -130,10 +130,12 @@ fn launched_on(state_dir: Option<&std::path::Path>, default: &std::path::Path) -
 }
 
 fn missing(why: String) -> Failure {
-    Failure::failed(
-        "app_broken",
-        format!("the app's window could not load ({why}); reinstall Latch"),
-    )
+    let mut failure = Failure::new(
+        code::app_broken,
+        format!("the app's window could not load ({why})"),
+    );
+    failure.next = Some("reinstall Latch".into());
+    failure
 }
 
 /// This Mac's macOS version, e.g. "26.1", or "" if macOS won't say.

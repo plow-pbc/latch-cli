@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::problem;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 
 /// The grammar, parsed from `schema.json` the first time it is used and
 /// shared after that. `LazyLock` runs the closure once per process.
@@ -197,17 +197,17 @@ impl Plan {
     pub fn destination(&self, path: &str) -> Result<PathBuf, Failure> {
         let (index, relative) = path
             .split_once('/')
-            .ok_or_else(|| problem(Exit::Failed, "bad_response", json!({})))?;
+            .ok_or_else(|| problem(code::bad_response, json!({})))?;
         let output = index
             .parse::<usize>()
             .ok()
             .and_then(|n| self.outputs.get(n))
-            .ok_or_else(|| problem(Exit::Failed, "bad_response", json!({})))?;
+            .ok_or_else(|| problem(code::bad_response, json!({})))?;
         if Path::new(relative)
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
         {
-            return Err(problem(Exit::Failed, "bad_response", json!({})));
+            return Err(problem(code::bad_response, json!({})));
         }
         Ok(if output.directory {
             Path::new(&output.path).join(relative)
@@ -347,8 +347,8 @@ pub fn lift(args: &[String]) -> Result<Lifted, Failure> {
                 .map(str::to_owned)
                 .collect();
             if accounts.is_empty() {
-                return Err(Failure::usage(
-                    "usage",
+                return Err(Failure::new(
+                    code::usage,
                     "--account needs a value: the account's email address".into(),
                 ));
             }
@@ -606,8 +606,7 @@ fn add_calendar_list_max(plan: &mut Plan) {
 
 fn denied() -> Failure {
     Failure::new(
-        Exit::Denied,
-        "not_allowed",
+        code::not_allowed,
         "Command or flag is outside the allowed Google interface".into(),
     )
 }

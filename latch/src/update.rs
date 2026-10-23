@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 
 use crate::cli::UpdateArgs;
 use crate::dashboard::Dashboard;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::log::log;
 use crate::state::{StateDir, to_hex, write_private};
 
@@ -74,7 +74,7 @@ impl Release {
         });
         let build = parsed.ok_or_else(|| {
             let message = format!("{tag:?} is not a release tag; tags look like v0.1.0-1327");
-            Failure::usage("bad_tag", message)
+            Failure::new(code::bad_tag, message)
         })?;
         Ok(Release {
             tag: tag.to_string(),
@@ -112,7 +112,7 @@ impl Source {
         let url = format!("{}/{path}", self.url);
         let unreachable = |why: String| {
             let message = format!("could not download {url}: {why}");
-            Failure::new(Exit::Unreachable, "releases_unreachable", message)
+            Failure::new(code::releases_unreachable, message)
         };
         let response = http()
             .get(&url)
@@ -125,9 +125,10 @@ impl Source {
                 .await
                 .map_err(|err| unreachable(err.to_string()))?
                 .to_vec()),
-            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::FORBIDDEN => Err(
-                Failure::failed("no_such_release", format!("{url} does not exist")),
-            ),
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::FORBIDDEN => Err(Failure::new(
+                code::no_such_release,
+                format!("{url} does not exist"),
+            )),
             status => Err(unreachable(status.to_string())),
         }
     }
@@ -137,7 +138,7 @@ impl Source {
         let bytes = self.get(path).await?;
         let refused = |why: &str| {
             let message = format!("{}/{path} {why}; nothing was installed", self.url);
-            Failure::new(Exit::Denied, "bad_signature", message)
+            Failure::new(code::bad_signature, message)
         };
         let signature = match self.get(&format!("{path}.minisig")).await {
             Err(failure) if failure.code == "no_such_release" => {
@@ -159,14 +160,17 @@ impl Source {
     async fn latest(&self) -> Result<Release, Failure> {
         let bytes = self.signed("latest.json").await?;
         let latest: Release = serde_json::from_slice(&bytes).map_err(|err| {
-            Failure::failed("bad_release", format!("latest.json is not valid: {err}"))
+            Failure::new(
+                code::bad_release,
+                format!("latest.json is not valid: {err}"),
+            )
         })?;
         if Release::named(&latest.tag)? != latest {
             let message = format!(
                 "latest.json names build {} for {}",
                 latest.build, latest.tag
             );
-            return Err(Failure::failed("bad_release", message));
+            return Err(Failure::new(code::bad_release, message));
         }
         Ok(latest)
     }
@@ -194,7 +198,7 @@ pub async fn run(state: &StateDir, args: UpdateArgs) -> Result<Value, Failure> {
         && config.peer.kind != "device"
     {
         let message = "latch is updated by the owner of this machine, never by an agent";
-        return Err(Failure::new(Exit::Denied, "owner_only", message.into()));
+        return Err(Failure::new(code::owner_only, message.into()));
     }
     let source = Source::releases();
     let bin = bin_dir();
@@ -229,7 +233,7 @@ async fn update(
     if current.is_none() && !check {
         let message = "this latch was built from a checkout, not released; \
                        build it again, or install a release with install.sh";
-        return Err(Failure::failed("local_build", message.into()));
+        return Err(Failure::new(code::local_build, message.into()));
     }
     let release = match tag {
         Some(tag) => Release::named(tag)?,
@@ -244,8 +248,32 @@ async fn update(
     if tag.is_none() && release.build <= current {
         return Ok(json!({"updated": false, "current": current, "latest": release}));
     }
+    let before = crate::status::local(state)?.serve;
     install(state, source, &release, bin).await?;
-    Ok(json!({"updated": true, "from": current, "to": release}))
+    let mut answer = json!({"updated": true, "from": current, "to": release});
+    let after = crate::status::local(state)?.serve.running;
+    if let Some(host) = host_after(before.running, before.attached, after) {
+        answer["host"] = host;
+    }
+    Ok(answer)
+}
+
+/// What an update did to the host on this state folder, when one ran. The
+/// installer stops it, and starts again only one `serve -d` started; one
+/// that ran in a terminal stays stopped, with the command that starts it.
+fn host_after(was_running: bool, attached: bool, running: bool) -> Option<Value> {
+    if !was_running {
+        return None;
+    }
+    if running {
+        return Some(json!({"running": true}));
+    }
+    let start = if attached {
+        "latch serve"
+    } else {
+        "latch serve --foreground"
+    };
+    Some(json!({"running": false, "next": start}))
 }
 
 /// Downloads `release`'s archive for this platform, checks it, and runs its
@@ -268,30 +296,39 @@ async fn install(
         })
         .ok_or_else(|| {
             let message = format!("{}'s SHA256SUMS does not list {name}.tar.gz", release.tag);
-            Failure::failed("bad_release", message)
+            Failure::new(code::bad_release, message)
         })?;
     if to_hex(&Sha256::digest(&archive)) != listed {
         let message = format!(
             "the downloaded {name}.tar.gz is not the one {}'s SHA256SUMS lists; nothing was installed",
             release.tag
         );
-        return Err(Failure::failed("bad_download", message));
+        return Err(Failure::new(code::bad_download, message));
     }
     let unpacked = tempfile::tempdir().map_err(|err| io_failure("a download folder", err))?;
     let path = unpacked.path().join(format!("{name}.tar.gz"));
     std::fs::write(&path, &archive).map_err(|err| io_failure(&path.display().to_string(), err))?;
+    // What tar and the installer print is for the owner, in trace.log: this
+    // command's stdout is its JSON, its stderr only its error line.
+    let log = crate::trace::file(state)?;
+    let (out, err) = crate::trace::output(&log)?;
     let untar = tokio::process::Command::new("tar")
         .arg("-xzf")
         .arg(&path)
         .arg("-C")
         .arg(unpacked.path())
+        .stdout(out)
+        .stderr(err)
         .status()
         .await
         .map_err(|err| io_failure("tar", err))?;
     if !untar.success() {
-        return Err(Failure::failed(
-            "bad_download",
-            format!("{name}.tar.gz could not be unpacked"),
+        return Err(Failure::new(
+            code::bad_download,
+            format!(
+                "{name}.tar.gz could not be unpacked; tar's output is in {}",
+                state.path.join(crate::trace::FILE).display()
+            ),
         ));
     }
     let setup = unpacked.path().join(&name);
@@ -299,7 +336,7 @@ async fn install(
         signer.check(&setup.join("Plow Latch.app")).await?;
     }
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
-    // Its progress is for the owner; this command's stdout is its JSON.
+    let (out, err) = crate::trace::output(&log)?;
     let mut installer = tokio::process::Command::new("sh");
     installer
         .arg(setup.join("install-binary.sh"))
@@ -313,16 +350,18 @@ async fn install(
         .args(engines(&dir))
         .arg(setup.join("latch"))
         .stdin(Stdio::null())
-        .stdout(std::io::stderr())
+        .stdout(out)
+        .stderr(err)
         .status()
         .await
         .map_err(|err| io_failure("install-binary.sh", err))?;
     if !installed.success() {
         let message = format!(
-            "{}'s install-binary.sh failed (see above); what it says it left in place is in place",
-            release.tag
+            "{}'s install-binary.sh failed; its output, and what it says it left in place, is in {}",
+            release.tag,
+            state.path.join(crate::trace::FILE).display()
         );
-        return Err(Failure::failed("install_failed", message));
+        return Err(Failure::new(code::install_failed, message));
     }
     Ok(())
 }
@@ -334,8 +373,8 @@ fn target() -> Result<&'static str, Failure> {
         ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
         ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
-        (os, arch) => Err(Failure::failed(
-            "unsupported_platform",
+        (os, arch) => Err(Failure::new(
+            code::unsupported_platform,
             format!("latch has no release for {os} on {arch}"),
         )),
     }
@@ -366,7 +405,7 @@ impl Signer {
                 "the release's {} {why}; nothing was installed",
                 app.display()
             );
-            Failure::new(Exit::Denied, "bad_app_signature", message)
+            Failure::new(code::bad_app_signature, message)
         };
         let shown = tool("codesign", &["-dvv".as_ref(), app.as_os_str()]).await?;
         let field = |name: &str| {
@@ -420,13 +459,13 @@ async fn tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, Failur
             "{program}: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
-        return Err(Failure::failed("tool_failed", message));
+        return Err(Failure::new(code::tool_failed, message));
     }
     Ok(String::from_utf8_lossy(&output.stderr).to_string())
 }
 
 fn io_failure(what: &str, err: std::io::Error) -> Failure {
-    Failure::failed("update_io", format!("{what}: {err}"))
+    Failure::new(code::update_io, format!("{what}: {err}"))
 }
 
 /// Whether `latest` is a newer build than `current`. A local build (no

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tokio::fs::File;
 
 use crate::dial::{self, ANSWER_WITHIN};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::plow::Peer;
 use crate::state::StateDir;
 use crate::wire::{self, Request};
@@ -31,7 +31,7 @@ pub async fn get(
             Some(name) => PathBuf::from(name),
             None => {
                 let message = format!("{remote_path:?} has no file name; give a local destination");
-                return Err(Failure::usage("no_file_name", message));
+                return Err(Failure::new(code::no_file_name, message));
             }
         },
     };
@@ -79,8 +79,8 @@ pub async fn put_args(local: &Path, remote_path: &str) -> Result<(File, Value), 
         .await
         .map_err(|err| local_failure(local, err))?;
     if !metadata.is_file() {
-        return Err(Failure::usage(
-            "not_a_file",
+        return Err(Failure::new(
+            code::not_a_file,
             format!("{} is not a file", local.display()),
         ));
     }
@@ -122,8 +122,7 @@ async fn send(
     check_same(&done, &sha256)?;
     let path = done["path"].as_str().ok_or_else(|| {
         Failure::new(
-            Exit::Unknown,
-            "bad_response",
+            code::bad_response,
             "the host's answer did not say where the file was put".to_string(),
         )
     })?;
@@ -234,7 +233,7 @@ async fn receive_into(
 fn size_of(start: &Value) -> Result<u64, Failure> {
     start["size"].as_u64().ok_or_else(|| {
         let message = "the host's answer did not say how many bytes follow".to_string();
-        Failure::new(Exit::Unknown, "bad_response", message)
+        Failure::new(code::bad_response, message)
     })
 }
 
@@ -244,11 +243,11 @@ fn check_same(done: &Value, sha256: &str) -> Result<(), Failure> {
         return Ok(());
     }
     let message = format!("the host saw sha256 {}, this side {sha256}", done["sha256"]);
-    Err(Failure::failed("checksum_mismatch", message))
+    Err(Failure::new(code::checksum_mismatch, message))
 }
 
 fn local_failure(path: &Path, err: std::io::Error) -> Failure {
-    Failure::usage("local_file", format!("{}: {err}", path.display()))
+    Failure::new(code::local_file, format!("{}: {err}", path.display()))
 }
 
 #[cfg(test)]

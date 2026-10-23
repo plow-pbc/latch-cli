@@ -23,7 +23,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::credential;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::lifecycle;
 use crate::login::shell_quoted;
 use crate::managed;
@@ -38,7 +38,7 @@ const HOLD_WITHIN: Duration = Duration::from_secs(60);
 pub async fn run(state: &StateDir, purge: bool) -> Result<Value, Failure> {
     let refused = |why: &str| {
         let message = format!("{} {why}; nothing was deleted", state.path.display());
-        Failure::failed("state_format", message)
+        Failure::new(code::state_format, message)
     };
     match fs::symlink_metadata(&state.path) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -72,11 +72,11 @@ pub async fn run(state: &StateDir, purge: bool) -> Result<Value, Failure> {
                 "{holder} started on {} as it was stopped; `latch stop`, then log out again",
                 path.display()
             );
-            return Err(Failure::failed("host_running", message));
+            return Err(Failure::new(code::host_running, message));
         }
         Err(holder) => {
             let message = format!("{holder} still holds this state folder; run this again");
-            return Err(Failure::failed("state_busy", message));
+            return Err(Failure::new(code::state_busy, message));
         }
     };
     held_for_tests();
@@ -147,5 +147,5 @@ fn held_for_tests() {
 }
 
 fn io_failure(path: &Path, err: io::Error) -> Failure {
-    Failure::failed("state_io", format!("{}: {err}", path.display()))
+    Failure::new(code::state_io, format!("{}: {err}", path.display()))
 }

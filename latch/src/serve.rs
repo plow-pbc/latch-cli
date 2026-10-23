@@ -35,7 +35,7 @@ use crate::audit::{self, AuditLog, Record};
 use crate::credential;
 use crate::dashboard::{self, Dashboard};
 use crate::exec;
-use crate::failure::Failure;
+use crate::failure::{Code, Failure, code};
 use crate::files;
 use crate::gate::rules::RuleFiles;
 use crate::gate::{self, Caller, Gate, Gatekeeper};
@@ -111,8 +111,8 @@ impl<'a> Checks<'a> {
     ) -> Result<Gate<'a>, Failure> {
         if local || identity.kind == "device" {
             if chat.is_some() {
-                return Err(Failure::usage(
-                    "plow_chat_not_supported",
+                return Err(Failure::new(
+                    code::plow_chat_not_supported,
                     "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat; omit them on owner calls".into(),
                 ));
             }
@@ -131,8 +131,7 @@ impl<'a> Checks<'a> {
                 caller: Caller::Agent { uid, chat },
             }),
             None => Err(Failure::new(
-                crate::failure::Exit::Unreachable,
-                "gatekeeper_unavailable",
+                code::gatekeeper_unavailable,
                 "The gatekeeper could not judge this, so it did not run: Plow names no agent for this caller".to_string(),
             )),
         }
@@ -204,12 +203,21 @@ pub struct Done {
 }
 
 impl Done {
-    pub fn failed(code: &str, message: String, audit_args: Value) -> Done {
+    pub fn failed(code: Code, message: String, audit_args: Value) -> Done {
+        Done::failure(Failure::new(code, message), audit_args)
+    }
+
+    pub fn failure(failure: Failure, audit_args: Value) -> Done {
         Done {
-            response: failed(code, message),
+            response: Response::error(&failure),
             audit_args,
-            outcome: code.to_string(),
+            outcome: failure.code,
         }
+    }
+
+    /// What a worker reported, by its code.
+    pub fn worker(error: crate::worker::WorkerError, audit_args: Value) -> Done {
+        Done::failure(Failure::reported(&error.code, error.message), audit_args)
     }
 }
 
@@ -227,7 +235,7 @@ pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), F
     // say so once, now, instead of starting. The quick check names a
     // missing kernel feature; the probe worker then installs the sandbox
     // for real, which is the only way to know it can be.
-    crate::sandbox::check().map_err(|message| Failure::failed("sandbox_unavailable", message))?;
+    crate::sandbox::check().map_err(|message| Failure::new(code::sandbox_unavailable, message))?;
     // The sandbox needs the state directory's real path (symlinks resolved).
     // One that does not exist yet has never logged in: say that, rather
     // than let the sandbox fail on the missing folder.
@@ -262,12 +270,12 @@ pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), F
 /// The workers a host on `state_dir` starts: this latch, confined.
 pub(crate) fn workers(state_dir: PathBuf) -> Result<WorkerSetup, Failure> {
     let program = std::env::current_exe()
-        .map_err(|err| Failure::failed("sandbox_unavailable", err.to_string()))?;
+        .map_err(|err| Failure::new(code::sandbox_unavailable, err.to_string()))?;
     let home = std::env::home_dir()
         .and_then(|home| home.canonicalize().ok())
         .ok_or_else(|| {
-            Failure::failed(
-                "bad_home",
+            Failure::new(
+                code::bad_home,
                 "the host's home folder cannot be resolved".into(),
             )
         })?;
@@ -293,7 +301,7 @@ async fn run_locked(
     let rules = RuleFiles::new(&state.path)?;
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
-        Failure::failed("sandbox_unavailable", message)
+        Failure::new(code::sandbox_unavailable, message)
     })?;
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
     exec::sweep_tmpdirs();
@@ -324,7 +332,7 @@ async fn run_host(
     let gatekeeper = Gatekeeper::new(
         plow.clone(),
         Gatekeeper::provider_for_host(&state.path)
-            .map_err(|why| Failure::failed("not_logged_in", why))?,
+            .map_err(|why| Failure::new(code::not_logged_in, why))?,
         Box::new(rules),
     );
     let mut audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
@@ -342,7 +350,7 @@ async fn run_host(
         Ok(url) => {
             let url = url.parse().map_err(|_| {
                 let message = format!("LATCH_TEST_RELAY_URL {url:?} is not a relay URL");
-                Failure::usage("bad_relay", message)
+                Failure::new(code::bad_relay, message)
             })?;
             RelayMode::custom([url])
         }
@@ -353,7 +361,7 @@ async fn run_host(
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
         .bind()
         .await
-        .map_err(|err| Failure::failed("iroh", format!("could not start iroh: {err}")))?;
+        .map_err(|err| Failure::new(code::iroh, format!("could not start iroh: {err}")))?;
     log(&format!(
         "serving as {:?}, key {}",
         config.peer.name,
@@ -378,11 +386,11 @@ async fn run_host(
     {
         endpoint.close().await;
         let message = "no iroh relay connection within 15 seconds".to_string();
-        return Err(Failure::failed("relay_unreachable", message));
+        return Err(Failure::new(code::relay_unreachable, message));
     }
     dashboard.step("registering with Plow…");
     let terminate = signal(SignalKind::terminate())
-        .map_err(|err| Failure::failed("signal", format!("cannot listen for SIGTERM: {err}")))?;
+        .map_err(|err| Failure::new(code::signal, format!("cannot listen for SIGTERM: {err}")))?;
     let name = config.peer.name.clone();
     let heartbeat_state = StateDir {
         path: state.path.clone(),
@@ -449,7 +457,7 @@ async fn run_host(
                     Ok((socket, _)) => { connections.spawn(serve_local(host.clone(), socket)); }
                     Err(err) => {
                         log(&format!("stopping: local socket accept failed: {err}"));
-                        accept_failure = Some(Failure::failed("local_socket", err.to_string()));
+                        accept_failure = Some(Failure::new(code::local_socket, err.to_string()));
                         break None;
                     }
                 }
@@ -472,7 +480,7 @@ async fn run_host(
             // key.
             ended = &mut heartbeat => {
                 break Some(ended.unwrap_or_else(|err| {
-                    Failure::failed("heartbeat", format!("the heartbeat stopped: {err}"))
+                    Failure::new(code::heartbeat, format!("the heartbeat stopped: {err}"))
                 }));
             }
         }
@@ -595,7 +603,7 @@ impl Binary {
     fn at(path: &Path) -> Result<Binary, Failure> {
         let on_disk = OnDisk::of(path).ok_or_else(|| {
             let message = format!("latch cannot find its own binary {}", path.display());
-            Failure::failed("no_binary", message)
+            Failure::new(code::no_binary, message)
         })?;
         Ok(Binary {
             path: path.to_path_buf(),
@@ -664,9 +672,12 @@ fn sweep_browsers(host: &Arc<Host>) {
 }
 
 /// `latch was updated; restart to use build 1327`, from what the new
-/// latch's `--version` said (`latch 0.1.0 (1327): commit …`).
-fn updated_to(version: &str) -> String {
-    let number = version
+/// latch's `--version` said (`{"version": "0.1.0 (1327): commit …"}`).
+fn updated_to(said: &str) -> String {
+    let said: Value = serde_json::from_str(said).unwrap_or_default();
+    let number = said["version"]
+        .as_str()
+        .unwrap_or_default()
         .split_once(" (")
         .and_then(|(_, rest)| rest.split_once("):"))
         .map(|(number, _)| number)
@@ -680,8 +691,7 @@ fn updated_to(version: &str) -> String {
 /// An exec this host's owner refuses to the caller (`latch serve --deny-exec`).
 fn exec_denied() -> Failure {
     Failure::new(
-        crate::failure::Exit::Denied,
-        "exec_denied",
+        code::exec_denied,
         "this host's owner does not let this agent run exec here \
          (latch serve --deny-exec); asking again will not help"
             .to_string(),
@@ -692,7 +702,7 @@ fn exec_denied() -> Failure {
 fn host_upgraded() -> Failure {
     let message = "latch on this host was replaced since `latch serve` started; nothing ran. \
                    Restart `latch serve` on the host to run the new latch, then try again";
-    Failure::failed("host_upgraded", message.to_string())
+    Failure::new(code::host_upgraded, message.to_string())
 }
 
 /// Makes this the one `latch serve` on `state_dir`: two hosts on one state
@@ -709,13 +719,13 @@ fn lock_state(state_dir: &Path) -> Result<File, Failure> {
                 "{} is held by {holder}; start latch once it finishes",
                 state_dir.display()
             );
-            return Failure::failed("state_busy", message);
+            return Failure::new(code::state_busy, message);
         }
         let message = format!(
             "{} is already served by {holder}; stop that `latch serve` first",
             state_dir.display()
         );
-        Failure::failed("already_serving", message)
+        Failure::new(code::already_serving, message)
     })
 }
 
@@ -730,7 +740,7 @@ pub(crate) fn hold_state(
 ) -> Result<Result<File, String>, Failure> {
     let path = state_dir.join("serve.lock");
     let io =
-        |err: std::io::Error| Failure::failed("state_io", format!("{}: {err}", path.display()));
+        |err: std::io::Error| Failure::new(code::state_io, format!("{}: {err}", path.display()));
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -903,7 +913,7 @@ async fn serve_operation(
     local: bool,
     mut send: crate::transport::SendStream,
     mut recv: crate::transport::RecvStream,
-    cut_off: impl std::future::Future<Output = &'static str>,
+    cut_off: impl std::future::Future<Output = Code>,
 ) {
     let Some(request) = read_request(&mut send, &mut recv).await else {
         return;
@@ -921,7 +931,10 @@ async fn read_request(
     match serde_json::from_slice::<Request>(&json) {
         Ok(request) => Some(request),
         Err(_) => {
-            let response = failed("bad_request", "the request frame is not valid".to_string());
+            let response = failed(
+                code::bad_request,
+                "the request frame is not valid".to_string(),
+            );
             answer(send, &response).await;
             None
         }
@@ -935,7 +948,7 @@ async fn serve_request(
     mut request: Request,
     mut send: crate::transport::SendStream,
     mut recv: crate::transport::RecvStream,
-    cut_off: impl std::future::Future<Output = &'static str>,
+    cut_off: impl std::future::Future<Output = Code>,
 ) {
     let op = request.op.clone();
     let op = op.as_str();
@@ -968,12 +981,7 @@ async fn serve_request(
                 .await;
             log(&format!("{op}: {caller}: denied: {}", denial.message));
             host.show_refusal(caller, op, &denial);
-            Response::Error {
-                exit: crate::failure::Exit::Denied,
-                details: Value::Null,
-                code: "caller_denied".to_string(),
-                message: denial.message,
-            }
+            failed(code::caller_denied, denial.message)
         }
         // An import's preview saves nothing: neither audited nor on the board.
         Ok(identity) if op == "vault" && request.args["command"] == "preview" => {
@@ -1038,7 +1046,7 @@ async fn serve_request(
                             async {
                                 tokio::select! {
                                     reason = cut_off => reason,
-                                    _ = recv.read_u8(), if local => "caller_gone",
+                                    _ = recv.read_u8(), if local => code::caller_gone,
                                 }
                             },
                         )
@@ -1119,7 +1127,7 @@ async fn serve_request(
                         .await
                     }
                     _ => Done::failed(
-                        "not_built_yet",
+                        code::not_built_yet,
                         format!("this host does not run `{op}` yet"),
                         Value::Null,
                     ),
@@ -1157,7 +1165,7 @@ async fn serve_request(
             );
             let response = match appended {
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
-                Err(message) => failed("audit_failed", message),
+                Err(message) => failed(code::audit_failed, message),
             };
             let name = host.shown_name(&identity).await;
             host.dashboard.end(
@@ -1385,7 +1393,7 @@ async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
         crate::transport::RecvStream::Local(recv),
         async {
             host.cut_off().await;
-            "interrupted"
+            code::interrupted
         },
     )
     .instrument(operation)
@@ -1393,10 +1401,10 @@ async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
 }
 
 /// Finishes when an exec is cut off by the host or loses its caller.
-async fn cut_off(host: &Host, connection: &Connection) -> &'static str {
+async fn cut_off(host: &Host, connection: &Connection) -> Code {
     tokio::select! {
-        () = host.cut_off() => "interrupted",
-        _ = connection.closed() => "caller_gone",
+        () = host.cut_off() => code::interrupted,
+        _ = connection.closed() => code::caller_gone,
     }
 }
 
@@ -1414,7 +1422,10 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
             return;
         };
         let Ok(request) = serde_json::from_slice::<Request>(&json) else {
-            let response = failed("bad_request", "the request frame is not valid".to_string());
+            let response = failed(
+                code::bad_request,
+                "the request frame is not valid".to_string(),
+            );
             answer(&mut send, &response).await;
             continue;
         };
@@ -1427,8 +1438,7 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
             "page" => link::page(&host.vault, &host.here(), &request.args, &mut audit_args),
             "submit" => link::submit(&host.vault, &request.args, &mut audit_args),
             op => Err(Failure::new(
-                crate::failure::Exit::Denied,
-                "not_on_a_phone_link",
+                code::not_on_a_phone_link,
                 format!("a phone link cannot run `{op}`"),
             )),
         };
@@ -1457,7 +1467,7 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
         host.dashboard.once(phone, finished);
         let response = match appended {
             Ok(audit_id) => with_audit_id(done.response, audit_id),
-            Err(message) => failed("audit_failed", message),
+            Err(message) => failed(code::audit_failed, message),
         };
         answer(&mut send, &response).await;
     }
@@ -1498,13 +1508,8 @@ pub(crate) fn with_audit_id(response: Response, audit_id: String) -> Response {
     }
 }
 
-fn failed(code: &str, message: String) -> Response {
-    Response::Error {
-        exit: crate::failure::Exit::Failed,
-        details: Value::Null,
-        code: code.to_string(),
-        message,
-    }
+fn failed(code: Code, message: String) -> Response {
+    Response::error(&Failure::new(code, message))
 }
 
 /// Sends the one response frame and ends our side of the stream.
@@ -1644,8 +1649,8 @@ impl Host {
             audit.lock().expect("audit log lock").append(record)
         });
         let result = appending.await.unwrap_or_else(|stopped| {
-            Err(Failure::failed(
-                "audit_failed",
+            Err(Failure::new(
+                code::audit_failed,
                 format!("the append stopped: {stopped}"),
             ))
         });
@@ -1701,12 +1706,14 @@ mod tests {
 
     #[test]
     fn an_update_names_its_build_when_it_has_one() {
-        let release = "latch 0.1.0 (1327): commit 1a2b3c4d5, built 2026-10-22, standalone";
+        let release =
+            r#"{"version":"0.1.0 (1327): commit 1a2b3c4d5, built 2026-10-22, standalone"}"#;
         assert_eq!(
             updated_to(release),
             "latch was updated; restart to use build 1327"
         );
-        let local = "latch 0.1.0 (commit 1a2b3c4d5, built 2026-10-22 03:45 UTC, local build)";
+        let local =
+            r#"{"version":"0.1.0 (commit 1a2b3c4d5, built 2026-10-22 03:45 UTC, local build)"}"#;
         for said in [local, ""] {
             assert_eq!(
                 updated_to(said),
@@ -1749,16 +1756,20 @@ mod tests {
             details: Value::Null,
             code: "sandbox_denied".to_string(),
             message: "/etc/hosts: Operation not permitted".to_string(),
+            next: None,
         };
         assert_eq!(decision(&refused), "deny");
         assert_eq!(decision(&Response::Ok(Value::Null)), "allow");
-        assert_eq!(decision(&failed("not_found", "gone".to_string())), "allow");
+        assert_eq!(
+            decision(&failed(code::not_found, "gone".to_string())),
+            "allow"
+        );
         let unconfined = failed(
-            "sandbox_failed",
+            code::sandbox_failed,
             "the sandbox could not be applied".to_string(),
         );
         assert_eq!(decision(&unconfined), "deny");
-        let upgraded = failed("host_upgraded", "restart the host".to_string());
+        let upgraded = failed(code::host_upgraded, "restart the host".to_string());
         assert_eq!(decision(&upgraded), "deny");
     }
 
@@ -1827,7 +1838,7 @@ mod tests {
         assert_eq!(result["audit_id"], "abc");
         assert_eq!(result["path"], "/tmp/a");
 
-        let failure = with_audit_id(failed("x", "y".to_string()), "abc".to_string());
+        let failure = with_audit_id(failed(code::not_found, "y".to_string()), "abc".to_string());
         assert!(matches!(
             failure,
             Response::Error {

@@ -16,7 +16,7 @@ use super::owner;
 use crate::audit::{self, AuditLog};
 use crate::cli::{Cli, Command as Latch, FileCommand, HostArg, RulesArgs, RulesCommand};
 use crate::dial::{self, ANSWER_WITHIN};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::plow::Plow;
 use crate::state::StateDir;
@@ -59,7 +59,7 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                 (None, Some(file)) => read_file(&file)?,
                 _ => {
                     let message = "give the rules as TEXT or --file F (- reads stdin)";
-                    return Err(Failure::usage("bad_arguments", message.into()));
+                    return Err(Failure::new(code::bad_arguments, message.into()));
                 }
             };
             // A save at a revision is the edit hosts of every version
@@ -72,6 +72,13 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
             target.call(args).await
         }
         RulesCommand::Edit { .. } => {
+            // It opens the person's editor: a program sets the rules instead.
+            if !crate::term::interactive() {
+                let message = "`latch rules edit` opens your editor, so it needs a terminal";
+                let mut failure = Failure::new(code::no_terminal, message.into());
+                failure.next = Some("latch rules set TEXT".into());
+                return Err(failure);
+            }
             let shown = target
                 .call(json!({"command": "show", "from": from}))
                 .await?;
@@ -83,11 +90,14 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                     shown["agents"][0]["agent_uid"].as_str(),
                 ),
             };
-            let text = edited(current["text"].as_str().unwrap_or_default())?;
+            // From the editor on, what goes wrong is the person's to read.
+            let text =
+                edited(current["text"].as_str().unwrap_or_default()).map_err(Failure::told)?;
             target
                 .call(json!({"command": "edit", "from": from, "text": text,
                              "revision": current["revision"]}))
                 .await
+                .map_err(Failure::told)
         }
         RulesCommand::Clear { revision, .. } => {
             // A host older than the revision check refuses the command it
@@ -125,7 +135,7 @@ async fn preview(
     let usage = |err: clap::Error| {
         let message = err.to_string().trim_end().to_string();
         let message = message.replacen("Usage: latch ", "Usage: latch rules try -- ", 1);
-        Failure::usage("usage", message)
+        Failure::new(code::usage, message)
     };
     let matches = Cli::command()
         .try_get_matches_from(std::iter::once("latch".to_string()).chain(words))
@@ -138,16 +148,18 @@ async fn preview(
     if innermost.ids().any(|id| id == "host")
         && innermost.value_source("host") == Some(ValueSource::CommandLine)
     {
-        let message = "The host goes on `latch rules try`, not on the request: \
-                       latch rules try --host NAME -- <request>";
-        return Err(Failure::usage("usage", message.to_string()));
+        let message = "the host goes on `latch rules try`, not on the request";
+        let mut failure = Failure::new(code::usage, message.to_string());
+        failure.next = Some("latch rules try --host NAME -- <request>".into());
+        return Err(failure);
     }
     if draft.as_deref() == Some(Path::new("-"))
         && matches!(&parsed.command, Latch::Exec(exec) if exec.stdin)
     {
-        let message = "--draft - and exec --stdin both read stdin: give the draft as a file, \
-                       --draft F";
-        return Err(Failure::usage("usage", message.to_string()));
+        let message = "--draft - and exec --stdin both read stdin";
+        let mut failure = Failure::new(code::usage, message.to_string());
+        failure.next = Some("give the draft as a file: --draft F".into());
+        return Err(failure);
     }
     args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
     let (op, request, asked): (&str, Value, HostArg) = match parsed.command {
@@ -248,7 +260,7 @@ fn expected(revision: &str) -> Value {
 /// The rules in `file`, or on stdin for `-`.
 fn read_file(file: &Path) -> Result<String, Failure> {
     let local =
-        |err: std::io::Error| Failure::usage("local_file", format!("{}: {err}", file.display()));
+        |err: std::io::Error| Failure::new(code::local_file, format!("{}: {err}", file.display()));
     if file == Path::new("-") {
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text).map_err(local)?;
@@ -259,7 +271,7 @@ fn read_file(file: &Path) -> Result<String, Failure> {
 
 /// `text` as the owner left it in `$EDITOR` (vi without one).
 fn edited(text: &str) -> Result<String, Failure> {
-    let failed = |message: String| Failure::new(Exit::Failed, "editor_failed", message);
+    let failed = |message: String| Failure::new(code::editor_failed, message);
     let file = tempfile::Builder::new()
         .prefix("latch-rules-")
         .suffix(".txt")

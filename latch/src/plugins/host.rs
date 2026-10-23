@@ -11,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use serde_json::{Map, Value, json};
 
 use super::{Connector, Plugins, Setting};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::plow::Plow;
 use crate::serve::Done;
 use crate::worker::WorkerSetup;
@@ -42,8 +42,8 @@ pub async fn run(
             Ok(connector) => disable(plugins, connector).await,
             Err(failure) => Err(failure),
         },
-        _ => Err(Failure::usage(
-            "bad_command",
+        _ => Err(Failure::new(
+            code::bad_command,
             format!("unknown plugins command {command:?}"),
         )),
     };
@@ -52,8 +52,7 @@ pub async fn run(
 
 fn owner_only() -> Failure {
     Failure::new(
-        Exit::Denied,
-        "owner_only",
+        code::owner_only,
         "plugins are turned on and off by the owner, on the host itself".into(),
     )
 }
@@ -123,7 +122,7 @@ async fn google(workers: &WorkerSetup, plow: &Plow) -> Result<Value, Failure> {
         .is_ok_and(|gog| gog.is_file() && gog.permissions().mode() & 0o111 != 0);
     if !executable {
         let message = format!("{} cannot be run; run install.sh again", gog.display());
-        return Err(Failure::failed("gog_not_executable", message));
+        return Err(Failure::new(code::gog_not_executable, message));
     }
     let tokens = match plow.google_tokens().await {
         // Plow's answer when the owner has no Google account connected.
@@ -153,7 +152,7 @@ async fn google_not_connected(plow: &Plow) -> Failure {
         "Plow has no Google account this host can use; {place}, then run \
          `latch plugins enable google` again"
     );
-    let mut failure = Failure::failed("google_not_connected", message);
+    let mut failure = Failure::new(code::google_not_connected, message);
     failure.details = json!({"connect_url": page});
     failure
 }
@@ -191,7 +190,7 @@ fn full_disk_access(
             access.reason
         ),
     };
-    let mut failure = Failure::failed("needs_setup", message);
+    let mut failure = Failure::new(code::needs_setup, message);
     failure.details = details;
     Err(failure)
 }

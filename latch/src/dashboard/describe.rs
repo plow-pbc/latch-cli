@@ -185,6 +185,7 @@ pub fn recorded(
             code: code.to_string(),
             message: String::new(),
             details: Value::Null,
+            next: None,
         },
     };
     let mut finished = finished(
@@ -208,6 +209,7 @@ pub fn refused(op: &str, code: &str, message: &str) -> Finished {
         code: code.to_string(),
         message: message.to_string(),
         details: Value::Null,
+        next: None,
     };
     finished(
         op,

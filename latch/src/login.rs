@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use crate::cli::{self, BUILD_API_URL, LoginArgs};
 use crate::credential;
 use crate::devices;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::heartbeat;
 use crate::plow::{self, Peer, Plow, Registration};
 use crate::state::{Config, StateDir};
@@ -33,6 +33,10 @@ const GIVE_UP_AFTER: Duration = Duration::from_secs(10 * 60);
 pub struct LoginOutput {
     pub peer: Peer,
     pub key_created: bool,
+    /// The person logged in by texting a code at a terminal: a human login,
+    /// which ends in a line for them rather than JSON.
+    #[serde(skip)]
+    pub by_text: bool,
 }
 
 /// Where this login's credential comes from.
@@ -57,7 +61,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     let Some(api_url) = api_url else {
         let message = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co \
                        (or set $PLOW_API_BASE or $PLOW_API_URL)";
-        return Err(Failure::usage("not_configured", message.to_string()));
+        return Err(Failure::new(code::not_configured, message.to_string()));
     };
     let source = if let Some(path) = &args.token_file {
         Source::Given(credential::read(path)?)
@@ -68,11 +72,14 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     } else if args.events || term::interactive() {
         Source::ByText
     } else {
-        // Never wait on a text nobody will see.
+        // Never wait on a text nobody will see: a login by text is a
+        // person's, at a terminal; a program's is `--events`.
         let message = "no Plow credential: pass --token-file FILE with the owner's Plow login, \
                        or run `latch login` at a terminal to log in by text"
             .to_string();
-        return Err(Failure::usage("no_credential", message));
+        let mut failure = Failure::new(code::no_credential, message);
+        failure.next = Some("latch login --token-file PATH, or latch login --events".into());
+        return Err(failure);
     };
     let owner = !matches!(source, Source::Agent(_));
     let save_token = matches!(source, Source::Given(_));
@@ -86,6 +93,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         name = hostname();
     }
 
+    let texted = matches!(source, Source::ByText) && !args.events;
     let token = match source {
         Source::Given(token) | Source::Saved(token) | Source::Agent(token) => token,
         Source::ByText => {
@@ -95,75 +103,83 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             by_text(state, &api_url, name, args.events).await?
         }
     };
-
-    state.create()?;
-    let (key, key_created) = state.load_or_create_key()?;
-    // Login never starts a listener, so it never learns a new relay address:
-    // it re-sends the one this peer last registered (a running host's
-    // heartbeat keeps that current in config.json), so logging in again
-    // never unlists a running host. A host first becomes reachable when
-    // `latch serve` registers its relay.
-    let relay_url = saved
-        .as_ref()
-        .and_then(|config| config.peer.relay_url.clone());
-    let registration = Registration {
-        key: key.public().to_string(),
-        name,
-        relay_url,
-    };
-    let plow = Plow::new(&api_url, &token);
-    // An agent is named after itself in Plow. Plow names one that is not
-    // an agent's credential, as it always has.
-    let me = if owner {
-        None
-    } else {
-        plow.agent_me().await.ok()
-    };
-    let registration = Registration {
-        name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
-        ..registration
-    };
-    let peer = match plow.register(&registration).await {
-        // Two agents may share a name: unless one was asked for, try once
-        // more as the name plus the start of this agent's uid.
-        Err(failure) if failure.code == "conflict" && !owner && !named => {
-            let me = match me {
-                Some(me) => me,
-                None => plow.agent_me().await.map_err(|_| failure)?,
-            };
-            let name = registration.name.as_deref().unwrap_or(&me.name);
-            let suffixed = Registration {
-                name: Some(format!("{name}-{}", &me.uid[..6.min(me.uid.len())])),
-                ..registration.clone()
-            };
-            plow.register(&suffixed).await?
-        }
-        // Another of the owner's machines may hold the name.
-        Err(failure) if failure.code == "conflict" && owner => {
-            if registration.name.is_none() {
-                return Err(failure);
+    // Once a person has texted, what goes wrong is theirs to read.
+    let registered = async {
+        state.create()?;
+        let (key, key_created) = state.load_or_create_key()?;
+        // Login never starts a listener, so it never learns a new relay address:
+        // it re-sends the one this peer last registered (a running host's
+        // heartbeat keeps that current in config.json), so logging in again
+        // never unlists a running host. A host first becomes reachable when
+        // `latch serve` registers its relay.
+        let relay_url = saved
+            .as_ref()
+            .and_then(|config| config.peer.relay_url.clone());
+        let registration = Registration {
+            key: key.public().to_string(),
+            name,
+            relay_url,
+        };
+        let plow = Plow::new(&api_url, &token);
+        // An agent is named after itself in Plow. Plow names one that is not
+        // an agent's credential, as it always has.
+        let me = if owner {
+            None
+        } else {
+            plow.agent_me().await.ok()
+        };
+        let registration = Registration {
+            name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
+            ..registration
+        };
+        let peer = match plow.register(&registration).await {
+            // Two agents may share a name: unless one was asked for, try once
+            // more as the name plus the start of this agent's uid.
+            Err(failure) if failure.code == "conflict" && !owner && !named => {
+                let me = match me {
+                    Some(me) => me,
+                    None => plow.agent_me().await.map_err(|_| failure)?,
+                };
+                let name = registration.name.as_deref().unwrap_or(&me.name);
+                let suffixed = Registration {
+                    name: Some(format!("{name}-{}", &me.uid[..6.min(me.uid.len())])),
+                    ..registration.clone()
+                };
+                plow.register(&suffixed).await?
             }
-            let rerun = if save_token {
-                "latch login --token-file FILE"
-            } else {
-                "latch login"
-            };
-            clash(&plow, registration, rerun, args.replace).await?
-        }
-        result => result?,
-    };
+            // Another of the owner's machines may hold the name.
+            Err(failure) if failure.code == "conflict" && owner => {
+                if registration.name.is_none() {
+                    return Err(failure);
+                }
+                let rerun = if save_token {
+                    "latch login --token-file FILE"
+                } else {
+                    "latch login"
+                };
+                clash(&plow, registration, rerun, args.replace).await?
+            }
+            result => result?,
+        };
 
-    // Save only after Plow accepted us, so a failed first login leaves no
-    // half-configured instance behind (apart from the key, and the token of
-    // a login by text, which is saved as soon as it arrives).
-    if save_token {
-        state.save_token(&token, &api_url)?;
+        // Save only after Plow accepted us, so a failed first login leaves no
+        // half-configured instance behind (apart from the key, and the token of
+        // a login by text, which is saved as soon as it arrives).
+        if save_token {
+            state.save_token(&token, &api_url)?;
+        }
+        state.save_config(&Config {
+            api_url,
+            peer: peer.clone(),
+        })?;
+        Ok(LoginOutput {
+            peer,
+            key_created,
+            by_text: texted,
+        })
     }
-    state.save_config(&Config {
-        api_url,
-        peer: peer.clone(),
-    })?;
-    Ok(LoginOutput { peer, key_created })
+    .await;
+    registered.map_err(|failure| if texted { failure.told() } else { failure })
 }
 
 /// Registers this peer again as it last was, when Plow no longer lists it:
@@ -217,24 +233,34 @@ async fn by_text(
         eprintln!("Text {code} to {}", for_people(&activation.send_to));
         eprintln!("Waiting for your text…");
     }
+    let waited = wait_for_text(state, api_url, &plow, &activation.activation_secret).await;
+    match events {
+        true => waited,
+        // Once it has talked to the person, what goes wrong is theirs to read.
+        false => waited.map_err(Failure::told),
+    }
+}
 
+/// Asks Plow until the code was texted: the login's token, saved.
+async fn wait_for_text(
+    state: &StateDir,
+    api_url: &str,
+    plow: &Plow,
+    secret: &str,
+) -> Result<String, Failure> {
     let started = Instant::now();
     let mut failures = 0;
     loop {
         let poll = poll_every(started.elapsed());
-        let wait = match plow.redeem(&activation.activation_secret).await {
+        let wait = match plow.redeem(secret).await {
             Ok(answer) if answer.status == "verified" => {
                 // Only the first `verified` answer carries the token.
                 let Some(token) = answer.token else {
                     let message = "this login was already collected; run `latch login` again";
-                    return Err(Failure::failed("login_collected", message.to_string()));
+                    return Err(Failure::new(code::login_collected, message.to_string()));
                 };
                 state.create()?;
                 state.save_token(&token, api_url)?;
-                // At a terminal, the result says it, with the name.
-                if !term::stdout_is_terminal() && !events {
-                    eprintln!("Logged in.");
-                }
                 return Ok(token);
             }
             Ok(_) => {
@@ -243,11 +269,11 @@ async fn by_text(
             }
             Err(failure) if failure.code == "expired" => {
                 let message = "the code expired before it was texted; run `latch login` again";
-                return Err(Failure::failed("code_expired", message.to_string()));
+                return Err(Failure::new(code::code_expired, message.to_string()));
             }
             Err(failure) if failure.code == "not_found" => {
                 let message = "Plow no longer knows this login; run `latch login` again";
-                return Err(Failure::failed("login_not_found", message.to_string()));
+                return Err(Failure::new(code::login_not_found, message.to_string()));
             }
             // Asking again would get the same refusal.
             Err(failure) if plow::refused(&failure) => return Err(failure),
@@ -255,7 +281,7 @@ async fn by_text(
             // longer each time.
             Err(failure) => {
                 failures += 1;
-                heartbeat::backoff(failures, failure.retry_after).max(poll)
+                heartbeat::backoff(failures, failure.retry_after()).max(poll)
             }
         };
         let Some(wait) = before_giving_up(started.elapsed(), wait) else {
@@ -263,7 +289,7 @@ async fn by_text(
                 "no text arrived within {} minutes; run `latch login` again",
                 GIVE_UP_AFTER.as_secs() / 60
             );
-            return Err(Failure::failed("code_expired", message));
+            return Err(Failure::new(code::code_expired, message));
         };
         tokio::time::sleep(wait).await;
     }
@@ -332,25 +358,25 @@ async fn clash(
     let machine = match peers.iter().find(|peer| peer.name == name) {
         Some(peer) if peer.kind == "agent" => {
             let message = format!("the name {name:?} belongs to an agent; choose another --name");
-            return Err(Failure::usage("conflict", message));
+            return Err(Failure::new(code::conflict, message));
         }
         Some(machine) if machine.key != registration.key => machine,
         _ => {
             let message = format!(
                 "this key or the name {name:?} is taken by another peer; choose another --name"
             );
-            return Err(Failure::usage("conflict", message));
+            return Err(Failure::new(code::conflict, message));
         }
     };
     let last_seen = machine.last_seen_at.as_deref().unwrap_or("never");
     let taken = || {
         let message = format!(
-            "a machine named {name:?} already exists (last seen {last_seen}); run \
-             `{rerun} --name OTHER` to use another name, or `{rerun} --name {} --replace` \
-             to replace it, which signs it out of Plow (no second text needed)",
-            shell_quoted(&name)
+            "a machine named {name:?} already exists (last seen {last_seen}); replacing it \
+             signs it out of Plow (no second text needed), or use another name with \
+             `{rerun} --name OTHER`"
         );
-        let mut failure = Failure::usage("conflict", message);
+        let mut failure = Failure::new(code::conflict, message);
+        failure.next = Some(format!("{rerun} --name {} --replace", shell_quoted(&name)).into());
         failure.details = json!({"existing_name": name, "last_seen_at": machine.last_seen_at});
         failure
     };
@@ -440,7 +466,7 @@ fn api_url(
 }
 
 fn missing(what: &str) -> Failure {
-    Failure::usage("not_configured", format!("first login needs {what}"))
+    Failure::new(code::not_configured, format!("first login needs {what}"))
 }
 
 #[cfg(test)]

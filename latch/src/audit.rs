@@ -21,7 +21,8 @@
 //!
 //! The log is `audit.sealed.ndjson`. A plaintext `audit.ndjson` an older
 //! latch left is neither read nor changed: a fresh sealed log starts beside
-//! it, and `plaintext_notice` says it can be deleted.
+//! it, and `latch status --local` names it (`old_audit_log`): it can be
+//! deleted.
 //!
 //! Records hold who called, what they asked (an exec's whole argv), the
 //! decision and the outcome; never file contents, command output or
@@ -39,7 +40,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::cli::AuditAction;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::seal::from_hex;
 use crate::secrets::{Secret, Secrets};
 use crate::state::{StateDir, to_hex};
@@ -412,14 +413,11 @@ pub struct Range {
 /// How many records a read without `--last` or `--all` shows.
 const PAGE: usize = 50;
 
-/// What a stream's lines are, so a reader knows this version's.
-const SCHEMA: u32 = 1;
-
 impl Range {
     /// The same rules as the command's flags, also for a range that came
     /// over the wire, and that each id is one.
     pub fn check(&self) -> Result<(), Failure> {
-        let usage = |message: &str| Err(Failure::usage("usage", message.to_string()));
+        let usage = |message: &str| Err(Failure::new(code::usage, message.to_string()));
         for (flag, id) in [("--before", &self.before), ("--after", &self.after)] {
             let is_id = |id: &String| {
                 id.len() == 64
@@ -471,7 +469,7 @@ pub fn read(
     range.check()?;
     let path = dir.join(FILE);
     let watching =
-        |err: std::io::Error| Failure::failed("watch_failed", format!("{}: {err}", dir.display()));
+        |err: std::io::Error| Failure::new(code::watch_failed, format!("{}: {err}", dir.display()));
     // Armed before the first look, so nothing written after it is missed.
     let mut watch = match range.follow {
         true => Some(
@@ -489,12 +487,12 @@ pub fn read(
         }
         match records.iter().position(|record| record.hash == id) {
             Some(at) => Ok(at + 1),
-            None => Err(Failure::usage(
-                "cursor_expired",
-                format!(
-                    "that record isn't in {whose} audit; read it again without --after or --before"
-                ),
-            )),
+            None => {
+                let message = format!("that record isn't in {whose} audit");
+                let mut failure = Failure::new(code::cursor_expired, message);
+                failure.next = Some("read it again without --after or --before".into());
+                Err(failure)
+            }
         }
     };
     let (start, end) = match (&range.after, &range.before) {
@@ -518,7 +516,7 @@ pub fn read(
     };
     let has_older = start > 0;
     let mut lines = vec![
-        json!({"type": "hello", "schema": SCHEMA}),
+        crate::stream::hello(),
         json!({"type": "snapshot", "cursor": id_before(start), "has_older": has_older}),
     ];
     lines.extend(records[start..end].iter().map(record_line));
@@ -656,17 +654,11 @@ pub fn record(
     }
 }
 
-/// The one line latch says while an older latch's plaintext audit log is
-/// in the folder: this latch never reads it, and it can be deleted.
-pub fn plaintext_notice(dir: &Path) -> Option<String> {
+/// An older latch's plaintext audit log in the folder, if there is one:
+/// this latch never reads it, and it can be deleted.
+pub fn plaintext(dir: &Path) -> Option<PathBuf> {
     let old = dir.join(PLAINTEXT);
-    old.exists().then(|| {
-        format!(
-            "latch: {} is an older latch's plaintext audit log; this latch keeps a sealed one \
-             ({FILE}) and never reads it, so it can be deleted",
-            old.display()
-        )
-    })
+    old.exists().then_some(old)
 }
 
 /// The file everything that writes the log, or rotates or first makes its
@@ -699,15 +691,15 @@ fn no_key(path: &Path) -> Failure {
 }
 
 fn failed(message: String) -> Failure {
-    Failure::failed("audit_key", message)
+    Failure::new(code::audit_key, message)
 }
 
 fn broken(path: &Path, problem: &str) -> Failure {
-    Failure::failed("audit_broken", format!("{}: {problem}", path.display()))
+    Failure::new(code::audit_broken, format!("{}: {problem}", path.display()))
 }
 
 fn io_failure(path: &Path, err: std::io::Error) -> Failure {
-    Failure::failed("audit_io", format!("{}: {err}", path.display()))
+    Failure::new(code::audit_io, format!("{}: {err}", path.display()))
 }
 
 #[cfg(test)]

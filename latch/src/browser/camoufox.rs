@@ -23,7 +23,7 @@ use super::cdp;
 use super::driver::{self, Download, Driver, Event, Frame, KEY_NAMES, Runtime, Tab};
 use super::engine::CAMOUFOX;
 use super::profile;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 
 /// How long the helper has to start the browser (a launch also makes the
 /// session's fingerprint), and to answer one operation: its
@@ -73,8 +73,8 @@ impl Camoufox {
         proxy: &str,
     ) -> Result<Self, Failure> {
         if CAMOUFOX.driver_contract != driver::CONTRACT {
-            return Err(Failure::failed(
-                "engine_unverified",
+            return Err(Failure::new(
+                code::engine_unverified,
                 format!(
                     "the {} plugin speaks driver contract {}, this latch {}",
                     CAMOUFOX.engine,
@@ -114,7 +114,10 @@ impl Camoufox {
             .process_group(0)
             .spawn()
             .map_err(|err| {
-                Failure::failed("engine_failed", format!("{}: {err}", engine.node.display()))
+                Failure::new(
+                    code::engine_failed,
+                    format!("{}: {err}", engine.node.display()),
+                )
             })?;
         super::worker::started_group(helper.id());
         let to_helper = helper.stdin.take().expect("piped");
@@ -168,7 +171,7 @@ impl Camoufox {
         );
         let found = launched.and_then(|_| {
             child_running(browser.helper.id(), &engine.executable)
-                .ok_or_else(|| Failure::failed("engine_failed", "Camoufox did not start".into()))
+                .ok_or_else(|| Failure::new(code::engine_failed, "Camoufox did not start".into()))
         });
         match found {
             Ok(pid) => {
@@ -230,14 +233,13 @@ impl Camoufox {
                 let message = error["message"].as_str().unwrap_or_default().to_string();
                 // The helper's own wait for the browser ran out.
                 self.unanswered |= code == "timeout";
-                let exit = match code {
-                    "no_such_tab" | "last_tab" | "no_such_download" | "bad_request" => Exit::Usage,
-                    _ => Exit::Failed,
-                };
-                return Err(Failure::new(exit, code, message));
+                return Err(Failure::reported(code, message));
             }
             return serde_json::from_value(answer["ok"].clone()).map_err(|err| {
-                Failure::failed("engine_error", format!("the helper's {op} answer: {err}"))
+                Failure::new(
+                    code::engine_error,
+                    format!("the helper's {op} answer: {err}"),
+                )
             });
         }
     }
@@ -247,8 +249,8 @@ impl Camoufox {
             if let Some(end) = self.buffer.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = self.buffer.drain(..=end).collect();
                 return serde_json::from_slice(&line[..end]).map_err(|_| {
-                    Failure::failed(
-                        "engine_error",
+                    Failure::new(
+                        code::engine_error,
                         "an unreadable answer from the helper".into(),
                     )
                 });
@@ -256,8 +258,8 @@ impl Camoufox {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 self.unanswered = true;
-                return Err(Failure::failed(
-                    "timeout",
+                return Err(Failure::new(
+                    code::timeout,
                     format!("the browser did not answer {op} in time"),
                 ));
             }
@@ -389,8 +391,8 @@ impl Driver for Camoufox {
 
     fn press(&mut self, key: &str) -> Result<(), Failure> {
         if !KEY_NAMES.contains(&key) {
-            return Err(Failure::usage(
-                "bad_key",
+            return Err(Failure::new(
+                code::bad_key,
                 format!("unknown key {key:?}; keys: {}", KEY_NAMES.join(", ")),
             ));
         }
@@ -442,7 +444,7 @@ impl Driver for Camoufox {
     fn download_file(&mut self, id: &str) -> Result<(Download, PathBuf), Failure> {
         let found: Value = self.ask("download_file", json!({"download": id}))?;
         let download = serde_json::from_value(found["download"].clone())
-            .map_err(|err| Failure::failed("engine_error", err.to_string()))?;
+            .map_err(|err| Failure::new(code::engine_error, err.to_string()))?;
         let path = PathBuf::from(found["path"].as_str().unwrap_or_default());
         Ok((download, path))
     }
@@ -459,7 +461,7 @@ impl Driver for Camoufox {
             .as_str()
             .and_then(cdp::base64_decode)
             .filter(|png| png.starts_with(b"\x89PNG\r\n\x1a\n") && png.len() >= 24)
-            .ok_or_else(|| Failure::failed("engine_error", "no screenshot".into()))?;
+            .ok_or_else(|| Failure::new(code::engine_error, "no screenshot".into()))?;
         let width = u32::from_be_bytes(png[16..20].try_into().expect("4 bytes"));
         let height = u32::from_be_bytes(png[20..24].try_into().expect("4 bytes"));
         let css_width = shot["css_width"].as_f64().unwrap_or(0.0);
@@ -558,11 +560,11 @@ fn child_running(parent: u32, executable: &Path) -> Option<u32> {
 }
 
 fn gone() -> Failure {
-    Failure::new(Exit::Failed, "browser_gone", "the browser stopped".into())
+    Failure::new(code::browser_gone, "the browser stopped".into())
 }
 
 fn io_failure(err: std::io::Error) -> Failure {
-    Failure::failed("engine_failed", err.to_string())
+    Failure::new(code::engine_failed, err.to_string())
 }
 
 /// Makes `pid`'s app the front one; false if it is no app or macOS

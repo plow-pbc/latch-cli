@@ -1525,7 +1525,10 @@ async fn a_host_whose_binary_was_replaced_says_which_build_is_there_on_its_dashb
 
     // An upgrade renames the new latch over the old one.
     let new = host.binary.with_extension("tmp");
-    std::fs::write(&new, "#!/bin/sh\necho 'latch 0.1.0 (133): commit 1a2b3c'\n").unwrap();
+    let says = r#"#!/bin/sh
+echo '{"version":"0.1.0 (133): commit 1a2b3c"}'
+"#;
+    std::fs::write(&new, says).unwrap();
     std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::rename(&new, &host.binary).unwrap();
     let said = tokio::time::timeout(
@@ -2007,6 +2010,7 @@ async fn local_vault_edits_reach_a_running_hosts_release_path() {
             "the owner",
             "--site",
             "example.com",
+            "--stdin",
         ])
         .env_remove("LATCH_HOST")
         .stdin(std::process::Stdio::piped())
@@ -2018,7 +2022,7 @@ async fn local_vault_edits_reach_a_running_hosts_release_path() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"synthetic-fill-value\n")
+        .write_all(br#"{"password": "synthetic-fill-value"}"#)
         .await
         .unwrap();
     let output = child.wait_with_output().await.unwrap();
