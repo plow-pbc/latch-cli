@@ -8,8 +8,8 @@ agents *call* it.
 This guide takes you from nothing to a Mac serving calls and a second
 machine calling it, in about 10 minutes.
 
-Every command prints one JSON object, except at a terminal, where
-`login` and `status --pretty` print for a person.
+Every command prints one JSON object, at a terminal or not; `--pretty`
+indents it. `setup`, `login` at a terminal and the dashboard are for a person.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 host unreachable, 4 denied,
 5 connection lost after sending.
@@ -109,7 +109,7 @@ Check it:
 
 ```sh
 latch status            # JSON: this peer, your Plow URL, and the hosts it can reach
-latch status --pretty   # the same for a person, with key art to compare between machines
+latch status --pretty   # the same, indented; its key art is to compare between machines
 latch status --local    # only this machine: state folder, login and serve. Works offline
 ```
 
