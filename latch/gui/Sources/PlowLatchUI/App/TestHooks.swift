@@ -20,9 +20,16 @@ enum TestHooks {
     /// A helper floated by `grant-helper`.
     static var helper: GrantHelper?
 
+    /// A link as `state` records it. A Google sign-in link's code is a
+    /// credential until used, so only the link's shape is kept.
+    static func recorded(_ url: URL) -> String {
+        guard let code = url.path.range(of: "/connect/") else { return url.absoluteString }
+        return "\(url.scheme ?? "")://\(url.host ?? "")\(url.port.map { ":\($0)" } ?? "")\(url.path[..<code.upperBound])…"
+    }
+
     static func install(_ app: AppModel) {
         // Nothing leaves the app: links and Finder reveals are recorded.
-        app.open = { opened.append("open \($0.absoluteString)") }
+        app.open = { opened.append("open \(recorded($0))") }
         app.reveal = { opened.append("reveal \($0.path)") }
         GrantHelper.settingsApp = { standIn }
         let guide = app.guideGrant

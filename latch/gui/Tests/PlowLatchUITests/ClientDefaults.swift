@@ -16,6 +16,9 @@ extension LatchClient {
     }
     func vaultRemove(_ item: String, revision: Int, host: String?) async throws { throw LatchError.unreachable("not scripted") }
     func disable(_ plugin: String) async throws { throw LatchError.unreachable("not scripted") }
+    nonisolated func signInGoogle(addAccount: Bool) -> AsyncThrowingStream<GoogleSignInEvent, Error> {
+        AsyncThrowingStream { $0.finish(throwing: LatchError.unreachable("not scripted")) }
+    }
     func devices() async throws -> DeviceList { throw LatchError.unreachable("not scripted") }
     func removeDevice(_ name: String) async throws { throw LatchError.unreachable("not scripted") }
     func updateCheck() async throws -> UpdateCheck { throw LatchError.unreachable("not scripted") }
