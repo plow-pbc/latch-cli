@@ -218,8 +218,8 @@ you've told that agent in your Plow chat with it.
 
 > **Never copy a device login (a machine's state folder, or its
 > `plow-token`) to an agent.** That login is you: the host sees one of your
-> own machines, and the gatekeeper judges the call as your own request, never
-> against what you asked that agent. A copied laptop state runs `exec` on your
+> own machines, and the gatekeeper judges the call as your own request
+> instead of judging it as that agent's. A copied laptop state runs `exec` on your
 > host as if you had asked for it.
 
 **An agent already running on Plow** has its credential and Plow's address

@@ -306,10 +306,10 @@ and command.
 
 ## The gatekeeper
 
-Every caller's browser commands pass the host's gatekeeper, which asks
-whether the owner asked for them: for an agent, in the owner's Plow chat
-with that agent and the owner's rules on the host; for the owner's own
-devices, allowed unless the host's rules forbid it. Judged,
+Every caller's browser commands pass the host's gatekeeper. An agent's
+are judged like its other calls: on the built-in defaults, the owner's
+rules on the host and the owner's Plow chat with that agent. The owner's
+own devices are allowed unless the host's rules forbid it. Judged,
 each before anything of it reaches the page:
 
 - opening a site this session has not been judged for: `open URL`, or

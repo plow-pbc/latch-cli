@@ -63,6 +63,11 @@ struct PlowLatchApp: App {
         // Which window opens follows what the app remembers, so neither
         // waits for latch; onboarding then asks latch where to resume.
         let finished = model.store.load().finished
+        #if LATCH_TEST_HOOKS
+        let windowed = !TestHooks.headless
+        #else
+        let windowed = true
+        #endif
         Window("Welcome to Latch", id: AppModel.onboardingWindow) {
             OnboardingView()
                 .environment(model)
@@ -71,7 +76,7 @@ struct PlowLatchApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .restorationBehavior(.disabled)
-        .defaultLaunchBehavior(finished ? .suppressed : .presented)
+        .defaultLaunchBehavior(windowed && !finished ? .presented : .suppressed)
 
         Window("Latch", id: AppModel.mainWindow) {
             MainView()
@@ -80,7 +85,7 @@ struct PlowLatchApp: App {
         }
         .defaultSize(width: 1120, height: 700)
         .restorationBehavior(.disabled)
-        .defaultLaunchBehavior(finished ? .presented : .suppressed)
+        .defaultLaunchBehavior(windowed && finished ? .presented : .suppressed)
 
         Settings {
             AppSettingsView()
