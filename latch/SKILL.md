@@ -147,6 +147,9 @@ fixes it.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.
+- A plan that stops (`do` or `act`: exit 1, or 4 for a confirmation)
+  prints nothing on stdout: its whole answer, with `status`, `steps`,
+  `stop` and `page`, is in the stderr `error` line. Read it there.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card, `do --confirm C` each
