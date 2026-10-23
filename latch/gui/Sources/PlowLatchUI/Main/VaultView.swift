@@ -721,7 +721,7 @@ struct ImportSheet: View {
             }
         case let (_, .failure(error)?):
             ContentUnavailableView {
-                Label("Nothing was imported", systemImage: "exclamationmark.triangle")
+                Label("Couldn't confirm the import", systemImage: "exclamationmark.triangle")
             } description: {
                 Text(error.message)
             }
@@ -755,6 +755,8 @@ struct ImportSheet: View {
                     }
                 }
             }
+            // The rows sent are the ones picked when Import was pressed.
+            .disabled(importer.importing)
         }
     }
 
