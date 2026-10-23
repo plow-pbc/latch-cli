@@ -120,6 +120,8 @@ private struct RulesEditor: View {
                     text = new
                 })
                 .font(.body)
+                // What's typed during a save couldn't be saved by it.
+                .disabled(saving)
                 .frame(minHeight: 70)
                 .accessibilityLabel(title)
                 if let error {
@@ -277,18 +279,12 @@ struct VerdictView: View {
             }
             if let gate = verdict.gate {
                 if let source = gate.source {
-                    LabeledContent("Read", value: Self.sources[source] ?? source)
+                    LabeledContent("Read", value: Why.sources[source] ?? source)
                 }
                 if let p = gate.p {
-                    ForEach([("Covered", "COVERED", Color.green), ("Not covered", "NOT_COVERED", .orange), ("Forbidden", "FORBIDDEN", .red)],
-                            id: \.1) { title, key, tint in
-                        if let value = p[key] {
-                            VStack(alignment: .leading, spacing: 2) {
-                                LabeledContent(title, value: value.formatted(.percent.precision(.fractionLength(0))))
-                                ProgressView(value: value).tint(tint).accessibilityHidden(true)
-                            }
-                        }
-                    }
+                    Likelihood(title: "Covered", value: p["COVERED"], tint: .green)
+                    Likelihood(title: "Not covered", value: p["NOT_COVERED"], tint: .orange)
+                    Likelihood(title: "Forbidden", value: p["FORBIDDEN"], tint: .red)
                 }
             }
         }
@@ -323,13 +319,6 @@ struct VerdictView: View {
         default: .red
         }
     }
-
-    static let sources = [
-        "owner_request": "Your own request",
-        "rules": "Rules only (no chat)",
-        "chat_and_rules": "Your chat with the agent + rules",
-        "chat": "Your chat with the agent",
-    ]
 }
 
 /// A request typed as in a shell: words split on spaces, with quotes and

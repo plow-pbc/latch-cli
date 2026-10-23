@@ -7,5 +7,4 @@ extension LatchClient {
     func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         throw LatchError.unreachable("not scripted")
     }
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry { throw LatchError.unreachable("not scripted") }
 }

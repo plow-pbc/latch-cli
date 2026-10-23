@@ -34,10 +34,6 @@ nonisolated protocol LatchClient: Sendable {
     func pluginsList(host: String?) async throws -> PluginsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
     func vaultList(host: String?) async throws -> VaultList
-    /// `latch rules try --new-agent --draft - -- REQUEST`: the verdict a new
-    /// agent's request would get under these rules, sent on stdin and never
-    /// saved. Needs no running host.
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
     /// `latch status --local --follow`: this Mac's state, again whenever it
@@ -169,10 +165,6 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func vaultList(host: String?) async throws -> VaultList {
         try decode(VaultList.self, try await run(["vault", "list"] + on(host)))
-    }
-
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry {
-        try decode(RulesTry.self, try await run(["rules", "try", "--new-agent", "--draft", "-", "--"] + request, input: Data(draft.utf8)))
     }
 
     func enable(_ plugin: String) async throws -> GoogleEnabled? {

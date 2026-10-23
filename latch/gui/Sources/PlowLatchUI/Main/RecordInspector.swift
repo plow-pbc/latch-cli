@@ -103,7 +103,7 @@ struct RecordInspector: View {
 }
 
 /// The gatekeeper's judgment: what it read, which rules, how sure.
-private struct Why: View {
+struct Why: View {
     var gate: AuditRecord.Gate
     var caller: String
 
@@ -149,7 +149,7 @@ private struct Why: View {
     ]
 }
 
-private struct Likelihood: View {
+struct Likelihood: View {
     var title: String
     var value: Double?
     var tint: Color

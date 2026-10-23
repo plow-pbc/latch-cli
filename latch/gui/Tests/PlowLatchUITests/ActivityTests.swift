@@ -194,7 +194,6 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws {}
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry { try Fixtures.decode(Fixtures.allow) }
     func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
@@ -342,7 +341,6 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws {}
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry { try Fixtures.decode(Fixtures.allow) }
     func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
