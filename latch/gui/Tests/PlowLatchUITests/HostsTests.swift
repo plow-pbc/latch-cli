@@ -105,16 +105,15 @@ struct HostSettingsTests {
         #expect(status.update?.build == 138)
     }
 
-    /// Connections lists Google's accounts in Plow, offering to connect one
-    /// where latch names the page, and never takes "Plow couldn't say" for
-    /// none.
+    /// Connections lists Google's accounts in Plow, and never takes "Plow
+    /// couldn't say" for none.
     @Test func connectionsAreWhatPlowSaysOfGoogle() throws {
         func connections(_ google: String) throws -> Connections {
             Connections(try Fixtures.decode(Fixtures.setup(on: [], google: google)) as SetupStatus)
         }
-        #expect(try connections(Fixtures.googleNotConnected) == .google(accounts: [], connect: URL(string: "http://localhost:3000/connections")))
+        #expect(try connections(Fixtures.googleNotConnected) == .google(accounts: []))
         #expect(try connections(Fixtures.googleConnected(["ada@example.com", "ada.work@example.com"]))
-            == .google(accounts: ["ada@example.com", "ada.work@example.com"], connect: nil))
+            == .google(accounts: ["ada@example.com", "ada.work@example.com"]))
         #expect(try connections(Fixtures.googleUnreachable) == .unknown)
         #expect(Connections(nil) == .unknown)
     }

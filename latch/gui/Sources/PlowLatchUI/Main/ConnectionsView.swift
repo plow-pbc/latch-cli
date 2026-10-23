@@ -1,19 +1,41 @@
 import SwiftUI
 
-/// What Connections shows of Google: the accounts connected in Plow and
-/// where to connect one, or that Plow couldn't say.
+/// What Connections shows of Google: the accounts connected in Plow, or
+/// that Plow couldn't say.
 nonisolated enum Connections: Equatable {
-    case google(accounts: [String], connect: URL?)
+    case google(accounts: [String])
     case unknown
 
     /// From `setup --status`'s Google step, which lists the accounts only
     /// when Plow answered.
     init(_ setup: SetupStatus?) {
-        guard let step = setup?.step("google"), let accounts = step.accounts else {
+        guard let accounts = setup?.step("google")?.accounts else {
             self = .unknown
             return
         }
-        self = .google(accounts: accounts, connect: step.connectUrl)
+        self = .google(accounts: accounts)
+    }
+}
+
+/// Connections' sheet while latch waits for a Google sign-in: connecting a
+/// first account or adding another, and why it ended without one.
+struct GoogleSignIn: Equatable {
+    var adding: Bool
+    var failure: String?
+
+    static let stopped = "Signing in stopped before Google answered. Try again."
+
+    /// latch's refusal, said plainly: decided on its code, never shown.
+    static func problem(_ error: LatchError, adding: Bool) -> String {
+        switch error.code {
+        case "sign_in_timeout":
+            adding ? "No new Google account showed up in time. An account that's already connected isn't added again."
+                : "No Google account showed up in time. If you finished signing in, try again."
+        case "plow_unreachable": "Plow can't be reached right now. Check your internet connection, then try again."
+        case "not_logged_in": "This Mac isn't logged in to Plow."
+        case "gog_not_configured": Onboarding.toolsMissing
+        default: "Couldn't connect Google just now. Try again."
+        }
     }
 }
 
@@ -34,6 +56,9 @@ struct ConnectionsView: View {
             guard !app.still else { return }
             await app.refreshConnections()
             await app.refreshDevices()
+        }
+        .sheet(isPresented: signingInBinding) {
+            GoogleSignInSheet()
         }
         .confirmationDialog("Remove “\(removingDevice?.name ?? "")” from your account?", isPresented: removingBinding,
                             presenting: removingDevice) { device in
@@ -57,18 +82,16 @@ struct ConnectionsView: View {
                     Spacer()
                     Button("Check Again") { Task { await app.refreshConnections() } }
                 }
-            case let .google(accounts, connect)?:
+            case let .google(accounts)?:
                 if accounts.isEmpty {
                     Text("No Google account is connected.").foregroundStyle(.secondary)
                 }
                 ForEach(accounts, id: \.self) { account in
                     Label(account, systemImage: "envelope")
                 }
-                if connect != nil {
-                    HStack {
-                        Spacer()
-                        Button(accounts.isEmpty ? "Connect Google Account…" : "Add Another Account…") { app.connectGoogle() }
-                    }
+                HStack {
+                    Spacer()
+                    Button(accounts.isEmpty ? "Connect Google Account…" : "Add Another Account…") { app.connectGoogle() }
                 }
             }
         } header: {
@@ -114,6 +137,10 @@ struct ConnectionsView: View {
         }
     }
 
+    private var signingInBinding: Binding<Bool> {
+        Binding { app.googleSignIn != nil } set: { if !$0 { app.endGoogleSignIn() } }
+    }
+
     private var removingBinding: Binding<Bool> {
         Binding { removingDevice != nil } set: { if !$0 { removingDevice = nil } }
     }
@@ -122,5 +149,47 @@ struct ConnectionsView: View {
         let state = device.online == true ? "Online" : "Offline"
         guard let seen = device.lastSeenAt else { return state }
         return "\(state) · seen \(seen.formatted(date: .abbreviated, time: .shortened))"
+    }
+}
+
+/// While latch waits for a Google sign-in in the browser. It goes by itself
+/// once Google is on; Cancel, or the sheet going any other way, stops the
+/// wait.
+struct GoogleSignInSheet: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let sheet = app.googleSignIn ?? GoogleSignIn(adding: false)
+        VStack(alignment: .leading, spacing: 16) {
+            Text(sheet.adding ? "Add a Google Account" : "Connect a Google Account").font(.headline)
+            if let failure = sheet.failure {
+                Text(failure).fixedSize(horizontal: false, vertical: true)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    ProgressView().controlSize(.small).accessibilityHidden(true)
+                    Text("Finish signing in with Google in your browser. This closes by itself when you're done.")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if sheet.adding {
+                    Text("Choose an account that isn't connected yet.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                if sheet.failure == nil {
+                    Button("Open the Sign-In Page Again") { app.openGoogleSignInAgain() }
+                        .disabled(!app.canOpenGoogleSignInAgain)
+                }
+                Spacer()
+                if sheet.failure != nil {
+                    Button("Close") { app.endGoogleSignIn() }.keyboardShortcut(.cancelAction)
+                    Button("Try Again") { app.connectGoogle() }.keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel") { app.endGoogleSignIn() }.keyboardShortcut(.cancelAction)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .onDisappear { app.endGoogleSignIn() }
     }
 }

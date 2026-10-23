@@ -520,7 +520,6 @@ struct ClosingTests {
         let notConnected = app.stage(.google)
         await notConnected.checkGoogle()
         #expect(notConnected.google == .notConnected)
-        #expect(notConnected.googleConnectURL == URL(string: "http://localhost:3000/connections"))
 
         client.google = Fixtures.googleUnreachable
         let unreachable = app.stage(.google)
@@ -550,51 +549,6 @@ struct ClosingTests {
         #expect(disconnected.google == .notConnected)
         app.stage(rulesSaved: true, setup: try? await client.setupStatus())
         #expect(Summary.rows(app: app, flow: nil).first { $0.title == "Google" }?.state == "Not set up")
-    }
-
-    @Test func connectingWaitsForTheAccountThenTurnsGoogleOn() async {
-        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["testuser@plow.test"]) }
-        client.google = Fixtures.googleNotConnected
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        var opened: [URL] = []
-        app.open = { opened.append($0) }
-        let flow = app.stage(.google)
-        flow.googleRecheck = .milliseconds(20)
-        await flow.checkGoogle()
-        flow.connectGoogle()
-        #expect(opened == [URL(string: "http://localhost:3000/connections")!])
-        #expect(flow.google == .waiting)
-        // Signing in takes a few checks; each one only reads.
-        let before = client.looked
-        await until { client.looked >= before + 3 }
-        #expect(flow.google == .waiting)
-        #expect(client.enabled.isEmpty)
-        client.google = Fixtures.googleConnectedOff
-        await until { flow.google == .connected }
-        #expect(client.enabled == ["google"])
-        #expect(flow.googleAccounts == ["testuser@plow.test"])
-        // Once connected, the checks stop.
-        let after = client.looked
-        try? await Task.sleep(for: .milliseconds(100))
-        #expect(client.looked == after)
-        #expect(flow.step == .google)
-    }
-
-    @Test func leavingGoogleStopsItsChecks() async {
-        let client = ScriptedClient { _ in nil }
-        client.google = Fixtures.googleNotConnected
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        app.open = { _ in }
-        let flow = app.stage(.google)
-        flow.googleRecheck = .milliseconds(20)
-        await flow.checkGoogle()
-        flow.connectGoogle()
-        await until { client.looked >= 3 }
-        flow.skip()
-        let after = client.looked
-        try? await Task.sleep(for: .milliseconds(150))
-        #expect(client.looked == after)
-        #expect(flow.google == .notConnected)
     }
 
     @Test func aCheckStillAnsweringWhenGoogleIsSkippedTurnsNothingOn() async {
@@ -644,22 +598,6 @@ struct ClosingTests {
         #expect(flow.google == .connected)
         await until { flow.google == .notConnected }
         #expect(flow.google == .notConnected)
-    }
-
-    @Test func waitingForGoogleEndsAtItsLimit() async {
-        let client = ScriptedClient { _ in nil }
-        client.google = Fixtures.googleNotConnected
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        app.open = { _ in }
-        let flow = app.stage(.google)
-        flow.googleRecheck = .milliseconds(20)
-        flow.googleWaitLimit = .milliseconds(150)
-        await flow.checkGoogle()
-        flow.connectGoogle()
-        await until { flow.google != .waiting }
-        #expect(flow.google == .notConnected)
-        #expect(flow.googleWaitEnded)
-        #expect(client.enabled.isEmpty)
     }
 
     @Test func googleProblemsAreSaidPlainly() async {

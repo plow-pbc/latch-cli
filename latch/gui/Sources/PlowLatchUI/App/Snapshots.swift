@@ -29,6 +29,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
+    func signInGoogle(addAccount: Bool) -> AsyncThrowingStream<GoogleSignInEvent, Error> { AsyncThrowingStream { _ in } }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> {
         AsyncThrowingStream { continuation in
             if let status = try? Fixtures.decode(status) as LocalStatus { continuation.yield(status) }
@@ -108,6 +109,9 @@ nonisolated enum Fixtures {
             + connectors.joined(separator: ",")
             + "," + host + "]}"
     }
+
+    /// A sign-in link as Plow mints one, its code made up.
+    static let signInLink = URL(string: "http://127.0.0.1:18934/v1/connectors/gmail/connect/EXAMPLE_ONLY")!
 
     /// `setup --status`'s Google step with these accounts connected in Plow
     /// (the plugin off here).
@@ -292,7 +296,7 @@ package enum SnapshotRunner {
             ("05-google-checking", .google, Fixtures.stopped, Progress(), { _ in }),
             ("05-google-not-connected", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
             ("05-google-waiting", .google, Fixtures.stopped, Progress(), {
-                await $0.checkGoogle(); $0.google = .waiting
+                await $0.checkGoogle(); $0.google = .waiting; $0.stage(googleSignInLink: Fixtures.signInLink)
             }),
             ("05-google-wait-ended", .google, Fixtures.stopped, Progress(), {
                 await $0.checkGoogle(); $0.googleWaitEnded = true
@@ -604,6 +608,18 @@ package enum SnapshotRunner {
                 app.section = .connections
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 900, height: 700), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            // Its sign-in sheet: adding an account, connecting a first, and
+            // a wait that saw no new account.
+            let timedOut = GoogleSignIn.problem(.failed(LatchFailure(code: "sign_in_timeout", message: "")), adding: true)
+            for (name, sheet) in [("21-connections-sign-in-adding", GoogleSignIn(adding: true)),
+                                  ("21-connections-sign-in-first", GoogleSignIn(adding: false)),
+                                  ("21-connections-sign-in-timed-out", GoogleSignIn(adding: true, failure: timedOut))] {
+                let app = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false,
+                                          google: Fixtures.googleConnected(["ada@example.com"]))
+                app.stage(googleSignIn: sheet, link: Fixtures.signInLink)
+                try await render(GoogleSignInSheet().environment(app), size: CGSize(width: 420, height: 170), dark: dark,
+                                 file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
             let managing = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: "pi-kitchen", checked: false,
                                            google: Fixtures.googleConnected(["ada@example.com"]))

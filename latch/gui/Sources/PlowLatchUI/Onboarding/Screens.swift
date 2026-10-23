@@ -351,8 +351,9 @@ struct GoogleView: View {
                     ProgressView().controlSize(.small).accessibilityHidden(true)
                     Text("Finish signing in with Google in your browser. This screen updates when you're done.")
                 }
-                Button("Open the sign-in page again") { flow.connectGoogle() }
+                Button("Open the sign-in page again") { flow.openGoogleSignInAgain() }
                     .buttonStyle(.link).foregroundStyle(Brand.volt)
+                    .disabled(flow.googleSignInLink == nil)
             }
         case .connected:
             if !flow.googleAccounts.isEmpty {
