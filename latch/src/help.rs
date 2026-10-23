@@ -319,7 +319,6 @@ const ENTRIES: &[Entry] = &[
             ex("What gog commands are allowed", &["google", "--", "help"]),
         ],
     },
-    #[cfg(target_os = "macos")]
     Entry {
         id: "messages.search",
         runs_on: |_| RunsOn::Host,
@@ -347,7 +346,6 @@ const ENTRIES: &[Entry] = &[
             ),
         ],
     },
-    #[cfg(target_os = "macos")]
     Entry {
         id: "messages.thread",
         runs_on: |_| RunsOn::Host,
@@ -367,7 +365,6 @@ const ENTRIES: &[Entry] = &[
             ],
         )],
     },
-    #[cfg(target_os = "macos")]
     Entry {
         id: "messages.chats",
         runs_on: |_| RunsOn::Host,
@@ -380,7 +377,6 @@ const ENTRIES: &[Entry] = &[
             &["messages", "chats", "--host", "mac", "--kind", "group"],
         )],
     },
-    #[cfg(target_os = "macos")]
     Entry {
         id: "messages.unreplied",
         runs_on: |_| RunsOn::Host,
@@ -393,7 +389,6 @@ const ENTRIES: &[Entry] = &[
             &["messages", "unreplied", "--host", "mac", "--within", "24h"],
         )],
     },
-    #[cfg(target_os = "macos")]
     Entry {
         id: "contacts.search",
         runs_on: |_| RunsOn::Host,
@@ -406,7 +401,6 @@ const ENTRIES: &[Entry] = &[
             &["contacts", "search", "--host", "mac", "Ada"],
         )],
     },
-    #[cfg(target_os = "macos")]
     Entry {
         id: "contacts.lookup",
         runs_on: |_| RunsOn::Host,

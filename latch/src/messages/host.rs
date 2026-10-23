@@ -24,6 +24,20 @@ pub fn actions(op: &str) -> &'static [&'static str] {
     }
 }
 
+/// Refuses a `messages` or `contacts` call on a host that isn't a Mac,
+/// before anything else about it is looked at.
+pub fn supported_here(op: &str) -> Result<(), Failure> {
+    if cfg!(target_os = "macos") || actions(op).is_empty() {
+        return Ok(());
+    }
+    let mut failure = Failure::new(
+        code::unsupported_platform,
+        format!("this host is not a Mac; {op} are read on macOS hosts only"),
+    );
+    failure.next = Some("ask a macOS host with --host H; `latch status` lists your hosts".into());
+    Err(failure)
+}
+
 /// The reader's sha256, when this build pins one (a release build does).
 const READER_SHA256: Option<&str> = option_env!("LATCH_MESSAGES_READER_SHA256");
 
@@ -219,10 +233,6 @@ pub async fn read(
     reads: &[PathBuf],
     argv: &[String],
 ) -> Result<Value, Failure> {
-    if !cfg!(target_os = "macos") {
-        let message = "Messages and contacts are read on macOS hosts only".to_string();
-        return Err(Failure::new(code::messages_unavailable, message));
-    }
     let program = reader(&workers.state_dir);
     verify(&program, READER_SHA256)?;
     let mut child = workers

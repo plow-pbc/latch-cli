@@ -180,13 +180,11 @@ async fn preview(
             let request = serde_json::to_value(&prepared.request).expect("request serializes");
             ("google", request, args.host)
         }
-        #[cfg(target_os = "macos")]
         Some(Latch::Messages(command)) => (
             "messages",
             crate::messages::messages_request(&command),
             command.host(),
         ),
-        #[cfg(target_os = "macos")]
         Some(Latch::Contacts(command)) => (
             "contacts",
             crate::messages::contacts_request(&command),

@@ -353,7 +353,6 @@ async fn run(
                 }
             }
         }
-        #[cfg(target_os = "macos")]
         Command::Messages(command) => {
             let request = messages::messages_request(&command);
             json(
@@ -368,7 +367,6 @@ async fn run(
                 .await?,
             )
         }
-        #[cfg(target_os = "macos")]
         Command::Contacts(command) => {
             let request = messages::contacts_request(&command);
             json(
