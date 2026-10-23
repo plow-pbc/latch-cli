@@ -3,11 +3,10 @@ import Testing
 @testable import PlowLatchUI
 
 /// How long Activity takes to take in a host's records as they stream, by
-/// count: the duplicate check must keep it linear. A measurement, so it
-/// runs only when asked for (`LATCH_SCALING=1 swift test --filter
+/// count: the duplicate check must keep it linear. A measurement, built
+/// only when asked for (`LATCH_SCALING=1 swift test --filter
 /// ActivityScalingTests`), never in the default run.
 @MainActor
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["LATCH_SCALING"] == "1"))
 struct ActivityScalingTests {
     private static func lines(_ count: Int) throws -> [AuditLine] {
         try (0..<count).map { try LatchJSON.decoder.decode(AuditLine.self, from: Data(PagedClient.line($0, op: "exec").utf8)) }
