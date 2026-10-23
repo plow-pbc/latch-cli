@@ -927,7 +927,7 @@ pub struct FollowArgs {
 }
 
 #[derive(Args, Debug)]
-#[command(group = clap::ArgGroup::new("target").args(["local", "host"]))]
+#[command(group = clap::ArgGroup::new("target").args(["local", "host"]).multiple(true))]
 pub struct StatusArgs {
     /// Show a card for a person, with key art to compare between machines, instead of JSON
     #[arg(long)]
@@ -937,8 +937,9 @@ pub struct StatusArgs {
     #[arg(long, conflicts_with = "pretty")]
     pub local: bool,
     /// Another serving machine of the owner's to ask for its own `status
-    /// --local`, the same JSON as there (owner devices only)
-    #[arg(long, conflicts_with_all = ["pretty", "local"])]
+    /// --local`, the same JSON as there, with or without --local (owner
+    /// devices only)
+    #[arg(long, conflicts_with = "pretty")]
     pub host: Option<String>,
     /// With --local or --host: as JSON lines, then again each time it changes, until stopped (or, when stdin is a pipe, until it closes)
     #[arg(long, requires = "target")]
