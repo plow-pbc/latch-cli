@@ -159,6 +159,17 @@ pub fn needs_sign_in(accounts: Vec<String>) -> Failure {
     failure
 }
 
+/// Plow has no Google account connected: `latch plugins enable google`
+/// signs one in.
+pub fn not_connected() -> Failure {
+    let mut failure = Failure::new(
+        code::google_not_connected,
+        "No Google account is connected in Plow.".into(),
+    );
+    failure.next = Some("latch plugins enable google".into());
+    failure
+}
+
 /// Google wants the owner to sign in again with `accounts`, which a call
 /// needed, while other accounts may still work: then `plugins enable
 /// google` succeeds without a sign-in, so the owner reconnects these in

@@ -14,12 +14,17 @@ func book(_ call: Call) throws -> AddressBook {
 
 func contactsSearch(_ call: Call, deadline: ContinuousClock.Instant) throws -> Answer {
     let book = try book(call)
-    let text = (call.filters.text ?? "").lowercased()
+    // Each word on its own, in the name, nickname or organization, ignoring
+    // case and accents: "Bob Smith" finds Robert "Bob" Smith, "jose" José.
+    let words = (call.filters.text ?? "").split(whereSeparator: \.isWhitespace)
     // Sorted by name, ties by their place in the book, so pages are stable
     // while the book is unchanged.
     let found = book.people.enumerated()
         .filter { _, person in
-            [person.name, person.nickname, person.organization].contains { $0?.lowercased().contains(text) ?? false }
+            let fields = [person.name, person.nickname, person.organization].compactMap { $0 }
+            return words.allSatisfy { word in
+                fields.contains { $0.range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+            }
         }
         .sorted { ($0.element.name, $0.offset) < ($1.element.name, $1.offset) }
     var answer = Answer("people")

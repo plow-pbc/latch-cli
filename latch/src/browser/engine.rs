@@ -253,6 +253,36 @@ pub fn verify(state_dir: &Path, engine: &str) -> Result<(), Failure> {
     }
 }
 
+/// The engine an `open` that names none runs on: Chrome when its build
+/// checks out, else Camoufox when its does. With neither, the first one's
+/// error that is not just "not installed" (a changed build, or no build for
+/// this platform); with none installed, one naming the owner's setup.
+pub fn default(state_dir: &Path) -> Result<&'static str, Failure> {
+    let chrome = match CFT.verified(state_dir) {
+        Ok(_) => return Ok("cft"),
+        Err(failure) => failure,
+    };
+    let fox = match CAMOUFOX.verified(state_dir) {
+        Ok(_) => return Ok("camoufox"),
+        Err(failure) => failure,
+    };
+    for failure in [chrome, fox] {
+        if failure.code != code::engine_not_installed.name {
+            return Err(failure);
+        }
+    }
+    let setup = "latch browser setup --engine chrome";
+    let mut failure = Failure::new(
+        code::engine_not_installed,
+        format!(
+            "no browser engine is installed; the host's owner installs one with `{setup}` \
+             (or `--engine camoufox`) on the host"
+        ),
+    );
+    failure.details = serde_json::json!({"setup": setup});
+    Err(failure)
+}
+
 /// Engine `engine` (`cft` or `camoufox`) as the commands name it.
 pub fn named(engine: &str) -> &str {
     if engine == "cft" { "chrome" } else { engine }
@@ -527,6 +557,84 @@ mod tests {
         checked(&receipt, &[(build.clone(), &pinned)]).unwrap();
         let kept: Receipt = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
         assert_eq!(kept.trees, [pinned]);
+    }
+
+    /// Stands in an installed `engine` (`cft` or `camoufox`) in `state`: stub
+    /// folders, and a receipt for the pinned hashes over them, which a check
+    /// takes at its word until anything in them changes.
+    fn fake_install(state: &Path, engine: &str) {
+        let key = platform().unwrap();
+        let (folder, parts) = if engine == "cft" {
+            let build = &CFT.builds[key];
+            let root = CFT.folder(state).join(&build.folder);
+            let exe = root.join(&build.executable);
+            fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            fs::write(&exe, b"chrome").unwrap();
+            (CFT.folder(state), vec![(root, &build.tree_sha256)])
+        } else {
+            let build = &CAMOUFOX.builds[key];
+            let root = CAMOUFOX.folder(state);
+            for part in ["camoufox", "node", "runtime"] {
+                fs::create_dir_all(root.join(part)).unwrap();
+            }
+            fs::write(root.join("manifest.json"), b"{}").unwrap();
+            let parts = vec![
+                (root.join("camoufox"), &build.camoufox.tree_sha256),
+                (root.join("node"), &build.node.tree_sha256),
+                (root.join("runtime"), &build.runtime_tree_sha256),
+            ];
+            (root, parts)
+        };
+        let folders: Vec<&Path> = parts.iter().map(|(folder, _)| folder.as_path()).collect();
+        let receipt = Receipt {
+            trees: parts.iter().map(|(_, tree)| tree.to_string()).collect(),
+            metadata: metadata_hash(&folders).unwrap(),
+        };
+        fs::write(folder.join(RECEIPT), serde_json::to_vec(&receipt).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn with_no_engine_named_chrome_runs_if_it_checks_out_else_camoufox() {
+        let none = tempfile::tempdir().unwrap();
+        let missing = default(none.path()).unwrap_err();
+        assert_eq!(missing.code, "engine_not_installed");
+        assert_eq!(
+            missing.details["setup"],
+            "latch browser setup --engine chrome"
+        );
+        assert!(
+            missing.message.contains("--engine camoufox"),
+            "{}",
+            missing.message
+        );
+
+        // Camoufox alone, as on an agent's machine; then Chrome beside it.
+        let state = tempfile::tempdir().unwrap();
+        fake_install(state.path(), "camoufox");
+        assert_eq!(default(state.path()).unwrap(), "camoufox");
+        fake_install(state.path(), "cft");
+        assert_eq!(default(state.path()).unwrap(), "cft");
+        // A Chrome that no longer checks out gives way to Camoufox.
+        let build = &CFT.builds[platform().unwrap()];
+        let exe = CFT
+            .folder(state.path())
+            .join(&build.folder)
+            .join(&build.executable);
+        fs::write(&exe, b"not chrome").unwrap();
+        assert_eq!(default(state.path()).unwrap(), "camoufox");
+
+        // With nothing to give way to, its own error says why.
+        let alone = tempfile::tempdir().unwrap();
+        fake_install(alone.path(), "cft");
+        assert_eq!(default(alone.path()).unwrap(), "cft");
+        fs::write(
+            CFT.folder(alone.path())
+                .join(&build.folder)
+                .join(&build.executable),
+            b"x",
+        )
+        .unwrap();
+        assert_eq!(default(alone.path()).unwrap_err().code, "engine_unverified");
     }
 
     #[test]

@@ -60,7 +60,7 @@ normal answer, not an error.
 
 ```
 {"login":{"kind":"device"},
- "this_machine":{"name":"studio","key":"5b66c591…","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":95728,"blocked":null,"deny_exec":{"every_agent":false,"agent_uids":[]}}},
+ "this_machine":{"name":"studio","key":"5b66c591…","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":95728,"blocked":null,"deny_exec":{"every_agent":false,"agent_uids":[]},"keep_awake":{"enabled":true,"held":true,"reason":null}}},
  "plugins":[{"name":"google","state":"enabled"},…],
  "update":{"available":false,"build":null,"checked_at":null},
  "last_error":null,"api_url":"https://api.plow.co","state_dir":"/Users/me/.latch",
@@ -77,6 +77,7 @@ Field by field:
 - `hosting.attached` means a managed host is held by the `latch serve` in a terminal that started it. An upgrade stops it, and a host run with `serve --foreground`, and says to run `latch serve` there again.
 - `hosting.blocked`, when set, says why a running host cannot be used: `other_version`, a host from another latch version, with its pid and how to stop it. `hosting.ready` is then false.
 - `hosting.state` is one of `starting`, `serving`, `stopped` or `error`. A machine that never served says `stopped`.
+- `hosting.keep_awake` is the keep-awake switch, `latch settings set --keep-awake on|off`, which saves the choice with no host, login or restart. `enabled` is the saved choice; show the switch from it. `held` is whether the serving host keeps the Mac from idle sleep now, and `null` only for the moment before a starting host says. When it is `false`, `reason` says why: `disabled`, `not_serving`, `on_battery`, `unsupported` (not macOS), `refused` (macOS refused; the choice stays on) or `unknown` (the power source can't be read). It changes without the choice changing, as the Mac is plugged in or unplugged, so `--follow` sends a line each time. It is `null` only if the saved settings can't be read.
 - `plugins` is what `latch plugins list` says.
 - `last_error` says why the host last stopped, when it stopped because of a failure. A host that was killed or crashed shows `serve_ended`.
 

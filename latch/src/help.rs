@@ -245,7 +245,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "status",
         runs_on: |_| RunsOn::Either,
-        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked` and `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required or not_logged_in), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
+        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required or not_logged_in), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -1163,7 +1163,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "plugins.enable",
         runs_on: |_| RunsOn::Local,
-        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do. When some connected accounts need signing in again, `enable google` still succeeds and names them in `needs_sign_in`. When none works (google_needs_sign_in, with their `accounts`), it offers a sign-in link as below and waits until they all work again. When no Google account is connected in Plow, `enable google` gets a single-use sign-in link from Plow, `sign_in_url` with its `expires_at` (a credential until used: latch never logs or audits it; `connect_url` is Plow's public Connections page). At a terminal it shows the link and a QR code and waits up to 5 minutes for an account Plow did not have, renewing the link if it expires unopened, then enables Google; otherwise it fails with google_not_connected carrying the link: sign in, then run it again. --add-account does the same with Google already connected: it enables Google, then offers a link to add another account; without a terminal or --events the answer is the enable result plus `sign_in_url`, which confirms the enable and the link, not that another account was added. --events (any connector): JSON lines `hello`, a `link` (`url`, `expires_at`) for each link, then one `result` or `error`, with the same wait. sign_in_timeout (exit 1): no new account was seen in time, counting one last look at the deadline; the person may still be signing in or chose an account Plow already had, and the enable before an add may already have succeeded. Closing stdin (a pipe), Ctrl-C, SIGTERM or a gone stdout reader stops the wait: before the final enable is sent that is google_connect_cancelled (exit 1; with --add-account, Google may already be on from the enable before the wait), after it outcome_unknown (exit 5). Only a `result` confirms the enable. The enable after the wait is a fresh one, so a `plugins disable google` made during the wait does not hold.",
+        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do. When some connected accounts need signing in again, `enable google` still succeeds and names them in `needs_sign_in`. When none works (google_needs_sign_in, with their `accounts`), it offers a sign-in link as below and waits until they all work again. When no Google account is connected in Plow, `enable google` gets a single-use sign-in link from Plow, `sign_in_url` with its `expires_at` (a credential until used: latch never logs or audits it; `connect_url` is Plow's public Connections page). At a terminal it shows the link and a QR code and waits up to 5 minutes for an account Plow did not have, renewing the link if it expires unopened, then enables Google; otherwise it fails with google_not_connected carrying the link: sign in, then run it again. --add-account does the same with Google already connected: it enables Google, then offers a link to add another account; without a terminal or --events the answer is the enable result plus `sign_in_url`, which confirms the enable and the link, not that another account was added. --events (any connector): JSON lines `hello`, a `link` (`url`, `expires_at`) for each link, then one `result` or `error`, with the same wait. sign_in_timeout (exit 1): no new account was seen in time (or, for a sign-in again, the accounts named still don't work), counting one last look at the deadline; the person may still be signing in or chose an account Plow already had. With --add-account, Google was enabled before the wait. Closing stdin (a pipe), Ctrl-C, SIGTERM or a gone stdout reader stops the wait: before the final enable is sent that is google_connect_cancelled (exit 1; with --add-account, Google was enabled before the wait), after it outcome_unknown (exit 5). Only a `result` confirms the enable. The enable after the wait is a fresh one, so a `plugins disable google` made during the wait does not hold.",
         effect: Repeatable(
             "runs the connector's setup and, if it succeeds, turns it on for this host",
         ),
@@ -1192,6 +1192,26 @@ const ENTRIES: &[Entry] = &[
             "Turn Google off here",
             &["plugins", "disable", "google"],
         )],
+    },
+    Entry {
+        id: "settings.set",
+        runs_on: |_| RunsOn::Local,
+        output: "`settings`, every setting as saved (`keep_awake`), and `next`: `latch status --local`, whose `this_machine.hosting.keep_awake` (`enabled`; `held`, null while the running host has not said; `reason` when not held: disabled, not_serving, on_battery, unsupported, refused or unknown) says what the host makes of it. Saved is all this says.",
+        effect: Repeatable(
+            "saves this machine's host setting, which a running host picks up without a restart",
+        ),
+        owner_only: false,
+        connector: None,
+        examples: &[
+            ex(
+                "Keep this Mac awake while plugged in, for its host",
+                &["settings", "set", "--keep-awake", "on"],
+            ),
+            ex(
+                "Let it sleep as usual",
+                &["settings", "set", "--keep-awake", "off"],
+            ),
+        ],
     },
     Entry {
         id: "audit",

@@ -97,15 +97,16 @@ latch's commands and behavior here are `main`'s today.
 
 **Browser sessions are disposable.** Every `browser open` starts a fresh
 browser with an empty profile of its own, on the engine it names
-(`--engine chrome`, the default, or `--engine camoufox`). Sessions share
-nothing: no cookies, logins, tabs or downloads. A session's logins last
+(`--engine chrome` or `--engine camoufox`; by default Chrome if the host
+has it, else Camoufox). Sessions share nothing: no cookies, logins, tabs
+or downloads. A session's logins last
 until it closes, with `browser close` or after 30 idle minutes, and then
 its profile is deleted. So a session starts signed in nowhere: sign in by
 filling from the vault or, on a Mac host with a screen, by handing the
 session to the owner (`browser handoff`). On Linux x86_64, which has no
 Chrome build, the installer sets up no browser: the host's owner installs
-Camoufox on the host (`latch browser setup --engine camoufox`), and callers
-open sessions with `--engine camoufox`.
+Camoufox on the host (`latch browser setup --engine camoufox`), which
+sessions then open on by default.
 
 **What an agent can't do:**
 
