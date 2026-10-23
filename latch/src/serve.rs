@@ -94,9 +94,10 @@ enum Stopping {
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
 /// uid, never by name. It only ever refuses; devices are never refused.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, serde::Serialize)]
 pub struct DenyExec {
     every_agent: bool,
+    #[serde(rename = "agent_uids")]
     agents: Vec<String>,
 }
 
@@ -161,12 +162,9 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// every browser session runs with no window. An `attached` host stops
 /// when the `latch serve` that started it goes away (see
 /// `serve/control.rs`).
-pub async fn run(
-    state: &StateDir,
-    headless_browsers: bool,
-    deny_exec: DenyExec,
-    attached: bool,
-) -> Result<(), Failure> {
+pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), Failure> {
+    let (headless_browsers, attached) = (args.headless_browsers, args.attached);
+    let deny_exec = DenyExec::from_flags(&args.deny_exec);
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
     // missing kernel feature; the probe worker then installs the sandbox
@@ -184,6 +182,9 @@ pub async fn run(
     };
     // Held until this process ends, however it ends.
     let _lock = lock_state(&state_dir)?;
+    // Only the host holding the folder saves its flags, so they are the
+    // running host's, or the last one's (`managed::saved_deny_exec`).
+    crate::managed::save_given(&state.path, &crate::managed::given_now(args))?;
     // From here on, other processes see this host's steps (`lifecycle.rs`).
     lifecycle::record(&state.path, Phase::Starting, attached, None)?;
     let result = run_locked(state, headless_browsers, deny_exec, attached, state_dir).await;

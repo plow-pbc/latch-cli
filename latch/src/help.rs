@@ -126,7 +126,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "status",
-        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one.",
+        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one, its `serve.deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -833,7 +833,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "rules.show",
-        output: "The rules for every agent and each agent's own, with their revisions.",
+        output: "The rules for every agent and each agent's own, with their revisions, and `deny_exec`: the agents the host refuses exec (`every_agent`, `agent_uids`), as it runs or last ran, null if its saved flags are unreadable.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -841,7 +841,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "plugins.list",
-        output: "`plugins`: each connector's `name` and `state` (enabled, disabled or needs_setup); one not enabled has a `reason` and the owner's `enable` command.",
+        output: "`plugins`: each connector's `name` and `state` (enabled, disabled or needs_setup); one not enabled has a `reason` and the owner's `enable` command. This machine's are read from its state folder, so they show with no host running.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
