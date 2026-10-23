@@ -1353,8 +1353,9 @@ impl MessagesCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ContactsCommand {
-    /// People whose name, nickname or organization contains TEXT, each with
-    /// every phone and email and the handle to pass to `latch messages`
+    /// People whose name, nickname or organization has every word of TEXT
+    /// (ignoring case and accents), each with every phone and email and the
+    /// handle to pass to `latch messages`
     Search {
         /// What to look for (required unless --cursor is given)
         #[arg(required_unless_present = "cursor")]

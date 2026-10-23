@@ -289,6 +289,31 @@ func contactsSearchAndLookupGiveHandlesToPassBack() throws {
 }
 
 @Test
+func contactsSearchFindsEveryWordOnItsOwn() {
+    let f = Fixture()
+    f.book([
+        ("Robert Smith", "Bob", nil, ["555-000-0011"], []),
+        ("John Quincy Adams", nil, nil, ["555-000-0012"], []),
+        ("José Núñez", nil, nil, ["555-000-0013"], []),
+        ("Anna Kowalski", nil, nil, ["555-000-0014"], []),
+    ])
+    func names(_ text: String) -> [String?] {
+        read(f, ["contacts", "search", text], now: now).rows.map { $0["name"] as? String }
+    }
+    // A word may be in the name or the nickname, in any order, past a middle
+    // name, with or without its accents.
+    #expect(names("Bob Smith") == ["Robert Smith"])
+    #expect(names("john adams") == ["John Quincy Adams"])
+    #expect(names("jose nunez") == ["José Núñez"])
+    #expect(names("NÚÑEZ") == ["José Núñez"])
+    // Every word must be there: a misspelt surname misses, and the first
+    // name alone finds the card.
+    #expect(names("robert jones") == [])
+    #expect(names("anna kowalksi") == [])
+    #expect(names("anna") == ["Anna Kowalski"])
+}
+
+@Test
 func everyAccountsAddressBookIsRead() {
     let f = everyday()
     f.book([("Di Account", nil, nil, ["+44 20 7946 0000"], [])], source: "ABCD-1234")
