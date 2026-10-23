@@ -521,6 +521,12 @@ struct StartView: View {
                 Text(error).foregroundStyle(Brand.clay).font(.callout)
             }
             Text("Your Mac stays reachable while it's awake and Latch is running.").foregroundStyle(Brand.muted)
+            // Starting the host can raise macOS's Local Network prompt: say so
+            // before it appears, and what each answer means. It never gates.
+            if flow.runInBackground, app.status?.serve.ready != true {
+                Text("macOS may ask to let \(Text(AppName.shown).bold()) find devices on local networks. Allow it so your agents can connect directly and, when your rules let them, reach those devices. Without it, Latch still runs, but connections may be slower and tasks that need local devices may fail.")
+                    .foregroundStyle(Brand.muted)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 56)

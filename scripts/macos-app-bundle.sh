@@ -68,6 +68,8 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 	<string>6.0</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Latch uses your local network so your agents can connect to this Mac directly and, when your rules let them, reach devices on your network. The connection between your agents and this Mac is encrypted end to end.</string>
 </dict>
 </plist>
 PLIST
