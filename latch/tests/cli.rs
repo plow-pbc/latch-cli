@@ -1718,6 +1718,8 @@ struct LiveState {
     sign_in_for: i64,
     /// Plow refuses this login a Google sign-in link.
     sign_in_refused: bool,
+    /// Plow takes this long to give a Google sign-in link.
+    sign_in_slow: std::time::Duration,
     /// The real Plow decision route and the login to ask it with: its
     /// decisions go there instead (`real_judge`).
     judge: Option<(String, String)>,
@@ -1742,6 +1744,7 @@ impl LivePlow {
                 added_google: Vec::new(),
                 sign_in_for: 120,
                 sign_in_refused: false,
+                sign_in_slow: std::time::Duration::ZERO,
                 judge: None,
             })),
         };
@@ -1791,6 +1794,12 @@ impl LivePlow {
 
     fn answer(&self, request: &Http) -> (u16, Value) {
         let mut state = self.state.lock().unwrap();
+        if request.line().contains("connect-code") && !state.sign_in_slow.is_zero() {
+            let slow = state.sign_in_slow;
+            drop(state);
+            thread::sleep(slow);
+            state = self.state.lock().unwrap();
+        }
         let bearer = request.bearer();
         state
             .seen
@@ -5173,6 +5182,71 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     let mut found = Vec::new();
     kept(&host, &mut found);
     assert!(found.is_empty(), "a link was kept: {found:?}");
+}
+
+/// The five-minute wait covers Plow's answers too, and a stop is heard
+/// from the start: a sign-in link Plow is slow to give ends in
+/// `sign_in_timeout` on time, and a caller closing its stdin pipe while
+/// Plow is still giving it stops the command before any link is shown.
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "systemd-tests")
+))]
+#[test]
+fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
+    use std::io::Read;
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
+    let gog = host
+        .join("plugins/gog")
+        .join(pin["version"].as_str().unwrap());
+    fs::create_dir_all(&gog).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    plow.state.lock().unwrap().sign_in_slow = std::time::Duration::from_secs(20);
+    let events = ["plugins", "enable", "google", "--events"];
+
+    let started = std::time::Instant::now();
+    let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("2"))];
+    let output = latch(&host, &events, &within);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{output:?}"
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let last: Value = serde_json::from_slice(
+        output
+            .stdout
+            .split(|b| *b == b'\n')
+            .rfind(|l| !l.is_empty())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(last["error"]["code"], "sign_in_timeout", "{output:?}");
+
+    let started = std::time::Instant::now();
+    let mut child = latch_command(&host, &events, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    thread::sleep(std::time::Duration::from_secs(1));
+    drop(child.stdin.take());
+    let mut shown = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut shown)
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "{shown}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{shown}"
+    );
+    assert!(!shown.contains("\"link\""), "{shown}");
 }
 
 /// A `latch serve` that holds the state folder but answers no socket this

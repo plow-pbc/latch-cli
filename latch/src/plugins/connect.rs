@@ -47,87 +47,108 @@ where
     Fut: Future<Output = Result<Value, Failure>>,
 {
     let deadline = Instant::now() + give_up_after();
+    let at_terminal = !events && term::interactive();
+    let adding = enabled.is_some();
     // The public page, from the host's refusal until Plow says it again.
     let mut page = refused
         .as_ref()
         .and_then(|refused| refused.details["connect_url"].as_str())
         .map(String::from);
-    let plow = Plow::from_state(state).map_err(|failure| with_page(failure, &page))?;
-    let connectors = plow
-        .connectors()
-        .await
-        .map_err(|failure| with_page(failure, &page))?;
-    page = Some(connectors.connections_page());
-    let before = accounts(&connectors);
-    let mut link = plow
-        .google_connect_link()
-        .await
-        .map_err(|failure| with_page(failure, &page))?;
-
-    let at_terminal = !events && term::interactive();
-    if !events && !at_terminal {
-        // No one here to wait with: the link is the answer.
-        let handoff = json!({"sign_in_url": link.url, "expires_at": link.expires_at});
-        return match enabled {
-            Some(mut result) => {
-                merge(&mut result, handoff);
-                Ok(Some(result))
-            }
-            None => {
-                let mut failure = Failure::failed(
-                    "google_not_connected",
-                    "No Google account is connected in Plow.".into(),
-                );
-                failure.details = handoff;
-                merge(
-                    &mut failure.details,
-                    json!({"next": format!("Open sign_in_url, finish Google sign-in, then run {ENABLE}."),
-                           "connect_url": page}),
-                );
-                Err(failure)
-            }
-        };
-    }
-
-    let adding = enabled.is_some();
-    if !offer(&link, events, at_terminal, adding, false) {
-        return Ok(None);
-    }
-    let waited = async {
+    // Everything up to an account appearing, Plow's answers included,
+    // within the one deadline.
+    let connecting = async {
+        let plow = Plow::from_state(state)?;
+        let connectors = plow.connectors().await?;
+        page = Some(connectors.connections_page());
+        let before = accounts(&connectors);
+        let mut link = plow.google_connect_link().await?;
+        if !events && !at_terminal {
+            return Ok(Connecting::HandedOver(link));
+        }
+        if !offer(&link, events, at_terminal, adding, false) {
+            return Ok(Connecting::Stopped);
+        }
         loop {
             tokio::time::sleep(POLL.min(deadline.saturating_duration_since(Instant::now()))).await;
             // A mint or a look that fails ends the wait with its own failure.
             let now = plow.connectors().await?;
+            if Instant::now() >= deadline {
+                return Err(timed_out());
+            }
             if accounts(&now)
                 .iter()
                 .any(|account| !before.contains(account))
             {
-                return Ok(true);
-            }
-            if Instant::now() >= deadline {
-                let mut timeout = Failure::failed(
-                    "sign_in_timeout",
-                    "No new Google account was observed before the wait ended.".into(),
-                );
-                timeout.details = json!({"next": "latch setup --status"});
-                return Err(timeout);
+                return Ok(Connecting::Appeared);
             }
             if expired(&link) {
                 link = plow.google_connect_link().await?;
                 if !offer(&link, events, at_terminal, adding, true) {
-                    return Ok(false);
+                    return Ok(Connecting::Stopped);
                 }
             }
         }
     };
-    let appeared = tokio::select! {
-        appeared = waited => appeared.map_err(|failure| with_page(failure, &page))?,
-        () = crate::remote::stop_requested() => false,
+    let bounded = async {
+        tokio::time::timeout_at(deadline.into(), connecting)
+            .await
+            .unwrap_or_else(|_| Err(timed_out()))
     };
-    if !appeared {
-        return Ok(None);
+    // Only a wait can be stopped: a pipe's answer comes at once.
+    let connected = if events || at_terminal {
+        tokio::select! {
+            connected = bounded => connected,
+            () = crate::remote::stop_requested() => Ok(Connecting::Stopped),
+        }
+    } else {
+        bounded.await
+    };
+    match connected.map_err(|failure| with_page(failure, &page))? {
+        Connecting::Stopped => Ok(None),
+        Connecting::Appeared => enable().await.map(Some),
+        Connecting::HandedOver(link) => {
+            // No one here to wait with: the link is the answer.
+            let handoff = json!({"sign_in_url": link.url, "expires_at": link.expires_at});
+            match enabled {
+                Some(mut result) => {
+                    merge(&mut result, handoff);
+                    Ok(Some(result))
+                }
+                None => {
+                    let mut failure = Failure::failed(
+                        "google_not_connected",
+                        "No Google account is connected in Plow.".into(),
+                    );
+                    failure.details = handoff;
+                    merge(
+                        &mut failure.details,
+                        json!({"next": format!("Open sign_in_url, finish Google sign-in, then run {ENABLE}."),
+                               "connect_url": page}),
+                    );
+                    Err(failure)
+                }
+            }
+        }
     }
-    enable().await.map(Some)
+}
+
+/// How the connecting phase ended.
+enum Connecting {
+    /// An account Plow did not have before is there.
+    Appeared,
+    /// The caller asked the wait to stop, or stopped reading.
+    Stopped,
+    /// No one waits here: this link is the answer.
+    HandedOver(ConnectLink),
+}
+
+fn timed_out() -> Failure {
+    let mut timeout = Failure::failed(
+        "sign_in_timeout",
+        "No new Google account was observed before the wait ended.".into(),
+    );
+    timeout.details = json!({"next": "latch setup --status"});
+    timeout
 }
 
 /// `failure`, with the public Connections page as `connect_url` when known.
