@@ -20,7 +20,7 @@ on your Mac ([section 10](#10-where-a-host-runs)).
 |---|---|---|---|
 | **Owner** | Your machines, logged in with your own Plow login. | Call any host, manage the rules and vault on any host, turn connectors on or off on the host itself, run a host. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as your OS user on the host that uses its state folder. An agent running there counts. | Everything the owner can, on that host, through its local socket. | Like the owner. |
-| **Agent** | An agent logged in with its own Plow agent credential. | Call hosts. It can't manage rules, the vault or connectors. With the usual agent credential, it can't start a host today. | Against your messages in its Plow chat, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential. | Call hosts. It can't manage rules, the vault or connectors, or read a host's status or audit with `--host`. With the usual agent credential, it can't start a host today. | Against your messages in its Plow chat, plus the host's rules. |
 | **Host** | A machine running `latch serve`. | Runs programs, file copies and connector calls in a sandbox, and holds the vault, rules, browser and audit log. | Its gatekeeper judges the work that needs judging; work it can't judge doesn't run. |
 
 **Read more:** [who's who in detail](#2-whos-who) ·
@@ -45,7 +45,7 @@ latch's commands and behavior here are `main`'s today.
 |---|---|---|---|---|---|
 | **Owner** (your CLI) | A machine logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: list them on any host; turn them on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` or `LATCH_HOST` naming another machine. An agent running there counts. | That host, through its private local socket; other hosts as the owner. | Yes, on that host. Rules and vault work without `latch serve` or the decision model. | It is the host. | Exactly like the owner; recorded as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It may list connectors. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host` and `audit --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It may list connectors. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
 
 - **Every machine logged in with your own Plow login is the owner today.**
   There's no host-only or view-only login yet (see section 11).
