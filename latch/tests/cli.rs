@@ -7651,6 +7651,30 @@ mod lifecycle {
         assert!(!registered(&host));
     }
 
+    /// A relative `LATCH_STATE_DIR` names a folder from where `serve -d`
+    /// ran: the host's service, which runs elsewhere, still hides it.
+    #[test]
+    fn a_detached_host_hides_a_relative_latch_state_dir() {
+        let plow = LivePlow::start();
+        let (_relay, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let _managed = Managed(host.clone());
+        let key = dir.path().join("client/key");
+        fs::create_dir(dir.path().join("client")).unwrap();
+        fs::write(&key, "client key").unwrap();
+
+        let started = latch_command(&host, &["serve", "-d"], &[])
+            .env("LATCH_TEST_RELAY_URL", &relay)
+            .env("LATCH_STATE_DIR", "client")
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert_eq!(started.status.code(), Some(0), "{started:?}");
+        let read = local_operation(&host, "exec", json!({"argv": ["cat", key], "timeout": 10}));
+        assert!(!read.to_string().contains("client key"), "{read}");
+    }
+
     #[test]
     fn a_detached_host_answers_once_serve_returns_and_stop_is_final() {
         let plow = LivePlow::start();

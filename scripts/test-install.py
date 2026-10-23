@@ -130,6 +130,21 @@ class BinaryInstall(unittest.TestCase):
     def test_options_on_both_sides_of_the_binary(self):
         self.install(custom=True, source="middle")
 
+    def test_latch_state_dir_names_the_state_folder_without_the_option(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            state = root / "state"
+            setup, binary, tools = fixture(root, state, "#!/bin/sh\n")
+            env = {**os.environ, "HOME": str(root / "home"), "LATCH_STATE_DIR": str(state),
+                   "PATH": f"{tools}:{os.environ['PATH']}"}
+            result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--no-browser", str(binary)],
+                                    cwd=root, env=env, capture_output=True, text=True,
+                                    stdin=subprocess.DEVNULL)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"gog 1.0 already installed at {state}/plugins/gog/1.0/gog", result.stdout)
+
     def test_setup_runs_only_at_a_terminal_and_not_when_told_not_to(self):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)

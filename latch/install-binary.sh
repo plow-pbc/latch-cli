@@ -68,7 +68,7 @@ quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [path/to/latch]"
 bin_dir="$HOME/.local/bin"
-state_dir="$HOME/.latch"
+state_dir=${LATCH_STATE_DIR:-"$HOME/.latch"}
 browsers=""
 no_browser=""
 client_only=""
@@ -82,7 +82,7 @@ while [ $# -gt 0 ]; do
       printf '%s\n' "$usage" '' \
         'Without a binary path, installs the latch next to this script.' \
         'Options may appear before or after the binary path.' \
-        'Binary directory defaults to ~/.local/bin; state and plugins default to ~/.latch.' \
+        'Binary directory defaults to ~/.local/bin; state and plugins default to $LATCH_STATE_DIR, else ~/.latch.' \
         'The browser engine defaults to Chrome for Testing; --browser chrome|camoufox' \
         'names the engines instead (repeat it for both), --no-browser installs none.' \
         '--client-only installs latch alone, for a machine that only asks hosts.'

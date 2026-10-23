@@ -54,7 +54,8 @@ starts no setup, and ends by saying to run `latch login` (see
 the host.
 
 `--state-dir DIR` on the installer puts the plugins in another state folder
-instead; pass the same `--state-dir DIR` to every `latch` command then.
+instead; pass the same `--state-dir DIR` to every `latch` command then, or
+set `LATCH_STATE_DIR=DIR`, which the installer and every command read.
 
 **Update:** run `latch update` (`latch update --check` only says whether a
 newer build is out; `latch update TAG` installs that build, also how to go
