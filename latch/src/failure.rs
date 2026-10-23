@@ -320,6 +320,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("output_too_large", Exit::Failed),
     ("own_machine", Exit::Usage),
     ("owner_only", Exit::Denied),
+    ("plow_chat_not_supported", Exit::Usage),
     ("plow_denied", Exit::Denied),
     ("plow_error", Exit::Failed),
     ("plow_rejected", Exit::Failed),

@@ -269,13 +269,11 @@ pub struct BrowserArgs {
     /// The session to use: the id `open` answered
     #[arg(long, env = "LATCH_BROWSER_SESSION", global = true)]
     pub session: Option<String>,
-    /// The agent turn this call belongs to, for the host's metrics
-    #[arg(long, env = "LATCH_TURN", global = true)]
-    pub turn: Option<String>,
     /// The owner's Plow chat this agent acts for, when its line has more
-    /// than one: the host's gatekeeper reads what the owner asked there
-    #[arg(long, env = "LATCH_CHAT", global = true)]
-    pub chat: Option<String>,
+    /// than one: the host's gatekeeper reads what the owner asked there.
+    /// Refused on owner calls and local modes
+    #[arg(long, env = "LATCH_PLOW_CHAT", global = true)]
+    pub plow_chat: Option<String>,
     #[command(subcommand)]
     pub command: BrowserCommand,
 }
@@ -991,9 +989,10 @@ pub struct HostArg {
     #[arg(long, env = "LATCH_HOST")]
     pub host: Option<String>,
     /// The owner's Plow chat this agent acts for, when its line has more
-    /// than one: the host's gatekeeper reads what the owner asked there
-    #[arg(long, env = "LATCH_CHAT")]
-    pub chat: Option<String>,
+    /// than one: the host's gatekeeper reads what the owner asked there.
+    /// Refused on owner calls and local modes
+    #[arg(long, env = "LATCH_PLOW_CHAT")]
+    pub plow_chat: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]

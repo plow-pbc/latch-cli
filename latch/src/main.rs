@@ -85,7 +85,7 @@ fn main() -> ExitCode {
         Ok(matches) => matches,
         Err(err) => return usage_error(err),
     };
-    if let Err(failure) = help::check_host(&matches) {
+    if let Err(failure) = help::check_selectors(&matches) {
         report(&failure);
         return failure.exit.into();
     }
@@ -223,7 +223,7 @@ async fn run(
             let peer = hosts::resolve(&state, host.host).await?;
             json(
                 pretty,
-                transfer::get(&state, &peer, host.chat, &remote_path, local_dest).await?,
+                transfer::get(&state, &peer, host.plow_chat, &remote_path, local_dest).await?,
             )
         }
         Command::File(FileCommand::Put {
@@ -234,7 +234,7 @@ async fn run(
             let peer = hosts::resolve(&state, host.host).await?;
             json(
                 pretty,
-                transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?,
+                transfer::put(&state, &peer, host.plow_chat, &local_path, &remote_path).await?,
             )
         }
         Command::Google(args) => json(pretty, google::client::run(&state, args).await?),
@@ -368,7 +368,7 @@ async fn call_host(
     let request = Request {
         op: op.to_string(),
         args,
-        chat: host.chat,
+        chat: host.plow_chat,
     };
     dial::call(state, &peer, &request, answer_within).await
 }

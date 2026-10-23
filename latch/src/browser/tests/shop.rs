@@ -741,7 +741,7 @@ async fn the_plan_suite_on_the_decision_model() {
         for mut audit in audits {
             audit.insert("command".into(), json!("do"));
             audit.insert("session".into(), json!(case.name));
-            audit.insert("turn".into(), json!(case.name));
+            audit.insert("ppid".into(), json!(std::os::unix::process::parent_id()));
             let line = json!({"time": jiff::Timestamp::now().to_string(), "caller": "suite",
                               "agent": null, "op": "browser", "args": audit, "decision": "allow",
                               "outcome": "ok", "prev": "", "hash": ""});

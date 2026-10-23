@@ -1263,22 +1263,29 @@ fn selected(mut args: &ArgMatches) -> (String, &ArgMatches) {
     (path.join("."), args)
 }
 
-/// Reject a host selector on a local operation before dispatch touches state.
-pub fn check_host(matches: &ArgMatches) -> Result<(), Failure> {
+/// Refuse selectors that this operation would ignore, before touching state.
+pub fn check_selectors(matches: &ArgMatches) -> Result<(), Failure> {
     let (id, args) = selected(matches);
-    if args.try_get_one::<String>("host").ok().flatten().is_none() {
-        return Ok(());
-    }
+    let has = |name| args.try_get_one::<String>(name).ok().flatten().is_some();
     // Unregistered internal or removed commands cannot accept a host either.
     let location = ENTRIES
         .iter()
         .find(|entry| entry.id == id)
         .map_or(RunsOn::Local, |entry| (entry.runs_on)(args));
-    if location == RunsOn::Local {
+    if has("host") && location == RunsOn::Local {
         return Err(Failure::usage(
             "host_not_supported",
             format!(
                 "`latch {}` runs locally; omit --host and unset LATCH_HOST. Run it on the intended machine",
+                id.replace('.', " ")
+            ),
+        ));
+    }
+    if has("plow_chat") && location != RunsOn::Host {
+        return Err(Failure::usage(
+            "plow_chat_not_supported",
+            format!(
+                "`latch {}` does not use a Plow chat; omit --plow-chat and unset LATCH_PLOW_CHAT",
                 id.replace('.', " ")
             ),
         ));
@@ -1574,60 +1581,66 @@ mod tests {
     }
 
     #[test]
-    fn every_host_selector_is_routed_or_refused_by_the_registry() {
+    fn every_selector_is_routed_or_refused_by_the_registry() {
         let mut root = Cli::command();
         root.build();
         let mut runnable = Vec::new();
         actions(&root, &[], true, &mut runnable);
         for (id, command) in runnable {
-            let accepts_host = command
-                .get_arguments()
-                .any(|arg| arg.get_long() == Some("host"));
-            let entry = ENTRIES.iter().find(|entry| entry.id == id);
-            let examples: Vec<Vec<&str>> = entry.map_or_else(
-                || vec![id.split('.').collect()],
-                |entry| {
-                    entry
-                        .examples
-                        .iter()
-                        .map(|example| example.args.to_vec())
-                        .collect()
-                },
-            );
-            for example in examples {
-                let mut words = example.iter().copied();
-                let mut argv = Vec::new();
-                while let Some(word) = words.next() {
-                    if word == "--host" {
-                        words.next();
-                    } else {
-                        argv.push(word);
-                    }
-                }
-                let with_host = (0..=argv.len()).find_map(|at| {
-                    let mut candidate = argv.clone();
-                    candidate.splice(at..at, ["--host", "routing-probe"]);
-                    let matches = root
-                        .clone()
-                        .try_get_matches_from(std::iter::once("latch").chain(candidate))
-                        .ok()?;
-                    let (found, args) = selected(&matches);
-                    let host = args.try_get_one::<String>("host").ok().flatten();
-                    (found == id && host.is_some_and(|host| host == "routing-probe"))
-                        .then_some(matches)
-                });
-                assert_eq!(
-                    with_host.is_some(),
-                    accepts_host,
-                    "{id}: {}",
-                    quoted(&example)
+            for (selector, flag) in [("host", "--host"), ("plow_chat", "--plow-chat")] {
+                let accepts_selector = command.get_arguments().any(|arg| arg.get_id() == selector);
+                let entry = ENTRIES.iter().find(|entry| entry.id == id);
+                let examples: Vec<Vec<&str>> = entry.map_or_else(
+                    || vec![id.split('.').collect()],
+                    |entry| {
+                        entry
+                            .examples
+                            .iter()
+                            .map(|example| example.args.to_vec())
+                            .collect()
+                    },
                 );
-                if let Some(matches) = with_host {
-                    let (_, args) = selected(&matches);
-                    let routes = entry.is_some_and(|entry| (entry.runs_on)(args) != RunsOn::Local);
-                    assert_eq!(check_host(&matches).is_ok(), routes, "{id}");
-                    if !routes {
-                        assert_eq!(check_host(&matches).unwrap_err().code, "host_not_supported");
+                for example in examples {
+                    let mut words = example.iter().copied();
+                    let mut argv = Vec::new();
+                    while let Some(word) = words.next() {
+                        if word == flag {
+                            words.next();
+                        } else {
+                            argv.push(word);
+                        }
+                    }
+                    let with_selector = (0..=argv.len()).find_map(|at| {
+                        let mut candidate = argv.clone();
+                        candidate.splice(at..at, [flag, "routing-probe"]);
+                        let matches = root
+                            .clone()
+                            .try_get_matches_from(std::iter::once("latch").chain(candidate))
+                            .ok()?;
+                        let (found, args) = selected(&matches);
+                        let value = args.try_get_one::<String>(selector).ok().flatten();
+                        (found == id && value.is_some_and(|value| value == "routing-probe"))
+                            .then_some(matches)
+                    });
+                    assert_eq!(
+                        with_selector.is_some(),
+                        accepts_selector,
+                        "{id}: {}",
+                        quoted(&example)
+                    );
+                    if let Some(matches) = with_selector {
+                        let (_, args) = selected(&matches);
+                        let routes = entry.is_some_and(|entry| match selector {
+                            "host" => (entry.runs_on)(args) != RunsOn::Local,
+                            _ => (entry.runs_on)(args) == RunsOn::Host,
+                        });
+                        assert_eq!(check_selectors(&matches).is_ok(), routes, "{id}");
+                        if !routes {
+                            assert_eq!(
+                                check_selectors(&matches).unwrap_err().code,
+                                format!("{selector}_not_supported")
+                            );
+                        }
                     }
                 }
             }
