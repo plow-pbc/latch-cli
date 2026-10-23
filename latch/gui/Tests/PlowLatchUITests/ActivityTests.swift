@@ -361,3 +361,99 @@ struct ActivityOrderTests {
         feed.stop()
     }
 }
+
+/// Hands out each screenshot it is asked for, and remembers each ask.
+final class ShotClient: LatchClient, @unchecked Sendable {
+    let stateDir = "/s"
+    /// The shots the host no longer keeps.
+    var gone: Set<String> = []
+    private(set) var asked: [String] = []
+
+    func auditShot(_ record: String, shot: String, host: String?) async throws -> Data {
+        asked.append("\(record) \(shot) \(host ?? "-")")
+        guard !gone.contains(shot) else {
+            throw LatchError.failed(LatchFailure(code: "no_such_shot", message: "record \(record)'s screenshot \(shot) is no longer kept"))
+        }
+        return Data("png \(shot)".utf8)
+    }
+}
+
+@MainActor
+struct RecordShotsTests {
+    private func browser() throws -> [AuditRecord] {
+        try AuditPage.parse(Data(Fixtures.browserAudit.utf8)).records
+    }
+
+    @Test func aPlanNamesItsShotsInTheOrderTheyWereTaken() throws {
+        let browser = try browser()
+        let plan = try #require(browser.first { $0.args?.command == "do" })
+        #expect(plan.shots == ["1", "final"])
+        #expect(!plan.isScreenshot)
+        let screenshot = try #require(browser.first { $0.args?.command == "screenshot" })
+        #expect(screenshot.shots.isEmpty && screenshot.isScreenshot)
+        #expect(try records(Fixtures.studioAudit).allSatisfy { $0.shots.isEmpty && !$0.isScreenshot })
+        // The app's own reads of them are the owner's reads, as `audit` is.
+        let read = try LatchJSON.decoder.decode(AuditRecord.self, from: Data(#"{"agent":null,"caller":"k","command":"latch audit shot","decision":"allow","details":null,"id":"e2","op":"audit_shot","outcome":"ok","time":"2026-10-23T22:50:02Z"}"#.utf8))
+        #expect(read.isOwnerRead && read.isBackground)
+    }
+
+    /// Nothing is read until the record is opened; then each shot once,
+    /// from the record's own host, into memory.
+    @Test func shotsAreReadOnlyOnceTheRecordIsOpened() async throws {
+        let plan = try #require(try browser().first { $0.args?.command == "do" })
+        let client = ShotClient()
+        let shots = RecordShots(client: client, host: "pi-kitchen", record: plan)
+        #expect(client.asked.isEmpty)
+        #expect(shots.shots.map(\.state) == [.loading, .loading])
+        await shots.load()
+        #expect(client.asked == ["1", "final"].map { "\(plan.id) \($0) pi-kitchen" })
+        #expect(shots.shots.map(\.state) == [.loaded(Data("png 1".utf8)), .loaded(Data("png final".utf8))])
+        await shots.load()
+        #expect(client.asked.count == 2)
+    }
+
+    @Test func aShotTheHostNoLongerKeepsSaysHowLongItKeepsThem() async throws {
+        let plan = try #require(try browser().first { $0.args?.command == "do" })
+        let client = ShotClient()
+        client.gone = ["1"]
+        let shots = RecordShots(client: client, host: nil, record: plan)
+        await shots.load()
+        #expect(shots.shots.map(\.state) == [.gone, .loaded(Data("png final".utf8))])
+        #expect(RecordShots.gone.contains("Kept on the host for 7 days"))
+        #expect(RecordShots.standalone.contains("Saved on the caller's machine"))
+        #expect(shots.shots.map(\.title) == ["After action 1", "Last page"])
+    }
+
+    private func records(_ fixture: String) throws -> [AuditRecord] {
+        try AuditPage.parse(Data(fixture.utf8)).records
+    }
+
+    /// The bundle's latch saves the shot into a folder of its own, which is
+    /// gone once the bytes are read: nothing stays on disk.
+    @Test func theAppKeepsNoCopyOnDisk() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let latch = folder.appending(path: "latch")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$@" > "\(folder.path)/argv"
+            while [ "$1" != "--output" ]; do shift; done
+            printf 'png bytes' > "$2"
+            dirname "$2" > "\(folder.path)/saved-in"
+            stat -f %Lp "$(dirname "$2")" > "\(folder.path)/mode"
+            echo '{"record":"r","shot":"1","path":"'"$2"'","size":9,"sha256":"x"}'
+            """.write(to: latch, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: latch.path)
+        let client = LiveLatchClient(executable: latch, stateDir: folder.path)
+        let png = try await client.auditShot("e3b0c442", shot: "1", host: "pi-kitchen")
+        #expect(png == Data("png bytes".utf8))
+        let argv = try String(contentsOf: folder.appending(path: "argv"), encoding: .utf8).split(separator: "\n")
+        #expect(Array(argv.prefix(6)) == ["--state-dir", Substring(folder.path), "audit", "shot", "e3b0c442", "1"])
+        #expect(argv.suffix(2) == ["--host", "pi-kitchen"])
+        let savedIn = try String(contentsOf: folder.appending(path: "saved-in"), encoding: .utf8).trimmingCharacters(in: .newlines)
+        #expect(savedIn.contains("latch-shot-"))
+        #expect(!FileManager.default.fileExists(atPath: savedIn))
+        #expect(try String(contentsOf: folder.appending(path: "mode"), encoding: .utf8) == "700\n")
+    }
+}

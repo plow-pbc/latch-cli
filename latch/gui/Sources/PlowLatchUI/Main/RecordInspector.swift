@@ -1,3 +1,5 @@
+import AppKit
+import QuickLook
 import SwiftUI
 
 /// One audit record in full: who asked, what it could touch, why the
@@ -6,6 +8,8 @@ struct RecordInspector: View {
     var record: AuditRecord
     var caller: (who: String, kind: String)
     var hostName: String
+    /// nil for this Mac's own host, else the host `--host` names.
+    var host: String?
 
     var body: some View {
         Form {
@@ -23,6 +27,13 @@ struct RecordInspector: View {
                 LabeledContent("Time", value: record.time.formatted(date: .abbreviated, time: .standard))
                 LabeledContent("Operation", value: record.op)
                 LabeledContent("Outcome") { Text(record.outcome).font(.body.monospaced()) }
+            }
+            if !record.shots.isEmpty {
+                ShotsSection(record: record, host: host, hostName: hostName)
+            } else if record.isScreenshot {
+                Section("Screenshot") {
+                    Text(RecordShots.standalone).foregroundStyle(.secondary)
+                }
             }
             if record.op == "exec", let args = record.args {
                 Section("What it could touch") {
@@ -101,6 +112,104 @@ struct RecordInspector: View {
         }
         if key.hasSuffix("_ms"), case let .number(ms) = value { return "\(Int(ms)) ms" }
         return value.text
+    }
+}
+
+/// A browser plan's screenshots, read from its host when the record opens;
+/// one opens in Quick Look from a file only this user can read, removed
+/// once it closes.
+private struct ShotsSection: View {
+    var record: AuditRecord
+    var host: String?
+    var hostName: String
+    @Environment(AppModel.self) private var app
+    @State private var shots: RecordShots?
+    @State private var preview: URL?
+
+    var body: some View {
+        Section("Screenshots") {
+            VStack(alignment: .leading, spacing: 6) {
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 8) {
+                        ForEach(shots?.shots ?? []) { shot in
+                            ShotTile(shot: shot, hostName: hostName) { open(shot) }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                if shots?.shots.contains(where: { $0.state == .gone }) == true {
+                    Text(RecordShots.gone).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .task(id: record.id) {
+                let shots = RecordShots(client: app.client, host: host, record: record)
+                self.shots = shots
+                await shots.load()
+            }
+            .quickLookPreview($preview)
+            .onChange(of: preview) { closed, _ in closed.map(Self.remove) }
+            .onDisappear { preview.map(Self.remove) }
+        }
+    }
+
+    private func open(_ shot: RecordShots.Shot) {
+        guard case let .loaded(png) = shot.state else { return }
+        let folder = FileManager.default.temporaryDirectory.appending(path: "latch-shot-\(UUID().uuidString)")
+        let file = folder.appending(path: "\(shot.title).png")
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        } catch {
+            return
+        }
+        guard FileManager.default.createFile(atPath: file.path, contents: png, attributes: [.posixPermissions: 0o600]) else {
+            Self.remove(file)
+            return
+        }
+        preview = file
+    }
+
+    private static func remove(_ file: URL) {
+        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    }
+}
+
+/// One screenshot as a thumbnail, or why there is none.
+private struct ShotTile: View {
+    var shot: RecordShots.Shot
+    var hostName: String
+    var open: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Group {
+                switch shot.state {
+                case .loading:
+                    ProgressView().controlSize(.small)
+                case let .loaded(png):
+                    if let image = NSImage(data: png) {
+                        Button(action: open) {
+                            Image(nsImage: image).resizable().scaledToFit()
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open in Quick Look")
+                    } else {
+                        Image(systemName: "photo").foregroundStyle(.secondary)
+                    }
+                case .gone:
+                    Image(systemName: "clock.badge.xmark").foregroundStyle(.secondary)
+                        .help(RecordShots.gone)
+                case let .failed(error):
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
+                        .help(ErrorCopy.short(error, host: hostName))
+                }
+            }
+            .frame(width: 128, height: 80)
+            .background(.quaternary, in: .rect(cornerRadius: 4))
+            .clipShape(.rect(cornerRadius: 4))
+            Text(shot.title).font(.caption).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(shot.title)
     }
 }
 
