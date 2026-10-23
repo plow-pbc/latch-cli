@@ -1684,6 +1684,21 @@ impl LivePlow {
             }
         }
         match (method, path) {
+            // Which accounts are connected, as Plow says, and where it connects them.
+            ("GET", "/v1/connectors") if kind == "device" => {
+                let accounts: Vec<Value> = state
+                    .google
+                    .iter()
+                    .map(|_| json!({"account": "owner@example.com", "is_default": true}))
+                    .collect();
+                (
+                    200,
+                    json!({"gmail": {"connected": !accounts.is_empty(), "connector": "gmail",
+                                     "account": null, "accounts": accounts},
+                           "slack": {"connected": false, "connector": "slack", "accounts": []},
+                           "web_base_url": "https://app.example.com"}),
+                )
+            }
             // Plow's answer with no Google account connected.
             ("POST", "/v1/connectors/gmail/access-token") if state.google.is_none() => {
                 (412, json!({"detail": "No Gmail account connected."}))
@@ -4268,6 +4283,62 @@ fn setup_sets_up_every_connector_with_no_host_running() {
     assert!(
         enabled(&latch(&host, &["plugins", "list"], &[])),
         "the host's"
+    );
+}
+
+/// `setup --status` asks Plow, read only, whether Google is connected
+/// there: none connected says where to connect one; connected, the
+/// connector is the step; enabled, it is done. The state folder is not
+/// changed and no credential is asked for.
+#[test]
+fn setup_status_says_whether_google_is_connected_in_plow() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let google = || {
+        let output = latch(&host, &["setup", "--status"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        status["steps"][1].clone()
+    };
+    let files = || {
+        let mut names: Vec<_> = fs::read_dir(&host)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = files();
+
+    let none = google();
+    assert_eq!(none["step"], "google");
+    assert_eq!(none["state"], "needed");
+    assert_eq!(none["connect_url"], "https://app.example.com/connections");
+    assert_eq!(none["accounts"], json!([]));
+    assert_eq!(none["args"], Value::Null);
+
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    let off = google();
+    assert_eq!(off["state"], "needed");
+    assert_eq!(off["accounts"], json!(["owner@example.com"]));
+    assert_eq!(off["args"], json!(["plugins", "enable", "google"]));
+    assert!(off.get("connect_url").is_none(), "{off}");
+    assert_eq!(files(), before, "nothing written");
+
+    fs::write(
+        host.join("plugins.json"),
+        r#"{"google":{"state":"enabled"}}"#,
+    )
+    .unwrap();
+    let on = google();
+    assert_eq!(on["state"], "done");
+    assert_eq!(on["accounts"], json!(["owner@example.com"]));
+    assert_eq!(on["args"], Value::Null);
+    let asked: Vec<String> = plow.seen().into_iter().map(|(line, _)| line).collect();
+    assert!(
+        !asked.iter().any(|line| line.contains("access-token")),
+        "{asked:?}"
     );
 }
 

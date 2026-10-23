@@ -101,6 +101,34 @@ pub struct Agent {
     pub line: Line,
 }
 
+/// `GET /v1/connectors`: the owner's connected accounts, and where Plow's
+/// pages are.
+#[derive(Deserialize, Debug)]
+pub struct Connectors {
+    /// Google (Gmail and Calendar).
+    pub gmail: Connection,
+    pub web_base_url: String,
+}
+
+impl Connectors {
+    /// The page where the owner connects accounts.
+    pub fn connections_page(&self) -> String {
+        format!("{}/connections", self.web_base_url.trim_end_matches('/'))
+    }
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Connection {
+    pub connected: bool,
+    #[serde(default)]
+    pub accounts: Vec<ConnectedAccount>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ConnectedAccount {
+    pub account: String,
+}
+
 /// One of the account's agents, from `GET /v1/agents`, by its uid and name.
 #[derive(Deserialize, Debug, Clone)]
 pub struct NamedAgent {
@@ -346,17 +374,14 @@ impl Plow {
 
     /// The page in Plow where the owner connects accounts such as Google.
     pub async fn connections_page(&self) -> Result<String, Failure> {
-        #[derive(Deserialize)]
-        struct Connectors {
-            web_base_url: String,
-        }
+        Ok(self.connectors().await?.connections_page())
+    }
+
+    /// Which accounts the owner has connected in Plow. Only reads.
+    pub async fn connectors(&self) -> Result<Connectors, Failure> {
         let url = format!("{}/v1/connectors", self.api_url);
         let response = self.send(self.http.get(url)).await?;
-        let connectors: Connectors = response.json().await.map_err(|_| bad_answer())?;
-        Ok(format!(
-            "{}/connections",
-            connectors.web_base_url.trim_end_matches('/')
-        ))
+        response.json().await.map_err(|_| bad_answer())
     }
 
     /// Every live agent in the account. Owner logins only.

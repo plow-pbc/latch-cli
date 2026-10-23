@@ -276,7 +276,8 @@ fn start_args(state: &StateDir) -> Vec<&'static str> {
 }
 
 /// `latch setup --status`: each step of setup, read from the state folder
-/// alone, so it changes nothing and needs no host, terminal or network.
+/// and, for Google, from Plow (read only), so it changes nothing and needs no
+/// host or terminal.
 #[derive(Serialize)]
 pub struct Status {
     pub steps: Vec<Step>,
@@ -296,24 +297,41 @@ pub struct Step {
     /// A connector's: enabled, and a host is serving it now.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ready: Option<bool>,
+    /// Google's: the accounts connected in Plow, when Plow said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<Vec<String>>,
+    /// Google's, when none is connected: where the owner connects one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_url: Option<String>,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum StepState {
     Done,
-    /// Running `args` does it.
+    /// Running `args` does it; for Google with no account in Plow,
+    /// connecting one at `connect_url` comes first.
     Needed,
     /// Something else comes first: an earlier step, or what `reason` says.
     Blocked,
 }
 
-pub fn status(state: &StateDir) -> Result<Status, Failure> {
+pub async fn status(state: &StateDir) -> Result<Status, Failure> {
     use crate::plugins::{Connector, Setting};
     use StepState::{Blocked, Done, Needed};
     let local = crate::status::local(state)?;
     let saved = crate::plugins::saved(state)?;
     let serving = local.serve.ready;
+    // Whether Google is connected in Plow, asked only for the owner's login.
+    let owner = local.peer.as_ref().is_some_and(|me| me.kind == "device");
+    let plow = if owner {
+        Some(match crate::plow::Plow::from_state(state) {
+            Ok(plow) => plow.connectors().await,
+            Err(failure) => Err(failure),
+        })
+    } else {
+        None
+    };
     let mut steps = vec![match &local.peer {
         Some(me) => Step::new("login", Done, format!("Logged in as {}.", me.name), None),
         None => Step::new(
@@ -351,11 +369,17 @@ pub fn status(state: &StateDir) -> Result<Status, Failure> {
                 Some(vec!["plugins", "enable", name]),
             ),
         };
-        steps.push(Step {
+        let mut step = Step {
             enabled: Some(enabled),
             ready: Some(enabled && serving),
             ..Step::new(name, state, reason, args)
-        });
+        };
+        if connector == Connector::Google
+            && let Some(plow) = &plow
+        {
+            google_in_plow(&mut step, plow, saved.get(&connector), serving);
+        }
+        steps.push(step);
     }
     steps.push(match (&local.peer, &local.serve) {
         (None, _) => Step::new("host", Blocked, "latch needs a login first.".into(), None),
@@ -380,6 +404,68 @@ pub fn status(state: &StateDir) -> Result<Status, Failure> {
     Ok(Status { steps })
 }
 
+/// The Google step for the owner, by what Plow says: none connected
+/// (connect one first), connected (then the connector), or Plow could not
+/// say, which is never taken for either.
+fn google_in_plow(
+    step: &mut Step,
+    plow: &Result<crate::plow::Connectors, Failure>,
+    saved: Option<&crate::plugins::Setting>,
+    serving: bool,
+) {
+    use crate::plugins::Setting;
+    use StepState::{Blocked, Done, Needed};
+    let connectors = match plow {
+        Ok(connectors) => connectors,
+        Err(failure) => {
+            step.state = Blocked;
+            step.reason = format!(
+                "Plow could not say whether Google is connected: {}",
+                failure.message
+            );
+            step.args = None;
+            return;
+        }
+    };
+    let accounts: Vec<String> = connectors
+        .gmail
+        .accounts
+        .iter()
+        .map(|account| account.account.clone())
+        .collect();
+    if !connectors.gmail.connected {
+        let page = connectors.connections_page();
+        step.state = Needed;
+        step.reason = format!(
+            "Google is not connected in Plow: connect it at {page}, then run \
+             `latch plugins enable google`."
+        );
+        step.args = None;
+        step.connect_url = Some(page);
+    } else {
+        let listed = accounts.join(", ");
+        (step.state, step.reason) = match saved {
+            Some(Setting::Enabled) if serving => (Done, format!("Google is on, for {listed}.")),
+            Some(Setting::Enabled) => (
+                Done,
+                format!("Google is on, for {listed}; agents can use it once latch is running."),
+            ),
+            Some(Setting::NeedsSetup { reason }) => (
+                Needed,
+                format!("Google is connected in Plow ({listed}); its setup here failed: {reason}"),
+            ),
+            None => (
+                Needed,
+                format!("Google is connected in Plow ({listed}); the connector is off."),
+            ),
+        };
+        if step.state == Needed {
+            step.args = Some(vec!["plugins", "enable", "google"]);
+        }
+    }
+    step.accounts = Some(accounts);
+}
+
 impl Step {
     fn new(
         step: &'static str,
@@ -394,6 +480,8 @@ impl Step {
             args,
             enabled: None,
             ready: None,
+            accounts: None,
+            connect_url: None,
         }
     }
 }
