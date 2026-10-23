@@ -72,6 +72,29 @@ struct WelcomeView: View {
 }
 
 /// Log in to Plow: the QR code is the hero; once logged in it becomes a check.
+/// Plow has another machine by this Mac's name: pick another one.
+private struct NameTaken: View {
+    @Bindable var flow: Onboarding
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("Another machine in your Plow account already has this Mac's name. Choose a new name for this Mac.")
+                .multilineTextAlignment(.center)
+            HStack {
+                TextField("New name", text: $flow.loginName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { flow.useAnotherName() }
+                Button("Use this name") { flow.useAnotherName() }
+                    .disabled(flow.loginName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            Text("To replace that machine instead, run `latch login` in Terminal.")
+                .font(.callout)
+                .foregroundStyle(Brand.muted)
+        }
+        .frame(maxWidth: 380)
+    }
+}
+
 struct LoginView: View {
     var flow: Onboarding
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -119,6 +142,7 @@ struct LoginView: View {
         case .waiting: "Scan this code to prepare a login text."
         case .expired: "Expired login code"
         case .failed: "Couldn't get a login code"
+        case .nameTaken: "This Mac's name is taken"
         case .verified: "Logged in"
         }
     }
@@ -139,7 +163,7 @@ struct LoginView: View {
                     .font(.system(size: 50, weight: .bold))
                     .foregroundStyle(Brand.onVolt)
                     .transition(.symbolEffect(.drawOn))
-            } else if case .failed = flow.login {
+            } else if flow.login == .nameTaken || { if case .failed = flow.login { true } else { false } }() {
                 Image(systemName: "exclamationmark")
                     .font(.system(size: 44, weight: .bold))
                     .foregroundStyle(Brand.clay)
@@ -195,6 +219,8 @@ struct LoginView: View {
                 Text(message).foregroundStyle(Brand.clay).multilineTextAlignment(.center)
                 Button("Try again") { flow.startLogin() }.buttonStyle(.link).foregroundStyle(Brand.volt)
             }
+        case .nameTaken:
+            NameTaken(flow: flow)
         case .verified:
             EmptyView()
         }
@@ -267,9 +293,14 @@ struct GoogleView: View {
             Panel {
                 PanelRow(symbol: "g.circle", title: "Google accounts", state: state, stateColor: color)
             }
-            if flow.googleConnectURL != nil, flow.google != .done {
-                Button("Connect Google in Plow") { flow.connectGoogleInPlow() }
-                    .buttonStyle(.link).foregroundStyle(Brand.volt)
+            if flow.primarySkips {
+                HStack(spacing: 16) {
+                    if flow.googleConnectURL != nil {
+                        Button("Connect Google in Plow") { flow.connectGoogleInPlow() }
+                            .buttonStyle(.link).foregroundStyle(Brand.volt)
+                    }
+                    Button("Check again") { Task { await flow.checkGoogle() } }
+                }
             }
             if case let .failed(message) = flow.google {
                 Text(message).foregroundStyle(Brand.clay).font(.callout)
@@ -335,9 +366,12 @@ struct AccessView: View {
             ForEach([flow.messages, flow.contacts].compactMap { if case let .failed(m) = $0 { m } else { nil } }, id: \.self) {
                 Text($0).foregroundStyle(Brand.clay).font(.callout)
             }
+            if flow.primarySkips {
+                Button("Check again") { flow.requestAccess() }.disabled(flow.waitingForAccess)
+            }
             if let error = flow.restartError {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(flow.app.status?.serve.state == "serving" ? "Latch couldn't restart." : "Latch is stopped. It couldn't start again.")
+                    Text(flow.app.status?.serve.running == true ? "Latch couldn't restart." : "Latch is stopped. It couldn't start again.")
                     Text(error).font(.callout).foregroundStyle(Brand.clay)
                     Button(flow.restarting ? "Restarting…" : "Try again") { Task { await flow.restartLatch() } }
                         .disabled(flow.restarting)
@@ -369,7 +403,7 @@ struct AccessView: View {
         .task {
             guard !flow.app.still else { return }
             await flow.app.refreshStatus()
-            if flow.progress.rerun, flow.messages == .unknown { flow.checkAccess() }
+            await flow.accessAppeared()
         }
         .onDisappear { flow.stopWork() }
     }
@@ -417,7 +451,7 @@ struct StartView: View {
             }
             if let blocked = app.status?.serve.blocked {
                 Text(blocked.message).foregroundStyle(Brand.clay).font(.callout)
-            } else if app.status?.serve.state == "serving" {
+            } else if app.status?.serve.ready == true {
                 Text("Latch is already running on this Mac.").foregroundStyle(Brand.muted)
             }
             if let error = flow.startError {
@@ -464,7 +498,7 @@ struct DoneView: View {
                     PanelRow(symbol: row.symbol, title: row.title, state: row.state, stateColor: row.set ? Brand.volt : Brand.muted)
                 }
             }
-            Text(app.status?.serve.state == "serving" ? "Your agents can now use this Mac." : "You can review or change your setup in Latch.")
+            Text(app.status?.serve.ready == true ? "Your agents can now use this Mac." : "You can review or change your setup in Latch.")
                 .foregroundStyle(Brand.muted)
                 .multilineTextAlignment(.center)
             Spacer(minLength: 0)
@@ -480,8 +514,7 @@ struct DoneView: View {
 
 /// Done's and the main window's list of what onboarding set up.
 /// Done's and the main window's list of what's set up, all from latch: its
-/// status, its rules, its connectors (and, during onboarding, what latch
-/// answered on its screens when the host isn't running to ask).
+/// status, its rules and its setup steps.
 enum Summary {
     struct Row {
         var symbol: String
@@ -493,20 +526,16 @@ enum Summary {
     static func rows(app: AppModel, flow: Onboarding?) -> [Row] {
         let failed = app.status == nil && app.statusError != nil
         let loggedIn = app.status?.peer != nil
-        let serving = app.status?.serve.state == "serving"
-        // Connectors' state needs the host; without it, only what latch
-        // answered on their screens this time is known. A skip says nothing
-        // about what latch has: "Not set up" is only ever latch's answer.
-        func connector(_ names: [String], answered: Bool) -> (String, Bool) {
-            if let plugins = app.plugins {
-                let on = names.allSatisfy { plugins[$0] == "enabled" }
-                return (on ? "On" : "Not set up", on)
-            }
-            if answered { return ("On", true) }
-            return ("Couldn't check", false)
+        let serving = app.status?.serve.ready == true
+        // A skip says nothing about what latch has: "Not set up" is only
+        // ever latch's answer.
+        func connector(_ names: [String]) -> (String, Bool) {
+            guard app.setup != nil else { return ("Couldn't check", false) }
+            let on = names.allSatisfy { app.connectorOn($0) == true }
+            return (on ? "On" : "Not set up", on)
         }
-        let google = connector(["google"], answered: flow?.google == .done)
-        let access = connector(["messages", "contacts"], answered: flow?.accessDone == true)
+        let google = connector(["google"])
+        let access = connector(["messages", "contacts"])
         // Rules as latch last said: its rules show, or what was saved here.
         let rules: (String, Bool) = switch app.rulesSaved ?? flow?.savedRules.map({ !$0.isEmpty }) {
         case true?: ("Saved", true)

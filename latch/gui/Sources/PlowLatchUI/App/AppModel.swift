@@ -44,20 +44,24 @@ final class AppModel {
     var progress: Progress { onboarding?.progress ?? store.load() }
 
     /// What's set up, as latch says: whether shared rules are saved, and
-    /// each connector's state; nil where latch couldn't say (a connector's
-    /// state needs this Mac's host running).
+    /// each setup step (`setup --status`); nil where latch couldn't say.
     private(set) var rulesSaved: Bool?
-    private(set) var plugins: [String: String]?
+    private(set) var setup: SetupStatus?
 
     func refreshSetup() async {
         rulesSaved = (try? await client.rulesShow()).map { $0.everyAgent != nil }
-        plugins = (try? await client.pluginsList()).map { Dictionary(uniqueKeysWithValues: $0.plugins.map { ($0.name, $0.state) }) }
+        setup = try? await client.setupStatus()
+    }
+
+    /// Whether latch says a connector is on; nil before it has said.
+    func connectorOn(_ name: String) -> Bool? {
+        setup.map { $0.step(name)?.enabled == true }
     }
 
     /// For snapshots: what latch said is set up.
-    func stage(rulesSaved: Bool?, plugins: [String: String]?) {
+    func stage(rulesSaved: Bool?, setup: SetupStatus?) {
         self.rulesSaved = rulesSaved
-        self.plugins = plugins
+        self.setup = setup
     }
 
     func refreshStatus() async {

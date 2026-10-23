@@ -9,6 +9,9 @@ nonisolated struct LocalStatus: Decodable, Equatable {
     struct Serve: Decodable, Equatable {
         /// `starting`, `serving`, `stopped` or `error`.
         var state: String
+        /// A `latch serve` holds this state folder.
+        var running: Bool
+        /// It is online and accepting callers.
         var ready: Bool
         /// Run as this user's service: `serve -d` (in the background), or a
         /// `latch serve` held by a terminal (`attached`).
@@ -81,14 +84,22 @@ nonisolated struct RulesTry: Decodable, Equatable {
     var refused: LatchFailure?
 }
 
-/// `latch plugins list`: each connector and whether it's on.
-nonisolated struct PluginsList: Decodable, Equatable {
-    struct Plugin: Decodable, Equatable {
-        var name: String
-        /// `enabled`, `disabled` or `needs_setup`.
+/// `latch setup --status`: each setup step as the state folder says, with
+/// no host needed.
+nonisolated struct SetupStatus: Decodable, Equatable {
+    struct Step: Decodable, Equatable {
+        /// `login`, a connector's name, or `host`.
+        var step: String
+        /// `done`, `needed` or `blocked`.
         var state: String
+        /// The words after `latch` that do this step, while it isn't done.
+        var args: [String]?
+        /// A connector's: its owner turned it on.
+        var enabled: Bool?
     }
-    var plugins: [Plugin]
+    var steps: [Step]
+
+    func step(_ name: String) -> Step? { steps.first { $0.step == name } }
 }
 
 /// `latch plugins enable google`'s answer.
