@@ -26,8 +26,10 @@ use crate::term;
 const POLL: Duration = Duration::from_secs(1);
 const POLL_FAST_FOR: Duration = Duration::from_secs(2 * 60);
 const POLL_SLOW: Duration = Duration::from_secs(5);
-/// How long a login by text waits for the text before it gives up.
-const GIVE_UP_AFTER: Duration = Duration::from_secs(10 * 60);
+/// How long a login by text waits for the text before it gives up: as long
+/// as Plow keeps the code (its `ACTIVATION_CODE_TTL`), which may say sooner
+/// that the code expired.
+const GIVE_UP_AFTER: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Serialize)]
 pub struct LoginOutput {
@@ -524,14 +526,18 @@ mod tests {
     }
 
     #[test]
-    fn a_login_gives_up_after_ten_minutes() {
+    fn a_login_waits_as_long_as_plow_keeps_the_code() {
         let second = Duration::from_secs(1);
         assert_eq!(before_giving_up(Duration::ZERO, second), Some(second));
         assert_eq!(
-            before_giving_up(Duration::from_millis(599_500), 5 * second),
+            before_giving_up(Duration::from_secs(11 * 60), 5 * second),
+            Some(5 * second)
+        );
+        assert_eq!(
+            before_giving_up(Duration::from_millis(1_799_500), 5 * second),
             Some(Duration::from_millis(500))
         );
-        assert_eq!(before_giving_up(Duration::from_secs(600), second), None);
+        assert_eq!(before_giving_up(Duration::from_secs(1800), second), None);
     }
 
     #[test]
