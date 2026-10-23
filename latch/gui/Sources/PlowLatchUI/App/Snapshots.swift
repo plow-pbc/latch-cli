@@ -25,7 +25,6 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry { try Fixtures.decode(Fixtures.allow) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> {
         AsyncThrowingStream { continuation in

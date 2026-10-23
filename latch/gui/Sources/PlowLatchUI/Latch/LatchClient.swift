@@ -34,10 +34,6 @@ nonisolated protocol LatchClient: Sendable {
     func pluginsList(host: String?) async throws -> PluginsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
     func vaultList(host: String?) async throws -> VaultList
-    /// `latch rules try --new-agent --draft - -- REQUEST`: the verdict a new
-    /// agent's request would get under these rules, sent on stdin and never
-    /// saved. Needs no running host.
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry
     /// `latch vault show ITEM`: its non-secret values.
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow
     /// `latch vault add --stdin`, every value on stdin, never in argv.
@@ -182,10 +178,6 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func vaultList(host: String?) async throws -> VaultList {
         try decode(VaultList.self, try await run(["vault", "list"] + on(host)))
-    }
-
-    func rulesTry(draft: String, request: [String]) async throws -> RulesTry {
-        try decode(RulesTry.self, try await run(["rules", "try", "--new-agent", "--draft", "-", "--"] + request, input: Data(draft.utf8)))
     }
 
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow {

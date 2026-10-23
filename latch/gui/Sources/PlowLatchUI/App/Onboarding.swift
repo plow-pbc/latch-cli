@@ -415,7 +415,7 @@ final class Onboarding {
                 for example in examples {
                     group.addTask { [client] in
                         do {
-                            return (example.id, .verdict(try await client.rulesTry(draft: draft, request: example.request)))
+                            return (example.id, .verdict(try await client.rulesTry(example.request, host: nil, agent: nil, newAgent: true, draft: draft)))
                         } catch {
                             return (example.id, .failed((error as? LatchError)?.message ?? error.localizedDescription))
                         }
